@@ -305,6 +305,7 @@ mod tests {
             hocus_proto::wire::AGENT_SELECTION,
             &Some(
                 serde_json::to_string(&hocus_proto::wire::Selection {
+                    revision: None,
                     plugin_id: PluginId::new(announced),
                     pane_id: None,
                     run_id: None,

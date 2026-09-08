@@ -647,6 +647,7 @@ fn selection(plugin_id: zellij_tile::prelude::PluginId) -> PipeMessage {
         name: hocus_proto::wire::AGENT_SELECTION.to_owned(),
         payload: Some(
             serde_json::to_string(&hocus_proto::wire::Selection {
+                revision: None,
                 plugin_id,
                 pane_id: None,
                 run_id: None,

@@ -605,6 +605,7 @@ pub struct State {
     archive_more: bool,
     selected_agent: Option<u32>,
     selected_run: Option<String>,
+    selected_run_revision: Option<u64>,
     /// Highest `seq` merged from hocus-agentd. A daemon reload restarts its
     /// counter, so re-subscribing resets this watermark.
     agent_seq: u64,
@@ -1005,6 +1006,7 @@ impl Default for State {
             archive_more: false,
             selected_agent: None,
             selected_run: None,
+            selected_run_revision: None,
             agent_seq: 0,
             mono_ms: 0,
             log_seq: 0,
@@ -1278,6 +1280,7 @@ impl ZellijPlugin for State {
                 self.push_strip(false);
                 return false;
             },
+            wire::AGENT_SEARCH => return self.on_agent_search(&pipe_message),
             wire::AGENT_RESUME => {
                 // `r` then `y` in the agent list, on a row in the archive. Nothing to redraw
                 // here - what this opens is a terminal pane, and the strip that follows is

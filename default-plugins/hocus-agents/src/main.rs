@@ -295,6 +295,17 @@ struct State {
     /// confirmation that silently does nothing is worse than no confirmation at all. It
     /// still ends when the cursor walks away, because it is an account of a row.
     resume_note: Option<(String, String)>,
+    search_revisions: BTreeMap<String, u64>,
+    // Consumed on the first render that can reveal the hit; refreshes retain manual scrolling.
+    pending_history_revision: Option<u64>,
+    search_editing: bool,
+    search_pending: bool,
+    search_query: String,
+    applied_search_query: Option<String>,
+    search_request: u64,
+    search_error: Option<String>,
+    search_truncated: bool,
+    search_base: Option<(Vec<StripRow>, Summaries)>,
 }
 
 /// Everything [`State::history_lines`] reads, as one comparable value.
@@ -397,6 +408,7 @@ impl ZellijPlugin for State {
 
     fn update(&mut self, event: Event) -> bool {
         let selection = self.selection_key();
+        let revision = self.selected_revision();
         let rendered = match event {
             Event::SessionUpdate(sessions, _) => self.vm_sessions(&sessions),
             Event::Key(key) => self.on_key(key),
@@ -418,7 +430,12 @@ impl ZellijPlugin for State {
         // Where the cursor moved to is hocus's business, not only this pane's: it
         // draws the selected agent's summary. Compared rather than sent on every
         // key, so holding `j` at the end of the list says nothing.
-        if self.follow_selection(selection) {
+        let moved = self.follow_selection(selection);
+        if !moved && revision != self.selected_revision() {
+            self.leave_row();
+            self.pending_history_revision = self.selected_revision();
+        }
+        if moved || revision != self.selected_revision() {
             self.send_selection();
         }
         rendered
@@ -442,6 +459,21 @@ impl ZellijPlugin for State {
             // the arriving keys belong to.
             return self
                 .take_ring_stop(pipe_message.args.get(wire::PANEL_STOP).map(String::as_str));
+        }
+        if pipe_message.name == wire::AGENT_SEARCH_RESULT {
+            let Some(result) = pipe_message
+                .payload
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<wire::SearchResult>(json).ok())
+            else {
+                return false;
+            };
+            let succeeded = result.error.is_empty();
+            let changed = self.apply_search_result(result);
+            if changed && succeeded {
+                self.send_selection();
+            }
+            return changed;
         }
         if pipe_message.name == wire::AGENT_RESUME_RESULT {
             let Some(result) = pipe_message
@@ -469,6 +501,13 @@ impl ZellijPlugin for State {
             return changed;
         }
         if pipe_message.name == wire::AGENT_RUN_DETAIL {
+            let revision = pipe_message
+                .args
+                .get("revision")
+                .and_then(|value| value.parse::<u64>().ok());
+            if revision != self.selected_revision() {
+                return false;
+            }
             let Some(run) = pipe_message
                 .payload
                 .as_deref()
@@ -542,20 +581,35 @@ impl ZellijPlugin for State {
         } else {
             1
         };
-        let label = if cols >= 14 {
+        let label = if self.search_editing {
+            format!("Search: {}  [Enter apply  Esc cancel]", self.search_query)
+        } else if self.search_base.is_some() {
+            let suffix = self
+                .search_error
+                .as_deref()
+                .map(|error| format!("  error: {error}"))
+                .unwrap_or_else(|| {
+                    if self.search_truncated {
+                        "  more matches omitted".to_owned()
+                    } else {
+                        "  [c clear  / edit]".to_owned()
+                    }
+                });
+            format!("Search: {}{}", self.search_query, suffix)
+        } else if cols >= 14 {
             if self.vm_tab {
                 if self.vms.has_error() {
-                    " Agents  [VMs!]"
+                    " Agents  [VMs!]".to_owned()
                 } else {
-                    " Agents  [VMs]"
+                    " Agents  [VMs]".to_owned()
                 }
             } else {
-                "[Agents]  VMs"
+                "[Agents]  VMs".to_owned()
             }
         } else if cols >= 3 {
-            "A V"
+            "A V".to_owned()
         } else {
-            "AV"
+            "AV".to_owned()
         };
         let mut text = Text::new(label);
         if cols < 14 {
@@ -600,7 +654,12 @@ impl ZellijPlugin for State {
             // too-short pane makes below, and what the Tab handler's ring relies on.
             self.focus = Focus::List;
             self.last_history_max_scroll = 0;
-            paint(Text::new("no agents").dim_range(..), 0, 0, Some(cols), None);
+            let message = if self.search_base.is_some() {
+                "no matches"
+            } else {
+                "no agents"
+            };
+            paint(Text::new(message).dim_range(..), 0, 0, Some(cols), None);
             return;
         }
         let (list_rows, history_rows) = split(rows);
@@ -777,6 +836,7 @@ impl State {
             return false;
         }
         self.leave_row();
+        self.pending_history_revision = self.selected_revision();
         true
     }
 
@@ -790,6 +850,7 @@ impl State {
     /// Nothing ever tells this pane that a summary request was refused, so the only honest
     /// lifetime for that hint is one the user can end themselves by walking off the row.
     fn leave_row(&mut self) {
+        self.pending_history_revision = None;
         self.list_scroll = None;
         self.history_scroll = 0;
         self.history_cursor = 0;
@@ -800,6 +861,9 @@ impl State {
     }
 
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
+        if self.search_editing {
+            return self.search_key(key);
+        }
         if self.tabs_focused {
             if key.bare_key == BareKey::Tab {
                 if key.has_modifiers(&[KeyModifier::Shift]) {
@@ -928,6 +992,8 @@ impl State {
         }
         if key.has_no_modifiers() {
             match key.bare_key {
+                BareKey::Char('/') => return self.begin_search(),
+                BareKey::Char('c') if self.search_base.is_some() => return self.clear_search(),
                 // `j`/`k` follow the focus - the vim spelling of whatever the focused half
                 // does with a line.
                 //
@@ -998,6 +1064,129 @@ impl State {
             },
             _ => false,
         }
+    }
+
+    fn apply_search_result(&mut self, result: wire::SearchResult) -> bool {
+        if self.search_base.is_none()
+            || !self.search_pending
+            || result.request_id != self.search_request.to_string()
+        {
+            return false;
+        }
+        self.search_pending = false;
+        self.search_editing = false;
+        self.search_error = (!result.error.is_empty()).then_some(result.error);
+        self.search_truncated = result.truncated;
+        if self.search_error.is_some() {
+            return true;
+        }
+        self.applied_search_query = Some(self.search_query.clone());
+        let selection = self.selection_key();
+        let revision = self.selected_revision();
+        self.search_revisions = result
+            .runs
+            .iter()
+            .map(|run| (run.run_id.clone(), run.revision))
+            .collect();
+        self.rows = result
+            .runs
+            .into_iter()
+            .map(|run| StripRow::Run {
+                run_id: run.run_id,
+                kind: run.kind,
+                text: format!("{} — {}", run.title, run.snippet),
+            })
+            .collect();
+        self.selected = self.rows.iter().position(selectable).unwrap_or(0);
+        self.list_scroll = None;
+        self.generation += 1;
+        if !self.follow_selection(selection) && self.selected_revision() != revision {
+            self.leave_row();
+            self.pending_history_revision = self.selected_revision();
+        }
+        if self.pending_history_revision.is_some() {
+            self.run = None;
+        }
+        true
+    }
+
+    fn begin_search(&mut self) -> bool {
+        self.search_request = self.search_request.wrapping_add(1);
+        self.search_pending = false;
+        if self.search_base.is_none() {
+            self.search_base = Some((self.rows.clone(), self.summaries.clone()));
+        }
+        self.search_query.clear();
+        self.search_error = None;
+        self.search_editing = true;
+        true
+    }
+
+    fn search_key(&mut self, key: KeyWithModifier) -> bool {
+        if key.bare_key == BareKey::Esc {
+            let Some(query) = self.applied_search_query.clone() else {
+                return self.clear_search();
+            };
+            self.search_request = self.search_request.wrapping_add(1);
+            self.search_pending = false;
+            self.search_editing = false;
+            self.search_query = query;
+            self.search_error = None;
+            return true;
+        }
+        if key.bare_key == BareKey::Enter {
+            if self.search_query.trim().is_empty() {
+                return true;
+            }
+            self.search_request = self.search_request.wrapping_add(1);
+            let request = wire::SearchRequest {
+                request_id: self.search_request.to_string(),
+                query: self.search_query.clone(),
+            };
+            let Ok(payload) = serde_json::to_string(&request) else {
+                return false;
+            };
+            self.search_pending = true;
+            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SEARCH).with_payload(payload));
+            self.search_error = None;
+            return true;
+        }
+        if key.bare_key == BareKey::Backspace {
+            if self.search_query.pop().is_some() {
+                self.search_request = self.search_request.wrapping_add(1);
+                self.search_pending = false;
+            }
+            return true;
+        }
+        if key.has_no_modifiers() {
+            if let BareKey::Char(ch) = key.bare_key {
+                self.search_query.push(ch);
+                self.search_request = self.search_request.wrapping_add(1);
+                self.search_pending = false;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn clear_search(&mut self) -> bool {
+        self.search_revisions.clear();
+        self.pending_history_revision = None;
+        self.applied_search_query = None;
+        self.search_request = self.search_request.wrapping_add(1);
+        self.search_pending = false;
+        self.search_editing = false;
+        let Some((rows, summaries)) = self.search_base.take() else {
+            return false;
+        };
+        self.rows = rows;
+        self.summaries = summaries;
+        self.search_query.clear();
+        self.search_error = None;
+        self.search_truncated = false;
+        self.selected = self.rows.iter().position(selectable).unwrap_or(0);
+        self.generation += 1;
+        true
     }
 
     /// One page of the history half: what it can show, less a line of overlap so a page turn
@@ -1295,6 +1484,12 @@ impl State {
             focused,
             summaries,
         } = strip;
+        if let Some(base) = self.search_base.as_mut() {
+            *base = (rows, summaries);
+            let was_live = self.live();
+            self.focused = focused.or(self.focused);
+            return self.live() != was_live;
+        }
         let walked_to = focused
             .filter(|_| focused != self.focused)
             .and_then(|pane_id| position_of(&rows, pane_id));
@@ -1377,7 +1572,8 @@ impl State {
         // and only `render` is told the width. So the winding that keeps the cursor on screen
         // happens here, the same place and for the same reason `last_history_max_scroll` is
         // recorded.
-        if focused {
+        let anchored = room > 0 && self.position_search_hit();
+        if focused || anchored {
             self.history_cursor = self
                 .history_cursor
                 .min(self.history().events.len().saturating_sub(1));
@@ -2136,6 +2332,28 @@ impl State {
         }
     }
 
+    fn position_search_hit(&mut self) -> bool {
+        let Some(revision) = self.pending_history_revision else {
+            return false;
+        };
+        let Some(index) = self
+            .history()
+            .events
+            .iter()
+            .position(|event| event.revision == Some(revision))
+        else {
+            return false;
+        };
+        self.history_cursor = self.history().events.len() - index - 1;
+        self.pending_history_revision = None;
+        true
+    }
+
+    fn selected_revision(&self) -> Option<u64> {
+        self.selected_run_id()
+            .and_then(|id| self.search_revisions.get(&id).copied())
+    }
+
     fn selection_key(&self) -> Option<String> {
         self.rows.get(self.selected).and_then(row_key)
     }
@@ -2235,6 +2453,7 @@ impl State {
             plugin_id: self.own_plugin_id,
             pane_id: self.selection(),
             run_id: self.selected_run_id(),
+            revision: self.selected_revision(),
         };
         let Ok(payload) = serde_json::to_string(&selection) else {
             return;
@@ -2346,6 +2565,322 @@ fn step(rows: &[StripRow], selected: usize, motion: Motion) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn search_reply(state: &mut State, ids: &[&str]) -> wire::SearchResult {
+        state.begin_search();
+        state.search_query = "history".to_owned();
+        state.search_key(KeyWithModifier::new(BareKey::Enter));
+        assert!(state.search_pending);
+        wire::SearchResult {
+            request_id: state.search_request.to_string(),
+            runs: ids
+                .iter()
+                .map(|id| wire::SearchRun {
+                    run_id: (*id).to_owned(),
+                    kind: "claude".to_owned(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn search_revisions_reposition_with_list_focus_and_refresh_preserves_scroll() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        assert_eq!(state.selected_revision(), None);
+        let mut run = a_run();
+        run.entries = (1..=600)
+            .map(|revision| agents::RunEntry {
+                revision,
+                text: format!("message {revision}"),
+                kind: agents::RunEntryKind::Message,
+                created_at_ms: Some(revision as i64),
+                event_id: None,
+            })
+            .collect();
+        state.focus = Focus::List;
+        for revision in [10, 20] {
+            let mut reply = search_reply(&mut state, &[&run.id]);
+            reply.runs[0].revision = revision;
+            assert!(state.apply_search_result(reply));
+            assert_eq!(state.selected_revision(), Some(revision));
+            // A detail already in flight for the preceding hit must not settle this anchor.
+            assert!(!state.pipe(PipeMessage::new(
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                wire::AGENT_RUN_DETAIL,
+                &Some(serde_json::to_string(&run).unwrap()),
+                &Some(BTreeMap::from([(
+                    "revision".to_owned(),
+                    (revision - 1).to_string()
+                )])),
+                false,
+            )));
+            state.render(40, 80);
+            assert_eq!(state.pending_history_revision, Some(revision));
+            state.pipe(PipeMessage::new(
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                wire::AGENT_RUN_DETAIL,
+                &Some(serde_json::to_string(&run).unwrap()),
+                &Some(BTreeMap::from([(
+                    "revision".to_owned(),
+                    revision.to_string(),
+                )])),
+                false,
+            ));
+            state.render_history(0, 0, 80);
+            assert_eq!(state.pending_history_revision, Some(revision));
+            state.render(40, 80);
+            assert_eq!(state.cursor_event().unwrap().revision, Some(revision));
+            let event = state.cursor_event().unwrap();
+            let end = state.history().entries.len() - state.history_scroll;
+            assert!(
+                event.start < end && event.end() > end.saturating_sub(state.last_history_body_rows)
+            );
+            state.scroll_history(-3);
+            let scroll = state.history_scroll;
+            run.entries.last_mut().unwrap().text.push('!');
+            state.pipe(PipeMessage::new(
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                wire::AGENT_RUN_DETAIL,
+                &Some(serde_json::to_string(&run).unwrap()),
+                &Some(BTreeMap::from([(
+                    "revision".to_owned(),
+                    revision.to_string(),
+                )])),
+                false,
+            ));
+            state.render(40, 80);
+            assert_eq!(state.history_scroll, scroll);
+        }
+        state.clear_search();
+        assert_eq!(state.selected_revision(), None);
+        let selection: wire::Selection =
+            serde_json::from_str(r#"{"plugin_id":0,"run_id":"old"}"#).unwrap();
+        assert_eq!(selection.revision, None);
+    }
+
+    #[test]
+    fn cancelling_an_initial_search_restores_live_rows_and_summaries() {
+        for pending in [false, true] {
+            let mut state = State::default();
+            state.set_rows(unfocused(strip()));
+            assert!(state.on_key(KeyWithModifier::new(BareKey::Char('/'))));
+            let reply = pending.then(|| search_reply(&mut state, &["stale"]));
+            let mut incoming = with_summary(strip(), 7, "While editing", false);
+            incoming.rows.push(agent(10, "new agent"));
+            state.set_rows(incoming.clone());
+            assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+            assert!(state.search_base.is_none());
+            assert!(!state.search_editing);
+            assert!(!state.search_pending);
+            assert!(state.search_query.is_empty());
+            assert_eq!(state.rows, incoming.rows);
+            assert_eq!(state.summaries, incoming.summaries);
+            if let Some(reply) = reply {
+                assert!(!state.apply_search_result(reply));
+            }
+            incoming.rows.push(agent(11, "another agent"));
+            incoming.summaries.get_mut(&7).unwrap().text = "After Escape".to_owned();
+            assert!(state.set_rows(incoming.clone()));
+            assert_eq!(state.rows, incoming.rows);
+            assert_eq!(state.summaries, incoming.summaries);
+        }
+    }
+
+    #[test]
+    fn cancelling_edits_restores_the_applied_query_and_matches() {
+        for pending in [false, true] {
+            let mut state = State::default();
+            state.set_rows(unfocused(strip()));
+            let reply = search_reply(&mut state, &["match-1", "match-2"]);
+            assert!(state.apply_search_result(reply));
+            state.selected = 1;
+            let matches = state.rows.clone();
+            assert!(state.on_key(KeyWithModifier::new(BareKey::Char('/'))));
+            assert!(state.on_key(KeyWithModifier::new(BareKey::Char('x'))));
+            if pending {
+                assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
+            }
+            let stale = wire::SearchResult {
+                request_id: state.search_request.to_string(),
+                ..Default::default()
+            };
+            assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+            assert_eq!(state.search_query, "history");
+            assert_eq!(state.applied_search_query.as_deref(), Some("history"));
+            assert_eq!(state.rows, matches);
+            assert_eq!(state.selected, 1);
+            assert!(!state.search_editing);
+            assert!(!state.search_pending);
+            assert!(!state.apply_search_result(stale));
+            state.set_rows(unfocused(vec![agent(10, "new agent")]));
+            assert_eq!(state.rows, matches);
+            assert!(state.clear_search());
+            assert!(state.applied_search_query.is_none());
+        }
+    }
+
+    #[test]
+    fn editing_a_pending_query_ignores_stale_replies_and_accepts_the_revised_query() {
+        for key in [BareKey::Char('x'), BareKey::Backspace] {
+            for error in ["", "stale error"] {
+                let mut state = State::default();
+                state.set_rows(unfocused(strip()));
+                let original = state.rows.clone();
+                let mut stale = search_reply(&mut state, &["match"]);
+                stale.error = error.to_owned();
+                assert!(state.on_key(KeyWithModifier::new(key)));
+                let revised = state.search_query.clone();
+                assert_eq!(
+                    revised,
+                    if key == BareKey::Backspace {
+                        "histor"
+                    } else {
+                        "historyx"
+                    }
+                );
+                assert!(!state.search_pending);
+                assert!(!state.apply_search_result(stale.clone()));
+                assert!(state.search_editing);
+                assert_eq!(state.rows, original);
+                assert!(state.search_error.is_none());
+                assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
+                assert!(!state.apply_search_result(stale.clone()));
+                assert!(state.search_pending);
+                stale.request_id = state.search_request.to_string();
+                stale.error.clear();
+                assert!(state.apply_search_result(stale));
+                assert_eq!(state.search_query, revised);
+                assert_eq!(
+                    state.applied_search_query.as_deref(),
+                    Some(revised.as_str())
+                );
+                assert_eq!(state.selection_key().as_deref(), Some("run:match"));
+                assert!(!state.search_editing);
+                assert!(state.search_error.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn strips_during_search_save_the_latest_rows_without_replacing_matches() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        let reply = search_reply(&mut state, &["match-1", "match-2"]);
+        assert!(state.apply_search_result(reply));
+        state.selected = 1;
+        let matches = state.rows.clone();
+        let mut incoming = with_summary(strip(), 7, "Updated summary", false);
+        incoming.rows.push(agent(10, "new agent"));
+        incoming.focused = Some(7);
+        assert!(!state.set_rows(incoming.clone()));
+        assert_eq!(state.rows, matches);
+        assert_eq!(state.selected, 1);
+        assert_eq!(state.focused, Some(7));
+        state.set_rows(Strip {
+            focused: None,
+            ..incoming.clone()
+        });
+        assert_eq!(state.focused, Some(7));
+        assert!(state.clear_search());
+        assert_eq!(state.rows, incoming.rows);
+        assert_eq!(state.summaries, incoming.summaries);
+        assert!(state.search_base.is_none());
+    }
+
+    #[test]
+    fn cancelled_and_replaced_search_replies_are_ignored() {
+        for cancellation in ["escape", "clear", "replace", "submit"] {
+            for error in ["", "stale error"] {
+                let mut state = State::default();
+                state.set_rows(one_run_selected());
+                let mut reply = search_reply(&mut state, &["stale"]);
+                reply.error = error.to_owned();
+                match cancellation {
+                    "escape" => {
+                        state.search_key(KeyWithModifier::new(BareKey::Esc));
+                    },
+                    "clear" => {
+                        state.clear_search();
+                    },
+                    "replace" => {
+                        state.begin_search();
+                    },
+                    _ => {
+                        search_reply(&mut state, &["new"]);
+                    },
+                }
+                let rows = state.rows.clone();
+                let editing = state.search_editing;
+                let pending = state.search_pending;
+                assert!(!state.apply_search_result(reply));
+                assert_eq!(state.rows, rows);
+                assert_eq!(state.search_editing, editing);
+                assert_eq!(state.search_pending, pending);
+                assert!(state.search_error.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn search_results_follow_selection_and_preserve_state_for_the_same_run() {
+        for id in ["claude:session-1", "another-run"] {
+            let mut state = reading("An open event");
+            state.history_scroll = 3;
+            state.history_cursor = 2;
+            state.summarizing = state.selection_key();
+            state.confirming_resume = state.selection_key();
+            state.resume_note = Some((state.selection_key().unwrap(), "refused".to_owned()));
+            state
+                .search_revisions
+                .insert("claude:session-1".to_owned(), 0);
+            let reply = search_reply(&mut state, &[id]);
+            assert!(state.apply_search_result(reply));
+            let same = id == "claude:session-1";
+            assert_eq!(state.history_scroll, if same { 3 } else { 0 });
+            assert_eq!(state.history_cursor, if same { 2 } else { 0 });
+            assert_eq!(state.reading.is_some(), same);
+            assert_eq!(state.reader_cache.is_some(), same);
+            assert_eq!(state.summarizing.is_some(), same);
+            assert_eq!(state.confirming_resume.is_some(), same);
+            assert_eq!(state.resume_note.is_some(), same);
+        }
+    }
+
+    #[test]
+    fn empty_results_and_errors_finish_search_and_ignore_duplicate_replies() {
+        for error in ["", "search failed"] {
+            let mut state = reading("An open event");
+            let original = state.rows.clone();
+            let mut reply = search_reply(&mut state, &[]);
+            reply.error = error.to_owned();
+            reply.truncated = true;
+            assert!(state.apply_search_result(reply.clone()));
+            assert!(!state.search_editing);
+            assert!(!state.search_pending);
+            assert!(state.search_base.is_some());
+            assert!(state.search_truncated);
+            assert_eq!(
+                state.search_error.as_deref(),
+                (!error.is_empty()).then_some(error)
+            );
+            if error.is_empty() {
+                assert!(state.rows.is_empty());
+                assert_eq!(state.selected, 0);
+                assert!(state.reading.is_none());
+            } else {
+                assert_eq!(state.rows, original);
+                assert!(state.reading.is_some());
+            }
+            assert!(!state.apply_search_result(reply));
+            assert!(state.clear_search());
+            assert_eq!(state.rows, original);
+            assert!(!state.search_truncated);
+            assert!(state.search_error.is_none());
+        }
+    }
 
     fn agent(pane_id: u32, text: &str) -> StripRow {
         StripRow::Agent {

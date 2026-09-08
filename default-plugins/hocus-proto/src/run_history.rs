@@ -487,6 +487,36 @@ pub fn entry_page(
     })
 }
 
+/// Search detail with the complete matching entry and the usual surrounding context.
+/// The selected entry may exceed the page's normal text budget.
+pub fn search_detail(
+    backend: &impl Backend,
+    run_id: &str,
+    revision: u64,
+) -> Result<EntryPage, String> {
+    let mut page = entry_page(
+        backend,
+        run_id,
+        Some(anchored_from(revision)),
+        MAX_PAGE_ENTRIES,
+    )?;
+    let full = entry_page(backend, run_id, Some(revision), 1)?;
+    if let Some(entry) = full
+        .entries
+        .into_iter()
+        .find(|entry| entry.revision == revision)
+    {
+        if let Some(selected) = page
+            .entries
+            .iter_mut()
+            .find(|entry| entry.revision == revision)
+        {
+            *selected = entry;
+        }
+    }
+    Ok(page)
+}
+
 /// Where a page anchored on `revision` starts: far enough back to carry the lead-in.
 pub fn anchored_from(revision: u64) -> u64 {
     revision.saturating_sub(ANCHOR_LEAD_IN).max(1)
@@ -650,6 +680,59 @@ pub fn search(
     })
 }
 
+/// Search the panel's distinct runs, retaining one representative entry per valid run.
+pub fn search_runs(backend: &impl Backend, query: &str) -> Result<Found, String> {
+    const PAGE: u32 = 100;
+    let query = query.trim();
+    let mut found = Found::default();
+    if query.is_empty() {
+        return Ok(found);
+    }
+    let mut request = FetchRequest::entity(rows::ENTRY_ENTITY)
+        .search(query)
+        .limit(PAGE);
+    let mut page = backend.fetch(&request)?;
+    // Choose once: an exhausted FTS page must not start a second, substring search.
+    if page.is_empty() {
+        request = FetchRequest::entity(rows::ENTRY_ENTITY)
+            .filter(Pred::contains("text", query))
+            .sort_by("created_at_ms", SortDir::Desc)
+            .sort_by("uid", SortDir::Asc)
+            .limit(PAGE);
+        page = backend.fetch(&request)?;
+    }
+    let mut offset = 0;
+    let mut seen = BTreeSet::new();
+    loop {
+        let hits = hits_from_rows(&page, query);
+        let ids = hits
+            .iter()
+            .filter(|hit| !seen.contains(&hit.run_id))
+            .map(|hit| hit.run_id.clone())
+            .collect();
+        let headers = headers_by_id(backend, &ids)?;
+        for hit in hits {
+            if !seen.insert(hit.run_id.clone()) {
+                continue;
+            }
+            let Some(header) = headers.get(&hit.run_id) else {
+                continue;
+            };
+            if found.hits.len() == MAX_RUNS {
+                found.truncated = true;
+                return Ok(found);
+            }
+            found.runs.insert(hit.run_id.clone(), header.clone());
+            found.hits.push(hit);
+        }
+        if page.is_empty() || (page.len() < PAGE as usize && !page.truncated) {
+            return Ok(found);
+        }
+        offset += page.len() as u32;
+        page = backend.fetch(&request.clone().offset(offset))?;
+    }
+}
+
 /// The matching entries, FTS first and a substring pass behind it.
 fn hits_for(
     backend: &impl Backend,
@@ -678,8 +761,12 @@ fn hits_for(
                 .limit(want),
         ))?;
     }
+    Ok(hits_from_rows(&rows, query))
+}
+
+fn hits_from_rows(rows: &zellij_tile::prelude::DataRows, query: &str) -> Vec<Hit> {
     let mut hits = Vec::new();
-    for (run_id, entries) in rows::entries_from_rows(&rows) {
+    for (run_id, entries) in rows::entries_from_rows(rows) {
         for entry in entries {
             hits.push(Hit {
                 run_id: run_id.clone(),
@@ -698,7 +785,7 @@ fn hits_for(
             .cmp(&a.created_at_ms)
             .then_with(|| b.revision.cmp(&a.revision))
     });
-    Ok(hits)
+    hits
 }
 
 /// A window of `text` around the first occurrence of `query`, on one line.
@@ -871,6 +958,80 @@ mod tests {
     }
 
     // -- searching ------------------------------------------------------
+
+    #[test]
+    fn distinct_runs_page_past_a_talkative_run_and_measure_overflow() {
+        let backend = backend();
+        let mut talkative = run("talkative", "claude", "main", 1);
+        talkative.entries = (1..=600)
+            .map(|rev| entry(rev, RunEntryKind::Message, "needle", rev as i64))
+            .collect();
+        write(&backend, &talkative);
+        // Orphaned entry rows are matches, but cannot take a slot from a valid run.
+        backend
+            .apply(vec![old_entry_put(
+                "missing",
+                &entry(1, RunEntryKind::Message, "needle", 1),
+            )])
+            .unwrap();
+        for n in 1..=50 {
+            let mut other = run(&format!("other-{n}"), "claude", "main", n);
+            other.entries = vec![entry(1, RunEntryKind::Message, "needle", n)];
+            write(&backend, &other);
+            if n == 49 || n == 50 {
+                let found = search_runs(&backend, "needle").unwrap();
+                assert_eq!(found.hits.len(), 50);
+                assert_eq!(found.truncated, n == 50);
+                assert_eq!(found.runs.len(), 50);
+                assert_eq!(
+                    found
+                        .hits
+                        .iter()
+                        .map(|hit| &hit.run_id)
+                        .collect::<BTreeSet<_>>()
+                        .len(),
+                    50
+                );
+            }
+        }
+        let page = entry_page(
+            &backend,
+            "talkative",
+            Some(anchored_from(10)),
+            MAX_PAGE_ENTRIES,
+        )
+        .unwrap();
+        assert_eq!(page.entries.first().unwrap().revision, 8);
+        assert!(page.entries.iter().any(|entry| entry.revision == 10));
+        assert_eq!(page.total, 600);
+    }
+
+    #[test]
+    fn distinct_run_search_uses_substrings_only_when_fts_starts_empty() {
+        let backend = backend();
+        for (id, text) in [
+            ("exact", "needle"),
+            ("substring", "needlesuffix"),
+            ("punctuation", "---"),
+        ] {
+            let mut recorded = run(id, "claude", "main", 1);
+            recorded.entries = (1..=100)
+                .map(|rev| entry(rev, RunEntryKind::Message, text, rev as i64))
+                .collect();
+            write(&backend, &recorded);
+        }
+        for (query, expected) in [
+            ("needle", "exact"),
+            ("suffix", "substring"),
+            ("---", "punctuation"),
+        ] {
+            let found = search_runs(&backend, query).unwrap();
+            assert_eq!(found.hits.len(), 1);
+            assert_eq!(found.hits[0].run_id, expected);
+            assert!(found.hits[0].snippet.contains(query));
+            assert!(!found.truncated);
+        }
+    }
 
     #[test]
     fn assistant_messages_are_searchable_and_pageable_after_archival_and_summary() {
@@ -1443,6 +1604,68 @@ mod tests {
     }
 
     // -- paging one run -------------------------------------------------
+
+    #[test]
+    fn search_detail_preserves_the_full_match_and_surrounding_context() {
+        for length in [ENTRY_TEXT_CHARS * 2, PAGE_TEXT_BUDGET * 2] {
+            let backend = backend();
+            let mut recorded = run("claude:match", "claude", "main", 1);
+            let text = format!("{} needle near the end", "x".repeat(length));
+            recorded.entries = (1..=6)
+                .map(|rev| entry(rev, RunEntryKind::Message, "context", rev as i64))
+                .collect();
+            recorded.entries[3].text = text.clone();
+            write(&backend, &recorded);
+
+            let found = search_runs(&backend, "needle").unwrap();
+            let hit = &found.hits[0];
+            assert_eq!(hit.revision, 4);
+            assert!(hit.snippet.contains("needle"));
+            let mut expected = entry_page(
+                &backend,
+                &recorded.id,
+                Some(anchored_from(hit.revision)),
+                MAX_PAGE_ENTRIES,
+            )
+            .unwrap();
+            assert!(!expected.entries[2].text.contains("needle"));
+            expected.entries[2] = recorded.entries[3].clone();
+
+            let detail = search_detail(&backend, &hit.run_id, hit.revision).unwrap();
+            assert_eq!(detail.entries[2].text, text);
+            assert_eq!(detail.entries, recorded.entries[1..]);
+            assert_eq!(detail, expected);
+        }
+    }
+
+    #[test]
+    fn search_detail_does_not_substitute_a_later_revision_for_a_missing_match() {
+        let backend = backend();
+        let mut recorded = run("claude:gap", "claude", "main", 1);
+        recorded.entries = vec![
+            entry(1, RunEntryKind::Prompt, "context", 1),
+            entry(
+                3,
+                RunEntryKind::Message,
+                &"x".repeat(ENTRY_TEXT_CHARS * 2),
+                3,
+            ),
+        ];
+        write(&backend, &recorded);
+        for revision in [2, 4] {
+            let expected = entry_page(
+                &backend,
+                &recorded.id,
+                Some(anchored_from(revision)),
+                MAX_PAGE_ENTRIES,
+            )
+            .unwrap();
+            assert_eq!(
+                search_detail(&backend, &recorded.id, revision).unwrap(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn an_absent_start_reads_the_newest_page() {
