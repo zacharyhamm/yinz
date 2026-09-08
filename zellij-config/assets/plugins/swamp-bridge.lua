@@ -267,7 +267,16 @@ handle = function(args)
     for id in pairs(runs.entries) do ids[#ids+1]=id end
     local predicate='has(tags.specName) && tags.specName == "question" && attributes.run in '..encode(ids)
     local questions=decode(command({'swamp','data','query',predicate,'--select','{"model": modelName, "version": version, "attributes": attributes}','--json'},config.root))
-    local outputs=decode(command({'swamp','data','query','has(tags.workflowRunId) && tags.workflowRunId in '..encode(ids),'--select','{"model":modelName,"name":name,"version":version,"attributes":attributes}','--json'},config.root))
+    -- Bound saved diffs before RunCommand serializes stdout; its byte cap would cut JSON.
+    -- CEL substring uses UTF-16 offsets: back off if the cut would split a surrogate pair.
+    local output_projection=[[{"model":modelName,"name":name,"version":version,"attributes":
+      specName == "diff" && has(attributes.output)
+        ? {"evidence":attributes.evidence,
+           "output":attributes.output.size() > 16384 ? attributes.output.substring(0,
+             attributes.output.substring(16383,16384).matches(r"[\uD800-\uDBFF]") ? 16383 : 16384) : attributes.output,
+           "previewTruncated":attributes.output.size() > 16384}
+        : attributes}]]
+    local outputs=decode(command({'swamp','data','query','has(tags.workflowRunId) && tags.workflowRunId in '..encode(ids),'--select',output_projection,'--json'},config.root))
     local children={}
     for _,id in ipairs(ids) do
       if id~=run then children[#children+1]=decode(command({'swamp','workflow','history','get',id,'--json'},config.root)) end

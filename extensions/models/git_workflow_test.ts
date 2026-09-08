@@ -120,10 +120,9 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
             /dirty/,
         );
         const beforeDiff = await git(source, ["status", "--porcelain=v1"]);
-        await Deno.writeTextFile(
-            source + "/untracked.txt",
-            "untracked contents\n",
-        );
+        const untracked = 'untracked contents 😀é\t"\\\n'.repeat(40000);
+        assert(new TextEncoder().encode(untracked).length > 1_100_000);
+        await Deno.writeTextFile(source + "/untracked.txt", untracked);
         await methods.show_diff.execute(args, c);
         const output = String(saved.get("diff-current")?.output);
         assert(
@@ -133,6 +132,10 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
         );
         assert(
             output.includes("+topic") && output.includes("untracked contents"),
+        );
+        assert(
+            output.endsWith(untracked),
+            "the saved diff retains every character",
         );
         await Deno.remove(source + "/untracked.txt");
         assert(await git(source, ["status", "--porcelain=v1"]) === beforeDiff);

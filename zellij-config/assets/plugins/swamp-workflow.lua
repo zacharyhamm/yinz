@@ -3,6 +3,7 @@ local z = require('zellij')
 local M = {status='No run attached', scroll=0, pending={}, selected=1}
 local form
 local function text(s) return z.text.sanitize(tostring(s or '')) end
+local function quote(s) return "'"..s:gsub("'","'\"'\"'").."'" end
 function M.refresh()
   if not M.attachment or M.busy then return end
   M.busy = true
@@ -112,6 +113,11 @@ function M.render(rows,cols)
       for _,finding in ipairs(review.findings or {}) do lines[#lines+1]=text(finding.severity..' '..finding.file..': '..finding.message) end
       if attrs.pane then lines[#lines+1]='Pane '..attrs.pane..' / '..text(attrs.log)..' / '..text(attrs.outcome) end
       if attrs.output then
+        if attrs.previewTruncated then
+          lines[#lines+1]='Diff preview (up to 16,384 characters). Retrieve the complete saved version:'
+          local predicate='modelName == '..z.json.encode(entry.model)..' && name == '..z.json.encode(entry.name)..' && version == '..entry.version
+          lines[#lines+1]=text('swamp data query '..quote(predicate)..' --select attributes.output --json --repo-dir '..quote(M.snapshot.root))
+        end
         if attrs.outputTruncated then lines[#lines+1]='Retained command scrollback (may omit older output):' end
         for line in attrs.output:gmatch('[^\n]+') do lines[#lines+1]=text(line) end
       end

@@ -62,9 +62,8 @@ const FRAME_ROWS: usize = 2;
 
 /// What this modal was opened to do.
 ///
-/// Both jobs about the focused pane need the daemon's snapshot before they can do
-/// anything - the pane's kind and its location are in it and nowhere else this plugin
-/// can reach. Only `Fork` stays up once it has one, to ask its question.
+/// Both jobs resolve the source from the daemon snapshot or an explicit lookup for
+/// a hidden pane. Only `Fork` stays up once it has one, to ask its question.
 enum Job {
     /// Fill the form in and create an agent. What the modal is without a caller pane.
     New,
@@ -350,20 +349,14 @@ impl ZellijPlugin for State {
         else {
             return false;
         };
-        let pane_of = |pane_id: u32| {
-            reply
-                .panes
-                .iter()
-                .flatten()
-                .find(move |pane| pane.pane_id == pane_id)
-        };
+        let pane_of = |pane_id| source_pane(&reply, pane_id, get_pane_info);
         // Taken, so a second snapshot cannot open a second pane or move a picker the user
         // is already looking at.
         match std::mem::replace(&mut self.job, Job::New) {
             Job::New => false,
             Job::Duplicate { pane_id } => {
                 let command =
-                    pane_of(pane_id).and_then(|pane| duplicate_command(pane, &reply.manual_kinds));
+                    pane_of(pane_id).and_then(|pane| duplicate_command(&pane, &reply.manual_kinds));
                 // A pane that is not an agent leaves the New agent form up, which is what
                 // this modal is underneath.
                 if let Some(new_pane_id) = command.and_then(start) {
@@ -376,12 +369,10 @@ impl ZellijPlugin for State {
                 source: ForkSource::Waiting,
             } => {
                 let source = match pane_of(pane_id).and_then(|pane| {
-                    agents::classify(pane, &reply.manual_kinds).map(|(kind, _)| (pane, kind))
+                    let kind = agents::classify(&pane, &reply.manual_kinds)?.0.to_owned();
+                    Some((pane, kind))
                 }) {
-                    Some((pane, kind)) => ForkSource::Ready(Box::new(ForkContext {
-                        pane: pane.clone(),
-                        kind: kind.to_owned(),
-                    })),
+                    Some((pane, kind)) => ForkSource::Ready(Box::new(ForkContext { pane, kind })),
                     None => ForkSource::NotAnAgent,
                 };
                 self.describe_fork(&source);
@@ -776,6 +767,25 @@ fn selected_project<'a>(form: &Form, projects: &'a Registry) -> Option<&'a proje
         // were built in.
         .and_then(|index| index.checked_sub(1))
         .and_then(|nth| projects.values().nth(nth))
+}
+
+/// Visible snapshots omit a source hidden behind its exit hook. Look up only the
+/// requested terminal, preserving the normal list's filtering and detection latch.
+fn source_pane(
+    reply: &PollReply,
+    pane_id: u32,
+    lookup: impl FnOnce(PaneId) -> Option<PaneInfo>,
+) -> Option<AgentPane> {
+    reply
+        .panes
+        .iter()
+        .flatten()
+        .find(|pane| pane.pane_id == pane_id)
+        .cloned()
+        .or_else(|| {
+            lookup(PaneId::Terminal(TerminalId::new(pane_id)))
+                .map(|pane| hocus_proto::panes::agent_pane(&pane, None))
+        })
 }
 
 fn duplicate_command(
@@ -1903,44 +1913,132 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_duplicate_ignores_late_snapshots_and_waits_for_its_bridge_ack() {
-        let mut state = State {
-            job: Job::Duplicate { pane_id: 7 },
-            workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
-            ..Default::default()
-        };
-        state.handle(FormEvent::Cancel);
-        assert!(state.workflow_result_pending);
-        assert!(matches!(state.job, Job::New));
-        let snapshot = PipeMessage::new(
-            PipeSource::Plugin(PluginId::new(1)),
-            wire::AGENT_SNAPSHOT,
-            &Some(serde_json::json!({"panes": [agent_pane("claude")], "activity": {}}).to_string()),
-            &None,
-            false,
-        );
-        // Ensure this is a launch-bearing snapshot, not a malformed payload ignored by parsing.
-        let reply: PollReply = serde_json::from_str(snapshot.payload.as_ref().unwrap()).unwrap();
-        assert!(duplicate_command(&reply.panes.unwrap()[0], &reply.manual_kinds).is_some());
-        assert!(!state.pipe(snapshot.clone()));
-        assert!(state.workflow_focus.is_none());
-        assert!(state.workflow_result_pending);
+    fn cancelled_pickers_ignore_late_snapshots_and_wait_for_their_bridge_ack() {
+        for job in [
+            Job::Duplicate { pane_id: 7 },
+            Job::Fork {
+                pane_id: 7,
+                source: ForkSource::Waiting,
+            },
+        ] {
+            let mut state = State {
+                job,
+                workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
+                ..Default::default()
+            };
+            state.handle(FormEvent::Cancel);
+            assert!(state.workflow_result_pending);
+            assert!(matches!(state.job, Job::New));
+            let snapshot = PipeMessage::new(
+                PipeSource::Plugin(PluginId::new(1)),
+                wire::AGENT_SNAPSHOT,
+                &Some(
+                    serde_json::json!({"panes": [agent_pane("claude")], "activity": {}})
+                        .to_string(),
+                ),
+                &None,
+                false,
+            );
+            // Ensure this is a launch-bearing snapshot, not a malformed payload ignored by parsing.
+            let reply: PollReply =
+                serde_json::from_str(snapshot.payload.as_ref().unwrap()).unwrap();
+            assert!(duplicate_command(&reply.panes.unwrap()[0], &reply.manual_kinds).is_some());
+            assert!(!state.pipe(snapshot.clone()));
+            assert!(state.workflow_focus.is_none());
+            assert!(state.workflow_result_pending);
 
-        let mut ack = PipeMessage::new(
-            PipeSource::Plugin(PluginId::new(43)),
-            "swamp-pane-ack",
-            &None,
-            &None,
-            true,
+            let mut ack = PipeMessage::new(
+                PipeSource::Plugin(PluginId::new(43)),
+                "swamp-pane-ack",
+                &None,
+                &None,
+                true,
+            );
+            state.pipe(ack.clone());
+            assert!(state.workflow_result_pending);
+            ack.source = PipeSource::Plugin(PluginId::new(42));
+            state.pipe(ack);
+            assert!(!state.workflow_result_pending);
+            assert!(state.workflow_reply.is_none());
+            assert!(!state.pipe(snapshot));
+            assert!(matches!(state.job, Job::New));
+            let empty = PipeMessage::new(
+                PipeSource::Plugin(PluginId::new(1)),
+                wire::AGENT_SNAPSHOT,
+                &Some(serde_json::json!({"panes": [], "activity": {}}).to_string()),
+                &None,
+                false,
+            );
+            assert!(
+                !state.pipe(empty),
+                "a late empty snapshot must not look up the hidden source"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_hidden_sources_keep_their_agent_and_launch_context() {
+        let reply: PollReply =
+            serde_json::from_value(serde_json::json!({"panes": [], "activity": {}})).unwrap();
+        for target in [
+            PaneTarget::Local,
+            PaneTarget::parse_display(Some("builder")),
+            PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: Some("rust-dev".to_owned()),
+                worktree: Some("/host/repo".into()),
+            },
+        ] {
+            let info = PaneInfo {
+                id: PaneId::Terminal(TerminalId::new(7)),
+                is_suppressed: true,
+                exited: true,
+                is_held: true,
+                host: match &target {
+                    PaneTarget::Local => None,
+                    PaneTarget::Firecracker { .. } => Some("firecracker:review".to_owned()),
+                    _ => Some("builder".to_owned()),
+                },
+                target: target.clone(),
+                agent: Some(agents::registered_agent(
+                    "claude",
+                    Some("/work/repo".to_owned()),
+                )),
+                ..Default::default()
+            };
+            let mut manifest = PaneManifest::default();
+            manifest
+                .panes
+                .insert(TabPosition::new(0), vec![info.clone()]);
+            assert!(hocus_proto::panes::terminal_panes(&manifest, &[]).is_empty());
+            let pane = source_pane(&reply, 7, |id| {
+                assert_eq!(id, info.id);
+                Some(info.clone())
+            })
+            .unwrap();
+            assert_eq!(pane.agent, info.agent);
+            assert_eq!(pane.status, agents::AgentStatus::Held);
+            let duplicate = duplicate_command(&pane, &reply.manual_kinds).unwrap();
+            assert_eq!(duplicate.path, PathBuf::from("claude"));
+            assert_eq!(duplicate.cwd, Some("/work/repo".into()));
+            assert_eq!(duplicate.target, target);
+            let fork = command_in_context(&pane, "codex");
+            assert_eq!(fork.path, PathBuf::from("codex"));
+            assert_eq!(fork.cwd, duplicate.cwd);
+            assert_eq!(fork.target, target);
+        }
+        assert!(source_pane(&reply, 7, |_| None).is_none());
+        let visible = agent_pane("codex");
+        let reply = PollReply {
+            panes: Some(vec![visible.clone()]),
+            ..reply
+        };
+        assert_eq!(
+            source_pane(&reply, visible.pane_id, |_| panic!(
+                "visible source needs no lookup"
+            )),
+            Some(visible)
         );
-        state.pipe(ack.clone());
-        assert!(state.workflow_result_pending);
-        ack.source = PipeSource::Plugin(PluginId::new(42));
-        state.pipe(ack);
-        assert!(!state.workflow_result_pending);
-        assert!(state.workflow_reply.is_none());
-        assert!(!state.pipe(snapshot));
-        assert!(matches!(state.job, Job::New));
     }
 
     #[test]
