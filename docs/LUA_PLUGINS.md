@@ -838,6 +838,8 @@ local safe_text = zellij.text.sanitize("text with control characters")
 ```
 
 Markdown objects retain parsed blocks and cache wrapped lines until the width changes.
+Pass `{dim=true}` to dim the entire document while preserving Markdown formatting.
+The `dim` option defaults to `false`.
 They use Hocus's CommonMark dialect with tables, strikethrough, and task lists.
 Wrapping measures terminal columns. Sanitization removes control characters and expands tabs.
 Markdown does not change the cursor. Render the active form to place or hide it.
