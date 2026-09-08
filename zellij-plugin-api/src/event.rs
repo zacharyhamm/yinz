@@ -265,6 +265,24 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the SessionUpdate Event"),
             },
+            Ok(ProtobufEventType::PaneOutput) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::PaneOutputPayload(p)) => Ok(Event::PaneOutput {
+                    pane_id: p.pane_id,
+                    data: p.data,
+                    context: p.context.into_iter().map(|c| (c.name, c.value)).collect(),
+                }),
+                _ => Err("Malformed PaneOutput payload"),
+            },
+            Ok(ProtobufEventType::RunCommandOutput) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::RunCommandOutputPayload(p)) => {
+                    Ok(Event::RunCommandOutput {
+                        data: p.data,
+                        stderr: p.stderr,
+                        context: p.context.into_iter().map(|c| (c.name, c.value)).collect(),
+                    })
+                },
+                _ => Err("Malformed RunCommandOutput payload"),
+            },
             Ok(ProtobufEventType::RunCommandResult) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::RunCommandResultPayload(run_command_result_payload)) => {
                     Ok(Event::RunCommandResult(
@@ -1050,6 +1068,38 @@ impl TryFrom<Event> for ProtobufEvent {
                     payload: Some(event::Payload::SessionUpdatePayload(session_update_payload)),
                 })
             },
+            Event::PaneOutput {
+                pane_id,
+                data,
+                context,
+            } => Ok(ProtobufEvent {
+                name: ProtobufEventType::PaneOutput as i32,
+                payload: Some(ProtobufEventPayload::PaneOutputPayload(PaneOutputPayload {
+                    pane_id,
+                    data,
+                    context: context
+                        .into_iter()
+                        .map(|(name, value)| ProtobufContextItem { name, value })
+                        .collect(),
+                })),
+            }),
+            Event::RunCommandOutput {
+                data,
+                stderr,
+                context,
+            } => Ok(ProtobufEvent {
+                name: ProtobufEventType::RunCommandOutput as i32,
+                payload: Some(ProtobufEventPayload::RunCommandOutputPayload(
+                    RunCommandOutputPayload {
+                        data,
+                        stderr,
+                        context: context
+                            .into_iter()
+                            .map(|(name, value)| ProtobufContextItem { name, value })
+                            .collect(),
+                    },
+                )),
+            }),
             Event::RunCommandResult(exit_code, stdout, stderr, context) => {
                 let run_command_result_payload = RunCommandResultPayload {
                     exit_code,
@@ -2664,6 +2714,8 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::FileSystemDelete => EventType::FileSystemDelete,
             ProtobufEventType::PermissionRequestResult => EventType::PermissionRequestResult,
             ProtobufEventType::SessionUpdate => EventType::SessionUpdate,
+            ProtobufEventType::PaneOutput => EventType::PaneOutput,
+            ProtobufEventType::RunCommandOutput => EventType::RunCommandOutput,
             ProtobufEventType::RunCommandResult => EventType::RunCommandResult,
             ProtobufEventType::WebRequestResult => EventType::WebRequestResult,
             ProtobufEventType::CommandPaneOpened => EventType::CommandPaneOpened,
@@ -2727,6 +2779,8 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::FileSystemDelete => ProtobufEventType::FileSystemDelete,
             EventType::PermissionRequestResult => ProtobufEventType::PermissionRequestResult,
             EventType::SessionUpdate => ProtobufEventType::SessionUpdate,
+            EventType::PaneOutput => ProtobufEventType::PaneOutput,
+            EventType::RunCommandOutput => ProtobufEventType::RunCommandOutput,
             EventType::RunCommandResult => ProtobufEventType::RunCommandResult,
             EventType::WebRequestResult => ProtobufEventType::WebRequestResult,
             EventType::CommandPaneOpened => ProtobufEventType::CommandPaneOpened,

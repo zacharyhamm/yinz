@@ -72,7 +72,44 @@ impl LuaPlugin {
     }
 
     pub fn update(&mut self, event: &Event) -> Result<bool> {
-        let event = to_lua_value(&self.lua, event)?;
+        // Live output is binary text. Avoid constructing and walking a Lua table per byte.
+        let event = match event {
+            Event::RunCommandOutput {
+                data,
+                stderr,
+                context,
+            } => {
+                let payload = self.lua.create_table().map_err(lua_err)?;
+                payload
+                    .set("data", self.lua.create_string(data).map_err(lua_err)?)
+                    .map_err(lua_err)?;
+                payload.set("stderr", *stderr).map_err(lua_err)?;
+                payload
+                    .set("context", to_lua_value(&self.lua, context)?)
+                    .map_err(lua_err)?;
+                let event = self.lua.create_table().map_err(lua_err)?;
+                event.set("RunCommandOutput", payload).map_err(lua_err)?;
+                LuaValue::Table(event)
+            },
+            Event::PaneOutput {
+                data,
+                pane_id,
+                context,
+            } => {
+                let payload = self.lua.create_table().map_err(lua_err)?;
+                payload
+                    .set("data", self.lua.create_string(data).map_err(lua_err)?)
+                    .map_err(lua_err)?;
+                payload.set("pane_id", *pane_id).map_err(lua_err)?;
+                payload
+                    .set("context", to_lua_value(&self.lua, context)?)
+                    .map_err(lua_err)?;
+                let event = self.lua.create_table().map_err(lua_err)?;
+                event.set("PaneOutput", payload).map_err(lua_err)?;
+                LuaValue::Table(event)
+            },
+            _ => to_lua_value(&self.lua, event)?,
+        };
         self.call_entrypoint("__update", |plugin| Ok((plugin, event)))
             .context("failed to run the plugin's `update`")
     }

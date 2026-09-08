@@ -221,6 +221,12 @@ impl NotificationEnd {
         self.error_message = Some(message);
     }
 
+    pub fn is_cancelled(&self) -> bool {
+        self.channel
+            .as_ref()
+            .is_some_and(|channel| channel.is_closed())
+    }
+
     pub fn set_stdout_message(&mut self, message: String) {
         self.stdout_message = Some(message);
     }

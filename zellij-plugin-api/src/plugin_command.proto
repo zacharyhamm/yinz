@@ -262,6 +262,7 @@ enum CommandName {
   ProjectConfigWrite = 283;
   SetRelatedPanes = 284;
   ArrangeProjectPanes = 285;
+  SubscribePaneOutput = 286;
 }
 
 message PluginCommand {
@@ -471,6 +472,7 @@ message PluginCommand {
     ProjectConfigWritePayload project_config_write_payload = 224;
     SetRelatedPanesPayload set_related_panes_payload = 225;
     ArrangeProjectPanesPayload arrange_project_panes_payload = 226;
+    PaneOutputSubscription pane_output_subscription = 227;
   }
 }
 
@@ -1288,6 +1290,7 @@ message RunCommandPayload {
   string cwd = 3;
   repeated ContextItem context = 4;
   optional uint64 max_output_bytes = 5;
+  optional bool stream_output = 6;
 }
 
 message WebRequestPayload {
@@ -2031,5 +2034,9 @@ message ProjectPaneGroup {
   string name = 2;
   optional string configuration_root = 3;
   repeated uint32 pane_ids = 4;
+}
+message PaneOutputSubscription {
+  bool enabled = 1;
+  repeated ContextItem context = 2;
 }
 message ArrangeProjectPanesPayload { repeated ProjectPaneGroup groups = 1; }

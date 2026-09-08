@@ -171,6 +171,24 @@ local function command(argv, cwd)
   end
   return r.stdout
 end
+local function commands(requests,root)
+  local results={}
+  for first=1,#requests,4 do
+    local pending={}
+    for i=first,math.min(first+3,#requests) do
+      local future,resolve=z.async.future()
+      pending[i]=future
+      z.task(function() resolve(table.pack(pcall(command,requests[i],root))) end)
+    end
+    for i,result in pairs(z.await(z.async.all(pending))) do results[i]=result end
+  end
+  local output={}
+  for i,result in ipairs(results) do
+    if not result[1] then error(result[2]) end
+    output[i]=result[2]
+  end
+  return output
+end
 local function supervisor(pane, saved)
   for _,row in ipairs(z.workflow_remote_panes and z.workflow_remote_panes() or {}) do
     if (saved and row.host_id==saved) or (not saved and row.terminal_id==pane) then
@@ -297,12 +315,10 @@ handle = function(args, manual_view)
     end
     assert(attachment,'Launch has no reported run yet; reconcile by launch token without repeating it')
     local run=attachment.run
-    local history=decode(command({'swamp','workflow','history','get',run,'--json'},config.root))
     local runs=read(scope(attachment.work,'runs'))
     local ids={}
     for id in pairs(runs.entries) do ids[#ids+1]=id end
     local predicate='specName == "question" && attributes.run in '..encode(ids)
-    local questions=decode(command({'swamp','data','query',predicate,'--select','{"model": modelName, "version": version, "attributes": attributes}','--json'},config.root))
     -- Bound every saved log copy before RunCommand serializes stdout; its byte cap would cut JSON.
     -- CEL substring uses UTF-16 offsets: back off if the cut would split a surrogate pair.
     local function preview(path)
@@ -331,13 +347,20 @@ handle = function(args, manual_view)
         "codeReview":has(attributes.codeReview) ? attributes.codeReview : "",
         "ready":has(attributes.ready) && attributes.ready}
       : attributes}]]
-    local outputs=decode(command({'swamp','data','query','has(tags.workflowRunId) && tags.workflowRunId in '..encode(ids),'--select',output_projection,'--json'},config.root))
-    local children={}
+    local requests={
+      {'swamp','workflow','history','get',run,'--json'},
+      {'swamp','data','query',predicate,'--select','{"model": modelName, "version": version, "attributes": attributes}','--json'},
+      {'swamp','data','query','has(tags.workflowRunId) && tags.workflowRunId in '..encode(ids),'--select',output_projection,'--json'},
+      {'swamp','workflow','history','logs',run,'--tail','100','--json'},
+    }
     for _,id in ipairs(ids) do
-      if id~=run then children[#children+1]=decode(command({'swamp','workflow','history','get',id,'--json'},config.root)) end
+      if id~=run then requests[#requests+1]={'swamp','workflow','history','get',id,'--json'} end
     end
-    return {run=run,root=config.root,history=history,children=children,active=active(work),
-      outputs=outputs,logs=command({'swamp','workflow','history','logs',run,'--tail','100','--json'},config.root),questions=questions}
+    local values=commands(requests,config.root)
+    local children={}
+    for i=5,#values do children[#children+1]=decode(values[i]) end
+    return {run=run,launch=work,root=config.root,history=decode(values[1]),children=children,active=active(work),
+      outputs=decode(values[3]),logs=values[4],questions=decode(values[2])}
 
   end
   key(args.work)
@@ -388,6 +411,8 @@ handle = function(args, manual_view)
       if ok then break end
       if not D.is_conflict(err) or attempt==8 then error(err) end
     end
+    local view=read(scope(args.work,'view'))
+    if not existing and view and view.incarnation==identity.incarnation then z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-changed'} end
     return {work=args.work,key=args.key,request=encode(args),incarnation=identity.incarnation,outcome='completed'}
   end
   if args.method == 'reconcile' then
@@ -548,7 +573,9 @@ handle = function(args, manual_view)
     put(uid, value, row)
     local argv = {}
     for i=2,#args.argv do argv[#argv+1] = args.argv[i] end
-    local pane = z.open_command_pane_background {{path=args.argv[1], args=argv, cwd=args.cwd}, {swamp_owner=encode(owner), swamp_operation=args.key}}
+    local attachment=read(scope(args.work,'attachment'))
+    local output_work=attachment and attachment.work or args.work
+    local pane = z.open_command_pane_background {{path=args.argv[1], args=argv, cwd=args.cwd}, {swamp_owner=encode(owner), swamp_operation=args.key, swamp_work=output_work}}
     value, row = read(uid)
     assert(pane,'Command dispatch was not acknowledged; reconcile the saved operation before any further action')
     value.pane = pane.Terminal or pane
@@ -723,5 +750,7 @@ z.on('command_pane_exited', function(event)
   end
   if value.outstanding then save_event(value.outstanding, 'process-exit', {exitCode=event.exit_code or z.null}) end
   present(owner.work)
+  local view=read(scope(owner.work,'view'))
+  if view and view.incarnation==identity.incarnation then z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-changed'} end
 end)
 return M

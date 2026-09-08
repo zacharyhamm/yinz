@@ -89,6 +89,8 @@ enum EventType {
     AgentEvent = 58;
     /// Which modifier keys the client believes are held right now
     ModifiersHeld = 59;
+    RunCommandOutput = 60;
+    PaneOutput = 61;
 }
 
 message EventNameList {
@@ -147,7 +149,21 @@ message Event {
     HookPayload hook_payload = 51;
     AgentEventPayload agent_event_payload = 52;
     ModifiersHeldPayload modifiers_held_payload = 53;
+    RunCommandOutputPayload run_command_output_payload = 54;
+    PaneOutputPayload pane_output_payload = 55;
   }
+}
+
+message PaneOutputPayload {
+  uint32 pane_id = 1;
+  bytes data = 2;
+  repeated ContextItem context = 3;
+}
+
+message RunCommandOutputPayload {
+  bytes data = 1;
+  bool stderr = 2;
+  repeated ContextItem context = 3;
 }
 
 message ModifiersHeldPayload {

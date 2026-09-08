@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -114,7 +114,31 @@ pub mod event {
         AgentEventPayload(super::AgentEventPayload),
         #[prost(message, tag="53")]
         ModifiersHeldPayload(super::ModifiersHeldPayload),
+        #[prost(message, tag="54")]
+        RunCommandOutputPayload(super::RunCommandOutputPayload),
+        #[prost(message, tag="55")]
+        PaneOutputPayload(super::PaneOutputPayload),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaneOutputPayload {
+    #[prost(uint32, tag="1")]
+    pub pane_id: u32,
+    #[prost(bytes="vec", tag="2")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag="3")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RunCommandOutputPayload {
+    #[prost(bytes="vec", tag="1")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag="2")]
+    pub stderr: bool,
+    #[prost(message, repeated, tag="3")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1209,6 +1233,8 @@ pub enum EventType {
     AgentEvent = 58,
     /// / Which modifier keys the client believes are held right now
     ModifiersHeld = 59,
+    RunCommandOutput = 60,
+    PaneOutput = 61,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1272,6 +1298,8 @@ impl EventType {
             EventType::Hook => "Hook",
             EventType::AgentEvent => "AgentEvent",
             EventType::ModifiersHeld => "ModifiersHeld",
+            EventType::RunCommandOutput => "RunCommandOutput",
+            EventType::PaneOutput => "PaneOutput",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1332,6 +1360,8 @@ impl EventType {
             "Hook" => Some(Self::Hook),
             "AgentEvent" => Some(Self::AgentEvent),
             "ModifiersHeld" => Some(Self::ModifiersHeld),
+            "RunCommandOutput" => Some(Self::RunCommandOutput),
+            "PaneOutput" => Some(Self::PaneOutput),
             _ => None,
         }
     }

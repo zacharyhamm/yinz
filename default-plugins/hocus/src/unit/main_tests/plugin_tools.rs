@@ -635,7 +635,7 @@ fn a_docs_query_and_a_docs_page_need_no_plugin_folder() {
         r#"{"query":"run_command"}"#
     ));
     let hits = &tool_results(&state)[0].content;
-    assert!(hits.contains("prelude_commands:"), "{hits}");
+    assert!(hits.contains("events:"), "{hits}");
 
     let mut state = ready_state();
     assert!(run_file_tool(

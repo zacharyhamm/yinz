@@ -52,6 +52,7 @@ const OUTPUT_TRUNCATED: &[u8] = b"\n[truncated]";
 async fn read_command_stream<R>(
     mut stream: R,
     max_output_bytes: Option<usize>,
+    mut on_chunk: impl FnMut(&[u8]),
 ) -> std::io::Result<Vec<u8>>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -64,6 +65,7 @@ where
         if read == 0 {
             break;
         }
+        on_chunk(&buffer[..read]);
         match max_output_bytes {
             Some(limit) => {
                 let keep = limit.saturating_sub(output.len()).min(read);
@@ -105,7 +107,7 @@ mod command_output_tests {
 
         let output = tokio::time::timeout(
             Duration::from_secs(1),
-            read_command_stream(reader, Some(limit)),
+            read_command_stream(reader, Some(limit), |_| {}),
         )
         .await
         .expect("the reader must reach EOF")
@@ -154,10 +156,112 @@ mod command_output_tests {
         });
 
         assert_eq!(
-            read_command_stream(reader, None).await.unwrap(),
+            read_command_stream(reader, None, |_| {}).await.unwrap(),
             b"complete output"
         );
         write.await.unwrap();
+    }
+
+    #[test]
+    fn streaming_spawn_failure_returns_one_correlated_completion() {
+        use zellij_runtime::channels::{unbounded, SenderWithContext};
+        let (jobs, receiver) = unbounded();
+        let jobs = SenderWithContext::new(jobs);
+        let (events, received) = unbounded();
+        let events = SenderWithContext::new(events);
+        let mut bus = Bus::new(
+            vec![receiver],
+            None,
+            None,
+            Some(&events),
+            None,
+            None,
+            None,
+            None,
+        );
+        bus.senders.should_silently_fail = true;
+        let worker = std::thread::spawn(move || background_jobs_main(bus, None, true));
+        let context = BTreeMap::from([("operation".to_owned(), "missing".to_owned())]);
+        let directory = tempfile::tempdir().unwrap();
+        jobs.send(BackgroundJob::RunCommand(
+            PluginId::new(1),
+            ClientId::new(1),
+            directory
+                .path()
+                .join("absent-command")
+                .display()
+                .to_string(),
+            vec![],
+            BTreeMap::new(),
+            directory.path().to_owned(),
+            context.clone(),
+            Some(64),
+            Some(true),
+        ))
+        .unwrap();
+        let (event, _) = received.recv_timeout(Duration::from_secs(10)).unwrap();
+        jobs.send(BackgroundJob::Exit).unwrap();
+        worker.join().unwrap().unwrap();
+        match event {
+            PluginInstruction::Update(events) => {
+                assert_eq!(events.len(), 1);
+                match &events[0].2 {
+                    Event::RunCommandResult(Some(2), stdout, stderr, result_context) => {
+                        assert!(stdout.is_empty());
+                        assert!(!stderr.is_empty());
+                        assert_eq!(result_context, &context);
+                    },
+                    event => panic!("expected completion, got {event:?}"),
+                }
+            },
+            event => panic!("expected plugin update, got {event:?}"),
+        }
+        assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn chunks_arrive_before_exit_and_both_streams_drain_after_release() {
+        let (mut out, stdout) = tokio::io::duplex(8);
+        let (mut err, stderr) = tokio::io::duplex(8);
+        let (chunks, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let reading = tokio::spawn(async move {
+            tokio::join!(
+                read_command_stream(stdout, Some(4), |data| {
+                    chunks.send((false, data.to_vec())).unwrap();
+                }),
+                read_command_stream(stderr, Some(4), |data| {
+                    chunks.send((true, data.to_vec())).unwrap();
+                }),
+            )
+        });
+        out.write_all(b"out").await.unwrap();
+        err.write_all(b"err").await.unwrap();
+        let mut first = vec![];
+        for _ in 0..2 {
+            first.push(
+                tokio::time::timeout(Duration::from_secs(5), received.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        first.sort();
+        assert_eq!(
+            first,
+            vec![(false, b"out".to_vec()), (true, b"err".to_vec())]
+        );
+        assert!(!reading.is_finished(), "output must precede stream closure");
+        out.write_all(b"more").await.unwrap();
+        err.write_all(b"more").await.unwrap();
+        drop((out, err));
+        let (stdout, stderr) = reading.await.unwrap();
+        assert_eq!(stdout.unwrap().len(), 4);
+        assert_eq!(stderr.unwrap().len(), 4);
+        let mut count = 0;
+        while received.recv().await.is_some() {
+            count += 1;
+        }
+        assert!(count >= 2, "caps must not suppress live chunks");
     }
 }
 
@@ -187,7 +291,8 @@ pub enum BackgroundJob {
         PathBuf,
         BTreeMap<String, String>,
         Option<usize>,
-    ), // command, args, env_variables, cwd, context, max_output_bytes
+        Option<bool>,
+    ), // command, args, env_variables, cwd, context, max_output_bytes, stream_output
     WebRequest(
         PluginId,
         ClientId,
@@ -502,6 +607,7 @@ pub(crate) fn background_jobs_main(
                 cwd,
                 context,
                 max_output_bytes,
+                stream_output,
             ) => {
                 runtime.spawn({
                     let senders = bus.senders.clone();
@@ -521,9 +627,27 @@ pub(crate) fn background_jobs_main(
                             let stderr = child.stderr.take().ok_or_else(|| {
                                 std::io::Error::other("command stderr was not piped")
                             })?;
+                            let emit = |stderr, data: &[u8]| {
+                                if stream_output == Some(true) {
+                                    let _ =
+                                        senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                            Some(plugin_id),
+                                            Some(client_id),
+                                            Event::RunCommandOutput {
+                                                data: data.to_vec(),
+                                                stderr,
+                                                context: context.clone(),
+                                            },
+                                        )]));
+                                }
+                            };
                             let (stdout, stderr, status) = tokio::join!(
-                                read_command_stream(stdout, max_output_bytes),
-                                read_command_stream(stderr, max_output_bytes),
+                                read_command_stream(stdout, max_output_bytes, |data| emit(
+                                    false, data
+                                )),
+                                read_command_stream(stderr, max_output_bytes, |data| emit(
+                                    true, data
+                                )),
                                 child.wait(),
                             );
                             Ok::<_, std::io::Error>((status?, stdout?, stderr?))
