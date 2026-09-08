@@ -42,7 +42,8 @@ pub type StreamKey = (PluginId, ClientId, String);
 
 struct ActiveWebRequestStream {
     abort_handle: tokio::task::AbortHandle,
-    generation: u64,
+    generation: u64, // distinguishes successive requests using the same stream key
+    deno_generation: Option<u64>, // identifies the runtime that receives this request's events
     state: Arc<Mutex<WebRequestStreamState>>,
     context: BTreeMap<String, String>,
 }
@@ -197,6 +198,7 @@ mod command_output_tests {
             context.clone(),
             Some(64),
             Some(true),
+            None,
         ))
         .unwrap();
         let (event, _) = received.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -292,7 +294,8 @@ pub enum BackgroundJob {
         BTreeMap<String, String>,
         Option<usize>,
         Option<bool>,
-    ), // command, args, env_variables, cwd, context, max_output_bytes, stream_output
+        Option<u64>,
+    ), // command, args, env_variables, cwd, context, max_output_bytes, stream_output, deno_generation
     WebRequest(
         PluginId,
         ClientId,
@@ -303,6 +306,7 @@ pub enum BackgroundJob {
         BTreeMap<String, String>, // context
         Option<String>,           // stream_id, when set the response body is streamed back
         Option<String>,           // proxy, when set the request is sent through this proxy URL
+        Option<u64>,              // deno_generation of the requesting runtime, if any
     ),
     CancelWebRequest(PluginId, ClientId, String), // String - stream_id
     /// Sent by a streaming request task back to this thread when its body ends, so that the
@@ -608,6 +612,7 @@ pub fn background_jobs_main(
                 context,
                 max_output_bytes,
                 stream_output,
+                deno_generation,
             ) => {
                 runtime.spawn({
                     let senders = bus.senders.clone();
@@ -656,22 +661,26 @@ pub fn background_jobs_main(
                         match output {
                             Ok((status, stdout, stderr)) => {
                                 let exit_code = status.code();
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(plugin_id),
-                                    Some(client_id),
-                                    Event::RunCommandResult(exit_code, stdout, stderr, context),
-                                )]));
+                                let _ =
+                                    senders.send_to_plugin(PluginInstruction::for_plugin_event(
+                                        plugin_id,
+                                        client_id,
+                                        deno_generation,
+                                        Event::RunCommandResult(exit_code, stdout, stderr, context),
+                                    ));
                             },
                             Err(e) => {
                                 log::error!("Failed to run command: {}", e);
                                 let stdout = vec![];
                                 let stderr = format!("{}", e).as_bytes().to_vec();
                                 let exit_code = Some(2);
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(plugin_id),
-                                    Some(client_id),
-                                    Event::RunCommandResult(exit_code, stdout, stderr, context),
-                                )]));
+                                let _ =
+                                    senders.send_to_plugin(PluginInstruction::for_plugin_event(
+                                        plugin_id,
+                                        client_id,
+                                        deno_generation,
+                                        Event::RunCommandResult(exit_code, stdout, stderr, context),
+                                    ));
                             },
                         }
                     }
@@ -687,6 +696,7 @@ pub fn background_jobs_main(
                 context,
                 stream_id,
                 proxy,
+                deno_generation,
             ) => {
                 let Some(http_client) = http_client.clone() else {
                     log::error!(
@@ -721,11 +731,12 @@ pub fn background_jobs_main(
                                     )
                                 },
                             };
-                            let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                Some(plugin_id),
-                                Some(client_id),
+                            let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+                                plugin_id,
+                                client_id,
+                                deno_generation,
                                 event,
-                            )]));
+                            ));
                         });
                     },
                     Some(stream_id) => {
@@ -754,10 +765,11 @@ pub fn background_jobs_main(
                             context.clone(),
                             http_client,
                             proxy,
+                            deno_generation,
                         ));
                         // ponytail: unloading a plugin does not cancel its in-flight streams -
                         // they drain to completion and the events are dropped by
-                        // update_plugins' plugin-id filter. Add a
+                        // plugin-id and runtime-generation filters. Add a
                         // BackgroundJob::CancelPluginWebRequests(plugin_id) from wasm_bridge's
                         // unload path if abandoned streams become a bandwidth problem.
                         active_streams.insert(
@@ -765,6 +777,7 @@ pub fn background_jobs_main(
                             ActiveWebRequestStream {
                                 abort_handle: handle.abort_handle(),
                                 generation,
+                                deno_generation,
                                 state,
                                 context,
                             },
@@ -1256,14 +1269,16 @@ async fn streamed_web_request(
     context: BTreeMap<String, String>,
     http_client: HttpClient,
     proxy: Option<String>,
+    deno_generation: Option<u64>,
 ) {
     let (plugin_id, client_id, stream_id) = key.clone();
     let emit_event = |event: Event| {
-        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-            Some(plugin_id),
-            Some(client_id),
+        let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+            plugin_id,
+            client_id,
+            deno_generation,
             event,
-        )]));
+        ));
     };
     let send_event = |event: Event| {
         let mut state = state.lock().unwrap();
@@ -1448,9 +1463,10 @@ fn finish_stream(
     stream.abort_handle.abort();
     let (plugin_id, client_id, stream_id) = key;
     if !state.response_sent {
-        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-            Some(plugin_id),
-            Some(client_id),
+        let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+            plugin_id,
+            client_id,
+            stream.deno_generation,
             Event::WebRequestResult(
                 400,
                 BTreeMap::new(),
@@ -1460,32 +1476,34 @@ fn finish_stream(
                     .into_bytes(),
                 stream.context,
             ),
-        )]));
+        ));
         state.response_sent = true;
     }
     if !state.pending.is_empty() {
-        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-            Some(plugin_id),
-            Some(client_id),
+        let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+            plugin_id,
+            client_id,
+            stream.deno_generation,
             Event::WebRequestStreamChunk {
                 stream_id: stream_id.clone(),
                 chunk: std::mem::take(&mut state.pending),
                 done: false,
                 error: None,
             },
-        )]));
+        ));
     }
     state.finished = true;
-    let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-        Some(plugin_id),
-        Some(client_id),
+    let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+        plugin_id,
+        client_id,
+        stream.deno_generation,
         Event::WebRequestStreamChunk {
             stream_id,
             chunk: vec![],
             done: true,
             error,
         },
-    )]));
+    ));
 }
 
 fn job_already_running(
@@ -2474,6 +2492,7 @@ mod web_request_stream_tests {
             ActiveWebRequestStream {
                 abort_handle: task.abort_handle(),
                 generation: GENERATION,
+                deno_generation: None,
                 state,
                 context: BTreeMap::new(),
             },
@@ -2521,11 +2540,33 @@ mod web_request_stream_tests {
     }
 
     fn drain_events(plugin_rx: &PluginRx) -> Vec<Event> {
-        let mut events = vec![];
-        while let Ok((PluginInstruction::Update(updates), _)) = plugin_rx.try_recv() {
-            events.extend(updates.into_iter().map(|(_, _, event)| event));
-        }
-        events
+        drain_events_for_generation(plugin_rx, None)
+    }
+
+    fn drain_events_for_generation(plugin_rx: &PluginRx, generation: Option<u64>) -> Vec<Event> {
+        plugin_rx
+            .try_iter()
+            .flat_map(|(instruction, _)| match instruction {
+                PluginInstruction::Update(updates) => {
+                    assert_eq!(generation, None);
+                    updates
+                        .into_iter()
+                        .map(|(plugin_id, client_id, event)| {
+                            assert_eq!(plugin_id, Some(PLUGIN_ID));
+                            assert_eq!(client_id, Some(CLIENT_ID));
+                            event
+                        })
+                        .collect::<Vec<_>>()
+                },
+                PluginInstruction::DenoEvent(plugin_id, client_id, actual_generation, event) => {
+                    assert_eq!(generation, Some(actual_generation));
+                    assert_eq!(plugin_id, PLUGIN_ID);
+                    assert_eq!(client_id, CLIENT_ID);
+                    vec![event]
+                },
+                other => panic!("unexpected plugin instruction: {other:?}"),
+            })
+            .collect()
     }
 
     fn stream_key() -> StreamKey {
@@ -2546,11 +2587,103 @@ mod web_request_stream_tests {
             BTreeMap::new(),
             web_http_client().unwrap(),
             None,
+            None,
         )
         .await;
         let events = drain_events(&plugin_rx);
         let jobs = job_rx.try_iter().map(|(job, _)| job).collect();
         (events, jobs)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streamed_results_and_finish_keep_the_originating_deno_generation() {
+        const DENO_GENERATION: u64 = 101; // distinct from the stream registry generation
+        let url = serve_once("200 OK", "text/plain", vec!["body"]).await;
+        let (senders, plugin_rx, job_rx) = test_senders();
+        let state = Arc::new(Mutex::new(WebRequestStreamState::default()));
+        streamed_web_request(
+            stream_key(),
+            GENERATION,
+            state.clone(),
+            senders.clone(),
+            url,
+            HttpVerb::Get,
+            BTreeMap::new(),
+            vec![],
+            BTreeMap::new(),
+            HttpClient::new().unwrap(),
+            None,
+            Some(DENO_GENERATION),
+        )
+        .await;
+        let mut active_streams = HashMap::from([(
+            stream_key(),
+            ActiveWebRequestStream {
+                abort_handle: tokio::spawn(async {}).abort_handle(),
+                generation: GENERATION,
+                deno_generation: Some(DENO_GENERATION),
+                state,
+                context: BTreeMap::new(),
+            },
+        )]);
+        let (job, _) = job_rx.try_recv().unwrap();
+        let BackgroundJob::WebRequestStreamFinished(key, generation, error) = job else {
+            panic!("stream must report completion");
+        };
+        assert_eq!(generation, GENERATION);
+        finish_stream(&mut active_streams, &senders, key, Some(generation), error);
+        let events = drain_events_for_generation(&plugin_rx, Some(DENO_GENERATION));
+        assert!(matches!(&events[..], [
+            Event::WebRequestResult(200, _, body, _),
+            Event::WebRequestStreamChunk { chunk, done: false, .. },
+            Event::WebRequestStreamChunk { done: true, error: None, .. },
+        ] if body.is_empty() && chunk == b"body"));
+        assert!(active_streams.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_stream_tags_synthetic_result_pending_bytes_and_terminator() {
+        const DENO_GENERATION: u64 = 101;
+        for response_sent in [false, true] {
+            let (senders, plugin_rx, _) = test_senders();
+            let mut active_streams = HashMap::from([(
+                stream_key(),
+                ActiveWebRequestStream {
+                    abort_handle: tokio::spawn(async {}).abort_handle(),
+                    generation: GENERATION,
+                    deno_generation: Some(DENO_GENERATION),
+                    state: Arc::new(Mutex::new(WebRequestStreamState {
+                        response_sent,
+                        pending: if response_sent {
+                            b"pending".to_vec()
+                        } else {
+                            vec![]
+                        },
+                        ..Default::default()
+                    })),
+                    context: BTreeMap::new(),
+                },
+            )]);
+            finish_stream(
+                &mut active_streams,
+                &senders,
+                stream_key(),
+                None,
+                Some("cancelled".into()),
+            );
+            let events = drain_events_for_generation(&plugin_rx, Some(DENO_GENERATION));
+            assert_eq!(events.len(), 2);
+            if response_sent {
+                assert!(matches!(&events[0], Event::WebRequestStreamChunk {
+                    chunk, done: false, ..
+                } if chunk == b"pending"));
+            } else {
+                assert!(matches!(&events[0], Event::WebRequestResult(400, ..)));
+            }
+            assert!(matches!(&events[1], Event::WebRequestStreamChunk {
+                done: true, error: Some(error), ..
+            } if error == "cancelled"));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2695,6 +2828,7 @@ mod web_request_stream_tests {
             ActiveWebRequestStream {
                 abort_handle: task.abort_handle(),
                 generation: GENERATION,
+                deno_generation: None,
                 state: Arc::new(Mutex::new(WebRequestStreamState::default())),
                 context: BTreeMap::from([("request_id".to_owned(), "7".to_owned())]),
             },
@@ -2747,6 +2881,7 @@ mod web_request_stream_tests {
             ActiveWebRequestStream {
                 abort_handle: tokio::spawn(async {}).abort_handle(),
                 generation: GENERATION,
+                deno_generation: None,
                 state: Arc::new(Mutex::new(WebRequestStreamState {
                     // the task already emitted the leading result and its chunks
                     response_sent: true,
@@ -2795,6 +2930,7 @@ mod web_request_stream_tests {
             ActiveWebRequestStream {
                 abort_handle: old_task.abort_handle(),
                 generation: GENERATION,
+                deno_generation: None,
                 state: Arc::new(Mutex::new(WebRequestStreamState {
                     response_sent: true,
                     pending: b"final bytes".to_vec(),
@@ -2820,6 +2956,7 @@ mod web_request_stream_tests {
             ActiveWebRequestStream {
                 abort_handle: new_task.abort_handle(),
                 generation: GENERATION + 1,
+                deno_generation: None,
                 state: new_state,
                 context: BTreeMap::new(),
             },
@@ -2868,6 +3005,7 @@ mod web_request_stream_tests {
             ActiveWebRequestStream {
                 abort_handle: task.abort_handle(),
                 generation: GENERATION + 1,
+                deno_generation: None,
                 state: Arc::new(Mutex::new(WebRequestStreamState::default())),
                 context: BTreeMap::new(),
             },

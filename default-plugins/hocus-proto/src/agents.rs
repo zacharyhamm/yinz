@@ -6678,8 +6678,11 @@ mod tests {
 
         assert_eq!(reads, vec![3, 5]);
         assert_eq!(
-            json,
-            r#"[{"idle_seconds":120,"kind":"codex","pane_id":3,"preview":"ready","source":"auto","status":"running","title":"codex"},{"kind":"reviewer","pane_id":5,"preview":"ready","source":"manual","status":"held","title":"shell"}]"#,
+            serde_json::from_str::<Value>(&json).unwrap(),
+            serde_json::json!([
+                {"idle_seconds":120,"kind":"codex","pane_id":3,"preview":"ready","source":"auto","status":"running","title":"codex"},
+                {"kind":"reviewer","pane_id":5,"preview":"ready","source":"manual","status":"held","title":"shell"}
+            ]),
         );
     }
 
@@ -6706,8 +6709,8 @@ mod tests {
         );
 
         assert_eq!(
-            json,
-            r#"[{"branch":"topic","cwd":"/work/hocus/src","kind":"codex","pane_id":3,"preview":"","project":"hocus","source":"auto","status":"running","tab":"tab 9","tab_id":9,"title":"codex"}]"#,
+            serde_json::from_str::<Value>(&json).unwrap(),
+            serde_json::json!([{"branch":"topic","cwd":"/work/hocus/src","kind":"codex","pane_id":3,"preview":"","project":"hocus","source":"auto","status":"running","tab":"tab 9","tab_id":9,"title":"codex"}]),
         );
     }
 

@@ -127,6 +127,21 @@ fn the_usage_line_marks_required_arguments() {
     );
 }
 
+#[test]
+fn schema_property_order_does_not_change_help_order() {
+    let parameters: Value = serde_json::from_str(
+        r#"{"properties":{"d":{"type":"string"},"c":{"type":"string"},"b":{"type":"string"},"a":{"type":"string"}},"required":["c","a"]}"#,
+    ).unwrap();
+    assert_eq!(
+        usage_line("example", &parameters),
+        "/example a=<string> c=<string> [b=<string>] [d=<string>]"
+    );
+    assert_eq!(
+        argument_table(&parameters).unwrap(),
+        "arguments\n  a  string  required\n  b  string\n  c  string  required\n  d  string"
+    );
+}
+
 /// Eighteen bracketed pairs on one line is a paragraph of punctuation, and
 /// the table under it names them all anyway.
 #[test]

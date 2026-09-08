@@ -1,0 +1,73 @@
+// Runs only in the isolated compiler runtime. Never evaluates a plugin buffer.
+function zellijCheck({ entry, sdk }) {
+  const prefix = "/$zellij/";
+  const sdkPath = prefix + "sdk.d.ts";
+  const ops = Deno.core.ops;
+  const sources = new Map();
+  const options = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    moduleDetection: ts.ModuleDetectionKind.Force,
+    lib: ["lib.es2022.d.ts"],
+    types: [],
+    strict: true,
+    allowJs: true,
+    checkJs: true,
+    allowImportingTsExtensions: true,
+    noEmit: true,
+    noUncheckedSideEffectImports: true,
+    skipLibCheck: false,
+  };
+  function readFile(name) {
+    if (name === sdkPath) return sdk;
+    if (name.startsWith(prefix)) return __zellijLibs[name.slice(prefix.length)];
+    return ops.op_zellij_check_read(name);
+  }
+  const host = {
+    getSourceFile(name, languageVersion) {
+      if (sources.has(name)) return sources.get(name);
+      const text = readFile(name);
+      if (text === undefined) return undefined;
+      const source = ts.createSourceFile(name, text, languageVersion, true);
+      sources.set(name, source);
+      if (!name.startsWith(prefix)) {
+        for (const ref of source.referencedFiles) {
+          ops.op_zellij_check_resolve(ref.fileName, name);
+        }
+        if (source.typeReferenceDirectives.length) {
+          throw new Error(`${name}: package type references are not supported`);
+        }
+      }
+      return source;
+    },
+    getDefaultLibFileName: () => prefix + "lib.es2022.d.ts",
+    getDefaultLibLocation: () => prefix.slice(0, -1),
+    getCurrentDirectory: () => "/",
+    getCanonicalFileName: name => name,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => "\n",
+    readFile,
+    fileExists: name => name === sdkPath ||
+      (name.startsWith(prefix) && Object.hasOwn(__zellijLibs, name.slice(prefix.length))),
+    directoryExists: name => name === prefix.slice(0, -1),
+    getDirectories: () => [],
+    writeFile() { throw new Error("offline checker cannot emit files"); },
+    resolveModuleNames(names, containingFile) {
+      return names.map(name => {
+        const resolvedFileName = ops.op_zellij_check_resolve(name, containingFile);
+        const extension = resolvedFileName.endsWith(".d.ts") ? ts.Extension.Dts :
+          resolvedFileName.endsWith(".mts") ? ts.Extension.Mts :
+          resolvedFileName.endsWith(".ts") ? ts.Extension.Ts :
+          resolvedFileName.endsWith(".mjs") ? ts.Extension.Mjs : ts.Extension.Js;
+        return { resolvedFileName, extension, isExternalLibraryImport: resolvedFileName === sdkPath };
+      });
+    },
+    resolveTypeReferenceDirectives: names => names.map(() => undefined),
+  };
+  const program = ts.createProgram([entry, sdkPath], options, host);
+  const diagnostics = ts.getPreEmitDiagnostics(program);
+  if (diagnostics.length) {
+    throw new Error(ts.formatDiagnostics(diagnostics, host));
+  }
+}

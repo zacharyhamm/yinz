@@ -2,8 +2,8 @@
 //! write`, and hocus's `plugin_write`, which spells the same rules in wasm-flavoured paths.
 //!
 //! A name is `keys` or `folder/module` - a file, or one folder deep for a module a plugin
-//! `require`s - and becomes `<dir>/<name>.lua`. Everything else is refused before anything
-//! touches the disk, so a name cannot be used to build a path outside the folder.
+//! `require`s - and defaults to `<dir>/<name>.lua`. The CLI also accepts explicit JS/TS
+//! filenames. Path validation prevents a name from escaping the folder.
 
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
@@ -21,13 +21,24 @@ pub use {
 /// The longest plugin name accepted, so a name cannot be used to build an unreasonable path.
 pub const MAX_PLUGIN_NAME_LEN: usize = 64;
 
-/// `<dir>/<name>.lua`, or why `name` is not a plugin name.
+/// Whether a path explicitly selects the embedded Deno runtime.
+pub fn is_deno_plugin(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("js" | "mjs" | "ts" | "mts")
+    )
+}
+
+/// `<dir>/<name>.lua`, or an explicit Lua/JS/TS filename, after validating the name.
 pub fn resolve_plugin_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("name is required and must not be empty".to_owned());
     }
-    let name = name.strip_suffix(".lua").unwrap_or(name);
+    let (name, extension) = match name.rsplit_once('.') {
+        Some((stem, ext @ ("lua" | "js" | "mjs" | "ts" | "mts"))) => (stem, ext),
+        _ => (name, "lua"),
+    };
     if name.len() > MAX_PLUGIN_NAME_LEN {
         return Err(format!(
             "a plugin name may be at most {MAX_PLUGIN_NAME_LEN} characters"
@@ -62,7 +73,7 @@ pub fn resolve_plugin_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
     if !dir.is_absolute() {
         return Err("the plugin folder is not an absolute path".to_owned());
     }
-    let path = dir.join(format!("{name}.lua"));
+    let path = dir.join(format!("{name}.{extension}"));
     // Belt and braces: the rules above admit no `..`, and this says so a second way.
     if path.components().any(|c| matches!(c, Component::ParentDir)) || !path.starts_with(dir) {
         return Err(format!("{name:?} is not a plugin name"));
@@ -79,6 +90,9 @@ pub fn resolve_plugin_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
 /// a symlink.
 pub fn backup_name(name: &str) -> String {
     let name = name.trim();
+    if let Some((stem, extension @ ("js" | "mjs" | "ts" | "mts"))) = name.rsplit_once('.') {
+        return format!("{stem}.bak.{extension}");
+    }
     let name = name.strip_suffix(".lua").unwrap_or(name);
     format!("{name}.bak")
 }
@@ -86,7 +100,12 @@ pub fn backup_name(name: &str) -> String {
 /// Whether `name` names a backup rather than a plugin, so a listing can leave it out.
 pub fn is_backup_name(name: &str) -> bool {
     let name = name.trim();
-    name.ends_with(".bak") || name.ends_with(".bak.lua")
+    let name = if is_deno_plugin(Path::new(name)) {
+        name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name)
+    } else {
+        name.strip_suffix(".lua").unwrap_or(name)
+    };
+    name.ends_with(".bak")
 }
 
 // Reading a source lexically ---------------------------------------------------------------
@@ -1106,6 +1125,55 @@ pub fn lint(name: &str, source: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deno_names_and_backups_preserve_extensions_and_name_guards() {
+        let dir = Path::new("/plugins");
+        for extension in ["js", "mjs", "ts", "mts"] {
+            let name = format!("app/keys.{extension}");
+            let path = resolve_plugin_file(dir, &format!(" {name} ")).unwrap();
+            assert_eq!(path, dir.join(&name));
+            assert!(is_deno_plugin(&path));
+            let backup = backup_name(&name);
+            assert_eq!(backup, format!("app/keys.bak.{extension}"));
+            assert_eq!(
+                resolve_plugin_file(dir, &backup).unwrap(),
+                dir.join(&backup)
+            );
+            assert!(is_backup_name(&backup));
+            assert!(!is_backup_name(&name));
+            for invalid in [
+                "../keys",
+                "app/../keys",
+                "/keys",
+                "-keys",
+                "app/-keys",
+                "a/b/keys",
+                "",
+                ".",
+                "..",
+                "app/",
+            ] {
+                assert!(
+                    resolve_plugin_file(dir, &format!("{invalid}.{extension}")).is_err(),
+                    "{invalid}.{extension}"
+                );
+            }
+            assert!(resolve_plugin_file(
+                dir,
+                &format!("{}.{extension}", "a".repeat(MAX_PLUGIN_NAME_LEN + 1))
+            )
+            .is_err());
+        }
+        assert_eq!(
+            resolve_plugin_file(dir, "keys").unwrap(),
+            dir.join("keys.lua")
+        );
+        assert_eq!(
+            resolve_plugin_file(dir, "keys.jsx").unwrap(),
+            dir.join("keys.jsx.lua")
+        );
+    }
 
     #[test]
     fn a_name_is_a_file_or_one_folder_deep_and_nothing_else() {

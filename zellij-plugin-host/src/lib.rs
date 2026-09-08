@@ -20,9 +20,10 @@
 #![allow(clippy::manual_inspect)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
-//! The plugin host: loads wasm and Lua plugins, runs them on the plugin thread, and turns their
+//! The plugin host: loads Wasm, Lua, and Deno plugins, runs them on the plugin thread, and turns their
 //! commands into instructions for the other server threads. It talks to the rest of the server
 //! over [`zellij_bus`], using [`zellij_routing`] to dispatch actions. It owns plugin job queues.
+pub mod deno;
 mod lua;
 pub use lua::check_lua_plugin;
 pub mod logging_pipe;
@@ -34,6 +35,7 @@ mod plugin_loader;
 mod plugin_map;
 mod plugin_worker;
 pub mod queues;
+pub(crate) mod response;
 mod wasm_bridge;
 mod watch_filesystem;
 mod zellij_exports;
@@ -294,6 +296,21 @@ pub fn plugin_thread_main(
             },
             PluginInstruction::Update(updates) => {
                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+            },
+            PluginInstruction::DenoTick(plugin_id, _client_id, generation) => {
+                wasm_bridge.deno_tick(plugin_id, generation, shutdown_send.clone());
+            },
+            PluginInstruction::DenoEvent(plugin_id, client_id, generation, event) => {
+                wasm_bridge.deno_event(
+                    plugin_id,
+                    client_id,
+                    generation,
+                    event,
+                    shutdown_send.clone(),
+                )?;
+            },
+            PluginInstruction::DenoDispose(plugin_id, generation) => {
+                wasm_bridge.deno_dispose(plugin_id, generation);
             },
             PluginInstruction::Unload(pid) => {
                 // Eventual cleanup for runtime unloads. Screen destruction paths drop notices
@@ -1327,11 +1344,12 @@ pub fn plugin_thread_main(
             },
             PluginInstruction::PluginFailed {
                 plugin_id,
+                deno_generation,
                 error,
                 failed_to_load,
             } => {
                 wasm_bridge
-                    .queue_plugin_failed(plugin_id, error, failed_to_load)
+                    .queue_plugin_failed(plugin_id, deno_generation, error, failed_to_load)
                     .non_fatal();
             },
             PluginInstruction::DetectPluginConfigChanges(new_plugins) => {

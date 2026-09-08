@@ -15,6 +15,32 @@ use crate::pty_writer::PtyWriteInstruction;
 use crate::screen::ScreenInstruction;
 use crate::ServerInstruction;
 use std::str::FromStr;
+
+#[test]
+fn asynchronous_plugin_events_preserve_generation_and_legacy_routing() {
+    use zellij_types::data::Event;
+    use zellij_types::internal_ids::{ClientId, PluginId};
+
+    let plugin = PluginId::new(7);
+    let client = ClientId::new(2);
+    let tagged =
+        PluginInstruction::for_plugin_event(plugin, client, Some(41), Event::InputReceived);
+    assert!(matches!(
+        tagged,
+        PluginInstruction::DenoEvent(id, origin, 41, Event::InputReceived)
+            if id == plugin && origin == client
+    ));
+    assert_eq!(PluginContext::from(&tagged), PluginContext::Update);
+    match PluginInstruction::for_plugin_event(plugin, client, None, Event::InputReceived) {
+        PluginInstruction::Update(events) => {
+            assert_eq!(
+                events,
+                vec![(Some(plugin), Some(client), Event::InputReceived)]
+            );
+        },
+        other => panic!("legacy completion changed routing: {other:?}"),
+    }
+}
 use zellij_types::diagnostics::BackgroundJobContext;
 use zellij_types::diagnostics::PluginContext;
 use zellij_types::diagnostics::PtyContext;
@@ -333,7 +359,7 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["PostMessagesToPluginWorker"];
+    special: ["PostMessagesToPluginWorker", "DenoTick", "DenoEvent", "DenoDispose"];
     only_special: ["PostMessageToPluginWorker"];
     targets: [(
         "PostMessagesToPluginWorker",

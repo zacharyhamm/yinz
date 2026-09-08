@@ -481,9 +481,11 @@ fn install_json(lua: &Lua, zellij: &Table) -> Result<()> {
 
     let encode = lua
         .create_function(|lua, value: LuaValue| {
-            let value: serde_json::Value = lua.from_value(value).map_err(|e| {
+            let mut value: serde_json::Value = lua.from_value(value).map_err(|e| {
                 mlua::Error::runtime(format!("could not encode this as JSON: {}", e))
             })?;
+            // Keep deterministic output even when another runtime enables serde_json's preserve_order.
+            value.sort_all_objects();
             serde_json::to_string(&value)
                 .map_err(|e| mlua::Error::runtime(format!("could not encode JSON: {}", e)))
         })

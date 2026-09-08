@@ -108,9 +108,12 @@ pub struct PluginLoader<'a> {
     keybinds: Keybinds,
     zellij_data_dir: PathBuf,
     data_access: Arc<DataAccess>,
+    deno_watch_generations: super::plugin_map::DenoWatchGenerations,
     queues: Arc<Mutex<Queues>>,
     size: Size,
     cancel: Arc<AtomicBool>,
+    client_cancel: Arc<AtomicBool>,
+    client_cancellations: Arc<Mutex<HashMap<ClientId, Arc<AtomicBool>>>>,
     loading_indication: LoadingIndication,
     senders: ThreadSenders,
     engine: Engine,
@@ -156,9 +159,12 @@ impl<'a> PluginLoader<'a> {
             keybinds: loading_context.keybinds,
             zellij_data_dir: loading_context.zellij_data_dir,
             data_access: loading_context.data_access,
+            deno_watch_generations: loading_context.deno_watch_generations,
             queues: loading_context.queues,
             size: loading_context.size,
             cancel: loading_context.cancel,
+            client_cancel: loading_context.client_cancel,
+            client_cancellations: loading_context.client_cancellations,
 
             skip_cache,
             senders,
@@ -174,8 +180,11 @@ impl<'a> PluginLoader<'a> {
         self
     }
     pub fn start_plugin(&mut self) -> Result<()> {
-        if self.plugin_config.runtime() == PluginRuntime::Lua {
-            return self.start_lua_plugin();
+        if matches!(
+            self.plugin_config.runtime(),
+            PluginRuntime::Lua | PluginRuntime::Deno
+        ) {
+            return self.start_script_plugin();
         }
         let module = if self.skip_cache {
             self.interpret_module()?
@@ -188,26 +197,28 @@ impl<'a> PluginLoader<'a> {
         self.clone_instance_for_other_clients()?;
         Ok(())
     }
-    /// Load a Lua plugin: read its source, build an interpreter for it, and register it exactly
+    /// Load a script plugin: read its source, build a runtime for it, and register it exactly
     /// as a wasm plugin is registered. Everything downstream of the `PluginMap` - event routing,
     /// rendering, the loading indicator - is shared, so only the two runtime-shaped steps differ.
     ///
-    /// There is no module cache here as there is for wasm: parsing Lua is cheap, and re-reading
-    /// the source on every load is what makes editing a plugin and reloading it work.
-    fn start_lua_plugin(&mut self) -> Result<()> {
+    /// Re-reading the source on every load makes editing and reloading scripts work.
+    fn start_script_plugin(&mut self) -> Result<()> {
+        if self.deno_client_disconnected() {
+            return self.clone_instance_for_other_clients();
+        }
         let err_context = || {
             format!(
-                "failed to start the Lua plugin at '{}'",
+                "failed to start the script plugin at '{}'",
                 self.plugin_config.path.display()
             )
         };
         self.loading_indication.override_previous_error();
         let (resolved_path, source) = self
             .plugin_config
-            .resolve_lua_source(self.user_plugin_dir.as_deref())
+            .resolve_source(self.user_plugin_dir.as_deref())
             .with_context(err_context)?;
 
-        // A Lua plugin has no WASI layer, so it gets no wasi context. The pipes go unused, but
+        // Script plugins have no WASI layer, so they get no wasi context. The pipes go unused, but
         // `PluginEnv` is shared with the wasm runtime and they are cheap.
         let mut plugin_env = self.create_plugin_env(
             None,
@@ -220,14 +231,33 @@ impl<'a> PluginLoader<'a> {
         plugin_env.resolved_source_path = Some(resolved_path);
         let subscriptions = plugin_env.subscriptions.clone();
         let chunk_name = self.plugin_config.path.display().to_string();
-        let lua_plugin =
-            load_lua_plugin(&source, &chunk_name, plugin_env).with_context(err_context)?;
-
-        let plugin = Arc::new(Mutex::new(RunningPlugin::new_lua(
-            lua_plugin,
-            self.size.rows,
-            self.size.cols,
-        )));
+        let running = if self.plugin_config.runtime() == PluginRuntime::Deno {
+            let path = plugin_env
+                .resolved_source_path
+                .as_deref()
+                .context("Deno plugin has no resolved source path")?
+                .to_owned();
+            let client_cancel = if self.plugin_config.is_shared() {
+                Arc::default()
+            } else {
+                self.client_cancel.clone()
+            };
+            let mut deno =
+                match super::deno::DenoPlugin::new(&source, &path, plugin_env, client_cancel) {
+                    Ok(deno) => deno,
+                    Err(_) if self.deno_client_disconnected() => {
+                        return self.clone_instance_for_other_clients()
+                    },
+                    Err(error) => return Err(error).with_context(err_context),
+                };
+            deno.env_mut().deno_generation = Some(deno.generation());
+            RunningPlugin::new_deno(deno, self.size.rows, self.size.cols)
+        } else {
+            let lua =
+                load_lua_plugin(&source, &chunk_name, plugin_env).with_context(err_context)?;
+            RunningPlugin::new_lua(lua, self.size.rows, self.size.cols)
+        };
+        let plugin = Arc::new(Mutex::new(running));
         // Inserted before `load` runs, so that host commands issued from `load` can find it.
         self.plugin_map.insert(
             self.plugin_id,
@@ -242,13 +272,21 @@ impl<'a> PluginLoader<'a> {
             .load(&self.plugin_config.initial_userspace_configuration)
             .with_context(err_context);
         if loaded.is_err() {
-            self.plugin_map
-                .remove_instance(self.plugin_id, self.client_id);
+            plugin.lock().unwrap().dispose();
+            self.plugin_map.remove_instance(self.plugin_id, self.client_id);
+            if self.deno_client_disconnected() {
+                return self.clone_instance_for_other_clients();
+            }
         }
         loaded?;
 
         self.clone_instance_for_other_clients()?;
         Ok(())
+    }
+    fn deno_client_disconnected(&self) -> bool {
+        self.plugin_config.runtime() == PluginRuntime::Deno
+            && !self.plugin_config.is_shared()
+            && self.client_cancel.load(Ordering::Acquire)
     }
     fn interpret_module(&mut self) -> Result<Module> {
         self.loading_indication.override_previous_error();
@@ -341,8 +379,11 @@ impl<'a> PluginLoader<'a> {
                 .with_context(err_context)
         })();
         if loaded.is_err() {
-            self.plugin_map
-                .remove_instance(self.plugin_id, self.client_id);
+            plugin.lock().unwrap().dispose();
+            self.plugin_map.remove_instance(self.plugin_id, self.client_id);
+            if self.deno_client_disconnected() {
+                return self.clone_instance_for_other_clients();
+            }
         }
         loaded?;
 
@@ -351,7 +392,7 @@ impl<'a> PluginLoader<'a> {
     /// Build the per-instance environment every host command acts on.
     ///
     /// Shared by both runtimes: `wasi_ctx` and the stdio pipes are the only wasm-shaped parts,
-    /// and a Lua plugin passes `None`/fresh pipes for them.
+    /// and script plugins pass `None`/fresh pipes for them.
     fn create_plugin_env(
         &self,
         wasi_ctx: Option<WasiCtx>,
@@ -363,6 +404,7 @@ impl<'a> PluginLoader<'a> {
             plugin_id: self.plugin_id,
             cancel: self.cancel.clone(),
             cancel_tripped: Arc::new(AtomicBool::new(false)),
+            deno_generation: None,
             client_id: self.client_id,
             owner_client_id: self.client_id,
             plugin: self.plugin_config.clone(), // TODO: change field name in PluginEnv to plugin_config
@@ -373,6 +415,7 @@ impl<'a> PluginLoader<'a> {
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
             temporary_data_dir: Some(self.temporary_data_dir.clone()),
             data_access: self.data_access.clone(),
+            deno_watch_generations: self.deno_watch_generations.clone(),
             queues: self.queues.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
             tab_index: self.tab_index,
@@ -385,7 +428,7 @@ impl<'a> PluginLoader<'a> {
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
             user_plugin_dir: self.user_plugin_dir.clone(),
-            // Set by `start_lua_plugin` once the source has been resolved; a wasm plugin has
+            // Set by `start_script_plugin` once the source has been resolved; a wasm plugin has
             // its own lookup and leaves it unset.
             resolved_source_path: None,
             default_mode: self.default_mode,
@@ -476,6 +519,13 @@ impl<'a> PluginLoader<'a> {
                     continue;
                 }
                 self.client_id = client_id;
+                self.client_cancel = self
+                    .client_cancellations
+                    .lock()
+                    .unwrap()
+                    .entry(client_id)
+                    .or_default()
+                    .clone();
                 self.start_plugin()?;
             }
         }
@@ -531,6 +581,7 @@ impl<'a> PluginLoader<'a> {
             plugin_id: self.plugin_id,
             cancel: self.cancel.clone(),
             cancel_tripped: Arc::new(AtomicBool::new(false)),
+            deno_generation: None,
             client_id: self.client_id,
             owner_client_id: self.client_id,
             plugin: plugin_config,
@@ -541,6 +592,7 @@ impl<'a> PluginLoader<'a> {
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
             temporary_data_dir: Some(self.temporary_data_dir.clone()),
             data_access: self.data_access.clone(),
+            deno_watch_generations: self.deno_watch_generations.clone(),
             queues: self.queues.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
             tab_index: self.tab_index,
@@ -553,7 +605,7 @@ impl<'a> PluginLoader<'a> {
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
             user_plugin_dir: self.user_plugin_dir.clone(),
-            // Only the Lua runtime resolves a source file; wasm has its own lookup.
+            // Script runtimes resolve a source file; wasm has its own lookup.
             resolved_source_path: None,
             default_mode: self.default_mode,
             subscriptions: Arc::new(Mutex::new(HashSet::new())),

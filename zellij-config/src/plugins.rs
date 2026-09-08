@@ -18,11 +18,12 @@ use {
 
 /// Plugin metadata
 /// The runtime a plugin runs on. Zellij runs plugins compiled to wasm and plugins written in
-/// Lua; see `PluginConfig::runtime`.
+/// Lua or JavaScript/TypeScript; see `PluginConfig::runtime`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginRuntime {
     Wasm,
     Lua,
+    Deno,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -44,16 +45,16 @@ pub struct PluginConfig {
     pub relative_path: Option<PathBuf>,
 }
 
-/// Read one candidate Lua source. `Ok(None)` means only that nothing is there, so the search can
+/// Read one candidate script source. `Ok(None)` means only that nothing is there, so the search can
 /// go on; anything else - a permission denied, a directory where a file was expected - is an
 /// error the user needs to see rather than a reason to keep looking and then report the wrong
 /// path as missing.
-fn read_lua_file(path: &Path) -> Result<Option<String>> {
+fn read_source_file(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(source) => Ok(Some(source)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(anyhow!("{}", e))
-            .with_context(|| format!("failed to read the Lua plugin at '{}'", path.display())),
+            .with_context(|| format!("failed to read the plugin at '{}'", path.display())),
     }
 }
 
@@ -314,9 +315,8 @@ impl PluginConfig {
 
     /// Which runtime should run this plugin, decided by its file extension.
     ///
-    /// A `.lua` file is a Lua plugin; anything else is wasm, which keeps every existing plugin
-    /// declaration working untouched and means no new URL scheme is needed - `file:~/thing.lua`
-    /// is enough.
+    /// A `.lua` file is Lua, `.js`/`.mjs`/`.ts`/`.mts` use Deno; anything else is wasm.
+    /// No new URL scheme is needed: `file:~/thing.ts` is enough.
     pub fn runtime(&self) -> PluginRuntime {
         // A builtin has no extension to read - its `path` is the bare tag - so being in the
         // builtin Lua table is what identifies it.
@@ -325,6 +325,7 @@ impl PluginConfig {
         }
         match self.path.extension().and_then(|e| e.to_str()) {
             Some("lua") => PluginRuntime::Lua,
+            Some("js" | "mjs" | "ts" | "mts") => PluginRuntime::Deno,
             _ => PluginRuntime::Wasm,
         }
     }
@@ -337,12 +338,17 @@ impl PluginConfig {
         }
     }
 
-    /// Read a Lua plugin's source from disk, looking in the user's plugin folder for anything
+    /// Backwards-compatible Lua source lookup.
+    pub fn resolve_lua_source(&self, user_plugin_dir: Option<&Path>) -> Result<(PathBuf, String)> {
+        self.resolve_source(user_plugin_dir)
+    }
+
+    /// Read a script plugin's source from disk, looking in the user's plugin folder for anything
     /// not found at the path as given.
     ///
     /// The path is tried first and unchanged, so every existing declaration keeps working and an
     /// absolute path always wins. Only when that is not there does the user plugin dir come into
-    /// it, which is what makes `file:keys.lua` - and `file:keys` - mean the obvious thing.
+    /// it, which lets `file:keys.lua` or `file:keys.ts` resolve in the plugin folder.
     ///
     /// The fallback keys on "the file is not there" rather than on "the path is relative",
     /// because the path itself is absolute by the time we are called: `zellij_runtime::plugin_location::parse_plugin_location`
@@ -353,14 +359,14 @@ impl PluginConfig {
     /// fail rather than resolve to a same-named plugin the user did not ask for.
     ///
     /// The extension is *not* appended for a bare `file:keys`, tempting as that is: `runtime()`
-    /// decides Lua by the `.lua` extension, so an extensionless path is taken for wasm and never
+    /// selects script runtimes by extension, so an extensionless path is taken for wasm and never
     /// arrives here at all. Appending it would be dead code that reads as a working feature.
     ///
     /// The path that was read comes back alongside the source, because for `file:keys.lua` it is
     /// *not* `self.path` and nothing else records which of the two candidates won. A reload names
     /// the file in full, so that path - not the location, which is the cwd-joined identity - is
     /// what `all_plugin_ids_for_plugin_location` has to match it against.
-    pub fn resolve_lua_source(&self, user_plugin_dir: Option<&Path>) -> Result<(PathBuf, String)> {
+    pub fn resolve_source(&self, user_plugin_dir: Option<&Path>) -> Result<(PathBuf, String)> {
         if let Some(source) = self.builtin_lua_source() {
             // A builtin has no file at all; its `path` is the bare tag. Handing it back keeps the
             // signature honest, and nothing matches a builtin by file path.
@@ -368,7 +374,7 @@ impl PluginConfig {
         }
 
         let mut tried = vec![self.path.clone()];
-        if let Some(source) = read_lua_file(&self.path)? {
+        if let Some(source) = read_source_file(&self.path)? {
             return Ok((self.path.clone(), source));
         }
 
@@ -378,7 +384,7 @@ impl PluginConfig {
             let in_dir = dir.join(self.relative_path.as_ref().unwrap_or(&self.path));
             if in_dir != self.path {
                 tried.push(in_dir.clone());
-                if let Some(source) = read_lua_file(&in_dir)? {
+                if let Some(source) = read_source_file(&in_dir)? {
                     return Ok((in_dir, source));
                 }
             }
@@ -390,7 +396,7 @@ impl PluginConfig {
             .collect::<Vec<_>>()
             .join(", ");
         Err(anyhow!(
-            "failed to find the Lua plugin '{}'; looked in: {}",
+            "failed to find the plugin '{}'; looked in: {}",
             self.path.display(),
             tried
         ))
@@ -415,6 +421,46 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use tempfile::tempdir;
+
+    #[test]
+    fn deno_extensions_share_source_lookup_and_preserve_explicit_paths() {
+        let plugins = tempdir().unwrap();
+        let cwd = tempdir().unwrap();
+        for extension in ["js", "mjs", "ts", "mts"] {
+            let name = format!("keys.{extension}");
+            let source = "export default {};";
+            fs::write(plugins.path().join(&name), source).unwrap();
+            let (location, relative_path) =
+                zellij_runtime::plugin_location::parse_plugin_location_with_relative(
+                    &format!("file:{name}"),
+                    Some(cwd.path().to_owned()),
+                )
+                .unwrap();
+            let plugin = PluginConfig::from_run_plugin(&RunPlugin {
+                location,
+                relative_path,
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(plugin.runtime(), super::PluginRuntime::Deno);
+            assert_eq!(
+                plugin.resolve_source(Some(plugins.path())).unwrap(),
+                (plugins.path().join(&name), source.to_owned())
+            );
+            let explicit = cwd.path().join(&name);
+            assert!(file_plugin(explicit.to_str().unwrap())
+                .resolve_source(Some(plugins.path()))
+                .is_err());
+            fs::write(&explicit, "// explicit").unwrap();
+            assert_eq!(
+                plugin.resolve_source(Some(plugins.path())).unwrap(),
+                (explicit, "// explicit".to_owned())
+            );
+        }
+        for name in ["keys", "keys.wasm", "keys.jsx", "keys.tsx", "keys.JS"] {
+            assert_eq!(file_plugin(name).runtime(), super::PluginRuntime::Wasm);
+        }
+    }
 
     fn builtin_plugin(name: &str) -> PluginConfig {
         PluginConfig::from_run_plugin(&RunPlugin {

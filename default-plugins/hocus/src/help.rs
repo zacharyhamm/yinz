@@ -459,9 +459,8 @@ pub fn split_help_request(line: &str) -> Option<&str> {
 ///
 /// Required arguments bare and first, optional ones after them in brackets,
 /// each with its type — the shape a shell's own usage line has, because that is
-/// the shape the reader already knows. Alphabetical within each half:
-/// `serde_json` is built without `preserve_order` here, so its maps are sorted,
-/// and pretending otherwise would promise an order the schema cannot keep.
+/// the shape the reader already knows. Sort each half alphabetically regardless
+/// of serde_json's map ordering, which workspace feature unification can change.
 ///
 /// Past `USAGE_OPTIONS_CAP` optional arguments the line says `[options]`
 /// instead of naming them. `agent_spawn` has eighteen, and eighteen bracketed
@@ -472,15 +471,18 @@ fn usage_line(name: &str, parameters: &Value) -> String {
         return format!("/{name}");
     };
     let required = required_names(parameters);
+    let mut keys: Vec<_> = properties.keys().collect();
+    keys.sort_unstable();
     let mut line = format!("/{name}");
-    for key in properties
-        .keys()
+    for key in keys
+        .iter()
+        .copied()
         .filter(|key| required.contains(&key.as_str()))
     {
         line.push_str(&format!(" {key}=<{}>", type_label(&properties[key])));
     }
-    let optional: Vec<&String> = properties
-        .keys()
+    let optional: Vec<&String> = keys
+        .into_iter()
         .filter(|key| !required.contains(&key.as_str()))
         .collect();
     if optional.len() > USAGE_OPTIONS_CAP {
@@ -574,6 +576,8 @@ fn argument_table(parameters: &Value) -> Option<String> {
         .max()
         .unwrap_or_default();
     let mut rows = vec!["arguments".to_owned()];
+    let mut properties: Vec<_> = properties.iter().collect();
+    properties.sort_unstable_by_key(|(key, _)| *key);
     for (key, property) in properties {
         let mark = match required.contains(&key.as_str()) {
             true => "  required",

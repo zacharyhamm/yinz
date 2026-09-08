@@ -78,7 +78,9 @@ fn a_destructive_slash_command_does_not_ask() {
 
     assert!(!matches!(state.status, Status::ConfirmingTool));
     assert_eq!(
-        state.messages[0].tool_calls[0].arguments, r#"{"is_plugin":false,"pane_id":1}"#,
+        serde_json::from_str::<serde_json::Value>(&state.messages[0].tool_calls[0].arguments)
+            .unwrap(),
+        serde_json::json!({"is_plugin": false, "pane_id": 1}),
         "the pairs came out typed, not as strings"
     );
 }

@@ -218,7 +218,11 @@ fn every_agent_action_maps_onto_the_tool_that_already_does_it() {
         let args = tools::Args::parse(arguments).unwrap();
         let host = state.agent_host_call(&call, &args).unwrap();
         assert_eq!(host.name, name, "{arguments}");
-        assert_eq!(host.arguments, mapped, "{arguments}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&host.arguments).unwrap(),
+            serde_json::from_str::<serde_json::Value>(mapped).unwrap(),
+            "{arguments}"
+        );
         assert_eq!(host.id, call.id, "the result still answers the call");
     }
 }

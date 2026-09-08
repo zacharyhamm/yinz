@@ -552,6 +552,24 @@ fn create_plugin_thread_with_hooks(
     user_plugin_dir: Option<PathBuf>,
     hooks: zellij_types::input::hooks::Hooks,
 ) -> PluginThreadHarness {
+    create_plugin_thread_with_hooks_and_event_sender(
+        zellij_cwd,
+        session_env_vars,
+        user_plugin_dir,
+        hooks,
+        None,
+    )
+}
+
+/// Override only the host's outgoing plugin channel, so a test can hold a real
+/// asynchronous completion while control instructions still reach the plugin thread.
+fn create_plugin_thread_with_hooks_and_event_sender(
+    zellij_cwd: Option<PathBuf>,
+    session_env_vars: Option<std::collections::BTreeMap<String, String>>,
+    user_plugin_dir: Option<PathBuf>,
+    hooks: zellij_types::input::hooks::Hooks,
+    event_sender: Option<SenderWithContext<PluginInstruction>>,
+) -> PluginThreadHarness {
     let zellij_cwd = zellij_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
     let initiating_client_id = ClientId::new(1);
@@ -579,7 +597,7 @@ fn create_plugin_thread_with_hooks(
         vec![plugin_receiver],
         Some(&to_screen),
         Some(&to_pty),
-        Some(&to_plugin),
+        Some(event_sender.as_ref().unwrap_or(&to_plugin)),
         Some(&to_server),
         Some(&to_pty_writer),
         Some(&to_background_jobs),
@@ -1019,6 +1037,7 @@ mod batching;
 mod break_panes_commands;
 mod cli_events;
 mod config_events;
+mod deno_plugins;
 mod focused_pane_commands;
 mod highlights;
 mod host_theme;

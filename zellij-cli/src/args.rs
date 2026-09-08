@@ -168,8 +168,8 @@ pub enum Recordings {
     },
 }
 
-/// Authoring Lua plugins in the user's plugin folder from a shell - what hocus's `plugin_*`
-/// tools do, for a person or an agent that is not hocus. `name` is `keys` or `folder/module`.
+/// Authoring Lua and JS/TS plugins in the user's plugin folder from a shell.
+/// Extensionless names select Lua; explicit .js, .mjs, .ts and .mts names select Deno.
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Plugins {
     /// Write a plugin from a file or stdin, after compiling it. Refuses to replace one that
@@ -185,7 +185,7 @@ pub enum Plugins {
         #[clap(long)]
         no_check: bool,
     },
-    /// Compile a plugin - the one in the folder, or --file - without loading it.
+    /// Check a plugin in the folder, or --file: compile Lua or semantically check JS/TS.
     Check {
         name: Option<String>,
         #[clap(short, long, value_parser, conflicts_with = "name")]
@@ -383,7 +383,7 @@ pub enum Command {
     #[clap(subcommand)]
     Recordings(Recordings),
 
-    /// Write, check, reload and read the logs of Lua plugins in your plugin folder.
+    /// Write, check, reload and read logs of Lua and JS/TS plugins.
     #[clap(subcommand)]
     Plugins(Plugins),
 

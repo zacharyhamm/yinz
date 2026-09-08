@@ -267,12 +267,21 @@ async fn an_agent_report_control_frame_reaches_the_callback() {
 
     assert_eq!(read_to_string(&mut reader, 8).await, "prompt$ ");
     assert_eq!(
-        seen.lock().expect("poisoned").clone(),
+        seen.lock()
+            .expect("poisoned")
+            .iter()
+            .map(|(id, kind, json)| {
+                (
+                    *id,
+                    kind.clone(),
+                    serde_json::from_str::<serde_json::Value>(json).expect("valid report JSON"),
+                )
+            })
+            .collect::<Vec<_>>(),
         vec![(
             TerminalId::new(7),
             "claude".to_owned(),
-            r#"{"_zellij_workflow_owner":"verified-remote-owner","hook_event_name":"Stop"}"#
-                .to_owned()
+            serde_json::json!({"_zellij_workflow_owner": "verified-remote-owner", "hook_event_name": "Stop"})
         )]
     );
 }
