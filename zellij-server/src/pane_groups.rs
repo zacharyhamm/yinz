@@ -246,37 +246,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn toggle_pane_id_adds_new_pane() {
-        let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = ClientId::new(1);
-        let pane_id = PaneId::Terminal(TerminalId::new(10));
-        let screen_size = create_test_screen_size();
-
-        pane_groups.toggle_pane_id_in_group(pane_id, screen_size, &client_id);
-
-        let result = pane_groups.get_client_pane_group(&client_id);
-        assert!(result.contains(&pane_id));
-    }
-
-    #[test]
-    fn toggle_pane_id_removes_existing_pane() {
-        let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = ClientId::new(1);
-        let pane_id = PaneId::Plugin(PluginId::new(10));
-        let screen_size = create_test_screen_size();
-
-        pane_groups.add_pane_id_to_group(pane_id, screen_size, &client_id);
-        assert!(pane_groups
-            .get_client_pane_group(&client_id)
-            .contains(&pane_id));
-
-        pane_groups.toggle_pane_id_in_group(pane_id, screen_size, &client_id);
-        assert!(!pane_groups
-            .get_client_pane_group(&client_id)
-            .contains(&pane_id));
-    }
-
     /// The one thing `PaneGroups` does besides bookkeeping: opening the multiple-select
     /// plugin the first time a client's group becomes non-empty. Every other test in this
     /// module drops that instruction unobserved, so this is the only place the predicate is

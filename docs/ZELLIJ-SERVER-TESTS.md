@@ -144,56 +144,59 @@ Run: `cargo x test`
 - [x] `pane_groups::tests::should_launch_plugin_returns_false_when_non_empty_to_non_empty`
 - [x] `pane_groups::tests::should_launch_plugin_returns_true_when_empty_to_non_empty`
 - [x] `pane_groups::tests::should_launch_plugin_returns_true_when_first_pane_added`
-- [ ] `pane_groups::tests::toggle_pane_id_adds_new_pane`
-- [ ] `pane_groups::tests::toggle_pane_id_removes_existing_pane`
-- [ ] `panes::frame_color_override::tests::a_bell_flash_holds_at_full_strength_then_eases_away`
-- [ ] `panes::frame_color_override::tests::a_bell_flash_is_faded_out_on_the_schedule_the_teardown_still_runs_on`
-- [ ] `panes::frame_color_override::tests::a_bell_flash_is_shown_to_every_client`
-- [ ] `panes::frame_color_override::tests::an_override_that_does_not_fade_applies_at_full_strength_forever`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::center_pad_centers_and_clamps`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::every_rendered_row_spans_the_full_width`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::hit_test_matches_rendered_marker_rows`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::hit_test_returns_none_off_option_rows_and_in_fallback`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::hit_test_round_trips_the_options`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::keycode_words_join_with_plus_separators`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::keycode_words_render_unbound_when_empty`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::options_are_left_justified_within_the_centered_block`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::renders_all_expected_content`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::renders_resolved_keybindings_as_joined_tokens`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::renders_unbound_when_no_keys`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::selected_rows_carry_the_selected_background_rectangle`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::selection_marker_moves_with_selected_index`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::small_columns_render_the_fallback`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::small_rows_render_the_fallback`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::tiny_geometry_does_not_panic`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::unselected_rows_do_not_use_the_selected_background`
-- [ ] `panes::nested_session_modal::nested_session_modal_tests::wrap_words_respects_width_and_indent`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_batch_that_lands_two_overlays_edge_to_edge_links_them`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_batch_that_places_the_halves_apart_unlinks_them`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_batch_that_re_cuts_an_expanded_panel_moves_its_divider`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_borderless_overlay_has_no_frame_to_be_dragged_by`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_borderless_overlay_stays_borderless_when_its_pane_is_replaced`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_client_keeps_its_overlay_focused_with_no_visibility_precondition`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_dragged_overlay_stays_where_it_was_dropped_when_the_surface_grows`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_dragged_panel_is_re_placed_where_the_user_left_it`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_dragged_panel_re_resolved_onto_a_smaller_surface_is_re_cut_whole`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_clamps_an_overlay_inside_the_session_surface`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_moves_an_overlay_by_the_pointer_delta`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_moves_both_halves_of_a_linked_panel`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_fullscreen_press_on_another_overlay_expands_that_one`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_half_of_a_dragged_panel_gives_its_width_up_and_the_reveal_cuts_it_again`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_does_not_take_the_mouse_or_the_cells_under_it`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_is_drawn_nowhere_but_is_still_here`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_is_still_re_resolved_against_a_new_surface`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_may_not_be_expanded`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_may_not_be_focused_until_it_is_shown`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_reports_itself_suppressed_and_unfocused`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_share_inside_the_shown_half_links_as_a_panel`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_linked_panel_is_expanded_as_a_panel`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_modal_is_the_top_of_the_stack_and_not_merely_the_thing_that_outranks_it`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_modal_may_not_be_expanded`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_modal_opened_over_a_modal_takes_focus_and_gives_it_back_when_it_closes`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_modal_opened_while_an_overlay_is_hidden_still_outranks_it_when_it_comes_back`
+- [x] `panes::frame_color_override::tests::a_bell_flash_holds_at_full_strength_then_eases_away`
+- [x] `panes::frame_color_override::tests::a_bell_flash_is_faded_out_on_the_schedule_the_teardown_still_runs_on`
+- [x] `panes::frame_color_override::tests::a_bell_flash_is_shown_to_every_client`
+- [x] `panes::frame_color_override::tests::a_client_scoped_override_is_seen_and_cleared_by_that_client_only`
+- [x] `panes::frame_color_override::tests::an_override_carries_the_text_that_replaces_the_title`
+- [x] `panes::frame_color_override::tests::an_override_that_does_not_fade_applies_at_full_strength_forever`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::center_pad_centers_and_clamps`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::chunks_are_placed_at_the_pane_s_content_offset`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::every_rendered_row_spans_the_full_width`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::hit_test_matches_rendered_marker_rows`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::hit_test_returns_none_off_option_rows_and_in_fallback`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::hit_test_round_trips_the_options`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::keycode_words_join_with_plus_separators`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::keycode_words_render_unbound_when_empty`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::options_are_left_justified_within_the_centered_block`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::renders_all_expected_content`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::renders_resolved_keybindings_as_joined_tokens`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::renders_unbound_when_no_keys`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::selected_rows_carry_the_selected_background_rectangle`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::selection_marker_moves_with_selected_index`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::small_columns_render_the_fallback`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::small_rows_render_the_fallback`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::the_fallback_thresholds_are_exact`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::tiny_geometry_does_not_panic`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::unselected_rows_do_not_use_the_selected_background`
+- [x] `panes::nested_session_modal::nested_session_modal_tests::wrap_words_respects_width_and_indent`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_batch_that_lands_two_overlays_edge_to_edge_links_them`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_batch_that_places_the_halves_apart_unlinks_them`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_batch_that_re_cuts_an_expanded_panel_moves_its_divider`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_borderless_overlay_has_no_frame_to_be_dragged_by`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_borderless_overlay_stays_borderless_when_its_pane_is_replaced`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_dragged_overlay_stays_where_it_was_dropped_when_the_surface_grows`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_dragged_panel_is_re_placed_where_the_user_left_it`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_dragged_panel_re_resolved_onto_a_smaller_surface_is_re_cut_whole`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_clamps_an_overlay_inside_the_session_surface`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_moves_an_overlay_by_the_pointer_delta`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_moves_both_halves_of_a_linked_panel`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_repaints_the_overlays_it_did_not_move`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_fullscreen_press_on_another_overlay_expands_that_one`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_hidden_half_of_a_dragged_panel_gives_its_width_up_and_the_reveal_cuts_it_again`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_does_not_take_the_mouse_or_the_cells_under_it`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_is_drawn_nowhere_but_is_still_here`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_is_still_re_resolved_against_a_new_surface`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_may_not_be_expanded`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_may_not_be_focused_until_it_is_shown`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_reports_itself_suppressed_and_unfocused`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_hidden_share_inside_the_shown_half_links_as_a_panel`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_joining_client_does_not_steal_focus_a_client_already_has`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_linked_panel_is_expanded_as_a_panel`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_modal_is_the_top_of_the_stack_and_not_merely_the_thing_that_outranks_it`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_modal_may_not_be_expanded`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_modal_opened_over_a_modal_takes_focus_and_gives_it_back_when_it_closes`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_modal_opened_while_an_overlay_is_hidden_still_outranks_it_when_it_comes_back`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_modal_put_back_locks_the_others_out_and_holds_the_keyboard_itself`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_modal_refuses_to_be_resized`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_pane_abutting_two_others_is_in_one_panel`
@@ -220,6 +223,7 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_resize_writes_the_new_size_back_into_the_overlay_s_coordinates`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_rounded_corners_update_reaches_the_style_the_overlay_frames_are_drawn_with`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_drag_clamps_at_the_floor`
+- [x] `panes::overlay_panes::overlay_panes_tests::a_seam_drag_tells_exactly_the_two_halves_their_new_size`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_drag_that_changes_nothing_reports_so`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_dragged_past_the_floor_comes_back_under_the_pointer`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_side_resize_of_the_left_half_moves_the_seam`
@@ -260,6 +264,7 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::closing_the_other_half_of_an_expanded_panel_ends_the_expansion`
 - [ ] `panes::overlay_panes::overlay_panes_tests::dragging_an_overlay_edge_outward_on_the_boundary_does_not_invert`
 - [ ] `panes::overlay_panes::overlay_panes_tests::dragging_the_seam_moves_the_divider_and_nothing_else`
+- [x] `panes::overlay_panes::overlay_panes_tests::expanding_an_overlay_tells_its_pty_the_viewport_size`
 - [ ] `panes::overlay_panes::overlay_panes_tests::expanding_a_panel_releases_a_seam_drag_and_refuses_the_next_step`
 - [ ] `panes::overlay_panes::overlay_panes_tests::expanding_an_overlay_releases_a_drag_in_flight`
 - [ ] `panes::overlay_panes::overlay_panes_tests::focusing_a_hidden_modal_by_id_reveals_it_and_still_reports_it_is_ours`
@@ -270,6 +275,7 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_a_half_of_an_expanded_panel_leaves_the_survivor_filling_the_screen`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_a_modal_does_not_hand_the_keyboard_to_the_overlay_under_it`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_a_modal_over_a_modal_walks_the_keyboard_to_the_modal_below`
+- [x] `panes::overlay_panes::overlay_panes_tests::hiding_and_showing_an_overlay_repaints_the_others`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_an_overlay_mid_drag_releases_the_mouse`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_an_overlay_moves_its_clients_to_the_one_below_it`
 - [ ] `panes::overlay_panes::overlay_panes_tests::reapplying_coordinates_re_resolves_against_the_surface_as_it_is_now`

@@ -4,8 +4,11 @@ use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::{LinkHandler, PaneId, TerminalPane};
 use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
+use crate::PtyWriteInstruction;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::path::PathBuf;
+use zellij_runtime::channels::{unbounded, Receiver, SenderWithContext};
+use zellij_types::diagnostics::ErrorContext;
 use zellij_types::geometry::{Direction, Resize};
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
@@ -188,6 +191,41 @@ fn overlay_panes_with(
         ThreadSenders::default().silently_fail_on_send(),
     );
     (panes, display_area)
+}
+
+/// What the pty writer was told - `resize_pty!` sends `ResizePty` over the senders, never
+/// through the os api, so this is the only place a pane's new size can be observed.
+type PtyWrites = Receiver<(PtyWriteInstruction, ErrorContext)>;
+
+/// The collection with its pty-writer channel captured, so a test can see which panes were told
+/// their new size.
+fn overlay_panes_with_pty_capture(cols: usize, rows: usize) -> (OverlayPanes, PtyWrites) {
+    let (mut panes, _) = overlay_panes_with(
+        cols,
+        rows,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols,
+            rows,
+        },
+    );
+    let (tx, rx) = unbounded();
+    panes
+        .senders
+        .replace_to_pty_writer(SenderWithContext::new(tx));
+    (panes, rx)
+}
+
+/// Every `ResizePty` sent since the last drain, as `(terminal, cols, rows)`, in order.
+fn resized_ptys(rx: &PtyWrites) -> Vec<(TerminalId, u16, u16)> {
+    let mut out = Vec::new();
+    while let Ok((instruction, _)) = rx.try_recv() {
+        if let PtyWriteInstruction::ResizePty(id, cols, rows, _, _) = instruction {
+            out.push((id, cols, rows));
+        }
+    }
+    out
 }
 
 fn add(panes: &mut OverlayPanes, id: u32, kind: OverlayKind, coords: FloatingPaneCoordinates) {
@@ -410,24 +448,65 @@ fn replacing_a_pane_keeps_its_slot_its_kind_and_its_coordinates() {
     );
 }
 
+/// `focus_pane_for_joining_client` is `focus_pane` for a client that has just attached: it gives
+/// the client an overlay to be on *unless it already has one*, which `focus_pane` would happily
+/// replace. It still refuses what may not be focused, a hidden overlay included.
 #[test]
-fn a_client_keeps_its_overlay_focused_with_no_visibility_precondition() {
+fn a_joining_client_does_not_steal_focus_a_client_already_has() {
     let mut panes = overlay_panes(80, 20);
-    panes
-        .connected_clients
-        .borrow_mut()
-        .insert(crate::ClientId::new(1));
-    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+    for client in 1..=3 {
+        panes
+            .connected_clients
+            .borrow_mut()
+            .insert(crate::ClientId::new(client));
+    }
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    add(
+        &mut panes,
+        2,
+        OverlayKind::Dismissible,
+        coordinates("40%", "40%"),
+    );
     panes.focus_pane(
         PaneId::Terminal(crate::TerminalId::new(1)),
         crate::ClientId::new(1),
     );
 
+    panes.focus_pane_for_joining_client(
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        crate::ClientId::new(1),
+    );
     assert_eq!(
         panes.active_pane_id(crate::ClientId::new(1)),
-        Some(PaneId::Terminal(crate::TerminalId::new(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1))),
+        "a client that already has an overlay keeps it"
     );
-    assert!(panes.has_active_panes());
+
+    panes.focus_pane_for_joining_client(
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        crate::ClientId::new(2),
+    );
+    assert_eq!(
+        panes.active_pane_id(crate::ClientId::new(2)),
+        Some(PaneId::Terminal(crate::TerminalId::new(2))),
+        "a client with no overlay is given the one it joined on"
+    );
+
+    panes.hide_pane(PaneId::Terminal(crate::TerminalId::new(2)));
+    panes.focus_pane_for_joining_client(
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        crate::ClientId::new(3),
+    );
+    assert_eq!(
+        panes.active_pane_id(crate::ClientId::new(3)),
+        None,
+        "a hidden overlay may not be focused, joining or not"
+    );
 }
 
 #[test]
@@ -2539,6 +2618,142 @@ fn dragging_the_seam_moves_the_divider_and_nothing_else() {
     assert!(!panes.seam_is_being_dragged());
 }
 
+/// A seam drag is one event per pointer cell, so it tells exactly the two halves their new size
+/// and does not put every other overlay on the tab through `set_pane_frames` - and it does tell
+/// them: an overlay that resizes on screen and never tells the program inside it is the bug
+/// this pins.
+#[test]
+fn a_seam_drag_tells_exactly_the_two_halves_their_new_size() {
+    let (mut panes, pty) = overlay_panes_with_pty_capture(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
+    add(
+        &mut panes,
+        3,
+        OverlayKind::Dismissible,
+        placed_coordinates("2", "14", "20", "4"),
+    );
+    panes.link_touching(&[
+        PaneId::Terminal(crate::TerminalId::new(1)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
+    ]);
+    let press = seam_cell(&panes);
+    panes.start_seam_drag(
+        PaneId::Terminal(crate::TerminalId::new(1)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        press,
+    );
+    let _ = resized_ptys(&pty);
+
+    assert!(panes.drag_seam_to(&Position::new(
+        press.line() as i32,
+        press.column() as u16 + 4,
+    )));
+
+    assert_eq!(geom(&panes, 1), (2, 2, 34, 10));
+    assert_eq!(geom(&panes, 2), (36, 2, 26, 10));
+    let mut resized = resized_ptys(&pty);
+    resized.sort();
+    assert_eq!(
+        resized,
+        vec![(TerminalId::new(1), 32, 8), (TerminalId::new(2), 24, 8)],
+        "the two halves, at their content size inside the frame, and nobody else"
+    );
+}
+
+/// Expanding an overlay goes through `set_pane_frames`, which tells the pty its new size.
+#[test]
+fn expanding_an_overlay_tells_its_pty_the_viewport_size() {
+    let (mut panes, pty) = overlay_panes_with_pty_capture(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        placed_coordinates("10", "5", "30", "8"),
+    );
+    let _ = resized_ptys(&pty);
+
+    assert!(panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1))));
+    assert_eq!(drawn(&panes, 1), (0, 0, 80, 20));
+    // the default frame style draws no full frame, so an expanded overlay has no frame and the
+    // content is the whole rectangle
+    assert_eq!(
+        resized_ptys(&pty),
+        vec![(TerminalId::new(1), 80, 20)],
+        "the program inside is told the expanded content size"
+    );
+
+    assert!(panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1))));
+    assert_eq!(
+        resized_ptys(&pty),
+        vec![(TerminalId::new(1), 28, 6)],
+        "and its own content size, inside its frame again, when it is put back"
+    );
+}
+
+/// Hiding or showing an overlay changes what is drawn *under* it, so every other overlay must
+/// be marked for repaint - or the pane underneath keeps the hidden overlay's content.
+#[test]
+fn hiding_and_showing_an_overlay_repaints_the_others() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+    add(
+        &mut panes,
+        2,
+        OverlayKind::Dismissible,
+        coordinates("40%", "40%"),
+    );
+    let bystander = PaneId::Terminal(crate::TerminalId::new(2));
+
+    panes.get_mut(&bystander).unwrap().set_should_render(false);
+    assert!(panes.hide_pane(PaneId::Terminal(crate::TerminalId::new(1))));
+    assert!(
+        panes.get(&bystander).unwrap().should_render(),
+        "the overlay that stayed is repainted when another is hidden"
+    );
+
+    panes.get_mut(&bystander).unwrap().set_should_render(false);
+    assert!(panes.show_pane(PaneId::Terminal(crate::TerminalId::new(1))));
+    assert!(
+        panes.get(&bystander).unwrap().should_render(),
+        "and again when it comes back"
+    );
+}
+
+/// A frame drag uncovers cells as it goes; the overlays it did not move are repainted so the
+/// uncovered cells are redrawn under them.
+#[test]
+fn a_frame_drag_repaints_the_overlays_it_did_not_move() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        placed_coordinates("10", "5", "30", "8"),
+    );
+    add(
+        &mut panes,
+        2,
+        OverlayKind::Dismissible,
+        placed_coordinates("50", "12", "20", "6"),
+    );
+    let bystander = PaneId::Terminal(crate::TerminalId::new(2));
+    panes.get_mut(&bystander).unwrap().set_should_render(false);
+
+    drag_by(&mut panes, 1, 4, 3);
+
+    assert_eq!(geom(&panes, 1), (14, 8, 30, 8), "the drag happened");
+    assert!(
+        panes.get(&bystander).unwrap().should_render(),
+        "the overlay that did not move is repainted"
+    );
+}
+
 /// A drag that goes nowhere - the same column again, or a drag with no seam held - reports so,
 /// so the caller can skip the render.
 #[test]
@@ -2641,8 +2856,10 @@ fn closing_a_half_ends_the_seam_drag_and_the_link() {
     );
 }
 
-/// A batch that places the halves apart - one hidden, the other given the whole panel, or the
-/// two put in different corners - is the end of the panel.
+/// A batch that places the halves apart - the two put in different corners - is the end of the
+/// panel. (Hiding one half and giving the other the whole panel is *not* apart: a hidden half
+/// lying inside the shown one still links, which is
+/// `a_hidden_share_inside_the_shown_half_links_as_a_panel`'s case.)
 #[test]
 fn a_batch_that_places_the_halves_apart_unlinks_them() {
     let mut panes = linked_panel();

@@ -53,6 +53,44 @@ fn renders_all_expected_content() {
     assert!(rendered.contains("<↓↑> select"));
     assert!(rendered.contains("<Enter> confirm"));
     assert!(rendered.contains("<Esc> dismiss"));
+    // the explanations are wrapped, so read them back as words rather than as a row
+    let words = rendered_words(&chunks);
+    assert!(
+        words.contains("The session will take up the whole screen."),
+        "the zoom explanation is missing from: {words}"
+    );
+    assert!(
+        words.contains("keybindings will be sent to this session."),
+        "the control-on-focus explanation is missing from: {words}"
+    );
+}
+
+/// Every rendered character, with runs of whitespace (including row breaks) collapsed to one
+/// space - what a wrapped paragraph reads as.
+fn rendered_words(chunks: &[CharacterChunk]) -> String {
+    render_lines(chunks)
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The modal is drawn over its pane, not over the screen: every chunk carries the pane's
+/// content offset, and the rows count up from it.
+#[test]
+fn chunks_are_placed_at_the_pane_s_content_offset() {
+    let style = Style::default();
+    let shortcuts = sample_shortcuts();
+    let (content_x, content_y) = (7, 3);
+    let chunks = guest_modal_chunks(80, 30, content_x, content_y, &style, "s", 0, &shortcuts);
+    assert_eq!(chunks.len(), 30);
+    for (row, chunk) in chunks.iter().enumerate() {
+        assert_eq!(
+            (chunk.x, chunk.y),
+            (content_x, content_y + row),
+            "row {row}"
+        );
+    }
 }
 
 #[test]
@@ -116,9 +154,12 @@ fn options_are_left_justified_within_the_centered_block() {
         .find(|line| line.trim_start().starts_with("> 1."))
         .expect("selected option line present");
     let selected_number_column = number_column(selected_line, "1.");
-    assert!(
-        selected_number_column > 2,
-        "block must be centered with a left pad before the marker"
+    let (block_width, _) = guest_modal_block_size(80, &style, "s", 0, &shortcuts);
+    assert!(block_width < 80, "the block must leave room to be centered");
+    assert_eq!(
+        selected_number_column,
+        center_modal_pad(block_width, 80) + 2,
+        "the number sits two cells (marker and space) into the centered block"
     );
 
     {
@@ -165,21 +206,78 @@ fn tiny_geometry_does_not_panic() {
     assert_eq!(chunks.len(), 2);
     let empty = guest_modal_chunks(0, 0, 0, 0, &style, "session", 0, &shortcuts);
     assert!(empty.is_empty());
+    // the empty guard is `rows < 1 || columns < 1`: one cell is enough to draw something
+    assert_eq!(
+        guest_modal_chunks(1, 1, 0, 0, &style, "session", 0, &shortcuts).len(),
+        1
+    );
+    assert!(guest_modal_chunks(1, 0, 0, 0, &style, "session", 0, &shortcuts).is_empty());
+    assert!(guest_modal_chunks(0, 1, 0, 0, &style, "session", 0, &shortcuts).is_empty());
+}
+
+/// Rows that carry any text at all - one for the fallback banner, many for the full block.
+fn rows_with_text(chunks: &[CharacterChunk]) -> usize {
+    render_lines(chunks)
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+}
+
+/// Both fallbacks fire at an exact threshold: 20 columns is the full block and 19 the banner,
+/// and a surface exactly as tall as the block gets the block while one row shorter gets the
+/// banner. The height is read off the layout so this keeps holding as the modal's text changes.
+#[test]
+fn the_fallback_thresholds_are_exact() {
+    let style = Style::default();
+    let shortcuts = sample_shortcuts();
+    let (_, block_height) = guest_modal_block_size(80, &style, "s", 0, &shortcuts);
+    assert!(block_height > 2, "the block is more than a banner");
+
+    let narrow = guest_modal_chunks(19, 40, 0, 0, &style, "s", 0, &shortcuts);
+    assert_eq!(rows_with_text(&narrow), 1, "19 columns is the banner");
+    let wide_enough = guest_modal_chunks(20, 40, 0, 0, &style, "s", 0, &shortcuts);
+    assert!(
+        rows_with_text(&wide_enough) > 1,
+        "20 columns is the full block"
+    );
+
+    let short = guest_modal_chunks(80, block_height - 1, 0, 0, &style, "s", 0, &shortcuts);
+    assert_eq!(
+        rows_with_text(&short),
+        1,
+        "one row short of the block is the banner"
+    );
+    let tall_enough = guest_modal_chunks(80, block_height, 0, 0, &style, "s", 0, &shortcuts);
+    assert!(
+        rows_with_text(&tall_enough) > 1,
+        "exactly the block's height is the full block"
+    );
+    assert!(
+        (0..block_height).any(|row| {
+            guest_modal_option_at_content_row(block_height, 80, row, &style, "s", 0, &shortcuts)
+                .is_some()
+        }),
+        "the full block at exactly its height still has option rows to hit"
+    );
 }
 
 #[test]
 fn every_rendered_row_spans_the_full_width() {
     let style = Style::default();
     let shortcuts = sample_shortcuts();
-    let columns = 80;
-    let chunks = guest_modal_chunks(columns, 30, 0, 0, &style, "s", 0, &shortcuts);
-    for chunk in &chunks {
-        let width: usize = chunk
-            .terminal_characters
-            .iter()
-            .map(|c| c.character.width().unwrap_or(0).max(1))
-            .sum();
-        assert_eq!(width, columns);
+    // the full block, the narrow fallback, the short fallback, and a fallback too small for
+    // even its banner
+    for (columns, rows) in [(80, 30), (18, 30), (80, 5), (3, 2)] {
+        let chunks = guest_modal_chunks(columns, rows, 0, 0, &style, "s", 0, &shortcuts);
+        assert_eq!(chunks.len(), rows);
+        for chunk in &chunks {
+            let width: usize = chunk
+                .terminal_characters
+                .iter()
+                .map(|c| c.character.width().unwrap_or(0).max(1))
+                .sum();
+            assert_eq!(width, columns, "at {columns}x{rows}");
+        }
     }
 }
 
@@ -209,8 +307,10 @@ fn hit_test_returns_none_off_option_rows_and_in_fallback() {
         guest_modal_option_at_content_row(40, 10, 0, &style, "session", 0, &shortcuts),
         None
     );
+    // wide enough for the full block but too short for it: the rows fallback, which has no
+    // option rows at all
     assert_eq!(
-        guest_modal_option_at_content_row(4, 10, 2, &style, "session", 0, &shortcuts),
+        guest_modal_option_at_content_row(4, 80, 2, &style, "session", 0, &shortcuts),
         None
     );
     assert_eq!(
@@ -341,6 +441,16 @@ fn wrap_words_respects_width_and_indent() {
     let width = 14;
     let lines = guest_modal_wrap_words(&words, indent, styles.fill.clone(), width);
     assert!(lines.len() > 1, "text wider than the width must wrap");
+    // every word comes out, in order, exactly once
+    let reassembled = lines
+        .iter()
+        .flat_map(|line| line.iter().skip(1).map(|(text, _)| text.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(reassembled, "one two three four five");
     for line in &lines {
         let indent_segment = &line[0];
         assert_eq!(indent_segment.0, " ".repeat(indent));
@@ -357,6 +467,8 @@ fn wrap_words_respects_width_and_indent() {
 #[test]
 fn center_pad_centers_and_clamps() {
     assert_eq!(center_modal_pad(10, 30), 10);
+    // an odd gap rounds down: the spare cell goes to the right of the block
+    assert_eq!(center_modal_pad(9, 30), 10);
     assert_eq!(center_modal_pad(30, 30), 0);
     assert_eq!(center_modal_pad(40, 30), 0);
 }
