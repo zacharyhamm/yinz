@@ -271,7 +271,7 @@ handle = function(args)
     local runs=read(scope(attachment.work,'runs'))
     local ids={}
     for id in pairs(runs.entries) do ids[#ids+1]=id end
-    local predicate='has(tags.specName) && tags.specName == "question" && attributes.run in '..encode(ids)
+    local predicate='specName == "question" && attributes.run in '..encode(ids)
     local questions=decode(command({'swamp','data','query',predicate,'--select','{"model": modelName, "version": version, "attributes": attributes}','--json'},config.root))
     -- Bound every saved log copy before RunCommand serializes stdout; its byte cap would cut JSON.
     -- CEL substring uses UTF-16 offsets: back off if the cut would split a surrogate pair.

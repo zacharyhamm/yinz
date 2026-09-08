@@ -19,7 +19,13 @@ function M.load(config)
     M.status=(not ok and tostring(snapshot) or snapshot.error or 'No exit workflow configured.') .. '\nUse Hocus /project-setup to configure .zellij/.swamp-workflows.kdl.'
     return
   end
-  view.load()
+  view.active=true
+  view.load{on_restart=function()
+    if not M.busy and not view.active and not view.submitting and #view.pending==0 then
+      z.rerun_command_pane(M.pane)
+      z.close_self()
+    end
+  end}
   view.status='Starting workflow...'
   M.workflow=true
   M.busy=true
@@ -47,11 +53,8 @@ function M.load(config)
 end
 function M.update(event)
   if M.workflow then
-    local active=M.busy or view.active or view.busy
-    if event.name=='key' and #view.pending==0 and view.focused_control()=='answer' and event.key=='Enter' then
-      if not active then z.rerun_command_pane(M.pane);z.close_self() end
-      return true
-    elseif event.name=='key' and #view.pending==0 and event.key=='Delete' then
+    local active=M.busy or view.active or view.submitting
+    if event.name=='key' and #view.pending==0 and event.key=='Delete' then
       if not active then z.close_terminal_pane(M.pane);z.close_self() end
       return true
     end
@@ -72,7 +75,7 @@ function M.render(rows,cols)
   if M.workflow then
     return view.render(math.max(0,rows-1),cols) .. z.ui.text(z.text.truncate(
       (M.busy or view.active) and 'Workflow active. Esc: scrollback (detach). Cancel run: explicit cancellation.'
-      or 'Enter: restart agent  Esc: scrollback  Delete: close held pane',cols)):render{x=0,y=math.max(0,rows-1),width=cols,height=1}
+      or 'Enter: activate button  Esc: scrollback  Delete: close held pane',cols)):render{x=0,y=math.max(0,rows-1),width=cols,height=1}
   end
   local lines={}
   for line in M.status:gmatch('[^\n]+') do lines[#lines+1]=line end

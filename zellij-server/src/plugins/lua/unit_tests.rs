@@ -6866,12 +6866,13 @@ fn swamp_workflow_answer_requires_the_submit_button() {
         local z = require('zellij')
         z.subscribe = function() end
         z.every = function() end
+        z.set_self_mouse_selection_support = function() end
         z.task = function(f) f() end
         z.await = function(value) return value end
         M.load()
         M.refresh = function() end
         M.snapshot = {root='/work'}
-        M.pending = {{model='model', attributes={run='run',question='question'}}}
+        M.pending = {{model='model', version=1, attributes={run='run',question='question',kind='text',answers={}}}}
         local calls = 0
         z.async.run_command = function(request)
             calls = calls + 1
@@ -6887,11 +6888,347 @@ fn swamp_workflow_answer_requires_the_submit_button() {
         key('Down')
         assert(M.focused_control() == 'submit')
         key('Enter')
-        assert(calls == 1 and M.status == 'Answer recorded')
+        assert(calls == 1 and M.notice == 'Answer recorded')
     "#,
         )
         .exec()
         .unwrap();
+}
+
+#[test]
+fn swamp_workflow_question_transitions_survive_polling_and_submission_races() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.subscribe=function() end
+z.every=function() end
+z.show_cursor=function() end
+z.set_self_mouse_selection_support=function(enabled) assert(enabled) end
+z.ui.text=function(value) return {render=function() return value end} end
+local polls,commands={},{}
+z.rpc.call=function()
+  local future,resolve=z.async.future();polls[#polls+1]=resolve;return future
+end
+z.async.run_command=function(opts)
+  local future,resolve=z.async.future();commands[#commands+1]={opts=opts,resolve=resolve};return future
+end
+local function pump() z.__update(M,{Timer=0}) end
+local function key(k) return M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
+local function question(id,version,kind,answers,state,run)
+  return {model='questions',version=version,attributes={run=run or 'run',question=id,kind=kind,answers=answers,prompt='Prompt '..id,state=state or 'pending'}}
+end
+local choices={'restart','duplicate','fork','begin-review','leave'}
+local q=question('first',2,'choice',choices)
+local written=question('written',1,'text',{})
+local function snapshot(questions)
+  return {root='/work',run='run',history={status='suspended'},questions={results=questions},logs='SELECTABLE LOG'}
+end
+local function resolve(questions) table.remove(polls,1){result=snapshot(questions)};pump() end
+M.load()
+assert(M.focused_control()=='detach')
+M.attach{directory='/work',run='run'}
+assert(M.render(20,120):find('Loading workflow',1,true))
+resolve{q,question('first',1,'choice',{'old'}),written}
+assert(#M.pending==2 and M.focused_control()=='choice_1')
+M.render(20,120)
+for i=1,5 do key('Tab') end
+assert(M.focused_control()=='next')
+key('Enter');assert(M.focused_control()=='answer')
+key('Tab');key('Tab');key('Enter')
+assert(M.focused_control()=='choice_1')
+M.refresh()
+key('Tab');assert(M.focused_control()=='choice_2')
+key('Enter');key('Enter')
+assert(#commands==1 and M.submitting and M.refreshing)
+assert(commands[1].opts.command[7]=='duplicate')
+assert(M.render(20,120):find('Submitting answer',1,true))
+resolve{q,written} -- this poll started before the submission
+commands[1].resolve{exit_code=1,stderr='Rejected answer'};pump()
+resolve{q,written}
+assert(M.render(20,120):find('Rejected answer',1,true))
+assert(M.focused_control()=='choice_2')
+key('Enter');assert(#commands==2)
+commands[2].resolve{exit_code=0};pump()
+resolve{q,written} -- stale history must not allow another submission
+assert(#M.pending==1 and M.focused_control()=='answer')
+M.update{name='pasted_text',value='kept draft'}
+M.refresh();resolve{written,q}
+key('Tab');assert(M.focused_control()=='submit')
+key('Enter');assert(commands[3].opts.command[7]=='kept draft')
+commands[3].resolve{exit_code=0};pump()
+resolve{q,written}
+assert(#M.pending==0 and M.focused_control()=='cancel_run')
+assert(M.render(20,120):find('No question pending',1,true))
+-- Different runs can reuse the same model/question, and latest answered wins.
+M.refresh();resolve{question('first',3,'choice',choices,'answered'),question('first',1,'choice',choices,nil,'child')}
+assert(#M.pending==1 and M.pending[1].attributes.run=='child')
+for _,size in ipairs{{0,0},{1,1},{2,8},{8,24}} do M.render(size[1],size[2]) end
+M.render(20,120)
+assert(not M.update{name='mouse',kind='left_click',line=0,col=0,value={LeftClick={0,0}}})
+M.refresh();resolve{question('first',2,'choice',choices,nil,'child')}
+assert(M.dirty and M.selecting)
+assert(not M.update{name='mouse',kind='hold',line=19,col=0,value={Hold={19,0}}})
+assert(not M.update{name='mouse',kind='release',line=19,col=0,value={Release={19,0}}})
+assert(#commands==3 and not M.selecting)
+M.render(20,120)
+local row=M.form_y
+local function click()
+  M.update{name='mouse',kind='left_click',line=row,col=2,value={LeftClick={row,2}}}
+  M.update{name='mouse',kind='release',line=row,col=2,value={Release={row,2}}}
+end
+click();click()
+assert(#commands==4 and commands[4].opts.command[7]=='restart')
+commands[4].resolve{exit_code=1,stderr=''};pump()
+resolve{question('first',2,'choice',choices,nil,'child')}
+assert(M.render(20,120):find('Command failed',1,true))
+for i=1,5 do key('Tab') end
+assert(M.focused_control()=='cancel_run')
+key('Enter');key('Enter')
+assert(#commands==5 and commands[5].opts.command[3]=='cancel')
+commands[5].resolve{exit_code=0};pump()
+resolve{}
+assert(M.render(20,120):find('Cancellation requested; resources preserved',1,true))
+local detached=false
+z.close_self=function() detached=true end
+key('Esc');assert(detached)
+"#).exec().unwrap();
+}
+
+#[test]
+fn swamp_workflow_off_form_release_keeps_offscreen_choices_clickable() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+local z=require('zellij')
+z.subscribe=function() end
+z.every=function() end
+z.show_cursor=function() end
+z.set_self_mouse_selection_support=function() end
+z.task=function(f) f() end
+z.await=function(value) return value end
+M.load()
+M.refresh=function() end
+M.snapshot={root='/work',history={status='suspended'},logs='SELECTABLE LOG'}
+M.pending={{model='model',version=1,attributes={run='run',question='question',kind='choice',
+  prompt='Choose',answers={'restart','duplicate','fork','begin-review','leave'}}}}
+local commands={}
+z.async.run_command=function(request)
+  commands[#commands+1]=request.command
+  return {exit_code=0}
+end
+local function key(k) M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
+local function mouse(kind,variant,row)
+  return M.update{name='mouse',kind=kind,line=row,col=2,value={[variant]={row,2}}}
+end
+local function contains(frame,label)
+  local bytes={}
+  for i=1,#label do bytes[i]=tostring(label:byte(i)) end
+  return frame:find(table.concat(bytes,','),1,true)
+end
+assert(not contains(M.render(8,16),'Begin review'))
+local row=M.form_y
+assert(row>0)
+mouse('left_click','LeftClick',row)
+M.render(8,16)
+mouse('hold','Hold',0)
+mouse('release','Release',0)
+assert(#commands==0, 'release in logs must not submit an answer')
+key('Tab');key('Right');key('Right')
+assert(M.focused_control()=='choice_4')
+assert(contains(M.render(8,16),'Begin review'), 'offscreen choice must scroll into view')
+mouse('left_click','LeftClick',row)
+M.render(8,16)
+mouse('release','Release',row)
+assert(#commands==1)
+assert(table.concat(commands[1],'|',2)=='workflow|answer|run|model|question|begin-review')
+"#,
+        )
+        .exec()
+        .unwrap();
+}
+
+#[test]
+fn swamp_workflow_restricted_answers_and_free_text_transitions() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+local z=require('zellij')
+z.subscribe=function() end
+z.every=function() end
+z.set_self_mouse_selection_support=function() end
+z.task=function(f) f() end
+z.await=function(value) return value end
+M.load()
+M.refresh=function() end
+M.snapshot={root='/work'}
+local function key(k) M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
+local q={run='run',question='question',kind='text',answers={}}
+local entry={model='model',version=1,attributes=q}
+local expected
+z.async.run_command=function(request)
+  assert(request.command[7]==expected, request.command[7])
+  return {exit_code=0}
+end
+for _,kind in ipairs{'conflict','merge','cleanup','text'} do
+  entry.version=entry.version+1
+  M.pending={entry}
+  q.kind=kind
+  q.answers={'return','remove-clean-worktree'}
+  assert(M.focused_control()=='choice_1')
+  key('Tab')
+  assert(M.focused_control()=='choice_2')
+  expected='remove-clean-worktree'
+  key('Enter')
+  assert(M.notice=='Answer recorded')
+end
+entry.version=entry.version+1
+M.pending={entry}
+q.answers={}
+assert(M.focused_control()=='answer')
+M.update{name='pasted_text',value='kept draft'}
+-- Polling and a rebuild caused by an active-state change preserve input.
+assert(M.focused_control()=='answer')
+M.active=true
+assert(M.focused_control()=='answer')
+key('Tab')
+expected='kept draft'
+key('Enter')
+entry.version=entry.version+1
+M.pending={entry}
+assert(M.focused_control()=='answer')
+M.update{name='pasted_text',value='discarded draft'}
+q.answers={'restricted'}
+assert(M.focused_control()=='choice_1')
+q.answers={}
+assert(M.focused_control()=='answer')
+key('Tab')
+expected=''
+key('Enter')
+"#,
+        )
+        .exec()
+        .unwrap();
+}
+
+#[test]
+fn swamp_workflow_all_wrapped_details_remain_reachable_in_small_panes() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.subscribe=function() end
+z.every=function() end
+z.show_cursor=function() end
+z.set_self_mouse_selection_support=function() end
+M.load()
+local details={
+  'Status with a long run identifier 0123456789abcdef',
+  'Notice with detailed check results and diagnostics',
+  'Error with a long explanation of the failed command',
+  'Confirm merge of source abcdef0123456789 into target 9876543210fedcba',
+  'workflow / history: suspended',
+  'checks/test: failed',
+  'Workflow log (last 100 lines):',
+  'First history line with long output',
+  'Last history line with more output',
+}
+M.status=details[1]
+M.notice=details[2]
+M.refresh_error=details[3]
+M.pending={{model='model',version=1,attributes={run='run',question='q',kind='text',answers={},prompt=details[4]}}}
+M.snapshot={history={workflowName='workflow',id='history',status='suspended',
+  jobs={{name='checks',steps={{name='test',status='failed'}}}}},
+  logs=details[8]..'\n'..details[9]}
+local rendered
+z.ui.text=function(value) return {render=function(_,rect)
+  assert(rect.y>=0 and rect.y<M.form_y)
+  rendered[#rendered+1]=value
+  return ''
+end} end
+local function render(rows,cols)
+  rendered={}
+  M.render(rows,cols)
+  return rendered
+end
+local function key(k) M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
+for _,size in ipairs{{2,8},{3,12},{8,16}} do
+  local rows,cols=size[1],size[2]
+  M.scroll=0
+  local seen={}
+  local page
+  for i=1,300 do
+    local visible=render(rows,cols)
+    assert(M.form_y>=1 and M.form_y<rows)
+    for _,line in ipairs(visible) do seen[line]=true end
+    local before=M.scroll
+    key('PageDown')
+    page=M.scroll-before
+    render(rows,cols)
+    if M.scroll==before then break end
+    assert(i<300)
+  end
+  for _,line in ipairs(details) do
+    for _,part in ipairs(z.text.wrap(line,cols)) do
+      assert(seen[part], 'unreachable: '..part)
+    end
+  end
+  key('PageUp')
+  local before=M.scroll
+  M.update{name='mouse',kind='scroll_up',lines=100}
+  assert(before-M.scroll<=page)
+  M.scroll=0
+  render(rows,cols)
+  M.update{name='mouse',kind='scroll_down',lines=100}
+  assert(M.scroll==page)
+end
+M.scroll=10000
+render(60,120)
+assert(M.scroll==0, 'resize must clamp scrolling')
+for _,rows in ipairs{0,1,2} do
+  render(rows,8)
+  assert(M.form_y==(rows==2 and 1 or 0))
+end
+assert(M.focused_control()=='answer')
+key('Tab')
+assert(M.focused_control()=='submit')
+render(1,8)
+-- The one-row viewport follows Submit and leaves it mouse-activatable.
+M.refresh=function() end
+z.task=function(f) f() end
+z.await=function(value) return value end
+local submitted=false
+z.async.run_command=function() submitted=true;return {exit_code=0} end
+M.update{name='mouse',kind='left_click',line=0,col=2,value={LeftClick={0,2}}}
+M.update{name='mouse',kind='release',line=0,col=2,value={Release={0,2}}}
+assert(submitted)
+"#).exec().unwrap();
 }
 
 #[test]
@@ -6910,6 +7247,7 @@ fn swamp_workflow_renders_only_for_input_and_refresh_completion() {
 local z=require('zellij')
 z.subscribe=function() end
 z.every=function() end
+z.set_self_mouse_selection_support=function() end
 local resolve
 z.rpc.call=function()
   local future
@@ -6918,18 +7256,18 @@ z.rpc.call=function()
 end
 M.load()
 M.attach{directory='/work',run='run'}
-assert(M.busy)
+assert(M.refreshing)
 assert(not z.__update(M,{PaneUpdate={panes={}}}))
 assert(not z.__update(M,{TabUpdate={}}))
 assert(not z.__update(M,'InputReceived'))
-assert(z.__update(M,{Key={bare_key={Char='a'},key_modifiers={}}}))
+assert(not z.__update(M,{Key={bare_key={Char='a'},key_modifiers={}}}))
 assert(M.update{name='key',key='PageDown',modifiers={}})
 assert(M.update{name='key',key='PageUp',modifiers={}})
-assert(z.__update(M,{Mouse={Hover={1,1}}}))
-assert(z.__update(M,{PastedText='answer'}))
+assert(not z.__update(M,{Mouse={Hover={1,1}}}))
+assert(not z.__update(M,{PastedText='answer'}))
 resolve{result={run='run',history={status='completed'}}}
 assert(z.__update(M,{Timer=0}), 'refresh completion must request a render')
-assert(not M.busy and M.status=='Run run: completed')
+assert(not M.refreshing and M.status=='Run run: completed')
 assert(not z.__update(M,{Timer=0}))
 assert(not z.__update(M,{PaneUpdate={panes={}}}))
 "#,
@@ -6952,6 +7290,7 @@ local z=require('zellij')
 z.server_binary='zellij'
 z.subscribe=function() end
 z.every=function() end
+z.set_self_mouse_selection_support=function() end
 local snapshot={run='run',root="/work/it's here",history={status='suspended'},
   questions={results={{model='question-model',version=2,attributes={run='run',question='diff',state='pending',kind='choice',prompt='Return to preparation.',answers={'return'}}}}},
   outputs={results={{model='git-model',name='diff-current',version=7,attributes={output='😀é\t"\\\npreview',previewTruncated=true}}}}}
@@ -6985,7 +7324,87 @@ end
 M.update{name='key',key='PageDown',modifiers={}}
 z.__update(M,{PastedText='return'})
 z.__update(M,{Key={bare_key='Enter',key_modifiers={}}})
-assert(submitted and not M.busy, M.status)
+assert(submitted and not M.submitting, M.notice)
+"#).exec().unwrap();
+}
+
+#[test]
+fn swamp_exit_enter_activates_the_focused_workflow_button() {
+    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
+    let plugin = load(source).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+local view=require('zellij.workflow_view')
+local function key(name) z.__update(M,{Key={bare_key=name,key_modifiers={}}}) end
+local function focus(id)
+  for i=1,8 do
+    if view.focused_control()==id then return end
+    key('Tab')
+  end
+  error('Missing control: '..id)
+end
+local function no_restart()
+  for i=1,8 do
+    assert(view.focused_control()~='restart')
+    key('Tab')
+  end
+end
+z.subscribe=function() end
+z.every=function() end
+z.request_render=function() end
+z.set_self_mouse_selection_support=function() end
+z.get_plugin_ids=function() return {plugin_id=1} end
+z.get_pane_info=function() return {is_suppressed=false} end
+z.project_config.read=function() return {config={workflow='configured'}} end
+z.rpc.call=function() return {} end
+z.await=function(value) return value end
+view.refresh=function() end
+local detached,rerun,cancelled=0,0,0
+z.close_self=function() detached=detached+1 end
+z.rerun_command_pane=function(pane) assert(pane==7);rerun=rerun+1 end
+z.async.run_command=function(request)
+  assert(request.command[3]=='cancel' and request.command[4]=='run')
+  cancelled=cancelled+1
+  return {exit_code=0}
+end
+local launch
+z.task=function(f) launch=f end
+M.load{agent_pane_id='7',agent_cwd='/work/topic',agent_exit_token='exit-token'}
+assert(M.busy and view.active)
+no_restart()
+z.task=function(f) f() end
+launch()
+view.snapshot={root='/work/topic'}
+view.attachment.run='run'
+focus('cancel_run')
+key('Enter')
+assert(cancelled==1 and detached==0 and rerun==0)
+focus('detach')
+key('Enter')
+assert(detached==1 and rerun==0)
+view.active=false
+assert(view.focused_control()=='detach','completion preserves Detach focus')
+key('Enter')
+assert(detached==2 and rerun==0,'Enter on Detach must not restart')
+focus('restart')
+view.submitting=true
+key('Enter')
+assert(rerun==0)
+view.submitting=false
+M.busy=true
+key('Enter')
+assert(rerun==0)
+M.busy=false
+key('Enter')
+assert(rerun==1 and detached==3)
+view.pending={{model='model',version=1,attributes={run='run',question='q',kind='choice',answers={'yes'}}}}
+no_restart()
+assert(rerun==1)
 "#).exec().unwrap();
 }
 
@@ -7003,6 +7422,7 @@ fn swamp_exit_preserves_scrollback_and_does_not_launch_unconfigured_or_managed_w
         .load(
             r#"
 local z=require('zellij')
+local function key(name) z.__update(M,{Key={bare_key=name,key_modifiers={}}}) end
 z.subscribe=function() end
 local closed, rerun, detached=0,0,0
 z.close_self=function() detached=detached+1 end
@@ -7012,10 +7432,10 @@ z.project_config.read=function() return {config={}} end
 z.rpc.call=function() error('unconfigured exit must not dispatch') end
 M.load{agent_pane_id='7',agent_cwd='/work/topic'}
 assert(M.status:find('project%-setup'))
-M.update{name='key',key='Esc'}
+key('Esc')
 assert(detached==1 and closed==0 and rerun==0)
 M.load{agent_pane_id='7',swamp_owner='owned'}
-M.update{name='key',key='Enter'}
+key('Enter')
 assert(rerun==1 and detached==2 and closed==0)
 z.project_config.read=function(directory)
   assert(directory=='/work/topic')
@@ -7026,6 +7446,7 @@ z.await=function(value) return value end
 z.request_render=function() end
 z.message_to_plugin=function() error('must not open a floating view') end
 z.every=function() end
+z.set_self_mouse_selection_support=function() end
 z.get_plugin_ids=function() return {plugin_id=1} end
 z.get_pane_info=function() return {is_suppressed=false} end
 local view=require('zellij.workflow_view')
@@ -7041,11 +7462,11 @@ z.rpc.call=function(request)
 end
 M.load{agent_pane_id='7',agent_cwd='/guest',agent_firecracker_worktree='/work/topic',agent_firecracker_vm=expected_vm,agent_exit_token='exit-token'}
 assert(not M.busy)
-M.update{name='key',key='Enter'}
-M.update{name='key',key='Delete'}
+key('Enter')
+key('Delete')
 assert(rerun==1 and closed==0,'active workflow disables restart and destructive close')
 view.active=false
-M.update{name='key',key='Enter'}
+key('Enter')
 assert(rerun==2,'completed workflow permits restarting the original agent')
 expected_vm=''
 M.load{agent_pane_id='7',agent_cwd='/work/topic',agent_exit_token='exit-token'}
@@ -7059,16 +7480,16 @@ z.rpc.call=function(request)
 end
 for i=1,2 do
   view.refresh()
-  assert(not view.attachment.run and view.active and not view.busy)
-  M.update{name='key',key='Enter'}
-  M.update{name='key',key='Delete'}
+  assert(not view.attachment.run and view.active and not view.refreshing)
+  key('Enter')
+  key('Delete')
   assert(rerun==2 and closed==0)
 end
 unresolved=false
 view.refresh()
 assert(not view.active and not view.attachment.run)
-M.update{name='key',key='Enter'}
-M.update{name='key',key='Delete'}
+key('Enter')
+key('Delete')
 assert(rerun==3 and closed==1)
 "#,
         )
