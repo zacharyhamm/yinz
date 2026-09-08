@@ -5181,6 +5181,7 @@ pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> St
     let whole = observed.contents.trim_end();
     let failed = whole.contains("failed to load the Lua plugin")
         || whole.contains("failed to load the Deno plugin")
+        || whole.contains("failed to start the script plugin")
         || whole.contains("failed to run the plugin's")
         || whole.contains("Panic!");
     let verdict = if failed { "FAILED to load" } else { "loaded" };

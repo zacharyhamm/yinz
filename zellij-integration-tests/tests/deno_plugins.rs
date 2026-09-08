@@ -402,3 +402,99 @@ fn deno_forms_and_markdown_render_beside_lua_and_wasm() {
     });
     zellij.quit();
 }
+
+#[test]
+fn deno_native_compilation_failure_keeps_the_session_alive() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("recursive.ts");
+    fs::write(
+        &plugin,
+        format!(
+            "export default {}0{};",
+            "[".repeat(10_000),
+            "]".repeat(10_000)
+        ),
+    )
+    .unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config(&format!(
+            "user_plugin_dir \"{}\"",
+            directory.path().display()
+        ))
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{\n tab {{\n pane {{ plugin location=\"file:{}\"; }}\n }}\n}}",
+            plugin.display()
+        )))
+        .start();
+    zellij.wait_until("compilation failure appears in the live session", |grid| {
+        grid.contains("compilation worker")
+    });
+    fs::write(
+        &plugin,
+        r#"
+let state = 'checking';
+export default {
+  async load() {
+    await zellij.waitForPermissions(['AuthorPlugins', 'ReadFiles']);
+    const source = 'export default ' + '['.repeat(10000) + '0' + ']'.repeat(10000) + ';';
+    for (const mode of ['Syntax', 'Semantic']) {
+      const failed = zellij.command('CheckPlugin', {name: 'check.ts', source, mode});
+      if (!failed.diagnostics.some(d => d.includes('compilation worker'))) throw Error('missing compilation diagnostic');
+      const healthy = zellij.command('CheckPlugin', {name: 'check.ts', source: 'export default {};', mode});
+      if (healthy.diagnostics.length) throw Error(healthy.diagnostics.join('\n'));
+    }
+    state = 'healthy after compilation failure';
+  },
+  render() {return state;}
+};
+"#,
+    )
+    .unwrap();
+    let (code, output) = zellij.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
+        url: format!("file:{}", plugin.display()),
+        configuration: None,
+    });
+    assert_eq!(code, 0, "{output}");
+    zellij.wait_until("authoring permission prompt", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    // Failed initial loads are absent from the runtime map, so reload opens a new pane.
+    let (code, output) = zellij.run_cli_action_reporting(CliAction::FocusNextPane);
+    assert_eq!(code, 0, "{output}");
+    zellij.send_stdin(b"y");
+    zellij.wait_until(
+        "a healthy replacement renders in the same session",
+        |grid| grid.contains("healthy after compilation failure"),
+    );
+    zellij.quit();
+}
+
+#[test]
+fn embedded_deno_context_menu_hook_filters_and_dispatches_selection() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            r#"
+mouse_mode true
+context_menu_on_right_click true
+load_plugins clear-defaults=true {}
+hooks { context_menu "zellij:context-menu"; }
+context_menu {
+    "Copy" { Copy; }
+    separator
+    "Deno menu action" { NewTab; }
+}
+"#,
+        )
+        .start();
+    zellij_integration_tests::claim_first_terminal_and_wait_for_prompt(&zellij);
+    zellij.send_stdin(b"\x1b[<2;5;5M\x1b[<2;5;5m");
+    zellij.wait_until("embedded hook filters Copy from the menu", |grid| {
+        grid.contains("Deno menu action") && !grid.contains("Copy")
+    });
+    zellij.send_stdin(b"\x1b[B\r");
+    zellij.wait_until("configured menu action opens a second tab", |grid| {
+        grid.contains("Tab #2")
+    });
+    zellij.quit();
+}

@@ -305,6 +305,24 @@ Unsupported JSON values reject instead of losing fields. Malformed, stale, and d
 RPC messages stay internal. Ordinary pipe messages still reach `pipe` callbacks and `waitForPipe()`.
 Lua callers retain their existing `{result}` or `{error}` wrapper.
 
+## Embedded builtins and server identity
+
+`zellij:context-menu` runs the compiled-in TypeScript source as a headless context-menu hook.
+It does not need source files on disk. Embedded plugins can import only `zellij:plugin`.
+Filesystem plugins retain their existing directory confinement.
+The other four Lua builtins and Lua configuration remain supported.
+
+The SDK exposes four readonly strings during module initialization:
+
+- `serverBinary`: the resolved server executable path.
+- `serverSession`: the session identity also supplied to Lua.
+- `serverIncarnation`: one UUID per server process, shared with Lua and retained across plugin reloads.
+- `instanceId`: one UUID per isolate, replaced on reload.
+
+Metadata access does not enable host commands during module initialization.
+The internal synchronous `workflowRemotePanes()` function is available only to the trusted `zellij:swamp-bridge` builtin.
+It queries PTY ownership with a five-second timeout. Filesystem plugins cannot obtain this capability through their name or configuration.
+
 ## Agent helpers
 
 Use `zellij.agent` to spawn, inspect, and prompt terminal agents.

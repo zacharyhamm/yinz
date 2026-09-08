@@ -92,6 +92,12 @@ export interface WebRequestResult {
   context: Record<string, string>;
 }
 export interface Zellij {
+  readonly serverBinary: string;
+  readonly serverSession: string;
+  readonly serverIncarnation: string;
+  readonly instanceId: string;
+  /** Internal: available only to the trusted zellij:swamp-bridge builtin. */
+  readonly workflowRemotePanes?: () => {terminal_id: number; host_id: string; remote_host: string; pane_token: string; owner: string | null}[];
   readonly agent: Agents;
   readonly hocus: HocusExtensions;
   readonly rpc: Rpc;

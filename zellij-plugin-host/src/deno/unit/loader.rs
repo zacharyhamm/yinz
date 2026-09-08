@@ -250,3 +250,34 @@ async fn runtime_errors_point_to_original_typescript() {
     };
     assert!(error.contains("main.ts:4:"), "{error}");
 }
+
+#[test]
+fn embedded_source_maps_keep_the_private_module_url_and_typescript_source() {
+    let source = "export const value: number = 42;";
+    let loader = PluginModuleLoader::embedded("context-menu", source).unwrap();
+    loader.load_source(loader.entrypoint()).unwrap();
+    let map = loader.get_source_map(loader.entrypoint().as_str()).unwrap();
+    let map: serde_json::Value = serde_json::from_slice(&map).unwrap();
+    assert_eq!(map["sources"][0], "zellij-builtin:///context-menu.ts");
+    assert_eq!(map["sourcesContent"][0], source);
+    assert_eq!(
+        loader
+            .get_source_mapped_source_line(loader.entrypoint().as_str(), 0)
+            .as_deref(),
+        Some(source)
+    );
+    for specifier in [
+        "./sibling.ts",
+        "../escape.ts",
+        "file:///tmp/a.ts",
+        "npm:x",
+        "https://example.com/a.ts",
+        "zellij-builtin:///context-menu.ts",
+    ] {
+        for kind in [ResolutionKind::Import, ResolutionKind::DynamicImport] {
+            assert!(loader
+                .resolve(specifier, loader.entrypoint().as_str(), kind)
+                .is_err());
+        }
+    }
+}

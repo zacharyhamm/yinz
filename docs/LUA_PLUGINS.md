@@ -1,12 +1,10 @@
 # Lua plugins
 
-Zellij runs two kinds of plugin. The original kind is a wasm module, which is what every builtin
-plugin is. The second kind is a Lua script, which exists because the wasm route asks for a Rust
-crate, a `wasm32-wasip1` toolchain and a compile step before you can change what your status bar
-says. A Lua plugin is a file you drop on disk.
+Zellij runs Wasm, Lua, and [JavaScript and TypeScript](DENO_PLUGINS.md) plugins.
+Most builtins use Wasm. Four builtins use Lua, and `zellij:context-menu` uses embedded TypeScript.
+A Lua plugin is a script file that needs no separate build step.
 
-Both kinds get the same events and the same host commands. Nothing about a plugin's capabilities
-depends on which language it is written in.
+All three runtimes receive the same public events and host commands, with the same permission checks.
 
 ## A plugin
 
@@ -1673,10 +1671,10 @@ Answer with an empty list to say "no menu here".
 **`context_menu_item_selected` goes to the plugin that offered the item, and to nobody else.** An
 item's `context` is yours; no other plugin sees it, however it is subscribed.
 
-The shipped hook is `zellij-config/assets/plugins/context-menu.lua`. A copy loaded from a `file:`
-location needs `zellij.request_permission { "run_actions_as_user", "run_commands" }` in its `load`
-- `run_commands` because its "Open" item shells out to the platform's link opener, which it finds
-by probing `xdg-open` and `open` once at load.
+The shipped hook, `zellij:context-menu`, uses embedded TypeScript from
+`zellij-config/assets/plugins/context-menu.ts`. Lua context-menu hooks remain supported.
+See [JavaScript and TypeScript plugins](DENO_PLUGINS.md) for the SDK and permissions for a TypeScript copy.
+The shipped hook probes `xdg-open` and `open` once at load to select the platform link opener.
 
 A hook point takes **one** plugin. Two plugins cannot both replace the pane, and a precedence
 rule between them would be worse to explain than the restriction - a hook that wants to do

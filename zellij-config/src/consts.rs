@@ -47,10 +47,6 @@ pub const BUILTIN_LUA_PLUGINS: &[(&str, &str)] = &[
         include_str!("../assets/plugins/agent-exit.lua"),
     ),
     (
-        "context-menu",
-        include_str!("../assets/plugins/context-menu.lua"),
-    ),
-    (
         "agent-policy",
         include_str!("../assets/plugins/agent-policy.lua"),
     ),
@@ -61,6 +57,19 @@ pub fn builtin_lua_plugin(name: &str) -> Option<&'static str> {
     BUILTIN_LUA_PLUGINS
         .iter()
         .find(|(plugin_name, _)| *plugin_name == name)
+        .map(|(_, source)| *source)
+}
+
+/// TypeScript builtins are compiled into the server and transpiled by its worker.
+pub const BUILTIN_DENO_PLUGINS: &[(&str, &str)] = &[(
+    "context-menu",
+    include_str!("../assets/plugins/context-menu.ts"),
+)];
+
+pub fn builtin_deno_plugin(name: &str) -> Option<&'static str> {
+    BUILTIN_DENO_PLUGINS
+        .iter()
+        .find(|(tag, _)| *tag == name)
         .map(|(_, source)| *source)
 }
 

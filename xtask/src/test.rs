@@ -29,6 +29,14 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
         },
     )
     .context(err_context)?;
+    // Native compiler workers must re-exec this checkout's production binary, never libtest.
+    cmd!(sh, "{cargo} build --bin zellij")
+        .run()
+        .context(err_context)?;
+    let _worker = sh.push_env(
+        "ZELLIJ_COMPILATION_WORKER",
+        crate::project_root().join("target/debug/zellij"),
+    );
 
     println!();
     let msg = ">> Testing the workspace";

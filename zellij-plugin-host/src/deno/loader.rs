@@ -1,4 +1,4 @@
-//! Local ES modules only. Runtime and checker share the same filesystem boundary.
+//! Filesystem modules share the checker boundary; embedded entrypoints can import only the SDK.
 use super::limits;
 use deno_ast::{MediaType, ParseParams, ParsedSource};
 use deno_core::{
@@ -18,6 +18,7 @@ pub const SDK_SPECIFIER: &str = "zellij:plugin";
 
 pub struct PluginModuleLoader {
     root: PathBuf,
+    embedded: bool,
     entrypoint: ModuleSpecifier,
     source_maps: RefCell<HashMap<String, Vec<u8>>>,
     sources: RefCell<HashMap<String, String>>,
@@ -33,6 +34,21 @@ impl PluginModuleLoader {
             .to_file_path()
             .map_err(|_| anyhow!("invalid plugin entrypoint"))?;
         media_type(&entry, false)?;
+        loader.set_entry_source(source)?;
+        Ok(loader)
+    }
+
+    pub fn embedded(name: &str, source: &str) -> Result<Self> {
+        let entrypoint = ModuleSpecifier::parse(&format!("zellij-builtin:///{name}.ts"))
+            .context("resolve embedded plugin entrypoint")?;
+        let mut loader = Self {
+            root: PathBuf::from(format!("/__zellij_builtin__/{name}.ts")),
+            embedded: true,
+            entrypoint,
+            source_maps: RefCell::new(HashMap::new()),
+            sources: RefCell::new(HashMap::new()),
+            entry_source: None,
+        };
         loader.set_entry_source(source)?;
         Ok(loader)
     }
@@ -99,6 +115,7 @@ impl PluginModuleLoader {
         media_type(&entry, true)?;
         Ok(Self {
             root,
+            embedded: false,
             entrypoint: file_specifier(&entry)?,
             source_maps: RefCell::new(HashMap::new()),
             sources: RefCell::new(HashMap::new()),
@@ -107,6 +124,12 @@ impl PluginModuleLoader {
     }
 
     pub(super) fn local_path(&self, url: &ModuleSpecifier, declarations: bool) -> Result<PathBuf> {
+        if self.embedded {
+            bail!(
+                "embedded plugin {} cannot load module {url}; only zellij:plugin is supported",
+                self.entrypoint
+            );
+        }
         if url.scheme() != "file" || url.query().is_some() || url.fragment().is_some() {
             return Err(anyhow!(
                 "only local module paths without query or fragment are supported: {url}"
@@ -144,6 +167,9 @@ impl PluginModuleLoader {
         if specifier == SDK_SPECIFIER {
             return ModuleSpecifier::parse(SDK_SPECIFIER).context("resolve embedded plugin SDK");
         }
+        if self.embedded {
+            bail!("unsupported import {specifier:?} from {referrer}: embedded plugins may import only zellij:plugin");
+        }
         if !(specifier.starts_with("./") || specifier.starts_with("../"))
             || specifier.contains(['\\', '?', '#'])
         {
@@ -166,7 +192,9 @@ impl PluginModuleLoader {
             super::SDK_MODULE.to_owned()
         } else {
             // Resolve again at load time: a symlink may have changed since resolve.
-            let path = if url == self.entrypoint() && self.entry_source.is_some() {
+            let path = if self.embedded && url == self.entrypoint() {
+                self.root.clone()
+            } else if url == self.entrypoint() && self.entry_source.is_some() {
                 url.to_file_path()
                     .map_err(|_| anyhow!("invalid plugin entrypoint"))?
             } else {
@@ -174,7 +202,14 @@ impl PluginModuleLoader {
             };
             let source = self.read_source(url, false)?;
             let emitted = transpile(&path, &source, false)?;
-            if let Some(map) = emitted.source_map {
+            if let Some(mut map) = emitted.source_map {
+                if self.embedded {
+                    let mut mapped: serde_json::Value =
+                        serde_json::from_str(&map).context("decode embedded plugin source map")?;
+                    mapped["sources"] = serde_json::json!([url.as_str()]);
+                    map = serde_json::to_string(&mapped)
+                        .context("encode embedded plugin source map")?;
+                }
                 self.source_maps
                     .borrow_mut()
                     .insert(url.to_string(), map.into_bytes());
@@ -302,6 +337,14 @@ pub(super) fn parse(path: &Path, source: &str, declarations: bool) -> Result<Par
 }
 
 pub(super) fn transpile(
+    path: &Path,
+    source: &str,
+    declarations: bool,
+) -> Result<deno_ast::EmittedSourceText> {
+    super::worker::transpile(path, source, declarations)
+}
+
+pub(super) fn transpile_native(
     path: &Path,
     source: &str,
     declarations: bool,

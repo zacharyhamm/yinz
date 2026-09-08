@@ -13,6 +13,23 @@ use zellij_types::{
 };
 
 pub(crate) fn check(path: &Path, source: &str, mode: PluginCheckMode) -> PluginCheckReport {
+    let mut report = match super::worker::analyze(path, source) {
+        Ok(report) => report,
+        Err(error) => PluginCheckReport {
+            diagnostics: vec![format!("{error:#}")],
+            ..Default::default()
+        },
+    };
+    if report.diagnostics.is_empty() && mode == PluginCheckMode::Semantic {
+        if let Err(error) = checker::check_semantic_source(path, source) {
+            report.diagnostics.push(format!("{error:#}"));
+        }
+    }
+    report
+}
+
+// Worker-only: no semantic checker or subprocess calls can occur here.
+pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
     let mut report = PluginCheckReport::default();
     let parsed = match loader::parse(path, source, true) {
         Ok(parsed) => parsed.into_with_scope_analysis(),
@@ -73,10 +90,7 @@ pub(crate) fn check(path: &Path, source: &str, mode: PluginCheckMode) -> PluginC
         report.warnings.push("Hocus tool registration requires MessageAndLaunchOtherPlugins; request it and wait for approval before calling zellij.hocus.tools".into());
     }
     report.outline.sort_by_key(|entry| entry.line);
-    let result = match mode {
-        PluginCheckMode::Syntax => checker::check_syntax(path, source),
-        PluginCheckMode::Semantic => checker::check_semantic_source(path, source),
-    };
+    let result = loader::transpile_native(path, source, true);
     if let Err(error) = result {
         report.diagnostics.push(format!("{error:#}"));
     }

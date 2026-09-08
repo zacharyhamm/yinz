@@ -24,6 +24,9 @@
 //! commands into instructions for the other server threads. It talks to the rest of the server
 //! over [`zellij_bus`], using [`zellij_routing`] to dispatch actions. It owns plugin job queues.
 pub mod deno;
+#[doc(hidden)]
+pub use deno::run_compilation_worker;
+mod host_bridge;
 mod lua;
 pub use lua::check_lua_plugin;
 pub mod logging_pipe;

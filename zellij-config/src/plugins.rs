@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::consts::BUILTIN_PLUGIN_DEBUG_DIR;
 #[cfg(not(target_family = "wasm"))]
 use crate::consts::BUILTIN_PLUGIN_RELEASE_DIR;
-use crate::consts::{builtin_lua_plugin, BUILTIN_PLUGIN_NAMES};
+use crate::consts::{builtin_deno_plugin, builtin_lua_plugin, BUILTIN_PLUGIN_NAMES};
 use zellij_runtime::errors::prelude::*;
 use zellij_types::data::PluginTag;
 use {
@@ -122,10 +122,10 @@ impl PluginConfig {
             }),
             RunPluginLocation::Zellij(tag) => {
                 let tag = tag.to_string();
-                // A builtin is either a wasm plugin with bytes to find or a Lua plugin with
-                // source compiled in; both are named the same way, so both are accepted here.
+                // Builtins resolve either to Wasm bytes or compiled-in Lua/TypeScript source.
                 if BUILTIN_PLUGIN_NAMES.contains(&tag.as_str())
                     || builtin_lua_plugin(&tag).is_some()
+                    || builtin_deno_plugin(&tag).is_some()
                 {
                     Some(PluginConfig {
                         path: PathBuf::from(&tag),
@@ -340,8 +340,10 @@ impl PluginConfig {
     /// A `.lua` file is Lua, `.js`/`.mjs`/`.ts`/`.mts` use Deno; anything else is wasm.
     /// No new URL scheme is needed: `file:~/thing.ts` is enough.
     pub fn runtime(&self) -> PluginRuntime {
-        // A builtin has no extension to read - its `path` is the bare tag - so being in the
-        // builtin Lua table is what identifies it.
+        // Builtin paths are bare tags; their registry selects the script runtime.
+        if self.builtin_deno_source().is_some() {
+            return PluginRuntime::Deno;
+        }
         if self.builtin_lua_source().is_some() {
             return PluginRuntime::Lua;
         }
@@ -356,6 +358,13 @@ impl PluginConfig {
     fn builtin_lua_source(&self) -> Option<&'static str> {
         match &self.location {
             RunPluginLocation::Zellij(tag) => builtin_lua_plugin(&tag.to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn builtin_deno_source(&self) -> Option<&'static str> {
+        match &self.location {
+            RunPluginLocation::Zellij(tag) => builtin_deno_plugin(&tag.to_string()),
             _ => None,
         }
     }
@@ -389,7 +398,10 @@ impl PluginConfig {
     /// the file in full, so that path - not the location, which is the cwd-joined identity - is
     /// what `all_plugin_ids_for_plugin_location` has to match it against.
     pub fn resolve_source(&self, user_plugin_dir: Option<&Path>) -> Result<(PathBuf, String)> {
-        if let Some(source) = self.builtin_lua_source() {
+        if let Some(source) = self
+            .builtin_lua_source()
+            .or_else(|| self.builtin_deno_source())
+        {
             // A builtin has no file at all; its `path` is the bare tag. Handing it back keeps the
             // signature honest, and nothing matches a builtin by file path.
             return Ok((self.path.clone(), source.to_owned()));
@@ -660,6 +672,29 @@ mod tests {
                 .unwrap(),
             (explicit, "-- standalone".to_owned())
         );
+    }
+
+    #[test]
+    fn deno_builtins_resolve_from_embedded_source() {
+        for (name, source) in crate::consts::BUILTIN_DENO_PLUGINS {
+            let plugin = builtin_plugin(name);
+            assert_eq!(plugin.runtime(), super::PluginRuntime::Deno);
+            assert!(plugin.is_builtin());
+            assert_eq!(
+                plugin
+                    .resolve_source(Some(std::path::Path::new("/missing/plugins")))
+                    .unwrap()
+                    .1,
+                *source
+            );
+            assert!(crate::consts::builtin_lua_plugin(name).is_none());
+        }
+        assert_eq!(crate::consts::BUILTIN_LUA_PLUGINS.len(), 4);
+        assert_eq!(
+            file_plugin("context-menu.ts").runtime(),
+            super::PluginRuntime::Deno
+        );
+        assert!(!file_plugin("context-menu.ts").is_builtin());
     }
 
     #[test]

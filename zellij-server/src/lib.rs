@@ -34,6 +34,8 @@ pub(crate) use zellij_panes::pane_groups;
 pub(crate) use zellij_plugin_host as plugins;
 pub use zellij_plugin_host::check_lua_plugin;
 use zellij_plugin_host::get_engine;
+#[doc(hidden)]
+pub use zellij_plugin_host::run_compilation_worker;
 mod locked_escape;
 pub use zellij_plugin_host::plugin_authoring;
 mod pty;

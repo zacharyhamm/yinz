@@ -30,6 +30,7 @@ fn main() {
         }
         return;
     }
+    zellij_server::run_compilation_worker();
     let process_started = std::time::Instant::now();
     // A pty-host supervisor is spawned once per pane, so it branches before the
     // logger, the cache-folder setup and the clap builder — none of which it
