@@ -350,6 +350,12 @@ pub(super) fn install(lua: &Lua, zellij: &Table) -> mlua::Result<()> {
         "sanitize",
         lua.create_function(|_, source: String| Ok(text::sanitize(&source)))?,
     )?;
+    text_table.set(
+        "sanitize_bytes",
+        lua.create_function(|_, source: mlua::LuaString| {
+            Ok(text::sanitize(&source.to_string_lossy()))
+        })?,
+    )?;
     lua.load(include_str!("ui.lua"))
         .set_name("zellij:ui")
         .call::<()>((native, zellij.clone()))

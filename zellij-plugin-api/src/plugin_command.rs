@@ -1631,6 +1631,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                             .map(usize::try_from)
                             .transpose()
                             .map_err(|_| "Run command output limit is too large")?,
+                        run_command_payload.stream_output,
                     ))
                 },
                 _ => Err("Mismatched payload for RunCommand"),
@@ -2984,6 +2985,14 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::CurrentSessionLastSavedTime) => {
                 Ok(PluginCommand::CurrentSessionLastSavedTime)
             },
+            Some(CommandName::SubscribePaneOutput) => match protobuf_plugin_command.payload {
+                Some(Payload::PaneOutputSubscription(p)) => {
+                    Ok(PluginCommand::SubscribePaneOutput(p.enabled.then(|| {
+                        p.context.into_iter().map(|c| (c.name, c.value)).collect()
+                    })))
+                },
+                _ => Err("Malformed pane output subscription"),
+            },
             Some(CommandName::GetPaneInfo) => match protobuf_plugin_command.payload {
                 Some(Payload::GetPaneInfoPayload(get_pane_info_payload)) => {
                     let pane_id = get_pane_info_payload
@@ -4106,6 +4115,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 cwd,
                 context,
                 max_output_bytes,
+                stream_output,
             ) => {
                 let env_variables: Vec<_> = env_variables
                     .into_iter()
@@ -4124,6 +4134,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         cwd,
                         context,
                         max_output_bytes: max_output_bytes.map(|limit| limit as u64),
+                        stream_output,
                     })),
                 })
             },
@@ -5345,6 +5356,19 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::CurrentSessionLastSavedTime as i32,
                 payload: Some(Payload::CurrentSessionLastSavedTimePayload(
                     CurrentSessionLastSavedTimePayload {},
+                )),
+            }),
+            PluginCommand::SubscribePaneOutput(context) => Ok(ProtobufPluginCommand {
+                name: CommandName::SubscribePaneOutput as i32,
+                payload: Some(Payload::PaneOutputSubscription(
+                    super::generated_api::api::plugin_command::PaneOutputSubscription {
+                        enabled: context.is_some(),
+                        context: context
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|(name, value)| ContextItem { name, value })
+                            .collect(),
+                    },
                 )),
             }),
             PluginCommand::GetPaneInfo(pane_id) => {
@@ -7534,11 +7558,12 @@ mod tests {
                 PathBuf::from("."),
                 BTreeMap::new(),
                 max_output_bytes,
+                Some(true),
             );
             let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
             let decoded: PluginCommand = protobuf.try_into().expect("decode");
             match decoded {
-                PluginCommand::RunCommand(_, _, _, _, decoded_limit) => {
+                PluginCommand::RunCommand(_, _, _, _, decoded_limit, Some(true)) => {
                     assert_eq!(decoded_limit, max_output_bytes)
                 },
                 other => panic!("expected RunCommand, got {:?}", other),
@@ -7935,6 +7960,7 @@ mod tests {
                 | PluginCommand::GetFocusedPaneInfo
                 | PluginCommand::SaveSession
                 | PluginCommand::CurrentSessionLastSavedTime
+                | PluginCommand::SubscribePaneOutput(_)
                 | PluginCommand::GetPaneInfo(_)
                 | PluginCommand::GetTabInfo(_)
                 | PluginCommand::GetSessionEnvironmentVariables

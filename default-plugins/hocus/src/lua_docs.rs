@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn a_docs_query_answers_section_line_hits_and_stays_far_under_the_cap() {
         let hits = search(None, &query("run_command"));
-        assert!(hits.contains("prelude_commands:"), "{hits}");
+        assert!(hits.contains("events:"), "{hits}");
         assert!(
             hits.len() < MAX_DOCS_OUTPUT / 4,
             "{} bytes is not a cheap grain",

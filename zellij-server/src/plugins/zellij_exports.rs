@@ -389,6 +389,19 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
     let err_context = || format!("failed to run plugin command {}", plugin_command);
     match check_command_permission(env, &command) {
         (PermissionStatus::Granted, _) => match command {
+            PluginCommand::SubscribePaneOutput(context) => {
+                if context.as_ref().is_some_and(|c| c.is_empty()) {
+                    return Err(anyhow!(
+                        "Pane output subscriptions require a nonempty context filter"
+                    ));
+                }
+                env.senders
+                    .send_to_screen(ScreenInstruction::SubscribePaneOutput(
+                        env.plugin_id,
+                        env.client_id,
+                        context,
+                    ))?;
+            },
             PluginCommand::Subscribe(event_list) => subscribe(env, event_list)?,
             PluginCommand::Unsubscribe(event_list) => unsubscribe(env, event_list)?,
             PluginCommand::SetSelectable(selectable) => set_selectable(env, selectable),
@@ -495,6 +508,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 cwd,
                 context,
                 max_output_bytes,
+                stream_output,
             ) => run_command(
                 env,
                 command_line,
@@ -502,6 +516,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 cwd,
                 context,
                 max_output_bytes,
+                stream_output,
             ),
             PluginCommand::WebRequest(url, verb, headers, body, context, stream_id, proxy) => {
                 web_request(env, url, verb, headers, body, context, stream_id, proxy)
@@ -3605,6 +3620,7 @@ fn run_command(
     cwd: PathBuf,
     context: BTreeMap<String, String>,
     max_output_bytes: Option<usize>,
+    stream_output: Option<bool>,
 ) {
     if command_line.is_empty() {
         log::error!("Command cannot be empty");
@@ -3626,6 +3642,7 @@ fn run_command(
                 cwd,
                 context,
                 max_output_bytes,
+                stream_output,
             ));
     }
 }
@@ -8046,6 +8063,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         },
         CommandType::GetPaneScrollback
         | CommandType::ListRecordings
+        | CommandType::SubscribePaneOutput
         | CommandType::SearchRecordings => PermissionType::ReadPaneContents,
         // The same gate `RunAction` sits behind, and for the same reason: a menu item is a list
         // of actions the server will run as the user, whichever way round it was assembled.
