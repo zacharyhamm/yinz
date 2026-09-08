@@ -86,24 +86,64 @@ mod command_output_tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
 
-    #[tokio::test]
-    async fn bounded_command_output_is_truncated_and_drained() {
+    /// A payload no two windows of which are alike, so a reader that kept the wrong bytes -
+    /// the tail, or a middle - could not pass as one that kept the head.
+    fn distinguishable_payload() -> Vec<u8> {
+        (0..100_000u32).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// Runs the bounded reader against a writer that never stops early, and returns the output
+    /// once the writer has confirmed every byte went in - so a reader that dropped the pipe
+    /// before EOF fails as "not drained" rather than as a join error.
+    async fn read_bounded(payload: Vec<u8>, limit: usize) -> Vec<u8> {
         let (mut writer, reader) = tokio::io::duplex(8);
+        let expected_len = payload.len();
         let write = tokio::spawn(async move {
-            writer.write_all(&vec![b'x'; 100_000]).await.unwrap();
+            writer.write_all(&payload).await?;
+            Ok::<usize, std::io::Error>(expected_len)
         });
 
         let output = tokio::time::timeout(
             Duration::from_secs(1),
-            read_command_stream(reader, Some(40)),
+            read_command_stream(reader, Some(limit)),
         )
         .await
-        .unwrap()
+        .expect("the reader must reach EOF")
         .unwrap();
-        write.await.unwrap();
+        let written = write
+            .await
+            .unwrap()
+            .expect("the pipe was not drained: the reader hung up before EOF");
+        assert_eq!(written, expected_len, "the pipe was not drained");
+        output
+    }
 
-        assert_eq!(output.len(), 40);
+    #[tokio::test]
+    async fn bounded_command_output_is_truncated_and_drained() {
+        let payload = distinguishable_payload();
+        let limit = 40;
+        let output = read_bounded(payload.clone(), limit).await;
+
+        assert_eq!(output.len(), limit);
+        let kept = limit - OUTPUT_TRUNCATED.len();
+        assert_eq!(
+            &output[..kept],
+            &payload[..kept],
+            "the kept bytes must be the first {kept} of the output"
+        );
         assert!(output.ends_with(OUTPUT_TRUNCATED));
+    }
+
+    /// A limit smaller than the marker keeps only as much of the marker as fits, and never more
+    /// than the limit.
+    #[tokio::test]
+    async fn bounded_command_output_honours_a_limit_smaller_than_the_marker() {
+        assert!(OUTPUT_TRUNCATED.len() > 5);
+        for limit in [5, 0] {
+            let output = read_bounded(distinguishable_payload(), limit).await;
+            assert_eq!(output.len(), limit, "limit {limit}");
+            assert_eq!(output, &OUTPUT_TRUNCATED[..limit], "limit {limit}");
+        }
     }
 
     #[tokio::test]
@@ -228,6 +268,12 @@ static WEB_REQUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 static WEB_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WEB_REQUEST_STREAM_CHUNK_SIZE: usize = 8192;
 const MAX_WEB_REQUEST_REDIRECTS: usize = 10;
+/// Borrows the IPC frame length as a size that is already agreed to be "big enough", but the
+/// events carrying these bodies are never IPC-framed: `Event::WebRequestResult` reaches the
+/// plugin thread on an in-process channel and is decoded straight into the wasm guest, so a body
+/// admitted at exactly this limit needs no envelope allowance for its status, headers and
+/// context. If a result ever crosses a framed transport, budget for the envelope here (see
+/// `screen/warp_ops.rs`, which keeps to half a frame for that reason).
 const MAX_BUFFERED_WEB_RESPONSE_BYTES: usize = MAX_IPC_FRAME_LEN;
 /// How long a streamed byte may wait to be joined by the ones behind it.
 ///
@@ -289,14 +335,7 @@ pub(crate) fn background_jobs_main(
     let mut active_streams: HashMap<StreamKey, ActiveWebRequestStream> = HashMap::new();
     let mut next_stream_generation = 0u64;
 
-    let http_client = HttpClient::builder()
-        .connect_timeout(WEB_REQUEST_CONNECT_TIMEOUT)
-        // the idle timeout is per-request, in send_web_request
-        // Redirects are followed by send_web_request so every target can be checked before curl
-        // sees it.
-        .redirect_policy(RedirectPolicy::None)
-        .build()
-        .ok();
+    let http_client = web_http_client();
     // We needn't do anything with the runtime, but it should exist at this point.
     let runtime = crate::global_async_runtime::get_tokio_runtime();
 
@@ -931,6 +970,21 @@ pub(crate) fn background_jobs_main(
     }
 }
 
+/// The client every plugin web request goes through. Shared with the tests so the redirect
+/// checks below are exercised against the shipped configuration: `RedirectPolicy::None` is what
+/// hands each hop to `send_web_request` for vetting, and a client that follows redirects itself
+/// would carry curl straight past `web_url`.
+pub(crate) fn web_http_client() -> Option<HttpClient> {
+    HttpClient::builder()
+        .connect_timeout(WEB_REQUEST_CONNECT_TIMEOUT)
+        // the idle timeout is per-request, in send_web_request
+        // Redirects are followed by send_web_request so every target can be checked before curl
+        // sees it.
+        .redirect_policy(RedirectPolicy::None)
+        .build()
+        .ok()
+}
+
 fn web_url(url: &str) -> Result<url::Url> {
     let url = url::Url::parse(url).with_context(|| format!("invalid web request URL: {url}"))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -1426,6 +1480,10 @@ fn find_resurrectable_sessions(
                             None
                         },
                     };
+                    // A layout whose creation stamp cannot be read (a filesystem without
+                    // birth times, or a clock that has gone backwards) is listed as dead "0s
+                    // ago" rather than dropped. Neither failure can be produced portably in a
+                    // test, so this fallback is documented here and not pinned by one.
                     let elapsed_duration = ctime
                         .and_then(|ctime| ctime.elapsed().ok())
                         .unwrap_or_default();
@@ -1452,7 +1510,10 @@ mod tests {
         UnixListener::bind(dir.join(name)).expect("bind unix socket")
     }
 
-    fn write_metadata(info_dir: &std::path::Path, session: &str, info: &SessionInfo) {
+    /// The legacy on-disk shape: bare files in the session folder, no `.checkpoint.lock` and no
+    /// `current` pointer. Only `scan_session_list_reads_the_legacy_flat_files` should use these
+    /// two; everything a running server writes goes through `write_checkpoint`.
+    fn write_flat_metadata(info_dir: &std::path::Path, session: &str, info: &SessionInfo) {
         let folder = info_dir.join(session);
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(
@@ -1462,10 +1523,41 @@ mod tests {
         .unwrap();
     }
 
-    fn write_layout(info_dir: &std::path::Path, session: &str) {
+    fn write_flat_layout(info_dir: &std::path::Path, session: &str) {
         let folder = info_dir.join(session);
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("session-layout.kdl"), "layout { }").unwrap();
+    }
+
+    /// Publishes a session the way `write_session_state_to_disk` does: metadata and layout
+    /// under a `.checkpoint-*` directory behind a `current` symlink.
+    fn publish(info_dir: &std::path::Path, session: &str) {
+        zellij_runtime::session_checkpoint::write_checkpoint(
+            &info_dir.join(session),
+            &zellij_session::metadata::session_info::to_string(&SessionInfo::new(
+                session.to_owned().into(),
+            ))
+            .unwrap(),
+            &("layout {}".to_owned(), BTreeMap::new()),
+        )
+        .unwrap();
+    }
+
+    fn scan(
+        current: &str,
+        sock_dir: &std::path::Path,
+        info_dir: &std::path::Path,
+    ) -> (
+        BTreeMap<SessionName, SessionInfo>,
+        BTreeMap<SessionName, Duration>,
+    ) {
+        scan_session_list(
+            &SessionName::new(current),
+            &[],
+            &BTreeMap::new(),
+            sock_dir,
+            info_dir,
+        )
     }
 
     #[test]
@@ -1474,23 +1566,9 @@ mod tests {
         let info_dir = tempdir().unwrap();
         let _listener = make_socket(sock_dir.path(), "live");
         for name in ["live", "dead"] {
-            zellij_runtime::session_checkpoint::write_checkpoint(
-                &info_dir.path().join(name),
-                &zellij_session::metadata::session_info::to_string(&SessionInfo::new(
-                    name.to_owned().into(),
-                ))
-                .unwrap(),
-                &("layout {}".to_owned(), BTreeMap::new()),
-            )
-            .unwrap();
+            publish(info_dir.path(), name);
         }
-        let (live, resurrectable) = scan_session_list(
-            &zellij_types::internal_ids::SessionName::new("me"),
-            &[],
-            &BTreeMap::new(),
-            sock_dir.path(),
-            info_dir.path(),
-        );
+        let (live, resurrectable) = scan("me", sock_dir.path(), info_dir.path());
         assert_eq!(
             live.keys().map(SessionName::as_str).collect::<Vec<_>>(),
             vec!["live"]
@@ -1508,13 +1586,7 @@ mod tests {
     fn scan_session_list_returns_empty_when_no_peers() {
         let sock_dir = tempdir().unwrap();
         let info_dir = tempdir().unwrap();
-        let (live, resurrectable) = scan_session_list(
-            &zellij_types::internal_ids::SessionName::new("me"),
-            &[],
-            &BTreeMap::new(),
-            sock_dir.path(),
-            info_dir.path(),
-        );
+        let (live, resurrectable) = scan("me", sock_dir.path(), info_dir.path());
         assert!(live.is_empty());
         assert!(resurrectable.is_empty());
     }
@@ -1525,71 +1597,159 @@ mod tests {
         let info_dir = tempdir().unwrap();
         let peer = "peer-alpha";
         let _listener = make_socket(sock_dir.path(), peer);
-        write_metadata(
-            info_dir.path(),
-            peer,
-            &SessionInfo::new(peer.to_string().into()),
-        );
+        publish(info_dir.path(), peer);
 
-        let (live, resurrectable) = scan_session_list(
-            &zellij_types::internal_ids::SessionName::new("me"),
-            &[],
-            &BTreeMap::new(),
-            sock_dir.path(),
-            info_dir.path(),
-        );
+        let (live, resurrectable) = scan("me", sock_dir.path(), info_dir.path());
         assert_eq!(live.len(), 1);
         assert!(live.contains_key(peer));
         assert!(resurrectable.is_empty());
     }
 
+    /// Only the current session's entry is enriched with the plugin list and the layouts this
+    /// server knows about; a peer's entry is left as its metadata describes it.
     #[test]
-    fn scan_session_list_finds_resurrectable_from_orphan_metadata() {
+    fn scan_session_list_enriches_only_the_current_session() {
         let sock_dir = tempdir().unwrap();
         let info_dir = tempdir().unwrap();
-        write_layout(info_dir.path(), "dead-beta");
+        let _listeners: Vec<UnixListener> = ["me", "other"]
+            .into_iter()
+            .map(|name| {
+                publish(info_dir.path(), name);
+                make_socket(sock_dir.path(), name)
+            })
+            .collect();
+        let layouts = vec![LayoutInfo::BuiltIn("compact".to_owned())];
+        let plugin = RunPlugin {
+            location: zellij_types::input::layout::RunPluginLocation::File(PathBuf::from(
+                "/plugins/status.wasm",
+            )),
+            ..Default::default()
+        };
+        let plugins = BTreeMap::from([(PluginId::new(7), plugin.clone())]);
 
-        let (live, resurrectable) = scan_session_list(
-            &zellij_types::internal_ids::SessionName::new("me"),
-            &[],
-            &BTreeMap::new(),
+        let (live, _) = scan_session_list(
+            &SessionName::new("me"),
+            &layouts,
+            &plugins,
             sock_dir.path(),
             info_dir.path(),
         );
-        assert!(live.is_empty());
-        assert_eq!(resurrectable.len(), 1);
-        assert!(resurrectable.contains_key("dead-beta"));
+
+        let me = &live[&SessionName::new("me")];
+        assert_eq!(me.available_layouts, layouts);
+        assert_eq!(
+            me.plugins,
+            BTreeMap::from([(
+                PluginId::new(7),
+                zellij_types::data::PluginInfo::from(plugin)
+            )])
+        );
+        let other = &live[&SessionName::new("other")];
+        assert!(other.available_layouts.is_empty(), "{other:?}");
+        assert!(other.plugins.is_empty(), "{other:?}");
     }
 
+    /// A dead session is resurrectable when its layout is on disk; nothing else about it is
+    /// consulted. The reported age is how long ago that layout was written.
+    #[test]
+    fn scan_session_list_finds_resurrectable_from_orphan_layout() {
+        let sock_dir = tempdir().unwrap();
+        let info_dir = tempdir().unwrap();
+        publish(info_dir.path(), "dead-beta");
+
+        let (live, resurrectable) = scan("me", sock_dir.path(), info_dir.path());
+        assert!(live.is_empty());
+        assert_eq!(
+            resurrectable
+                .keys()
+                .map(SessionName::as_str)
+                .collect::<Vec<_>>(),
+            vec!["dead-beta"]
+        );
+        let dead_for = resurrectable[&SessionName::new("dead-beta")];
+        assert!(
+            dead_for < Duration::from_secs(60),
+            "the layout was just written, so the session died {dead_for:?} ago at most"
+        );
+    }
+
+    /// Metadata alone is not enough to bring a session back, so a folder with no layout is left
+    /// off the list rather than offered as resurrectable.
+    #[test]
+    fn scan_session_list_drops_a_folder_with_metadata_but_no_layout() {
+        let sock_dir = tempdir().unwrap();
+        let info_dir = tempdir().unwrap();
+        write_flat_metadata(
+            info_dir.path(),
+            "no-layout",
+            &SessionInfo::new("no-layout".to_owned().into()),
+        );
+
+        let (live, resurrectable) = scan("me", sock_dir.path(), info_dir.path());
+        assert!(live.is_empty());
+        assert!(resurrectable.is_empty(), "{resurrectable:?}");
+    }
+
+    /// The pre-checkpoint layout: bare `session-metadata.kdl` / `session-layout.kdl` in the
+    /// session folder, which `SessionCheckpoint::read` still accepts for sessions written by
+    /// an older server.
+    #[test]
+    fn scan_session_list_reads_the_legacy_flat_files() {
+        let sock_dir = tempdir().unwrap();
+        let info_dir = tempdir().unwrap();
+        let _listener = make_socket(sock_dir.path(), "live");
+        write_flat_metadata(
+            info_dir.path(),
+            "live",
+            &SessionInfo::new("live".to_owned().into()),
+        );
+        write_flat_layout(info_dir.path(), "dead");
+
+        let (live, resurrectable) = scan("me", sock_dir.path(), info_dir.path());
+        assert_eq!(
+            live.keys().map(SessionName::as_str).collect::<Vec<_>>(),
+            vec!["live"]
+        );
+        assert_eq!(
+            resurrectable
+                .keys()
+                .map(SessionName::as_str)
+                .collect::<Vec<_>>(),
+            vec!["dead"]
+        );
+    }
+
+    /// "Live" means a socket file of that name exists: nothing here connects to it, so a socket
+    /// left behind by a crashed server reads as live too. That is production's definition as
+    /// well (`read_live_session_states` only stats the directory entry), not a shortcut of the
+    /// test.
     #[test]
     fn scan_session_list_separates_live_from_resurrectable() {
         let sock_dir = tempdir().unwrap();
         let info_dir = tempdir().unwrap();
-        for name in ["live-a", "live-b", "live-c"] {
-            let _listener = make_socket(sock_dir.path(), name);
-            write_metadata(
-                info_dir.path(),
-                name,
-                &SessionInfo::new(name.to_string().into()),
-            );
-            std::mem::forget(_listener);
-        }
+        let _listeners: Vec<UnixListener> = ["live-a", "live-b", "live-c"]
+            .into_iter()
+            .map(|name| {
+                publish(info_dir.path(), name);
+                make_socket(sock_dir.path(), name)
+            })
+            .collect();
         for name in ["dead-a", "dead-b"] {
-            write_layout(info_dir.path(), name);
+            publish(info_dir.path(), name);
         }
 
-        let (live, resurrectable) = scan_session_list(
-            &zellij_types::internal_ids::SessionName::new("me"),
-            &[],
-            &BTreeMap::new(),
-            sock_dir.path(),
-            info_dir.path(),
+        let (live, resurrectable) = scan("me", sock_dir.path(), info_dir.path());
+        assert_eq!(
+            live.keys().map(SessionName::as_str).collect::<Vec<_>>(),
+            vec!["live-a", "live-b", "live-c"]
         );
-        assert_eq!(live.len(), 3);
-        assert_eq!(resurrectable.len(), 2);
-        for name in ["live-a", "live-b", "live-c"] {
-            assert!(!resurrectable.contains_key(name));
-        }
+        assert_eq!(
+            resurrectable
+                .keys()
+                .map(SessionName::as_str)
+                .collect::<Vec<_>>(),
+            vec!["dead-a", "dead-b"]
+        );
     }
 }
 
@@ -1722,24 +1882,67 @@ mod web_request_stream_tests {
         url
     }
 
-    async fn serve_redirect(location: String) -> (String, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+    /// Reads one HTTP request off `socket`: the head up to the blank line, then as many body
+    /// bytes as its `Content-Length` announces, so a test can see whether a body was sent at all.
+    /// `None` if the peer hung up first.
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<Vec<u8>> {
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            match socket.read(&mut byte).await {
+                Ok(0) | Err(_) => return None,
+                Ok(_) => request.push(byte[0]),
+            }
+        }
+        let head = String::from_utf8_lossy(&request).to_ascii_lowercase();
+        let content_length: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(0);
+        let mut body = vec![0u8; content_length];
+        if content_length > 0 {
+            socket.read_exact(&mut body).await.ok()?;
+        }
+        request.extend(body);
+        Some(request)
+    }
+
+    fn header_line<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request
+            .split("\r\n\r\n")
+            .next()
+            .unwrap_or("")
+            .lines()
+            .find(|line| {
+                line.to_ascii_lowercase()
+                    .starts_with(&format!("{}:", name.to_ascii_lowercase()))
+            })
+    }
+
+    fn request_body(request: &str) -> &str {
+        request.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+    }
+
+    /// Serves one request with `status` and `location`, then a second one with `200 OK` and the
+    /// body `redirected`; the second request is handed back whole so the test can see what the
+    /// client sent after following the redirect. Returns the url to hit.
+    async fn serve_redirect(
+        status: &'static str,
+        location: String,
+    ) -> (String, tokio::sync::oneshot::Receiver<Vec<u8>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());
         let (request_tx, request_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut byte = [0u8; 1];
-            while !request.ends_with(b"\r\n\r\n") {
-                match socket.read(&mut byte).await {
-                    Ok(0) | Err(_) => return,
-                    Ok(_) => request.push(byte[0]),
-                }
+            if read_request(&mut socket).await.is_none() {
+                return;
             }
             socket
                 .write_all(
                     format!(
-                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        "HTTP/1.1 {status}\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     )
                     .as_bytes(),
                 )
@@ -1749,13 +1952,9 @@ mod web_request_stream_tests {
             drop(socket);
 
             let (mut socket, _) = listener.accept().await.unwrap();
-            request.clear();
-            while !request.ends_with(b"\r\n\r\n") {
-                match socket.read(&mut byte).await {
-                    Ok(0) | Err(_) => return,
-                    Ok(_) => request.push(byte[0]),
-                }
-            }
+            let Some(request) = read_request(&mut socket).await else {
+                return;
+            };
             let _ = request_tx.send(request);
             socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nredirected")
@@ -1765,38 +1964,174 @@ mod web_request_stream_tests {
         (url, request_rx)
     }
 
+    /// Serves one `200 OK` and hands back the request it received. A second origin for the
+    /// cross-origin redirect test: it listens on its own port, which is all `Url::origin`
+    /// needs to tell it apart from the redirecting server.
+    async fn serve_capture() -> (String, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let Some(request) = read_request(&mut socket).await else {
+                return;
+            };
+            let _ = request_tx.send(request);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nredirected")
+                .await
+                .unwrap();
+        });
+        (url, request_rx)
+    }
+
+    /// Answers every request with a 302 back to itself, and counts them.
+    async fn serve_redirect_loop() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/loop", listener.local_addr().unwrap());
+        let hops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = hops.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                if read_request(&mut socket).await.is_none() {
+                    continue;
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let _ = socket.flush().await;
+            }
+        });
+        (url, hops)
+    }
+
+    /// The allowlist is `http` and `https` with a host; a foreign scheme is refused whether or
+    /// not it names a file, and so is an `http` URL with nothing to connect to. The `url` crate
+    /// never yields a parsed `http` URL without a host (it refuses `http://` outright and reads
+    /// `http:///x` as `http://x/`), so the hostless cases are refused at parse time and the
+    /// `host_str().is_none()` clause in `web_url` is a second line behind that.
     #[test]
     fn web_requests_accept_only_http_and_https_urls() {
         assert!(web_url("https://example.com/path").is_ok());
         assert!(web_url("http://example.com/path").is_ok());
-        assert!(web_url("file://localhost/etc/passwd").is_err());
+        for rejected in [
+            "file://localhost/etc/passwd",
+            "ftp://example.com/pub",
+            "data:text/plain,hello",
+            "http://",
+            "http:///",
+            "http://:8080/",
+        ] {
+            assert!(web_url(rejected).is_err(), "{rejected} should be refused");
+        }
     }
 
+    /// Every credential-bearing header is dropped, in whatever case it was written; the rest
+    /// are kept.
     #[test]
-    fn cross_origin_redirects_drop_sensitive_headers() {
+    fn scrub_redirect_headers_drops_every_credential_header() {
         let mut headers = BTreeMap::from([
             ("Authorization".to_owned(), "secret".to_owned()),
-            ("Cookie".to_owned(), "secret".to_owned()),
+            ("cookie".to_owned(), "secret".to_owned()),
+            ("Cookie2".to_owned(), "secret".to_owned()),
+            ("PROXY-AUTHORIZATION".to_owned(), "secret".to_owned()),
+            ("Www-Authenticate".to_owned(), "secret".to_owned()),
             ("X-Request-Id".to_owned(), "safe".to_owned()),
+            ("Content-Type".to_owned(), "safe".to_owned()),
         ]);
 
         scrub_redirect_headers(&mut headers);
 
         assert_eq!(
             headers,
-            BTreeMap::from([("X-Request-Id".to_owned(), "safe".to_owned())])
+            BTreeMap::from([
+                ("X-Request-Id".to_owned(), "safe".to_owned()),
+                ("Content-Type".to_owned(), "safe".to_owned()),
+            ])
+        );
+    }
+
+    fn credentialed_headers() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("Authorization".to_owned(), "Bearer secret".to_owned()),
+            ("Cookie".to_owned(), "session=secret".to_owned()),
+            ("X-Request-Id".to_owned(), "safe".to_owned()),
+        ])
+    }
+
+    /// A redirect to another origin is followed without the credentials: the second request
+    /// carries neither the bearer token nor the cookie, but does keep the harmless header.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cross_origin_redirect_drops_credentials() {
+        let (target, redirected_request) = serve_capture().await;
+        let (url, _) = serve_redirect("302 Found", target).await;
+        let (status, _, body) = buffered_web_request(
+            url,
+            HttpVerb::Get,
+            credentialed_headers(),
+            vec![],
+            web_http_client().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!((status, body.as_slice()), (200, &b"redirected"[..]));
+        let request = String::from_utf8(redirected_request.await.unwrap()).unwrap();
+        assert!(
+            header_line(&request, "authorization").is_none(),
+            "the bearer token followed a cross-origin redirect:\n{request}"
+        );
+        assert!(
+            header_line(&request, "cookie").is_none(),
+            "the cookie followed a cross-origin redirect:\n{request}"
+        );
+        assert!(header_line(&request, "x-request-id").is_some(), "{request}");
+    }
+
+    /// Within one origin the credentials stay: an authenticated API that redirects must keep
+    /// working, so over-scrubbing is as much a bug as under-scrubbing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_same_origin_redirect_keeps_credentials() {
+        let (url, redirected_request) = serve_redirect("302 Found", "/final".to_owned()).await;
+        buffered_web_request(
+            url,
+            HttpVerb::Get,
+            credentialed_headers(),
+            vec![],
+            web_http_client().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let request = String::from_utf8(redirected_request.await.unwrap()).unwrap();
+        assert!(request.starts_with("GET /final "), "{request}");
+        assert_eq!(
+            header_line(&request, "authorization"),
+            Some("authorization: Bearer secret"),
+            "{request}"
+        );
+        assert_eq!(
+            header_line(&request, "cookie"),
+            Some("cookie: session=secret"),
+            "{request}"
         );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn an_http_redirect_to_a_file_url_is_rejected() {
-        let (url, _) = serve_redirect("file://localhost/etc/passwd".to_owned()).await;
+        let (url, _) = serve_redirect("302 Found", "file://localhost/etc/passwd".to_owned()).await;
         let error = buffered_web_request(
             url,
             HttpVerb::Get,
             BTreeMap::new(),
             vec![],
-            HttpClient::new().unwrap(),
+            web_http_client().unwrap(),
             None,
         )
         .await
@@ -1809,13 +2144,13 @@ mod web_request_stream_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_safe_http_redirect_is_followed() {
-        let (url, redirected_request) = serve_redirect("/final".to_owned()).await;
+        let (url, redirected_request) = serve_redirect("302 Found", "/final".to_owned()).await;
         let (status, _, body) = buffered_web_request(
             url,
             HttpVerb::Get,
             BTreeMap::new(),
             vec![],
-            HttpClient::new().unwrap(),
+            web_http_client().unwrap(),
             None,
         )
         .await
@@ -1829,26 +2164,79 @@ mod web_request_stream_tests {
             .starts_with(b"GET /final "));
     }
 
+    /// The status and the verb together decide whether the redirected request is rewritten to a
+    /// bodiless GET: 303 rewrites any verb, 301 and 302 rewrite only POST, and 307 rewrites
+    /// nothing. Rewriting drops the payload too, so a POST body is never replayed as a GET.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_302_redirect_only_rewrites_post_to_get() {
-        for (verb, expected_method) in [(HttpVerb::Post, b"GET"), (HttpVerb::Put, b"PUT")] {
-            let (url, redirected_request) = serve_redirect("/final".to_owned()).await;
+    async fn redirect_status_and_verb_decide_the_rewrite() {
+        for (status, verb, expected_method) in [
+            ("301 Moved Permanently", HttpVerb::Post, "GET"),
+            ("302 Found", HttpVerb::Post, "GET"),
+            ("302 Found", HttpVerb::Put, "PUT"),
+            ("303 See Other", HttpVerb::Put, "GET"),
+            ("307 Temporary Redirect", HttpVerb::Post, "POST"),
+        ] {
+            let (url, redirected_request) = serve_redirect(status, "/final".to_owned()).await;
             buffered_web_request(
                 url,
                 verb,
                 BTreeMap::new(),
-                vec![],
-                HttpClient::new().unwrap(),
+                b"payload".to_vec(),
+                web_http_client().unwrap(),
                 None,
             )
             .await
             .unwrap();
 
-            assert!(redirected_request
-                .await
-                .unwrap()
-                .starts_with(expected_method));
+            let request = String::from_utf8(redirected_request.await.unwrap()).unwrap();
+            let case = format!("{status} + {verb:?}");
+            assert!(
+                request.starts_with(&format!("{expected_method} /final ")),
+                "{case}: {request}"
+            );
+            if expected_method == "GET" {
+                assert!(
+                    header_line(&request, "content-length").is_none(),
+                    "{case}: a rewritten request must not announce a body:\n{request}"
+                );
+                assert_eq!(request_body(&request), "", "{case}: body replayed as GET");
+            } else {
+                assert_eq!(
+                    request_body(&request),
+                    "payload",
+                    "{case}: the body must survive a redirect that keeps the verb"
+                );
+            }
         }
+    }
+
+    /// A redirect loop is a hang without the cap; with it the request fails after exactly
+    /// `MAX_WEB_REQUEST_REDIRECTS` hops.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_redirect_loop_fails_at_the_redirect_cap() {
+        let (url, hops) = serve_redirect_loop().await;
+        let error = buffered_web_request(
+            url,
+            HttpVerb::Get,
+            BTreeMap::new(),
+            vec![],
+            web_http_client().unwrap(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("exceeded {MAX_WEB_REQUEST_REDIRECTS} redirects")),
+            "{error}"
+        );
+        assert_eq!(
+            hops.load(Ordering::SeqCst),
+            MAX_WEB_REQUEST_REDIRECTS + 1,
+            "the first request plus one per permitted redirect"
+        );
     }
 
     #[tokio::test]
@@ -1863,11 +2251,27 @@ mod web_request_stream_tests {
             .contains("exceeded the 4-byte buffered-body limit"));
     }
 
+    /// The limit is inclusive: a body of exactly the maximum size is the largest one accepted,
+    /// and it comes back whole.
+    #[tokio::test]
+    async fn buffered_web_bodies_of_exactly_the_limit_are_returned_whole() {
+        let (mut reader, sender, _reader_is_waiting) = ControlledReader::new();
+        sender.send(b"four".to_vec()).unwrap();
+        drop(sender);
+
+        let body = read_bounded_web_body(&mut reader, 4).await.unwrap();
+        assert_eq!(body, b"four");
+    }
+
     /// Frames arriving back-to-back are joined into one event rather than one apiece. Every one
     /// used to be its own `PluginInstruction`, its own wasm `update()` and its own place in the
     /// plugin thread's queue - ahead of whatever the user was typing.
     #[tokio::test(start_paused = true)]
     async fn a_burst_of_frames_arrives_as_one_event_after_the_coalescing_window() {
+        assert_eq!(
+            WEB_REQUEST_STREAM_COALESCE_WINDOW,
+            Duration::from_millis(20)
+        );
         let parts: &[&[u8]] = &[
             b"data: {\"n\":1}\n\n",
             b"data: {\"n\":2}\n\n",
@@ -2016,7 +2420,7 @@ mod web_request_stream_tests {
             BTreeMap::new(),
             vec![],
             BTreeMap::new(),
-            HttpClient::new().unwrap(),
+            web_http_client().unwrap(),
             None,
         )
         .await;
@@ -2062,11 +2466,6 @@ mod web_request_stream_tests {
                 other => panic!("expected a chunk, got {:?}", other),
             })
             .collect();
-        assert!(
-            chunks.len() >= 2,
-            "body should arrive incrementally, got {} chunk(s)",
-            chunks.len()
-        );
         let joined: Vec<u8> = chunks.into_iter().flatten().copied().collect();
         assert_eq!(
             String::from_utf8(joined).unwrap(),
@@ -2119,7 +2518,16 @@ mod web_request_stream_tests {
     async fn unreachable_host_reports_an_error_and_still_finishes() {
         let (events, jobs) = run_stream("http://127.0.0.1:1/".to_owned()).await;
 
-        assert!(matches!(events[0], Event::WebRequestResult(400, ..)));
+        // one synthetic result and nothing after it: no chunk, no second result
+        match &events[..] {
+            [Event::WebRequestResult(400, _, body, _)] => {
+                assert!(
+                    !body.is_empty(),
+                    "the body is what the plugin shows for the failure"
+                );
+            },
+            other => panic!("expected exactly one 400 result, got {other:?}"),
+        }
         match &jobs[..] {
             [BackgroundJob::WebRequestStreamFinished(_, GENERATION, Some(_))] => {},
             other => panic!(
@@ -2133,15 +2541,24 @@ mod web_request_stream_tests {
     async fn truncated_non_2xx_response_finishes_with_an_error() {
         let (events, jobs) = run_stream(serve_truncated_response().await).await;
 
-        assert!(matches!(events[0], Event::WebRequestResult(500, ..)));
-        assert!(matches!(
-            &jobs[..],
-            [BackgroundJob::WebRequestStreamFinished(
-                _,
-                GENERATION,
-                Some(_)
-            )]
-        ));
+        // The partial body is discarded on purpose: the plugin gets the error text in its
+        // place, and the same text in the finish report, rather than a body that looks
+        // complete but is not.
+        let error = match &jobs[..] {
+            [BackgroundJob::WebRequestStreamFinished(_, GENERATION, Some(error))] => error,
+            other => panic!("expected one finish report carrying an error, got {other:?}"),
+        };
+        match &events[..] {
+            [Event::WebRequestResult(500, _, body, _)] => {
+                assert_ne!(body, b"short", "the partial body must not pass as the body");
+                assert_eq!(
+                    std::str::from_utf8(body).unwrap(),
+                    error,
+                    "the body is the error text"
+                );
+            },
+            other => panic!("expected exactly one 500 result, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2240,10 +2657,12 @@ mod web_request_stream_tests {
         assert!(active_streams.is_empty(), "the stream must be deregistered");
     }
 
-    /// reusing an in-flight stream_id supersedes the old stream - the registry ends up holding
-    /// only the new one, and the old one is terminated rather than orphaned
+    /// `finish_stream`'s supersede semantics: ending a stream with an error flushes what it
+    /// had pending before the terminator, and a stale finish for the old generation cannot touch
+    /// the replacement registered under the same key. Whether the `WebRequest` arm *uses* these
+    /// semantics is `the_web_request_arm_supersedes_and_cancels_through_the_bus`'s business.
     #[tokio::test(flavor = "multi_thread")]
-    async fn reusing_a_stream_id_supersedes_the_old_stream() {
+    async fn finish_stream_supersede_flushes_pending_bytes_then_terminates() {
         let (senders, plugin_rx, _job_rx) = test_senders();
         let mut active_streams = HashMap::new();
         let old_task = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(60)).await });
@@ -2261,7 +2680,8 @@ mod web_request_stream_tests {
             },
         );
 
-        // what the WebRequest arm does before spawning a replacement under the same key
+        // the call the WebRequest arm makes before spawning a replacement under the same key -
+        // made by hand here, so this test says nothing about whether the arm makes it
         finish_stream(
             &mut active_streams,
             &senders,
@@ -2347,5 +2767,167 @@ mod web_request_stream_tests {
             Some("cancelled".to_owned()),
         );
         assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    /// Replies to every connection with a `200 OK` chunked head and a first chunk `hello`, then
+    /// holds the socket open without ending the body, so a stream against it stays in flight
+    /// until something on the server side ends it.
+    async fn serve_open_stream() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = vec![];
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                if read_request(&mut socket).await.is_none() {
+                    continue;
+                }
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n",
+                    )
+                    .await
+                    .unwrap();
+                socket.flush().await.unwrap();
+                held.push(socket);
+            }
+        });
+        url
+    }
+
+    /// Blocks for the next `count` plugin events, however they are batched.
+    fn recv_events(plugin_rx: &PluginRx, count: usize) -> Vec<Event> {
+        let mut events = vec![];
+        while events.len() < count {
+            let (instruction, _) = plugin_rx
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap_or_else(|e| {
+                    panic!("waiting for {count} plugin events, got {events:?}: {e}")
+                });
+            match instruction {
+                PluginInstruction::Update(updates) => {
+                    events.extend(updates.into_iter().map(|(_, _, event)| event));
+                },
+                other => panic!("unexpected plugin instruction {other:?}"),
+            }
+        }
+        events
+    }
+
+    fn terminator(error: Option<&str>) -> Event {
+        Event::WebRequestStreamChunk {
+            stream_id: "stream-1".to_owned(),
+            chunk: vec![],
+            done: true,
+            error: error.map(str::to_owned),
+        }
+    }
+
+    /// Drives the real `WebRequest`, `CancelWebRequest` and `WebRequestStreamFinished` arms of
+    /// `background_jobs_main` over a bus, rather than calling `finish_stream` by hand. Reusing a
+    /// stream id must end the stream that holds it before the replacement starts, cancelling
+    /// must end the replacement, and a stream that completes must be terminated by its own
+    /// finish report arriving back on the bus. That report carries the generation the arm
+    /// assigned, so a generation counter that stopped advancing would let a stale report from
+    /// the superseded stream terminate its replacement here.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_web_request_arm_supersedes_and_cancels_through_the_bus() {
+        let open_url = serve_open_stream().await;
+        let (to_plugin, plugin_rx) = unbounded();
+        let (to_jobs, job_rx) = unbounded();
+        let to_plugin = SenderWithContext::new(to_plugin);
+        let to_jobs = SenderWithContext::new(to_jobs);
+        let bus = Bus::new(
+            vec![job_rx],
+            None,
+            None,
+            Some(&to_plugin),
+            None,
+            None,
+            Some(&to_jobs),
+            None,
+        )
+        .should_silently_fail();
+        let main = std::thread::spawn(move || background_jobs_main(bus, None, true));
+        let request = |url: &str, stream_id: &str| {
+            BackgroundJob::WebRequest(
+                PLUGIN_ID,
+                CLIENT_ID,
+                url.to_owned(),
+                HttpVerb::Get,
+                BTreeMap::new(),
+                vec![],
+                BTreeMap::new(),
+                Some(stream_id.to_owned()),
+                None,
+            )
+        };
+
+        let hello = Event::WebRequestStreamChunk {
+            stream_id: "stream-1".to_owned(),
+            chunk: b"hello".to_vec(),
+            done: false,
+            error: None,
+        };
+        // waiting for the first chunk as well as the result makes the sequence below exact:
+        // the stream has nothing pending to flush when it is superseded
+        to_jobs.send(request(&open_url, "stream-1")).unwrap();
+        let events = recv_events(&plugin_rx, 2);
+        assert!(
+            matches!(events[0], Event::WebRequestResult(200, ..)),
+            "the first stream must be in flight before its id is reused, got {events:?}"
+        );
+        assert_eq!(events[1], hello);
+
+        // the same id again: the first stream is terminated as superseded before the second
+        // one reports in
+        to_jobs.send(request(&open_url, "stream-1")).unwrap();
+        let events = recv_events(&plugin_rx, 3);
+        assert_eq!(events[0], terminator(Some("superseded")));
+        assert!(
+            matches!(events[1], Event::WebRequestResult(200, ..)),
+            "expected the replacement's result, got {:?}",
+            events[1]
+        );
+        assert_eq!(events[2], hello);
+
+        to_jobs
+            .send(BackgroundJob::CancelWebRequest(
+                PLUGIN_ID,
+                CLIENT_ID,
+                "stream-1".to_owned(),
+            ))
+            .unwrap();
+        assert_eq!(
+            recv_events(&plugin_rx, 1),
+            vec![terminator(Some("cancelled"))]
+        );
+
+        // a stream that runs to completion is terminated by the finish report the task sends
+        // back to this same bus, with no error
+        let done_url = serve_once("200 OK", "text/event-stream", vec!["data: 1\n\n"]).await;
+        to_jobs.send(request(&done_url, "stream-1")).unwrap();
+        let events = recv_events(&plugin_rx, 3);
+        assert!(
+            matches!(events[0], Event::WebRequestResult(200, ..)),
+            "{events:?}"
+        );
+        assert_eq!(
+            events[1],
+            Event::WebRequestStreamChunk {
+                stream_id: "stream-1".to_owned(),
+                chunk: b"data: 1\n\n".to_vec(),
+                done: false,
+                error: None,
+            }
+        );
+        assert_eq!(events[2], terminator(None));
+
+        to_jobs.send(BackgroundJob::Exit).unwrap();
+        main.join().unwrap().unwrap();
+        assert!(
+            plugin_rx.try_recv().is_err(),
+            "nothing may follow a terminator"
+        );
     }
 }

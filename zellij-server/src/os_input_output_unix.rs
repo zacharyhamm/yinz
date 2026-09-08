@@ -475,6 +475,12 @@ impl UnixPtyBackend {
         Self::with_termios(termios::tcgetattr(io::stdin()).ok())
     }
 
+    /// The client terminal settings this backend hands to every local pane.
+    #[cfg(test)]
+    pub(crate) fn configured_termios(&self) -> Option<WireTermios> {
+        self.wire_termios.clone()
+    }
+
     pub fn with_termios(current_termios: Option<termios::Termios>) -> Result<Self, io::Error> {
         if current_termios.is_none() {
             log::warn!("Starting a server without a controlling terminal, using the default termios configuration.");
@@ -1289,11 +1295,16 @@ mod tests {
     use nix::sys::termios;
     use std::io::Read;
 
+    /// Not a test: the entry point `original_termios_reaches_both_local_pane_paths` re-execs
+    /// this binary at, to run a real supervisor over the production fd-3 handoff. In every
+    /// other run - which is every run of the suite - the variable is unset and this is a
+    /// deliberate no-op, so it can never go red on its own.
     #[test]
     fn termios_supervisor_entry() {
         if std::env::var_os("ZELLIJ_TEST_TERMIOS_SUPERVISOR").is_some() {
             crate::pty_host::run_pty_host("termios-test/0".to_owned());
         }
+        // Otherwise this is the suite proper, and the test below is what exercises this path.
     }
 
     #[tokio::test]
@@ -1458,10 +1469,51 @@ mod tests {
             "expected partial write, got {written}/{size}",
         );
 
+        // Which bytes were accepted matters as much as how many: the caller re-queues
+        // `&data[written..]`, so the kernel must hold exactly the prefix. Drain the slave
+        // and check what arrived after the leftover fill is that prefix.
+        let slave_flags = fcntl(borrowed_slave, FcntlArg::F_GETFL).expect("F_GETFL");
+        let mut slave_oflags = OFlag::from_bits_truncate(slave_flags);
+        slave_oflags.insert(OFlag::O_NONBLOCK);
+        fcntl(borrowed_slave, FcntlArg::F_SETFL(slave_oflags)).expect("F_SETFL");
+        let mut read_back = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match nix::unistd::read(borrowed_slave, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => read_back.extend_from_slice(&buf[..n]),
+                Err(nix::errno::Errno::EAGAIN) => break,
+                Err(nix::errno::Errno::EINTR) => continue,
+                Err(e) => panic!("draining the slave failed: {e}"),
+            }
+        }
+        assert!(
+            read_back.ends_with(&data[..written]),
+            "the {written} accepted bytes are not the prefix of the buffer"
+        );
+        assert!(
+            read_back.len() >= written,
+            "read back {} bytes, fewer than the {written} reported written",
+            read_back.len()
+        );
+
         unsafe {
             libc::close(master_fd);
             libc::close(slave_fd);
         }
+    }
+
+    /// Only EAGAIN and a zero-length write mean "stop here and re-queue the rest". Any
+    /// other errno is how `PtyWriter` learns a pane's fd is gone, and swallowing it would
+    /// leave the pane's writes silently dropped forever.
+    #[test]
+    fn try_write_to_fd_propagates_an_error_that_is_not_eagain() {
+        // A descriptor open for reading only fails every write with EBADF, and stays
+        // owned for the whole call - no closed-fd-number reuse to worry about.
+        let read_only = std::fs::File::open("/dev/null").expect("open /dev/null");
+        let error = super::try_write_to_fd(read_only.as_raw_fd(), b"gone")
+            .expect_err("a write to a read-only fd must be an error, not a short write");
+        assert!(error.to_string().contains("EBADF"), "{error}");
     }
 
     /// Verify that `try_write_to_fd` returns Ok(0) — not an error — when the

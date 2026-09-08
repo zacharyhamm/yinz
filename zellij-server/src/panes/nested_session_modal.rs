@@ -521,9 +521,6 @@ pub fn guest_modal_option_at_content_row(
     }
     let styles = guest_modal_styles(style);
     let layout = guest_modal_layout(columns, rows, &styles, session_name, selected, shortcuts);
-    if layout.option_rows.is_empty() {
-        return None;
-    }
     layout
         .option_rows
         .iter()
@@ -535,6 +532,29 @@ fn center_modal_pad(block_width: usize, columns: usize) -> usize {
         return 0;
     }
     (columns - block_width) / 2
+}
+
+/// The full block's `(width, height)` for these columns, measured on a surface tall enough that
+/// the short fallback cannot fire - so tests can pin the height threshold and the centring
+/// without restating how the modal's content is laid out.
+#[cfg(test)]
+fn guest_modal_block_size(
+    columns: usize,
+    style: &Style,
+    session_name: &str,
+    selected: usize,
+    shortcuts: &GuestModalShortcuts,
+) -> (usize, usize) {
+    let styles = guest_modal_styles(style);
+    let layout = guest_modal_layout(
+        columns,
+        usize::MAX,
+        &styles,
+        session_name,
+        selected,
+        shortcuts,
+    );
+    (layout.block_width, layout.rows.len())
 }
 
 #[cfg(test)]

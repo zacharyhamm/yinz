@@ -468,6 +468,11 @@ impl TestSession {
         self.fake_server_os_api.firecracker_session_stops()
     }
 
+    /// How many of those stops happened while a pane was still open.
+    pub fn firecracker_stops_with_live_panes(&self) -> usize {
+        self.fake_server_os_api.firecracker_stops_with_live_panes()
+    }
+
     /// Make shutdown wait for the same file lock a guarded VM close holds.
     pub fn set_firecracker_provider_lock(&self, path: PathBuf) {
         self.fake_server_os_api.set_firecracker_provider_lock(path);
