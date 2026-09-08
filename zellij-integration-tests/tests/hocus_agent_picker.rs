@@ -589,11 +589,11 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
     let initial = zellij.wait_until("the agent list is on screen", |snapshot| {
         // The list can render before the asynchronous two-pane placement lands.
         // Wait until it is actually beside the conversation before remembering home.
-        snapshot.text.lines().any(|line| {
-            line.find("no agents")
-                .zip(line.find("new chat"))
-                .is_some_and(|(agents, conversation)| agents < conversation)
-        })
+        list_corner(snapshot).is_some()
+            && snapshot
+                .text
+                .lines()
+                .any(|line| line.contains("agents ─") && line.contains("hocus —"))
     });
     let home = list_corner(&initial).expect("the agent list is on screen");
     assert!(
