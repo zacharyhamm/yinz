@@ -532,3 +532,30 @@ fn host_wire_definitions_require_explicit_sdk_review() {
     }
     insta::assert_snapshot!("sdk_wire_definitions", wire);
 }
+
+#[test]
+fn sdk_rpc_declarations_require_one_destination_and_json() {
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("rpc.ts"), r#"
+      import zellij, {type Json, type RpcCall, type CancellablePromise} from 'zellij:plugin';
+      zellij.rpc.handle('echo', async (payload: Json, call: RpcCall) => {const id: number = call.source.Plugin; return payload;});
+      zellij.rpc.handle('nil', () => {});
+      const request: CancellablePromise<Json> = zellij.rpc.call({pluginId:7,name:'echo',payload:null,timeoutMs:10});
+      request.cancel();
+      zellij.rpc.call({pluginUrl:'file:/plugin.ts',pluginConfig:{city:'Oslo'},name:'echo'});
+      // @ts-expect-error destination required
+      zellij.rpc.call({name:'echo'});
+      // @ts-expect-error only one destination
+      zellij.rpc.call({pluginId:7,pluginUrl:'x',name:'echo'});
+      // @ts-expect-error config requires URL
+      zellij.rpc.call({pluginId:7,pluginConfig:{},name:'echo'});
+      // @ts-expect-error JSON only
+      zellij.rpc.call({pluginId:7,name:'echo',payload:1n});
+      // @ts-expect-error numeric timeout
+      zellij.rpc.call({pluginId:7,name:'echo',timeoutMs:'10'});
+      // @ts-expect-error unknown option
+      zellij.rpc.call({pluginId:7,name:'echo',timeout:10});
+      // @ts-expect-error JSON results
+      zellij.rpc.handle('bad', () => new Uint8Array());
+    "#).unwrap();
+}

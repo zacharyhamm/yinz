@@ -34,7 +34,15 @@ Test names are in the linked files. The full repository gate is recorded below.
 | Parsed permission inference | **Verified.** [Analysis tests][analysis-tests] cover literal arrays on SDK bindings, imported aliases, namespace imports and raw permission commands. Comments and shadowed names grant nothing. Computed requests warn and use normal runtime approval. Imported source cannot silently add grants. |
 | Legacy filesystem scan/watch events | **Raw commands and typed events available.** Existing host tests cover the shared implementation; dedicated Deno change-notification and disconnect coverage is not established by the new data-watch tests. |
 | Remaining host command families | **Typed raw access available.** Common dispatch covers keybindings, clipboard, pane placement, actions and other host operations. The representative session test does not exhaust these families. |
-| UI/widgets, streaming helpers, RPC, agent helpers and workers | **Excluded from this work.** Raw commands/events expose applicable host operations, but do not provide these SDK conveniences or CPU parallelism. |
+| Streaming helpers, agent helpers and workers | **Excluded from this work.** Raw commands/events expose applicable host operations, but do not provide these SDK conveniences or CPU parallelism. |
+
+RPC now has shared version-1 dispatch through `zellij.rpc.call()` and `zellij.rpc.handle()`.
+SDK regressions cover results, errors, provenance, cancellation, deadlines, cleanup, message limits, and ordinary pipes.
+Real plugin tests exercise Deno and Lua peers, URL launch/configuration, ID addressing, reverse calls, permission denial, and old replies after reload.
+RPC verification: focused tests passed. `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` passed format, lint, doctests, and all 386 integration tests.
+The unit phase passed 7,936 tests and failed `plugins::lua::unit_tests::swamp_output_preview_names_the_saved_version_and_keeps_return_actionable`.
+That unchanged Lua test also fails alone at its submit-focus assertion. The gate remains red.
+The historical gate results below predate this addition.
 
 ## Public contracts
 

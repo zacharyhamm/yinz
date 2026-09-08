@@ -577,6 +577,7 @@ impl RuntimeInstance {
             parked: false,
             limits,
         };
+        instance.call("initialize", json!(uuid::Uuid::new_v4().to_string()), None)?;
         let module = get_tokio_runtime()
             .block_on(instance.runtime.load_main_es_module(loader.entrypoint()))
             .context("loading Deno plugin modules");
@@ -725,6 +726,10 @@ mod sdk_tests {
             .unwrap();
         runtime.op_state().borrow_mut().put(TestHost::default());
         run(&mut runtime, &format!("globalThis.bridge = {SDK}; globalThis.bind = (plugin) => bridge('bind', {{default: plugin}}); globalThis.check = (ok) => {{ if (!ok) throw new Error('SDK assertion failed'); }};"));
+        run(
+            &mut runtime,
+            &format!("bridge('initialize', '{}')", uuid::Uuid::new_v4()),
+        );
         runtime
     }
 
@@ -1634,4 +1639,5 @@ mod sdk_tests {
         assert_send::<DenoPlugin>();
     }
     include!("unit/ui_sdk.rs");
+    include!("unit/rpc_sdk.rs");
 }

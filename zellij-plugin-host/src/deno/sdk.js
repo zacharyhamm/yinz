@@ -402,19 +402,67 @@
   let hocusIdentity = null;
   let hocusDefinitions = null;
   let hocusHandlers = new Map();
-  function hocusMessage(name, payload, destination = null) {
-    validate(payload);
-    const encoded = JSON.stringify(payload);
-    if (encodeUtf8(encoded).length > 64000) throw new RangeError("Hocus payload exceeds 64000 bytes");
+  let rpcPrefix = null;
+  let rpcCount = 0n;
+  const rpcHandlers = new Map();
+  const rpcCalls = new Map();
+  function jsonMessage(value) {
+    // The host rejects getters, proxies, cycles, sparse arrays and excessive depth.
+    validate(value);
+    function copy(value) {
+      if (typeof value === "bigint" || value instanceof Uint8Array) throw new TypeError("RPC requires JSON values");
+      if (value === null || typeof value !== "object") return value;
+      if (Array.isArray(value)) return value.map(copy);
+      return Object.fromEntries(Object.getOwnPropertyNames(value).map((key) => {
+        if (!Object.getOwnPropertyDescriptor(value, key).enumerable) throw new TypeError("JSON properties must be enumerable");
+        return [key, copy(value[key])];
+      }));
+    }
+    const encoded = JSON.stringify(copy(value));
+    if (encodeUtf8(encoded).length > 64000) throw new RangeError("RPC/Hocus payload exceeds 64000 bytes");
+    return encoded;
+  }
+  function sendPluginMessage(name, payload, destination = null, pluginUrl = null, pluginConfig = {}) {
+    const encoded = jsonMessage(payload);
     command("MessageToPlugin", {
-      plugin_url: null, destination_plugin_id: destination, plugin_config: {},
+      plugin_url: pluginUrl, destination_plugin_id: destination, plugin_config: pluginConfig,
       message_name: name, message_payload: encoded, message_args: {},
       new_plugin_args: null, floating_pane_coordinates: null,
     });
   }
+  const rpc = Object.freeze({
+    handle(name, handler) {
+      if (typeof name !== "string" || !name || name.startsWith("hocus_tool:")) throw new TypeError("RPC name must be nonempty and not use reserved hocus_tool: prefix");
+      if (typeof handler !== "function") throw new TypeError("RPC handler must be a function");
+      rpcHandlers.set(name, handler);
+    },
+    call(options) {
+      return cancellable((operation) => {
+        const {pluginId, pluginUrl, pluginConfig, name, payload = null, timeoutMs} = record(options, "RPC options");
+        for (const key of Object.keys(options)) if (!["pluginId", "pluginUrl", "pluginConfig", "name", "payload", "timeoutMs"].includes(key)) throw new TypeError("unknown RPC option: " + key);
+        if ((pluginId === undefined) === (pluginUrl === undefined)) throw new TypeError("RPC requires exactly one destination");
+        if (pluginId !== undefined && (!Number.isSafeInteger(pluginId) || pluginId < 0 || pluginId > 4294967295)) throw new TypeError("pluginId must fit u32");
+        if (pluginUrl !== undefined && (typeof pluginUrl !== "string" || !pluginUrl)) throw new TypeError("pluginUrl must be nonempty");
+        if (pluginId !== undefined && pluginConfig !== undefined) throw new TypeError("pluginConfig requires pluginUrl");
+        if (typeof name !== "string" || !name) throw new TypeError("RPC name must be nonempty");
+        if (rpcPrefix === null) throw new Error("RPC isolate identity is unavailable");
+        const config = stringMap(pluginConfig, "pluginConfig");
+        const callId = rpcPrefix + ":rpc" + (++rpcCount);
+        let timer;
+        operation.cleanup = () => { rpcCalls.delete(callId); timer?.cancel(); };
+        rpcCalls.set(callId, {operation, pluginId});
+        if (timeoutMs !== undefined) timer = addTimer(timeoutMs, () => {
+          const error = new Error("RPC timed out: " + name);
+          error.name = "TimeoutError";
+          operation.reject(error);
+        }, operation.reject);
+        sendPluginMessage("zellij_rpc_call", {version: 1, call_id: callId, name, payload}, pluginId ?? null, pluginUrl ?? null, config);
+      });
+    },
+  });
   function registerHocus(definitions = hocusDefinitions) {
     if (hocusIdentity && definitions !== null) {
-      hocusMessage("hocus_extension_register", {version: 1, ...hocusIdentity, tools: definitions});
+      sendPluginMessage("hocus_extension_register", {version: 1, ...hocusIdentity, tools: definitions});
     }
   }
   const hocus = Object.freeze({
@@ -448,28 +496,52 @@
       if (message.source && Number.isSafeInteger(message.source.Plugin)) registerHocus();
       return true;
     }
-    if (message.name !== "zellij_rpc_call") return false;
+    return false;
+  }
+  function rpcPipe(message) {
+    if (!["zellij_rpc_call", "zellij_rpc_reply"].includes(message.name)) return false;
+    const from = message.source?.Plugin;
+    if (!Number.isSafeInteger(from) || from < 0 || from > 4294967295 || typeof message.payload !== "string" || encodeUtf8(message.payload).length > 64000) return true;
     let call;
-    try { call = JSON.parse(message.payload ?? ""); } catch (_) { return true; }
-    if (call?.version !== 1 || typeof call.name !== "string" || !call.name.startsWith("hocus_tool:")) return true;
-    if (!hocusIdentity || !message.source || !Number.isSafeInteger(message.source.Plugin) || message.source.Plugin < 0 ||
-        typeof call.call_id !== "string" || !call.call_id || encodeUtf8(message.payload).length > 64000) return true;
+    try { call = JSON.parse(message.payload); validate(call); } catch (_) { return true; }
+    if (call?.version !== 1 || typeof call.call_id !== "string" || !call.call_id) return true;
+    if (message.name === "zellij_rpc_reply") {
+      const waiting = rpcCalls.get(call.call_id);
+      if (!waiting || (waiting.pluginId !== undefined && waiting.pluginId !== from)) return true;
+      const hasError = Object.hasOwn(call, "error"), hasResult = Object.hasOwn(call, "result");
+      if (hasError && (hasResult || typeof call.error !== "string")) return true;
+      // Lua omits the result field when its handler returns nil.
+      if (hasError) waiting.operation.reject(new Error(call.error));
+      else waiting.operation.resolve(call.result ?? null);
+      return true;
+    }
+    if (typeof call.name !== "string" || !call.name) return true;
     const origin = client;
-    const from = message.source.Plugin;
     const reply = (result, error) => {
       const previous = client;
       client = origin;
       try {
-        const payload = {version: 1, call_id: call.call_id, ...(error === undefined ? {result: result ?? null} : {error: String(error)})};
-        try { hocusMessage("zellij_rpc_reply", payload, from); }
-        catch (error) { hocusMessage("zellij_rpc_reply", {version: 1, call_id: call.call_id, error: String(error).slice(0, 2000)}, from); }
-      } finally { client = previous; }
+        let payload;
+        try {
+          payload = {version: 1, call_id: call.call_id, ...(error === undefined ? {result: result === undefined ? null : result} : {error: String(error).slice(0, 2000)})};
+          jsonMessage(payload);
+        } catch (error) {
+          payload = {version: 1, call_id: call.call_id, error: String(error).slice(0, 2000)};
+        }
+        // Leave room for the opaque caller ID even when it nearly fills the envelope.
+        if (Object.hasOwn(payload, "error")) {
+          while (encodeUtf8(JSON.stringify(payload)).length > 64000 && payload.error.length) payload.error = payload.error.slice(0, Math.floor(payload.error.length / 2));
+        }
+        sendPluginMessage("zellij_rpc_reply", payload, from);
+      } catch (error) { fail(error); }
+      finally { client = previous; }
     };
-    const handler = hocusHandlers.get(call.name);
+    const handler = call.name.startsWith("hocus_tool:") ? (hocusIdentity && hocusHandlers.get(call.name)) : rpcHandlers.get(call.name);
     try {
       if (!handler) throw new Error("no rpc handler named " + call.name);
-      track(handler(call.payload ?? {}, {version:1, callId:call.call_id, name:call.name, payload:call.payload ?? {}, source:message.source}), (result) => reply(result), (error) => reply(null, error));
-    } catch (error) { reply(null, error); }
+      const payload = call.payload ?? null;
+      track(handler(payload, {version:1, callId:call.call_id, name:call.name, payload, source:{Plugin:from}}), (result) => reply(result), (error) => reply(null, error ?? "RPC handler failed"));
+    } catch (error) { reply(null, error ?? "RPC handler failed"); }
     return true;
   }
   function uiInteger(n, name) {
@@ -601,6 +673,7 @@
     ui,
     text,
     hocus,
+    rpc,
     data,
     encodeUtf8,
     decodeUtf8,
@@ -620,7 +693,7 @@
       const namespace = arg.hocus_extension_name, path = arg.hocus_extension_path;
       hocusIdentity = typeof namespace === "string" && namespace && typeof path === "string" && path ? {namespace, path} : null;
     }
-    if (name === "pipe" && hocusPipe(arg)) return;
+    if (name === "pipe" && (rpcPipe(arg) || hocusPipe(arg))) return;
     const type = name === "update" ? (typeof arg === "string" ? arg : Object.keys(arg)[0]) : undefined;
     const payload = name === "update" && typeof arg !== "string" ? arg[type] : undefined;
     const listeners = [...(handlers.get(type) ?? [])];
@@ -704,7 +777,10 @@
     client = origin ?? null;
     try {
       if (failure) { const error = failure; failure = null; throw error; }
-      if (action === "bind") {
+      if (action === "initialize") {
+        if (rpcPrefix !== null) throw new Error("SDK already initialized");
+        rpcPrefix = arg;
+      } else if (action === "bind") {
         plugin = arg.default;
         if (plugin === null || typeof plugin !== "object") {
           throw new TypeError("plugin must default-export a lifecycle object");
