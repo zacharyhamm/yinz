@@ -391,7 +391,8 @@ export interface EntityDef {name: string; version: number; attrs: AttrDef[];}
 export type Pred = Tagged<{Eq: [string, DataValue]; Ne: [string, DataValue]; Gt: [string, DataValue]; Gte: [string, DataValue]; Lt: [string, DataValue]; Lte: [string, DataValue]; In: [string, DataValue[]]; IsNull: string; NotNull: string; Prefix: [string, string]; Contains: [string, string]; And: Pred[]; Or: Pred[]; Not: Pred}>;
 export interface FetchRequest {namespace: string | null; entity: string; filter: Pred | null; search: string | null; sort: [string, 'Asc' | 'Desc'][]; select: string[]; limit: number; offset: number; after_id: Integer | null;}
 export type Mutation = {Put: {entity: string; uid: string | null; values: [string, DataValue][]; expect_rev?: Integer | null}}
-  | {Update: {entity: string; filter: Pred; values: [string, DataValue][]; expect_rev?: Integer | null}} | {Delete: {entity: string; filter: Pred}};
+  | {Update: {entity: string; filter: Pred; values: [string, DataValue][]; expect_rev?: Integer | null}} | {Delete: {entity: string; filter: Pred}}
+  | {AssertRows: {entity: string; filter: Pred; rows: [Integer, Integer][]}};
 export interface DataRows {columns: string[]; rows: DataValue[][]; truncated: boolean; next_cursor: Integer | null;}
 export interface DataSchemaInfo {namespace: string; entity: string; version: number; created: boolean; attrs_added: string[]; indexes_created: string[]; full_text_rebuilt: boolean;}
 export interface ApplyReport {rows_written: Integer; rows_deleted: Integer; ids: Integer[]; per_mutation: Integer[];}
