@@ -1,788 +1,263 @@
-//! Turning a command's reply into a Lua value.
-//!
-//! A host command that answers writes its reply with `wasi_write_object`, which serializes the
-//! *protobuf* encoding of the response - the wasm guest decodes it on the other side of its stdin
-//! pipe, in `zellij-tile/src/shim.rs`. A Lua plugin has no guest to do that, so the decoding
-//! happens here instead, and the shim is the reference for what each response means.
-//!
-//! Unlike the command direction, this cannot be one `from_value` call: the protobuf response types
-//! are prost-generated and have no serde representation, and each one names its payload
-//! differently. So this is a table, and it is complete: every command whose reply the shim reads
-//! has an arm here. The shape of each arm follows the shim's - a `oneof { ok | error }` becomes
-//! "a Lua value, or raise", an `Option` that means "nothing to report" becomes `nil`, and a
-//! reply that has a `zellij_types::data` type goes through the same conversion the shim uses, so
-//! that a plugin sees the same fields in a reply as it does in an event.
-//!
-//! The `_ => return None` at the end is for commands that do not answer at all; a reply arriving
-//! for one of those is handed back as the raw bytes, which is the honest answer for something
-//! this does not know how to read. `every_reply_the_shim_reads_is_decoded` in `unit_tests.rs`
-//! pins the list of commands that must not fall through, so a new answering command added to
-//! the shim without an arm here fails a test rather than silently regressing to bytes.
+//! Convert shared host replies to Lua values.
 
-use mlua::{Lua, Value as LuaValue};
-use prost::Message;
-use serde::Serialize;
-use zellij_types::internal_ids::TabId;
-
-use zellij_plugin_api::event::ProtobufPaneScrollbackResponse;
+use mlua::{serde::SerializeOptions, Lua, LuaSerdeExt, Value as LuaValue};
 use zellij_runtime::errors::prelude::*;
-use {
-    zellij_plugin_api::plugin_command::break_panes_to_new_tab_response,
-    zellij_plugin_api::plugin_command::break_panes_to_tab_with_id_response,
-    zellij_plugin_api::plugin_command::break_panes_to_tab_with_index_response,
-    zellij_plugin_api::plugin_command::delete_layout_response,
-    zellij_plugin_api::plugin_command::dump_layout_response,
-    zellij_plugin_api::plugin_command::dump_session_layout_response,
-    zellij_plugin_api::plugin_command::edit_layout_response,
-    zellij_plugin_api::plugin_command::enqueue_queue_job_response,
-    zellij_plugin_api::plugin_command::focus_or_create_tab_response,
-    zellij_plugin_api::plugin_command::fs_list_response,
-    zellij_plugin_api::plugin_command::fs_metadata_response,
-    zellij_plugin_api::plugin_command::fs_mutate_response,
-    zellij_plugin_api::plugin_command::fs_read_response,
-    zellij_plugin_api::plugin_command::get_focused_pane_info_response,
-    zellij_plugin_api::plugin_command::get_pane_cwd_response,
-    zellij_plugin_api::plugin_command::get_pane_git_probe_response,
-    zellij_plugin_api::plugin_command::get_pane_pid_response,
-    zellij_plugin_api::plugin_command::get_pane_running_command_response,
-    zellij_plugin_api::plugin_command::hide_floating_panes_response,
-    zellij_plugin_api::plugin_command::new_tab_response,
-    zellij_plugin_api::plugin_command::open_command_pane_in_git_checkout_response,
-    zellij_plugin_api::plugin_command::parse_layout_response,
-    zellij_plugin_api::plugin_command::read_plugin_log_response,
-    zellij_plugin_api::plugin_command::rename_layout_response,
-    zellij_plugin_api::plugin_command::save_layout_response,
-    zellij_plugin_api::plugin_command::save_session_response,
-    zellij_plugin_api::plugin_command::show_floating_panes_response,
-    zellij_plugin_api::plugin_command::spawn_agent_response,
-    zellij_plugin_api::plugin_command::ProtobufBreakPanesToNewTabResponse,
-    zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIdResponse,
-    zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIndexResponse,
-    zellij_plugin_api::plugin_command::ProtobufCheckLuaPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufCurrentSessionLastSavedTimeResponse,
-    zellij_plugin_api::plugin_command::ProtobufDataApplyResponse,
-    zellij_plugin_api::plugin_command::ProtobufDataCatalogResponse,
-    zellij_plugin_api::plugin_command::ProtobufDataCountResponse,
-    zellij_plugin_api::plugin_command::ProtobufDataDefineResponse,
-    zellij_plugin_api::plugin_command::ProtobufDataFetchResponse,
-    zellij_plugin_api::plugin_command::ProtobufDataUnwatchResponse,
-    zellij_plugin_api::plugin_command::ProtobufDataWatchResponse,
-    zellij_plugin_api::plugin_command::ProtobufDeleteAllDeadSessionsResponse,
-    zellij_plugin_api::plugin_command::ProtobufDeleteDeadSessionResponse,
-    zellij_plugin_api::plugin_command::ProtobufDeleteLayoutResponse,
-    zellij_plugin_api::plugin_command::ProtobufDumpLayoutResponse,
-    zellij_plugin_api::plugin_command::ProtobufDumpSessionLayoutResponse,
-    zellij_plugin_api::plugin_command::ProtobufEditLayoutResponse,
-    zellij_plugin_api::plugin_command::ProtobufEnqueueQueueJobResponse,
-    zellij_plugin_api::plugin_command::ProtobufFocusOrCreateTabResponse,
-    zellij_plugin_api::plugin_command::ProtobufFsListResponse,
-    zellij_plugin_api::plugin_command::ProtobufFsMetadataResponse,
-    zellij_plugin_api::plugin_command::ProtobufFsMutateResponse,
-    zellij_plugin_api::plugin_command::ProtobufFsReadResponse,
-    zellij_plugin_api::plugin_command::ProtobufGenerateRandomNameResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetFocusedPaneInfoResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetLayoutDirResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetLocalUtcOffsetResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetPaneCwdResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetPaneGitProbeResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetPaneInfoResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetPanePidResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetPaneRunningCommandResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetPluginAliasConfigurationResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetSessionEnvironmentVariablesResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetSessionListResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetTabInfoResponse,
-    zellij_plugin_api::plugin_command::ProtobufGetUserPluginDirResponse,
-    zellij_plugin_api::plugin_command::ProtobufHideFloatingPanesResponse,
-    zellij_plugin_api::plugin_command::ProtobufKillSessionsResponse,
-    zellij_plugin_api::plugin_command::ProtobufListNotificationsResponse,
-    zellij_plugin_api::plugin_command::ProtobufListOrphanedPanesResponse,
-    zellij_plugin_api::plugin_command::ProtobufListRecordingsResponse,
-    zellij_plugin_api::plugin_command::ProtobufNewTabResponse,
-    zellij_plugin_api::plugin_command::ProtobufNewTabsResponse,
-    zellij_plugin_api::plugin_command::ProtobufNewTiledPaneInTabResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneFloatingNearPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInGitCheckoutResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceOfPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneNearPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneOverlayResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenFileFloatingNearPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenFileInPlaceOfPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenFileNearPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenFileResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenPaneInNewTabResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenPluginPaneFloatingResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenTerminalFloatingNearPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenTerminalInPlaceOfPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenTerminalNearPluginResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
-    zellij_plugin_api::plugin_command::ProtobufOpenTerminalResponse,
-    zellij_plugin_api::plugin_command::ProtobufPaneId,
-    zellij_plugin_api::plugin_command::ProtobufParseLayoutResponse,
-    zellij_plugin_api::plugin_command::ProtobufQueueStatusResponse,
-    zellij_plugin_api::plugin_command::ProtobufReadPluginLogResponse,
-    zellij_plugin_api::plugin_command::ProtobufRenameLayoutResponse,
-    zellij_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
-    zellij_plugin_api::plugin_command::ProtobufSaveSessionResponse,
-    zellij_plugin_api::plugin_command::ProtobufSearchRecordingsResponse,
-    zellij_plugin_api::plugin_command::ProtobufShowFloatingPanesResponse,
-    zellij_plugin_api::plugin_command::ProtobufSpawnAgentResponse,
-    zellij_plugin_api::plugin_command::ProtobufWarpPaneResponse,
-};
-use {
-    zellij_plugin_api::plugin_ids::ProtobufPluginIds,
-    zellij_plugin_api::plugin_ids::ProtobufZellijVersion,
-};
-use {
-    zellij_types::data::CommandType, zellij_types::data::DataApplyResponse,
-    zellij_types::data::DataCatalogResponse, zellij_types::data::DataCountResponse,
-    zellij_types::data::DataDefineResponse, zellij_types::data::DataFetchResponse,
-    zellij_types::data::DataUnwatchResponse, zellij_types::data::DataWatchResponse,
-    zellij_types::data::FileMetadata, zellij_types::data::GetSessionListResponse,
-    zellij_types::data::LayoutMetadata, zellij_types::data::LayoutParsingError,
-    zellij_types::data::ListOrphanedPanesResponse, zellij_types::data::NotificationInfo,
-    zellij_types::data::PaneGitProbe, zellij_types::data::PaneId,
-    zellij_types::data::PaneScrollbackResponse, zellij_types::data::PluginIds,
-    zellij_types::data::QueueStatusResponse, zellij_types::data::RecordingSummary,
-    zellij_types::data::SearchHit, zellij_types::data::WarpPaneResponse,
-};
+use zellij_types::data::{CommandType, PaneInfo, SessionListSnapshot};
 
-/// Decode the reply `bytes` a `command` produced. `None` means "no table for this one" - the
-/// caller hands the bytes back untouched.
+#[allow(unused_imports)]
+pub(crate) use crate::response::DATA_CONFLICT_MARKER;
+use crate::response::{decode_response, DecodedResponse};
+
+/// Decode a reply, retaining `None` for commands with no known response format.
 pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<Result<LuaValue>> {
-    Some(match command {
-        CommandType::GetPluginIds => decode(bytes).and_then(|response: ProtobufPluginIds| {
-            let ids = PluginIds::try_from(response).map_err(|e| anyhow!("{}", e))?;
-            value(lua, ids)
-        }),
-        CommandType::GetZellijVersion => {
-            decode(bytes).and_then(|r: ProtobufZellijVersion| value(lua, r.version))
-        },
-        CommandType::GenerateRandomName => {
-            decode(bytes).and_then(|r: ProtobufGenerateRandomNameResponse| value(lua, r.name))
-        },
-        CommandType::GetUserPluginDir => decode(bytes)
-            .and_then(|r: ProtobufGetUserPluginDirResponse| value(lua, r.user_plugin_dir)),
-        // Seconds, as a number. Lua has `os.date` and does not need this to draw a
-        // calendar - the command is for wasm, which has no timezone at all - but a
-        // reply the shim reads is a reply every runtime should get decoded.
-        CommandType::GetLocalUtcOffset => decode(bytes)
-            .and_then(|r: ProtobufGetLocalUtcOffsetResponse| value(lua, r.offset_seconds)),
-        CommandType::GetLayoutDir => {
-            decode(bytes).and_then(|r: ProtobufGetLayoutDirResponse| value(lua, r.layout_dir))
-        },
-        CommandType::GetSessionEnvironmentVariables => {
-            decode(bytes).and_then(|r: ProtobufGetSessionEnvironmentVariablesResponse| {
-                let vars: std::collections::BTreeMap<String, String> = r
-                    .env_vars
-                    .into_iter()
-                    .map(|env_var| (env_var.name, env_var.value))
-                    .collect();
-                value(lua, vars)
-            })
-        },
-        CommandType::GetPluginAliasConfiguration => {
-            decode(bytes).and_then(|r: ProtobufGetPluginAliasConfigurationResponse| {
-                let configuration: std::collections::BTreeMap<String, String> =
-                    r.configuration.into_iter().collect();
-                value(lua, configuration)
-            })
-        },
-        CommandType::GetFocusedPaneInfo => {
-            decode(bytes).and_then(|r: ProtobufGetFocusedPaneInfoResponse| match r.result {
-                Some(get_focused_pane_info_response::Result::FocusedPaneInfo(info)) => {
-                    let pane_id = info
-                        .focused_pane_id
-                        .and_then(|id| PaneId::try_from(id).ok())
-                        .ok_or_else(|| anyhow!("the focused pane has no id"))?;
-                    value(
+    decode_response(command, bytes).map(|response| {
+        match response? {
+            DecodedResponse::Json(value) => {
+                // JSON object keys are strings. Restore typed numeric map keys for Lua,
+                // including the pane manifests and histories nested in a session snapshot.
+                match command {
+                    CommandType::GetSessionList => super::to_lua_value(
                         lua,
-                        FocusedPane {
-                            tab_id: TabId::new(info.focused_tab_id as usize),
-                            pane_id,
-                        },
-                    )
-                },
-                Some(get_focused_pane_info_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::GetPaneInfo => {
-            decode(bytes).and_then(|r: ProtobufGetPaneInfoResponse| match r.pane_info {
-                Some(info) => value(
-                    lua,
-                    zellij_types::data::PaneInfo::try_from(info).map_err(|e| anyhow!("{}", e))?,
-                ),
-                None => Ok(LuaValue::Nil),
-            })
-        },
-        CommandType::GetTabInfo => {
-            decode(bytes).and_then(|r: ProtobufGetTabInfoResponse| match r.tab_info {
-                Some(info) => value(
-                    lua,
-                    zellij_types::data::TabInfo::try_from(info).map_err(|e| anyhow!("{}", e))?,
-                ),
-                None => Ok(LuaValue::Nil),
-            })
-        },
-        CommandType::GetPaneCwd => {
-            decode(bytes).and_then(|r: ProtobufGetPaneCwdResponse| match r.result {
-                Some(get_pane_cwd_response::Result::Cwd(cwd)) => value(lua, cwd),
-                Some(get_pane_cwd_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Ok(LuaValue::Nil),
-            })
-        },
-        CommandType::GetPanePid => {
-            decode(bytes).and_then(|r: ProtobufGetPanePidResponse| match r.result {
-                Some(get_pane_pid_response::Result::Pid(pid)) => value(lua, pid),
-                Some(get_pane_pid_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Ok(LuaValue::Nil),
-            })
-        },
-        CommandType::GetPaneRunningCommand => {
-            decode(bytes).and_then(|r: ProtobufGetPaneRunningCommandResponse| match r.result {
-                Some(get_pane_running_command_response::Result::Command(command)) => {
-                    value(lua, command.args)
-                },
-                Some(get_pane_running_command_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Ok(LuaValue::Nil),
-            })
-        },
-        CommandType::GetPaneGitProbe => {
-            decode(bytes).and_then(|r: ProtobufGetPaneGitProbeResponse| match r.result {
-                Some(get_pane_git_probe_response::Result::Probe(probe)) => {
-                    value(lua, PaneGitProbe::from(probe))
-                },
-                Some(get_pane_git_probe_response::Result::Pending(_)) => Ok(LuaValue::Nil),
-                Some(get_pane_git_probe_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::GetPaneScrollback => {
-            decode(bytes).and_then(|r: ProtobufPaneScrollbackResponse| {
-                match PaneScrollbackResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {
-                    PaneScrollbackResponse::Ok(contents) => value(lua, contents),
-                    PaneScrollbackResponse::Err(e) => Err(anyhow!("{}", e)),
+                        &serde_json::from_value::<SessionListSnapshot>(value)?,
+                    ),
+                    CommandType::GetPaneInfo => super::to_lua_value(
+                        lua,
+                        &serde_json::from_value::<Option<PaneInfo>>(value)?,
+                    ),
+                    _ => lua
+                        .to_value_with(&value, SerializeOptions::new().serialize_unit_to_null(true))
+                        .and_then(|value| super::nulls_to_nil(lua, value))
+                        .map_err(super::lua_err),
                 }
-            })
-        },
-        CommandType::GetSessionList => {
-            decode(bytes).and_then(|r: ProtobufGetSessionListResponse| {
-                match GetSessionListResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {
-                    GetSessionListResponse::Ok(snapshot) => value(lua, snapshot),
-                    GetSessionListResponse::Err(e) => Err(anyhow!("{}", e)),
-                }
-            })
-        },
-        CommandType::CurrentSessionLastSavedTime => {
-            decode(bytes).and_then(|r: ProtobufCurrentSessionLastSavedTimeResponse| {
-                value(lua, r.timestamp_millis)
-            })
-        },
-        CommandType::SaveSession => {
-            decode(bytes).and_then(|r: ProtobufSaveSessionResponse| match r.result {
-                Some(save_session_response::Result::Success(_)) => Ok(LuaValue::Boolean(true)),
-                Some(save_session_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::DumpLayout => {
-            decode(bytes).and_then(|r: ProtobufDumpLayoutResponse| match r.result {
-                Some(dump_layout_response::Result::LayoutContent(layout)) => value(lua, layout),
-                Some(dump_layout_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::DumpSessionLayout => {
-            decode(bytes).and_then(|r: ProtobufDumpSessionLayoutResponse| {
-                // The shim drops metadata that fails to convert rather than failing the whole
-                // dump, since the layout text is the answer and the metadata is a bonus.
-                let metadata = r
-                    .metadata
-                    .and_then(|metadata| LayoutMetadata::try_from(metadata).ok());
-                match r.result {
-                    Some(dump_session_layout_response::Result::LayoutContent(layout)) => {
-                        value(lua, SessionLayout { layout, metadata })
-                    },
-                    Some(dump_session_layout_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                    None => Err(anyhow!("zellij answered with nothing")),
-                }
-            })
-        },
-        // `nil` for a plugin that compiles, the error text otherwise: a check is a question,
-        // so a failing one is an answer rather than a raised error.
-        CommandType::CheckLuaPlugin => {
-            decode(bytes).and_then(|r: ProtobufCheckLuaPluginResponse| value(lua, r.error))
-        },
-        CommandType::ParseLayout => {
-            decode(bytes).and_then(|r: ProtobufParseLayoutResponse| match r.result {
-                Some(parse_layout_response::Result::Metadata(metadata)) => value(
-                    lua,
-                    LayoutMetadata::try_from(metadata).map_err(|e| anyhow!("{}", e))?,
-                ),
-                Some(parse_layout_response::Result::Error(e)) => Err(layout_parsing_error(
-                    LayoutParsingError::try_from(e).map_err(|e| anyhow!("{}", e))?,
-                )),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::SaveLayout => {
-            decode(bytes).and_then(|r: ProtobufSaveLayoutResponse| match r.result {
-                Some(save_layout_response::Result::Success(_)) => Ok(LuaValue::Boolean(true)),
-                Some(save_layout_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::DeleteLayout => {
-            decode(bytes).and_then(|r: ProtobufDeleteLayoutResponse| match r.result {
-                Some(delete_layout_response::Result::Success(_)) => Ok(LuaValue::Boolean(true)),
-                Some(delete_layout_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::RenameLayout => {
-            decode(bytes).and_then(|r: ProtobufRenameLayoutResponse| match r.result {
-                Some(rename_layout_response::Result::Success(_)) => Ok(LuaValue::Boolean(true)),
-                Some(rename_layout_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::EditLayout => {
-            decode(bytes).and_then(|r: ProtobufEditLayoutResponse| match r.result {
-                Some(edit_layout_response::Result::Success(_)) => Ok(LuaValue::Boolean(true)),
-                Some(edit_layout_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        // These two answer with whether anything changed, not just that nothing went wrong, so
-        // the flag is kept rather than collapsed to `true`.
-        CommandType::ShowFloatingPanes => {
-            decode(bytes).and_then(|r: ProtobufShowFloatingPanesResponse| match r.result {
-                Some(show_floating_panes_response::Result::Success(changed)) => {
-                    Ok(LuaValue::Boolean(changed))
-                },
-                Some(show_floating_panes_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::HideFloatingPanes => {
-            decode(bytes).and_then(|r: ProtobufHideFloatingPanesResponse| match r.result {
-                Some(hide_floating_panes_response::Result::Success(changed)) => {
-                    Ok(LuaValue::Boolean(changed))
-                },
-                Some(hide_floating_panes_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::DeleteDeadSessionAndReply => {
-            decode(bytes).and_then(|r: ProtobufDeleteDeadSessionResponse| error_or_true(r.error))
-        },
-        CommandType::DeleteAllDeadSessionsAndReply => decode(bytes)
-            .and_then(|r: ProtobufDeleteAllDeadSessionsResponse| error_or_true(r.error)),
-        CommandType::KillSessionsAndReply => {
-            decode(bytes).and_then(|r: ProtobufKillSessionsResponse| error_or_true(r.error))
-        },
-        CommandType::WarpPaneToSession
-        | CommandType::WarpPaneFromSession
-        | CommandType::WarpTabToSession
-        | CommandType::WarpTabFromSession
-        | CommandType::AdoptOrphanedPane => decode(bytes).and_then(
-            |r: ProtobufWarpPaneResponse| match WarpPaneResponse::try_from(r)
-                .map_err(|e| anyhow!("{}", e))?
-            {
-                WarpPaneResponse::Ok(message) => value(lua, message),
-                WarpPaneResponse::Err(e) => Err(anyhow!("{}", e)),
+                .map_err(|e| anyhow!("zellij's answer could not be given to Lua: {}", e))
             },
-        ),
-        CommandType::ListOrphanedPanes => {
-            decode(bytes).and_then(|r: ProtobufListOrphanedPanesResponse| {
-                match ListOrphanedPanesResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {
-                    ListOrphanedPanesResponse::Ok(panes) => value(lua, panes),
-                    ListOrphanedPanesResponse::Err(e) => Err(anyhow!("{}", e)),
-                }
-            })
-        },
-        CommandType::DataDefineEntity => decode(bytes).and_then(|r: ProtobufDataDefineResponse| {
-            match DataDefineResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {
-                DataDefineResponse::Ok(info) => value(lua, info),
-                DataDefineResponse::Err(e) => Err(anyhow!("{}", e)),
-            }
-        }),
-        CommandType::DataApply => {
-            decode(bytes).and_then(
-                |r: ProtobufDataApplyResponse| match DataApplyResponse::try_from(r)
-                    .map_err(|e| anyhow!("{}", e))?
-                {
-                    DataApplyResponse::Ok(report) => value(lua, report),
-                    // Both are Lua errors, which `pcall` catches, but they are not the same
-                    // question: a conflict is worth re-reading and trying again, and everything
-                    // else will fail the same way however often it is sent. A Lua error carries
-                    // nothing but its message, so that is where the difference is carried.
-                    DataApplyResponse::Conflict(e) => Err(anyhow!("{}{}", DATA_CONFLICT_MARKER, e)),
-                    DataApplyResponse::Err(e) => Err(anyhow!("{}", e)),
-                },
-            )
-        },
-        CommandType::DataFetch => {
-            decode(bytes).and_then(
-                |r: ProtobufDataFetchResponse| match DataFetchResponse::try_from(r)
-                    .map_err(|e| anyhow!("{}", e))?
-                {
-                    DataFetchResponse::Ok(rows) => value(lua, rows),
-                    DataFetchResponse::Err(e) => Err(anyhow!("{}", e)),
-                },
-            )
-        },
-        CommandType::DataCount => {
-            decode(bytes).and_then(
-                |r: ProtobufDataCountResponse| match DataCountResponse::try_from(r)
-                    .map_err(|e| anyhow!("{}", e))?
-                {
-                    DataCountResponse::Ok(count) => value(lua, count),
-                    DataCountResponse::Err(e) => Err(anyhow!("{}", e)),
-                },
-            )
-        },
-        CommandType::DataWatch => {
-            decode(bytes).and_then(
-                |r: ProtobufDataWatchResponse| match DataWatchResponse::try_from(r)
-                    .map_err(|e| anyhow!("{}", e))?
-                {
-                    DataWatchResponse::Ok(handle) => value(lua, handle),
-                    DataWatchResponse::Err(e) => Err(anyhow!("{}", e)),
-                },
-            )
-        },
-        CommandType::DataCatalog => decode(bytes).and_then(|r: ProtobufDataCatalogResponse| {
-            match DataCatalogResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {
-                DataCatalogResponse::Ok(entities) => value(lua, entities),
-                DataCatalogResponse::Err(e) => Err(anyhow!("{}", e)),
-            }
-        }),
-        CommandType::DataUnwatch => decode(bytes).and_then(|r: ProtobufDataUnwatchResponse| {
-            match DataUnwatchResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {
-                DataUnwatchResponse::Ok => Ok(LuaValue::Boolean(true)),
-                DataUnwatchResponse::Err(e) => Err(anyhow!("{}", e)),
-            }
-        }),
-        CommandType::EnqueueQueueJob => {
-            decode(bytes).and_then(|r: ProtobufEnqueueQueueJobResponse| match r.result {
-                Some(enqueue_queue_job_response::Result::JobId(job_id)) => value(lua, job_id),
-                Some(enqueue_queue_job_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::QueueStatus => decode(bytes).and_then(|r: ProtobufQueueStatusResponse| {
-            let queues = QueueStatusResponse::try_from(r).map_err(|e| anyhow!("{}", e))?;
-            value(lua, queues)
-        }),
-        CommandType::ListRecordings => {
-            decode(bytes).and_then(|r: ProtobufListRecordingsResponse| {
-                let recordings: Vec<RecordingSummary> =
-                    r.recordings.into_iter().map(Into::into).collect();
-                value(lua, recordings)
-            })
-        },
-        CommandType::SearchRecordings => {
-            decode(bytes).and_then(|r: ProtobufSearchRecordingsResponse| {
-                let hits: Vec<SearchHit> = r.hits.into_iter().map(Into::into).collect();
-                value(lua, hits)
-            })
-        },
-        CommandType::ListNotifications => {
-            decode(bytes).and_then(|r: ProtobufListNotificationsResponse| match r.error {
-                Some(e) => Err(anyhow!("{}", e)),
-                None => {
-                    let notifications: Vec<NotificationInfo> =
-                        r.notifications.into_iter().map(Into::into).collect();
-                    value(lua, notifications)
-                },
-            })
-        },
-        CommandType::NewTab | CommandType::NewTabUnfocused => {
-            decode(bytes).and_then(|r: ProtobufNewTabResponse| match r.result {
-                Some(new_tab_response::Result::TabId(tab_id)) => value(lua, tab_id),
-                _ => Ok(LuaValue::Nil),
-            })
-        },
-        CommandType::NewTabsWithLayout | CommandType::NewTabsWithLayoutInfo => {
-            decode(bytes).and_then(|r: ProtobufNewTabsResponse| value(lua, r.tab_ids))
-        },
-        CommandType::FocusOrCreateTab => {
-            decode(bytes).and_then(|r: ProtobufFocusOrCreateTabResponse| match r.result {
-                Some(focus_or_create_tab_response::Result::TabId(tab_id)) => value(lua, tab_id),
-                _ => Ok(LuaValue::Nil),
-            })
-        },
-        CommandType::BreakPanesToNewTab => {
-            decode(bytes).and_then(|r: ProtobufBreakPanesToNewTabResponse| match r.result {
-                Some(break_panes_to_new_tab_response::Result::TabId(tab_id)) => value(lua, tab_id),
-                _ => Ok(LuaValue::Nil),
-            })
-        },
-        CommandType::BreakPanesToTabWithIndex => decode(bytes).and_then(
-            |r: ProtobufBreakPanesToTabWithIndexResponse| match r.result {
-                Some(break_panes_to_tab_with_index_response::Result::TabId(tab_id)) => {
-                    value(lua, tab_id)
-                },
-                _ => Ok(LuaValue::Nil),
-            },
-        ),
-        CommandType::BreakPanesToTabWithId => {
-            decode(bytes).and_then(|r: ProtobufBreakPanesToTabWithIdResponse| match r.result {
-                Some(break_panes_to_tab_with_id_response::Result::TabId(tab_id)) => {
-                    value(lua, tab_id)
-                },
-                _ => Ok(LuaValue::Nil),
-            })
-        },
-        CommandType::NewTiledPaneInTab => {
-            decode(bytes).and_then(|r: ProtobufNewTiledPaneInTabResponse| pane_id(lua, r.pane_id))
-        },
-        CommandType::OpenFile | CommandType::OpenFileFloating | CommandType::OpenFileInPlace => {
-            decode(bytes).and_then(|r: ProtobufOpenFileResponse| pane_id(lua, r.pane_id))
-        },
-        CommandType::OpenFileNearPlugin => {
-            decode(bytes).and_then(|r: ProtobufOpenFileNearPluginResponse| pane_id(lua, r.pane_id))
-        },
-        CommandType::OpenFileFloatingNearPlugin => decode(bytes)
-            .and_then(|r: ProtobufOpenFileFloatingNearPluginResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenFileInPlaceOfPlugin => decode(bytes)
-            .and_then(|r: ProtobufOpenFileInPlaceOfPluginResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenTerminal
-        | CommandType::OpenTerminalFloating
-        | CommandType::OpenTerminalInPlace => {
-            decode(bytes).and_then(|r: ProtobufOpenTerminalResponse| pane_id(lua, r.pane_id))
-        },
-        CommandType::OpenTerminalNearPlugin => decode(bytes)
-            .and_then(|r: ProtobufOpenTerminalNearPluginResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenTerminalFloatingNearPlugin => decode(bytes)
-            .and_then(|r: ProtobufOpenTerminalFloatingNearPluginResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenTerminalInPlaceOfPlugin => decode(bytes)
-            .and_then(|r: ProtobufOpenTerminalInPlaceOfPluginResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenTerminalPaneInPlaceOfPaneId => decode(bytes)
-            .and_then(|r: ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenEditPaneInPlaceOfPaneId => decode(bytes)
-            .and_then(|r: ProtobufOpenEditPaneInPlaceOfPaneIdResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenCommandPane
-        | CommandType::OpenCommandPaneFloating
-        | CommandType::OpenCommandPaneInPlace
-        | CommandType::OpenCommandPaneBackground => {
-            decode(bytes).and_then(|r: ProtobufOpenCommandPaneResponse| pane_id(lua, r.pane_id))
-        },
-        CommandType::OpenCommandPaneNearPlugin => decode(bytes)
-            .and_then(|r: ProtobufOpenCommandPaneNearPluginResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenCommandPaneOverlay => decode(bytes)
-            .and_then(|r: ProtobufOpenCommandPaneOverlayResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenCommandPaneFloatingNearPlugin => {
-            decode(bytes).and_then(|r: ProtobufOpenCommandPaneFloatingNearPluginResponse| {
-                pane_id(lua, r.pane_id)
-            })
-        },
-        CommandType::OpenCommandPaneInPlaceOfPlugin => decode(bytes)
-            .and_then(|r: ProtobufOpenCommandPaneInPlaceOfPluginResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenCommandPaneInPlaceOfPaneId => decode(bytes)
-            .and_then(|r: ProtobufOpenCommandPaneInPlaceOfPaneIdResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenPluginPaneFloating => decode(bytes)
-            .and_then(|r: ProtobufOpenPluginPaneFloatingResponse| pane_id(lua, r.pane_id)),
-        CommandType::OpenCommandPaneInGitCheckoutNearPlugin => {
-            decode(bytes).and_then(|r: ProtobufOpenCommandPaneInGitCheckoutResponse| {
-                match r.result {
-                    Some(open_command_pane_in_git_checkout_response::Result::PaneId(id)) => {
-                        pane_id(lua, Some(id))
-                    },
-                    Some(open_command_pane_in_git_checkout_response::Result::Error(e)) => {
-                        Err(anyhow!("{}", e))
-                    },
-                    None => Err(anyhow!("zellij answered with nothing")),
-                }
-            })
-        },
-        CommandType::SpawnAgent => {
-            decode(bytes).and_then(|r: ProtobufSpawnAgentResponse| match r.result {
-                Some(spawn_agent_response::Result::PaneId(id)) => value(
-                    lua,
-                    zellij_types::agent::SpawnedAgent {
-                        pane_id: PaneId::try_from(id).map_err(|e| anyhow!(e))?,
-                        branch: r.branch,
-                        cwd: r.cwd.map(Into::into),
-                    },
-                ),
-                Some(spawn_agent_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::OpenCommandPaneInNewTab
-        | CommandType::OpenPluginPaneInNewTab
-        | CommandType::OpenEditorPaneInNewTab => {
-            decode(bytes).and_then(|r: ProtobufOpenPaneInNewTabResponse| {
-                let pane_id = match r.pane_id.map(PaneId::try_from) {
-                    Some(Ok(pane_id)) => Some(pane_id),
-                    Some(Err(e)) => return Err(anyhow!("{}", e)),
-                    None => None,
-                };
-                value(
-                    lua,
-                    PaneInNewTab {
-                        tab_id: r.tab_id.map(TabId::try_from).transpose()?,
-                        pane_id,
-                    },
-                )
-            })
-        },
-        CommandType::ReadPluginLog => {
-            decode(bytes).and_then(|r: ProtobufReadPluginLogResponse| match r.result {
-                Some(read_plugin_log_response::Result::Lines(lines)) => value(lua, lines),
-                Some(read_plugin_log_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::ProjectConfigRead | CommandType::ProjectConfigWrite => {
-            decode(bytes).and_then(|r: ProtobufFsReadResponse| match r.result {
-                Some(fs_read_response::Result::Contents(contents)) => {
-                    let snapshot: serde_json::Value = serde_json::from_slice(&contents)
-                        .context("invalid project configuration reply")?;
-                    value(lua, snapshot)
-                },
-                Some(fs_read_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::FsRead => decode(bytes).and_then(|r: ProtobufFsReadResponse| match r.result {
-            Some(fs_read_response::Result::Contents(contents)) => lua
-                .create_string(&contents)
+            DecodedResponse::Bytes(bytes) => lua
+                .create_string(&bytes)
                 .map(LuaValue::String)
                 .map_err(|e| anyhow!("{}", e)),
-            Some(fs_read_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-            None => Err(anyhow!("zellij answered with nothing")),
-        }),
-        CommandType::FsList => decode(bytes).and_then(|r: ProtobufFsListResponse| match r.result {
-            Some(fs_list_response::Result::Entries(list)) => {
-                let entries: Vec<FsEntry> = list
-                    .entries
-                    .into_iter()
-                    .map(|entry| FsEntry {
-                        path: entry.path,
-                        // `metadata_is_set` is false when the entry could not be stat'ed, which
-                        // is a real answer ("this exists, I could not read it") and not an error.
-                        metadata: entry
-                            .metadata
-                            .as_ref()
-                            .and_then(Option::<FileMetadata>::from),
-                    })
-                    .collect();
-                value(lua, entries)
-            },
-            Some(fs_list_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-            None => Err(anyhow!("zellij answered with nothing")),
-        }),
-        CommandType::FsMetadata => {
-            decode(bytes).and_then(|r: ProtobufFsMetadataResponse| match r.result {
-                Some(fs_metadata_response::Result::Metadata(metadata)) => {
-                    match Option::<FileMetadata>::from(&metadata) {
-                        Some(metadata) => value(lua, metadata),
-                        None => Ok(LuaValue::Nil),
-                    }
-                },
-                Some(fs_metadata_response::Result::NotFound(_)) => Ok(LuaValue::Nil),
-                Some(fs_metadata_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::FsWrite
-        | CommandType::FsRemove
-        | CommandType::FsCreateDir
-        | CommandType::FsRename => {
-            decode(bytes).and_then(|r: ProtobufFsMutateResponse| match r.result {
-                Some(fs_mutate_response::Result::Success(_)) => Ok(LuaValue::Boolean(true)),
-                Some(fs_mutate_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        _ => return None,
+        }
     })
 }
 
-/// One entry of an `FsList` answer. Named fields rather than a pair, so that a plugin writes
-/// `entry.path` instead of `entry[1]`.
-#[derive(Serialize)]
-struct FsEntry {
-    path: String,
-    metadata: Option<FileMetadata>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+    use zellij_plugin_api::plugin_command::{fs_read_response, ProtobufFsReadResponse};
 
-/// The two halves of `GetFocusedPaneInfo`, which protobuf keeps apart and a plugin wants together.
-#[derive(Serialize)]
-struct FocusedPane {
-    tab_id: TabId,
-    pane_id: PaneId,
-}
+    #[test]
+    fn pane_reply_keeps_numeric_client_keys() {
+        use zellij_plugin_api::plugin_command::ProtobufGetPaneInfoResponse;
+        use zellij_types::internal_ids::ClientId;
 
-/// A `DumpSessionLayout` answer: the KDL text, and the metadata the host sent alongside it.
-#[derive(Serialize)]
-struct SessionLayout {
-    layout: String,
-    metadata: Option<LayoutMetadata>,
-}
-
-/// The `(tab_id, pane_id)` pair the shim returns for the `*InNewTab` family, with names.
-#[derive(Serialize)]
-struct PaneInNewTab {
-    tab_id: Option<TabId>,
-    pane_id: Option<PaneId>,
-}
-
-fn decode<T: Message + Default>(bytes: &[u8]) -> Result<T> {
-    T::decode(bytes).map_err(|e| anyhow!("zellij's answer could not be read: {}", e))
-}
-
-fn pane_id(lua: &Lua, id: Option<ProtobufPaneId>) -> Result<LuaValue> {
-    match id.map(PaneId::try_from) {
-        Some(Ok(pane_id)) => value(lua, pane_id),
-        Some(Err(e)) => Err(anyhow!("{}", e)),
-        None => Ok(LuaValue::Nil),
+        let pane = PaneInfo {
+            index_in_pane_group: [(ClientId::new(7), 2)].into_iter().collect(),
+            ..Default::default()
+        };
+        let reply = ProtobufGetPaneInfoResponse {
+            pane_info: Some(pane.try_into().unwrap()),
+        }
+        .encode_to_vec();
+        let lua = Lua::new();
+        let value = response_to_lua(&lua, CommandType::GetPaneInfo, &reply)
+            .unwrap()
+            .unwrap();
+        lua.globals().set("reply", value).unwrap();
+        lua.load("assert(reply.index_in_pane_group[7] == 2 and reply.exit_status == nil)")
+            .exec()
+            .unwrap();
     }
-}
 
-/// The front of the message a `DataApply` conflict raises. A Lua error is a string and nothing
-/// else, so this is how a plugin tells "somebody wrote it first" - a race worth re-reading for -
-/// from a request that will fail the same way however often it is sent. `zellij.data.is_conflict`
-/// in `prelude.lua` looks for it, and the two are pinned together by a test that provokes a real
-/// conflict through the store.
-///
-/// It rides in the message rather than in a raised table because mlua renders a table error as
-/// `<table 0x...>` and ignores its `__tostring`, so an uncaught conflict would reach the log with
-/// its message gone.
-pub(crate) const DATA_CONFLICT_MARKER: &str = "data conflict: ";
+    #[test]
+    fn session_reply_preserves_all_numeric_maps_and_string_configuration_keys() {
+        use zellij_plugin_api::plugin_command::ProtobufGetSessionListResponse;
+        use zellij_types::data::{
+            GetSessionListResponse, PaneId, PaneManifest, PluginInfo, SessionInfo,
+        };
+        use zellij_types::internal_ids::{ClientId, PluginId, TabId, TabPosition, TerminalId};
 
-/// The replies whose only field is an optional error: absent means it worked.
-fn error_or_true(error: Option<String>) -> Result<LuaValue> {
-    match error {
-        Some(e) => Err(anyhow!("{}", e)),
-        None => Ok(LuaValue::Boolean(true)),
+        let client = ClientId::new(7);
+        let pane_id = PaneId::Terminal(TerminalId::new(42));
+        let snapshot = SessionListSnapshot {
+            live_sessions: vec![SessionInfo {
+                panes: PaneManifest {
+                    panes: [(
+                        TabPosition::new(0),
+                        vec![PaneInfo {
+                            id: pane_id,
+                            index_in_pane_group: [(client, 2)].into_iter().collect(),
+                            ..Default::default()
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+                plugins: [(
+                    PluginId::new(3),
+                    PluginInfo {
+                        location: "zellij:hocus".into(),
+                        configuration: [("7".into(), "string key".into())].into_iter().collect(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                tab_history: [(client, vec![TabId::new(9)])].into_iter().collect(),
+                pane_history: [(client, vec![pane_id])].into_iter().collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let reply = ProtobufGetSessionListResponse::from(GetSessionListResponse::Ok(snapshot))
+            .encode_to_vec();
+        let lua = Lua::new();
+        let value = response_to_lua(&lua, CommandType::GetSessionList, &reply)
+            .unwrap()
+            .unwrap();
+        lua.globals().set("reply", value).unwrap();
+        lua.load(
+            r#"
+            local s = reply.live_sessions[1]
+            assert(s.plugins[3].location == "zellij:hocus" and s.plugins["3"] == nil)
+            assert(s.plugins[3].configuration["7"] == "string key")
+            assert(s.plugins[3].configuration[7] == nil)
+            assert(s.tab_history[7][1] == 9 and s.tab_history["7"] == nil)
+            assert(s.pane_history[7][1].Terminal == 42 and s.pane_history["7"] == nil)
+            assert(s.panes.panes["0"] == nil)
+            local pane = s.panes.panes[0][1]
+            assert(pane.id == 42 and pane.is_plugin == false)
+            assert(pane.index_in_pane_group[7] == 2 and pane.index_in_pane_group["7"] == nil)
+            assert(pane.exit_status == nil)
+        "#,
+        )
+        .exec()
+        .unwrap();
     }
-}
 
-/// The shim hands `LayoutParsingError` back as a value; Lua gets it as a raised message, so the
-/// parts a plugin would show - where, what, and the parser's hint - are folded into one line.
-fn layout_parsing_error(error: LayoutParsingError) -> anyhow::Error {
-    match error {
-        LayoutParsingError::KdlError {
-            kdl_error,
-            file_name,
-            ..
-        } => match kdl_error.help_message {
-            Some(help) => anyhow!("{}: {} ({})", file_name, kdl_error.error_message, help),
-            None => anyhow!("{}: {}", file_name, kdl_error.error_message),
-        },
-        LayoutParsingError::SyntaxError => anyhow!("the layout could not be parsed"),
+    #[test]
+    fn tab_reply_preserves_numeric_values_array_indices_and_missing_fields() {
+        use zellij_plugin_api::plugin_command::ProtobufGetTabInfoResponse;
+        use zellij_types::data::TabInfo;
+        use zellij_types::internal_ids::{ClientId, TabId, TabPosition};
+
+        let reply = ProtobufGetTabInfoResponse {
+            tab_info: Some(
+                TabInfo {
+                    tab_id: TabId::new(9),
+                    position: TabPosition::new(0),
+                    other_focused_clients: vec![ClientId::new(7), ClientId::new(11)],
+                    ..Default::default()
+                }
+                .try_into()
+                .unwrap(),
+            ),
+        }
+        .encode_to_vec();
+        let lua = Lua::new();
+        let value = response_to_lua(&lua, CommandType::GetTabInfo, &reply)
+            .unwrap()
+            .unwrap();
+        lua.globals().set("reply", value).unwrap();
+        lua.load(
+            r#"
+            assert(reply.tab_id == 9 and reply.position == 0)
+            assert(reply.other_focused_clients[1] == 7 and reply.other_focused_clients[2] == 11)
+            assert(reply.other_focused_clients["1"] == nil)
+            assert(reply.active_swap_layout_name == nil)
+        "#,
+        )
+        .exec()
+        .unwrap();
     }
-}
 
-fn value<T: Serialize>(lua: &Lua, from: T) -> Result<LuaValue> {
-    super::to_lua_value(lua, &from)
-        .map_err(|e| anyhow!("zellij's answer could not be given to Lua: {}", e))
+    #[test]
+    fn data_reply_preserves_large_signed_integers_and_tagged_values() {
+        use zellij_plugin_api::plugin_command::ProtobufDataFetchResponse;
+        use zellij_types::data::{DataFetchResponse, DataRows, DataValue};
+
+        let reply = ProtobufDataFetchResponse::from(DataFetchResponse::Ok(DataRows {
+            columns: vec![
+                "min".into(),
+                "max".into(),
+                "real".into(),
+                "null".into(),
+                "blob".into(),
+            ],
+            rows: vec![vec![
+                DataValue::Int(i64::MIN),
+                DataValue::Int(i64::MAX),
+                DataValue::Real(1.5),
+                DataValue::Null,
+                DataValue::Blob(vec![0, 255]),
+            ]],
+            ..Default::default()
+        }))
+        .encode_to_vec();
+        let lua = Lua::new();
+        let value = response_to_lua(&lua, CommandType::DataFetch, &reply)
+            .unwrap()
+            .unwrap();
+        lua.globals().set("reply", value).unwrap();
+        lua.load(
+            r#"
+            local row = reply.rows[1]
+            assert(row[1].Int == math.mininteger and row[2].Int == math.maxinteger)
+            assert(math.type(row[1].Int) == "integer" and math.type(row[2].Int) == "integer")
+            assert(row[3].Real == 1.5 and row[4] == "Null")
+            assert(row[5].Blob[1] == 0 and row[5].Blob[2] == 255)
+            assert(reply.next_cursor == nil)
+        "#,
+        )
+        .exec()
+        .unwrap();
+    }
+
+    #[test]
+    fn file_bytes_and_json_nulls_keep_their_lua_representation() {
+        let lua = Lua::new();
+        let contents = vec![0, 255, 128, b'a'];
+        let reply = ProtobufFsReadResponse {
+            result: Some(fs_read_response::Result::Contents(contents.clone())),
+        }
+        .encode_to_vec();
+        assert_eq!(
+            decode_response(CommandType::FsRead, &reply)
+                .unwrap()
+                .unwrap(),
+            DecodedResponse::Bytes(contents.clone())
+        );
+        let LuaValue::String(value) = response_to_lua(&lua, CommandType::FsRead, &reply)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("file contents must be a binary Lua string");
+        };
+        assert_eq!(value.as_bytes().as_ref(), contents.as_slice());
+
+        let snapshot = serde_json::json!({"missing": null, "items": [1, null, 3]});
+        let reply = ProtobufFsReadResponse {
+            result: Some(fs_read_response::Result::Contents(
+                serde_json::to_vec(&snapshot).unwrap(),
+            )),
+        }
+        .encode_to_vec();
+        assert_eq!(
+            decode_response(CommandType::ProjectConfigRead, &reply)
+                .unwrap()
+                .unwrap(),
+            DecodedResponse::Json(snapshot)
+        );
+        let value = response_to_lua(&lua, CommandType::ProjectConfigRead, &reply)
+            .unwrap()
+            .unwrap();
+        lua.globals().set("reply", value).unwrap();
+        lua.load("assert(reply.missing == nil and reply.items[1] == 1 and reply.items[2] == nil and reply.items[3] == 3)")
+            .exec()
+            .unwrap();
+        assert!(matches!(
+            response_to_lua(&lua, CommandType::GetPaneCwd, &[])
+                .unwrap()
+                .unwrap(),
+            LuaValue::Nil
+        ));
+    }
 }

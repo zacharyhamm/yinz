@@ -26,7 +26,7 @@ Commands:
                        PaneUpdate, TabUpdate, CommandPaneExited, CwdChanged and the rest. One object
                        per line, `{"event": <type>, "payload": <the event>}`, until the session ends
   recordings           Read local terminal pane recordings
-  plugins              Write, check, reload and read the logs of Lua plugins in your plugin folder
+  plugins              Write, check, reload and read logs of Lua and JS/TS plugins
   hocus                The hocus agent plugins
   firecracker          Manage session-scoped Firecracker VMs
   pty-host             Inspect and clean up detached pane supervisors. Panes outlive a server that

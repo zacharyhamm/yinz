@@ -1978,6 +1978,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
         context.clone(),
     ));
     let action_clone = action.clone();
+    let deno_generation = env.deno_generation;
     let client_id = env.client_id;
     let plugin_id = env.plugin_id;
     let senders = env.senders.clone();
@@ -2013,14 +2014,15 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
         // After action completes, send ActionComplete event with context
         // Convert server PaneId to zellij_types PaneId
         let pane_id_for_event = pane_id.map(|p| p.into());
-        let updates = vec![(
-            Some(plugin_id),
-            Some(client_id),
+        let instruction = PluginInstruction::for_plugin_event(
+            plugin_id,
+            client_id,
+            deno_generation,
             Event::ActionComplete(action_clone, pane_id_for_event, context),
-        )];
+        );
 
         // Send the ActionComplete event back to the plugin
-        if let Err(e) = senders.send_to_plugin(PluginInstruction::Update(updates)) {
+        if let Err(e) = senders.send_to_plugin(instruction) {
             log::error!("Failed to send ActionComplete event: {:?}", e);
         }
     });
@@ -3573,7 +3575,8 @@ fn set_timeout(env: &PluginEnv, secs: FractionalSeconds) {
         },
     };
     let send_plugin_instructions = env.senders.to_plugin.clone();
-    let update_target = Some(env.plugin_id);
+    let update_target = env.plugin_id;
+    let deno_generation = env.deno_generation;
     let client_id = env.client_id;
     let plugin_name = env.name();
     // Use tokio runtime for async I/O (timer operation)
@@ -3588,11 +3591,12 @@ fn set_timeout(env: &PluginEnv, secs: FractionalSeconds) {
             .ok_or(anyhow!("found no sender to send plugin instruction to"))
             .and_then(|sender| {
                 sender
-                    .send(PluginInstruction::Update(vec![(
+                    .send(PluginInstruction::for_plugin_event(
                         update_target,
-                        Some(client_id),
+                        client_id,
+                        deno_generation,
                         Event::Timer(FractionalSeconds::new(elapsed_time)),
-                    )]))
+                    ))
                     .to_anyhow()
             })
             .with_context(|| {
@@ -3705,6 +3709,7 @@ fn run_command(
                 context,
                 max_output_bytes,
                 stream_output,
+                env.deno_generation,
             ));
     }
 }
@@ -3731,6 +3736,7 @@ fn web_request(
             context,
             stream_id,
             proxy,
+            env.deno_generation,
         ));
 }
 
@@ -5304,13 +5310,18 @@ fn catalog_entities(
 
 fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
     let response = match resolve_fetch_namespace(env, &request).and_then(|namespace| {
-        env.data_access.plugin_data().register_watch(
+        let mut generations = env.deno_watch_generations.lock().unwrap();
+        let handle = env.data_access.plugin_data().register_watch(
             &namespace,
             env.plugin_id,
             env.client_id,
             request.clone(),
             mode,
-        )
+        )?;
+        if let Some(generation) = env.deno_generation {
+            generations.insert(handle.watch_id, generation);
+        }
+        Ok(handle)
     }) {
         Ok(handle) => {
             // Event delivery is gated on the plugin's subscriptions, so a plugin that watched but
@@ -5332,14 +5343,19 @@ fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
 }
 
 fn data_unwatch(env: &mut PluginEnv, watch_id: DataWatchId) {
+    let mut generations = env.deno_watch_generations.lock().unwrap();
     let response = match env
         .data_access
         .plugin_data()
         .unregister_watch(env.plugin_id, watch_id)
     {
-        Ok(()) => DataUnwatchResponse::Ok,
+        Ok(()) => {
+            generations.remove(&watch_id);
+            DataUnwatchResponse::Ok
+        },
         Err(e) => DataUnwatchResponse::Err(e.to_string()),
     };
+    drop(generations);
     write_data_response(
         env,
         ProtobufDataUnwatchResponse::from(response).encode_to_vec(),
@@ -5355,6 +5371,8 @@ fn data_unwatch(env: &mut PluginEnv, watch_id: DataWatchId) {
 /// back into the plugin directly would deadlock whenever a plugin watches something it also writes
 /// — which is the normal case, not an exotic one.
 fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet<String>) {
+    // Refresh and recipient lookup must be atomic with registration/unwatch/disposal.
+    let generations = env.deno_watch_generations.lock().unwrap();
     let changed = match env
         .data_access
         .plugin_data()
@@ -5373,11 +5391,12 @@ fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet
             rows: change.rows,
         };
         env.senders
-            .send_to_plugin(PluginInstruction::Update(vec![(
-                Some(change.plugin_id),
-                Some(change.client_id),
+            .send_to_plugin(PluginInstruction::for_plugin_event(
+                change.plugin_id,
+                change.client_id,
+                generations.get(&change.watch_id).copied(),
                 event,
-            )]))
+            ))
             .with_context(|| "failed to deliver a data store change".to_string())
             .non_fatal();
     }
@@ -6510,7 +6529,8 @@ fn scan_host_folder(env: &PluginEnv, folder_to_scan: PathBuf) {
             match reading_folder {
                 Ok(reading_folder) => {
                     let send_plugin_instructions = env.senders.to_plugin.clone();
-                    let update_target = Some(env.plugin_id);
+                    let update_target = env.plugin_id;
+                    let deno_generation = env.deno_generation;
                     let client_id = env.client_id;
                     thread::spawn({
                         move || {
@@ -6527,11 +6547,12 @@ fn scan_host_folder(env: &PluginEnv, folder_to_scan: PathBuf) {
                             send_plugin_instructions
                                 .ok_or(anyhow!("found no sender to send plugin instruction to"))
                                 .map(|sender| {
-                                    let _ = sender.send(PluginInstruction::Update(vec![(
+                                    let _ = sender.send(PluginInstruction::for_plugin_event(
                                         update_target,
-                                        Some(client_id),
+                                        client_id,
+                                        deno_generation,
                                         Event::FileSystemUpdate(paths_in_folder),
-                                    )]));
+                                    ));
                                 })
                                 .non_fatal();
                         }
@@ -7788,7 +7809,12 @@ fn override_layout(
 // formatted as string from the plugin.
 fn report_panic(env: &PluginEnv, msg: &str) {
     log::error!("PANIC IN PLUGIN!\n\r{}", msg);
-    handle_plugin_crash(env.plugin_id, msg.to_owned(), env.senders.clone());
+    handle_plugin_crash(
+        env.plugin_id,
+        env.deno_generation,
+        msg.to_owned(),
+        env.senders.clone(),
+    );
 }
 
 // Helper Functions ---------------------------------------------------------------------------------------------------

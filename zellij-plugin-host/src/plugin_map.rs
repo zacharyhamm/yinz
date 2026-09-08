@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity)]
+use crate::deno::DenoPlugin;
 use crate::lua::LuaPlugin;
 use crate::plugin_limits::PluginResourceLimits;
 use crate::plugin_worker::MessageToWorker;
@@ -8,7 +9,10 @@ use std::io::Write;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::PathBuf,
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use wasmi::{Instance, Store};
 use wasmi_wasi::WasiCtx;
@@ -48,6 +52,7 @@ pub struct PluginMap {
     // Value-only retry state survives failed instances without retaining their resources.
     plugin_metadata: BTreeMap<PluginId, PluginMetadata>,
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
+    deno_client_cancellations: HashMap<(PluginId, ClientId), (Option<u64>, Arc<AtomicBool>)>,
 }
 
 #[derive(Clone)]
@@ -125,6 +130,8 @@ impl PluginMap {
             self.plugin_assets.keys().copied().collect();
         for (plugin_id, client_id) in ids_in_plugin_map {
             if pid == plugin_id {
+                self.deno_client_cancellations
+                    .remove(&(plugin_id, client_id));
                 if let Some(plugin_asset) = self.plugin_assets.remove(&(plugin_id, client_id)) {
                     removed.insert((plugin_id, client_id), plugin_asset);
                 }
@@ -289,9 +296,9 @@ impl PluginMap {
             RunPluginLocation,
             HashMap<PluginUserConfiguration, Vec<(PluginId, ClientId)>>,
         > = HashMap::new();
-        for ((plugin_id, client_id), (running_plugin, _, _)) in self.plugin_assets.iter() {
-            let running_plugin = running_plugin.lock().unwrap();
-            let plugin_config = &running_plugin.env().plugin;
+        for (plugin_id, metadata) in &self.plugin_metadata {
+            let plugin_config = &metadata.config;
+            let client_id = &metadata.owner_client_id;
             let running_plugin_location = &plugin_config.location;
             let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
             match cloned_plugin_assets.get_mut(running_plugin_location) {
@@ -327,6 +334,26 @@ impl PluginMap {
     /// Whether this plugin already has an instance owned by this client.
     pub fn contains(&self, plugin_id: PluginId, client_id: ClientId) -> bool {
         self.plugin_assets.contains_key(&(plugin_id, client_id))
+            && !self
+                .deno_client_cancellations
+                .get(&(plugin_id, client_id))
+                .is_some_and(|(_, cancel)| cancel.load(Ordering::Acquire))
+    }
+    /// Validate failure identity without locking an isolate that may be executing guest code.
+    pub fn contains_deno_generation(&self, plugin_id: PluginId, generation: u64) -> bool {
+        self.deno_client_cancellations
+            .iter()
+            .any(|((id, _), (current, cancel))| {
+                *id == plugin_id && *current == Some(generation) && !cancel.load(Ordering::Acquire)
+            })
+    }
+    /// A queued reload supersedes old failure reports before its replacement is instantiated.
+    pub fn invalidate_deno_generations(&mut self, plugin_id: PluginId) {
+        for ((id, _), (generation, _)) in &mut self.deno_client_cancellations {
+            if *id == plugin_id {
+                *generation = None;
+            }
+        }
     }
     pub fn insert(
         &mut self,
@@ -338,10 +365,22 @@ impl PluginMap {
     ) {
         let metadata = PluginMetadata::from_running(&running_plugin.lock().unwrap());
         self.plugin_metadata.insert(plugin_id, metadata);
-        self.plugin_assets.insert(
+        if let PluginBackend::Deno(deno) = &running_plugin.lock().unwrap().backend {
+            self.deno_client_cancellations.insert(
+                (plugin_id, client_id),
+                (Some(deno.generation()), deno.client_cancel()),
+            );
+        } else {
+            self.deno_client_cancellations.remove(&(plugin_id, client_id));
+        }
+        if let Some((previous, _, _)) = self.plugin_assets.insert(
             (plugin_id, client_id),
             (running_plugin, subscriptions, running_workers),
-        );
+        ) {
+            // Insertion runs on the pinned executor. Queued jobs may still hold the old
+            // handle, so dropping the map's Arc alone does not release its isolate.
+            previous.lock().unwrap().dispose();
+        }
     }
     /// Move a plugin's single instance from one owner client to another, eg. when the client
     /// owning a shared plugin disconnects. Returns true if an instance was moved.
@@ -351,6 +390,13 @@ impl PluginMap {
         }
         match self.plugin_assets.remove(&(plugin_id, from)) {
             Some(plugin_asset) => {
+                if let Some(metadata) = self.plugin_metadata.get_mut(&plugin_id) {
+                    metadata.owner_client_id = to;
+                }
+                if let Some(cancel) = self.deno_client_cancellations.remove(&(plugin_id, from)) {
+                    self.deno_client_cancellations
+                        .insert((plugin_id, to), cancel);
+                }
                 {
                     let mut running_plugin = plugin_asset.0.lock().unwrap();
                     let plugin_env = running_plugin.env_mut();
@@ -374,6 +420,9 @@ impl PluginMap {
         self.plugin_metadata
             .get(&plugin_id)
             .map(PluginMetadata::run_plugin)
+    }
+    pub fn plugin_config_of_plugin_id(&self, plugin_id: PluginId) -> Option<PluginConfig> {
+        self.plugin_metadata.get(&plugin_id).map(|metadata| metadata.config.clone())
     }
     pub fn list_plugins(&self) -> BTreeMap<PluginId, RunPlugin> {
         self.plugin_metadata
@@ -420,6 +469,9 @@ impl ResponseSink {
 /// The message a guest is stopped with when its cancel token is set.
 pub const CANCELLED_BY_HOST: &str = "plugin cancelled by the host";
 
+/// One registry per bridge/data provider; lock before registering, refreshing or removing watches.
+pub type DenoWatchGenerations = Arc<Mutex<HashMap<zellij_types::internal_ids::DataWatchId, u64>>>;
+
 pub struct PluginEnv {
     pub plugin_id: PluginId,
     /// Set by the host to stop this instance: an unload, or session shutdown. Wasm checks it at
@@ -434,6 +486,8 @@ pub struct PluginEnv {
     /// not unwind guest frames, so `zellij-tile`'s state cell stays borrowed and the next export
     /// panics), and a Lua one would only run away again. Per instance, unlike `cancel`.
     pub cancel_tripped: Arc<AtomicBool>,
+    /// Identifies the Deno instance that emitted a failure, including host ReportPanic.
+    pub deno_generation: Option<u64>,
     pub plugin: PluginConfig,
     pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
     /// Whether this plugin has asked for permissions at all, set by `request_permission`.
@@ -462,6 +516,7 @@ pub struct PluginEnv {
     pub temporary_data_dir: Option<Arc<zellij_runtime::owned_dir::OwnedDir>>,
     /// The process-wide provider shared by recording and plugin data.
     pub data_access: Arc<DataAccess>,
+    pub deno_watch_generations: DenoWatchGenerations,
     /// The work queues, shared with the plugin thread. A plugin enqueues and reads status
     /// straight from here rather than asking the plugin thread, because a plugin that waits for
     /// the plugin thread while holding its own lock deadlocks the moment another plugin loads
@@ -474,7 +529,7 @@ pub struct PluginEnv {
     /// Where the user's own plugins live. Read by `GetUserPluginDir`, and by the Lua
     /// loader as the folder to search when a plugin is named rather than pathed.
     pub user_plugin_dir: Option<PathBuf>,
-    /// The file a Lua plugin's source was actually read from, which is not always
+    /// The file a script plugin's source was actually read from, which is not always
     /// `plugin.location`: a plugin declared `file:keys.lua` keeps `<cwd>/keys.lua` as its
     /// identity but is found in `user_plugin_dir`. A reload names the file in full, so this
     /// is what `all_plugin_ids_for_plugin_location` matches it against. `None` for wasm
@@ -533,6 +588,35 @@ impl<T: Write + Send + 'static> std::io::Write for WriteOutputStream<T> {
 }
 
 impl PluginEnv {
+    /// Remove only this runtime's watches, including watches created for other clients.
+    pub fn clear_deno_watches(&self, generation: u64) {
+        use zellij_types::plugin_data::DataError;
+
+        self.deno_watch_generations
+            .lock()
+            .unwrap()
+            .retain(|watch_id, owner| {
+                if *owner != generation {
+                    return true;
+                }
+                match self
+                    .data_access
+                    .plugin_data()
+                    .unregister_watch(self.plugin_id, *watch_id)
+                {
+                    // The bridge's plugin-wide unload may already have removed the watch.
+                    Ok(()) | Err(DataError::InvalidQuery(_)) => false,
+                    Err(error) => {
+                        Err::<(), _>(error)
+                            .context("failed to remove Deno data watch")
+                            .non_fatal();
+                        // A surviving watch must keep its generation, never become unscoped.
+                        true
+                    },
+                }
+            });
+    }
+
     // Get the name (path) of the containing plugin
     pub fn name(&self) -> String {
         format!("{} (ID {})", self.plugin.path.display(), self.plugin_id)
@@ -548,20 +632,16 @@ pub enum AtomicEvent {
     Resize,
 }
 
-/// The runtime actually executing a plugin. Zellij runs plugins compiled to wasm and plugins
-/// written in Lua; everything above this enum - pane sizes, subscriptions, event routing,
-/// rendering - is common to both, so the runtime difference is confined to here and to the
-/// entrypoint methods on `RunningPlugin`.
-///
-/// This is an enum rather than a `Box<dyn Trait>` deliberately: there will only ever be a
-/// couple of runtimes, and an enum keeps the wasm variant free of object-safety and `Send`
-/// gymnastics.
+/// The runtime executing a plugin. Pane sizes, subscriptions, event permissions and
+/// host commands are shared. Deno stores only a Send handle here, while its isolate
+/// stays on the assigned executor thread.
 pub enum PluginBackend {
     Wasm {
         store: Store<PluginEnv>,
         instance: Instance,
     },
     Lua(LuaPlugin),
+    Deno(DenoPlugin),
 }
 
 pub struct RunningPlugin {
@@ -578,6 +658,42 @@ pub struct RunningPlugin {
 }
 
 impl RunningPlugin {
+    pub fn new_deno(deno: DenoPlugin, rows: usize, columns: usize) -> Self {
+        Self {
+            backend: PluginBackend::Deno(deno),
+            rows,
+            columns,
+            next_event_ids: HashMap::new(),
+            last_applied_event_ids: HashMap::new(),
+            denied_events_logged: HashSet::new(),
+        }
+    }
+
+    pub fn deno_generation(&self) -> Option<u64> {
+        match &self.backend {
+            PluginBackend::Deno(deno) if !deno.is_disposed() => Some(deno.generation()),
+            _ => None,
+        }
+    }
+
+    pub fn is_disposed(&self) -> bool {
+        matches!(&self.backend, PluginBackend::Deno(deno) if deno.is_disposed())
+    }
+
+    pub fn deno_tick(&mut self) -> Result<bool> {
+        match &mut self.backend {
+            PluginBackend::Deno(deno) => deno.tick(),
+            _ => Ok(false),
+        }
+    }
+
+    /// Release thread-bound runtime state while still on the assigned executor.
+    pub fn dispose(&mut self) {
+        if let PluginBackend::Deno(deno) = &mut self.backend {
+            deno.dispose();
+        }
+    }
+
     pub fn new(store: Store<PluginEnv>, instance: Instance, rows: usize, columns: usize) -> Self {
         RunningPlugin {
             backend: PluginBackend::Wasm { store, instance },
@@ -611,12 +727,14 @@ impl RunningPlugin {
         match &self.backend {
             PluginBackend::Wasm { store, .. } => store.data(),
             PluginBackend::Lua(lua) => lua.env(),
+            PluginBackend::Deno(deno) => deno.env(),
         }
     }
     pub fn env_mut(&mut self) -> &mut PluginEnv {
         match &mut self.backend {
             PluginBackend::Wasm { store, .. } => store.data_mut(),
             PluginBackend::Lua(lua) => lua.env_mut(),
+            PluginBackend::Deno(deno) => deno.env_mut(),
         }
     }
 
@@ -636,6 +754,7 @@ impl RunningPlugin {
             // A Lua plugin's source has already run by the time it gets here; running it is how
             // we obtained the table holding its entrypoints.
             PluginBackend::Lua(_) => Ok(()),
+            PluginBackend::Deno(_) => Ok(()),
         }
     }
 
@@ -659,6 +778,7 @@ impl RunningPlugin {
                 Ok(())
             },
             PluginBackend::Lua(lua) => lua.load(configuration.inner()),
+            PluginBackend::Deno(deno) => deno.load(configuration.inner()),
         }
     }
 
@@ -693,6 +813,7 @@ impl RunningPlugin {
                 Ok(should_render == 1)
             },
             PluginBackend::Lua(lua) => lua.update(event),
+            PluginBackend::Deno(deno) => deno.update(event),
         }
     }
 
@@ -713,6 +834,7 @@ impl RunningPlugin {
                 Ok(Some(should_render == 1))
             },
             PluginBackend::Lua(lua) => lua.pipe(message).map(Some),
+            PluginBackend::Deno(deno) => deno.pipe(message).map(Some),
         }
     }
 
@@ -730,6 +852,7 @@ impl RunningPlugin {
                 Ok(wasi_read_string(store.data())?.into_bytes())
             },
             PluginBackend::Lua(lua) => lua.render(rows, columns),
+            PluginBackend::Deno(deno) => deno.render(rows, columns),
         }
     }
 
@@ -776,6 +899,88 @@ impl RunningPlugin {
 mod tests {
     use super::configuration_matches_for_reload;
     use zellij_types::input::layout::PluginUserConfiguration;
+
+    #[test]
+    fn reload_metadata_lookup_needs_no_guest_and_deduplicates_clients() {
+        use super::{ClientId, PluginConfig, PluginId, PluginMap, RunPluginLocation};
+        let mut map = PluginMap::default();
+        for (id, extension) in [(7, "ts"), (8, "lua"), (9, "wasm")] {
+            let run = zellij_runtime::plugin_location::run_plugin_from_url(&format!(
+                "file:/cwd/plugin.{extension}"
+            ))
+            .unwrap();
+            let config = PluginConfig::from_run_plugin(&run).unwrap();
+            let resolved = std::path::PathBuf::from(format!("/plugins/plugin.{extension}"));
+            // No runtime assets: every lookup below must be served from cached metadata.
+            for client in [1, 2] {
+                map.plugin_metadata.insert(
+                    PluginId::new(id),
+                    super::PluginMetadata {
+                        config: config.clone(),
+                        resolved_source_path: Some(resolved.clone()),
+                        cwd: "/cwd".into(),
+                        tab_index: None,
+                        size: (0, 0),
+                        owner_client_id: ClientId::new(client),
+                    },
+                );
+            }
+            assert_eq!(
+                map.all_plugin_ids_for_plugin_location(
+                    &RunPluginLocation::File(resolved),
+                    &PluginUserConfiguration::default(),
+                )
+                .unwrap(),
+                vec![PluginId::new(id)]
+            );
+            assert_eq!(
+                map.run_plugin_of_plugin_id(PluginId::new(id))
+                    .unwrap()
+                    .location,
+                run.location
+            );
+            assert_eq!(
+                map.plugin_config_of_plugin_id(PluginId::new(id)),
+                Some(config)
+            );
+        }
+        assert_eq!(map.clone_plugin_assets().len(), 3);
+    }
+
+    #[test]
+    fn deno_failure_identity_rejects_replacements_and_disconnected_clients() {
+        use super::{Arc, AtomicBool, ClientId, Ordering, PluginId, PluginMap};
+        let mut map = PluginMap::default();
+        let id = PluginId::new(7);
+        let client = ClientId::new(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        // Metadata alone is sufficient: no running-plugin lock or V8 isolate is needed.
+        map.deno_client_cancellations
+            .insert((id, client), (Some(41), cancel.clone()));
+        assert!(map.contains_deno_generation(id, 41));
+        map.deno_client_cancellations
+            .insert((id, client), (Some(42), cancel.clone()));
+        assert!(!map.contains_deno_generation(id, 41));
+        assert!(map.contains_deno_generation(id, 42));
+        let peer = Arc::new(AtomicBool::new(false));
+        map.deno_client_cancellations
+            .insert((id, ClientId::new(2)), (Some(43), peer.clone()));
+        cancel.store(true, Ordering::Release);
+        assert!(!map.contains_deno_generation(id, 42));
+        assert!(map.contains_deno_generation(id, 43));
+        assert!(!map.contains_deno_generation(PluginId::new(8), 43));
+        map.invalidate_deno_generations(id);
+        assert!(!map.contains_deno_generation(id, 43));
+        // Reload invalidates failure identity, but a subsequent disconnect must still
+        // reach the exact attachment token consulted by contains().
+        let (generation, retained_cancel) = &map.deno_client_cancellations[&(id, ClientId::new(2))];
+        assert_eq!(*generation, None);
+        assert!(Arc::ptr_eq(retained_cancel, &peer));
+        peer.store(true, Ordering::Release);
+        assert!(retained_cancel.load(Ordering::Acquire));
+        map.deno_client_cancellations.clear();
+        assert!(!map.contains_deno_generation(id, 43));
+    }
 
     fn configuration(entries: &[(&str, &str)]) -> PluginUserConfiguration {
         PluginUserConfiguration::new(

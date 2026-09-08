@@ -24,6 +24,9 @@ zellij-tile-markdown = { path = "../zellij-tile-markdown" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
+deno_core = "=0.405.0"
+deno_ast = { version = "=0.53.3", features = ["transpiling"] }
+deno_error = "0.7"
 highway = { version = "=1.2.0", default-features = false, features = ["std"] }
 kdl = { workspace = true }
 lazy_static = { workspace = true }

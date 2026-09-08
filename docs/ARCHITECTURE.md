@@ -51,6 +51,17 @@ Run focused tests with `cargo x test -p <owning-crate>`.
 Run `cargo x postgres-test --build` followed by `cargo x postgres-test --test` for storage against Postgres.
 Run `cargo x ci check` before a branch or PR handoff.
 
+## Plugin runtimes
+
+The server supports Wasm, Lua, and embedded Deno Core. They share permission checks,
+host command dispatch, subscriptions, and the plugin render path.
+Deno isolates stay in an executor-thread-local registry. The shared plugin map holds
+only their handles and environments. Each invocation temporarily moves its environment
+into scoped op state; no host operation keeps an environment borrow across an await.
+Generation IDs reject completions from replaced isolates. Separate plugin and client
+cancellation tokens stop execution without cancelling another client's instance.
+See [JavaScript and TypeScript plugins](DENO_PLUGINS.md) for the SDK and offline checker.
+
 ## Data access
 
 The server constructs one host-only `DataAccess` provider and shares it with the plugin runtime

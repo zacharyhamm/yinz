@@ -1568,40 +1568,33 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             }
             // On stderr, and after the path: the path is the answer a script reads, and a
             // warning is for the person watching. Never a refusal - see `plugin_authoring::lint`.
-            print_plugin_lint(&name, &source);
+            if !zellij_plugin_api::authoring::is_deno_plugin(&written.path) {
+                print_plugin_lint(&name, &source);
+            }
             Ok(())
         },
         PluginsCli::Check { name, file } => {
-            // Two names, and they are not the same one: `chunk` is what the compiler quotes in
-            // an error, and the lint's is the plugin name - `hocus/todo`, not `todo.lua` -
-            // because one of its rules turns on where in the folder the file lands.
-            let (chunk, lint_name, source) = match (name, file) {
-                (_, Some(file)) => (
-                    file.file_name()
-                        .map(|f| f.to_string_lossy().to_string())
-                        .unwrap_or_else(|| file.display().to_string()),
-                    plugin_name_of(&plugin_dir, &file),
-                    read_source(Some(&file))?,
-                ),
+            let (path, lint_name) = match (name, file) {
+                (_, Some(file)) => {
+                    let lint_name = plugin_name_of(&plugin_dir, &file);
+                    (file, lint_name)
+                },
                 (Some(name), None) => {
                     let path =
                         zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
                             .map_err(|e| anyhow::anyhow!(e))?;
-                    (
-                        path.file_name()
-                            .map(|f| f.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                        name,
-                        std::fs::read_to_string(&path).map_err(|e| {
-                            anyhow::anyhow!("failed to read {}: {e}", path.display())
-                        })?,
-                    )
+                    (path, name)
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
             };
-            zellij_server::check_lua_plugin(&source, &chunk).map_err(|e| anyhow::anyhow!(e))?;
-            println!("{chunk} compiles");
-            print_plugin_lint(&lint_name, &source);
+            zellij_server::plugin_authoring::check_plugin(&path)?;
+            if zellij_plugin_api::authoring::is_deno_plugin(&path) {
+                println!("{} checks successfully", path.display());
+            } else {
+                let chunk = path.file_name().unwrap_or_default().to_string_lossy();
+                println!("{chunk} compiles");
+                print_plugin_lint(&lint_name, &read_source(Some(&path))?);
+            }
             Ok(())
         },
         PluginsCli::Reload { name } => {

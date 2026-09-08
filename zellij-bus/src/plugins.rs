@@ -96,6 +96,9 @@ pub enum PluginInstruction {
         client_id: ClientId,
     },
     Update(Vec<(Option<PluginId>, Option<ClientId>, Event)>), // Focused plugin / broadcast, client_id, event data
+    DenoTick(PluginId, ClientId, u64),
+    DenoEvent(PluginId, ClientId, u64, Event),
+    DenoDispose(PluginId, u64),
     Unload(PluginId),                                         // plugin_id
     Reload(
         Option<bool>,   // should float
@@ -287,10 +290,12 @@ pub enum PluginInstruction {
         plugin_url: String,
         permissions: Vec<PermissionType>,
     },
-    /// A plugin failed to load or trapped. Only queued jobs act on this: a job that can no
-    /// longer run must not keep its slot.
+    /// A plugin failed to load or trapped. Deno reports are validated against their instance
+    /// generation before painting errors or disposing it. Failed jobs also release their slot.
     PluginFailed {
         plugin_id: PluginId,
+        /// None for legacy runtimes and load failures that precede instance creation.
+        deno_generation: Option<u64>,
         error: String,
         /// True when the load itself failed, so the loader has already run and given up; false
         /// when a plugin that was loaded trapped. The two need different cleanup - see
@@ -308,11 +313,30 @@ pub enum PluginInstruction {
     Exit,
 }
 
+impl PluginInstruction {
+    /// Async completions belong to the Deno instance that started the operation.
+    /// Wasm and Lua retain their existing event delivery protocol.
+    pub fn for_plugin_event(
+        plugin_id: PluginId,
+        client_id: ClientId,
+        deno_generation: Option<u64>,
+        event: Event,
+    ) -> Self {
+        match deno_generation {
+            Some(generation) => Self::DenoEvent(plugin_id, client_id, generation, event),
+            None => Self::Update(vec![(Some(plugin_id), Some(client_id), event)]),
+        }
+    }
+}
+
 impl From<&PluginInstruction> for PluginContext {
     fn from(plugin_instruction: &PluginInstruction) -> Self {
         // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
         // a variant is added without either a matching `PluginContext` or an arm here.
         match plugin_instruction {
+            PluginInstruction::DenoTick(..) => PluginContext::Update,
+            PluginInstruction::DenoEvent(..) => PluginContext::Update,
+            PluginInstruction::DenoDispose(..) => PluginContext::Unload,
             PluginInstruction::PostMessagesToPluginWorker(..) => {
                 PluginContext::PostMessageToPluginWorker
             },

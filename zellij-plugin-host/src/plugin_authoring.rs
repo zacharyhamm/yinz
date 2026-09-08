@@ -1,9 +1,22 @@
-//! The file work behind `zellij plugins`: writing a Lua plugin into the user's plugin folder
+//! The file work behind `zellij plugins`: writing a script plugin into the user's plugin folder
 //! and reading its lines back out of the log. Kept apart from the command so it can be tested on
 //! a folder of its own, and in this crate rather than the binary's so the integration tests can
 //! run the same code the CLI does.
 
 use std::path::{Path, PathBuf};
+use zellij_plugin_api::authoring::is_deno_plugin;
+
+/// Check a file using its runtime: Lua compilation or Deno's semantic module check.
+pub fn check_plugin(path: &Path) -> anyhow::Result<()> {
+    if is_deno_plugin(path) {
+        crate::deno::check_plugin(path)
+    } else {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
+        let chunk = path.file_name().unwrap_or_default().to_string_lossy();
+        crate::check_lua_plugin(&source, &chunk).map_err(|e| anyhow::anyhow!(e))
+    }
+}
 
 /// A plugin written, and the copy kept of whatever it replaced.
 #[derive(Debug, PartialEq, Eq)]
@@ -13,12 +26,12 @@ pub struct Written {
     pub replaced: Option<PathBuf>,
 }
 
-/// Write `source` as `<dir>/<name>.lua` with exactly one trailing newline, creating the
+/// Write `source` with its explicit script extension (default `.lua`) and one trailing newline, creating the
 /// module folder if the name has one. Refuses a name that is not a plugin name, an existing
 /// file unless `overwrite`, a symlink in place of the file or its folder, and - when `check`
 /// - a source that does not compile.
 ///
-/// An overwrite keeps the version it replaced as `<name>.bak.lua`, which is the same thing
+/// An overwrite keeps the version it replaced as `<name>.bak.<extension>`, which is the same thing
 /// hocus's `plugin_write` does: a rewrite that dropped a feature is then one read away from
 /// the file it dropped it from, whichever surface did the rewriting. A backup that cannot be
 /// kept refuses the write rather than proceeding without one - see [`keep_backup`].
@@ -39,8 +52,12 @@ pub fn write(
             .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_default();
-        crate::check_lua_plugin(source, &chunk)
-            .map_err(|e| anyhow::anyhow!("{} does not compile: {e}", chunk))?;
+        if is_deno_plugin(&path) {
+            crate::deno::check_syntax(&path, source)
+        } else {
+            crate::check_lua_plugin(source, &chunk).map_err(|e| anyhow::anyhow!(e))
+        }
+        .map_err(|e| anyhow::anyhow!("{} does not compile: {e:#}", chunk))?;
     }
     let parent = path.parent().expect("a plugin file has a folder");
     if parent.is_symlink() {
@@ -131,7 +148,9 @@ pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<St
     };
     let matching: Vec<&str> = log
         .lines()
-        .filter(|line| line.contains(&file_name) || line.contains(&builtin_tag))
+        .filter(|line| {
+            line.contains(&file_name) || (!is_deno_plugin(path) && line.contains(&builtin_tag))
+        })
         .collect();
     let start = matching.len().saturating_sub(lines.max(1));
     let mut out = matching[start..].join("\n");
@@ -144,6 +163,100 @@ pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deno_writes_check_syntax_and_preserve_previous_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        for extension in ["js", "mjs", "ts", "mts"] {
+            let name = format!("app/keys.{extension}");
+            // An unresolved import is syntactically valid: writes must not require its module yet.
+            let source = "import './missing.js';\nexport default {};";
+            let written = write(dir.path(), &name, source, false, true).unwrap();
+            assert_eq!(written.path, dir.path().join(&name));
+            assert!(
+                check_plugin(&written.path).is_err(),
+                "semantic check must resolve imports"
+            );
+            assert!(write(dir.path(), &name, "export default {};", false, true).is_err());
+            assert!(write(dir.path(), &name, "export default {", true, true).is_err());
+            assert_eq!(
+                std::fs::read_to_string(&written.path).unwrap(),
+                format!("{source}\n")
+            );
+            let replaced = write(dir.path(), &name, "export default {};", true, true).unwrap();
+            let backup = dir.path().join(format!("app/keys.bak.{extension}"));
+            assert_eq!(replaced.replaced, Some(backup.clone()));
+            assert_eq!(
+                std::fs::read_to_string(&backup).unwrap(),
+                format!("{source}\n")
+            );
+            assert!(
+                write(dir.path(), &name, "export default {};\n\n", true, true)
+                    .unwrap()
+                    .replaced
+                    .is_none()
+            );
+            assert_eq!(
+                std::fs::read_to_string(&backup).unwrap(),
+                format!("{source}\n")
+            );
+            #[cfg(unix)]
+            {
+                let linked = format!("linked.{extension}");
+                std::os::unix::fs::symlink(&written.path, dir.path().join(&linked)).unwrap();
+                assert!(write(dir.path(), &linked, "export default {};", true, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("symlink"));
+                let protected = format!("protected.{extension}");
+                let original = write(dir.path(), &protected, source, false, true).unwrap();
+                std::os::unix::fs::symlink(
+                    &written.path,
+                    dir.path().join(format!("protected.bak.{extension}")),
+                )
+                .unwrap();
+                assert!(
+                    write(dir.path(), &protected, "export default {};", true, true)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("backup")
+                );
+                assert_eq!(
+                    std::fs::read_to_string(original.path).unwrap(),
+                    format!("{source}\n")
+                );
+            }
+        }
+        let typed = write(
+            dir.path(),
+            "typed.mts",
+            "const value: number = 1; export { value };",
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(typed.path.ends_with("typed.mts"));
+        assert!(write(
+            dir.path(),
+            "typed.js",
+            "const value: number = 1;",
+            false,
+            true
+        )
+        .is_err());
+        write(dir.path(), "broken.ts", "export default {", false, false).unwrap();
+    }
+
+    #[test]
+    fn deno_logs_do_not_include_same_stem_lua_builtins() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("zellij.log");
+        std::fs::write(&log, "[lua:keys] lua\n[deno:/plugins/keys.ts] one\n[deno:/plugins/other.ts] other\n[deno:/plugins/keys.ts] two\n").unwrap();
+        assert_eq!(
+            log_tail(&log, Path::new("/plugins/keys.ts"), 2).unwrap(),
+            "[deno:/plugins/keys.ts] one\n[deno:/plugins/keys.ts] two\n"
+        );
+    }
 
     #[test]
     fn a_write_compiles_first_and_never_clobbers_or_follows_a_link() {

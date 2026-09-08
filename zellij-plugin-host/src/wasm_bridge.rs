@@ -69,7 +69,27 @@ fn make_plugin_url_path_safe(url: String) -> String {
 #[derive(Debug, Clone)]
 pub enum EventOrPipeMessage {
     Event(Event),
+    DenoEvent(ClientId, u64, Event),
     PipeMessage(Option<ClientId>, PipeMessage),
+}
+
+impl EventOrPipeMessage {
+    fn client_for_replay(
+        &self,
+        owner: ClientId,
+        generation: Option<u64>,
+        shared: bool,
+    ) -> Option<ClientId> {
+        match self {
+            Self::DenoEvent(client, expected, _)
+                if generation == Some(*expected) && (shared || *client == owner) =>
+            {
+                Some(*client)
+            },
+            Self::DenoEvent(..) => None,
+            _ => Some(owner),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -93,9 +113,12 @@ pub struct LoadingContext {
     pub keybinds: Keybinds,
     pub zellij_data_dir: PathBuf,
     pub data_access: Arc<DataAccess>,
+    pub deno_watch_generations: super::plugin_map::DenoWatchGenerations,
     pub queues: Arc<Mutex<Queues>>,
     pub size: Size,
     pub cancel: Arc<AtomicBool>,
+    pub client_cancel: Arc<AtomicBool>,
+    pub client_cancellations: Arc<Mutex<HashMap<ClientId, Arc<AtomicBool>>>>,
 }
 
 impl LoadingContext {
@@ -149,6 +172,7 @@ impl LoadingContext {
             tab_index,
             zellij_data_dir: wasm_bridge.zellij_data_dir.clone(),
             data_access: wasm_bridge.data_access.clone(),
+            deno_watch_generations: wasm_bridge.deno_watch_generations.clone(),
             queues: wasm_bridge.queues.clone(),
             size,
             // Made by the load or reload this context is for; a context built for a plugin
@@ -158,6 +182,9 @@ impl LoadingContext {
                 .get(&plugin_id)
                 .cloned()
                 .unwrap_or_default(),
+            client_cancel: wasm_bridge.client_cancellations.lock().unwrap()
+                .entry(client_id).or_default().clone(),
+            client_cancellations: wasm_bridge.client_cancellations.clone(),
         })
     }
     pub fn update_plugin_path(&mut self, new_path: PathBuf) {
@@ -175,6 +202,7 @@ pub struct WasmBridge {
     senders: ThreadSenders,
     zellij_data_dir: PathBuf,
     data_access: Arc<DataAccess>,
+    deno_watch_generations: super::plugin_map::DenoWatchGenerations,
     plugin_map: Arc<Mutex<PluginMap>>,
     plugin_executor: Arc<PinnedExecutor>,
     next_plugin_id: u32,
@@ -205,6 +233,9 @@ pub struct WasmBridge {
     /// looping inside `update()` holds that lock on its executor thread, and the plugin thread
     /// waiting for it there is exactly how a runaway plugin once wedged session shutdown.
     cancel_tokens: HashMap<PluginId, Arc<AtomicBool>>,
+    // Attachment-scoped: a reused client ID must not revive pending work from its
+    // previous connection. Separate from plugin cancellation so peers keep running.
+    client_cancellations: Arc<Mutex<HashMap<ClientId, Arc<AtomicBool>>>>,
     /// Named work queues. Jobs are ordinary plugins once running; this is what decides when
     /// they start and who is told when they end. Shared with every `PluginEnv`, which enqueues
     /// and reads status directly - see the note on `PluginEnv::queues`. Never hold this lock
@@ -276,12 +307,15 @@ fn close_plugin_instance(
                 Err(e) => {
                     log::error!("{:?}", e);
                     let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
-                    handle_plugin_crash(plugin_id, stringified_error, senders.clone());
+                    if !rp.is_disposed() {
+                        handle_plugin_crash(plugin_id, rp.env().deno_generation, stringified_error, senders.clone());
+                    }
                 },
             }
         }
     }
 
+    running_plugin.lock().unwrap().dispose();
     drop(running_plugin);
     drop(subscriptions);
 }
@@ -361,6 +395,7 @@ impl WasmBridge {
             senders,
             zellij_data_dir,
             data_access,
+            deno_watch_generations: Default::default(),
             plugin_map,
             plugin_executor,
             path_to_default_shell,
@@ -376,6 +411,7 @@ impl WasmBridge {
             unloaded_while_loading: Default::default(),
             pending_plugin_reloads: HashSet::new(),
             cancel_tokens: HashMap::new(),
+            client_cancellations: Arc::default(),
             queues: Default::default(),
             zellij_cwd,
             session_env_vars,
@@ -873,9 +909,38 @@ impl WasmBridge {
     pub fn queue_plugin_failed(
         &mut self,
         plugin_id: PluginId,
+        deno_generation: Option<u64>,
         error: String,
         failed_to_load: bool,
     ) -> Result<()> {
+        if let Some(generation) = deno_generation {
+            // Serialize validation and painting with reload's map replacement. A retired
+            // attachment is logically disposed even before its executor cleanup runs.
+            let plugin_map = self.plugin_map.lock().unwrap();
+            if !plugin_map.contains_deno_generation(plugin_id, generation) {
+                return Ok(());
+            }
+            show_plugin_crash(plugin_id, error.clone(), &self.senders);
+            // Check again on the executor: reload can replace the entry before cleanup runs.
+            // Instance locks are safe here because all this plugin's callbacks run here too.
+            self.plugin_executor.execute_for_plugin_tagged(
+                plugin_id,
+                "failed_dispose",
+                false,
+                move |_, plugin_map, _, _, _| {
+                    let instances = plugin_map.lock().unwrap().running_plugins();
+                    for (id, _, instance) in instances {
+                        if id != plugin_id {
+                            continue;
+                        }
+                        let mut instance = instance.lock().unwrap();
+                        if instance.deno_generation() == Some(generation) {
+                            instance.dispose();
+                        }
+                    }
+                },
+            );
+        }
         let recorded = self.queues.lock().unwrap().record_outcome(
             plugin_id,
             QueueJobOutcome::Failed,
@@ -1041,10 +1106,27 @@ impl WasmBridge {
         )]));
     }
     pub fn reload_plugin_with_id(&mut self, plugin_id: PluginId) -> Result<()> {
+        // Configuration is cached outside the guest mutex. Interrupt Deno before any
+        // getter waits on an entrypoint, and give the replacement its own uncancelled token.
+        if self
+            .plugin_config_of_plugin_id(plugin_id)
+            .is_some_and(|config| config.runtime() == zellij_config::plugins::PluginRuntime::Deno)
+        {
+            self.cancel_token(plugin_id).store(true, Ordering::Release);
+            self.cancel_tokens
+                .insert(plugin_id, Arc::new(AtomicBool::new(false)));
+        }
         let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
             log::error!("Failed to find plugin with id: {}", plugin_id);
             return Ok(());
         };
+
+        // A failure already queued by the old generation must not finish a queue job or
+        // paint over this reload, even before the executor installs the replacement.
+        self.plugin_map
+            .lock()
+            .unwrap()
+            .invalidate_deno_generations(plugin_id);
 
         let (rows, columns) = self.size_of_plugin_id(plugin_id).unwrap_or((0, 0));
         self.cached_events_for_pending_plugins
@@ -1055,8 +1137,7 @@ impl WasmBridge {
         let mut loading_indication = LoadingIndication::new(run_plugin.location.to_string());
         self.start_plugin_loading_indication(&[plugin_id], &loading_indication);
         self.loading_plugins.insert((plugin_id, run_plugin.clone()));
-        // Kept, not replaced: a reload does not cancel the instance it replaces, whose
-        // `BeforeClose` runs below on the same thread, after whatever it is doing now.
+        // Lua/Wasm keep their token; Deno's replacement token was installed above.
         self.cancel_token(plugin_id);
 
         let plugin_executor = self.plugin_executor.clone();
@@ -1120,6 +1201,7 @@ impl WasmBridge {
                         .lock()
                         .unwrap()
                         .contains(&EventType::BeforeClose);
+                    let old_instance = running_plugin.clone();
                     let mut running_plugin = running_plugin.lock().unwrap();
                     if let Some(directory) = &running_plugin.env().temporary_data_dir {
                         // Transfer ownership on the executor, before replacing the old instance.
@@ -1137,22 +1219,28 @@ impl WasmBridge {
                             .env()
                             .cancel_tripped
                             .load(std::sync::atomic::Ordering::Relaxed);
-                        running_plugin
-                            .env()
-                            .cancel
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
                         if was_stopped_mid_call {
                             log::warn!(
                                 "plugin {plugin_id} was cancelled mid-call, so its BeforeClose \
                                  is skipped before its reload"
                             );
-                        } else if let Err(e) = apply_before_close_event_to_plugin(
-                            plugin_id,
-                            first_client_id,
-                            &mut running_plugin,
-                            senders.clone(),
-                        ) {
-                            log::error!("{:?}", e);
+                        } else {
+                            running_plugin.env().cancel.store(false, Ordering::Release);
+                            if running_plugin.env().deno_generation.is_some() {
+                                arm_unload_watchdog(
+                                    plugin_id,
+                                    running_plugin.env().cancel.clone(),
+                                    vec![old_instance],
+                                );
+                            }
+                            if let Err(e) = apply_before_close_event_to_plugin(
+                                plugin_id,
+                                first_client_id,
+                                &mut running_plugin,
+                                senders.clone(),
+                            ) {
+                                log::error!("{:?}", e);
+                            }
                         }
                     }
                 }
@@ -1214,6 +1302,15 @@ impl WasmBridge {
 
         self.connected_clients.lock().unwrap().push(client_id);
         let mut new_plugins = HashSet::new();
+        {
+            let mut cancellations = self.client_cancellations.lock().unwrap();
+            if cancellations
+                .get(&client_id)
+                .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+            {
+                cancellations.insert(client_id, Arc::default());
+            }
+        }
         log::info!(
             "attach trace: WasmBridge::add_client client_id={client_id} waiting for plugin_map lock"
         );
@@ -1574,6 +1671,34 @@ impl WasmBridge {
         }
     }
 
+    pub fn deno_event(
+        &mut self,
+        plugin_id: PluginId,
+        client_id: ClientId,
+        generation: u64,
+        event: Event,
+        shutdown_sender: Sender<()>,
+    ) -> Result<()> {
+        // Reload invalidates the old generation before enqueueing its replacement.
+        // Check before update_plugins can cache the event for that replacement.
+        let current = self
+            .plugin_map
+            .lock()
+            .unwrap()
+            .contains_deno_generation(plugin_id, generation);
+        if current {
+            if let Some(cached) = self.cached_events_for_pending_plugins.get_mut(&plugin_id) {
+                cached.push(EventOrPipeMessage::DenoEvent(client_id, generation, event));
+            } else {
+                self.update_plugins(
+                    vec![(Some(plugin_id), Some(client_id), event)],
+                    shutdown_sender,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn update_plugins(
         &mut self,
         mut updates: Vec<(Option<PluginId>, Option<ClientId>, Event)>,
@@ -1681,6 +1806,8 @@ impl WasmBridge {
                     // thread is behind; sending while holding the plugin's lock
                     // would pass that stall on to every other job for this
                     // plugin.
+                    let disposed = running_plugin.is_disposed();
+                    let generation = running_plugin.env().deno_generation;
                     drop(running_plugin);
                     match apply_result {
                         Ok(()) => {
@@ -1688,13 +1815,19 @@ impl WasmBridge {
                                 plugin_render_assets,
                             ));
                         },
+                        Err(_) if disposed => {},
                         Err(e) => {
                             log::error!("{:?}", e);
 
                             // https://stackoverflow.com/questions/66450942/in-rust-is-there-a-way-to-make-literal-newlines-in-r-using-windows-c
                             let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
 
-                            handle_plugin_crash(plugin_id, stringified_error, senders.clone());
+                            handle_plugin_crash(
+                                plugin_id,
+                                generation,
+                                stringified_error,
+                                senders.clone(),
+                            );
                         },
                     }
                 }
@@ -1911,6 +2044,8 @@ impl WasmBridge {
                                 );
                                 // Same rule as the events job: never hold the
                                 // plugin's lock across the bounded screen channel.
+                                let disposed = running_plugin.is_disposed();
+                                let generation = running_plugin.env().deno_generation;
                                 drop(running_plugin);
                                 match apply_result {
                                     Ok(()) => {
@@ -1918,6 +2053,7 @@ impl WasmBridge {
                                             ScreenInstruction::PluginBytes(plugin_render_assets),
                                         );
                                     },
+                                    Err(_) if disposed => {},
                                     Err(e) => {
                                         log::error!("{:?}", e);
 
@@ -1927,6 +2063,7 @@ impl WasmBridge {
 
                                         handle_plugin_crash(
                                             plugin_id,
+                                            generation,
                                             stringified_error,
                                             senders.clone(),
                                         );
@@ -2021,7 +2158,81 @@ impl WasmBridge {
             }
         }
     }
+    pub fn deno_dispose(&self, plugin_id: PluginId, generation: u64) {
+        self.plugin_executor.execute_for_plugin_tagged(
+            plugin_id,
+            "deno_dispose",
+            false,
+            move |_, _, _, _, _| super::deno::dispose_generation(generation),
+        );
+    }
+
+    pub fn deno_tick(&self, plugin_id: PluginId, generation: u64, shutdown: Sender<()>) {
+        self.plugin_executor.execute_for_plugin_tagged(
+            plugin_id,
+            "deno_tick",
+            false,
+            move |senders, plugin_map, connected_clients, _, _| {
+                let _shutdown = shutdown;
+                let connected_clients = connected_clients.lock().unwrap().clone();
+                let instances = plugin_map.lock().unwrap().running_plugins();
+                for (id, client_id, instance) in instances {
+                    if id != plugin_id {
+                        continue;
+                    }
+                    let mut plugin = instance.lock().unwrap();
+                    if plugin.deno_generation() != Some(generation) {
+                        continue;
+                    }
+                    let clients = if plugin.env().plugin.is_shared() {
+                        connected_clients.clone()
+                    } else {
+                        vec![client_id]
+                    };
+                    let result = plugin.deno_tick().and_then(|render| {
+                        if render && plugin.rows > 0 && plugin.columns > 0 {
+                            render_plugin_for_clients(plugin_id, &mut plugin, &clients, None)
+                        } else {
+                            Ok(vec![])
+                        }
+                    });
+                    let pipe_changes = pipes_to_block_or_unblock(&mut plugin, None);
+                    let owner = plugin.env().owner_client_id;
+                    let disposed = plugin.is_disposed();
+                    drop(plugin);
+                    if !pipe_changes.is_empty() {
+                        let asset = PluginRenderAsset::new(plugin_id, owner, vec![])
+                            .with_pipes(pipe_changes);
+                        senders
+                            .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![asset]))
+                            .context("failed to apply asynchronous plugin pipe changes")
+                            .non_fatal();
+                    }
+                    match result {
+                        Ok(assets) if !assets.is_empty() => {
+                            senders
+                                .send_to_screen(ScreenInstruction::PluginBytes(assets))
+                                .context("failed to deliver asynchronous plugin render")
+                                .non_fatal();
+                        },
+                        Ok(_) => {},
+                        Err(_) if disposed => {},
+                        Err(error) => handle_plugin_crash(
+                            plugin_id,
+                            Some(generation),
+                            format!("{error:#}"),
+                            senders.clone(),
+                        ),
+                    }
+                    break;
+                }
+            },
+        );
+    }
+
     pub fn remove_client(&mut self, client_id: ClientId) {
+        self.client_cancellations.lock().unwrap().entry(client_id)
+            .or_default().store(true, Ordering::Release);
         let was_connected = {
             let mut clients = self.connected_clients.lock().unwrap();
             let previous_len = clients.len();
@@ -2446,8 +2657,23 @@ impl WasmBridge {
                                   _engine| {
                                 let _s = _s; // guard to allow the task to complete before cleanup/shutdown
                                 for event_or_pipe_message in events_or_pipe_messages {
+                                    // Replay runs on the pinned executor. A cache can span
+                                    // an attachment/reload, so validate against this actual
+                                    // instance and retain a shared callback's original client.
+                                    let event_client_id = {
+                                        let plugin = running_plugin.lock().unwrap();
+                                        event_or_pipe_message.client_for_replay(
+                                            plugin.env().owner_client_id,
+                                            plugin.deno_generation(),
+                                            plugin.env().plugin.is_shared(),
+                                        )
+                                    };
+                                    let Some(event_client_id) = event_client_id else {
+                                        continue;
+                                    };
                                     match event_or_pipe_message {
-                                        EventOrPipeMessage::Event(event) => {
+                                        EventOrPipeMessage::Event(event)
+                                        | EventOrPipeMessage::DenoEvent(_, _, event) => {
                                             if !subs.contains(&EventType::from(&event)) {
                                                 continue;
                                             }
@@ -2455,7 +2681,7 @@ impl WasmBridge {
                                             let mut plugin_render_assets = vec![];
                                             match apply_event_to_plugin(
                                                 plugin_id,
-                                                client_id,
+                                                event_client_id,
                                                 &render_clients,
                                                 &mut running_plugin,
                                                 &event,
@@ -2478,11 +2704,14 @@ impl WasmBridge {
                                                     // error, and belongs in its pane.
                                                     let stringified_error =
                                                         format!("{:?}", e).replace("\n", "\n\r");
-                                                    handle_plugin_crash(
-                                                        plugin_id,
-                                                        stringified_error,
-                                                        senders.clone(),
-                                                    );
+                                                    if !running_plugin.is_disposed() {
+                                                        handle_plugin_crash(
+                                                            plugin_id,
+                                                            running_plugin.env().deno_generation,
+                                                            stringified_error,
+                                                            senders.clone(),
+                                                        );
+                                                    }
                                                 },
                                             }
                                         },
@@ -2525,11 +2754,14 @@ impl WasmBridge {
                                                     let stringified_error =
                                                         format!("{:?}", e).replace("\n", "\n\r");
 
-                                                    handle_plugin_crash(
-                                                        plugin_id,
-                                                        stringified_error,
-                                                        senders.clone(),
-                                                    );
+                                                    if !running_plugin.is_disposed() {
+                                                        handle_plugin_crash(
+                                                            plugin_id,
+                                                            running_plugin.env().deno_generation,
+                                                            stringified_error,
+                                                            senders.clone(),
+                                                        );
+                                                    }
                                                 },
                                             }
                                         },
@@ -3183,6 +3415,7 @@ fn handle_plugin_loading_failure(
     let _ = senders.send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id));
     let _ = senders.send_to_plugin(PluginInstruction::PluginFailed {
         plugin_id,
+        deno_generation: None,
         error: format!("{:?}", error),
         failed_to_load: true,
     });
@@ -3311,6 +3544,9 @@ pub fn render_plugin_for_clients(
     clients: &[ClientId],
     current_pipe: Option<&PipeSource>,
 ) -> Result<Vec<PluginRenderAsset>> {
+    if running_plugin.is_disposed() {
+        return Ok(vec![]);
+    }
     let err_context = || format!("Failed to render plugin {plugin_id}");
     let rows = running_plugin.rows;
     let columns = running_plugin.columns;
@@ -3373,6 +3609,9 @@ pub fn apply_events_to_plugin(
     senders: ThreadSenders,
     plugin_subscriptions: &HashSet<EventType>,
 ) -> Result<()> {
+    if running_plugin.is_disposed() {
+        return Ok(());
+    }
     let rows = running_plugin.rows;
     let columns = running_plugin.columns;
     let err_context = || format!("Failed to apply event to plugin {plugin_id}");
@@ -3535,12 +3774,24 @@ fn lock_with_deadline<T>(mutex: &Mutex<T>, deadline: Option<Instant>) -> Option<
     }
 }
 
-pub fn handle_plugin_crash(plugin_id: PluginId, message: String, senders: ThreadSenders) {
+pub fn handle_plugin_crash(
+    plugin_id: PluginId,
+    deno_generation: Option<u64>,
+    message: String,
+    senders: ThreadSenders,
+) {
     let _ = senders.send_to_plugin(PluginInstruction::PluginFailed {
         plugin_id,
+        deno_generation,
         error: message.clone(),
         failed_to_load: false,
     });
+    if deno_generation.is_none() {
+        show_plugin_crash(plugin_id, message, &senders);
+    }
+}
+
+fn show_plugin_crash(plugin_id: PluginId, message: String, senders: &ThreadSenders) {
     let mut loading_indication = LoadingIndication::new("Panic!".to_owned());
     loading_indication.indicate_loading_error(message);
     let _ = senders.send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(
@@ -3599,6 +3850,49 @@ fn instances_of<'a>(
 mod tests {
     use super::*;
     use {zellij_types::data::BareKey, zellij_types::data::KeyWithModifier};
+
+    #[test]
+    fn cached_deno_events_keep_generation_and_origin_across_attachment_and_reload() {
+        let first = ClientId::new(1);
+        let second = ClientId::new(2);
+        let cached = [
+            EventOrPipeMessage::DenoEvent(first, 41, Event::Visible(true)),
+            EventOrPipeMessage::DenoEvent(second, 42, Event::Visible(false)),
+        ];
+        let replay = |owner, generation, shared| {
+            cached
+                .iter()
+                .filter_map(|message| {
+                    let client = message.client_for_replay(owner, generation, shared)?;
+                    let EventOrPipeMessage::DenoEvent(_, _, event) = message else {
+                        unreachable!()
+                    };
+                    Some((client, event.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            replay(first, Some(41), false),
+            vec![(first, Event::Visible(true))]
+        );
+        assert_eq!(
+            replay(second, Some(42), false),
+            vec![(second, Event::Visible(false))]
+        );
+        assert!(replay(second, Some(41), false).is_empty());
+        assert!(replay(first, Some(43), false).is_empty());
+        assert!(replay(first, None, false).is_empty());
+        // Shared ownership may move, but commands resumed by this completion must
+        // still act for the client which started the operation.
+        assert_eq!(
+            replay(second, Some(41), true),
+            vec![(first, Event::Visible(true))]
+        );
+        assert_eq!(
+            EventOrPipeMessage::Event(Event::InputReceived).client_for_replay(second, None, false),
+            Some(second)
+        );
+    }
 
     fn plugin_config(configuration: &[(&str, &str)]) -> PluginConfig {
         let configuration = configuration

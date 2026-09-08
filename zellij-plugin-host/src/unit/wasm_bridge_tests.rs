@@ -108,6 +108,66 @@ fn cancellation_marks(bridge: &WasmBridge) -> Vec<PluginId> {
 }
 
 #[test]
+fn a_stale_deno_failure_neither_paints_an_error_nor_finishes_a_job() {
+    let mut test = TestBridge::new();
+    let plugin_id = PluginId::new(7);
+    launch_job(&mut test.bridge, "merge", plugin_id);
+    let screen = test._receivers.iter().find_map(|receiver| {
+        receiver.downcast_ref::<channels::Receiver<(ScreenInstruction, zellij_types::diagnostics::ErrorContext)>>()
+    }).unwrap();
+    let plugin = test._receivers.iter().find_map(|receiver| {
+        receiver.downcast_ref::<channels::Receiver<(PluginInstruction, zellij_types::diagnostics::ErrorContext)>>()
+    }).unwrap();
+    // Drain setup messages; every assertion below observes only failure handling.
+    screen.try_iter().for_each(drop);
+    plugin.try_iter().for_each(drop);
+    // Generation 41 has already left the map. Its queued error must have no effects,
+    // even though the plugin id still names a running queue job.
+    handle_plugin_crash(
+        plugin_id,
+        Some(41),
+        "old error".to_owned(),
+        test.bridge.senders.clone(),
+    );
+    assert!(
+        screen.try_recv().is_err(),
+        "Deno failures must wait for generation validation before painting"
+    );
+    let (
+        PluginInstruction::PluginFailed {
+            plugin_id,
+            deno_generation,
+            error,
+            failed_to_load,
+        },
+        _,
+    ) = plugin.try_recv().unwrap()
+    else {
+        panic!("expected the failure report");
+    };
+    assert_eq!(deno_generation, Some(41));
+    test.bridge
+        .queue_plugin_failed(plugin_id, deno_generation, error, failed_to_load)
+        .unwrap();
+    assert!(
+        screen.try_recv().is_err(),
+        "stale failures must not paint or close the pane"
+    );
+    let snapshot = test
+        .bridge
+        .queues
+        .lock()
+        .unwrap()
+        .queue_snapshot("merge")
+        .unwrap();
+    assert_eq!(
+        snapshot.running.len(),
+        1,
+        "stale failures must not finish the current job"
+    );
+}
+
+#[test]
 fn shutting_down_cancels_a_plugin_that_is_still_loading() {
     let mut test = TestBridge::new();
     test.bridge
@@ -150,7 +210,12 @@ fn a_job_whose_load_failed_leaves_no_cancellation_mark() {
         .insert((crate::PluginId::new(7), run_plugin()));
 
     test.bridge
-        .queue_plugin_failed(crate::PluginId::new(7), "no such file".to_owned(), true)
+        .queue_plugin_failed(
+            crate::PluginId::new(7),
+            None,
+            "no such file".to_owned(),
+            true,
+        )
         .unwrap();
 
     assert!(
@@ -182,7 +247,7 @@ fn a_job_that_trapped_while_still_loading_is_cancelled() {
         .insert((crate::PluginId::new(7), run_plugin()));
 
     test.bridge
-        .queue_plugin_failed(crate::PluginId::new(7), "boom".to_owned(), false)
+        .queue_plugin_failed(crate::PluginId::new(7), None, "boom".to_owned(), false)
         .unwrap();
 
     assert_eq!(cancellation_marks(&test.bridge), vec![PluginId::new(7)]);

@@ -46,6 +46,7 @@ fn test_env() -> PluginEnv {
         plugin_own_data_dir: PathBuf::from("."),
         temporary_data_dir: None,
         data_access: Arc::new(DataAccess::sqlite(&PathBuf::from("."))),
+        deno_watch_generations: Default::default(),
         queues: Default::default(),
         plugin_own_cache_dir: PathBuf::from("."),
         tab_index: Some(TabId::new(0)),
@@ -64,6 +65,7 @@ fn test_env() -> PluginEnv {
         keybinds: Default::default(),
         intercepting_key_presses: false,
         cancel_tripped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        deno_generation: None,
         stdin_pipe: Arc::new(Mutex::new(VecDeque::new())),
         stdout_pipe: Arc::new(Mutex::new(VecDeque::new())),
         store_limits: PluginResourceLimits::new(crate::PluginId::new(1)),
@@ -4627,6 +4629,143 @@ fn the_catalog_shows_shared_namespaces_only_with_the_permission_and_never_a_priv
 }
 
 // Pane workflows ------------------------------------------------------------------------------
+
+#[test]
+fn data_watches_keep_recipient_generations_and_disposal_unregisters_only_its_runtime() {
+    use crate::plugin_map::DenoWatchGenerations;
+    use crate::zellij_exports::run_plugin_command;
+    use crate::PluginInstruction;
+    use prost::Message;
+    use zellij_plugin_api::plugin_command::ProtobufDataWatchResponse;
+    use zellij_runtime::channels::{unbounded, SenderWithContext};
+    use zellij_types::data::{
+        AttrDef, DataWatchResponse, EntityDef, FetchRequest, Mutation, PluginCommand, WatchMode,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let data_access = Arc::new(DataAccess::sqlite(dir.path()));
+    let registry: DenoWatchGenerations = Default::default();
+    let (sender, receiver) = unbounded();
+    data_access
+        .plugin_data()
+        .define_entity(
+            "shared:watchgen",
+            "test",
+            &EntityDef::new("note", 1).attr(AttrDef::text("text")),
+            false,
+        )
+        .unwrap();
+    let make_env = |id, generation| {
+        let mut env = test_env();
+        env.plugin_id = crate::PluginId::new(id);
+        env.deno_generation = generation;
+        env.data_access = data_access.clone();
+        env.deno_watch_generations = registry.clone();
+        env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+        env.response_sink = ResponseSink::Capture(None);
+        env.senders.to_plugin = Some(SenderWithContext::new(sender.clone()));
+        env
+    };
+    let watch = |env: &mut PluginEnv| {
+        run_plugin_command(
+            env,
+            PluginCommand::DataWatch {
+                request: FetchRequest::entity("note").in_namespace("shared:watchgen"),
+                mode: WatchMode::Rows,
+            },
+        )
+        .unwrap();
+        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        let response = DataWatchResponse::try_from(
+            ProtobufDataWatchResponse::decode(bytes.as_slice()).unwrap(),
+        )
+        .unwrap();
+        let DataWatchResponse::Ok(handle) = response else {
+            panic!("watch failed");
+        };
+        handle.watch_id
+    };
+    let write = |env: &mut PluginEnv, text: &str| {
+        run_plugin_command(
+            env,
+            PluginCommand::DataApply {
+                namespace: Some("shared:watchgen".into()),
+                mutations: vec![Mutation::put("note").uid("one").set("text", text).build()],
+            },
+        )
+        .unwrap();
+    };
+    let received = || {
+        let mut events = Vec::new();
+        for (instruction, _) in receiver.try_iter() {
+            match instruction {
+                PluginInstruction::DenoEvent(
+                    plugin,
+                    client,
+                    generation,
+                    Event::PluginDataChanged { watch_id, .. },
+                ) => {
+                    events.push((plugin.get(), client.get(), Some(generation), watch_id));
+                },
+                PluginInstruction::Update(updates) => {
+                    for (plugin, client, event) in updates {
+                        let Event::PluginDataChanged { watch_id, .. } = event else {
+                            panic!("unexpected event");
+                        };
+                        events.push((plugin.unwrap().get(), client.unwrap().get(), None, watch_id));
+                    }
+                },
+                other => panic!("unexpected instruction: {other:?}"),
+            }
+        }
+        events.sort();
+        events
+    };
+    let mut old = make_env(1, Some(11));
+    let first = watch(&mut old);
+    old.client_id = crate::ClientId::new(2);
+    let second = watch(&mut old);
+    let mut replacement = make_env(1, Some(12));
+    let fresh = watch(&mut replacement);
+    let mut legacy = make_env(2, None);
+    let legacy_watch = watch(&mut legacy);
+    let mut writer = make_env(3, Some(99));
+    write(&mut writer, "before disposal");
+    assert_eq!(
+        received(),
+        vec![
+            (1, 1, Some(11), first),
+            (1, 1, Some(12), fresh),
+            (1, 2, Some(11), second),
+            (2, 1, None, legacy_watch),
+        ]
+    );
+
+    // Another plugin cannot erase the generation by attempting an unauthorized unwatch.
+    run_plugin_command(&mut legacy, PluginCommand::DataUnwatch { watch_id: fresh }).unwrap();
+    assert_eq!(registry.lock().unwrap().get(&fresh), Some(&12));
+    old.clear_deno_watches(11);
+    old.clear_deno_watches(11);
+    assert_eq!(
+        *registry.lock().unwrap(),
+        [(fresh, 12)].into_iter().collect()
+    );
+    write(&mut writer, "after disposal");
+    assert_eq!(
+        received(),
+        vec![(1, 1, Some(12), fresh), (2, 1, None, legacy_watch)]
+    );
+
+    run_plugin_command(
+        &mut replacement,
+        PluginCommand::DataUnwatch { watch_id: fresh },
+    )
+    .unwrap();
+    assert!(registry.lock().unwrap().is_empty());
+    write(&mut writer, "after unwatch");
+    assert_eq!(received(), vec![(2, 1, None, legacy_watch)]);
+}
+
 //
 // `zellij.pane_workflow` is pure prelude: it sequences `open_command_pane` /
 // `run_command_in_pane` calls off `command_pane_exited` events. These drive it end to end with
