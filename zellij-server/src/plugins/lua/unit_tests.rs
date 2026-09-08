@@ -6907,7 +6907,9 @@ fn swamp_workflow_question_transitions_survive_polling_and_submission_races() {
     plugin.lua.load(r#"
 local z=require('zellij')
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 z.every=function() end
+z.after=function(_,fn) fn() end
 z.show_cursor=function() end
 z.set_self_mouse_selection_support=function(enabled) assert(enabled) end
 z.ui.text=function(value) return {
@@ -7024,6 +7026,7 @@ fn swamp_workflow_off_form_release_keeps_offscreen_choices_clickable() {
             r#"
 local z=require('zellij')
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 z.every=function() end
 z.show_cursor=function() end
 z.set_self_mouse_selection_support=function() end
@@ -7085,6 +7088,7 @@ fn swamp_workflow_restricted_answers_and_free_text_transitions() {
             r#"
 local z=require('zellij')
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 z.every=function() end
 z.set_self_mouse_selection_support=function() end
 z.task=function(f) f() end
@@ -7153,6 +7157,7 @@ fn swamp_workflow_dims_markdown_history_and_prioritizes_the_question() {
     plugin.lua.load(r#"
 local z=require('zellij')
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 z.every=function() end
 z.show_cursor=function() end
 z.set_self_mouse_selection_support=function() end
@@ -7216,6 +7221,7 @@ fn swamp_workflow_all_wrapped_details_remain_reachable_in_small_panes() {
     plugin.lua.load(r#"
 local z=require('zellij')
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 z.every=function() end
 z.show_cursor=function() end
 z.set_self_mouse_selection_support=function() end
@@ -7325,6 +7331,7 @@ fn swamp_workflow_renders_only_for_input_and_refresh_completion() {
             r#"
 local z=require('zellij')
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 z.every=function() end
 z.set_self_mouse_selection_support=function() end
 local resolve
@@ -7368,6 +7375,7 @@ fn swamp_output_preview_names_the_saved_version_and_keeps_return_actionable() {
 local z=require('zellij')
 z.server_binary='zellij'
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 z.every=function() end
 z.set_self_mouse_selection_support=function() end
 local snapshot={run='run',root="/work/it's here",history={status='suspended'},
@@ -7443,6 +7451,7 @@ local function no_restart()
   end
 end
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 z.every=function() end
 z.request_render=function() end
 z.set_self_mouse_selection_support=function() end
@@ -7512,6 +7521,7 @@ fn swamp_exit_preserves_scrollback_and_does_not_launch_unconfigured_or_managed_w
 local z=require('zellij')
 local function key(name) z.__update(M,{Key={bare_key=name,key_modifiers={}}}) end
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 local closed, rerun, detached=0,0,0
 z.close_self=function() detached=detached+1 end
 z.close_terminal_pane=function() closed=closed+1 end
@@ -7609,6 +7619,7 @@ local handler, next_pane, spawned, sent= nil,6,0,0
 z.server_session='session'; z.server_incarnation='incarnation';z.instance_id='instance'
 z.get_plugin_ids=function() return {host_id='host'} end
 z.subscribe=function() end
+z.subscribe_pane_output=function() end
 z.data.define=function() end
 z.data.eq=function(_,uid) return uid end
 local scan_pages,next_row=0,0
@@ -7731,6 +7742,7 @@ local picked,reruns,closed,acks=0,0,0,0
 z.rerun_command_pane=function(pane) assert(pane==7);reruns=reruns+1 end
 z.close_plugin_pane=function() closed=closed+1 end
 z.message_to_plugin=function(opts)
+  if opts.message_name=='workflow-changed' then return end
   if opts.message_name=='swamp-pane-ack' then assert(opts.destination_plugin_id==42);acks=acks+1;return end
   picked=picked+1
   assert(opts.plugin_config.caller_terminal_pane_id=='7')
@@ -8220,4 +8232,120 @@ assert(replacements==before_reload,'reload never recovers placement')
 z.get_pane_info=function() return {plugin_url='file:untrusted.lua'} end
 assert(select(2,call{method='identity'}))
 "#).exec().unwrap();
+}
+
+#[test]
+fn workflow_stream_tail_preserves_utf8_and_status_while_scrolled() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.every=function() end
+local redraw
+z.after=function(delay,fn) assert(delay==0 and not redraw);redraw=fn end
+z.subscribe=function() end
+z.set_self_mouse_selection_support=function() end
+z.show_cursor=function() end
+local rendered={}
+z.ui.text=function(value) return {dim=function(self) return self end,error=function(self) return self end,render=function(_,rect)
+  rendered[#rendered+1]={value=value,y=rect.y};return value
+end} end
+M.load()
+M.notice='Submitting answer...';M.action='run-tests';M.submitting=true;M.started=os.time()
+M.output('test','stdout',string.char(240,159))
+M.output('test','stderr','simultaneous error')
+M.output('test','stdout',string.char(152,128)..'\27[31mcolored\27[0m')
+assert(M.render(20,100):find('😀colored',1,true))
+M.output('test','stderr',string.rep('e',10000)..'old stderr')
+M.output('test','stdout',string.rep('x',70000)..'TAIL')
+local frame=M.render(20,100)
+assert(frame:find('older output omitted',1,true) or M.scroll>0)
+assert(frame:find('TAIL',1,true))
+M.update{name='key',key='PageUp'}
+rendered={};M.render(3,100)
+local status=false
+for _,line in ipairs(rendered) do
+  if line.value:find('Submitting answer',1,true) then
+    assert(line.y==M.form_y-1);status=true
+  end
+end
+assert(status)
+M.output('test','stdout','later')
+local old=M.scroll
+M.render(3,100);assert(M.scroll==old)
+M.update{name='key',key='End'}
+assert(M.render(20,100):find('TAILlater',1,true))
+assert(redraw,'chunks share one pending redraw')
+local draw=redraw;redraw=nil;draw()
+M.output('test','stdout','next frame');assert(redraw)
+local watched,closed
+z.subscribe_pane_output=function(context) watched=context end
+z.close_self=function() closed=true end
+M.watch('launch');assert(watched.swamp_work=='launch')
+M.update{name='key',key='Esc',bare_key='Esc',key_modifiers={}}
+assert(closed and watched==z.null,'detach removes the subscription even during submission')
+"#).exec().unwrap();
+}
+
+#[test]
+fn async_command_stream_registers_before_dispatch_and_cleans_up_at_completion() {
+    let mut plugin = load(
+        r#"
+local z=require('zellij')
+local M={chunks=0}
+function M.load()
+  z.run_command=function(args)
+    assert(args.stream_output)
+    z.__update(M,{RunCommandOutput={data={111,107},stderr=false,context=args.context}})
+    M.context=args.context
+  end
+  M.future=z.async.run_command{command={'test'},on_output=function(e)
+    assert(e.data=='ok');M.chunks=M.chunks+1
+  end}
+  assert(M.chunks==1 and not M.future.done)
+  z.__update(M,{RunCommandResult={0,{}, {},M.context}})
+  assert(M.future.done)
+  z.__update(M,{RunCommandOutput={data={111,107},stderr=false,context=M.context}})
+  assert(M.chunks==1)
+end
+return M
+"#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+}
+
+#[test]
+fn live_output_events_reach_lua_as_binary_strings() {
+    let mut plugin = load(
+        r#"
+local z=require('zellij')
+return {update=function(e)
+  assert(type(e.data)=='string' and e.data==string.char(0,255,240,159))
+  assert(e.context.operation=='test')
+  if e.name=='pane_output' then assert(e.pane_id==7) else assert(e.stderr) end
+end}
+"#,
+    )
+    .unwrap();
+    let context = BTreeMap::from([("operation".to_owned(), "test".to_owned())]);
+    plugin
+        .update(&Event::RunCommandOutput {
+            data: vec![0, 255, 240, 159],
+            stderr: true,
+            context: context.clone(),
+        })
+        .unwrap();
+    plugin
+        .update(&Event::PaneOutput {
+            data: vec![0, 255, 240, 159],
+            pane_id: 7,
+            context,
+        })
+        .unwrap();
 }

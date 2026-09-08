@@ -169,6 +169,8 @@ local event_fields = {
 --- The fields above that are bytes, and want to be strings.
 local byte_fields = {
   run_command_result = { "stdout", "stderr" },
+  run_command_output = { "data" },
+  pane_output = { "data" },
   web_request_result = { "body" },
   web_request_stream_chunk = { "chunk" },
 }
@@ -532,10 +534,9 @@ local tuple_fields = {
   notify = { "message", "pane_id", "click" },
   cli_pipe_output = { "pipe_name", "output" },
   reconfigure = { "configuration", "write_to_disk" },
-  -- Five arguments of five different meanings, three of them tables: positional is unreadable
-  -- here. All five must be given - serde counts a tuple variant's elements, and
-  -- `max_bytes_returned` being an `Option` makes it nullable, not absent.
-  run_command = { "command", "env_variables", "cwd", "context", "max_bytes_returned" },
+  -- Named arguments avoid confusing the three tables. The optional final slot enables chunks;
+  -- to_positional also accepts the original five-element spelling.
+  run_command = { "command", "env_variables", "cwd", "context", "max_bytes_returned", "stream_output" },
   -- Three arguments of three different meanings, the last of them a nested enum: which of the
   -- three a bare positional table meant is unguessable at the call site.
   open_command_pane_in_git_checkout_near_plugin = { "command", "source_directory", "checkout" },
@@ -544,6 +545,9 @@ local tuple_fields = {
 --- Turn `{ tab_index = 0, name = "logs" }` into `{ 0, "logs" }` for the commands above. A table
 --- that already looks positional is left alone, so both spellings work.
 local function to_positional(name, args)
+  if zellij.snake_case(name) == "run_command" and type(args) == "table" and #args == 5 then
+    args[6] = zellij.null
+  end
   local fields = tuple_fields[zellij.snake_case(name)]
   if not fields or type(args) ~= "table" or args[1] ~= nil then
     return args
@@ -980,16 +984,27 @@ end
 --- `zellij.run_command`, awaited: resolves with the `run_command_result` event (`exit_code`,
 --- `stdout`, `stderr`, `context`). Takes the same table: `command` (the argv list),
 --- `env_variables`, `cwd` (default `/host`), `context`, `max_bytes_returned`. Needs
---- `run_commands`.
+--- `run_commands`. Optional `on_output(event)` receives correlated stdout/stderr chunks
+--- before completion (`event.data`, `event.stderr`). It is registered before dispatch and
+--- removed after both streams drain. Output limits only cap the completion result.
 function zellij.async.run_command(args)
   local context, token = with_token(args.context)
   local aw = awaitable { events = { "run_command_result" }, match = matches_token(token) }
+  if args.on_output then
+    subscribe_once("run_command_output")
+    local chunks = awaitable { events = { "run_command_output" }, match = function(_, event)
+      if event.context and event.context.__async == token then args.on_output(event) end
+      return false
+    end }
+    aw.on_settle[#aw.on_settle+1] = function() unregister(chunks) end
+  end
   zellij.run_command {
     command = args.command,
     env_variables = args.env_variables or {},
     cwd = args.cwd or "/host",
     context = context,
     max_bytes_returned = args.max_bytes_returned or zellij.null,
+    stream_output = args.on_output and true or args.stream_output or zellij.null,
   }
   return aw
 end

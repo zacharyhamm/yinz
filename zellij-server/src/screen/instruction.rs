@@ -69,6 +69,8 @@ use {
 /// that mapping is total.
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
+    SubscribePaneOutput(PluginId, ClientId, Option<BTreeMap<String, String>>),
+    UnsubscribePaneOutput(PluginId),
     PtyBytes(TerminalId, VteBytes),
     RemotePaneReady(TerminalId),
     PluginBytes(Vec<PluginRenderAsset>),
@@ -927,9 +929,10 @@ impl From<&ScreenInstruction> for ScreenContext {
                 },
             },
             // Instructions whose context is named differently from the instruction itself.
-            ScreenInstruction::PtyBytes(..) | ScreenInstruction::RemotePaneReady(..) => {
-                ScreenContext::HandlePtyBytes
-            },
+            ScreenInstruction::SubscribePaneOutput(..)
+            | ScreenInstruction::UnsubscribePaneOutput(..)
+            | ScreenInstruction::PtyBytes(..)
+            | ScreenInstruction::RemotePaneReady(..) => ScreenContext::HandlePtyBytes,
             ScreenInstruction::ClearAllPluginHighlights(..) => ScreenContext::ClearPluginHighlights,
             other => {
                 let name: &'static str = other.into();

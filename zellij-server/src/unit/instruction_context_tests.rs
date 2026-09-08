@@ -192,6 +192,8 @@ pin_context_to_instruction! {
     special: [
         "Resize",
         "PtyBytes",
+        "SubscribePaneOutput",
+        "UnsubscribePaneOutput",
         "RemotePaneReady",
         "ClearAllPluginHighlights",
     ];

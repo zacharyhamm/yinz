@@ -27,6 +27,8 @@ parser.add_argument('--firecracker-only', action='store_true')
 parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
 parser.add_argument('--test-output-only', action='store_true')
+parser.add_argument('--latency-only', action='store_true')
+parser.add_argument('--latency-baseline', action='store_true', help='Measure the previous view without requiring live output')
 args = parser.parse_args()
 source = Path(__file__).resolve().parents[2]
 root = Path(tempfile.mkdtemp(prefix='zellij-workflow-acceptance-'))
@@ -35,13 +37,13 @@ main.mkdir()
 binary = root / 'zellij'
 # Keep the tested executable stable if another checkout rebuilds during the run.
 os.link(Path(args.binary).resolve(), binary)
-session = 'workflow-acceptance'
+session = 'workflow-' + root.name.rsplit('-', 1)[-1]
 env = os.environ.copy()
 for name in ('ZELLIJ', 'ZELLIJ_SESSION_NAME', 'ZELLIJ_PANE_ID', 'ZELLIJ_PANE_REF', 'ZELLIJ_CONFIG_FILE', 'ZELLIJ_CONFIG_DIR', 'SWAMP_REPO_DIR', 'SWAMP_SERVER_URL', 'GIT_PAGER', 'PAGER', 'LESS'):
     env.pop(name, None)
 for name, directory in [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'),
                         ('XDG_CACHE_HOME', 'cache'), ('XDG_RUNTIME_DIR', 'runtime'),
-                        ('ZELLIJ_SOCKET_DIR', 'sock')]:
+                        ('ZELLIJ_SOCKET_DIR', 'sock'), ('TMPDIR', 'tmp')]:
     env[name] = str(root / directory)
     (root / directory).mkdir()
 env['SWAMP_SMOKE_ZELLIJ'] = str(binary)
@@ -103,13 +105,13 @@ def attached_pane(resource):
     return host and host['attached'] and any(p['id'] == host['terminal_id'] and not p['is_plugin'] for p in json.loads(zellij('action', 'list-panes', '--json')))
 
 
-def until(label, predicate):
+def until(label, predicate, interval=0.25):
     deadline = time.monotonic() + 240
     while time.monotonic() < deadline:
         value = predicate()
         if value:
             return value
-        time.sleep(0.25)
+        time.sleep(interval)
     raise AssertionError('Timed out: ' + label + '; inspect ' + str(root))
 
 
@@ -379,7 +381,7 @@ try:
             print('PASS: pager replaces the automatic exit view at its original location and restores it', flush=True)
             raise SystemExit(0)
 
-        if not args.test_output_only:
+        if not args.test_output_only and not args.latency_only:
             launch('success')
             initial = until('initial exit menu', lambda: pending('success', 'exit'))
             assert initial['attributes']['answers'] == ['begin-review', 'leave']
@@ -419,8 +421,14 @@ try:
             assert run('git', 'rev-parse', 'HEAD').stdout == run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
             print('PASS: no unsolicited worker; diff is read-only; stale approval re-prepares; optional passing checks and merge/keep succeed', flush=True)
 
-        launch('failed-checks', gate=['/usr/bin/python3', '-c',
-                                     "import sys; sys.stdout.write(('x' * 63 + '\\n') * 9600); sys.exit(1)"])
+        release = root / 'release-live-command'
+        live_gate = ("import sys,time; from pathlib import Path; "
+                     "print('LIVE BEFORE RELEASE 😀', flush=True); "
+                     "print('LIVE STDERR', file=sys.stderr, flush=True); "
+                     "release=Path(" + repr(str(release)) + "); "
+                     "exec('while not release.exists(): time.sleep(0.05)'); "
+                     "sys.stdout.write(('x' * 63 + '\\n') * 9600); sys.exit(1)")
+        launch('failed-checks', gate=['/usr/bin/python3', '-c', live_gate])
         def check_output_previews(question, nested=False):
             snapshot = bridge(method='workflow_show', directory=str(topic), run=question['attributes']['run'])
             assert len(json.dumps(snapshot).encode()) < 1_048_576
@@ -448,8 +456,46 @@ try:
             assert all(json.loads(r)['method'] != 'agent_spawn' for r in requests), 'Failed tests must not automatically start a repair agent'
 
 
-        prepare('failed-checks')
-        choose('failed-checks', 'review', 'run-tests')
+        review_question = prepare('failed-checks')
+        # Earlier scenarios may leave completed views open. Start this detach check with one view.
+        for pane in json.loads(zellij('action', 'list-panes', '--json')):
+            if pane.get('plugin_url') == 'zellij:swamp-workflow':
+                zellij('action', 'close-pane', '--pane-id', 'plugin_' + str(pane['id']))
+        frame_start = len(ui_output)
+        zellij('workflow', 'show', review_question['attributes']['run'])
+        until('review buttons rendered', lambda: b'Run tests' in bytes(ui_output[frame_start:]))
+        # Select the actual button; output must arrive while the gate is held open.
+        index = review_question['attributes']['answers'].index('run-tests')
+        os.write(ui_fd, b'\t' * index)
+        clicked = time.monotonic()
+        frame_start = len(ui_output)
+        os.write(ui_fd, b'\r')
+        until('immediate submission feedback', lambda: b'Submitting answer' in bytes(ui_output[frame_start:]), interval=0.005)
+        feedback = time.monotonic() - clicked
+        until('answer recorded', lambda: b'Answer recorded' in bytes(ui_output[frame_start:]), interval=0.005)
+        submission = time.monotonic() - clicked
+        if not args.latency_baseline:
+            # Output from another stream may replace this frame before a CLI snapshot arrives.
+            until('live output before command exit', lambda: b'LIVE BEFORE RELEASE' in bytes(ui_output))
+        assert not release.exists()
+        os.write(ui_fd, b'\x1b')
+        until('view detached', lambda: not any(p.get('plugin_url') == 'zellij:swamp-workflow'
+              for p in json.loads(zellij('action', 'list-panes', '--json'))))
+        frame_start = len(ui_output)
+        zellij('workflow', 'show', review_question['attributes']['run'])
+        until('view reattached', lambda: b'Cancel run' in bytes(ui_output[frame_start:]))
+        assert not release.exists(), 'Detach must not release or stop execution'
+        released = time.monotonic()
+        release.touch()
+        until('next question rendered', lambda: b'Start fix agent' in bytes(ui_output[frame_start:]), interval=0.005)
+        timings = dict(click_to_feedback_seconds=feedback, submission_seconds=submission,
+                       release_to_next_question_seconds=time.monotonic()-released,
+                       child_decisions=len(histories('failed-checks')))
+        (root / 'latency.json').write_text(json.dumps(timings, indent=2))
+        print('LATENCY:', timings, flush=True)
+        if args.latency_only:
+            raise SystemExit(0)
+        os.write(ui_fd, b'\x1b')
         failed = until('failed-test choices', lambda: pending('failed-checks', 'failed-tests'))
         assert failed['attributes']['answers'] == ['start-fix-agent', 'return-to-menu', 'leave']
         check_output_previews(failed)

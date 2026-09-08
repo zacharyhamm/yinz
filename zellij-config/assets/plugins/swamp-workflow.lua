@@ -8,6 +8,10 @@ local function quote(s) return "'"..s:gsub("'","'\"'\"'").."'" end
 local form_key, question_key, form_height, form_has_input
 local content_height=0
 local answered={}
+local streams={}
+local latest_stream
+local output_render_pending=false
+local follow_live=true
 local generation=0
 local function identity(entry)
   return entry and z.json.encode{entry.attributes.run,entry.model,entry.attributes.question}
@@ -51,7 +55,9 @@ local function repaint()
   if M.selecting then M.dirty=true else z.request_render() end
 end
 function M.refresh()
-  if not M.attachment or M.refreshing or M.submitting then return end
+  if not M.attachment then return end
+  if M.refreshing or M.submitting then M.refresh_queued=true;return end
+  M.refresh_queued=false
   M.refreshing = true
   local revision=generation
   z.task(function()
@@ -63,6 +69,7 @@ function M.refresh()
       if reply.error then M.refresh_error=reply.error;return end
       M.refresh_error=nil
       M.snapshot = reply.result
+      if M.snapshot.launch and M.snapshot.launch~=M.launch then M.watch(M.snapshot.launch) end
       M.active = M.snapshot.active or M.snapshot.history.status == 'running' or M.snapshot.history.status == 'suspended'
       for _,child in ipairs(M.snapshot.children or {}) do
         M.active = M.active or child.status == 'running' or child.status == 'suspended'
@@ -89,13 +96,21 @@ function M.refresh()
     if not ok and revision==generation then M.refresh_error=tostring(err) end
     M.refreshing=false
     if before~=z.json.encode{M.snapshot or {},M.status,M.refresh_error or ''} then repaint() end
-    if revision~=generation then M.refresh() end
+    if revision~=generation or M.refresh_queued then M.refresh() end
   end)
 end
 function M.focused_control() controls();return form:focused_id() end
+function M.watch(launch)
+  if launch~=M.launch then streams={};follow_live=true end
+  M.launch=launch
+  z.subscribe_pane_output(launch and {swamp_work=launch} or z.null)
+end
 function M.attach(attachment)
+  M.watch(attachment.launch)
   generation=generation+1
   M.attachment=attachment
+  M.submitting=false
+  M.started=nil
   M.snapshot=nil
   M.pending={}
   M.selected=1
@@ -110,12 +125,14 @@ end
 function M.load(options)
   on_restart=options and options.on_restart
   form_key=nil
-  z.subscribe {'key','mouse','pasted_text'}
+  z.subscribe {'key','mouse','pasted_text','pane_output','command_pane_exited'}
   z.set_self_mouse_selection_support(true)
   controls()
   z.every(2,M.refresh)
+  z.every(1,function() if M.started and (M.submitting or M.active) then repaint() end end)
 end
 function M.pipe(message)
+  if message.name=='workflow-changed' then M.refresh();return end
   if message.name ~= 'show' or not message.payload then return end
   M.attach(z.json.decode(message.payload))
   z.show_self(true)
@@ -123,11 +140,17 @@ function M.pipe(message)
   if pipe then z.cli_pipe_output(pipe,z.json.encode({attached=true})); z.unblock_cli_pipe_input(pipe) end
 end
 function M.update(event)
+  if event.name=='pane_output' and event.context and event.context.swamp_work==M.launch then
+    M.output(event.context.swamp_operation or 'command','pane '..event.pane_id,event.data)
+    return false
+  end
+  if event.name=='command_pane_exited' and event.context and event.context.swamp_work==M.launch then M.refresh();return false end
   controls()
-  if event.name=='key' and event.key=='PageUp' then M.scroll=math.max(0,M.scroll-content_height);return true end
+  if event.name=='key' and event.key=='End' then follow_live=true;M.scroll=math.huge;return true end
+  if event.name=='key' and event.key=='PageUp' then follow_live=false; M.scroll=math.max(0,M.scroll-content_height);return true end
   if event.name=='key' and event.key=='PageDown' then M.scroll=M.scroll+content_height;return true end
   if event.name=='mouse' then
-    if event.kind=='scroll_up' then M.scroll=math.max(0,M.scroll-math.min(event.lines or 3,content_height));return true end
+    if event.kind=='scroll_up' then follow_live=false;M.scroll=math.max(0,M.scroll-math.min(event.lines or 3,content_height));return true end
     if event.kind=='scroll_down' then M.scroll=M.scroll+math.min(event.lines or 3,content_height);return true end
     if event.kind=='left_click' then M.selecting=(event.line or 0)<(M.form_y or 0) end
     if M.selecting then
@@ -145,7 +168,7 @@ function M.update(event)
   elseif event.name=='pasted_text' then action=form:insert_pasted_text(event.value)
   else return false end
   if not action then return false end
-  if action.kind=='cancel' or action.id=='detach' then z.close_self();return true end
+  if action.kind=='cancel' or action.id=='detach' then z.subscribe_pane_output(z.null);z.close_self();return true end
   if action.id=='next' then M.selected=M.selected % #M.pending+1;controls();return true end
   if action.kind~='button_pressed' or M.submitting then return action.kind~='ignored' end
   if action.id=='restart' and on_restart and not M.active and #M.pending==0 then
@@ -168,12 +191,20 @@ function M.update(event)
   generation=generation+1
   M.submitting=true
   M.notice_error=false
+  M.started=os.time()
+  M.action=choice and entry.attributes.answers[choice] or action.id
   M.notice=success=='Answer recorded' and 'Submitting answer...' or 'Requesting cancellation...'
+  local attachment=M.attachment
+  local operation=(entry and identity(entry) or command[4])..': '..M.action
+  repaint()
   z.task(function()
-    local ok,result=pcall(function() return z.await(z.async.run_command {cwd=M.snapshot.root,context={swamp_owner='view'},command=command,max_bytes_returned=8192}) end)
+    local ok,result=pcall(function() return z.await(z.async.run_command {cwd=M.snapshot.root,context={swamp_owner='view'},command=command,max_bytes_returned=8192,
+      on_output=function(event) M.output(operation,event.stderr and 'stderr' or 'stdout',event.data) end}) end)
     local accepted=ok and result.exit_code==0
+    if M.attachment~=attachment then return end
     M.notice_error=not accepted
     M.notice=accepted and success or (ok and ((result.stderr and result.stderr~='' and result.stderr) or (result.stdout and result.stdout~='' and result.stdout) or 'Command failed') or tostring(result))
+    if not accepted then M.output(operation,'submission error',M.notice) end
     if accepted and command[3]=='answer' then
       answered[identity(entry)]=entry.version
       for i,pending in ipairs(M.pending) do if identity(pending)==identity(entry) then table.remove(M.pending,i);break end end
@@ -185,6 +216,41 @@ function M.update(event)
     M.refresh()
   end)
   return true
+end
+function M.output(operation,source,data)
+  local stream
+  for _,entry in ipairs(streams) do
+    if entry.operation==operation and entry.source==source then stream=entry;break end
+  end
+  if not stream then
+    stream={operation=operation,source=source,raw=''}
+    streams[#streams+1]=stream
+  end
+  latest_stream=stream
+  stream.raw=stream.raw..data
+  if #stream.raw>65536 then
+    stream.raw=stream.raw:sub(-65536)
+    -- Drop any UTF-8 continuation bytes at the retained boundary.
+    stream.raw=stream.raw:gsub('^[\128-\191]+','')
+    stream.omitted=true
+  end
+  local raw=stream.raw
+  -- Withhold an incomplete final codepoint until the next chunk arrives.
+  local last=raw:match('([\194-\244][\128-\191]*)$')
+  if last then
+    local first=last:byte()
+    local need=first<224 and 2 or first<240 and 3 or 4
+    if #last<need then raw=raw:sub(1,#raw-#last) end
+  end
+  -- Remove complete terminal escape sequences; raw retains incomplete ones across chunks.
+  raw=raw:gsub('\27%][^\7\27]*\7',''):gsub('\27%][^\27]*\27\\','')
+  raw=raw:gsub('\27%[[0-?]*[ -/]*[@-~]',''):gsub('\27[@-_]','')
+  stream.value=z.text.sanitize_bytes(raw)
+  -- Deliver every chunk, but let queued chunks share the next render.
+  if not output_render_pending then
+    output_render_pending=true
+    z.after(0,function() output_render_pending=false;repaint() end)
+  end
 end
 local markdown_cache={}
 local function failed(status)
@@ -254,18 +320,28 @@ function M.render(rows,cols)
     add('Workflow log (last 100 lines):')
     add(M.snapshot.logs or '', false, true)
   end
+  for _,stream in ipairs(streams) do
+    add(stream.value)
+    add('Live '..stream.operation..' / '..stream.source..(stream.omitted and ' [older output omitted]' or '')..' (End: live)')
+    blocks[#blocks].live=stream==latest_stream
+  end
   markdown_cache=cache
-  local height=math.min(form_height,math.max(0,rows-(rows>=2 and 1 or 0)))
-  local footer_height=question and math.min(question.count,math.floor((rows-height)/2)) or 0
+  local status_height=M.notice and rows>=3 and 1 or 0
+  local height=math.min(form_height,math.max(0,rows-status_height-(rows>=2 and 1 or 0)))
+  local footer_height=question and math.min(question.count,math.floor((rows-height-status_height)/2)) or 0
   if question and question.count>footer_height then
     table.insert(blocks,1,{widget=question.widget,count=question.count-footer_height,scroll=footer_height})
   end
-  local separator=footer_height>0 and rows-height-footer_height>=2 and 1 or 0
-  local page=math.max(0,rows-height-footer_height-separator)
+  local separator=footer_height>0 and rows-height-status_height-footer_height>=2 and 1 or 0
+  local page=math.max(0,rows-height-status_height-footer_height-separator)
   content_height=page
   M.form_y=rows-height
-  local total=0
-  for _,block in ipairs(blocks) do total=total+block.count end
+  local total,live_end=0,nil
+  for _,block in ipairs(blocks) do
+    total=total+block.count
+    if block.live then live_end=total end
+  end
+  if #streams>0 and follow_live then M.scroll=math.max(0,(live_end or total)-page) end
   M.scroll=math.max(0,math.min(M.scroll,math.max(0,total-page)))
   local frame={}
   local function draw(block,y,skip,count)
@@ -286,6 +362,14 @@ function M.render(rows,cols)
     skip=math.max(0,skip-block.count)
   end
   if footer_height>0 then draw(question,page+separator,0,footer_height) end
+  if status_height>0 then
+    local status=(M.action or '')..': '..M.notice
+    if M.started then status=status..' ('..math.max(0,os.time()-M.started)..'s)' end
+    if M.notice=='Answer recorded' then status=status..(#M.pending>0 and '; next question ready' or '; waiting for workflow...') end
+    local line=z.ui.text(z.text.truncate(text(status),cols))
+    if M.notice_error then line=line:error() end
+    frame[#frame+1]=line:render{x=0,y=M.form_y-status_height,width=cols,height=1}
+  end
   return table.concat(frame) .. form:render{x=0,y=M.form_y,width=cols,height=height}
 end
 return M

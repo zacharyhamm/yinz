@@ -20,7 +20,7 @@ fn fixture() -> String {
 local M={}
 function M.load(config)
   z.task(function()
-    z.await(z.async.permissions{'read_application_state','change_application_state','run_commands','write_to_stdin','read_cli_pipes','plugin_data','read_pane_contents'})
+    z.await(z.async.permissions{'read_application_state','change_application_state','run_commands','write_to_stdin','read_cli_pipes','plugin_data','read_pane_contents','message_and_launch_other_plugins'})
     bridge.load()
     config.agent_cwd='/host'
     token=config.agent_exit_token
@@ -32,7 +32,7 @@ end
 function M.update(event) return hook.update(event) end
 function M.render(rows,cols) return hook.render(rows,cols) end
 function M.pipe(message)
-  if message.name~='fixture' then return end
+  if message.name~='fixture' then hook.pipe(message);return end
   z.task(function()
     if message.payload=='agent' then
       local agent=call{method='agent_spawn',work=token,key='worker',spec={kind='claude',cwd='/host',allow_outside_worktree=true}}

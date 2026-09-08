@@ -834,6 +834,7 @@ macro_rules! send_to_client {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SessionState {
     clients: HashSet<ClientId>,
+    interactive_clients: HashSet<ClientId>,
     pipes: HashMap<String, ClientId>,     // String => pipe_id
     watchers: HashSet<ClientId>,          // watcher clients (read-only observers)
     last_active_client: Option<ClientId>, // last client that sent a Key message
@@ -850,6 +851,7 @@ impl SessionState {
     pub fn new() -> Self {
         SessionState {
             clients: HashSet::new(),
+            interactive_clients: HashSet::new(),
             pipes: HashMap::new(),
             watchers: HashSet::new(),
             last_active_client: None,
@@ -886,6 +888,7 @@ impl SessionState {
     /// can proceed.
     pub fn remove_client(&mut self, client_id: ClientId) -> Vec<u32> {
         self.clients.remove(&client_id);
+        self.interactive_clients.remove(&client_id);
         self.pipes.retain(|_p_id, c_id| c_id != &client_id);
         self.clear_last_active_client(client_id);
         let stuck: Vec<u32> = self
@@ -900,6 +903,9 @@ impl SessionState {
     }
     pub fn client_ids(&self) -> Vec<ClientId> {
         self.clients.iter().copied().collect()
+    }
+    fn input_unblock_clients(&self) -> Vec<ClientId> {
+        self.interactive_clients.iter().copied().collect()
     }
     pub fn watcher_client_ids(&self) -> Vec<ClientId> {
         self.watchers.iter().copied().collect()
@@ -920,6 +926,7 @@ impl SessionState {
     }
     pub fn convert_client_to_watcher(&mut self, client_id: ClientId) {
         self.clients.remove(&client_id);
+        self.interactive_clients.remove(&client_id);
         self.watchers.insert(client_id);
     }
     pub fn is_watcher(&self, client_id: &ClientId) -> bool {
@@ -1253,6 +1260,11 @@ pub fn start_server_impl(
                 session
                     .current_input_modes
                     .insert(client_id, default_input_mode);
+                session_state
+                    .write()
+                    .unwrap()
+                    .interactive_clients
+                    .insert(client_id);
 
                 *session_data.write().unwrap() = Some(session);
                 session_data
@@ -1433,6 +1445,11 @@ pub fn start_server_impl(
                 session_data
                     .current_input_modes
                     .insert(client_id, default_input_mode);
+                session_state
+                    .write()
+                    .unwrap()
+                    .interactive_clients
+                    .insert(client_id);
 
                 log::info!(
                     "attach trace: server main client_id={client_id} waiting for session_state write lock"
@@ -1511,7 +1528,10 @@ pub fn start_server_impl(
                     .unwrap();
             },
             ServerInstruction::UnblockInputThread => {
-                let client_ids = session_state.read().unwrap().client_ids();
+                // Pane closes and plugin reloads release interactive input only. A CLI
+                // must wait for its own route/completion, otherwise it exits before its
+                // reply and that reply can reach a newly allocated client with the same id.
+                let client_ids = session_state.read().unwrap().input_unblock_clients();
                 for client_id in client_ids {
                     send_to_client!(
                         client_id,
@@ -1524,66 +1544,28 @@ pub fn start_server_impl(
             },
             ServerInstruction::UnblockCliPipeInput(pipe_name) => {
                 let pipe = session_state.read().unwrap().get_pipe(&pipe_name);
-                match pipe {
-                    Some(client_id) => {
-                        send_to_client!(
-                            client_id,
-                            os_input,
-                            ServerToClientMsg::UnblockCliPipeInput {
-                                pipe_name: pipe_name.clone()
-                            },
-                            session_state,
-                            session_data
-                        );
-                    },
-                    None => {
-                        // send to all clients, this pipe might not have been associated yet
-                        let client_ids = session_state.read().unwrap().client_ids();
-                        for client_id in client_ids {
-                            send_to_client!(
-                                client_id,
-                                os_input,
-                                ServerToClientMsg::UnblockCliPipeInput {
-                                    pipe_name: pipe_name.clone()
-                                },
-                                session_state,
-                                session_data
-                            );
-                        }
-                    },
+                if let Some(client_id) = pipe {
+                    send_to_client!(
+                        client_id,
+                        os_input,
+                        ServerToClientMsg::UnblockCliPipeInput { pipe_name },
+                        session_state,
+                        session_data
+                    );
                 }
             },
             ServerInstruction::CliPipeOutput(pipe_name, output) => {
+                // Association is queued before dispatching the pipe to the plugin. An unknown
+                // pipe has disconnected; broadcasting its late output can corrupt a probe's reply.
                 let pipe = session_state.read().unwrap().get_pipe(&pipe_name);
-                match pipe {
-                    Some(client_id) => {
-                        send_to_client!(
-                            client_id,
-                            os_input,
-                            ServerToClientMsg::CliPipeOutput {
-                                pipe_name: pipe_name.clone(),
-                                output: output.clone()
-                            },
-                            session_state,
-                            session_data
-                        );
-                    },
-                    None => {
-                        // send to all clients, this pipe might not have been associated yet
-                        let client_ids = session_state.read().unwrap().client_ids();
-                        for client_id in client_ids {
-                            send_to_client!(
-                                client_id,
-                                os_input,
-                                ServerToClientMsg::CliPipeOutput {
-                                    pipe_name: pipe_name.clone(),
-                                    output: output.clone()
-                                },
-                                session_state,
-                                session_data
-                            );
-                        }
-                    },
+                if let Some(client_id) = pipe {
+                    send_to_client!(
+                        client_id,
+                        os_input,
+                        ServerToClientMsg::CliPipeOutput { pipe_name, output },
+                        session_state,
+                        session_data
+                    );
                 }
             },
             ServerInstruction::EventUpdateToClient(client_id, event_type, event_json) => {
@@ -1907,12 +1889,15 @@ pub fn start_server_impl(
                 // The router queues RemoveClient after ConnStatus. Leave ownership there:
                 // removing twice can close a new connection that reuses this client ID.
             },
-            ServerInstruction::Log(
-                lines_to_log,
-                client_id,
-                _completion_tx, // the action ends here, dropping this will release anything waiting
-                                // for it
-            ) => {
+            ServerInstruction::Log(lines_to_log, client_id, completion_tx) => {
+                // A timed-out route may already have released its client ID. Its late reply
+                // belongs to that request, never to a new connection reusing the ID.
+                if completion_tx
+                    .as_ref()
+                    .is_some_and(NotificationEnd::is_cancelled)
+                {
+                    continue;
+                }
                 send_to_client!(
                     client_id,
                     os_input,
@@ -1923,12 +1908,15 @@ pub fn start_server_impl(
                     session_data
                 );
             },
-            ServerInstruction::LogError(
-                lines_to_log,
-                client_id,
-                _completion_tx, // the action ends here, dropping this will release anything waiting
-                                // for it
-            ) => {
+            ServerInstruction::LogError(lines_to_log, client_id, completion_tx) => {
+                // A timed-out route may already have released its client ID. Its late reply
+                // belongs to that request, never to a new connection reusing the ID.
+                if completion_tx
+                    .as_ref()
+                    .is_some_and(NotificationEnd::is_cancelled)
+                {
+                    continue;
+                }
                 send_to_client!(
                     client_id,
                     os_input,
@@ -3180,6 +3168,28 @@ mod session_state_tests {
                 .get_actions_for_key_in_mode(&InputMode::Normal, &key),
             Some(&vec![Action::Quit])
         );
+    }
+
+    #[test]
+    fn a_late_reply_detects_that_its_requester_stopped_waiting() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let completion = NotificationEnd::new(sender);
+        assert!(!completion.is_cancelled());
+        drop(receiver);
+        assert!(completion.is_cancelled());
+    }
+
+    #[test]
+    fn input_unblocks_exclude_cli_connections_and_reused_client_ids() {
+        let mut session = SessionState::new();
+        let cli = session.new_client();
+        let interactive = session.new_client();
+        session.interactive_clients.insert(interactive);
+        assert_eq!(session.input_unblock_clients(), vec![interactive]);
+        session.remove_client(interactive);
+        assert_eq!(session.new_client(), interactive);
+        assert!(session.input_unblock_clients().is_empty());
+        assert!(session.client_ids().contains(&cli));
     }
 
     #[test]

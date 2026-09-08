@@ -951,6 +951,7 @@ pub(crate) struct Screen {
     host_theme_light_styling: Option<Styling>,
     nested_session_handling: NestedSessionHandling,
     pane_output_activity: HashMap<PaneId, Instant>,
+    pane_output_subscriptions: HashMap<(PluginId, ClientId), BTreeMap<String, String>>,
     /// Whether each client's host terminal currently has keyboard focus, as reported through
     /// DECSET 1004. A client that never reported counts as focused.
     client_host_focused: HashMap<ClientId, bool>,
@@ -1481,6 +1482,7 @@ impl Screen {
             host_theme_light_styling: None,
             nested_session_handling,
             pane_output_activity: HashMap::new(),
+            pane_output_subscriptions: HashMap::new(),
             client_host_focused: HashMap::new(),
             client_notification_protocols: HashMap::new(),
             host_notification_protocol: HostNotificationProtocol::default(),
