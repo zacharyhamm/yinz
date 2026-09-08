@@ -79,6 +79,8 @@ fn stored_run(
         pane_id: 7,
         zellij_session_name: session.to_owned().into(),
         host_id: HostId::new("test-host"),
+        origin_run_id: None,
+        previous_run_id: None,
         session_id: id.to_owned(),
         kind: kind.to_owned(),
         cwd: Some(cwd.to_owned()),

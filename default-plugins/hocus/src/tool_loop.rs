@@ -3080,27 +3080,24 @@ impl State {
         for run in runs {
             if run.ended_at_ms.is_none() {
                 self.active_runs.insert(run.pane_id, run);
+            } else if let Some(existing) = self
+                .archived_runs
+                .iter_mut()
+                .find(|existing| existing.id == run.id)
+            {
+                *existing = run;
             } else {
-                self.active_runs.remove(&run.pane_id);
-                if let Some(existing) = self
-                    .archived_runs
-                    .iter_mut()
-                    .find(|existing| existing.id == run.id)
+                if self
+                    .archive_loaded_through
+                    .as_ref()
+                    .is_some_and(|(started_at_ms, id)| {
+                        (std::cmp::Reverse(run.started_at_ms), run.id.as_str())
+                            < (std::cmp::Reverse(*started_at_ms), id.as_str())
+                    })
                 {
-                    *existing = run;
-                } else {
-                    if self
-                        .archive_loaded_through
-                        .as_ref()
-                        .is_some_and(|(started_at_ms, id)| {
-                            (std::cmp::Reverse(run.started_at_ms), run.id.as_str())
-                                < (std::cmp::Reverse(*started_at_ms), id.as_str())
-                        })
-                    {
-                        self.archive_offset = self.archive_offset.saturating_add(1);
-                    }
-                    self.archived_runs.insert(0, run);
+                    self.archive_offset = self.archive_offset.saturating_add(1);
                 }
+                self.archived_runs.insert(0, run);
             }
         }
         self.archived_runs.sort_by(|a, b| {

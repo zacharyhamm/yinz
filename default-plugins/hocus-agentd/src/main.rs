@@ -257,6 +257,10 @@ struct State {
     /// see `agents::rows::Owner`.
     host_id: HostId,
     runs: BTreeMap<u32, agents::AgentRun>,
+    /// Only live observations can establish lineage, never historical pane numbers.
+    observed_runs: BTreeSet<u32>,
+    /// Kept across SessionEnd until the next start, but not across a pane/process lifetime.
+    run_predecessors: BTreeMap<u32, (agents::rows::Owner, agents::AgentRunHeader)>,
     pending_messages: BTreeMap<u32, messages::Pending>,
     dirty_runs: BTreeMap<String, agents::AgentRun>,
     /// Runs whose pane is gone from this session, so their write has to be guarded: a warped
@@ -1132,14 +1136,35 @@ impl State {
 
     fn record_run_event(&mut self, pane_id: u32, kind: &str, event: &wire::HookEvent, now_ms: i64) {
         let changed_session = self.runs.get(&pane_id).is_some_and(|run| {
-            !run.session_id.is_empty()
-                && !event.session_id.is_empty()
-                && run.session_id != event.session_id
+            run.kind != kind
+                || (!run.session_id.is_empty()
+                    && !event.session_id.is_empty()
+                    && run.session_id != event.session_id)
         });
+        // A late end for the previous session must not close its replacement.
+        if changed_session && event.hook_event_name == agents::HOOK_SESSION_END {
+            if !event.session_id.is_empty() {
+                let owner = self.owner();
+                if let Some(mut run) =
+                    self.load_run(&agents::session_run_id(kind, &event.session_id))
+                {
+                    if run.owner() == owner
+                        && messages::Pending::default().capture(&mut run, event, now_ms)
+                    {
+                        self.finished_runs.push(run.id.clone());
+                        self.dirty_runs.insert(run.id.clone(), run);
+                    }
+                }
+            }
+            return;
+        }
         if changed_session {
             self.finish_run(pane_id, agents::RunOutcome::Replaced, now_ms);
         }
         let owner = self.owner();
+        if event.hook_event_name == "SessionStart" && event.source.as_deref() != Some("clear") {
+            self.run_predecessors.remove(&pane_id);
+        }
         // A duplicate installed hook can replay SessionEnd after the first close was
         // persisted. Recover its entries before deduplicating the replay.
         if event.hook_event_name == agents::HOOK_SESSION_END
@@ -1189,6 +1214,8 @@ impl State {
                 pane_id,
                 zellij_session_name: owner.zellij_session_name.clone(),
                 host_id: owner.host_id.clone(),
+                origin_run_id: None,
+                previous_run_id: None,
                 session_id: event.session_id.clone(),
                 kind: kind.to_owned(),
                 cwd: event.cwd.clone(),
@@ -1204,6 +1231,34 @@ impl State {
             });
         let already_ended = run.outcome != agents::RunOutcome::Active;
         let mut changed = new_run;
+        if event.hook_event_name == "SessionStart"
+            && event.source.as_deref() == Some("clear")
+            && run.origin_run_id.is_none()
+            && run.previous_run_id.is_none()
+        {
+            if let Some((previous_owner, previous)) = self.run_predecessors.get(&pane_id) {
+                if owner.is_known()
+                    && *previous_owner == owner
+                    && previous.kind == kind
+                    && !previous.session_id.is_empty()
+                    && !run.session_id.is_empty()
+                    && previous.id != run.id
+                    && previous.origin_run_id.as_ref() != Some(&run.id)
+                {
+                    run.origin_run_id = Some(
+                        previous
+                            .origin_run_id
+                            .clone()
+                            .unwrap_or_else(|| previous.id.clone()),
+                    );
+                    run.previous_run_id = Some(previous.id.clone());
+                    changed = true;
+                }
+            }
+        }
+        if event.hook_event_name != agents::HOOK_SESSION_END {
+            self.observed_runs.insert(pane_id);
+        }
         if !event.session_id.is_empty() && run.session_id.is_empty() {
             run.session_id = event.session_id.clone();
             changed = true;
@@ -1285,19 +1340,13 @@ impl State {
         if session_id.trim().is_empty() || !owner.is_known() {
             return;
         }
-        if !self.run_lookups.insert(pane_id) {
-            return;
-        }
+        // The caller has no live run: even a pane already checked by the manifest may
+        // now be resuming a different session after SessionEnd.
+        self.run_lookups.insert(pane_id);
         // The session-derived shape by construction — an empty session id returned above — so
         // the derivation is `session_run_id`, which is the one a warp can reproduce.
         let run_id = agents::session_run_id(kind, session_id);
-        let Ok(rows) = store::Host::shared().fetch(&agents::rows::run_by_id_request(&run_id))
-        else {
-            return;
-        };
-        let mut runs = agents::rows::runs_from_rows(&rows);
-        self.hydrate_runs(&mut runs);
-        let Some(run) = runs.into_iter().next() else {
+        let Some(run) = self.load_run(&run_id) else {
             return;
         };
         self.adopt_run(pane_id, run.adopted_by(pane_id, owner));
@@ -1335,6 +1384,10 @@ impl State {
             if !released {
                 pending.flush(&mut run, now_ms);
             }
+        }
+        if self.observed_runs.remove(&pane_id) && !released {
+            self.run_predecessors
+                .insert(pane_id, (run.owner(), run.header()));
         }
         run.outcome = outcome;
         run.ended_at_ms = Some(now_ms);
@@ -1817,6 +1870,8 @@ impl State {
         // disagreeing with `hooks` about which road the pane is read from.
         self.event_fed.retain(|id| live.contains(id));
         self.run_lookups.retain(|id| live.contains(id));
+        self.observed_runs.retain(|id| live.contains(id));
+        self.run_predecessors.retain(|id, _| live.contains(id));
         // A pane that has come back to life is running a new process, and has to
         // earn its latch again rather than inherit the dead one's. `settle_latches`
         // below re-earns it in the same breath if it really is running an agent.
@@ -1828,6 +1883,11 @@ impl State {
         // suppression in the first place.
         let mut forgotten: Vec<u32> = Vec::new();
         for pane in &panes {
+            // A process exit is stronger than SessionEnd (which also fires on /clear).
+            if pane.status != agents::AgentStatus::Running {
+                self.observed_runs.remove(&pane.pane_id);
+                self.run_predecessors.remove(&pane.pane_id);
+            }
             if pane.status == agents::AgentStatus::Running
                 && was_shown.contains(&pane.pane_id)
                 && !was_running.contains(&pane.pane_id)
@@ -1892,6 +1952,20 @@ impl State {
             }
         }
         self.adopt_arrived_runs();
+        for pane in self.panes.iter().flatten() {
+            if let Some(agent) = &pane.agent {
+                if pane.status == agents::AgentStatus::Running
+                    && agent.state != AgentState::Exited
+                    && self.runs.get(&pane.pane_id).is_some_and(|run| {
+                        !run.session_id.is_empty()
+                            && agent.kind == run.kind
+                            && agent.session_id.as_deref() == Some(run.session_id.as_str())
+                    })
+                {
+                    self.observed_runs.insert(pane.pane_id);
+                }
+            }
+        }
         for (pane_id, cwd) in reported {
             self.record_cwd(pane_id, &cwd);
         }
@@ -1940,6 +2014,9 @@ impl State {
     /// where `store::Host` is a stub that errors on every call, so nothing that reads the store
     /// can be exercised there.
     fn adopt_run(&mut self, pane_id: u32, run: agents::AgentRun) {
+        // Resuming a known run preserves its lineage; it cannot acquire a new predecessor.
+        self.run_predecessors.remove(&pane_id);
+        self.observed_runs.remove(&pane_id);
         // The row is claimed with an unguarded write - see `run_owned_mutation` for why this
         // one may not be guarded.
         self.released_runs.remove(&run.id);
@@ -3240,6 +3317,8 @@ impl State {
     /// Not for a pane that has merely gone `Held` or `Exited`: that is an agent that finished
     /// its work, and its last summary is the most useful thing on the row.
     fn forget_agent(&mut self, pane_id: u32) {
+        self.run_predecessors.remove(&pane_id);
+        self.observed_runs.remove(&pane_id);
         self.hooks.remove(&pane_id);
         self.event_fed.remove(&pane_id);
         self.activity.remove(&pane_id);
@@ -4282,6 +4361,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
@@ -6168,6 +6249,211 @@ mod tests {
     // What an agent says about itself
     // -----------------------------------------------------------------------
 
+    mod lineage {
+        use super::*;
+
+        fn start(session: &str, source: &str) -> wire::HookEvent {
+            wire::HookEvent {
+                session_id: session.to_owned(),
+                source: Some(source.to_owned()),
+                ..hook("SessionStart")
+            }
+        }
+
+        fn state() -> State {
+            State {
+                host_id: HostId::new("host-a"),
+                zellij_session_name: Some("here".into()),
+                ..State::default()
+            }
+        }
+
+        fn manifest(state: &mut State, kind: &str, session: &str, exited: bool) {
+            state.manifest.panes.insert(
+                zellij_tile::prelude::TabPosition::new(0),
+                vec![PaneInfo {
+                    id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                    title: kind.to_owned(),
+                    agent: Some(AgentInfo {
+                        kind: kind.to_owned(),
+                        session_id: Some(session.to_owned()),
+                        state: if exited {
+                            AgentState::Exited
+                        } else {
+                            AgentState::Idle
+                        },
+                        source: AgentSource::Reported,
+                        detail: None,
+                        waiting_on: None,
+                        wait_needs_a_person: false,
+                        cwd: None,
+                        run_id: None,
+                    }),
+                    ..PaneInfo::default()
+                }],
+            );
+            state.rebuild_panes();
+        }
+
+        #[test]
+        fn clear_lineage_survives_closure_replays_and_manifest_ordering() {
+            for kind in ["claude", "codex"] {
+                for closure in ["replacement", "end", "manifest"] {
+                    for manifest_first in [false, true] {
+                        let mut state = state();
+                        state.record_run_event(7, kind, &start("A", "startup"), 1);
+                        manifest(&mut state, kind, "A", false);
+                        if closure == "end" {
+                            let end = wire::HookEvent {
+                                hook_event_name: "SessionEnd".into(),
+                                ..start("A", "clear")
+                            };
+                            state.record_run_event(7, kind, &end, 2);
+                            state.record_run_event(7, kind, &end, 3);
+                        } else if closure == "manifest" {
+                            manifest(&mut state, kind, "A", true);
+                        }
+                        if closure != "replacement" {
+                            // Persistence drains the completed payload; lineage must not depend on it.
+                            state.dirty_runs.clear();
+                        }
+                        if manifest_first {
+                            manifest(&mut state, kind, "B", false);
+                        }
+                        state.record_run_event(7, kind, &start("B", "clear"), 4);
+                        if !manifest_first {
+                            manifest(&mut state, kind, "B", false);
+                        }
+                        let b = state.runs[&7].clone();
+                        assert_eq!(
+                            b.origin_run_id,
+                            Some(format!("{kind}:A")),
+                            "{closure} / {manifest_first}"
+                        );
+                        assert_eq!(b.previous_run_id, b.origin_run_id);
+                        state.record_run_event(7, kind, &start("B", "clear"), 5);
+                        assert_eq!(state.runs[&7], b);
+                        // Another event can beat the clear-start hook, just as the manifest can.
+                        state.record_run_event(
+                            7,
+                            kind,
+                            &wire::HookEvent {
+                                hook_event_name: "UserPromptSubmit".into(),
+                                prompt: Some("continue".into()),
+                                ..start("C", "clear")
+                            },
+                            6,
+                        );
+                        state.record_run_event(7, kind, &start("C", "clear"), 7);
+                        let c = state.runs[&7].clone();
+                        assert_eq!(c.origin_run_id, Some(format!("{kind}:A")));
+                        assert_eq!(c.previous_run_id, Some(format!("{kind}:B")));
+                        assert_ne!(b.id, c.id);
+                        assert_eq!(state.dirty_runs[&b.id].previous_run_id, b.previous_run_id);
+                        // A delayed end for B cannot replace C or overwrite its links.
+                        state.record_run_event(
+                            7,
+                            kind,
+                            &wire::HookEvent {
+                                hook_event_name: "SessionEnd".into(),
+                                ..start("B", "clear")
+                            },
+                            8,
+                        );
+                        state.record_run_event(7, kind, &start("C", "clear"), 9);
+                        assert_eq!(state.runs[&7], c);
+                        // Replaying an older clear adopts its existing lineage, not C -> B -> C.
+                        state.record_run_event(7, kind, &start("B", "clear"), 10);
+                        assert_eq!(state.runs[&7].origin_run_id, b.origin_run_id);
+                        assert_eq!(state.runs[&7].previous_run_id, b.previous_run_id);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn lineage_requires_an_observed_predecessor_in_the_same_process_kind_and_owner() {
+            for case in [
+                "startup", "resume", "compact", "kind", "host", "owner", "destroy", "restart",
+                "daemon", "same",
+            ] {
+                let mut state = state();
+                state.record_run_event(7, "claude", &start("A", "startup"), 1);
+                let a = state.runs[&7].clone();
+                manifest(&mut state, "claude", "A", false);
+                match case {
+                    "host" => state.host_id = HostId::new("host-b"),
+                    "owner" => state.zellij_session_name = Some("elsewhere".into()),
+                    "destroy" => {
+                        state.manifest.panes.clear();
+                        state.rebuild_panes();
+                    },
+                    "restart" => {
+                        state.record_run_event(
+                            7,
+                            "claude",
+                            &wire::HookEvent {
+                                hook_event_name: "SessionEnd".into(),
+                                ..start("A", "clear")
+                            },
+                            2,
+                        );
+                        state.manifest.panes.values_mut().next().unwrap()[0].exited = true;
+                        state.rebuild_panes();
+                        // The new hook can arrive before the running manifest.
+                    },
+                    "daemon" => {
+                        state = self::state();
+                        // A restored DB row whose old pane number happens to match is not evidence.
+                        state.runs.insert(7, a);
+                        manifest(&mut state, "claude", "B", false);
+                    },
+                    _ => {},
+                }
+                let source = if ["startup", "resume", "compact"].contains(&case) {
+                    case
+                } else {
+                    "clear"
+                };
+                let kind = if case == "kind" { "codex" } else { "claude" };
+                let session = if case == "same" { "A" } else { "B" };
+                state.record_run_event(7, kind, &start(session, source), 3);
+                assert_eq!(state.runs[&7].origin_run_id, None, "{case}");
+                assert_eq!(state.runs[&7].previous_run_id, None, "{case}");
+            }
+        }
+
+        #[test]
+        fn resume_and_transfer_preserve_existing_lineage_without_inventing_it() {
+            let mut state = state();
+            state.record_run_event(7, "claude", &start("A", "startup"), 1);
+            state.record_run_event(7, "claude", &start("B", "clear"), 2);
+            let b = state.runs[&7].clone();
+            state.record_run_event(7, "claude", &start("A", "resume"), 3);
+            assert_eq!(state.runs[&7].previous_run_id, None);
+            state.record_run_event(7, "claude", &start("B", "resume"), 4);
+            assert_eq!(state.runs[&7].origin_run_id, b.origin_run_id);
+            assert_eq!(state.runs[&7].previous_run_id, b.previous_run_id);
+            let mut transferred = self::state();
+            transferred.host_id = HostId::new("host-b");
+            transferred.adopt_run(9, b.adopted_by(9, &transferred.owner()));
+            transferred.record_run_event(9, "claude", &start("B", "clear"), 5);
+            assert_eq!(
+                transferred.runs[&9].previous_run_id.as_deref(),
+                Some("claude:A")
+            );
+            transferred.record_run_event(9, "claude", &start("C", "clear"), 6);
+            assert_eq!(
+                transferred.runs[&9].origin_run_id.as_deref(),
+                Some("claude:A")
+            );
+            assert_eq!(
+                transferred.runs[&9].previous_run_id.as_deref(),
+                Some("claude:B")
+            );
+        }
+    }
+
     /// One hook payload, as the generated script forwards it.
     fn hook(name: &str) -> wire::HookEvent {
         wire::HookEvent {
@@ -6313,6 +6599,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "s".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: None,
@@ -7350,6 +7638,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new("host-a"),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -8711,6 +9001,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
@@ -8751,6 +9043,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
@@ -9173,6 +9467,100 @@ mod tests {
         );
         assert_eq!(state.finished_runs.len(), summaries);
         assert!(!state.runs.contains_key(&7));
+    }
+
+    #[test]
+    fn delayed_session_end_captures_only_into_its_owned_archive() {
+        for kind in ["claude", "codex"] {
+            for owner in ["same", "other host", "other session", "missing"] {
+                let mut state = State {
+                    host_id: HostId::new("host-a"),
+                    zellij_session_name: Some("here".into()),
+                    ..State::default()
+                };
+                state.record_run_event(7, kind, &prompt("work"), 1);
+                let id = state.runs[&7].id.clone();
+                state.record_run_event(
+                    7,
+                    kind,
+                    &wire::HookEvent {
+                        session_id: "replacement".into(),
+                        source: Some("clear".into()),
+                        ..hook("SessionStart")
+                    },
+                    2,
+                );
+                let partial = wire::HookEvent {
+                    session_id: "replacement".into(),
+                    ..display("t", "m", 0, false, "still ")
+                };
+                state.record_run_event(7, kind, &partial, 3);
+                let active = state.runs[&7].clone();
+                let predecessors = state.run_predecessors.clone();
+                let observed = state.observed_runs.clone();
+                state.finished_runs.clear();
+                let mut archived = state.dirty_runs[&id].clone();
+                match owner {
+                    "other host" => archived.host_id = HostId::new("host-b"),
+                    "other session" => archived.zellij_session_name = "elsewhere".into(),
+                    _ => {},
+                }
+                state.dirty_runs.insert(id.clone(), archived.clone());
+                if owner == "missing" {
+                    state.dirty_runs.remove(&id);
+                }
+                let end = wire::HookEvent {
+                    assistant_messages: vec![hocus_proto::agent::CapturedMessage {
+                        source_id: "session:final".into(),
+                        turn_id: "t".into(),
+                        text: "closing words".into(),
+                        incomplete: false,
+                    }],
+                    ..hook("SessionEnd")
+                };
+                if owner == "same" {
+                    archived.revision += 1;
+                    archived.entries.push(agents::RunEntry {
+                        revision: archived.revision,
+                        event_id: Some("message:[\"t\",\"session:final\"]".into()),
+                        kind: agents::RunEntryKind::Message,
+                        text: "closing words".into(),
+                        created_at_ms: Some(4),
+                    });
+                }
+                for now in [4, 5] {
+                    state.record_run_event(7, kind, &end, now);
+                    assert_eq!(state.runs[&7], active);
+                    assert_eq!(state.dirty_runs[&active.id], active);
+                    assert_eq!(state.run_predecessors, predecessors);
+                    assert_eq!(state.observed_runs, observed);
+                    assert_eq!(
+                        state.dirty_runs.get(&id),
+                        (owner != "missing").then_some(&archived)
+                    );
+                    assert_eq!(
+                        state.finished_runs,
+                        if owner == "same" {
+                            vec![id.clone()]
+                        } else {
+                            vec![]
+                        }
+                    );
+                }
+                state.record_run_event(
+                    7,
+                    kind,
+                    &wire::HookEvent {
+                        index: Some(1),
+                        final_batch: Some(true),
+                        delta: Some("working".into()),
+                        ..partial
+                    },
+                    6,
+                );
+                assert_eq!(state.runs[&7].entries.last().unwrap().text, "still working");
+            }
+        }
     }
 
     #[test]

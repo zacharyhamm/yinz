@@ -290,6 +290,41 @@ fn assistant_messages_reach_the_timeline_and_history_search() {
                 && grid.contains("Parser verified with Unicode")
         },
     );
+    clear(&zellij, "Parser verified with Unicode");
+    send_hook(
+        &mut zellij,
+        pane_id,
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"replacement","prompt":"Review the replacement session"}"#,
+    );
+    submit(&zellij, r#"/agent_run {"run_id":"claude:replacement"}"#);
+    zellij.wait_until("the replacement run is active", |grid| {
+        grid.contains("Review the replacement session")
+            && grid.contains("active")
+            && grid.contains("1 of 1 entries")
+    });
+    clear(&zellij, "1 of 1 entries");
+    // The original run is now only in storage. A delayed close must recover its
+    // entries and preserve new closing words without closing the replacement.
+    let delayed_end = r#"{"hook_event_name":"SessionEnd","session_id":"conversation","assistant_messages":[{"source_id":"conversation:final","turn_id":"turn","text":"Parser verified with Unicode"},{"source_id":"conversation:closing","turn_id":"turn","text":"Final parser handoff recorded"}]}"#;
+    for _ in 0..2 {
+        send_hook(&mut zellij, pane_id, delayed_end);
+        submit(&zellij, r#"/agent_run {"run_id":"claude:conversation"}"#);
+        zellij.wait_until(
+            "the delayed close adds exactly one archived message",
+            |grid| {
+                grid.contains("Final parser handoff recorded")
+                    && grid.contains("Checking the lexer")
+                    && grid.contains("5 of 5 entries")
+            },
+        );
+        clear(&zellij, "Final parser handoff recorded");
+    }
+    submit(&zellij, r#"/agent_run {"run_id":"claude:replacement"}"#);
+    zellij.wait_until("the delayed close leaves the replacement active", |grid| {
+        grid.contains("Review the replacement session")
+            && grid.contains("active")
+            && grid.contains("1 of 1 entries")
+    });
 }
 
 #[test]

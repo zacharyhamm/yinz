@@ -887,6 +887,11 @@ pub struct AgentRun {
     pub host_id: HostId,
     #[serde(default)]
     pub session_id: String,
+    /// Original and immediately preceding runs of an observed context clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_run_id: Option<String>,
     pub kind: String,
     #[serde(default)]
     pub cwd: Option<String>,
@@ -956,6 +961,8 @@ impl AgentRun {
         AgentRunHeader {
             id: self.id.clone(),
             pane_id: self.pane_id,
+            origin_run_id: self.origin_run_id.clone(),
+            previous_run_id: self.previous_run_id.clone(),
             session_id: self.session_id.clone(),
             kind: self.kind.clone(),
             cwd: self.cwd.clone(),
@@ -979,6 +986,11 @@ pub struct AgentRunHeader {
     pub pane_id: u32,
     #[serde(default)]
     pub session_id: String,
+    /// Original and immediately preceding runs of an observed context clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_run_id: Option<String>,
     pub kind: String,
     #[serde(default)]
     pub cwd: Option<String>,
@@ -1837,6 +1849,8 @@ pub mod rows {
             pane_id: run.pane_id,
             zellij_session_name: run.zellij_session_name.clone(),
             host_id: run.host_id.clone(),
+            origin_run_id: run.origin_run_id.clone(),
+            previous_run_id: run.previous_run_id.clone(),
             session_id: run.session_id.clone(),
             kind: run.kind.clone(),
             cwd: run.cwd.clone(),
@@ -2251,7 +2265,7 @@ pub fn run_history(
     }
 }
 
-/// The two rows [`run_history`] pins above its timeline.
+/// The run identity fields [`run_history`] pins above its timeline.
 ///
 /// Both answer a question the timeline cannot. `short_run_id` on the divider says *which of
 /// this agent's runs* is being drawn, in the eight characters a rule can spare; this says the
@@ -2277,18 +2291,32 @@ fn run_header(run: &AgentRun, width: usize, utc_offset_secs: i32) -> Vec<MdLine>
         width,
     );
     rows.extend(wrapped_field(label, value, width));
+    for (label, id) in [
+        ("origin", run.origin_run_id.as_deref()),
+        ("previous", run.previous_run_id.as_deref()),
+    ] {
+        if let Some(id) = id {
+            let prefix = format!("{}:", run.kind);
+            rows.extend(wrapped_field(
+                label,
+                id.strip_prefix(&prefix).unwrap_or(id),
+                width,
+            ));
+        }
+    }
     rows
 }
 
 /// One `label  value` row, plus a continuation row per further slice the value needs, each
 /// indented under the value column so the field reads as one block.
 ///
-/// The label column is [`HEADER_LABEL_WIDTH`] wide for every field, so the values line up
-/// whether the label is `started` or `session`.
+/// The label column is at least [`HEADER_LABEL_WIDTH`] wide, with a separating space
+/// even for the longer `previous` label.
 fn wrapped_field(label: &str, value: &str, width: usize) -> Vec<MdLine> {
-    let label = format!("{label:<HEADER_LABEL_WIDTH$}");
+    let label_width = HEADER_LABEL_WIDTH.max(label.len() + 1);
+    let label = format!("{label:<label_width$}");
     // At least one column, or a half narrow enough to leave none would loop forever below.
-    let room = width.saturating_sub(HEADER_LABEL_WIDTH).max(1);
+    let room = width.saturating_sub(label_width).max(1);
     // By character rather than by byte: a session id is a uuid today, but nothing stops a
     // hand-rolled `agent-report` from naming a run in any script at all, and a slice through
     // the middle of a character panics.
@@ -2298,7 +2326,7 @@ fn wrapped_field(label: &str, value: &str, width: usize) -> Vec<MdLine> {
         let slice: String = chars.by_ref().take(room).collect();
         let gutter = match rows.is_empty() {
             true => label.clone(),
-            false => " ".repeat(HEADER_LABEL_WIDTH),
+            false => " ".repeat(label_width),
         };
         rows.push(MdLine::plain(slice).prepend(&gutter, HEADER_LABEL_STYLE));
     }
@@ -4338,6 +4366,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4496,6 +4526,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4579,6 +4611,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4634,6 +4668,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4723,6 +4759,8 @@ mod tests {
             pane_id: 7,
             zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
@@ -4912,12 +4950,75 @@ mod tests {
         assert_eq!(restored, vec![run]);
     }
 
+    #[test]
+    fn lineage_round_trips_in_payload_and_header_and_defaults_to_absent() {
+        use crate::store::{self, Backend};
+        let local = store::Local::shared("hocus-agentd");
+        local.define_all(&store::shared_defs()).unwrap();
+        let mut run = a_run_with_entries("claude:C", "here", 7, &["continue"]);
+        for linked in [false, true] {
+            if linked {
+                run.origin_run_id = Some("claude:A".into());
+                run.previous_run_id = Some("claude:B".into());
+            }
+            let json = serde_json::to_value(&run).unwrap();
+            assert_eq!(json.get("origin_run_id").is_some(), linked);
+            assert_eq!(serde_json::from_value::<AgentRun>(json).unwrap(), run);
+            let header = serde_json::to_value(run.header()).unwrap();
+            assert_eq!(header.get("previous_run_id").is_some(), linked);
+            assert_eq!(
+                serde_json::from_value::<AgentRunHeader>(header).unwrap(),
+                run.header()
+            );
+            local.apply(rows::run_mutations(&run)).unwrap();
+            assert_eq!(stored_run(&local, &run.id), run);
+            let fetched = local
+                .fetch(&rows::run_by_id_request(&run.id).select(["header"]))
+                .unwrap();
+            assert_eq!(rows::run_headers_from_rows(&fetched), vec![run.header()]);
+            let adopted = stored_run(&local, &run.id).adopted_by(9, &owner("there"));
+            assert_eq!(adopted.origin_run_id, run.origin_run_id);
+            assert_eq!(adopted.previous_run_id, run.previous_run_id);
+        }
+    }
+
+    #[test]
+    fn lineage_header_wraps_full_agent_session_ids() {
+        let mut run = a_pane_run();
+        let origin = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let previous = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        run.origin_run_id = Some(format!("claude:{origin}"));
+        run.previous_run_id = Some(format!("claude:{previous}"));
+        for width in [20, 32, 60] {
+            let header = run_header(&run, width, 0);
+            assert!(header.iter().all(|row| row.text.chars().count() <= width));
+            for (label, expected) in [("origin", origin), ("previous", previous)] {
+                let field: String = header
+                    .iter()
+                    .skip_while(|row| !row.text.starts_with(label))
+                    .enumerate()
+                    .take_while(|(i, row)| *i == 0 || row.text.starts_with(' '))
+                    .map(|(i, row)| {
+                        if i == 0 {
+                            row.text[label.len()..].trim()
+                        } else {
+                            row.text.trim()
+                        }
+                    })
+                    .collect();
+                assert_eq!(field, expected);
+            }
+        }
+    }
+
     fn a_run_with_entries(id: &str, session: &str, pane_id: u32, entries: &[&str]) -> AgentRun {
         AgentRun {
             id: id.to_owned(),
             pane_id,
             zellij_session_name: session.to_owned().into(),
             host_id: HostId::new(HOST),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
@@ -7319,6 +7420,8 @@ mod tests {
             pane_id: 3,
             zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,

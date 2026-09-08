@@ -4106,6 +4106,47 @@ mod tests {
         assert!(!state.history_lines(38).is_empty());
     }
 
+    #[test]
+    fn live_and_archived_continuations_render_in_a_narrow_panel() {
+        for archived in [false, true] {
+            let mut run = a_run();
+            run.origin_run_id = Some("claude:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into());
+            run.previous_run_id = Some("claude:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".into());
+            let row = if archived {
+                StripRow::Run {
+                    run_id: run.id.clone(),
+                    text: "↳ claude · history".into(),
+                    kind: "claude".into(),
+                }
+            } else {
+                run.ended_at_ms = None;
+                run.outcome = agents::RunOutcome::Active;
+                StripRow::Agent {
+                    pane_id: 3,
+                    text: "↳ claude · history".into(),
+                    kind: "claude".into(),
+                }
+            };
+            let mut state = State::default();
+            state.set_rows(unfocused(vec![row]));
+            state.run = Some(run);
+            state.render(60, 32);
+            let header = &state.history().header;
+            assert!(header.iter().all(|row| row.text.chars().count() <= 32));
+            for label in ["started", "session", "origin", "previous"] {
+                assert!(
+                    header.iter().any(|row| row.text.starts_with(label)),
+                    "{label} / archived={archived}"
+                );
+            }
+            assert!(
+                header.iter().any(|row| row.text.starts_with("        ")),
+                "long session IDs wrap"
+            );
+            assert!(!state.history().entries.is_empty());
+        }
+    }
+
     /// One `AgentRun`, as hocus pipes it over for the selected row.
     fn a_run() -> agents::AgentRun {
         agents::AgentRun {
@@ -4113,6 +4154,8 @@ mod tests {
             pane_id: 3,
             zellij_session_name: "zellij".to_owned().into(),
             host_id: zellij_tile::prelude::HostId::default(),
+            origin_run_id: None,
+            previous_run_id: None,
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
