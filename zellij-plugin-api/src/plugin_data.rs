@@ -14,12 +14,13 @@ use super::generated_api::api::plugin_data::{
     value::Value as ProtobufValueOneof,
 };
 pub use super::generated_api::api::plugin_data::{
-    ApplyReport as ProtobufApplyReport, AttrDef as ProtobufAttrDef, AttrKind as ProtobufAttrKind,
-    AttrPattern as ProtobufAttrPattern, AttrValue as ProtobufAttrValue,
-    AttrValues as ProtobufAttrValues, Delete as ProtobufDelete, EntityDef as ProtobufEntityDef,
-    EntityInfo as ProtobufEntityInfo, FetchRequest as ProtobufFetchRequest,
-    Mutation as ProtobufMutation, Pred as ProtobufPred, PredList as ProtobufPredList,
-    Put as ProtobufPut, Row as ProtobufRow, Rows as ProtobufRows, SchemaInfo as ProtobufSchemaInfo,
+    ApplyReport as ProtobufApplyReport, AssertRows as ProtobufAssertRows,
+    AttrDef as ProtobufAttrDef, AttrKind as ProtobufAttrKind, AttrPattern as ProtobufAttrPattern,
+    AttrValue as ProtobufAttrValue, AttrValues as ProtobufAttrValues, Delete as ProtobufDelete,
+    EntityDef as ProtobufEntityDef, EntityInfo as ProtobufEntityInfo,
+    FetchRequest as ProtobufFetchRequest, Mutation as ProtobufMutation, Pred as ProtobufPred,
+    PredList as ProtobufPredList, Put as ProtobufPut, Row as ProtobufRow,
+    RowRevision as ProtobufRowRevision, Rows as ProtobufRows, SchemaInfo as ProtobufSchemaInfo,
     Sort as ProtobufSort, SortDir as ProtobufSortDir, Update as ProtobufUpdate,
     Value as ProtobufValue, WatchHandle as ProtobufWatchHandle, WatchMode as ProtobufWatchMode,
 };
@@ -414,6 +415,21 @@ impl TryFrom<Mutation> for ProtobufMutation {
     type Error = &'static str;
     fn try_from(mutation: Mutation) -> Result<Self, &'static str> {
         let inner = match mutation {
+            Mutation::AssertRows {
+                entity,
+                filter,
+                rows,
+            } => ProtobufMutationOneof::AssertRows(ProtobufAssertRows {
+                entity,
+                filter: Some(ProtobufPred::try_from(filter)?),
+                rows: rows
+                    .into_iter()
+                    .map(|(id, rev)| ProtobufRowRevision {
+                        id: id.get(),
+                        rev: rev.get(),
+                    })
+                    .collect(),
+            }),
             Mutation::Put {
                 entity,
                 uid,
@@ -460,6 +476,19 @@ impl TryFrom<ProtobufMutation> for Mutation {
             return Err("Mutation has no branch set");
         };
         Ok(match inner {
+            ProtobufMutationOneof::AssertRows(assertion) => Mutation::AssertRows {
+                entity: assertion.entity,
+                filter: assertion
+                    .filter
+                    .map(Pred::try_from)
+                    .transpose()?
+                    .ok_or("AssertRows has no filter")?,
+                rows: assertion
+                    .rows
+                    .into_iter()
+                    .map(|row| (DataRowId::new(row.id), DataRevision::new(row.rev)))
+                    .collect(),
+            },
             ProtobufMutationOneof::Put(put) => Mutation::Put {
                 entity: put.entity,
                 uid: put.uid,
@@ -721,7 +750,7 @@ pub(crate) mod tests {
     pub(crate) fn any_mutation(tc: &hegel::TestCase) -> Mutation {
         let values = generators::vecs(generators::tuples!(generators::text(), any_data_value(),))
             .max_size(4);
-        match tc.draw(generators::integers::<u8>().max_value(2)) {
+        match tc.draw(generators::integers::<u8>().max_value(3)) {
             0 => Mutation::Put {
                 entity: tc.draw(generators::text()),
                 uid: tc.draw(generators::optional(generators::text())),
@@ -737,6 +766,21 @@ pub(crate) mod tests {
                 expect_rev: tc
                     .draw(generators::optional(generators::integers::<i64>()))
                     .map(DataRevision::new),
+            },
+            3 => Mutation::AssertRows {
+                entity: tc.draw(generators::text()),
+                filter: tc.draw(any_pred(2)),
+                rows: tc
+                    .draw(
+                        generators::vecs(generators::tuples!(
+                            generators::integers::<i64>(),
+                            generators::integers::<i64>()
+                        ))
+                        .max_size(4),
+                    )
+                    .into_iter()
+                    .map(|(id, rev)| (DataRowId::new(id), DataRevision::new(rev)))
+                    .collect(),
             },
             _ => Mutation::Delete {
                 entity: tc.draw(generators::text()),
@@ -1029,11 +1073,38 @@ pub(crate) mod tests {
                 .set("project", "other")
                 .build(),
             Mutation::delete("agent", Pred::eq("project", "zellij")),
+            Mutation::AssertRows {
+                entity: "agent".into(),
+                filter: Pred::eq("project", "zellij"),
+                rows: vec![],
+            },
+            Mutation::AssertRows {
+                entity: "agent".into(),
+                filter: Pred::eq("project", "zellij"),
+                rows: vec![(DataRowId::new(7), DataRevision::new(3))],
+            },
         ];
         for mutation in mutations {
             let protobuf = ProtobufMutation::try_from(mutation.clone()).unwrap();
-            assert_eq!(Mutation::try_from(protobuf), Ok(mutation));
+            use prost::Message;
+            let bytes = protobuf.encode_to_vec();
+            assert_eq!(
+                Mutation::try_from(ProtobufMutation::decode(bytes.as_slice()).unwrap()),
+                Ok(mutation)
+            );
         }
+    }
+
+    #[test]
+    fn an_assertion_without_a_filter_is_rejected() {
+        assert!(Mutation::try_from(ProtobufMutation {
+            mutation: Some(ProtobufMutationOneof::AssertRows(ProtobufAssertRows {
+                entity: "agent".into(),
+                filter: None,
+                rows: vec![],
+            })),
+        })
+        .is_err());
     }
 
     #[test]

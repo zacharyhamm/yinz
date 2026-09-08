@@ -206,8 +206,26 @@ pub struct Delete {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RowRevision {
+    #[prost(int64, tag="1")]
+    pub id: i64,
+    #[prost(int64, tag="2")]
+    pub rev: i64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AssertRows {
+    #[prost(string, tag="1")]
+    pub entity: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="2")]
+    pub filter: ::core::option::Option<Pred>,
+    #[prost(message, repeated, tag="3")]
+    pub rows: ::prost::alloc::vec::Vec<RowRevision>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Mutation {
-    #[prost(oneof="mutation::Mutation", tags="1, 2, 3")]
+    #[prost(oneof="mutation::Mutation", tags="1, 2, 3, 4")]
     pub mutation: ::core::option::Option<mutation::Mutation>,
 }
 /// Nested message and enum types in `Mutation`.
@@ -221,6 +239,8 @@ pub mod mutation {
         Update(super::Update),
         #[prost(message, tag="3")]
         Delete(super::Delete),
+        #[prost(message, tag="4")]
+        AssertRows(super::AssertRows),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]

@@ -151,12 +151,14 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
             let report = backend.apply(mutations)?;
             let id = u64::try_from(report.ids.first().copied().unwrap_or_default().get())
                 .unwrap_or_default();
-            let attach = notes::plan_attach(id, &draft.tags, &draft.todo_ids);
-            let attach_error = if attach.is_empty() {
-                None
-            } else {
-                backend.apply(attach).err()
-            };
+            let attach_error = notes::plan_attach(backend, id, &draft.tags, &draft.todo_ids)
+                .and_then(|attach| {
+                    if !attach.is_empty() {
+                        backend.apply(attach).map_err(todos::topology_error)?;
+                    }
+                    Ok(())
+                })
+                .err();
             let mut value = reply(&projects, &existing(backend, id)?, now);
             if let Some(error) = attach_error {
                 value["warning"] = json!(format!(
@@ -233,8 +235,9 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
             if unlink {
                 backend.apply(notes::plan_unlink(note_id, todo_id))?;
             } else {
-                notes::require_todos(backend, &[todo_id])?;
-                backend.apply(notes::plan_link(note_id, todo_id))?;
+                backend
+                    .apply(notes::plan_link(backend, note_id, todo_id)?)
+                    .map_err(todos::topology_error)?;
             }
             Ok(json!({ "note_id": note_id, "todo_id": todo_id, "linked": !unlink }).to_string())
         },
@@ -308,6 +311,55 @@ pub fn run_query(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
 mod tests {
     use super::*;
     use hocus_proto::store::Local;
+    use zellij_tile::prelude::{
+        ApplyReport, DataRows, DataSchemaInfo, DataWatchHandle, EntityDef, Mutation, Pred,
+        WatchMode, WriteError,
+    };
+
+    /// Delete from the real store between planning and application, or just after
+    /// allocating a note ID so attachment planning itself sees the deletion.
+    struct DeletingTodo<B> {
+        backend: B,
+        todo_id: u64,
+        after_note: bool,
+    }
+
+    impl<B: Backend> Backend for DeletingTodo<B> {
+        fn define(&self, def: &EntityDef) -> Result<DataSchemaInfo, String> {
+            self.backend.define(def)
+        }
+        fn fetch(&self, request: &FetchRequest) -> Result<DataRows, String> {
+            self.backend.fetch(request)
+        }
+        fn count(&self, request: &FetchRequest) -> Result<u64, String> {
+            self.backend.count(request)
+        }
+        fn watch(
+            &self,
+            request: &FetchRequest,
+            mode: WatchMode,
+        ) -> Result<DataWatchHandle, String> {
+            self.backend.watch(request, mode)
+        }
+        fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
+            let creates_note = mutations.iter().any(|m| m.entity() == "note");
+            let guarded = mutations
+                .iter()
+                .any(|m| matches!(m, Mutation::AssertRows { .. }));
+            let delete = || {
+                self.backend
+                    .apply(vec![Mutation::delete("todo", Pred::eq("id", self.todo_id))])
+            };
+            if !self.after_note && guarded {
+                delete()?;
+            }
+            let report = self.backend.apply(mutations)?;
+            if self.after_note && creates_note {
+                delete()?;
+            }
+            Ok(report)
+        }
+    }
 
     /// The real engine over a temporary file, with one project remembered.
     fn backend() -> Local {
@@ -322,6 +374,78 @@ mod tests {
         )
         .expect("remembered");
         backend
+    }
+
+    #[test]
+    fn attachment_planning_and_apply_failures_keep_the_created_note_warning() {
+        for after_note in [false, true] {
+            let local = backend();
+            let id = todo(&local, "target");
+            let racing = DeletingTodo {
+                backend: &local,
+                todo_id: id,
+                after_note,
+            };
+            let reply = parsed(&run_mutate(&racing, "note_add", &json!({
+                "global": true, "title": "keep", "body": "body", "tags": ["tag"], "todo_ids": [id]
+            })).expect("the created note is a partial success"));
+            let reason = if after_note {
+                format!("no todo item {id}; call todo_list")
+            } else {
+                "the todo list changed; reload and retry".into()
+            };
+            assert_eq!(
+                reply["warning"],
+                format!("the note was written but its tags and links were not: {reason}")
+            );
+            let note = notes::fetch_note(&local, reply["id"].as_u64().unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(note.title, "keep");
+            assert!(note.tags.is_empty() && note.todo_ids.is_empty());
+            for entity in ["note_tag", "note_link"] {
+                assert!(local
+                    .fetch(&FetchRequest::entity(entity))
+                    .unwrap()
+                    .is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn link_and_completion_conflicts_ask_for_a_reload() {
+        for op in ["note_link", "todo_done"] {
+            let local = backend();
+            let id = todo(&local, "target");
+            let note = parsed(
+                &run_mutate(
+                    &local,
+                    "note_add",
+                    &json!({
+                        "global": true, "title": "note", "body": "body"
+                    }),
+                )
+                .unwrap(),
+            );
+            let racing = DeletingTodo {
+                backend: &local,
+                todo_id: id,
+                after_note: false,
+            };
+            let error = crate::ops::run_mutate(
+                &racing,
+                op,
+                &json!({
+                    "project": "work", "id": id, "todo_id": id, "note_id": note["id"]
+                }),
+            )
+            .unwrap_err();
+            assert_eq!(error, "the todo list changed; reload and retry");
+            assert!(local
+                .fetch(&FetchRequest::entity("note_link"))
+                .unwrap()
+                .is_empty());
+        }
     }
 
     fn parsed(out: &str) -> Value {

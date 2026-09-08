@@ -1227,6 +1227,34 @@ pub(crate) fn plugin_thread_main(
                             None,
                         );
                     },
+                    None if matches!(name.as_str(), "store_query" | "store_mutate") => {
+                        // Store operations use one existing instance, including when a
+                        // nonshared alias has an instance for each attached UI client.
+                        if let Some((plugin_id, client_id)) =
+                            wasm_bridge.builtin_service_instance("hocus-store")
+                        {
+                            pipe_messages.push((
+                                Some(plugin_id),
+                                Some(client_id),
+                                PipeMessage::new(
+                                    PipeSource::Cli(pipe_id.clone()),
+                                    &name,
+                                    &payload,
+                                    &args,
+                                    true,
+                                ),
+                            ));
+                        } else {
+                            bus.senders
+                                .send_to_server(ServerInstruction::LogError(
+                                    vec!["No running hocus-store instance; load hocus-store before requesting notes or todos".to_owned()],
+                                    cli_client_id,
+                                    None,
+                                ))
+                                .context("failed to report missing store destination")
+                                .non_fatal();
+                        }
+                    },
                     None => {
                         // no specific destination, send to all plugins
                         pipe_to_all_plugins(

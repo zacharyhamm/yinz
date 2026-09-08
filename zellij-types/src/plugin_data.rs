@@ -904,6 +904,13 @@ pub enum Mutation {
     },
     /// Remove every row matching `filter`.
     Delete { entity: String, filter: Pred },
+    /// Require the complete matching set of (id, rev) pairs at this point in the batch.
+    /// A mismatch rolls back the batch with Conflict. The snapshot is protected until commit.
+    AssertRows {
+        entity: String,
+        filter: Pred,
+        rows: Vec<(DataRowId, DataRevision)>,
+    },
 }
 
 /// The `expect_rev` that means *this row must not exist yet*.
@@ -944,7 +951,8 @@ impl Mutation {
         match self {
             Mutation::Put { entity, .. }
             | Mutation::Update { entity, .. }
-            | Mutation::Delete { entity, .. } => entity,
+            | Mutation::Delete { entity, .. }
+            | Mutation::AssertRows { entity, .. } => entity,
         }
     }
 
@@ -1003,6 +1011,18 @@ impl Mutation {
                 }
                 validate_expect_rev(*expect_rev)?;
                 validate_value_attrs(values)
+            },
+            Mutation::AssertRows { filter, rows, .. } => {
+                filter.validate()?;
+                let mut ids = std::collections::BTreeSet::new();
+                for (id, rev) in rows {
+                    if id.get() <= 0 || rev.get() <= 0 || !ids.insert(*id) {
+                        return Err(DataError::InvalidQuery(
+                            "AssertRows requires unique positive ids and positive revisions".into(),
+                        ));
+                    }
+                }
+                Ok(())
             },
             Mutation::Delete { filter, .. } => filter.validate(),
         }
@@ -1650,5 +1670,30 @@ mod tests {
         // Wrapping would flip an ordering comparison, which is worse than being wrong at a bound
         // no real timestamp reaches.
         assert_eq!(DataValue::from(u64::MAX), DataValue::Int(i64::MAX));
+    }
+    #[test]
+    fn assert_rows_validates_and_round_trips_json() {
+        let assertion = |rows| Mutation::AssertRows {
+            entity: "todo".into(),
+            filter: Pred::eq("root", "/work"),
+            rows,
+        };
+        for rows in [vec![], vec![(DataRowId::new(1), DataRevision::new(2))]] {
+            let mutation = assertion(rows);
+            mutation.validate().unwrap();
+            let json = serde_json::to_string(&mutation).unwrap();
+            assert_eq!(serde_json::from_str::<Mutation>(&json).unwrap(), mutation);
+        }
+        for rows in [
+            vec![(DataRowId::new(0), DataRevision::new(1))],
+            vec![(DataRowId::new(1), DataRevision::new(0))],
+            vec![(DataRowId::new(1), DataRevision::new(-1))],
+            vec![(DataRowId::new(1), DataRevision::new(1)); 2],
+        ] {
+            assert!(matches!(
+                assertion(rows).validate(),
+                Err(DataError::InvalidQuery(_))
+            ));
+        }
     }
 }

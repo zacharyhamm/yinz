@@ -1,0 +1,168 @@
+//! Exercise the public commands as processes with redirected stdin and a real session.
+use serde_json::Value;
+use std::{
+    io::Write,
+    path::Path,
+    process::{Command, Output, Stdio},
+};
+
+fn command(dir: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_zellij"));
+    cmd.env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir)
+        .env("XDG_DATA_HOME", dir)
+        .env("XDG_CACHE_HOME", dir)
+        .env("ZELLIJ_SOCKET_DIR", dir)
+        .env("TMPDIR", dir)
+        .env_remove("ZELLIJ")
+        .env_remove("ZELLIJ_SESSION_NAME")
+        .env_remove("ZELLIJ_PANE_ID")
+        .env_remove("ZELLIJ_PANE_REF")
+        .env("SHELL", "/bin/sh")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    cmd
+}
+
+fn success(output: Output) -> Value {
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("one JSON value on stdout")
+}
+
+struct Session(tempfile::TempDir);
+impl Session {
+    fn action(&self, args: &[&str]) -> Output {
+        command(self.0.path())
+            .args(["--session", "notes-test", "action"])
+            .args(args)
+            .output()
+            .unwrap()
+    }
+}
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = command(self.0.path())
+            .args(["kill-session", "notes-test"])
+            .output();
+    }
+}
+
+#[test]
+fn notes_todos_commands_return_json_and_failures_with_redirected_stdin() {
+    let session = Session(tempfile::tempdir().unwrap());
+    let dir = session.0.path();
+    let config = dir.join("config.kdl");
+    let layout = dir.join("layout.kdl");
+    std::fs::write(&config, "plugins { hocus-store location=\"zellij:hocus-store\"; }\nload_plugins clear-defaults=true { \"hocus-store\"; }\ndetachable_panes false\n").unwrap();
+    std::fs::write(&layout, "layout { pane command=\"/bin/sh\"; }\n").unwrap();
+    let started = command(dir)
+        .arg("--config")
+        .arg(&config)
+        .arg("--layout")
+        .arg(&layout)
+        .args(["attach", "--create-background", "notes-test"])
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    success(session.action(&["project-remember", "work", "--root", "/work"]));
+    let todo = success(session.action(&["todo-add", "one request only", "--project", "work"]));
+    let id = todo["id"].to_string();
+    let mut child = command(dir)
+        .args([
+            "--session",
+            "notes-test",
+            "action",
+            "note-add",
+            "multiline",
+            "--project",
+            "work",
+            "--todo-id",
+            &id,
+            "--body-file",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"first\n\nsecond\n")
+        .unwrap();
+    let note = success(child.wait_with_output().unwrap());
+    assert_eq!(note["body"], "first\n\nsecond"); // Existing store trims outer whitespace.
+    let note_id = note["id"].to_string();
+    let list = success(session.action(&["todo-list", "--project", "work"]));
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        success(session.action(&["note-get", &note_id]))["todo_ids"][0],
+        todo["id"]
+    );
+    let error = session.action(&["note-get", "999999"]);
+    assert!(!error.status.success());
+    assert!(error.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&error.stderr).contains("no note"));
+    // A deliberately stale revision is also a process failure, without partial tag replacement.
+    let error = session.action(&[
+        "note-edit",
+        &note_id,
+        "--tag",
+        "new",
+        "--expect-rev",
+        "999999",
+    ]);
+    assert!(!error.status.success());
+    assert!(error.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&error.stderr).contains("somebody else"));
+}
+
+#[test]
+fn notes_todos_skill_install_uses_custom_codex_home_and_defaults_to_both_agents() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = temp.path().join("custom codex");
+    let install = |args: &[&str]| {
+        command(temp.path())
+            .env("CODEX_HOME", &codex_home)
+            .args(["hocus", "skills", "install"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let dry = install(&["--dry-run"]);
+    assert!(dry.status.success());
+    assert!(!codex_home.exists());
+    assert!(install(&[]).status.success());
+    let codex = codex_home.join("skills/zellij-notes-todos/SKILL.md");
+    let claude = temp
+        .path()
+        .join(".claude/skills/zellij-notes-todos/SKILL.md");
+    assert_eq!(
+        std::fs::read(&codex).unwrap(),
+        std::fs::read(&claude).unwrap()
+    );
+    assert!(install(&[]).status.success());
+    std::fs::write(&codex, "custom").unwrap();
+    assert!(!install(&[]).status.success());
+    assert_eq!(std::fs::read_to_string(&codex).unwrap(), "custom");
+    assert!(install(&["--force"]).status.success());
+    assert_eq!(
+        std::fs::read(codex).unwrap(),
+        std::fs::read(claude).unwrap()
+    );
+}

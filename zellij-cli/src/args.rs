@@ -211,6 +211,23 @@ pub enum Hocus {
     /// Wire coding-agent hooks up to the agent plugins, so panes report their own state.
     #[clap(subcommand)]
     Hooks(HocusHooks),
+    /// Install the bundled notes and todos skill for coding agents.
+    #[clap(subcommand)]
+    Skills(HocusSkills),
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum HocusSkills {
+    /// Install into user skill directories. Identical content is a no-op.
+    Install {
+        #[clap(long, value_enum, default_value = "all")]
+        agent: HocusHookAgent,
+        #[clap(long)]
+        dry_run: bool,
+        /// Replace a differing SKILL.md. Other files are preserved.
+        #[clap(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -886,6 +903,8 @@ tail -f /tmp/my-live-logfile | zellij pipe --name logs --plugin https://example.
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum CliAction {
+    #[clap(flatten)]
+    NotesTodos(crate::notes_todos::NotesTodos),
     /// Write bytes to the terminal.
     Write {
         bytes: Vec<u8>,
@@ -1980,7 +1999,14 @@ mod tests {
         ] {
             let help = try_parse_cli(args).unwrap_err();
             assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
-            assert_eq!(help.to_string(), expected);
+            // Clap can pad blank lines with spaces. Compare the visible help text.
+            assert_eq!(
+                help.to_string()
+                    .lines()
+                    .map(str::trim_end)
+                    .collect::<Vec<_>>(),
+                expected.lines().map(str::trim_end).collect::<Vec<_>>()
+            );
         }
     }
 

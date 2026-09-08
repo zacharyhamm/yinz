@@ -363,3 +363,131 @@ fn a_note_write_answers_without_parking_the_queue() {
     assert!(answer.contains("because"), "got {answer}");
     assert_eq!(stored_note(&state, 1).unwrap().title, "why");
 }
+
+use zellij_tile::prelude::{
+    ApplyReport, DataRows, DataSchemaInfo, DataWatchHandle, EntityDef, Mutation, Pred, WatchMode,
+    WriteError,
+};
+
+/// Delete from the real store between planning and application, or just after
+/// allocating a note ID so attachment planning itself sees the deletion.
+struct DeletingTodo<B> {
+    backend: B,
+    todo_id: u64,
+    after_note: bool,
+}
+
+impl<B: Backend> Backend for DeletingTodo<B> {
+    fn define(&self, def: &EntityDef) -> Result<DataSchemaInfo, String> {
+        self.backend.define(def)
+    }
+    fn fetch(&self, request: &FetchRequest) -> Result<DataRows, String> {
+        self.backend.fetch(request)
+    }
+    fn count(&self, request: &FetchRequest) -> Result<u64, String> {
+        self.backend.count(request)
+    }
+    fn watch(&self, request: &FetchRequest, mode: WatchMode) -> Result<DataWatchHandle, String> {
+        self.backend.watch(request, mode)
+    }
+    fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
+        let creates_note = mutations.iter().any(|m| m.entity() == "note");
+        let guarded = mutations
+            .iter()
+            .any(|m| matches!(m, Mutation::AssertRows { .. }));
+        let delete = || {
+            self.backend
+                .apply(vec![Mutation::delete("todo", Pred::eq("id", self.todo_id))])
+        };
+        if !self.after_note && guarded {
+            delete()?;
+        }
+        let report = self.backend.apply(mutations)?;
+        if self.after_note && creates_note {
+            delete()?;
+        }
+        Ok(report)
+    }
+}
+
+#[test]
+fn attachment_planning_and_apply_failures_keep_the_created_note_warning() {
+    for after_note in [false, true] {
+        let mut state = state_with_project();
+        let id = todo(&mut state, "todo_add", r#"{"text":"target"}"#)["id"]
+            .as_u64()
+            .unwrap();
+        let racing = DeletingTodo {
+            backend: state.store(),
+            todo_id: id,
+            after_note,
+        };
+        let call = agent_call(
+            "note_add",
+            &serde_json::json!({
+                "title": "keep", "body": "body", "tags": ["tag"], "todo_ids": [id]
+            })
+            .to_string(),
+        );
+        let reply: serde_json::Value = serde_json::from_str(
+            &state
+                .note_write(racing, &call)
+                .expect("the created note is a partial success"),
+        )
+        .unwrap();
+        let reason = if after_note {
+            format!("no todo item {id}; call todo_list")
+        } else {
+            "the todo list changed; reload and retry".into()
+        };
+        assert_eq!(
+            reply["warning"],
+            format!("the note was written but its tags and links were not: {reason}")
+        );
+        let note = stored_note(&state, reply["id"].as_u64().unwrap()).unwrap();
+        assert_eq!(note.title, "keep");
+        assert!(note.tags.is_empty() && note.todo_ids.is_empty());
+        for entity in ["note_tag", "note_link"] {
+            assert!(state
+                .store()
+                .fetch(&FetchRequest::entity(entity))
+                .unwrap()
+                .is_empty());
+        }
+    }
+}
+
+#[test]
+fn link_and_completion_conflicts_ask_for_a_reload() {
+    for op in ["note_link", "todo_done"] {
+        let mut state = state_with_project();
+        let id = todo(&mut state, "todo_add", r#"{"text":"target"}"#)["id"]
+            .as_u64()
+            .unwrap();
+        let note = note(&mut state, "note_add", r#"{"title":"note","body":"body"}"#);
+        let racing = DeletingTodo {
+            backend: state.store(),
+            todo_id: id,
+            after_note: false,
+        };
+        let call = agent_call(
+            op,
+            &serde_json::json!({
+                "id": id, "todo_id": id, "note_id": note["id"]
+            })
+            .to_string(),
+        );
+        let error = if op == "note_link" {
+            state.note_write(racing, &call)
+        } else {
+            state.todo_write(racing, &call)
+        }
+        .unwrap_err();
+        assert_eq!(error, "the todo list changed; reload and retry");
+        assert!(state
+            .store()
+            .fetch(&FetchRequest::entity("note_link"))
+            .unwrap()
+            .is_empty());
+    }
+}

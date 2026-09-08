@@ -1768,17 +1768,20 @@ impl State {
     /// in case no store was running to answer. An apply is a host call that has
     /// either happened or failed by the time it returns, so the queue never
     /// parks and there is no timeout to get wrong.
-    pub(crate) fn todo_write(&mut self, call: &ToolCall) -> Result<String, String> {
+    pub(crate) fn todo_write(
+        &self,
+        backend: impl Backend,
+        call: &ToolCall,
+    ) -> Result<String, String> {
         let args = tools::Args::parse(&call.arguments)?;
         let (root, name) = self.todo_target(&args)?;
-        let backend = self.store();
         let list = todos::fetch_list(&backend, &root)?;
 
         match call.name.as_str() {
             "todo_add" => {
                 let text = args.text.as_deref().ok_or("text is required")?;
                 let (mutations, text) = todos::plan_add(&list, &root, text, args.parent_id)?;
-                let report = backend.apply(mutations)?;
+                let report = backend.apply(mutations).map_err(todos::topology_error)?;
                 Ok(serde_json::json!({
                     "project": name,
                     // The first put of the batch is the new item; anything after
@@ -1827,7 +1830,7 @@ impl State {
                 let id = args.id.ok_or("id is required")?;
                 let done = !args.undo;
                 let (mutations, change) = todos::plan_set_done(&list, &root, id, done)?;
-                backend.apply(mutations)?;
+                backend.apply(mutations).map_err(todos::topology_error)?;
                 Ok(serde_json::json!({
                     "project": name,
                     "id": change.id,
@@ -1845,7 +1848,7 @@ impl State {
     ///
     /// Always returns `true`: the queue always advances, because nothing waits.
     pub(crate) fn start_todo_write(&mut self, call: &ToolCall) -> bool {
-        let answer = match self.todo_write(call) {
+        let answer = match self.todo_write(self.store(), call) {
             Ok(answer) => answer,
             Err(error) => error,
         };
@@ -1931,9 +1934,12 @@ impl State {
     /// a note's tags and links carry its id, which the store allocates on the
     /// first apply, so they go in a second — and if that one fails the answer
     /// says the note is there without them rather than pretending either way.
-    pub(crate) fn note_write(&mut self, call: &ToolCall) -> Result<String, String> {
+    pub(crate) fn note_write(
+        &self,
+        backend: impl Backend,
+        call: &ToolCall,
+    ) -> Result<String, String> {
         let args = tools::Args::parse(&call.arguments)?;
-        let backend = self.store();
         match call.name.as_str() {
             "note_add" => {
                 let title = args.title.as_deref().ok_or("title is required")?;
@@ -1954,12 +1960,14 @@ impl State {
                 let report = backend.apply(mutations)?;
                 let id = u64::try_from(report.ids.first().copied().unwrap_or_default().get())
                     .unwrap_or_default();
-                let attach = notes::plan_attach(id, &draft.tags, &draft.todo_ids);
-                let warning = if attach.is_empty() {
-                    None
-                } else {
-                    backend.apply(attach).err()
-                };
+                let warning = notes::plan_attach(&backend, id, &draft.tags, &draft.todo_ids)
+                    .and_then(|attach| {
+                        if !attach.is_empty() {
+                            backend.apply(attach).map_err(todos::topology_error)?;
+                        }
+                        Ok(())
+                    })
+                    .err();
                 let mut value = self.note_reply(&existing_note(&backend, id)?);
                 if let Some(error) = warning {
                     value["warning"] = serde_json::json!(format!(
@@ -2045,8 +2053,9 @@ impl State {
                 if args.unlink {
                     backend.apply(notes::plan_unlink(note_id, todo_id))?;
                 } else {
-                    notes::require_todos(&backend, &[todo_id])?;
-                    backend.apply(notes::plan_link(note_id, todo_id))?;
+                    backend
+                        .apply(notes::plan_link(&backend, note_id, todo_id)?)
+                        .map_err(todos::topology_error)?;
                 }
                 Ok(serde_json::json!({
                     "note_id": note_id,
@@ -2061,7 +2070,7 @@ impl State {
     /// Run a note change and finish the call with its answer. Always `true`,
     /// as [`Self::start_todo_write`] is: nothing waits.
     pub(crate) fn start_note_write(&mut self, call: &ToolCall) -> bool {
-        let answer = match self.note_write(call) {
+        let answer = match self.note_write(self.store(), call) {
             Ok(answer) => answer,
             Err(error) => error,
         };

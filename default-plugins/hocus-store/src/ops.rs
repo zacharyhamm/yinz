@@ -110,7 +110,10 @@ fn todo_root(
 /// Kept beside the planners rather than inside them because the runner has to
 /// know before it can build the view they take.
 fn needs_list(op: &str) -> bool {
-    matches!(op, "todo_add" | "todo_done" | "todo_edit" | "todo_list")
+    matches!(
+        op,
+        "todo_add" | "todo_done" | "todo_edit" | "todo_list" | "todo_delete" | "todo_move"
+    )
 }
 
 /// Plan a mutation: what to write, and what to say about it.
@@ -195,6 +198,48 @@ pub fn plan_mutate(
                         "cascaded": change.cascaded,
                         "reopened": change.reopened,
                     })
+                    .to_string(),
+                ),
+            ))
+        },
+        "todo_delete" => {
+            let id = args
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or("id is required")?;
+            let (root, name) = todo_root(&view.projects, args)?;
+            let recursive = args
+                .get("recursive")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (mutations, deleted_ids) = todos::plan_delete(&view.list(), &root, id, recursive)?;
+            Ok((
+                mutations,
+                Reply::Fixed(
+                    json!({"project": name, "id": id,
+                "deleted": true, "deleted_ids": deleted_ids})
+                    .to_string(),
+                ),
+            ))
+        },
+        "todo_move" => {
+            let id = args
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or("id is required")?;
+            let (root, name) = todo_root(&view.projects, args)?;
+            let parent_id = args.get("parent_id").and_then(Value::as_u64);
+            let expect_rev = args
+                .get("expect_rev")
+                .and_then(Value::as_i64)
+                .map(DataRevision::new);
+            let (mutations, reopened) =
+                todos::plan_move(&view.list(), &root, id, parent_id, expect_rev)?;
+            Ok((
+                mutations,
+                Reply::Fixed(
+                    json!({"project": name, "id": id,
+                "parent_id": parent_id, "reopened": reopened})
                     .to_string(),
                 ),
             ))
@@ -304,6 +349,9 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
     let (mutations, reply) = plan_mutate(&view, op, args)?;
     let report = match backend.apply(mutations) {
         Ok(report) => report,
+        Err(error) if matches!(op, "todo_add" | "todo_done" | "todo_move" | "todo_delete") => {
+            return Err(todos::topology_error(error))
+        },
         Err(error) if error.is_conflict() => return Err(edit_conflict(backend, &view, args)),
         Err(error) => return Err(error.into()),
     };
@@ -312,8 +360,7 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
 
 /// What to say when a guarded edit was refused.
 ///
-/// `todo_edit` is the only op here that guards, so the answer can name the item without asking
-/// which op it was. The store's own prose says a revision is gone without saying what the item
+/// Text edits guard the item being changed. The store's own prose says a revision is gone without saying what the item
 /// reads now or what to guard on next, and both are what a caller needs to decide.
 fn edit_conflict(backend: &impl Backend, view: &StoreView, args: &Value) -> String {
     let Some(id) = args.get("id").and_then(Value::as_u64) else {
@@ -443,6 +490,166 @@ mod tests {
 
     fn field(out: &str, key: &str) -> Value {
         serde_json::from_str::<Value>(out).expect("json")[key].clone()
+    }
+
+    fn add(backend: &impl Backend, text: &str, parent: Option<u64>) -> u64 {
+        field(
+            &run_mutate(
+                backend,
+                "todo_add",
+                &json!({"project":"work", "text":text, "parent_id":parent}),
+            )
+            .unwrap(),
+            "id",
+        )
+        .as_u64()
+        .unwrap()
+    }
+
+    #[test]
+    fn todo_delete_cleans_subtree_links_but_preserves_notes_and_old_parent_state() {
+        let backend = backend();
+        let top = add(&backend, "top", None);
+        let child = add(&backend, "child", Some(top));
+        let leaf = add(&backend, "leaf", Some(child));
+        let note = field(&run_mutate(&backend, "note_add", &json!({"global":true,"title":"keep","body":"findings","todo_ids":[top,child,leaf]})).unwrap(), "id");
+        assert!(run_mutate(
+            &backend,
+            "todo_delete",
+            &json!({"project":"work","id":child})
+        )
+        .is_err());
+        assert!(run_mutate(&backend, "todo_delete", &json!({"project":"work","id":999})).is_err());
+        let deleted = run_mutate(
+            &backend,
+            "todo_delete",
+            &json!({"project":"work","id":child,"recursive":true}),
+        )
+        .unwrap();
+        assert_eq!(field(&deleted, "deleted_ids"), json!([child, leaf]));
+        let listed = todos::fetch_list(&backend, "/tmp/work").unwrap();
+        assert_eq!(todos::counts(&listed), (1, 1));
+        assert!(!todos::item_of(&listed, top).unwrap().done);
+        let note = run_query(&backend, "note_get", &json!({"id":note})).unwrap();
+        assert_eq!(field(&note, "todo_ids"), json!([top]));
+        assert_eq!(field(&note, "body"), "findings");
+        run_mutate(&backend, "todo_delete", &json!({"project":"work","id":top})).unwrap();
+        assert!(todos::fetch_list(&backend, "/tmp/work")
+            .unwrap()
+            .items
+            .is_empty());
+    }
+
+    #[test]
+    fn todo_move_preserves_subtree_and_links_reopens_ancestors_and_guards_revision() {
+        let backend = backend();
+        let old = add(&backend, "old", None);
+        let moving = add(&backend, "moving", Some(old));
+        let child = add(&backend, "child", Some(moving));
+        run_mutate(&backend, "todo_done", &json!({"project":"work","id":child})).unwrap();
+        let dest = add(&backend, "dest", None);
+        let parent = add(&backend, "parent", Some(dest));
+        run_mutate(&backend, "todo_done", &json!({"project":"work","id":dest})).unwrap();
+        let note = field(
+            &run_mutate(
+                &backend,
+                "note_add",
+                &json!({"global":true,"title":"keep","body":"findings","todo_ids":[moving,child]}),
+            )
+            .unwrap(),
+            "id",
+        );
+        let before = todos::fetch_list(&backend, "/tmp/work").unwrap();
+        let rev = todos::item_of(&before, moving).unwrap().rev;
+        let moved = run_mutate(
+            &backend,
+            "todo_move",
+            &json!({"project":"work","id":moving,"parent_id":parent,"expect_rev":rev}),
+        )
+        .unwrap();
+        assert_eq!(field(&moved, "reopened"), json!([parent, dest]));
+        let after = todos::fetch_list(&backend, "/tmp/work").unwrap();
+        assert!(todos::item_of(&after, child).unwrap().done);
+        assert!(!todos::item_of(&after, old).unwrap().done);
+        assert_eq!(
+            todos::trail_of(&after.items, child),
+            ["dest", "parent", "moving", "child"]
+        );
+        assert_eq!(
+            field(
+                &run_query(&backend, "note_get", &json!({"id":note})).unwrap(),
+                "todo_ids"
+            ),
+            json!([moving, child])
+        );
+        let error = run_mutate(
+            &backend,
+            "todo_move",
+            &json!({"project":"work","id":moving,"expect_rev":rev}),
+        )
+        .unwrap_err();
+        assert_eq!(error, "the todo list changed; reload and retry");
+        assert_eq!(todos::fetch_list(&backend, "/tmp/work").unwrap(), after);
+        run_mutate(
+            &backend,
+            "todo_move",
+            &json!({"project":"work","id":moving}),
+        )
+        .unwrap();
+        let after = todos::fetch_list(&backend, "/tmp/work").unwrap();
+        assert!(after.items.iter().any(|item| item.id == moving));
+    }
+
+    #[test]
+    fn todo_move_rejects_missing_cross_project_cycles_and_depth_overflow() {
+        let backend = backend();
+        let top = add(&backend, "top", None);
+        let child = add(&backend, "child", Some(top));
+        let third = add(&backend, "third", Some(child));
+        let fourth = add(&backend, "fourth", Some(third));
+        let fifth = add(&backend, "fifth", Some(fourth));
+        let subtree = add(&backend, "subtree", None);
+        add(&backend, "subtask", Some(subtree));
+        remember(&backend, "other", "/tmp/other");
+        let other = field(
+            &run_mutate(
+                &backend,
+                "todo_add",
+                &json!({"project":"other","text":"other"}),
+            )
+            .unwrap(),
+            "id",
+        )
+        .as_u64()
+        .unwrap();
+        let before = todos::fetch_list(&backend, "/tmp/work").unwrap();
+        for (id, parent) in [
+            (999, top),
+            (top, 999),
+            (top, other),
+            (top, top),
+            (top, child),
+            (subtree, fourth),
+            (subtree, fifth),
+        ] {
+            assert!(
+                run_mutate(
+                    &backend,
+                    "todo_move",
+                    &json!({"project":"work","id":id,"parent_id":parent})
+                )
+                .is_err(),
+                "{id} -> {parent}"
+            );
+            assert_eq!(todos::fetch_list(&backend, "/tmp/work").unwrap(), before);
+        }
+        // Two levels fit below level three exactly.
+        run_mutate(
+            &backend,
+            "todo_move",
+            &json!({"project":"work","id":subtree,"parent_id":third}),
+        )
+        .unwrap();
     }
 
     #[test]

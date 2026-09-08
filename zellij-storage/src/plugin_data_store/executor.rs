@@ -18,6 +18,10 @@ pub(super) trait Executor {
     /// two servers cannot both decide an entity does not exist yet.
     fn lock_schema(&mut self) -> Result<(), DataError>;
 
+    /// Block all writers to these tables until this transaction commits.
+    /// Tables arrive in stable order; SQLite already holds its database write lock.
+    fn lock_writes(&mut self, tables: &[String]) -> Result<(), DataError>;
+
     /// Run one or more statements that take no parameters. DDL, mostly.
     fn execute_batch(&mut self, sql: &str) -> Result<(), DataError>;
 

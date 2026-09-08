@@ -3,7 +3,7 @@ name = "zellij"
 authors = ["Aram Drevekenin <aram@poor.dev>"]
 description = "A terminal workspace with batteries included"
 homepage = "https://zellij.dev"
-include = ["src/**/*", "assets/layouts/*", "assets/config/*", "LICENSE.md", "README.md", "!**/*_test.*", "!**/tests/**/*"]
+include = ["src/**/*", "assets/layouts/*", "assets/config/*", "assets/skills/**", "LICENSE.md", "README.md", "!**/*_test.*", "!**/tests/**/*"]
 # See 'workspace.package' for concrete values
 license.workspace = true
 repository.workspace = true
@@ -42,6 +42,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 suggest = { workspace = true }
 thiserror = { workspace = true }
+tempfile = { workspace = true }
 isahc = { workspace = true }
 # Only the `#[ignore]`d e2e suite uses this, and it drags in libssh2 + OpenSSL. Cargo does not
 # allow optional dev-dependencies, so it is an optional normal dependency instead, enabled by
@@ -53,7 +54,6 @@ name = "agent_report"
 path = "src/tests/agent_report.rs"
 
 [dev-dependencies]
-tempfile = { workspace = true }
 insta = "1.48"
 zellij-test-support = { path = "zellij-test-support" }
 rand = { workspace = true }
@@ -235,3 +235,7 @@ unstable = ["zellij-client/unstable"]
 e2e = ["dep:ssh2"]
 # The plugin-data store suite against a real Postgres in docker; see `cargo x postgres-test`.
 postgres-tests = ["zellij-storage/postgres-tests"]
+
+[[test]]
+name = "notes_todos"
+path = "src/tests/notes_todos.rs"

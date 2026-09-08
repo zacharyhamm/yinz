@@ -189,6 +189,10 @@ impl Executor for SqliteExec<'_> {
         Ok(())
     }
 
+    fn lock_writes(&mut self, _tables: &[String]) -> Result<(), DataError> {
+        Ok(())
+    }
+
     fn execute_batch(&mut self, sql: &str) -> Result<(), DataError> {
         self.0.execute_batch(sql).ctx("statement failed")
     }
@@ -234,3 +238,7 @@ impl Executor for SqliteExec<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "unit/snapshots.rs"]
+mod snapshot_tests;

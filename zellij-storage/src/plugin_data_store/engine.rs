@@ -92,7 +92,17 @@ pub(super) fn apply(
         if !schemas.contains_key(entity) {
             schemas.insert(entity.to_owned(), require_entity(exec, namespace, entity)?);
         }
-        let schema = &schemas[entity];
+    }
+    if mutations
+        .iter()
+        .any(|mutation| matches!(mutation, Mutation::AssertRows { .. }))
+    {
+        let mut tables: Vec<_> = schemas.values().map(EntitySchema::table).collect();
+        tables.sort();
+        exec.lock_writes(&tables)?;
+    }
+    for mutation in mutations {
+        let schema = &schemas[mutation.entity()];
         apply_one(exec, schema, mutation, now, &mut report)?;
     }
     Ok(report)

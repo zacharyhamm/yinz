@@ -1,5 +1,8 @@
 # Hocus skills
 
+For the installable Claude Code and Codex notes/todos skill, see
+[Notes and todos from the command line](NOTES_TODOS.md#install-the-coding-agent-skill).
+
 A skill is a prompt kept on disk and typed as a slash command. `/bench fix the flaky test`
 sends the `bench` skill's text to the model as your turn, with `fix the flaky test` as its
 arguments. That is all a skill is: a prompt, never a tool. Whatever hocus decides to do with it

@@ -72,7 +72,7 @@ fn make_plugin_url_path_safe(url: String) -> String {
 #[derive(Debug, Clone)]
 pub enum EventOrPipeMessage {
     Event(Event),
-    PipeMessage(PipeMessage),
+    PipeMessage(Option<ClientId>, PipeMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -1934,7 +1934,10 @@ impl WasmBridge {
             }
             for (plugin_id, cached_events) in self.cached_events_for_pending_plugins.iter_mut() {
                 if message_pid.is_none() || message_pid.as_ref() == Some(plugin_id) {
-                    cached_events.push(EventOrPipeMessage::PipeMessage(pipe_message.clone()));
+                    cached_events.push(EventOrPipeMessage::PipeMessage(
+                        message_cid,
+                        pipe_message.clone(),
+                    ));
                     if let PipeSource::Cli(pipe_id) = &pipe_message.source {
                         for client_id in &all_connected_clients {
                             if Self::message_is_directed_at_plugin(
@@ -2337,7 +2340,8 @@ impl WasmBridge {
                 .collect();
             // a shared plugin only has an instance for its owner, so this loop applies the cached
             // events once - but they are then rendered for every client
-            let render_clients = if self.plugin_is_shared(&plugin_id) {
+            let plugin_is_shared = self.plugin_is_shared(&plugin_id);
+            let render_clients = if plugin_is_shared {
                 all_connected_clients.clone()
             } else {
                 vec![]
@@ -2422,7 +2426,19 @@ impl WasmBridge {
                                                 },
                                             }
                                         },
-                                        EventOrPipeMessage::PipeMessage(pipe_message) => {
+                                        EventOrPipeMessage::PipeMessage(
+                                            message_cid,
+                                            pipe_message,
+                                        ) => {
+                                            if !Self::message_is_directed_at_plugin(
+                                                Some(plugin_id),
+                                                message_cid,
+                                                &plugin_id,
+                                                &client_id,
+                                                plugin_is_shared,
+                                            ) {
+                                                continue;
+                                            }
                                             let mut running_plugin = running_plugin.lock().unwrap();
                                             let mut plugin_render_assets = vec![];
 
