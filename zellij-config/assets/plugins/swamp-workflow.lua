@@ -146,7 +146,7 @@ function M.update(event)
   end
   if event.name=='command_pane_exited' and event.context and event.context.swamp_work==M.launch then M.refresh();return false end
   controls()
-  if event.name=='key' and event.key=='End' then follow_live=true;M.scroll=math.huge;return true end
+  if event.name=='key' and event.key=='End' and form:focused_id()~='answer' then follow_live=true;M.scroll=math.huge;return true end
   if event.name=='key' and event.key=='PageUp' then follow_live=false; M.scroll=math.max(0,M.scroll-content_height);return true end
   if event.name=='key' and event.key=='PageDown' then M.scroll=M.scroll+content_height;return true end
   if event.name=='mouse' then

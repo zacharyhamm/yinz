@@ -6880,13 +6880,21 @@ fn swamp_workflow_answer_requires_the_submit_button() {
             return {exit_code=0}
         end
         local function key(k)
-            return M.update{name='key',bare_key=k,key_modifiers={}}
+            return M.update{name='key',key=k,bare_key=k,key_modifiers={}}
         end
-        M.update{name='pasted_text',value='my answer'}
+        M.update{name='pasted_text',value='my'}
+        key('Home')
+        key('PageUp')
+        local scroll = M.scroll
+        key('End')
+        assert(M.scroll == scroll, 'End edits the focused answer without scrolling output')
+        M.update{name='pasted_text',value=' answer'}
         key('Enter')
         assert(calls == 0 and M.focused_control() == 'answer')
         key('Down')
         assert(M.focused_control() == 'submit')
+        key('End')
+        assert(M.scroll == math.huge, 'End resumes live-follow when Submit is focused')
         key('Enter')
         assert(calls == 1 and M.notice == 'Answer recorded')
     "#,
@@ -8278,7 +8286,15 @@ assert(status)
 M.output('test','stdout','later')
 local old=M.scroll
 M.render(3,100);assert(M.scroll==old)
-M.update{name='key',key='End'}
+M.pending={{model='model',version=1,attributes={run='run',question='question',prompt='Answer?',kind='text',answers={}}}}
+local function key(k) return M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
+key('End')
+assert(M.focused_control()=='answer' and M.scroll==old)
+M.output('test','stdout',' while editing')
+M.render(3,100);assert(M.scroll==old,'editing End must leave live-follow paused')
+key('Down')
+assert(M.focused_control()=='submit')
+key('End')
 assert(M.render(20,100):find('TAILlater',1,true))
 assert(redraw,'chunks share one pending redraw')
 local draw=redraw;redraw=nil;draw()
