@@ -154,6 +154,8 @@ fn completed_runs_are_nested_under_the_archive_and_page_on_demand() {
     state.archived_runs.push(agents::AgentRunHeader {
         id: "claude:session-1".to_owned(),
         pane_id: 3,
+        origin_run_id: None,
+        previous_run_id: None,
         session_id: "session-1".to_owned(),
         kind: "claude".to_owned(),
         cwd: Some("/work/hocus".to_owned()),
@@ -186,6 +188,8 @@ fn header(session_id: &str, host: Option<&str>) -> agents::AgentRunHeader {
     agents::AgentRunHeader {
         id: agents::run_id("claude", 3, session_id, 10, &HostId::new("test-host")),
         pane_id: 3,
+        origin_run_id: None,
+        previous_run_id: None,
         session_id: session_id.to_owned(),
         kind: "claude".to_owned(),
         cwd: Some("/work/hocus".to_owned()),
@@ -210,6 +214,8 @@ fn seed_run(state: &State, session_id: &str, host: Option<&str>, ended: bool) {
         pane_id: 3,
         zellij_session_name: "main".to_owned().into(),
         host_id: HostId::new("test-host"),
+        origin_run_id: None,
+        previous_run_id: None,
         session_id: session_id.to_owned(),
         kind: "claude".to_owned(),
         cwd: Some("/work/hocus".to_owned()),
@@ -364,6 +370,8 @@ fn a_selected_agent_picks_up_its_run_when_the_first_header_arrives() {
     let mut run = agents::AgentRunHeader {
         id: "claude:session-1".to_owned(),
         pane_id: 3,
+        origin_run_id: None,
+        previous_run_id: None,
         session_id: "session-1".to_owned(),
         kind: "claude".to_owned(),
         cwd: Some("/work/hocus".to_owned()),
@@ -390,6 +398,8 @@ fn archive_offset_moves_only_for_completions_before_the_loaded_page() {
     let completed = |id: &str, started_at_ms: i64| agents::AgentRunHeader {
         id: id.to_owned(),
         pane_id: 3,
+        origin_run_id: None,
+        previous_run_id: None,
         session_id: id.to_owned(),
         kind: "claude".to_owned(),
         cwd: None,
@@ -500,5 +510,37 @@ fn walking_between_worktree_agents_keeps_both_branch_headers() {
         state.last_strip.focused,
         Some(3),
         "the focus itself did move — this is not a test that nothing happened",
+    );
+}
+
+#[test]
+fn continuations_are_marked_without_changing_history_order_or_keys() {
+    let mut state = state_with_panes();
+    let mut live = header("C", None);
+    live.origin_run_id = Some("claude:A".into());
+    live.previous_run_id = Some("claude:B".into());
+    live.ended_at_ms = None;
+    live.outcome = agents::RunOutcome::Active;
+    let mut archived = header("B", None);
+    archived.origin_run_id = Some("claude:A".into());
+    archived.previous_run_id = Some("claude:A".into());
+    archived.started_at_ms = 20;
+    // The daemon sends live headers first, then completed runs from the same pane.
+    state.merge_run_headers(vec![live, archived, header("A", None)]);
+    let rows = state.current_strip().rows;
+    assert!(rows.iter().any(|row| matches!(row, agents::StripRow::Agent { pane_id: 3, text, .. } if text.trim_start().starts_with("↳ "))));
+    let archive: Vec<_> = rows
+        .iter()
+        .filter_map(|row| match row {
+            agents::StripRow::Run { run_id, text, .. } => Some((run_id.as_str(), text.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        archive,
+        vec![
+            ("claude:B", "↳ claude · hook history"),
+            ("claude:A", "claude · hook history")
+        ]
     );
 }

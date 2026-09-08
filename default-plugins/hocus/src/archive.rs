@@ -268,11 +268,31 @@ impl State {
             &self.summaries,
             &self.hooks,
         );
+        for row in &mut rows {
+            if let agents::StripRow::Agent { pane_id, text, .. } = row {
+                if self
+                    .active_runs
+                    .get(pane_id)
+                    .is_some_and(|run| run.previous_run_id.is_some())
+                {
+                    text.insert_str(text.len() - text.trim_start().len(), "↳ ");
+                }
+            }
+        }
         if !self.archived_runs.is_empty() || self.archive_more {
             rows.push(agents::StripRow::Project("archive".to_owned()));
             rows.extend(self.archived_runs.iter().map(|run| agents::StripRow::Run {
                 run_id: run.id.clone(),
-                text: format!("{} · {}", run.kind, run.title),
+                text: format!(
+                    "{}{} · {}",
+                    if run.previous_run_id.is_some() {
+                        "↳ "
+                    } else {
+                        ""
+                    },
+                    run.kind,
+                    run.title
+                ),
                 kind: run.kind.clone(),
             }));
             if self.archive_more {
