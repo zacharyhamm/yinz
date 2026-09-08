@@ -238,8 +238,10 @@ struct State {
     last_window_start: usize,
     /// Manual wheel position; None keeps the list centered on the selection.
     list_scroll: Option<usize>,
-    /// Latest pane-relative pointer row, including the negative hover-leave sentinel.
-    mouse_line: Option<isize>,
+    /// Latest pane-relative pointer position, including the negative hover-leave sentinel.
+    mouse_position: Option<(isize, usize)>,
+    last_rows: usize,
+    last_cols: usize,
     /// How many rows the last render gave the list. Below it are the divider and the history
     /// half, which point at nothing: a click down there has to be rejected rather than mapped
     /// through `last_window_start` onto a row that was never drawn.
@@ -517,6 +519,19 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        self.last_rows = rows;
+        self.last_cols = cols;
+        if rows <= 1 || cols == 0 {
+            // Forget the hidden geometry, but keep selections and scrolls for when it returns.
+            self.last_window_start = 0;
+            self.last_list_rows = 0;
+            self.last_history_rows = 0;
+            self.last_history_body_rows = 0;
+            self.last_history_max_scroll = 0;
+            self.last_reader_rows = 0;
+            self.last_reader_max_scroll = 0;
+            self.vms.clear_dimensions();
+        }
         if rows == 0 || cols == 0 {
             return;
         }
@@ -560,8 +575,6 @@ impl ZellijPlugin for State {
         );
         let rows = rows.saturating_sub(1);
         if rows == 0 {
-            self.vms.last_details_rows = 0;
-            self.last_history_rows = 0;
             return;
         }
         if self.vm_tab {
@@ -995,20 +1008,31 @@ impl State {
 
     fn on_mouse(&mut self, mouse_event: Mouse) -> bool {
         match mouse_event {
-            Mouse::Hover(line, _)
-            | Mouse::LeftClick(line, _)
-            | Mouse::RightClick(line, _)
-            | Mouse::Hold(line, _)
-            | Mouse::Release(line, _) => self.mouse_line = Some(line),
+            Mouse::Hover(line, column)
+            | Mouse::LeftClick(line, column)
+            | Mouse::RightClick(line, column)
+            | Mouse::Hold(line, column)
+            | Mouse::Release(line, column) => self.mouse_position = Some((line, column)),
             _ => {},
         }
+        if self.last_rows == 0 || self.last_cols == 0 {
+            return false;
+        }
+        if let Some((line, column)) = self.mouse_position {
+            if line < 0 || line as usize >= self.last_rows || column >= self.last_cols {
+                return false;
+            }
+        }
+        if let Mouse::LeftClick(0, column) = mouse_event {
+            self.tabs_focused = true;
+            self.switch_vm_tab(column >= self.vm_tab_column.max(1));
+            return true;
+        }
+        if self.last_rows <= 1 || self.mouse_position.is_some_and(|(line, _)| line == 0) {
+            return false;
+        }
         let mouse_event = match mouse_event {
-            Mouse::LeftClick(0, column) => {
-                self.tabs_focused = true;
-                self.switch_vm_tab(column >= self.vm_tab_column.max(1));
-                return true;
-            },
-            Mouse::LeftClick(line, column) if line > 0 => {
+            Mouse::LeftClick(line, column) => {
                 self.tabs_focused = false;
                 Mouse::LeftClick(line - 1, column)
             },
@@ -1038,12 +1062,12 @@ impl State {
 
     /// The server sends Hover with the wheel's coordinates before each wheel event.
     fn scroll_surface(&mut self, delta: isize) -> bool {
-        let target = match self.mouse_line {
-            Some(line) if line < 0 => return false,
-            Some(line) if (line as usize) < self.last_list_rows => Focus::List,
+        // on_mouse has checked the pane bounds and excluded the tab header.
+        let target = match self.mouse_position.map(|(line, _)| line as usize - 1) {
+            Some(line) if line < self.last_list_rows => Focus::List,
             Some(line)
                 if self.last_history_rows > 0
-                    && (line as usize) <= self.last_list_rows + self.last_history_rows =>
+                    && line <= self.last_list_rows + self.last_history_rows =>
             {
                 Focus::History
             },
@@ -1066,7 +1090,7 @@ impl State {
         true
     }
 
-    /// A click on screen line `line`.
+    /// A click on content line `line`, below the tab header.
     ///
     /// The half it lands in takes the keys - the pointer saying where the user is looking is
     /// the whole reason for having two halves rather than one. In the list it also moves the
@@ -3400,8 +3424,9 @@ mod tests {
         let selection = state.selection_key();
         state.history_scroll = 2;
         state.focus = Focus::History;
-        assert!(!state.on_mouse(Mouse::Hover(0, 0)));
+        assert!(!state.on_mouse(Mouse::Hover(1, 0)));
         assert!(state.on_mouse(Mouse::ScrollDown(3)));
+        state.on_mouse(Mouse::Hover(state.last_list_rows as isize, 49));
         assert!(
             state.on_mouse(Mouse::ScrollDown(3)),
             "wheel events can precede a render"
@@ -3418,7 +3443,7 @@ mod tests {
         assert!(state.on_mouse(Mouse::ScrollUp(1)));
         state.render(12, 50);
         assert_eq!(state.last_window_start, 14);
-        assert!(state.on_mouse(Mouse::LeftClick(1, 0)));
+        assert!(state.on_mouse(Mouse::LeftClick(2, 0)));
         assert_eq!(state.selected, 15);
         assert_eq!(state.list_scroll, None);
     }
@@ -3455,9 +3480,12 @@ mod tests {
         state.render(16, 50);
         assert!(!state.on_mouse(Mouse::ScrollDown(1)));
         state.set_rows(unfocused(rows));
-        state.render(1, 50);
+        state.render(2, 50);
         assert_eq!(state.last_history_rows, 0);
         assert!(state.on_mouse(Mouse::ScrollDown(1)));
+        state.render(1, 50);
+        assert_eq!(state.last_list_rows, 0);
+        assert!(!state.on_mouse(Mouse::ScrollDown(1)));
         state.render(0, 50);
         assert!(!state.on_mouse(Mouse::ScrollDown(1)));
         state.render(12, 50);
@@ -3471,6 +3499,89 @@ mod tests {
             !state.on_mouse(Mouse::ScrollDown(1)),
             "outside the rendered pane"
         );
+    }
+
+    #[test]
+    fn header_and_empty_panes_preserve_list_history_and_reader_positions() {
+        for reader in [false, true] {
+            let mut state = reading(&"word ".repeat(1000));
+            state.rows.extend((0..20).map(|id| agent(id, "claude")));
+            state.list_scroll = Some(3);
+            state.history_scroll = 1;
+            if reader {
+                assert!(state.scroll_reader(3));
+            } else {
+                state.close_reader();
+            }
+            state.tabs_focused = true;
+            state.render(12, 50);
+            let position = |state: &State| {
+                (
+                    state.selected,
+                    state.list_scroll,
+                    state.history_scroll,
+                    state.history_cursor,
+                    state.reading.as_ref().map(|r| (r.scroll, r.cursor)),
+                    state.focus,
+                    state.tabs_focused,
+                )
+            };
+            let before = position(&state);
+            let dimensions = |state: &State| {
+                [
+                    state.last_window_start,
+                    state.last_list_rows,
+                    state.last_history_rows,
+                    state.last_history_body_rows,
+                    state.last_history_max_scroll,
+                    state.last_reader_rows,
+                    state.last_reader_max_scroll,
+                ]
+            };
+            let visible = dimensions(&state);
+            for (line, column) in [(0, 0), (-1, 0), (12, 0), (1, 50)] {
+                state.on_mouse(Mouse::Hover(line, column));
+                assert!(!state.on_mouse(Mouse::ScrollUp(1)));
+                assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+                if line != 0 {
+                    assert!(!state.on_mouse(Mouse::LeftClick(line, column)));
+                }
+                assert_eq!(position(&state), before);
+            }
+            for (rows, cols) in [(1, 50), (0, 50), (12, 0)] {
+                state.render(rows, cols);
+                assert_eq!((state.last_rows, state.last_cols), (rows, cols));
+                assert_eq!(dimensions(&state), [0; 7]);
+                state.mouse_position = None;
+                assert!(!state.on_mouse(Mouse::ScrollUp(1)));
+                assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+                state.on_mouse(Mouse::Hover(1, 0));
+                assert!(!state.on_mouse(Mouse::ScrollUp(1)));
+                assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+                assert!(!state.on_mouse(Mouse::LeftClick(1, 0)));
+                assert_eq!(position(&state), before);
+
+                let header_visible = rows > 0 && cols > 0;
+                assert_eq!(state.on_mouse(Mouse::LeftClick(0, 10)), header_visible);
+                assert_eq!(state.vm_tab, header_visible);
+                assert_eq!(state.on_mouse(Mouse::LeftClick(0, 0)), header_visible);
+                assert!(!state.vm_tab);
+
+                state.render(12, 50);
+                assert_eq!(position(&state), before);
+                // Only the active surface's geometry is restored.
+                let restored = dimensions(&state);
+                if reader {
+                    assert_eq!(restored[5..], visible[5..]);
+                } else {
+                    assert_eq!(restored[..5], visible[..5]);
+                }
+                state.on_mouse(Mouse::Hover(1, 0));
+                assert!(state.on_mouse(Mouse::ScrollDown(1)));
+                assert!(state.on_mouse(Mouse::ScrollUp(1)));
+                assert_eq!(position(&state), before);
+            }
+        }
     }
 
     #[test]
@@ -3489,7 +3600,7 @@ mod tests {
             state.render(20, 50);
             let selected = state.selected;
             let history_scroll = state.history_scroll;
-            state.on_mouse(Mouse::Hover(0, 0));
+            state.on_mouse(Mouse::Hover(1, 0));
             assert!(state.on_mouse(Mouse::ScrollDown(1)));
             assert_eq!(state.reading.as_ref().unwrap().scroll, 1);
             assert!(state.on_mouse(Mouse::ScrollDown(1000)));
@@ -3532,7 +3643,7 @@ mod tests {
         assert_eq!(state.last_history_rows, 4);
         assert_eq!(state.last_history_max_scroll, 1);
 
-        assert!(!state.on_mouse(Mouse::Hover(state.last_list_rows as isize, 0)));
+        assert!(!state.on_mouse(Mouse::Hover((state.last_list_rows + 1) as isize, 0)));
         assert!(state.on_mouse(Mouse::ScrollUp(1)));
         assert_eq!(state.history_scroll, 1);
         assert!(
@@ -3549,12 +3660,12 @@ mod tests {
             "scrolling history does not take the keys"
         );
         assert_eq!(state.list_scroll, None);
-        // The last rendered row belongs to history too, as does its pinned header.
-        state.on_mouse(Mouse::Hover(7, 0));
+        // The last rendered row and the first row below the divider belong to history too.
+        state.on_mouse(Mouse::Hover(8, 0));
         assert!(state.on_mouse(Mouse::ScrollUp(1)));
-        state.on_mouse(Mouse::Hover((state.last_list_rows + 1) as isize, 0));
+        state.on_mouse(Mouse::Hover((state.last_list_rows + 2) as isize, 0));
         assert!(state.on_mouse(Mouse::ScrollDown(1)));
-        state.mouse_line = None;
+        state.mouse_position = None;
         state.focus = Focus::History;
         assert!(
             state.on_mouse(Mouse::ScrollUp(1)),
@@ -3600,7 +3711,7 @@ mod tests {
 
         // Wound all the way back, the oldest event is at the top of the half and the tail of
         // the summary has scrolled off the bottom.
-        state.on_mouse(Mouse::Hover(state.last_list_rows as isize, 0));
+        state.on_mouse(Mouse::Hover((state.last_list_rows + 1) as isize, 0));
         assert!(state.on_mouse(Mouse::ScrollUp(50)));
         state.render(8, 50);
         assert_eq!(state.history_scroll, state.last_history_max_scroll);
@@ -3959,12 +4070,21 @@ mod tests {
         assert_eq!(state.last_list_rows, list_rows);
         assert_eq!(state.last_history_rows, history_rows);
 
-        assert!(state.on_click(list_rows), "the divider takes the focus");
+        assert!(
+            state.on_mouse(Mouse::LeftClick((list_rows + 1) as isize, 0)),
+            "the divider takes the focus"
+        );
         assert_eq!(state.focus, Focus::History);
         assert_eq!(state.selected, 2, "and selects nothing");
-        assert!(!state.on_click(list_rows + 2), "already down here");
+        assert!(
+            !state.on_mouse(Mouse::LeftClick((list_rows + 3) as isize, 0)),
+            "already down here"
+        );
 
-        assert!(state.on_click(3), "the list takes it back");
+        assert!(
+            state.on_mouse(Mouse::LeftClick(4, 0)),
+            "the list takes it back"
+        );
         assert_eq!(state.focus, Focus::List);
         assert_eq!(state.selected, 3, "pane 7, the row that was pointed at");
         assert!(
@@ -3975,7 +4095,7 @@ mod tests {
         // and a click on a header inside the list still hits no row, but the half is the
         // half the pointer is in
         state.focus = Focus::History;
-        assert!(state.on_click(0), "the Project header");
+        assert!(state.on_mouse(Mouse::LeftClick(1, 0)), "the Project header");
         assert_eq!(state.focus, Focus::List);
         assert_eq!(state.selected, 3, "still pane 7");
     }
