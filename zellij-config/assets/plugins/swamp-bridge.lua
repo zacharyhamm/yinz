@@ -35,7 +35,7 @@ local function save_event(uid, outcome, fields)
   for k, v in pairs(fields or {}) do value[k] = v end
   put(uid, value, row)
 end
--- Placement belongs to the authenticated hook instance, never to a caller-supplied pane.
+-- Placement belongs to an authenticated builtin view, never to a caller-supplied pane.
 -- It is intentionally not recovered across server/bridge reloads.
 local placements={}
 local function close_view(work)
@@ -75,7 +75,7 @@ local function present(work)
   if not placement or placement.detached then return end
   local view=z.plugin_pane(placement.view)
   local ok,info=pcall(z.get_pane_info,view)
-  if not ok or not info or info.plugin_url~='zellij:agent-exit' then
+  if not ok or not info or (info.plugin_url~='zellij:agent-exit' and info.plugin_url~='zellij:swamp-workflow') then
     placement.detached=true
     return
   end
@@ -103,6 +103,35 @@ local function present(work)
   end
   z.replace_pane_with_existing_pane{current,target,true}
   placement.current=next_pane
+end
+local function attach_manual(work, view)
+  if read(scope(work,'view')) then return end
+  local existing=placements[work]
+  if existing then
+    local ok,pane=pcall(z.get_pane_info,z.plugin_pane(existing.view))
+    if ok and pane then return end
+  end
+  local placement={view=view,queue={},manual=true}
+  placements[work]=placement
+  local cursor
+  repeat
+    -- Default row-id order preserves delivery order across pages.
+    local rows,page=D.fetch{entity='delivery',after_id=cursor}
+    for _,row in ipairs(rows) do
+      local id=decode(row.uid)
+      if id[1]==identity.host_id and id[2]==identity.session and id[3]==work then
+        local operation=decode(row.value)
+        if operation.outcome=='pending' and operation.pane then
+          local request=decode(operation.request)
+          if request.method=='command' and request.foreground then
+            placement.queue[#placement.queue+1]=row.uid
+          end
+        end
+      end
+    end
+    cursor=page.next_cursor
+  until not cursor or cursor==z.null
+  present(work)
 end
 local function finish_agent(owner, event, raw)
   local agent_uid = scope(owner.work, owner.agent)
@@ -215,7 +244,7 @@ local function discover(work, root)
   end
   return read(scope(work,'runs'))
 end
-handle = function(args)
+handle = function(args, manual_view)
   assert(type(args) == 'table', 'Expected a typed request')
   if args.method == 'identity' then return identity end
   if args.method == 'workflow_cancel' then
@@ -249,6 +278,7 @@ handle = function(args)
       end
     elseif args.launch and args.launch~=z.null then work=args.launch end
     local runs=work and discover(work,config.root)
+    if work and manual_view then attach_manual(work,manual_view) end
     if args.run and args.run~=z.null then attachment=read(scope(args.run,'attachment'))
     elseif runs then
       for id,entry in pairs(runs.entries) do
@@ -506,7 +536,7 @@ handle = function(args)
     -- One transaction publishes observation and the exclusive prompt slot before bytes.
     D.apply({D.put('delivery', {value=encode(value)}, uid, row.rev), D.put('delivery', {value=encode(agent)}, agent_uid, agent_row.rev)})
     local placement=placements[args.work]
-    if placement and not placement.detached then
+    if placement and not placement.manual and not placement.detached then
       placement.queue[#placement.queue+1]=uid
       present(args.work)
     end
@@ -524,6 +554,11 @@ handle = function(args)
     value.pane = pane.Terminal or pane
     value.checkout, value.log = args.cwd, 'terminal_' .. value.pane
     put(uid, value, row)
+    local placement=placements[args.work]
+    if args.foreground and placement and not placement.detached then
+      placement.queue[#placement.queue+1]=uid
+      present(args.work)
+    end
     local host = supervisor(value.pane)
     value, row = read(uid)
     value.supervisor, value.process = host.host_id, host.child_pid
@@ -558,9 +593,9 @@ handle = function(args)
   else error('Unknown bridge method') end
   return result(uid)
 end
-local function invoke(args)
+local function invoke(args, manual_view)
   local new_launch=type(args)=='table' and args.method=='workflow_run' and not read(scope(args.work,args.key))
-  local ok,response=pcall(handle,args)
+  local ok,response=pcall(handle,args,manual_view)
   if ok then return response end
   if new_launch then
     -- A validation/configuration failure before a runner claim is safe to restart.
@@ -601,7 +636,7 @@ function M.load()
         placements[args.work]={view=from,queue={}}
       end
     end
-    return invoke(args)
+    return invoke(args, args.method=='workflow_show' and pane.plugin_url=='zellij:swamp-workflow' and from or nil)
   end)
 end
 function M.pipe(message)
