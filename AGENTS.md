@@ -129,6 +129,14 @@ in `default-plugins/*/.cargo/config.toml` is only read when cargo is invoked fro
 directories, and passing it splits the artifact tree. Tests that load a plugin at runtime need
 `cargo x build -p` (plugins only) first - there is no checked-in wasm to fall back on.
 
+### What tests exist
+
+`docs/TEST_INVENTORY.md` is a generated checklist of every automated test - one item per test,
+grouped by the gate that runs it, `#[ignore]`d ones tagged. Regenerate it with
+`scripts/test-inventory.sh` (one `cargo nextest list --workspace --all-features --run-ignored
+all`, plus a source scan that reports anything the listing missed). `--fast` skips the
+feature-gated e2e and Postgres groups.
+
 ### Choosing what to run
 
 Default to the tests that cover what you touched, using the narrowing recipes above — `-p` for a

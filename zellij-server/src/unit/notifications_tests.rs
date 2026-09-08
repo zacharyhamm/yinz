@@ -15,6 +15,17 @@ fn a_kitty_host_is_detected_from_its_term() {
         NotificationProtocol::from_host_terminal_env(&env(&[("TERM", "xterm-kitty")])),
         NotificationProtocol::Osc99
     );
+    // The match is exact, on purpose: `xterm-kitty` is the value kitty itself sets, and a
+    // terminal that merely mentions kitty in a terminfo name is not known to render OSC 99,
+    // where OSC 9 is the safe fallback. A real kitty behind another TERM still has
+    // `KITTY_WINDOW_ID`, which the sibling test covers.
+    for term in ["xterm-kitty-direct", "kitty", "xterm-kitty2"] {
+        assert_eq!(
+            NotificationProtocol::from_host_terminal_env(&env(&[("TERM", term)])),
+            NotificationProtocol::Osc9,
+            "TERM={term} is not an exact kitty match"
+        );
+    }
 }
 
 #[test]
