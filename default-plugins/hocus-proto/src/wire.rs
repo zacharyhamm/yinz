@@ -668,6 +668,9 @@ mod tests {
             max_tokens: Some(256),
             ..Default::default()
         };
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("completion-fixtures.json")).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), fixtures["request"]);
         let json = serde_json::to_string(&request).expect("encoded");
         let back: CompletionRequest = serde_json::from_str(&json).expect("parsed");
         assert_eq!(back.request_id, "lua:hc1");
@@ -700,6 +703,9 @@ mod tests {
             model: "gpt-5".to_owned(),
             error: String::new(),
         };
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("completion-fixtures.json")).unwrap();
+        assert_eq!(serde_json::to_value(&reply).unwrap(), fixtures["reply"]);
         let json = serde_json::to_string(&reply).expect("encoded");
         let back: CompletionReply = serde_json::from_str(&json).expect("parsed");
         assert_eq!(back.request_id, "lua:hc1");

@@ -90,6 +90,7 @@ export interface WebRequestResult {
   context: Record<string, string>;
 }
 export interface Zellij {
+  readonly agent: Agents;
   readonly hocus: HocusExtensions;
   readonly rpc: Rpc;
   readonly ui: UserInterface;
@@ -557,6 +558,7 @@ export interface HocusToolDefinition {
   handler(payload: Json, call: HocusToolCall): Json | void | Promise<Json | void>;
 }
 export interface HocusExtensions {
+  complete(options: CompletionOptions): CancellablePromise<CompletionResult>;
   /** Requires MessageAndLaunchOtherPlugins. Replaces all handlers and registrations. */
   tools(definitions: Record<string, HocusToolDefinition>): void;
   launch(): {namespace: string; path: string} | null;
@@ -638,4 +640,39 @@ export interface TerminalText {
   center(text: string, width: number): string;
   wrap(text: string, width: number): string[];
   sanitize(text: string): string;
+}
+
+export type AgentPane = number | {Terminal: number};
+export type AgentStateFilter = AgentState | Lowercase<AgentState>;
+export interface AgentSpawnOptions extends AgentSpawnSpec {
+  sourceDirectory?: string; cwd?: string; name?: string; context?: StringMap;
+  automaticFirecrackerVm?: boolean; startSuppressed?: boolean;
+}
+export interface AgentTurnOptions {fallback?: 'idle';}
+export interface AgentTurn {message: string | null; hook: string | null; state: AgentState | null; sessionId: string | null;}
+export interface Agents {
+  spawnDetails(options: AgentSpawnOptions): SpawnedAgent;
+  spawn(options: AgentSpawnOptions): PaneId;
+  info(pane: AgentPane): AgentInfo | null;
+  all(): Record<number, AgentInfo>;
+  on(handler: (event: AgentEvent) => boolean | void | Promise<boolean | void>): () => void;
+  send(pane: AgentPane, text: string, options?: {enter?: boolean}): void;
+  /** Resolves on a future PaneUpdate; after requires a preceding matching update. */
+  waitForState(pane: AgentPane, states: AgentStateFilter | AgentStateFilter[], options?: {after?: AgentStateFilter | AgentStateFilter[]}): CancellablePromise<PaneInfo>;
+  waitForEvent(pane: AgentPane, hooks?: string | string[]): CancellablePromise<AgentEvent>;
+  waitForTurn(pane: AgentPane, options?: AgentTurnOptions): CancellablePromise<AgentTurn>;
+  prompt(pane: AgentPane, text: string, options?: AgentTurnOptions & {enter?: boolean}): CancellablePromise<AgentTurn>;
+}
+/** Nested fields retain the completion wire spelling for transcript round trips. */
+export interface CompletionToolCall {id: string; name: string; arguments: string;}
+export type CompletionMessage = {
+  role: 'system' | 'user' | 'assistant'; content?: string; tool_calls?: CompletionToolCall[]; tool_call_id?: string | null;
+} | {role: 'tool'; content?: string; tool_calls?: CompletionToolCall[]; tool_call_id: string;};
+export interface CompletionUsage {prompt_tokens: number; completion_tokens: number; total_tokens: number;}
+export interface CompletionOptions {
+  messages: CompletionMessage[]; system?: string | null; model?: string | null; tools?: Json[]; toolChoice?: Json;
+  temperature?: number | null; maxTokens?: number | null; timeoutMs?: number;
+}
+export interface CompletionResult {
+  content: string; toolCalls: CompletionToolCall[]; finishReason: string; usage: CompletionUsage | null; model: string;
 }

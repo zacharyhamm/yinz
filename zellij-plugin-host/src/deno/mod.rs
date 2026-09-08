@@ -670,6 +670,7 @@ mod sdk_tests {
         commands: Vec<(Value, u32)>,
         fail_permission_client: Option<u32>,
         fail_command: Option<&'static str>,
+        session_list: Value,
     }
 
     #[op2]
@@ -685,7 +686,7 @@ mod sdk_tests {
         let host = state.borrow_mut::<TestHost>();
         host.commands.push((command.clone(), client));
         if let Some(name) = host.fail_command {
-            if command.get(name).is_some() {
+            if command.get(name).is_some() || command == json!(name) {
                 return Err(JsErrorBox::generic(format!("{name} dispatch failed")));
             }
         }
@@ -696,6 +697,10 @@ mod sdk_tests {
         }
         if command == json!("GetPluginIds") {
             Ok(json!({ "json": { "client_id": client } }))
+        } else if command == json!("GetSessionList") {
+            Ok(json!({ "json": host.session_list }))
+        } else if command.get("SpawnAgent").is_some() {
+            Ok(json!({"json":{"pane_id":{"Terminal":7},"branch":null,"cwd":null}}))
         } else {
             Ok(json!({ "json": null }))
         }
@@ -1640,4 +1645,6 @@ mod sdk_tests {
     }
     include!("unit/ui_sdk.rs");
     include!("unit/rpc_sdk.rs");
+    include!("unit/agent_sdk.rs");
+    include!("unit/completion_sdk.rs");
 }

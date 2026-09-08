@@ -559,3 +559,48 @@ fn sdk_rpc_declarations_require_one_destination_and_json() {
       zellij.rpc.handle('bad', () => new Uint8Array());
     "#).unwrap();
 }
+
+#[test]
+fn sdk_agent_and_completion_types_check_rust_completion_fixtures() {
+    // hocus-proto's wire tests compare these fixtures to serialized Rust structs.
+    let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../default-plugins/hocus-proto/src/completion-fixtures.json"
+    ))
+    .unwrap();
+    let source = format!(
+        r#"
+      import zellij, {{type CompletionMessage, type CompletionOptions, type CompletionResult, type PaneId, type AgentInfo}} from 'zellij:plugin';
+      const request = {} satisfies {{messages: CompletionMessage[]}} & Record<string, unknown>;
+      const reply = {};
+      const options: CompletionOptions = {{messages:request.messages, system:request.system, model:request.model, tools:request.tools, toolChoice:request.tool_choice, temperature:request.temperature, maxTokens:request.max_tokens}};
+      const result: CompletionResult = {{content:reply.content, toolCalls:reply.tool_calls, finishReason:reply.finish_reason, usage:reply.usage, model:reply.model}};
+      zellij.hocus.complete(options).cancel();
+      zellij.hocus.complete({{messages:[{{role:'assistant',tool_calls:result.toolCalls}},{{role:'tool',tool_call_id:'call_1',content:'clear'}}]}});
+      const pane: PaneId = zellij.agent.spawn({{kind:'codex',permission_mode:'plan',sourceDirectory:'/host',startSuppressed:true}});
+      const info: AgentInfo | null = zellij.agent.info(7);
+      zellij.agent.info({{Terminal:7}});
+      zellij.agent.on(e => {{const hook:string=e.hook;}})();
+      zellij.agent.waitForState(7,['idle','Busy'],{{after:'Waiting'}}).then(p => p.agent?.session_id);
+      zellij.agent.prompt(7,'go',{{fallback:'idle',enter:false}}).then(t => {{const message:string|null=t.message;}});
+      // @ts-expect-error plugin IDs are not agents
+      zellij.agent.send({{Plugin:7}},'go');
+      // @ts-expect-error invalid states
+      zellij.agent.waitForState(7,'running');
+      // @ts-expect-error unsupported fallback
+      zellij.agent.waitForTurn(7,{{fallback:'SessionStart'}});
+      // @ts-expect-error tool messages require a call ID
+      zellij.hocus.complete({{messages:[{{role:'tool',content:'answer'}}]}});
+      // @ts-expect-error unknown role
+      zellij.hocus.complete({{messages:[{{role:'developer'}}]}});
+      // @ts-expect-error maxTokens is numeric
+      zellij.hocus.complete({{messages:[],system:'hello',maxTokens:'12'}});
+      // @ts-expect-error tools are JSON
+      zellij.hocus.complete({{messages:[],system:'hello',tools:[()=>null]}});
+      // @ts-expect-error nested wire field spelling is preserved
+      const bad: CompletionMessage = {{role:'assistant',toolCalls:result.toolCalls}};
+    "#,
+        fixtures["request"], fixtures["reply"]
+    );
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("agents.ts"), &source).unwrap();
+}
