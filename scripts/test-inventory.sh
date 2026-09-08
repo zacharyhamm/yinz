@@ -138,7 +138,7 @@ if [[ $scan -eq 1 ]]; then
   done > "$work/static.tsv"
   # A name nextest listed anywhere counts as covered: the scan cannot rebuild
   # module paths reliably, so it checks the leaf name only.
-  awk -F'\t' 'NR==FNR { known[$0]=1; next } !($2 in known) { print }' \
+  awk -F'\t' 'FILENAME == ARGV[1] { known[$0]=1; next } !($2 in known) { print }' \
     "$work/known.txt" "$work/static.tsv" > "$unmatched"
 fi
 
