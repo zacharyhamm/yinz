@@ -44,7 +44,7 @@ pub fn classify_probe_connect_error(kind: io::ErrorKind) -> Result<SessionProbe,
 /// in some trouble, and the safe reading of trouble is "do not build over it".
 pub fn classify_probe_reply(reply: IpcRecv<ServerToClientMsg>) -> SessionProbe {
     match reply {
-        IpcRecv::Msg(ServerToClientMsg::Connected, _) => SessionProbe::Alive,
+        IpcRecv::Msg(ServerToClientMsg::Connected { .. }, _) => SessionProbe::Alive,
         IpcRecv::Msg(..) | IpcRecv::Idle | IpcRecv::Eof | IpcRecv::Malformed => {
             SessionProbe::Unresponsive
         },

@@ -977,12 +977,12 @@ pub enum CliAction {
         /// The pane_id of the pane, eg. terminal_1, plugin_2 or 3
         pane_id: String,
     },
-    /// Move a pane, with the process running in it, to another session
+    /// Move a visible pane and its hidden contents to another session. Plugins restart.
     WarpPane {
         /// Name of the session to move the pane to
         #[clap(long, short)]
         to_session: String,
-        /// The pane to move, eg. terminal_1 or 3. Defaults to the focused pane.
+        /// Visible pane, eg. terminal_1, plugin_2 or 3. Moves its whole stack list if present.
         #[clap(long)]
         pane_id: Option<String>,
         /// Land the pane in the target session's focused tab instead of a new tab

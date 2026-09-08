@@ -274,6 +274,8 @@ pub(crate) enum AcceptedPane {
 pub(crate) enum ExtractedPanePlacement {
     Tiled,
     Floating,
+    /// Use destination geometry for a group extracted from a temporary tiled tab.
+    FloatingDefault,
     /// [`OverlayCarry`] is the in-memory half of the overlay's wrapper - whether it was set
     /// aside, and whether where it sits is the user's doing. It rides here rather than in
     /// `OverlayPlacement` because that struct crosses the protobuf boundary and neither bit is
@@ -1425,7 +1427,11 @@ impl Tab {
         let Some(list) = self.stack_lists.get(&stack_list_id) else {
             return pane_id;
         };
-        let Some(pane) = self.tiled_panes.get_pane(pane_id) else {
+        let Some(pane) = self
+            .tiled_panes
+            .get_pane(pane_id)
+            .or_else(|| self.floating_panes.get_pane(pane_id))
+        else {
             return pane_id;
         };
         let geom = pane.current_geom();
@@ -1487,15 +1493,23 @@ impl Tab {
     }
     pub fn hidden_stack_list_members_for_serialization(
         &self,
+        floating: bool,
     ) -> Vec<(PaneId, &Box<dyn Pane>, PaneGeom)> {
         let synthetic_geoms = self.stack_list_serialization_geoms();
         let mut hidden_members = vec![];
         for list in self.stack_lists.values() {
+            let floating_pane = self.floating_panes.get_pane(list.visible);
+            if floating_pane.is_some() != floating {
+                continue;
+            }
             for member in &list.members {
                 if *member == list.visible {
                     continue;
                 }
-                let Some(member_geom) = synthetic_geoms.get(member) else {
+                let Some(member_geom) = floating_pane
+                    .map(|pane| pane.position_and_size())
+                    .or_else(|| synthetic_geoms.get(member).copied())
+                else {
                     continue;
                 };
                 // A member with a scrollback editor open on it *is* the editor -
@@ -1506,7 +1520,7 @@ impl Tab {
                     .scrollback_editor_subject(*member)
                     .or_else(|| self.suppressed_panes.get(member));
                 if let Some(suppressed) = resolved_pane {
-                    hidden_members.push((suppressed.pane.pid(), &suppressed.pane, *member_geom));
+                    hidden_members.push((suppressed.pane.pid(), &suppressed.pane, member_geom));
                 }
             }
         }
@@ -1539,29 +1553,6 @@ impl Tab {
                     .unwrap_or(false)
             })
             .map(|(pane_id, _)| *pane_id)
-    }
-    /// The scrollback editor, if any, standing in for `pane_id` while its
-    /// scrollback is being edited.
-    ///
-    /// The inverse of `scrollback_editor_subject`, and the question anything
-    /// taking `pane_id` out of the tab has to ask: an editor whose subject has
-    /// gone is editing a dump of a pane that no longer exists.
-    pub fn scrollback_editor_standing_in_for(&self, pane_id: PaneId) -> Option<PaneId> {
-        self.suppressed_panes
-            .get(&pane_id)
-            .and_then(|suppressed| suppressed.restored_by)
-            .filter(|stand_in| stand_in.is_scrollback_editor)
-            .map(|stand_in| stand_in.pane_id)
-    }
-    /// Suppressed panes with a process in them, which are panes the session still
-    /// has even though nothing on screen shows them.
-    pub fn suppressed_selectable_terminal_count(&self) -> usize {
-        self.suppressed_panes
-            .iter()
-            .filter(|(pane_id, suppressed)| {
-                matches!(pane_id, PaneId::Terminal(_)) && suppressed.pane.selectable()
-            })
-            .count()
     }
     /// The pane whose scrollback `stand_in` is editing.
     fn scrollback_editor_subject(&self, stand_in: PaneId) -> Option<&SuppressedPane> {
@@ -1612,7 +1603,20 @@ impl Tab {
                 return;
             },
         };
-        let removed_visible = self.tiled_panes.replace_pane(current_visible, target_box);
+        let removed_visible = if self.floating_panes.panes_contain(&current_visible) {
+            match self
+                .floating_panes
+                .replace_pane(current_visible, target_box)
+            {
+                Ok(pane) => Some(pane),
+                Err(error) => {
+                    Err::<(), _>(error).non_fatal();
+                    None
+                },
+            }
+        } else {
+            self.tiled_panes.replace_pane(current_visible, target_box)
+        };
         if let Some(removed_visible) = removed_visible {
             // Whatever either of these two was standing in for stays suppressed
             // behind it, wherever it goes: an entry names its stand-in, not the
@@ -1624,14 +1628,22 @@ impl Tab {
         }
         self.reserved_top_rows.borrow_mut().remove(&current_visible);
         if let Some(client_id) = client_id {
-            self.tiled_panes.focus_pane(target_member, client_id);
+            if self.floating_panes.panes_contain(&target_member) {
+                self.floating_panes.focus_pane(target_member, client_id);
+            } else {
+                self.tiled_panes.focus_pane(target_member, client_id);
+            }
         }
         self.refresh_or_dissolve_stack_list(stack_list_id);
         self.set_force_render();
         self.set_should_clear_display_before_rendering();
     }
     fn move_focus_within_stack_list(&mut self, client_id: ClientId, down: bool) -> bool {
-        let active_pane_id = match self.tiled_panes.get_active_pane_id(client_id) {
+        let active_pane_id = match if self.floating_panes.panes_are_visible() {
+            self.floating_panes.active_pane_id(client_id)
+        } else {
+            self.tiled_panes.get_active_pane_id(client_id)
+        } {
             Some(id) => id,
             None => return false,
         };
@@ -1714,7 +1726,17 @@ impl Tab {
                     return StackListRemoval::NotRemoved;
                 },
             };
-            let removed_visible = self.tiled_panes.replace_pane(id, target_box);
+            let removed_visible = if self.floating_panes.panes_contain(&id) {
+                match self.floating_panes.replace_pane(id, target_box) {
+                    Ok(pane) => Some(pane),
+                    Err(error) => {
+                        Err::<(), _>(error).non_fatal();
+                        None
+                    },
+                }
+            } else {
+                self.tiled_panes.replace_pane(id, target_box)
+            };
             self.stack_list_of_member.remove(&id);
             self.reserved_top_rows.borrow_mut().remove(&id);
             if let Some(list) = self.stack_lists.get_mut(&stack_list_id) {
@@ -1790,8 +1812,12 @@ impl Tab {
     fn dissolve_stack_list(&mut self, stack_list_id: StackListId) {
         if let Some(list) = self.stack_lists.get(&stack_list_id) {
             let members = list.members.clone();
+            let floating = self.floating_panes.panes_contain(&list.visible);
             self.drop_stack_list_ledger(stack_list_id, &members);
             self.tiled_panes.reapply_pane_frames();
+            if floating {
+                self.floating_panes.set_pane_frames().non_fatal();
+            }
         }
     }
     fn drop_stack_list_ledger(&mut self, stack_list_id: StackListId, members: &[PaneId]) {
@@ -1807,6 +1833,9 @@ impl Tab {
             Some(list) => (list.members.clone(), list.visible),
             None => return,
         };
+        if self.floating_panes.panes_contain(&visible) {
+            return;
+        }
         let n = members.len();
         if n == 0 || !self.tiled_panes.panes_contain(&visible) {
             self.drop_stack_list_ledger(stack_list_id, &members);
@@ -1937,12 +1966,30 @@ impl Tab {
         }
     }
     fn resize_stack_list_hidden_members(&mut self, stack_list_id: StackListId) {
+        if let Some(list) = self.stack_lists.get(&stack_list_id) {
+            if self.floating_panes.fullscreen_pane_id() != Some(list.visible) {
+                if let Some(pane) = self.floating_panes.get_pane_mut(list.visible) {
+                    let mut offset = pane.get_content_offset();
+                    offset.top = list.members.len() + 1;
+                    if pane.get_content_offset() != offset {
+                        pane.set_content_offset(offset);
+                        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                            .non_fatal();
+                    }
+                }
+            }
+        }
+
         let (visible_geom, visible_offset, hidden_members) = {
             let list = match self.stack_lists.get(&stack_list_id) {
                 Some(l) => l,
                 None => return,
             };
-            let (geom, offset) = match self.tiled_panes.get_pane(list.visible) {
+            let (geom, offset) = match self
+                .tiled_panes
+                .get_pane(list.visible)
+                .or_else(|| self.floating_panes.get_pane(list.visible))
+            {
                 Some(p) => (p.position_and_size(), p.get_content_offset()),
                 None => return,
             };
@@ -1967,8 +2014,9 @@ impl Tab {
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
+        floating: bool,
     ) -> Result<()> {
-        if self.stack_lists.is_empty() || self.tiled_panes.fullscreen_is_active() {
+        if self.stack_lists.is_empty() || (!floating && self.tiled_panes.fullscreen_is_active()) {
             return Ok(());
         }
         let mut connected_clients: HashSet<ClientId> =
@@ -1986,7 +2034,14 @@ impl Tab {
             { self.current_pane_group.borrow().clone_inner() };
         let active_panes: HashMap<ClientId, PaneId> = connected_clients
             .iter()
-            .filter_map(|c| self.tiled_panes.get_active_pane_id(*c).map(|p| (*c, p)))
+            .filter_map(|c| {
+                let pane = if floating {
+                    self.floating_panes.active_pane_id(*c)
+                } else {
+                    self.tiled_panes.get_active_pane_id(*c)
+                };
+                pane.map(|p| (*c, p))
+            })
             .collect();
         let client_modes: Vec<(ClientId, InputMode)> = {
             let mode_info = self.mode_info.borrow();
@@ -2000,7 +2055,24 @@ impl Tab {
         };
         let lists: Vec<StackList> = self.stack_lists.values().cloned().collect();
         for list in lists {
-            let (rect, visible_content_offset) = match self.tiled_panes.get_pane(list.visible) {
+            if self.floating_panes.panes_contain(&list.visible) != floating
+                || (floating && self.floating_panes.fullscreen_pane_id().is_some())
+            {
+                continue;
+            }
+            let z_index = if floating {
+                self.floating_panes
+                    .get_pane_z_index(list.visible)
+                    .map(|index| index + 1)
+            } else {
+                None
+            };
+
+            let (rect, visible_content_offset) = match self
+                .tiled_panes
+                .get_pane(list.visible)
+                .or_else(|| self.floating_panes.get_pane(list.visible))
+            {
                 Some(p) => (p.position_and_size(), p.get_content_offset()),
                 None => continue,
             };
@@ -2014,7 +2086,7 @@ impl Tab {
                 .iter()
                 .filter_map(|member| {
                     if *member == list.visible {
-                        self.tiled_panes.get_pane(*member).map(|p| &**p)
+                        self.get_pane_with_id(*member)
                     } else {
                         self.suppressed_panes.get(member).map(|s| &*s.pane)
                     }
@@ -2031,7 +2103,11 @@ impl Tab {
                 header_geom.rows = Dimension::fixed(1);
                 header_geom.stacked = None;
                 let pane_box = if *member == list.visible {
-                    self.tiled_panes.get_pane_mut(*member)
+                    if floating {
+                        self.floating_panes.get_pane_mut(*member)
+                    } else {
+                        self.tiled_panes.get_pane_mut(*member)
+                    }
                 } else {
                     self.suppressed_panes.get_mut(member).map(|s| &mut s.pane)
                 };
@@ -2045,7 +2121,7 @@ impl Tab {
                     self.style,
                     &active_panes,
                     multiple_users_exist_in_session,
-                    None,
+                    z_index,
                     false,
                     false,
                     should_draw_pane_frames,
@@ -2083,7 +2159,7 @@ impl Tab {
             output.add_character_chunks_to_multiple_clients(
                 vec![padding_chunk],
                 connected_clients.iter().copied(),
-                None,
+                z_index,
             )?;
         }
         Ok(())
@@ -5767,7 +5843,7 @@ impl Tab {
                     self.mouse_scroll_resize,
                 )
                 .with_context(err_context)?;
-            self.render_stack_list_headers(output, client_id_override)
+            self.render_stack_list_headers(output, client_id_override, false)
                 .with_context(err_context)?;
         }
         // the floating panes are *not* rendered here - they draw over the tiled ones, see
@@ -5795,6 +5871,19 @@ impl Tab {
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
         if self.has_floating_panes_to_render() {
+            let resize: Vec<_> = self
+                .stack_lists
+                .iter()
+                .filter_map(|(id, list)| {
+                    self.floating_panes
+                        .get_pane(list.visible)
+                        .filter(|pane| pane.get_content_offset().top != list.members.len() + 1)
+                        .map(|_| *id)
+                })
+                .collect();
+            for id in resize {
+                self.resize_stack_list_hidden_members(id);
+            }
             self.floating_panes.render(
                 output,
                 &self.mouse_hover_pane_id,
@@ -5803,6 +5892,9 @@ impl Tab {
                 &self.mouse_help_text_visible,
                 self.mouse_scroll_resize,
             )?;
+        }
+        if self.has_floating_panes_to_render() {
+            self.render_stack_list_headers(output, client_id_override, true)?;
         }
         if self.overlays_are_rendered() {
             let z_index_offset = self.floating_layer_count();
@@ -6086,6 +6178,161 @@ impl Tab {
     pub(crate) fn get_floating_panes(&self) -> impl Iterator<Item = (&PaneId, &Box<dyn Pane>)> {
         self.floating_panes.get_panes()
     }
+    /// Resolve a visible selection to its list and every replacement behind it.
+    pub(crate) fn warp_pane_ids(&self, selected: Option<PaneId>) -> Result<Vec<PaneId>, String> {
+        let mut ids = match selected {
+            Some(id) => {
+                if !self
+                    .get_tiled_panes()
+                    .chain(self.get_floating_panes())
+                    .any(|(p, _)| *p == id)
+                {
+                    return Err("only visible panes can initiate a warp".into());
+                }
+                self.stack_list_id_of_member(&id)
+                    .and_then(|id| self.stack_lists.get(&id))
+                    .map(|list| list.members.clone())
+                    .unwrap_or_else(|| vec![id])
+            },
+            None => self
+                .get_tiled_panes()
+                .chain(self.get_floating_panes())
+                .map(|(id, _)| *id)
+                .chain(self.suppressed_panes.iter().filter_map(|(id, pane)| {
+                    (matches!(id, PaneId::Terminal(_)) && pane.restored_by.is_none()).then_some(*id)
+                }))
+                .collect(),
+        };
+        loop {
+            let before = ids.len();
+            for list in self.stack_lists.values() {
+                if ids.contains(&list.visible) {
+                    for id in &list.members {
+                        if !ids.contains(id) {
+                            ids.push(*id);
+                        }
+                    }
+                }
+            }
+            for (id, pane) in &self.suppressed_panes {
+                if pane
+                    .restored_by
+                    .is_some_and(|cover| ids.contains(&cover.pane_id))
+                    && !ids.contains(id)
+                {
+                    ids.push(*id);
+                }
+            }
+            if before == ids.len() {
+                break;
+            }
+        }
+        Ok(ids)
+    }
+
+    pub(crate) fn warp_relationships(
+        &self,
+        slots: &[PaneId],
+    ) -> zellij_types::data::WarpRelationships {
+        use zellij_types::data::{WarpHiddenPane, WarpRelationships, WarpStackList};
+        let index = |id: PaneId| slots.iter().position(|p| *p == id).map(|i| i as u32);
+        WarpRelationships {
+            hidden: slots
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, id)| {
+                    self.suppressed_panes.get(id).map(|pane| WarpHiddenPane {
+                        pane: slot as u32,
+                        restored_by: pane.restored_by.and_then(|cover| index(cover.pane_id)),
+                        is_scrollback_editor: pane
+                            .restored_by
+                            .is_some_and(|cover| cover.is_scrollback_editor),
+                    })
+                })
+                .collect(),
+            stacks: self
+                .stack_lists
+                .values()
+                .filter_map(|list| {
+                    index(list.visible).map(|selected| WarpStackList {
+                        members: list.members.iter().filter_map(|id| index(*id)).collect(),
+                        selected,
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    /// Remove a transfer as a unit: neither covers nor list members promote a replacement.
+    pub(crate) fn extract_warp_panes(&mut self, ids: &[PaneId]) -> Vec<Box<dyn Pane>> {
+        self.prepare_arrangement();
+        let lists: Vec<_> = self
+            .stack_lists
+            .iter()
+            .filter(|(_, list)| ids.contains(&list.visible))
+            .map(|(id, list)| (*id, list.members.clone()))
+            .collect();
+        for (id, members) in lists {
+            self.drop_stack_list_ledger(id, &members);
+        }
+        ids.iter()
+            .filter_map(|id| self.extract_pane(*id, true))
+            .collect()
+    }
+
+    pub(crate) fn restore_warp_relationships(
+        &mut self,
+        slots: &[PaneId],
+        relationships: &zellij_types::data::WarpRelationships,
+    ) -> Result<()> {
+        relationships
+            .validate(slots.len())
+            .map_err(|e| anyhow!("{e}"))?;
+        if slots.iter().any(|id| self.get_pane_with_id(*id).is_none()) {
+            return Err(anyhow!(
+                "a transferred pane is missing during relationship restoration"
+            ));
+        }
+        self.prepare_arrangement();
+        for hidden in &relationships.hidden {
+            let id = slots[hidden.pane as usize];
+            let pane = self
+                .extract_pane(id, true)
+                .context("cannot hide transferred companion")?;
+            self.suppressed_panes.insert(
+                id,
+                SuppressedPane {
+                    pane,
+                    restored_by: hidden.restored_by.map(|cover| StandIn {
+                        pane_id: slots[cover as usize],
+                        is_scrollback_editor: hidden.is_scrollback_editor,
+                    }),
+                },
+            );
+        }
+        let stacks: Vec<_> = relationships
+            .stacks
+            .iter()
+            .map(|stack| StackList {
+                members: stack.members.iter().map(|id| slots[*id as usize]).collect(),
+                visible: slots[stack.selected as usize],
+            })
+            .collect();
+        // Members are already parked; only rebuild the ledger. Extracting them again
+        // would discard the replacement links on hidden editors.
+        for stack in stacks {
+            let id = self.next_stack_list_id;
+            self.next_stack_list_id += 1;
+            for member in &stack.members {
+                self.stack_list_of_member.insert(*member, id);
+            }
+            self.stack_lists.insert(id, stack);
+            self.refresh_or_dissolve_stack_list(id);
+        }
+        self.set_force_render();
+        Ok(())
+    }
+
     pub(crate) fn get_suppressed_panes(&self) -> impl Iterator<Item = (&PaneId, &SuppressedPane)> {
         self.suppressed_panes.iter()
     }
@@ -6505,6 +6752,12 @@ impl Tab {
         if !self.lower_layer_may_take_focus(client_id) {
             return Ok(false);
         }
+        if self.floating_panes.panes_are_visible()
+            && self.move_focus_within_stack_list(client_id, true)
+        {
+            self.release_overlay_focus_to_lower_layer(client_id);
+            return Ok(true);
+        }
         let moved = if self.floating_panes.panes_are_visible() {
             self.floating_panes
                 .move_focus(
@@ -6537,6 +6790,12 @@ impl Tab {
 
         if !self.lower_layer_may_take_focus(client_id) {
             return Ok(false);
+        }
+        if self.floating_panes.panes_are_visible()
+            && self.move_focus_within_stack_list(client_id, false)
+        {
+            self.release_overlay_focus_to_lower_layer(client_id);
+            return Ok(true);
         }
         let moved = if self.floating_panes.panes_are_visible() {
             self.floating_panes
@@ -9005,15 +9264,16 @@ impl Tab {
                 )
                 .non_fatal();
             },
-            ExtractedPanePlacement::Floating => {
+            ExtractedPanePlacement::Floating | ExtractedPanePlacement::FloatingDefault => {
                 if self.floating_panes.find_room_for_new_pane().is_none() {
                     return AcceptedPane::NoRoom(pane);
                 }
+                let keep_geometry = matches!(placement, ExtractedPanePlacement::Floating);
                 let floating_pane_coordinates = FloatingPaneCoordinates {
-                    x: Some(PercentOrFixed::Fixed(pane.x())),
-                    y: Some(PercentOrFixed::Fixed(pane.y())),
-                    width: Some(PercentOrFixed::Fixed(pane.cols())),
-                    height: Some(PercentOrFixed::Fixed(pane.rows())),
+                    x: keep_geometry.then(|| PercentOrFixed::Fixed(pane.x())),
+                    y: keep_geometry.then(|| PercentOrFixed::Fixed(pane.y())),
+                    width: keep_geometry.then(|| PercentOrFixed::Fixed(pane.cols())),
+                    height: keep_geometry.then(|| PercentOrFixed::Fixed(pane.rows())),
                     pinned: Some(pane.current_geom().is_pinned),
                     borderless: Some(pane.borderless()),
                 };

@@ -732,6 +732,7 @@ pub(crate) fn layout_infos(tc: &hegel::TestCase) -> LayoutInfo {
 
 pub(crate) fn warped_panes(tc: &hegel::TestCase) -> WarpedPane {
     WarpedPane {
+        group: None,
         host_id: SupervisorId::new(strings(tc)),
         control_socket: paths(tc),
         title: optional_strings(tc),
@@ -749,6 +750,7 @@ pub(crate) fn warped_panes(tc: &hegel::TestCase) -> WarpedPane {
 
 pub(crate) fn warped_tabs(tc: &hegel::TestCase) -> WarpedTab {
     WarpedTab {
+        relationships: None,
         name: optional_strings(tc),
         tiled_layout: tiled_pane_layouts(tc),
         floating_layout: up_to(tc, 2, floating_pane_layouts),

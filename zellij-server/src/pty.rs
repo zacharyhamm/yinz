@@ -1328,11 +1328,33 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     });
             },
             PtyInstruction::AdoptTerminal {
-                payload,
+                mut payload,
                 placement,
                 client_id,
                 response_channel,
             } => {
+                if let Some(group) = payload.group.take() {
+                    let result = group
+                        .validate_pane_group()
+                        .map_err(|e| anyhow!("{e}"))
+                        .and_then(|_| pty.adopt_tab(&group))
+                        .and_then(|adopted| {
+                            pty.bus
+                                .senders
+                                .send_to_screen(ScreenInstruction::AdoptedTabReady {
+                                    payload: group,
+                                    adopted: Box::new(adopted),
+                                    client_id,
+                                    placement: Some(placement),
+                                    response_channel: Some(response_channel.clone()),
+                                })
+                                .context("failed to place adopted pane group")
+                        });
+                    if let Err(error) = result {
+                        let _ = response_channel.send(Err(error));
+                    }
+                    continue;
+                }
                 // Matched rather than mapped so the payload — which carries the
                 // pane's whole scrollback — moves into the Screen instruction
                 // instead of being cloned.
@@ -1390,6 +1412,8 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             pty.bus
                                 .senders
                                 .send_to_screen(ScreenInstruction::AdoptedTabReady {
+                                    placement: None,
+                                    response_channel: None,
                                     payload,
                                     adopted: Box::new(adopted),
                                     client_id,
@@ -3521,6 +3545,9 @@ impl Pty {
     /// instructions because there is only one pty thread and its channel is
     /// ordered: nothing can run between the two halves.
     pub fn adopt_tab(&mut self, payload: &WarpedTab) -> Result<AdoptedTabPanes> {
+        payload
+            .validate_relationships()
+            .map_err(|e| anyhow!("{e}"))?;
         let mut tiled = vec![];
         let mut floating = vec![];
         let mut failed = None;

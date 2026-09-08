@@ -26,7 +26,7 @@ fn server_message_name(msg: &ServerToClientMsg) -> String {
         ServerToClientMsg::Render { .. } => "Render",
         ServerToClientMsg::UnblockInputThread => "UnblockInputThread",
         ServerToClientMsg::Exit { .. } => "Exit",
-        ServerToClientMsg::Connected => "Connected",
+        ServerToClientMsg::Connected { .. } => "Connected",
         ServerToClientMsg::Log { .. } => "Log",
         ServerToClientMsg::LogError { .. } => "LogError",
         ServerToClientMsg::SwitchSession { .. } => "SwitchSession",

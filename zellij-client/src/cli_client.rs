@@ -227,6 +227,16 @@ fn individual_messages_client(
     // session, so a plain `--blocking` that returned on it would report success the moment an
     // unrelated pane went away.
     let is_blocking = matches!(&action, Action::NewBlockingPane { .. });
+    // Warp placement and rollback also broadcast input unblocks before their result arrives.
+    let wait_for_result = is_blocking
+        || matches!(
+            &action,
+            Action::WarpPane { .. }
+                | Action::WarpTab { .. }
+                | Action::WarpTabFrom { .. }
+                | Action::AdoptPane { .. }
+                | Action::AdoptTab { .. }
+        );
     let msg = ClientToServerMsg::Action {
         action,
         terminal_id: pane_id,
@@ -236,7 +246,7 @@ fn individual_messages_client(
     os_input.send_to_server(msg);
     loop {
         match os_input.recv_from_server().msg() {
-            Some((ServerToClientMsg::UnblockInputThread, _)) if !is_blocking => {
+            Some((ServerToClientMsg::UnblockInputThread, _)) if !wait_for_result => {
                 return None;
             },
             Some((ServerToClientMsg::Log { lines: log_lines }, _)) => {

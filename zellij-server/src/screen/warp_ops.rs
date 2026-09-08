@@ -47,6 +47,189 @@ pub(super) const PANE_WARP_SCREEN_RESERVE: std::time::Duration =
     std::time::Duration::from_millis(500);
 
 impl Screen {
+    pub(super) fn finish_warp_group(
+        &mut self,
+        tab_id: TabId,
+        slots: &[PaneId],
+        relationships: &zellij_types::data::WarpRelationships,
+    ) -> Result<()> {
+        use crate::tab::{AcceptedPane, ExtractedPanePlacement, SuppressedPane};
+        let Some((placement, target, client_id, response_channel)) =
+            self.pending_group_placements.remove(&tab_id)
+        else {
+            return Ok(());
+        };
+        let result = (|| {
+            if placement == WarpPlacement::NewTab {
+                return Ok(());
+            }
+            let Some(target) = target.filter(|id| self.tabs.contains_key(id)) else {
+                return Ok(());
+            };
+            let source = self
+                .tabs
+                .get_mut(&tab_id)
+                .context("missing adopted group tab")?;
+            let mut panes = source.extract_warp_panes(slots).into_iter();
+            let root = panes.next().context("missing adopted group root")?;
+            let placement = if placement == WarpPlacement::Floating {
+                ExtractedPanePlacement::FloatingDefault
+            } else {
+                ExtractedPanePlacement::Tiled
+            };
+            let destination = self
+                .tabs
+                .get_mut(&target)
+                .context("missing warp destination")?;
+            match destination.accept_extracted_pane(root, placement) {
+                AcceptedPane::Accepted => {},
+                AcceptedPane::NoRoom(root) => {
+                    let source = self
+                        .tabs
+                        .get_mut(&tab_id)
+                        .context("missing group recovery tab")?;
+                    source.add_tiled_pane(root, slots[0], true, Some(client_id))?;
+                    source.add_suppressed_panes(
+                        panes
+                            .map(|pane| {
+                                (
+                                    pane.pid(),
+                                    SuppressedPane {
+                                        pane,
+                                        restored_by: None,
+                                    },
+                                )
+                            })
+                            .collect(),
+                    );
+                    source.restore_warp_relationships(slots, relationships)?;
+                    // Retaining the adopted group is success; the source must not roll it back.
+                    return Ok(());
+                },
+                AcceptedPane::LostInAdd => {
+                    return Err(anyhow!("the destination lost the adopted root pane"))
+                },
+            }
+            destination.add_suppressed_panes(
+                panes
+                    .map(|pane| {
+                        (
+                            pane.pid(),
+                            SuppressedPane {
+                                pane,
+                                restored_by: None,
+                            },
+                        )
+                    })
+                    .collect(),
+            );
+            destination.restore_warp_relationships(slots, relationships)?;
+            destination.focus_pane_with_id(slots[0], false, false, client_id)?;
+            self.close_tab_by_id(tab_id)?;
+            if let Some(position) = self.get_tab_position_by_id(target) {
+                self.switch_active_tab(position, None, true, client_id)?;
+            }
+            Ok(())
+        })();
+        if let Some(response_channel) = response_channel {
+            let _ = response_channel.send(result);
+            Ok(())
+        } else {
+            result
+        }
+    }
+
+    pub(super) fn prepare_pane_group(
+        &self,
+        pane_id: Option<PaneId>,
+        client_id: ClientId,
+    ) -> Result<Option<(TabId, Vec<TerminalId>, PreparedTabWarp)>, String> {
+        let pane_id = pane_id
+            .or_else(|| self.active_pane_id(client_id))
+            .ok_or_else(|| "no pane is focused".to_owned())?;
+        let (tab_id, tab) = self
+            .tabs
+            .iter()
+            .find(|(_, tab)| tab.get_pane_with_id(pane_id).is_some())
+            .ok_or_else(|| format!("there is no pane {pane_id:?} in this session"))?;
+        let ids = tab.warp_pane_ids(Some(pane_id))?;
+        if ids.len() == 1 && matches!(pane_id, PaneId::Terminal(_)) {
+            return Ok(None);
+        }
+        let leaving = ids
+            .iter()
+            .filter(|id| {
+                tab.get_pane_with_id(**id)
+                    .is_some_and(|pane| pane.selectable())
+            })
+            .count();
+        if self.selectable_warp_pane_count()? <= leaving {
+            return Err(
+                "these are the session's last panes; moving them would close the session".into(),
+            );
+        }
+        let mut slots = vec![pane_id];
+        slots.extend(ids.into_iter().filter(|id| *id != pane_id));
+        let root = tab
+            .get_pane_with_id(pane_id)
+            .ok_or_else(|| "warp root vanished".to_owned())?;
+        let tiled_layout = zellij_types::input::layout::TiledPaneLayout {
+            run: root.invoked_with().clone(),
+            name: Some(root.current_title()),
+            borderless: Some(root.borderless()),
+            ..Default::default()
+        };
+        let floating_layout = slots
+            .iter()
+            .skip(1)
+            .map(|id| {
+                let pane = tab
+                    .get_pane_with_id(*id)
+                    .ok_or_else(|| "warp companion vanished".to_owned())?;
+                Ok(zellij_types::input::layout::FloatingPaneLayout {
+                    run: pane.invoked_with().clone(),
+                    name: Some(pane.current_title()),
+                    borderless: Some(pane.borderless()),
+                    ..Default::default()
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let relationships = tab.warp_relationships(&slots);
+        relationships.validate(slots.len())?;
+        let terminals = |panes: &[PaneId]| {
+            panes
+                .iter()
+                .copied()
+                .filter(|id| matches!(id, PaneId::Terminal(_)))
+                .collect::<Vec<_>>()
+        };
+        let terminal_ids = slots
+            .iter()
+            .filter_map(|id| {
+                if let PaneId::Terminal(id) = id {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Ok(Some((
+            *tab_id,
+            terminal_ids,
+            PreparedTabWarp {
+                name: None,
+                tiled_layout,
+                floating_layout,
+                tiled_panes: terminals(&slots[..1]),
+                floating_panes: terminals(&slots[1..]),
+                hide_floating_panes: true,
+                relationships: Some(relationships),
+                slots,
+                pane_group: true,
+            },
+        )))
+    }
+
     /// Keep a warped pane's screen dump inside something a message bus should be
     /// asked to carry.
     ///
@@ -97,13 +280,8 @@ impl Screen {
         contents[cut..].to_owned()
     }
 
-    /// Decide whether a pane may be moved to another session, and say which
-    /// terminal it is if so.
-    ///
-    /// Every reason a warp cannot work is checked here, before the pty thread is
-    /// asked for anything. Once the supervisor is released the pane is briefly in
-    /// nobody's hands, so nothing that could have been decided beforehand should
-    /// be discovered then.
+    /// Check the ordinary terminal path after companion-group preparation.
+    /// Hidden IDs are rejected here too, before asking the pty thread to release.
     pub(super) fn check_pane_can_be_warped(
         &mut self,
         pane_id: Option<PaneId>,
@@ -125,26 +303,17 @@ impl Screen {
             },
         };
 
-        // `get_pane_with_id` rather than a walk of the ids, because it is what
-        // `take_released_pane_for_warp` looks the pane up with once the supervisor
-        // is gone. Any pane found here is findable then, suppressed or not - which
-        // is the whole reason a suppressed pane can be moved at all.
-        let panes_leaving = match self
+        let tab = self
             .tabs
             .values()
             .find(|tab| tab.get_pane_with_id(pane_id).is_some())
-        {
-            // A scrollback editor goes with the pane it is editing: it would
-            // otherwise be left holding a dump of a pane that is in another
-            // session now, and restoring nothing when closed.
-            Some(tab) => 1 + usize::from(tab.scrollback_editor_standing_in_for(pane_id).is_some()),
-            None => return Err(format!("there is no pane {terminal_id} in this session")),
-        };
+            .ok_or_else(|| format!("there is no pane {terminal_id} in this session"))?;
+        let panes_leaving = tab.warp_pane_ids(Some(pane_id))?.len();
 
         // Warping the session's last pane would end the session, which is not what
         // moving a pane should mean. A tab's last pane is fine — the render pass
         // sweeps tabs with nothing selectable left in them.
-        if self.selectable_terminal_pane_count() <= panes_leaving {
+        if self.selectable_warp_pane_count()? <= panes_leaving {
             return Err(if panes_leaving > 1 {
                 "this pane and the scrollback editor open on it are the session's last panes; \
                  moving it would close the session"
@@ -156,19 +325,20 @@ impl Screen {
         Ok(terminal_id)
     }
 
-    /// Panes with a process in them, whether or not anything on screen shows them.
-    ///
-    /// Suppressed panes count: a pane hidden behind a scrollback editor, or parked
-    /// as a stack-list member, is still a pane this session would be left with.
-    fn selectable_terminal_pane_count(&self) -> usize {
-        self.tabs
-            .values()
-            .map(|tab| {
-                tab.get_selectable_tiled_panes_count()
-                    + tab.get_visible_selectable_floating_panes_count()
-                    + tab.suppressed_selectable_terminal_count()
-            })
-            .sum()
+    /// Count the same selectable content that pane and tab transfers discover.
+    /// Independent background plugins are excluded, while companions count.
+    fn selectable_warp_pane_count(&self) -> Result<usize, String> {
+        self.tabs.values().try_fold(0, |count, tab| {
+            Ok(count
+                + tab
+                    .warp_pane_ids(None)?
+                    .iter()
+                    .filter(|id| {
+                        tab.get_pane_with_id(**id)
+                            .is_some_and(|pane| pane.selectable())
+                    })
+                    .count())
+        })
     }
 
     /// How a released pane says where its process can be picked up.
@@ -221,16 +391,8 @@ impl Screen {
         }
     }
 
-    /// Serialize the released pane and take it out of its tab.
-    ///
-    /// Note what is *not* here for the warped pane: `PtyInstruction::ClosePane`.
-    /// That is what the `ScreenInstruction::ClosePane` handler sends, and it
-    /// SIGHUPs the child and terminates the supervisor. `Tab::close_pane` itself
-    /// touches nothing on the pty thread — it just tidies the tab up, moves
-    /// clients off the pane and relayouts, which is exactly what is wanted when a
-    /// pane leaves. A scrollback editor left behind by the pane it was editing is
-    /// the exception: that one is being closed rather than moved, so it is closed
-    /// the way anything else is.
+    /// Serialize an ordinary pane after its reader has stopped. Companion groups
+    /// use the batch path below, including during rollback.
     pub(super) fn take_released_pane_for_warp(
         &mut self,
         terminal_id: TerminalId,
@@ -238,53 +400,32 @@ impl Screen {
     ) -> Result<Box<WarpedPane>, String> {
         let address = Self::warp_address(released?)?;
         let pane_id = PaneId::Terminal(terminal_id);
-
-        let mut payload = None;
-        let mut editor_left_behind = None;
-        for tab in self.tabs.values_mut() {
-            let scrollback_lines = self.scrollback_lines_to_serialize;
-            let Some(pane) = tab.get_pane_with_id(pane_id) else {
-                continue;
-            };
-            // Not gated on `serialize_pane_viewport`: that option governs
-            // automatic session serialization, and a warp is something the user
-            // asked for by name.
-            let contents = pane
+        let scrollback_lines = self.scrollback_lines_to_serialize;
+        let tab = self
+            .tabs
+            .values_mut()
+            .find(|tab| tab.get_pane_with_id(pane_id).is_some())
+            .ok_or_else(|| {
+                format!("pane {terminal_id} vanished while its supervisor was being released")
+            })?;
+        let pane = tab
+            .get_pane_with_id(pane_id)
+            .ok_or_else(|| "warp pane vanished".to_owned())?;
+        let payload = Box::new(WarpedPane {
+            group: None,
+            host_id: address.host_id,
+            control_socket: address.control_socket,
+            remote: address.remote,
+            title: Some(pane.current_title()),
+            contents: pane
                 .serialize(scrollback_lines)
-                .map(Self::fit_to_warp_budget);
-            let title = Some(pane.current_title());
-            let borderless = pane.borderless();
-            let agent = pane.agent_info().cloned();
-            // Asked before the pane goes, closed after: while the pane is still
-            // suppressed behind it, closing the editor would swap the pane back
-            // into the grid rather than close anything.
-            editor_left_behind = tab.scrollback_editor_standing_in_for(pane_id);
-            tab.close_pane(pane_id, false, None);
-            if let Some(editor_pane_id) = editor_left_behind {
-                tab.close_pane(editor_pane_id, false, None);
-            }
-            payload = Some(Box::new(WarpedPane {
-                host_id: address.host_id.clone(),
-                control_socket: address.control_socket.clone(),
-                title,
-                contents,
-                borderless,
-                remote: address.remote.clone(),
-                agent,
-            }));
-            break;
-        }
-        if let Some(editor_pane_id) = editor_left_behind {
-            let _ = self
-                .bus
-                .senders
-                .send_to_pty(PtyInstruction::ClosePane(editor_pane_id, None));
-            self.clear_nested_guest(editor_pane_id);
-        }
+                .map(Self::fit_to_warp_budget),
+            borderless: pane.borderless(),
+            agent: pane.agent_info().cloned(),
+        });
+        tab.extract_warp_panes(&[pane_id]);
         self.clear_nested_guest(pane_id);
-        payload.ok_or_else(|| {
-            format!("pane {terminal_id} vanished while its supervisor was being released")
-        })
+        Ok(payload)
     }
 
     /// Work out how a tab would be moved, so that everything which can fail has
@@ -327,42 +468,9 @@ impl Screen {
             .get(&tab_index)
             .ok_or_else(|| format!("there is no tab {tab_index} in this session"))?;
 
-        // A hidden terminal is refused unless it is a stack-list member. The
-        // distinction is not whether it is hidden but *how*: a pane with a
-        // stand-in is one half of a pair — a scrollback editor, or a pane replaced
-        // in place — and closing the tab swaps the hidden one back in rather than
-        // removing it, dismantling the tab around a pty nobody released. A
-        // stack-list member is parked with nothing standing in for it, has a slot
-        // in the layout the tab travels as (see `stack_list_serialization_geoms`),
-        // and is taken out by `empty_and_close_tab` with everything else.
-        //
-        // Hidden *plugin* panes are exempt throughout: they have no process to
-        // strand, and `close_tab_by_id` re-homes them into another tab.
-        if tab.get_suppressed_panes().any(|(hidden, suppressed)| {
-            matches!(hidden, PaneId::Terminal(_))
-                && !(suppressed.restored_by.is_none() && tab.pane_is_stack_list_member(hidden))
-        }) {
-            return Err(
-                "this tab has a pane hidden behind another one; close it before moving the tab"
-                    .to_owned(),
-            );
-        }
-
-        // Asked of the tab, and asked first: a tab with no process in it is not a
-        // tab worth moving, and saying so is more use than the layout complaint
-        // an empty tab would otherwise earn. What actually gets released is
-        // decided further down, from the slots.
-        //
-        // Asked of the panes with a slot rather than of all of them: an overlay
-        // does not travel, so a tab whose only terminal is an overlay has nothing
-        // to move and should be told so here rather than warp with an empty
-        // payload.
-        if !tab
-            .tiled_and_floating_pane_ids()
-            .iter()
-            .any(|pane_id| matches!(pane_id, PaneId::Terminal(_)))
-        {
-            return Err("this tab has no panes with a process to move".to_owned());
+        let transfer_ids = tab.warp_pane_ids(None)?;
+        if transfer_ids.is_empty() {
+            return Err("this tab has no panes to move".into());
         }
 
         let name = Some(tab.name.clone()).filter(|name| !name.is_empty());
@@ -372,7 +480,7 @@ impl Screen {
         // release. They are read again in `take_released_tab_for_warp`, by which
         // time the screen has stopped changing.
         let (tiled, floating, hide_floating_panes) =
-            self.tab_panes_for_layout(tab_index, tab, false);
+            self.tab_panes_for_layout(tab_index, tab, false, true);
         let manifests =
             |panes: &[(PaneId, PaneLayoutMetadata)]| -> Vec<(PaneId, PaneLayoutManifest)> {
                 panes
@@ -396,7 +504,7 @@ impl Screen {
         let tiled = manifests(&tiled);
         let floating = manifests(&floating);
 
-        let arrangement = layout_for_warped_tab(
+        let mut arrangement = layout_for_warped_tab(
             &tiled
                 .iter()
                 .map(|(_, pane)| pane.clone())
@@ -408,11 +516,48 @@ impl Screen {
             viewport,
         )?;
 
-        let in_slot_order = |panes: &[(PaneId, PaneLayoutManifest)], order: &[usize]| {
-            order.iter().map(|index| panes[*index].0).collect()
-        };
-        let tiled_panes: Vec<PaneId> = in_slot_order(&tiled, &arrangement.tiled_order);
-        let floating_panes: Vec<PaneId> = in_slot_order(&floating, &arrangement.floating_order);
+        let mut slots: Vec<PaneId> = arrangement
+            .all_tiled_order
+            .iter()
+            .map(|i| tiled[*i].0)
+            .chain(floating.iter().map(|(id, _)| *id))
+            .collect();
+        let tiled_panes = arrangement
+            .tiled_order
+            .iter()
+            .map(|i| tiled[*i].0)
+            .filter(|id| matches!(id, PaneId::Terminal(_)))
+            .collect::<Vec<_>>();
+        let mut floating_panes = arrangement
+            .floating_order
+            .iter()
+            .map(|i| floating[*i].0)
+            .filter(|id| matches!(id, PaneId::Terminal(_)))
+            .collect::<Vec<_>>();
+        for id in transfer_ids {
+            if slots.contains(&id) {
+                continue;
+            }
+            let pane = tab
+                .get_pane_with_id(id)
+                .ok_or_else(|| format!("missing companion {id:?}"))?;
+            arrangement
+                .floating_layout
+                .push(zellij_types::input::layout::FloatingPaneLayout {
+                    name: Some(pane.current_title()),
+                    run: pane.invoked_with().clone(),
+                    borderless: Some(pane.borderless()),
+                    ..Default::default()
+                });
+            slots.push(id);
+            if matches!(id, PaneId::Terminal(_)) {
+                floating_panes.push(id);
+            }
+        }
+        let relationships = tab.warp_relationships(&slots);
+        relationships.validate(slots.len())?;
+        let relationships = (!relationships.hidden.is_empty() || !relationships.stacks.is_empty())
+            .then_some(relationships);
 
         // Released from the slots rather than from the tab's pane ids, so that the
         // two sets cannot drift apart. `take_released_tab_for_warp` builds the
@@ -435,6 +580,9 @@ impl Screen {
             tab_index,
             terminal_ids,
             PreparedTabWarp {
+                relationships,
+                slots,
+                pane_group: false,
                 name,
                 tiled_layout: arrangement.tiled_layout,
                 floating_layout: arrangement.floating_layout,
@@ -493,6 +641,7 @@ impl Screen {
             }
             .unwrap_or_default();
             WarpedPane {
+                group: None,
                 host_id: address.host_id,
                 control_socket: address.control_socket,
                 remote: address.remote,
@@ -517,9 +666,27 @@ impl Screen {
         let floating_panes: Vec<WarpedPane> =
             prepared.floating_panes.iter().map(warped_pane).collect();
 
-        self.empty_and_close_tab(tab_index);
+        let tab = self
+            .tabs
+            .get_mut(&tab_index)
+            .ok_or_else(|| "warp tab disappeared".to_owned())?;
+        let removed = tab.extract_warp_panes(&prepared.slots);
+        for pane in removed {
+            let id = pane.pid();
+            if matches!(id, PaneId::Plugin(_)) {
+                self.bus
+                    .senders
+                    .send_to_pty(PtyInstruction::ClosePane(id, None))
+                    .non_fatal();
+            }
+            self.clear_nested_guest(id);
+        }
+        if !prepared.pane_group {
+            self.empty_and_close_tab(tab_index);
+        }
 
         Ok(Box::new(WarpedTab {
+            relationships: prepared.relationships,
             name: prepared.name,
             tiled_layout: prepared.tiled_layout,
             floating_layout: prepared.floating_layout,
@@ -761,7 +928,10 @@ impl Screen {
         payload: WarpedTab,
         adopted: AdoptedTabPanes,
         client_id: ClientId,
+        placement: Option<WarpPlacement>,
+        response_channel: Option<crossbeam::channel::Sender<Result<()>>>,
     ) -> Result<()> {
+        let target = self.tab_a_client_is_looking_at(client_id);
         let err_context = || "failed to place an adopted tab".to_string();
         let tab_index = self.get_new_tab_id();
         let default_layout = self.default_layout.clone();
@@ -776,6 +946,10 @@ impl Screen {
             Some(client_id),
         )?;
 
+        if let Some(relationships) = payload.relationships {
+            self.pending_warp_relationships
+                .insert(tab_index, relationships);
+        }
         let mut tiled_layout = payload.tiled_layout;
         tiled_layout.hide_floating_panes = payload.hide_floating_panes;
 
@@ -810,6 +984,11 @@ impl Screen {
                 None,
             ))
             .with_context(err_context)?;
+
+        if let Some(placement) = placement {
+            self.pending_group_placements
+                .insert(tab_index, (placement, target, client_id, response_channel));
+        }
 
         Ok(())
     }

@@ -15,6 +15,8 @@ pub(crate) type QuitCb = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
 pub(crate) const FAKE_PID_BASE: u32 = 100_000;
 
 pub(crate) struct FakePtyState {
+    warp_socket: Option<PathBuf>,
+    refuse_next_adoption: bool,
     pub terminal_action: Option<TerminalAction>,
     pub output_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     pub stdin: Vec<u8>,
@@ -93,6 +95,8 @@ pub enum WarpFailure {
     Unwarpable,
     /// Passes the pre-flight check and then fails to release.
     Unreleasable,
+    /// Refuse one attach, then allow rollback to take the process back.
+    UnadoptableOnce,
 }
 
 /// Supervisors released by one session and not yet adopted by another.
@@ -202,6 +206,8 @@ impl SharedPtys {
             fake_pty_registry.fake_pty_states.insert(
                 terminal_id,
                 FakePtyState {
+                    warp_socket: None,
+                    refuse_next_adoption: false,
                     terminal_action,
                     output_tx: Some(output_tx),
                     stdin: Vec::new(),
@@ -274,10 +280,16 @@ impl SharedPtys {
     }
 
     pub(crate) fn release_for_warp(&self, terminal_id: TerminalId) -> Option<PathBuf> {
-        let fake_pty_state =
-            self.mutate(|fake_pty_registry| fake_pty_registry.fake_pty_states.remove(&terminal_id));
-        let fake_pty_state = fake_pty_state?;
-        let control_socket = next_control_socket();
+        let mut fake_pty_state = self.mutate(|registry| {
+            let mut state = registry.fake_pty_states.remove(&terminal_id)?;
+            state.refuse_next_adoption |=
+                registry.warp_failures.remove(&terminal_id) == Some(WarpFailure::UnadoptableOnce);
+            Some(state)
+        })?;
+        let control_socket = fake_pty_state
+            .warp_socket
+            .get_or_insert_with(next_control_socket)
+            .clone();
         detached_supervisors()
             .lock()
             .unwrap()
@@ -364,7 +376,13 @@ impl SharedPtys {
     }
 
     fn adopt_parked(&self, key: &Path, quit_cb: QuitCb) -> Option<AdoptedFakePty> {
-        let mut fake_pty_state = detached_supervisors().lock().unwrap().remove(key)?;
+        let mut fake_pty_state = {
+            let mut detached = detached_supervisors().lock().unwrap();
+            if std::mem::take(&mut detached.get_mut(key)?.refuse_next_adoption) {
+                return None;
+            }
+            detached.remove(key)?
+        };
         let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
         let run_command = fake_pty_state.run_command();
         let child_exit_status = if fake_pty_state.exited {

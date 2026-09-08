@@ -478,8 +478,8 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                     payload,
                 })
             },
-            ServerToClientMsg::Connected => {
-                server_to_client_msg::Message::Connected(ConnectedMsg {})
+            ServerToClientMsg::Connected { warp_companions } => {
+                server_to_client_msg::Message::Connected(ConnectedMsg { warp_companions })
             },
             ServerToClientMsg::Log { lines } => {
                 server_to_client_msg::Message::Log(LogMsg { lines })
@@ -596,7 +596,11 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
 
                 Ok(ServerToClientMsg::Exit { exit_reason })
             },
-            Some(server_to_client_msg::Message::Connected(_)) => Ok(ServerToClientMsg::Connected),
+            Some(server_to_client_msg::Message::Connected(msg)) => {
+                Ok(ServerToClientMsg::Connected {
+                    warp_companions: msg.warp_companions,
+                })
+            },
             Some(server_to_client_msg::Message::Log(log)) => {
                 Ok(ServerToClientMsg::Log { lines: log.lines })
             },
@@ -1142,10 +1146,122 @@ fn warp_placement_from_i32(value: i32) -> Result<zellij_types::data::WarpPlaceme
 /// protobuf `WarpedPane` has no placement while `AdoptPaneAction` does — the two
 /// are the same five fields but not the same message, and conflating them would
 /// mean inventing a placement for a pane whose place the layout already decides.
+fn warped_tab_to_protobuf(
+    payload: &zellij_types::data::WarpedTab,
+) -> crate::client_server_contract::client_server_contract::AdoptTabAction {
+    crate::client_server_contract::client_server_contract::AdoptTabAction {
+        name: payload.name.clone(),
+        tiled_layout: Some(payload.tiled_layout.clone().into()),
+        floating_layout: payload
+            .floating_layout
+            .iter()
+            .map(|l| l.clone().into())
+            .collect(),
+        tiled_panes: payload
+            .tiled_panes
+            .iter()
+            .map(warped_pane_to_protobuf)
+            .collect(),
+        floating_panes: payload
+            .floating_panes
+            .iter()
+            .map(warped_pane_to_protobuf)
+            .collect(),
+        hide_floating_panes: payload.hide_floating_panes,
+        relationships: payload
+            .relationships
+            .as_ref()
+            .map(warp_relationships_to_protobuf),
+    }
+}
+fn warped_tab_from_protobuf(
+    adopt_tab_action: crate::client_server_contract::client_server_contract::AdoptTabAction,
+) -> Result<zellij_types::data::WarpedTab> {
+    let payload = zellij_types::data::WarpedTab {
+        relationships: adopt_tab_action
+            .relationships
+            .map(warp_relationships_from_protobuf),
+        name: adopt_tab_action.name,
+        tiled_layout: adopt_tab_action
+            .tiled_layout
+            .ok_or_else(|| anyhow!("AdoptTab missing tiled_layout"))?
+            .try_into()?,
+        floating_layout: adopt_tab_action
+            .floating_layout
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>>>()?,
+        tiled_panes: adopt_tab_action
+            .tiled_panes
+            .into_iter()
+            .map(warped_pane_from_protobuf)
+            .collect::<Result<Vec<_>>>()?,
+        floating_panes: adopt_tab_action
+            .floating_panes
+            .into_iter()
+            .map(warped_pane_from_protobuf)
+            .collect::<Result<Vec<_>>>()?,
+        hide_floating_panes: adopt_tab_action.hide_floating_panes,
+    };
+    payload
+        .validate_relationships()
+        .map_err(|e| anyhow!("{e}"))?;
+    Ok(payload)
+}
+fn warp_relationships_to_protobuf(
+    value: &zellij_types::data::WarpRelationships,
+) -> crate::client_server_contract::client_server_contract::WarpRelationships {
+    use crate::client_server_contract::client_server_contract as proto;
+    proto::WarpRelationships {
+        hidden: value
+            .hidden
+            .iter()
+            .map(|p| proto::WarpHiddenPane {
+                pane: p.pane,
+                restored_by: p.restored_by,
+                is_scrollback_editor: p.is_scrollback_editor,
+            })
+            .collect(),
+        stacks: value
+            .stacks
+            .iter()
+            .map(|s| proto::WarpStackList {
+                members: s.members.clone(),
+                selected: s.selected,
+            })
+            .collect(),
+    }
+}
+fn warp_relationships_from_protobuf(
+    value: crate::client_server_contract::client_server_contract::WarpRelationships,
+) -> zellij_types::data::WarpRelationships {
+    use zellij_types::data::{WarpHiddenPane, WarpRelationships, WarpStackList};
+    WarpRelationships {
+        hidden: value
+            .hidden
+            .into_iter()
+            .map(|p| WarpHiddenPane {
+                pane: p.pane,
+                restored_by: p.restored_by,
+                is_scrollback_editor: p.is_scrollback_editor,
+            })
+            .collect(),
+        stacks: value
+            .stacks
+            .into_iter()
+            .map(|s| WarpStackList {
+                members: s.members,
+                selected: s.selected,
+            })
+            .collect(),
+    }
+}
+
 fn warped_pane_to_protobuf(
     pane: &zellij_types::data::WarpedPane,
 ) -> crate::client_server_contract::client_server_contract::WarpedPane {
     crate::client_server_contract::client_server_contract::WarpedPane {
+        group: pane.group.as_deref().map(warped_tab_to_protobuf),
         host_id: pane.host_id.clone().into_string(),
         control_socket: pane.control_socket.to_string_lossy().to_string(),
         title: pane.title.clone(),
@@ -1160,6 +1276,11 @@ fn warped_pane_from_protobuf(
     pane: crate::client_server_contract::client_server_contract::WarpedPane,
 ) -> Result<zellij_types::data::WarpedPane> {
     Ok(zellij_types::data::WarpedPane {
+        group: pane
+            .group
+            .map(warped_tab_from_protobuf)
+            .transpose()?
+            .map(Box::new),
         host_id: SupervisorId::new(pane.host_id),
         control_socket: std::path::PathBuf::from(pane.control_socket),
         title: pane.title,
@@ -1288,7 +1409,6 @@ impl TryFrom<zellij_types::input::actions::Action>
         use crate::client_server_contract::client_server_contract::{
             action::ActionType,
             AdoptPaneAction,
-            AdoptTabAction,
             AreFloatingPanesVisibleAction,
             ArrangePanesByProjectAction,
             BreakPaneAction,
@@ -1918,6 +2038,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             }),
             zellij_types::input::actions::Action::AdoptPane { payload, placement } => {
                 ActionType::AdoptPane(AdoptPaneAction {
+                    group: payload.group.as_deref().map(warped_tab_to_protobuf),
                     host_id: payload.host_id.clone().into_string(),
                     control_socket: payload.control_socket.to_string_lossy().to_string(),
                     title: payload.title.clone(),
@@ -1945,26 +2066,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                 tab_id: u32::try_from(tab_id.get()).context("tab_id is outside u32 range")?,
             }),
             zellij_types::input::actions::Action::AdoptTab { payload } => {
-                ActionType::AdoptTab(AdoptTabAction {
-                    name: payload.name.clone(),
-                    tiled_layout: Some(payload.tiled_layout.clone().into()),
-                    floating_layout: payload
-                        .floating_layout
-                        .iter()
-                        .map(|l| l.clone().into())
-                        .collect(),
-                    tiled_panes: payload
-                        .tiled_panes
-                        .iter()
-                        .map(warped_pane_to_protobuf)
-                        .collect(),
-                    floating_panes: payload
-                        .floating_panes
-                        .iter()
-                        .map(warped_pane_to_protobuf)
-                        .collect(),
-                    hide_floating_panes: payload.hide_floating_panes,
-                })
+                ActionType::AdoptTab(warped_tab_to_protobuf(&payload))
             },
             zellij_types::input::actions::Action::LaunchOrFocusPlugin {
                 plugin,
@@ -2988,6 +3090,12 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 Ok(zellij_types::input::actions::Action::AdoptPane {
                     placement: warp_placement_from_i32(adopt_pane_action.placement)?,
                     payload: Box::new(zellij_types::data::WarpedPane {
+                        group: adopt_pane_action
+                            .group
+                            .clone()
+                            .map(warped_tab_from_protobuf)
+                            .transpose()?
+                            .map(Box::new),
                         host_id: SupervisorId::new(adopt_pane_action.host_id.clone()),
                         control_socket: PathBuf::from(&adopt_pane_action.control_socket),
                         title: adopt_pane_action.title.clone(),
@@ -3020,29 +3128,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::AdoptTab(adopt_tab_action) => {
                 Ok(zellij_types::input::actions::Action::AdoptTab {
-                    payload: Box::new(zellij_types::data::WarpedTab {
-                        name: adopt_tab_action.name,
-                        tiled_layout: adopt_tab_action
-                            .tiled_layout
-                            .ok_or_else(|| anyhow!("AdoptTab missing tiled_layout"))?
-                            .try_into()?,
-                        floating_layout: adopt_tab_action
-                            .floating_layout
-                            .into_iter()
-                            .map(TryInto::try_into)
-                            .collect::<Result<Vec<_>>>()?,
-                        tiled_panes: adopt_tab_action
-                            .tiled_panes
-                            .into_iter()
-                            .map(warped_pane_from_protobuf)
-                            .collect::<Result<Vec<_>>>()?,
-                        floating_panes: adopt_tab_action
-                            .floating_panes
-                            .into_iter()
-                            .map(warped_pane_from_protobuf)
-                            .collect::<Result<Vec<_>>>()?,
-                        hide_floating_panes: adopt_tab_action.hide_floating_panes,
-                    }),
+                    payload: Box::new(warped_tab_from_protobuf(adopt_tab_action)?),
                 })
             },
             ActionType::LaunchOrFocusPlugin(launch_plugin_action) => {

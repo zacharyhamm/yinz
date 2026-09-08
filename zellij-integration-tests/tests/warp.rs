@@ -676,55 +676,32 @@ fn one_unmovable_pane_stops_a_whole_tab_and_leaves_it_working() {
 }
 
 #[test]
-fn warping_a_pane_being_edited_takes_the_editor_down_with_it() {
-    // A scrollback editor stands in for the pane it is editing, so the pane is
-    // suppressed behind it and neither half is on its own. The pane can still
-    // travel — the editor is closed rather than carried, because an editor whose
-    // subject is in another session now is showing a dump of a pane that is not
-    // there and would restore nothing when closed.
+fn warping_a_visible_editor_carries_its_subject_and_restores_it_on_close() {
     let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
     let being_edited = split_off_a_pane(&sender, "SCROLLBACK_MARKER");
-
     sender.send_stdin(&keys::ctrl('s'));
     sender.send_stdin(&keys::key('e'));
     let editor = sender.expect_pty_spawn();
     sender.wait_until("the scrollback editor to open", |grid_snapshot| {
         grid_snapshot.contains("EDITING SCROLLBACK") && grid_snapshot.contains("SCROLLBACK_MARKER")
     });
-
     let (exit_code, reported) = warp_pane_by_id(&sender, &receiver, being_edited.terminal_id());
+    assert_ne!(exit_code, 0, "hidden selection must be refused");
+    assert!(reported.contains("visible"), "{reported}");
+    assert!(!being_edited.is_exited() && !editor.is_exited());
+    let (exit_code, reported) = warp_pane_by_id(&sender, &receiver, editor.terminal_id());
     assert_eq!(exit_code, 0, "the warp was refused: {reported}");
-
-    let arrived = receiver.expect_adopted_pty();
-    assert!(
-        !arrived.is_exited(),
-        "the pane being edited was killed rather than handed over",
-    );
-    sender.wait_until(
-        "the editor to be closed with its subject",
-        |grid_snapshot| !grid_snapshot.contains("EDITING SCROLLBACK"),
-    );
-    assert!(
-        !receiver.snapshot().contains("EDITING SCROLLBACK"),
-        "the editor travelled with the pane instead of being closed",
-    );
-    // Closed on the pty thread too, rather than left as a process nothing owns.
-    for _ in 0..50 {
-        if editor.is_exited() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    assert!(
-        editor.is_exited(),
-        "the editor's process was left running with no pane to close it",
-    );
-
-    arrived.output(b"edited and then moved\r\n");
-    receiver.wait_until(
-        "the pane to be running in its new session",
-        |grid_snapshot| grid_snapshot.contains("edited and then moved"),
-    );
+    let arrived_editor = receiver.expect_adopted_pty();
+    let arrived_subject = receiver.expect_adopted_pty();
+    receiver.wait_until("the editor to arrive", |grid| {
+        grid.contains("EDITING SCROLLBACK")
+    });
+    assert!(!arrived_editor.is_exited() && !arrived_subject.is_exited());
+    arrived_editor.exit(Some(0));
+    arrived_subject.output(b"edited and then moved\r\n");
+    receiver.wait_until("closing the editor restores its running subject", |grid| {
+        grid.contains("edited and then moved") && !grid.contains("EDITING SCROLLBACK")
+    });
 }
 
 #[test]
@@ -815,4 +792,69 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
     // emptied. What became of the processes is a question only the receiving
     // session can answer now, and it has just answered it.
     drop((first, second, third));
+}
+
+#[test]
+fn warp_adoption_failure_returns_all_editor_companions_and_their_relationships() {
+    let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    let subject = split_off_a_pane(&sender, "ROLLBACK_SUBJECT");
+    for index in 0..2 {
+        sender.send_stdin(&keys::ctrl('s'));
+        sender.send_stdin(&keys::key('e'));
+        let editor = sender.expect_pty_spawn();
+        let marker = format!("EDITOR_READY_{index}");
+        editor.output(format!("{marker}\r\n").as_bytes());
+        sender.wait_until("editor to open", |grid| grid.contains(&marker));
+    }
+    subject.fail_warp(WarpFailure::UnadoptableOnce);
+    let (exit_code, reported) = warp_focused_pane_to(&sender, &receiver, false);
+    assert_ne!(exit_code, 0);
+    assert!(reported.contains("back in this session"), "{reported}");
+    let newest_editor = sender.expect_adopted_pty();
+    let older_editor = sender.expect_adopted_pty();
+    let restored_subject = sender.expect_adopted_pty();
+    sender.wait_until("rollback editor to appear", |grid| {
+        grid.contains("EDITING SCROLLBACK")
+    });
+    newest_editor.exit(Some(0));
+    older_editor.output(b"OLDER_EDITOR_RESTORED\r\n");
+    sender.wait_until("first cover to close", |grid| {
+        grid.contains("OLDER_EDITOR_RESTORED")
+    });
+    older_editor.exit(Some(0));
+    restored_subject.output(b"SUBJECT_RESTORED\r\n");
+    sender.wait_until("second cover to close", |grid| {
+        grid.contains("SUBJECT_RESTORED")
+    });
+    assert!(!restored_subject.is_exited());
+}
+
+#[test]
+fn a_visible_stack_warps_to_the_floating_layer_with_selectable_members() {
+    let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    let _first = split_off_a_pane(&sender, "FIRST_FLOATING_MEMBER");
+    for marker in ["SECOND_FLOATING_MEMBER", "THIRD_FLOATING_MEMBER"] {
+        sender.send_stdin(&keys::ctrl('p'));
+        sender.send_stdin(&keys::key('s'));
+        let pane = sender.expect_pty_spawn();
+        pane.output(format!("{marker}\r\n").as_bytes());
+        sender.wait_until("stack member ready", |grid| grid.contains(marker));
+    }
+    warp_focused_pane_expecting_success(&sender, &receiver, true);
+    let third = receiver.expect_adopted_pty();
+    let first = receiver.expect_adopted_pty();
+    let second = receiver.expect_adopted_pty();
+    receiver.wait_until("floating stack arrives", |grid| {
+        grid.contains("THIRD_FLOATING_MEMBER")
+    });
+    receiver.send_stdin(&keys::alt('k'));
+    receiver.wait_until("select hidden floating member", |grid| {
+        grid.contains("SECOND_FLOATING_MEMBER")
+    });
+    assert_eq!(stack_list_entries(&receiver).len(), 3);
+    second.exit(Some(0));
+    receiver.wait_until("closing selected member promotes a survivor", |grid| {
+        grid.contains("THIRD_FLOATING_MEMBER")
+    });
+    assert!(!first.is_exited() && !third.is_exited());
 }

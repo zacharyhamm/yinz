@@ -79,11 +79,11 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "list_other_sessions",
-        "Show the other zellij sessions on this machine, with the terminal-pane ID of each pane in them. The list gives the tab_id of each tab as well as its number in the tab bar; the tools take the tab_id. Use warp_pane_here or warp_tab_here to move one of those panes or tabs into this session.",
+        "Show the other zellij sessions on this machine, with each visible pane ID and its is_plugin value. The list gives the tab_id of each tab as well as its number in the tab bar; the tools take the tab_id. Use warp_pane_here or warp_tab_here to move one of those panes or tabs into this session.",
     ),
     (
         "warp_pane_here",
-        "Move one terminal pane out of a different session and into this session. The pane keeps its program and its scrollback. Use list_other_sessions first to get the session name and the pane ID. A session that gives away its last tab stops.",
+        "Move a visible pane and its hidden contents into this session. Selecting a stack member moves the whole list. Terminal programs continue with their scrollback. Plugin instances restart. Hidden pane IDs cannot initiate a warp. Use list_other_sessions first to get the session name and the pane ID. A session that gives away its last tab stops.",
     ),
     (
         "warp_tab_here",

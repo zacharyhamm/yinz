@@ -94,7 +94,7 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::Exit { exit_reason } => ClientInstruction::Exit(exit_reason),
             ServerToClientMsg::Render { content } => ClientInstruction::Render(content),
             ServerToClientMsg::UnblockInputThread => ClientInstruction::UnblockInputThread,
-            ServerToClientMsg::Connected => ClientInstruction::Connected,
+            ServerToClientMsg::Connected { .. } => ClientInstruction::Connected,
             ServerToClientMsg::Log { lines } => ClientInstruction::Log(lines),
             ServerToClientMsg::LogError { lines } => ClientInstruction::LogError(lines),
             ServerToClientMsg::SwitchSession { connect_to_session } => {

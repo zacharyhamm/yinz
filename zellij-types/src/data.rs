@@ -2171,6 +2171,9 @@ pub enum WarpPlacement {
 /// server-side agent record attached to that process.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedPane {
+    /// A visible pane and its companions, using the same handoff as a tab.
+    #[serde(default)]
+    pub group: Option<Box<WarpedTab>>,
     /// Identifies the supervisor, for error messages and `pty-host adopt`.
     /// Empty for a remote pane, whose supervisor is not on this machine.
     pub host_id: SupervisorId,
@@ -2232,6 +2235,8 @@ pub struct RemotePaneHandoff {
 /// orders.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedTab {
+    #[serde(default)]
+    pub relationships: Option<WarpRelationships>,
     /// The tab's name, so it does not arrive renamed.
     pub name: Option<String>,
     pub tiled_layout: TiledPaneLayout,
@@ -2250,6 +2255,117 @@ pub struct WarpedTab {
     /// Ordered to match `floating_layout`, minus its plugin panes.
     pub floating_panes: Vec<WarpedPane>,
     pub hide_floating_panes: bool,
+}
+
+impl WarpedTab {
+    pub fn validate_relationships(&self) -> Result<(), String> {
+        let Some(relationships) = &self.relationships else {
+            return Ok(());
+        };
+        let tiled = self.tiled_layout.extract_run_instructions();
+        let terminal = |run: &Option<Run>| !matches!(run, Some(Run::Plugin(_)));
+        if tiled.iter().filter(|run| terminal(run)).count() != self.tiled_panes.len()
+            || self
+                .floating_layout
+                .iter()
+                .filter(|pane| terminal(&pane.run))
+                .count()
+                != self.floating_panes.len()
+            || self
+                .tiled_panes
+                .iter()
+                .chain(&self.floating_panes)
+                .any(|pane| pane.group.is_some())
+        {
+            return Err("warp terminal payloads do not match their layout slots".into());
+        }
+        relationships.validate(tiled.len() + self.floating_layout.len())
+    }
+
+    pub fn validate_pane_group(&self) -> Result<(), String> {
+        self.validate_relationships()?;
+        let relationships = self
+            .relationships
+            .as_ref()
+            .ok_or_else(|| "pane group is missing relationships".to_owned())?;
+        if self.tiled_layout.extract_run_instructions().len() != 1
+            || relationships.hidden.len() != self.floating_layout.len()
+            || relationships.hidden.iter().any(|pane| pane.pane == 0)
+        {
+            return Err("a pane group must have one visible root and hidden companions".into());
+        }
+        Ok(())
+    }
+}
+
+/// References index all layout slots: tiled first, then floating, including plugins.
+/// Hidden companions occupy extra floating slots until relationships are restored.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct WarpRelationships {
+    pub hidden: Vec<WarpHiddenPane>,
+    pub stacks: Vec<WarpStackList>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct WarpHiddenPane {
+    pub pane: u32,
+    pub restored_by: Option<u32>,
+    pub is_scrollback_editor: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct WarpStackList {
+    pub members: Vec<u32>,
+    pub selected: u32,
+}
+
+impl WarpRelationships {
+    pub fn validate(&self, slots: usize) -> Result<(), String> {
+        use std::collections::{HashMap, HashSet};
+        let valid = |id: u32| (id as usize) < slots;
+        let mut hidden = HashMap::new();
+        let mut covers = HashSet::new();
+        for pane in &self.hidden {
+            if !valid(pane.pane) || hidden.insert(pane.pane, pane.restored_by).is_some() {
+                return Err("invalid or duplicate hidden warp pane".into());
+            }
+            if let Some(cover) = pane.restored_by {
+                if !valid(cover) || !covers.insert(cover) {
+                    return Err("invalid or duplicate warp cover".into());
+                }
+            } else if pane.is_scrollback_editor {
+                return Err("a parked pane cannot have an editor flag".into());
+            }
+        }
+        for pane in hidden.keys() {
+            let mut seen = HashSet::new();
+            let mut next = Some(*pane);
+            while let Some(id) = next {
+                if !seen.insert(id) {
+                    return Err("cyclic warp replacement chain".into());
+                }
+                next = hidden.get(&id).copied().flatten();
+            }
+        }
+        let mut members = HashSet::new();
+        for stack in &self.stacks {
+            if stack.members.len() < 2
+                || !stack.members.contains(&stack.selected)
+                || hidden.contains_key(&stack.selected)
+            {
+                return Err("invalid selected warp stack member".into());
+            }
+            for id in &stack.members {
+                if !valid(*id)
+                    || !members.insert(*id)
+                    || (*id != stack.selected && hidden.get(id) != Some(&None))
+                {
+                    return Err("invalid or duplicate warp stack member".into());
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 use crate::geometry::FloatingPaneCoordinates;
