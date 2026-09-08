@@ -25,6 +25,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--binary', default='target/debug/zellij')
 parser.add_argument('--firecracker-only', action='store_true')
 parser.add_argument('--recovery-only', action='store_true')
+parser.add_argument('--source-diff-only', action='store_true')
 args = parser.parse_args()
 source = Path(__file__).resolve().parents[2]
 root = Path(tempfile.mkdtemp(prefix='zellij-workflow-acceptance-'))
@@ -195,6 +196,25 @@ for name in ('agent-work', 'review-integration', 'question', 'agent-exit'):
     swamp('workflow', 'validate', '@hammz/zellij-' + name)
 (root / 'config/zellij').mkdir(exist_ok=True)
 (root / 'config/zellij/config.kdl').write_text('show_release_notes false\nshow_startup_tips false\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/zellij-firecracker')) + '\n')
+observer = root / 'snapshot.lua'
+observer.write_text('''local z=require('zellij')
+return {
+  load=function() z.request_permission{'message_and_launch_other_plugins','read_cli_pipes'} end,
+  pipe=function(message)
+    if message.name~='snapshot' then return end
+    local cli=message.source.Cli
+    z.block_cli_pipe_input(cli)
+    z.task(function()
+      local snapshot=z.async.pipe('agent_snapshot')
+      z.message_to_plugin{plugin_url='zellij:hocus-agentd',message_name='agent_subscribe'}
+      z.cli_pipe_output(cli,z.await(snapshot).payload)
+      z.unblock_cli_pipe_input(cli)
+    end)
+  end,
+}
+''')
+(root / 'cache/zellij').mkdir(exist_ok=True)
+(root / 'cache/zellij/permissions.kdl').write_text(json.dumps(str(observer)) + ' {\n MessageAndLaunchOtherPlugins\n ReadCliPipes\n}\n')
 if args.firecracker_only:
     provider_config = source / 'target/firecracker-test/config/zellij/firecracker.json'
     shutil.copy(provider_config, root / 'config/zellij/firecracker.json')
@@ -279,6 +299,75 @@ try:
         def agents():
             return [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('agent')]
 
+        def exercise_diff(token):
+            before_diff = run('git', 'status', '--porcelain=v1', cwd=topic).stdout
+            before_head = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
+            contents = 'untracked diff contents 😀é\t"\\\n'
+            for large in (False, True):
+                (topic / 'untracked').write_text(contents)
+                choose(token, 'prepare', 'show-diff')
+                diff = until('saved diff question', lambda: pending(token, 'diff'))
+                predicate = 'specName == "diff" && tags.workflowRunId == ' + json.dumps(diff['attributes']['run'])
+                saved = swamp('data', 'query', predicate, '--select', '{"model":modelName,"name":name,"version":version,"attributes":attributes}')['results'][0]
+                output = saved['attributes']['output']
+                assert output.endswith(contents)
+                snapshot = bridge(method='workflow_show', directory=str(topic), run=diff['attributes']['run'])
+                preview = next(o for o in snapshot['outputs']['results'] if (o['model'], o['name'], o['version']) == (saved['model'], saved['name'], saved['version']))
+                shown = preview['attributes']['output']
+                assert shown and output.startswith(shown) and len(shown) <= 16384
+                assert not any(0xD800 <= ord(c) <= 0xDFFF for c in shown)
+                assert preview['attributes']['previewTruncated'] == (len(output) > 16384)
+                assert any(q['attributes'].get('question') == 'diff' and q['attributes']['state'] == 'pending' for q in snapshot['questions']['results'])
+                if large:
+                    assert len(shown.encode('utf-16-le')) // 2 == 16383
+                    assert (topic / 'untracked').stat().st_size == 1_100_000
+                    assert len(json.dumps(snapshot).encode()) < 1_048_576
+                    zellij('workflow', 'show', diff['attributes']['run'])
+                    until('diff question rendered', lambda: 'return' in zellij('action', 'dump-screen'))
+                    # Submit Return through the real view's pinned form.
+                    os.write(ui_fd, b'return\r')
+                    until('Return opens preparation', lambda: pending(token, 'prepare'))
+                    os.write(ui_fd, b'\x1b')
+                    exact = 'modelName == ' + json.dumps(saved['model']) + ' && name == ' + json.dumps(saved['name']) + ' && version == ' + str(saved['version'])
+                    assert swamp('data', 'query', exact, '--select', 'attributes.output')['results'] == [output]
+                else:
+                    assert shown == output
+                    choose(token, 'diff', 'return')
+                    # Put an emoji across the next preview's UTF-16 boundary.
+                    padding = 16383 - len(output[:-len(contents)].encode('utf-16-le')) // 2
+                    remaining = 1_100_000 - padding
+                    contents = 'x' * padding + '😀é\t"\\\n' * (remaining // 10) + 'z' * (remaining % 10)
+            (topic / 'untracked').unlink()
+            assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout == before_head
+            assert run('git', 'status', '--porcelain=v1', cwd=topic).stdout == before_diff
+            print('PASS: short diffs unchanged; 1.1 MB Unicode diff saved intact; bounded preview parses; Return works in the view', flush=True)
+
+        if args.source_diff_only:
+            launch('previews')
+            choose('previews', 'exit', 'begin-review')
+            exercise_diff('previews')
+            choose('previews', 'prepare', 'leave')
+            original_id = int(zellij('run', '--cwd', str(topic), '--', 'claude').strip().split('_')[-1])
+            original = until('tiled source is ready for input', lambda: next((p for p in json.loads(zellij('action', 'list-panes', '--json')) if not p['is_plugin'] and p['id'] == original_id and p.get('pane_cwd') == str(topic)), None))
+            assert not original['is_floating'] and not original['is_suppressed']
+            zellij('action', 'write-chars', '--pane-id', str(original_id), 'exit\n')
+            original = until('automatic exit hook suppresses source', lambda: next((p for p in agents() if p['id'] == original_id and p['exited'] and p['is_suppressed']), None))
+            automatic = until('automatic exit run', lambda: swamp('workflow', 'history', 'search', '--filter', 'inputs.sourcePane == ' + str(original_id))['results'])
+            token = automatic[0]['inputs']['launch']
+            snapshot = json.loads(zellij('pipe', '--name', 'snapshot', '--plugin', 'file:' + str(observer), '--', '{}'))
+            assert original_id not in [p['pane_id'] for p in snapshot['panes']]
+            choose(token, 'exit', 'fork')
+            until('hidden source resolved by Fork', lambda: 'forking claude' in zellij('action', 'dump-screen'))
+            os.write(ui_fd, b'\x1b')
+            until('Fork cancellation returns to exit question', lambda: pending(token, 'exit'))
+            before_ids = {p['id'] for p in agents()}
+            choose(token, 'exit', 'duplicate')
+            duplicated = until('Duplicate launches hidden source kind', lambda: next((p for p in agents() if p['id'] not in before_ids), None))
+            assert duplicated['agent']['kind'] == 'claude'
+            assert duplicated['agent']['cwd'] == str(topic)
+            print('PASS: automatic tiled exit suppresses source; snapshot excludes it; Fork resolves it; cancelled Fork returns; Duplicate preserves kind/cwd', flush=True)
+            raise SystemExit(0)
+
         launch('success')
         initial = until('initial exit menu', lambda: pending('success', 'exit'))
         assert initial['attributes']['answers'] == ['begin-review', 'leave']
@@ -290,17 +379,7 @@ try:
         launch('success')
         assert len(histories('success')) == before, 'Duplicate launch dispatched a second run'
         choose('success', 'exit', 'begin-review')
-        before_diff = run('git', 'status', '--porcelain=v1', cwd=topic).stdout
-        (topic / 'untracked').write_text('untracked diff contents\n')
-        choose('success', 'prepare', 'show-diff')
-        diff = until('saved diff question', lambda: pending('success', 'diff'))
-        outputs = swamp('data', 'query', 'has(tags.workflowRunId) && tags.workflowRunId == ' + json.dumps(diff['attributes']['run']),
-                        '--select', '{"name":name,"attributes":attributes}')['results']
-        assert any('untracked diff contents' in o['attributes'].get('output', '') for o in outputs)
-        assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout.strip() == base
-        (topic / 'untracked').unlink()
-        assert run('git', 'status', '--porcelain=v1', cwd=topic).stdout == before_diff
-        choose('success', 'diff', 'return')
+        exercise_diff('success')
         choose('success', 'prepare', 'commit-and-rebase')
         choose('success', 'review', 'merge')
         q = until('informed skipped-check confirmation', lambda: pending('success', 'merge'))

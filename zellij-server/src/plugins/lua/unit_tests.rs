@@ -6939,6 +6939,50 @@ assert(not z.__update(M,{PaneUpdate={panes={}}}))
 }
 
 #[test]
+fn swamp_diff_preview_names_the_saved_version_and_keeps_return_actionable() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.server_binary='zellij'
+z.subscribe=function() end
+z.every=function() end
+local snapshot={run='run',root="/work/it's here",history={status='suspended'},
+  questions={results={{model='question-model',version=2,attributes={run='run',question='diff',state='pending',kind='choice',prompt='Return to preparation.',answers={'return'}}}}},
+  outputs={results={{model='git-model',name='diff-current',version=7,attributes={output='😀é\t"\\\npreview',previewTruncated=true}}}}}
+z.rpc.call=function()
+  local a,r=z.async.future();r{result=snapshot};return a
+end
+z.ui.text=function(value) return {render=function() return value end} end
+z.show_cursor=function() end
+M.load()
+M.attach{directory=snapshot.root,run='run'}
+local rendered=M.render(60,400)
+assert(rendered:find('Diff preview (up to 16,384 characters)',1,true))
+assert(rendered:find([[swamp data query 'modelName == "git-model" && name == "diff-current" && version == 7' --select attributes.output --json --repo-dir '/work/it'"'"'s here']],1,true))
+assert(rendered:find('Return to preparation.',1,true))
+snapshot.outputs.results[1].attributes.previewTruncated=false
+assert(not M.render(60,400):find('Diff preview',1,true))
+local submitted=false
+z.async.run_command=function(opts)
+  assert(opts.cwd==snapshot.root)
+  assert(z.json.encode(opts.command)==z.json.encode{'zellij','workflow','answer','run','question-model','diff','return'})
+  submitted=true
+  local a,r=z.async.future();r{exit_code=0,stdout='',stderr=''};return a
+end
+M.update{name='key',key='PageDown',modifiers={}}
+z.__update(M,{PastedText='return'})
+z.__update(M,{Key={bare_key='Enter',key_modifiers={}}})
+assert(submitted and not M.busy, M.status)
+"#).exec().unwrap();
+}
+
+#[test]
 fn swamp_exit_preserves_scrollback_and_does_not_launch_unconfigured_or_managed_work() {
     let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
     let plugin = load(source).unwrap();
