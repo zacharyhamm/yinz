@@ -5,6 +5,7 @@ mod event;
 mod limits;
 mod loader;
 mod transport;
+mod ui;
 
 pub use checker::{check_plugin, check_syntax};
 
@@ -32,6 +33,7 @@ use super::{PluginId, PluginInstruction};
 use zellij_bus::global_async_runtime::get_tokio_runtime;
 use zellij_bus::{ClientId, ThreadSenders};
 use limits::op_zellij_encode;
+use ui::{op_zellij_ui_call, op_zellij_ui_create, op_zellij_ui_pure};
 
 const SDK: &str = include_str!("sdk.js");
 pub(crate) const SDK_MODULE: &str = "export const zellij = globalThis.zellij; export const definePlugin = zellij.definePlugin; export default zellij;";
@@ -131,7 +133,10 @@ deno_core::extension!(
         op_zellij_command,
         op_zellij_validate,
         op_zellij_encode,
-        op_zellij_log
+        op_zellij_log,
+        op_zellij_ui_create,
+        op_zellij_ui_call,
+        op_zellij_ui_pure
     ]
 );
 
@@ -704,7 +709,10 @@ mod sdk_tests {
             op_zellij_command,
             op_zellij_validate,
             op_zellij_encode,
-            op_zellij_log
+            op_zellij_log,
+            op_zellij_ui_create,
+            op_zellij_ui_call,
+            op_zellij_ui_pure
         ]
     );
 
@@ -1625,4 +1633,5 @@ mod sdk_tests {
         fn assert_send<T: Send>() {}
         assert_send::<DenoPlugin>();
     }
+    include!("unit/ui_sdk.rs");
 }

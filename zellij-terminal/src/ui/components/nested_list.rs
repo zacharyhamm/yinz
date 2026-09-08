@@ -3,8 +3,8 @@
 #![allow(clippy::chars_next_cmp)]
 #![allow(clippy::ptr_arg)]
 use super::{
-    is_too_high, parse_indices, parse_opaque, parse_selected, parse_text, stringify_text,
-    Coordinates, Text,
+    is_too_high, parse_disabled, parse_indices, parse_opaque, parse_selected, parse_text,
+    stringify_text, Coordinates, Text,
 };
 use crate::panes::terminal_character::{AnsiCode, CharacterStyles, RESET_STYLES};
 use zellij_types::style::Style;
@@ -31,7 +31,7 @@ pub fn nested_list(
         if is_too_high(line_index + 1, &coordinates) {
             break;
         }
-        let style_declaration = if line_item.text.selected {
+        let style_declaration = if line_item.text.selected && !line_item.text.disabled {
             style.colors.list_selected
         } else {
             style.colors.list_unselected
@@ -42,19 +42,34 @@ pub fn nested_list(
         } else {
             "- "
         };
-        let text_style = if line_item.text.opaque || line_item.text.selected {
+        let text_style = if line_item.text.disabled {
+            let disabled_style = CharacterStyles::from(style_declaration)
+                .bold(Some(AnsiCode::Reset))
+                .italic(Some(AnsiCode::On));
+            if line_item.text.opaque || line_item.text.selected {
+                disabled_style.background(Some(style_declaration.background.into()))
+            } else {
+                disabled_style
+            }
+        } else if line_item.text.opaque || line_item.text.selected {
             CharacterStyles::from(style_declaration)
                 .background(Some(style_declaration.background.into()))
+                .bold(Some(AnsiCode::On))
         } else {
-            CharacterStyles::from(style_declaration)
+            CharacterStyles::from(style_declaration).bold(Some(AnsiCode::On))
+        };
+        let text = if line_item.text.disabled {
+            line_item.text.into_disabled()
+        } else {
+            line_item.text
         };
         let (mut text, text_width) = stringify_text(
-            &line_item.text,
+            &text,
             Some(padding + bulletin.len()),
             &coordinates,
             &style_declaration,
             &style.colors,
-            text_style.bold(Some(AnsiCode::On)),
+            text_style,
         );
         text = pad_line(text, max_width, padding, text_width);
         let go_to_row_instruction = coordinates
@@ -69,11 +84,7 @@ pub fn nested_list(
             });
         stringified.push_str(&format!(
             "{}{}{:padding$}{bulletin}{}{text}{}",
-            go_to_row_instruction,
-            text_style,
-            " ",
-            text_style.bold(Some(AnsiCode::On)),
-            RESET_STYLES
+            go_to_row_instruction, text_style, " ", text_style, RESET_STYLES
         ));
     }
     stringified.as_bytes().to_vec()
@@ -87,13 +98,14 @@ pub fn parse_nested_list_items<'a>(
             let indentation_level = parse_indentation_level(&mut stringified);
             let selected = parse_selected(&mut stringified);
             let opaque = parse_opaque(&mut stringified);
+            let disabled = parse_disabled(&mut stringified);
             let indices = parse_indices(&mut stringified);
             let text = parse_text(&mut stringified).map_err(|e| e.to_string())?;
             let text = Text {
                 text,
                 opaque,
                 selected,
-                disabled: false,
+                disabled,
                 indices,
             };
             Ok::<NestedListItem, String>(NestedListItem {

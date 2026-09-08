@@ -13,10 +13,19 @@
   const pushContext = Function.call.bind(Array.prototype.push);
   const popContext = Function.call.bind(Array.prototype.pop);
   let client = null;
+  let renderContext = null;
+  const renderContexts = new WeakMap();
+  const renderStack = [];
   core.setPromiseHooks(
-    (promise, parent) => setContext(contexts, promise, client ?? getContext(contexts, parent) ?? null),
-    (promise) => { pushContext(stack, client); client = getContext(contexts, promise) ?? null; },
-    () => { client = popContext(stack) ?? null; },
+    (promise, parent) => {
+      setContext(contexts, promise, client ?? getContext(contexts, parent) ?? null);
+      setContext(renderContexts, promise, renderContext ?? getContext(renderContexts, parent) ?? null);
+    },
+    (promise) => {
+      pushContext(stack, client); client = getContext(contexts, promise) ?? null;
+      pushContext(renderStack, renderContext); renderContext = getContext(renderContexts, promise) ?? null;
+    },
+    () => { client = popContext(stack) ?? null; renderContext = popContext(renderStack) ?? null; },
   );
   // No process, filesystem, networking, or raw ops are exposed to the guest.
   delete globalThis.Deno;
@@ -390,6 +399,190 @@
     },
   });
 
+  let hocusIdentity = null;
+  let hocusDefinitions = null;
+  let hocusHandlers = new Map();
+  function hocusMessage(name, payload, destination = null) {
+    validate(payload);
+    const encoded = JSON.stringify(payload);
+    if (encodeUtf8(encoded).length > 64000) throw new RangeError("Hocus payload exceeds 64000 bytes");
+    command("MessageToPlugin", {
+      plugin_url: null, destination_plugin_id: destination, plugin_config: {},
+      message_name: name, message_payload: encoded, message_args: {},
+      new_plugin_args: null, floating_pane_coordinates: null,
+    });
+  }
+  function registerHocus(definitions = hocusDefinitions) {
+    if (hocusIdentity && definitions !== null) {
+      hocusMessage("hocus_extension_register", {version: 1, ...hocusIdentity, tools: definitions});
+    }
+  }
+  const hocus = Object.freeze({
+    launch: () => hocusIdentity && {...hocusIdentity},
+    tools(definitions) {
+      record(definitions, "Hocus tools");
+      const entries = Object.entries(definitions);
+      if (entries.length > 32) throw new RangeError("at most 32 Hocus tools are allowed");
+      const replacement = new Map();
+      const specs = entries.sort(([a], [b]) => a.localeCompare(b)).map(([name, definition]) => {
+        const {handler, description = name, parameters = {type: "object"}, safety = "read_only", consequence = null} = record(definition, "Hocus tool");
+        if (!/^[a-z][a-z0-9_]*$/.test(name) || name.length > 64) throw new TypeError("tool names must be lower snake case, at most 64 characters");
+        if (typeof handler !== "function") throw new TypeError("tool handler must be a function");
+        if (typeof description !== "string" || !description.trim() || encodeUtf8(description).length > 2000) throw new TypeError("tool description must contain 1–2000 bytes");
+        validate(parameters);
+        if (parameters?.type !== "object" || encodeUtf8(JSON.stringify(parameters)).length > 16000) throw new TypeError("tool parameters must be an object JSON Schema of at most 16000 bytes");
+        if (!["read_only", "automatic", "confirm"].includes(safety)) throw new TypeError("invalid tool safety");
+        if (consequence !== null && typeof consequence !== "string") throw new TypeError("consequence must be a string");
+        if (safety === "confirm" && !consequence?.trim()) throw new TypeError("confirm requires a consequence");
+        replacement.set("hocus_tool:" + name, handler);
+        return {name, description, parameters, safety, consequence};
+      });
+      // The dispatcher checks the existing grant before publishing or replacing handlers.
+      registerHocus(specs);
+      hocusDefinitions = JSON.parse(JSON.stringify(specs));
+      hocusHandlers = replacement;
+    },
+  });
+  function hocusPipe(message) {
+    if (message.name === "hocus_extension_discover") {
+      if (message.source && Number.isSafeInteger(message.source.Plugin)) registerHocus();
+      return true;
+    }
+    if (message.name !== "zellij_rpc_call") return false;
+    let call;
+    try { call = JSON.parse(message.payload ?? ""); } catch (_) { return true; }
+    if (call?.version !== 1 || typeof call.name !== "string" || !call.name.startsWith("hocus_tool:")) return true;
+    if (!hocusIdentity || !message.source || !Number.isSafeInteger(message.source.Plugin) || message.source.Plugin < 0 ||
+        typeof call.call_id !== "string" || !call.call_id || encodeUtf8(message.payload).length > 64000) return true;
+    const origin = client;
+    const from = message.source.Plugin;
+    const reply = (result, error) => {
+      const previous = client;
+      client = origin;
+      try {
+        const payload = {version: 1, call_id: call.call_id, ...(error === undefined ? {result: result ?? null} : {error: String(error)})};
+        try { hocusMessage("zellij_rpc_reply", payload, from); }
+        catch (error) { hocusMessage("zellij_rpc_reply", {version: 1, call_id: call.call_id, error: String(error).slice(0, 2000)}, from); }
+      } finally { client = previous; }
+    };
+    const handler = hocusHandlers.get(call.name);
+    try {
+      if (!handler) throw new Error("no rpc handler named " + call.name);
+      track(handler(call.payload ?? {}, {version:1, callId:call.call_id, name:call.name, payload:call.payload ?? {}, source:message.source}), (result) => reply(result), (error) => reply(null, error));
+    } catch (error) { reply(null, error); }
+    return true;
+  }
+  function uiInteger(n, name) {
+    if (!Number.isSafeInteger(n) || n < 0 || n > 262144) throw new RangeError(`${name} must be an integer between 0 and 262144`);
+    return n;
+  }
+  function coordinates(c) {
+    validate(c);
+    const {x = 0, y = 0, width, height, scroll = 0} = record(c, 'coordinates');
+    for (const key of Object.keys(c)) if (!['x','y','width','height','scroll'].includes(key)) throw new TypeError('unknown coordinate: ' + key);
+    return {x: uiInteger(x,'x'), y: uiInteger(y,'y'), width: uiInteger(width,'width'), height: uiInteger(height,'height'), scroll: uiInteger(scroll,'scroll')};
+  }
+  const pure = (op, args) => core.ops.op_zellij_ui_pure({op, args});
+  const text = Object.freeze({
+    width: (s) => pure('Width', s), sanitize: (s) => pure('Sanitize', s),
+    wrap: (s, width) => pure('Wrap', [s, uiInteger(width,'width')]),
+    truncate: (s, width, ellipsis = '…') => pure('Truncate', [s, uiInteger(width,'width'), ellipsis]),
+    pad: (s, width) => pure('Pad', [s, uiInteger(width,'width')]),
+    padLeft: (s, width) => pure('PadLeft', [s, uiInteger(width,'width')]),
+    center: (s, width) => pure('Center', [s, uiInteger(width,'width')]),
+  });
+  const styled = new WeakMap();
+  function textDescriptor(value) {
+    if (styled.has(value)) return structuredStyle(styled.get(value));
+    if (typeof value !== 'string') throw new TypeError('component text must be a string or styled text');
+    return {text:value, selected:false, opaque:false, disabled:false, levels:[]};
+  }
+  function structuredStyle(d) { return {...d, levels:d.levels.map(indices => [...indices])}; }
+  function styledText(value = '', ribbon = false) {
+    const d = textDescriptor(value);
+    const w = {
+      len: () => [...d.text].length,
+      selected() { d.selected = true; return w; },
+      opaque() { d.opaque = true; return w; },
+      disabled() { d.disabled = true; return w; },
+      emphasis(level, from = 0, to = w.len()) {
+        uiInteger(level,'level'); uiInteger(from,'from'); uiInteger(to,'to');
+        if (level > 7 || from > to || to > w.len()) throw new RangeError('style range or level out of bounds');
+        while (d.levels.length <= level) d.levels.push([]);
+        for (let i = from; i < to; i++) d.levels[level].push(i);
+        return w;
+      },
+      dim: (from,to) => w.emphasis(4,from,to), unbold: (from,to) => w.emphasis(5,from,to),
+      error: (from,to) => w.emphasis(6,from,to), success: (from,to) => w.emphasis(7,from,to),
+      render: (c) => pure(ribbon ? 'Ribbon' : 'Text', [d, c === undefined ? null : coordinates(c)]),
+    };
+    styled.set(w,d);
+    return w;
+  }
+  function fieldDescriptor(d, single) {
+    validate(d);
+    record(d,'field descriptor');
+    for (const k of Object.keys(d)) if (!['kind','id','label','value','options','placeholder','maxVisibleOptions','disabled','style'].includes(k)) throw new TypeError('unknown field descriptor: ' + k);
+    const kinds = {textInput:'text_input', radioGroup:'radio_group', checkbox:'checkbox', select:'select', combo:'combo', button:'button'};
+    if (!Object.hasOwn(kinds,d.kind)) throw new TypeError('unknown widget kind');
+    return {kind:kinds[d.kind], id:d.id ?? (single ? 'value' : null), label:d.label ?? '',
+      value:Object.hasOwn(d,'value') ? d.value : (['textInput','combo'].includes(d.kind) ? '' : d.kind === 'checkbox' ? false : d.options?.length ? 0 : null),
+      options:d.options ?? [], placeholder:d.placeholder ?? '', max_visible_options:d.maxVisibleOptions ?? 6,
+      disabled:d.disabled ?? false, style:d.style ?? 'ribbon'};
+  }
+  function construct(fields, single = false, dialog = null) {
+    if (!Array.isArray(fields)) throw new TypeError('fields must be an array');
+    const descriptors = fields.map(d => fieldDescriptor(d,single));
+    const state = core.ops.op_zellij_ui_create({kind:'Form', fields:descriptors, dialog});
+    const singleId = single ? descriptors[0].id : undefined;
+    const call = (op, args) => core.ops.op_zellij_ui_call(state, args === undefined ? {op} : {op,args});
+    const w = {
+      value: (id = singleId) => call('Value',id), values: () => call('Values'),
+      setValue(id, value) { call('SetValue',single ? [singleId,id] : [id,value]); return w; },
+      setOptions(id, options) { call('SetOptions',single ? [singleId,id] : [id,options]); return w; },
+      focus(id = singleId) { call('Focus',id); return w; }, focusedId: () => call('FocusedId'),
+      moveFocus: (forward = true) => call('MoveFocus',forward),
+      handleKey: (key) => call('Key',key), handleMouse: (mouse) => call('Mouse',mouse),
+      insertPastedText: (text) => call('Paste',text),
+      render(c) {
+        const result = call('Render',coordinates(c));
+        if (result.updateCursor && renderContext !== null) renderContext.cursor = result.cursor;
+        return result.text;
+      },
+    };
+    if (dialog) w.setStatus = (text = null) => { call('SetStatus',text); return w; };
+    return w;
+  }
+  const ui = {
+    text: (s) => styledText(s), ribbon: (s) => styledText(s,true),
+    form: (fields) => construct(fields),
+    dialog(d) {
+      validate(d); record(d,'dialog');
+      for (const k of Object.keys(d)) if (!['fields','title','message','help'].includes(k)) throw new TypeError('unknown dialog field: ' + k);
+      return construct(d.fields ?? [],false,{title:d.title, message:d.message ?? null, help:d.help ?? null});
+    },
+    markdown(source, {compact = false} = {}) {
+      const state = core.ops.op_zellij_ui_create({kind:'Markdown',source,compact});
+      return {render: (c) => core.ops.op_zellij_ui_call(state,{op:'Render',args:coordinates(c)})};
+    },
+    table(rows = []) {
+      if (!Array.isArray(rows)) throw new TypeError('table rows must be an array');
+      rows = rows.map(row => row.map(textDescriptor));
+      const w = {row(...cells) { rows.push(cells.map(textDescriptor)); return w; },
+        render: (c) => pure('Table',[rows,c === undefined ? null : coordinates(c)])};
+      return w;
+    },
+    nestedList(items = []) {
+      const entry = (item) => typeof item === 'string' || styled.has(item) ? [textDescriptor(item),0] : [textDescriptor(item.text),uiInteger(item.indent ?? 0,'indent')];
+      items = items.map(entry);
+      const w = {item(text, indent = 0) { items.push(entry({text,indent})); return w; },
+        render: (c) => pure('NestedList',[items,c === undefined ? null : coordinates(c)])};
+      return w;
+    },
+  };
+  for (const kind of ['textInput','checkbox','radioGroup','select','combo','button']) ui[kind] = (d = {}) => construct([{...d,kind}],true);
+  Object.freeze(ui);
+
   const api = Object.freeze({
     command,
     definePlugin: (value) => value,
@@ -405,6 +598,9 @@
     webRequest,
     fs,
     projectConfig,
+    ui,
+    text,
+    hocus,
     data,
     encodeUtf8,
     decodeUtf8,
@@ -420,6 +616,11 @@
   Object.defineProperty(globalThis, "zellij", { value: api });
 
   function lifecycle(name, arg) {
+    if (name === "load") {
+      const namespace = arg.hocus_extension_name, path = arg.hocus_extension_path;
+      hocusIdentity = typeof namespace === "string" && namespace && typeof path === "string" && path ? {namespace, path} : null;
+    }
+    if (name === "pipe" && hocusPipe(arg)) return;
     const type = name === "update" ? (typeof arg === "string" ? arg : Object.keys(arg)[0]) : undefined;
     const payload = name === "update" && typeof arg !== "string" ? arg[type] : undefined;
     const listeners = [...(handlers.get(type) ?? [])];
@@ -467,6 +668,7 @@
     }
     if (!pendingRender && frame.version !== version) {
       const startedVersion = version;
+      const invocation = {cursor: undefined};
       frame.pending = true;
       pendingRender = true;
       let synchronous = true;
@@ -478,17 +680,23 @@
         }
         if (startedVersion === version && frame.rows === rows && frame.columns === columns) {
           frame.text = text ?? "";
+          frame.cursor = invocation.cursor;
           frame.version = startedVersion;
         }
         // Publish completion, or start the replacement for a superseded render.
         if (!synchronous || frame.version !== version) dirty = true;
       };
       try {
-        const value = typeof plugin.render === "function" ? plugin.render(rows, columns) : "";
+        const previousRender = renderContext;
+        let value;
+        renderContext = invocation;
+        try { value = typeof plugin.render === "function" ? plugin.render(rows, columns) : ""; }
+        finally { renderContext = previousRender; }
         track(value, (text) => { try { finish(text); } catch (error) { fail(error); } });
         synchronous = false;
       } catch (error) { frame.pending = false; pendingRender = false; throw error; }
     }
+    if (frame.version === version && frame.cursor !== undefined) command('ShowCursor', frame.cursor);
     return frame.text;
   }
   return (action, arg, origin) => {

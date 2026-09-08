@@ -228,10 +228,29 @@ impl State {
         stdout: &[u8],
     ) -> bool {
         self.extension_files = if exit_code == Some(0) {
-            extensions::extension_files(&self.user_plugin_dir, &String::from_utf8_lossy(stdout))
+            {
+                let (files, conflicts) = extensions::extension_files(
+                    &self.user_plugin_dir,
+                    &String::from_utf8_lossy(stdout),
+                );
+                for conflict in conflicts {
+                    self.log("extension_error", serde_json::json!({"error": conflict}));
+                }
+                files
+            }
         } else {
             BTreeMap::new()
         };
+        for owner in self
+            .extension_instances
+            .iter()
+            .filter(|(_, (namespace, path))| self.extension_files.get(namespace) != Some(path))
+            .map(|(owner, _)| *owner)
+            .collect::<Vec<_>>()
+        {
+            self.remove_extension_owner(owner);
+        }
+        self.extension_scan_due_ms = None;
         if self.extension_files.is_empty() {
             return false;
         }
@@ -480,38 +499,42 @@ impl State {
             .map(|(owner, _)| *owner)
             .collect::<Vec<_>>()
         {
-            // A call waiting on this owner, in whichever chat sent it, will never be
-            // answered: say so now rather than after the timeout. Decided before the owner's
-            // tools go, since the head is matched to the owner through them.
-            let waiting_on = |status: &Status, pending: &VecDeque<ToolCall>| {
-                matches!(status, Status::AwaitingExtension)
-                    && pending
-                        .front()
-                        .and_then(|head| self.extensions.tool(&head.name))
-                        .map(|tool| tool.owner)
-                        == Some(owner)
-            };
-            let foreground = waiting_on(&self.status, &self.pending);
-            let parked: Vec<usize> = self
-                .parked
-                .iter()
-                .enumerate()
-                .filter(|(_, chat)| waiting_on(&chat.status, &chat.pending))
-                .map(|(index, _)| index)
-                .collect();
-            self.extensions.remove_owner(owner);
-            if foreground {
-                self.abandon_extension_call();
-            }
-            for index in parked {
-                self.with_parked(index, |state| state.abandon_extension_call());
-            }
+            self.remove_extension_owner(owner);
         }
         self.extension_instances = instances;
         if !self.extension_files.is_empty() {
             extensions::discover();
         }
         false
+    }
+
+    fn remove_extension_owner(&mut self, owner: zellij_tile::prelude::PluginId) {
+        // A call waiting on this owner, in whichever chat sent it, will never be
+        // answered: say so now rather than after the timeout. Decided before the owner's
+        // tools go, since the head is matched to the owner through them.
+        let waiting_on = |status: &Status, pending: &VecDeque<ToolCall>| {
+            matches!(status, Status::AwaitingExtension)
+                && pending
+                    .front()
+                    .and_then(|head| self.extensions.tool(&head.name))
+                    .map(|tool| tool.owner)
+                    == Some(owner)
+        };
+        let foreground = waiting_on(&self.status, &self.pending);
+        let parked: Vec<usize> = self
+            .parked
+            .iter()
+            .enumerate()
+            .filter(|(_, chat)| waiting_on(&chat.status, &chat.pending))
+            .map(|(index, _)| index)
+            .collect();
+        self.extensions.remove_owner(owner);
+        if foreground {
+            self.abandon_extension_call();
+        }
+        for index in parked {
+            self.with_parked(index, |state| state.abandon_extension_call());
+        }
     }
 
     /// Answer the head with the extension's departure and move on: the owner it was waiting
@@ -2070,10 +2093,38 @@ impl State {
         let extension =
             extensions::namespace_for_path(&self.user_plugin_dir, &target).map(str::to_owned);
         if let Some(namespace) = &extension {
+            let entries = match tools::plugin_fs_list(tools::PLUGINS_ROOT) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    self.finish_head(format!("cannot check extension namespaces: {error}"));
+                    return true;
+                },
+            };
+            let listing = tools::listing_names(tools::PLUGINS_ROOT, &entries)
+                .iter()
+                .map(|name| format!("{}/{name}", self.user_plugin_dir.trim_end_matches('/')))
+                .chain(std::iter::once(target.clone()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let (files, conflicts) = extensions::extension_files(&self.user_plugin_dir, &listing);
+            if files.get(namespace) != Some(&target) {
+                self.extension_files.remove(namespace);
+                for owner in self
+                    .extension_instances
+                    .iter()
+                    .filter(|(_, (name, _))| name == namespace)
+                    .map(|(owner, _)| *owner)
+                    .collect::<Vec<_>>()
+                {
+                    self.remove_extension_owner(owner);
+                }
+                self.finish_head(conflicts.join("\n"));
+                return true;
+            }
             self.extension_files
                 .insert(namespace.clone(), target.clone());
             if let Some(owner) = self.extensions.owner_for_path(&target) {
-                self.extensions.remove_owner(owner);
+                self.remove_extension_owner(owner);
                 extensions::reload(owner);
             } else {
                 extensions::load(&target, namespace);

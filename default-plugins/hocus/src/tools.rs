@@ -1819,10 +1819,7 @@ pub fn specs() -> Value {
         // Shared authoring names select Lua by default or JS/TS by extension.
         tool(
             "plugin_docs",
-            "How to write Zellij plugins; section=deno covers JS/TS. Call before writing one. `section` defaults to \
-             index, which lists the rest with sizes. `query` (a regex) searches every section, \
-             or only `section`, answering section:LINE:text - find where something is spelled \
-             before fetching a section; `start_line`/`line_count` then read that part of it.",
+            "Zellij plugin authoring; section=deno covers JS/TS. Read before writing. Default section=index lists sections and sizes. query searches all sections or the named section with a regex, returning section:LINE:text. Use start_line/line_count to read a section range.",
             json!({
                 "type": "object",
                 "properties": {

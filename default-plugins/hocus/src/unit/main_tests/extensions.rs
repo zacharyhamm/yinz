@@ -434,3 +434,23 @@ fn a_registration_report_names_the_tools_and_asks_for_them_to_be_called() {
     assert!(answer.contains("Call each one once"), "{answer}");
     assert!(matches!(state.status, Status::Idle));
 }
+
+#[test]
+fn a_duplicate_scan_revokes_registration_and_finishes_pending_calls() {
+    let mut state = extension_state("automatic", None);
+    state.user_plugin_dir = "/plugins".into();
+    state.extension_instances.insert(
+        zellij_tile::prelude::PluginId::new(7),
+        ("weather".into(), "/plugins/hocus/weather.lua".into()),
+    );
+    let request = call("pending", "weather_forecast", "{}");
+    state.pending.push_back(request.clone());
+    assert!(!state.run_head(&request));
+    state.on_extension_scan_result(
+        Some(0),
+        b"/plugins/hocus/weather.lua\n/plugins/hocus/weather.ts\n",
+    );
+    assert!(state.extensions.tool("weather_forecast").is_none());
+    assert!(state.extension_files.is_empty());
+    assert!(tool_results(&state)[0].content.contains("went away"));
+}

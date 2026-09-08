@@ -90,6 +90,9 @@ export interface WebRequestResult {
   context: Record<string, string>;
 }
 export interface Zellij {
+  readonly hocus: HocusExtensions;
+  readonly ui: UserInterface;
+  readonly text: TerminalText;
   readonly fs: Filesystem;
   readonly projectConfig: ProjectConfiguration;
   readonly data: DataStore;
@@ -532,3 +535,97 @@ export interface DataStore {
 export type PluginCheckMode = 'Syntax' | 'Semantic';
 export interface OutlineEntry {line: Integer; kind: 'Require' | 'Permission' | 'Function' | 'Handler' | 'Define' | 'Registration' | 'Tool'; text: string}
 export interface PluginCheckReport {diagnostics: string[]; outline: OutlineEntry[]; permissions: Permission[]; warnings: string[]}
+
+/** Tool handlers answer version-1 Hocus RPC calls. Source is supplied by the host. */
+export interface HocusToolCall { version: 1; callId: string; name: string; payload: Json; source: {Plugin: number}; }
+export interface HocusToolDefinition {
+  description?: string;
+  parameters?: {type: 'object'; [key: string]: Json};
+  safety?: 'read_only' | 'automatic' | 'confirm';
+  /** Required for confirm. */
+  consequence?: string;
+  handler(payload: Json, call: HocusToolCall): Json | void | Promise<Json | void>;
+}
+export interface HocusExtensions {
+  /** Requires MessageAndLaunchOtherPlugins. Replaces all handlers and registrations. */
+  tools(definitions: Record<string, HocusToolDefinition>): void;
+  launch(): {namespace: string; path: string} | null;
+}
+export interface Viewport { x?: number; y?: number; width: number; height: number; }
+export interface MarkdownViewport extends Viewport { scroll?: number; }
+export type WidgetInteraction =
+  | {kind: 'fieldChanged' | 'complete' | 'buttonPressed'; id: string; shouldRender: boolean}
+  | {kind: 'focusMoved' | 'cancel' | 'ignored'; shouldRender: boolean};
+export type WidgetValue = string | boolean | number | null;
+export interface WidgetInteractionMethods {
+  focusedId(): string | null;
+  moveFocus(forward?: boolean): WidgetInteraction;
+  handleKey(key: KeyWithModifier): WidgetInteraction;
+  handleMouse(mouse: Mouse): WidgetInteraction;
+  insertPastedText(text: string): WidgetInteraction;
+  /** Returns terminal text; cursor updates are attached to the current render invocation. */
+  render(viewport: Viewport): string;
+  values(): Record<string, WidgetValue>;
+}
+export interface Control<T extends WidgetValue> extends WidgetInteractionMethods {
+  value(): T;
+  setValue(value: T): this;
+  focus(): this;
+}
+export interface ChoiceControl<T extends WidgetValue> extends Control<T> { setOptions(options: string[]): this; }
+export interface FormWidget extends WidgetInteractionMethods {
+  value(id: string): WidgetValue;
+  setValue(id: string, value: WidgetValue): this;
+  setOptions(id: string, options: string[]): this;
+  focus(id: string): this;
+}
+export interface ButtonControl extends WidgetInteractionMethods { focus(): this; }
+export interface DialogWidget extends FormWidget { setStatus(text?: string | null): this; }
+export interface ControlOptions { id?: string; label?: string; }
+export interface TextInputOptions extends ControlOptions { value?: string; }
+export interface CheckboxOptions extends ControlOptions { value?: boolean; }
+/** Selections use zero-based indices; null means no selection. */
+export interface RadioGroupOptions extends ControlOptions { options?: string[]; value?: number | null; }
+export interface SelectOptions extends RadioGroupOptions { placeholder?: string; maxVisibleOptions?: number; }
+export interface ComboOptions extends TextInputOptions { options?: string[]; placeholder?: string; maxVisibleOptions?: number; }
+export interface ButtonOptions extends ControlOptions { disabled?: boolean; style?: 'ribbon' | 'text'; }
+export type FieldDescriptor = {id: string} & (
+  | ({kind: 'textInput'} & TextInputOptions) | ({kind: 'checkbox'} & CheckboxOptions)
+  | ({kind: 'radioGroup'} & RadioGroupOptions) | ({kind: 'select'} & SelectOptions)
+  | ({kind: 'combo'} & ComboOptions) | ({kind: 'button'} & ButtonOptions));
+export interface StyledText {
+  len(): number;
+  selected(): this; opaque(): this; disabled(): this;
+  /** Ranges count Unicode characters, with zero-based starts and exclusive ends. */
+  emphasis(level: number, from?: number, to?: number): this;
+  dim(from?: number, to?: number): this; unbold(from?: number, to?: number): this;
+  error(from?: number, to?: number): this; success(from?: number, to?: number): this;
+  render(viewport?: Viewport): string;
+}
+export type ComponentText = string | StyledText;
+export interface TableComponent { row(...cells: ComponentText[]): this; render(viewport?: Viewport): string; }
+export interface NestedListComponent { item(text: ComponentText, indent?: number): this; render(viewport?: Viewport): string; }
+export interface MarkdownComponent { render(viewport: MarkdownViewport): {text: string; totalRows: number}; }
+export interface UserInterface {
+  text(text?: ComponentText): StyledText; ribbon(text?: ComponentText): StyledText;
+  table(rows?: ComponentText[][]): TableComponent;
+  nestedList(items?: (ComponentText | {text: ComponentText; indent?: number})[]): NestedListComponent;
+  textInput(options?: TextInputOptions): Control<string>;
+  checkbox(options?: CheckboxOptions): Control<boolean>;
+  radioGroup(options?: RadioGroupOptions): ChoiceControl<number | null>;
+  select(options?: SelectOptions): ChoiceControl<number | null>;
+  combo(options?: ComboOptions): ChoiceControl<string>;
+  button(options?: ButtonOptions): ButtonControl;
+  form(fields: FieldDescriptor[]): FormWidget;
+  dialog(options: {title: string; message?: string; help?: string; fields?: FieldDescriptor[]}): DialogWidget;
+  markdown(source: string, options?: {compact?: boolean}): MarkdownComponent;
+}
+export interface TerminalText {
+  width(text: string): number;
+  truncate(text: string, width: number, ellipsis?: string): string;
+  pad(text: string, width: number): string;
+  padLeft(text: string, width: number): string;
+  center(text: string, width: number): string;
+  wrap(text: string, width: number): string[];
+  sanitize(text: string): string;
+}

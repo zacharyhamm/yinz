@@ -1,125 +1,16 @@
 //! Interpreter-local widget state. All rendering and interaction lives in zellij-tile.
 use mlua::{Lua, LuaSerdeExt, Table, UserData, UserDataMethods, Value};
-use serde::Deserialize;
 use zellij_tile::text;
-use zellij_tile::ui_components::{forms::*, serialize_text_with_coordinates, Text};
+#[cfg(test)]
+use zellij_tile::ui_components::serialize_text_with_coordinates;
+use zellij_tile::ui_components::{forms::*, Text};
+#[cfg(test)]
 use zellij_tile_markdown as markdown;
 use zellij_types::data::{KeyWithModifier, Mouse};
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Descriptor {
-    kind: String,
-    id: String,
-    label: String,
-    value: serde_json::Value,
-    options: Vec<String>,
-    placeholder: String,
-    max_visible_options: usize,
-    disabled: bool,
-    style: String,
-}
-
+use super::super::ui::{build, Descriptor, Markdown, Widget};
 fn error(message: impl Into<String>) -> mlua::Error {
     mlua::Error::runtime(message.into())
-}
-
-fn build(fields: Vec<Descriptor>) -> mlua::Result<Form> {
-    let mut form = Form::new();
-    let mut ids = std::collections::HashSet::new();
-    for d in fields {
-        if d.id.is_empty() || !ids.insert(d.id.clone()) {
-            return Err(error("widget IDs must be nonempty and unique"));
-        }
-        let string = || {
-            d.value
-                .as_str()
-                .ok_or_else(|| error(format!("{}: value must be a string", d.id)))
-        };
-        let index = || -> mlua::Result<Option<usize>> {
-            if d.value.is_null() {
-                return Ok(None);
-            }
-            let n = d
-                .value
-                .as_u64()
-                .filter(|n| *n > 0 && *n <= d.options.len() as u64)
-                .ok_or_else(|| {
-                    error(format!("{}: value must be a one-based option index", d.id))
-                })?;
-            Ok(Some(n as usize - 1))
-        };
-        form = match d.kind.as_str() {
-            "text_input" => form.field(&d.id, &d.label, TextInput::new(string()?.to_owned())),
-            "checkbox" => form.checkbox(
-                &d.id,
-                &d.label,
-                Checkbox::new(
-                    d.value
-                        .as_bool()
-                        .ok_or_else(|| error("checkbox value must be boolean"))?,
-                ),
-            ),
-            "radio_group" => {
-                let selected = index()?;
-                let mut radio = RadioGroup::new(&d.options);
-                if let Some(i) = selected {
-                    radio.select_index(i);
-                }
-                form.radio(&d.id, &d.label, radio)
-            },
-            "select" => {
-                let selected = index()?;
-                let mut select = Select::new(&d.options)
-                    .placeholder(&d.placeholder)
-                    .max_visible_options(d.max_visible_options);
-                if let Some(i) = selected {
-                    select.select_index(i);
-                }
-                form.select(&d.id, &d.label, select)
-            },
-            "combo" => form.combo(
-                &d.id,
-                &d.label,
-                Combo::new(&d.options)
-                    .with_text(string()?)
-                    .placeholder(&d.placeholder)
-                    .max_visible_options(d.max_visible_options),
-            ),
-            "button" => {
-                let style = match d.style.as_str() {
-                    "ribbon" => ButtonStyle::Ribbon,
-                    "text" => ButtonStyle::Text,
-                    _ => return Err(error("button style must be ribbon or text")),
-                };
-                form.button(
-                    &d.id,
-                    Button::new(&d.label).disabled(d.disabled).style(style),
-                )
-            },
-            _ => return Err(error(format!("unknown widget kind: {}", d.kind))),
-        };
-    }
-    Ok(form)
-}
-
-enum Widget {
-    Form(Form),
-    Dialog(Dialog),
-}
-impl Widget {
-    fn form(&self) -> &Form {
-        match self {
-            Self::Form(f) => f,
-            Self::Dialog(d) => d.form(),
-        }
-    }
-    fn form_mut(&mut self) -> &mut Form {
-        match self {
-            Self::Form(f) => f,
-            Self::Dialog(d) => d.form_mut(),
-        }
-    }
 }
 
 fn action(lua: &Lua, event: FormEvent) -> mlua::Result<Table> {
@@ -269,41 +160,12 @@ impl UserData for Widget {
     }
 }
 
-struct Markdown {
-    blocks: Vec<markdown::MdBlock>,
-    width: Option<usize>,
-    lines: Vec<markdown::MdLine>,
-    compact: bool,
-    dim: bool,
-}
 impl UserData for Markdown {
     fn add_methods<M: UserDataMethods<Self>>(m: &mut M) {
         m.add_method_mut(
             "render",
             |_, this, (x, y, width, height, scroll): (usize, usize, usize, usize, usize)| {
-                if this.width != Some(width) {
-                    this.lines = markdown::wrap(
-                        &this.blocks,
-                        width,
-                        markdown::Options {
-                            compact_blocks: this.compact,
-                        },
-                    );
-                    this.width = Some(width);
-                }
-                let mut output = String::new();
-                if width > 0 {
-                    for (row, line) in this.lines.iter().skip(scroll).take(height).enumerate() {
-                        output.push_str(&serialize_text_with_coordinates(
-                            &markdown::style_text(&line.text, &line.styles, this.dim),
-                            x,
-                            y + row,
-                            Some(width),
-                            Some(1),
-                        ));
-                    }
-                }
-                Ok((output, this.lines.len()))
+                Ok(this.render(x, y, width, height, scroll))
             },
         );
     }
@@ -314,7 +176,7 @@ pub(super) fn install(lua: &Lua, zellij: &Table) -> mlua::Result<()> {
     native.set(
         "form",
         lua.create_function(|lua, (fields, dialog): (Value, Option<Table>)| {
-            let form = build(lua.from_value(fields)?)?;
+            let form = build(lua.from_value::<Vec<Descriptor>>(fields)?, 1).map_err(error)?;
             Ok(if let Some(t) = dialog {
                 let mut d = Dialog::new(Text::new(t.get::<String>("title")?), form);
                 if let Some(s) = t.get::<Option<String>>("message")? {
@@ -332,13 +194,7 @@ pub(super) fn install(lua: &Lua, zellij: &Table) -> mlua::Result<()> {
     native.set(
         "markdown",
         lua.create_function(|_, (source, compact, dim): (String, bool, bool)| {
-            Ok(Markdown {
-                blocks: markdown::parse(&source),
-                width: None,
-                lines: vec![],
-                compact,
-                dim,
-            })
+            Ok(Markdown::new(&source, compact, dim))
         })?,
     )?;
     let text_table: Table = zellij.get("text")?;

@@ -578,3 +578,56 @@ fn wasm_hocus_checks_writes_edits_and_loads_typescript_with_literal_grants() {
     assert!(result.contains("typed plugin running:true"), "{result}");
     zellij.quit();
 }
+
+#[test]
+fn hocus_registers_calls_and_reloads_a_typescript_extension() {
+    let plugins = tempfile::tempdir().unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&hocus_config(&plugins.path().display().to_string()))
+        .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
+        .start();
+    zellij.wait_until("hocus requests permission", |screen| {
+        screen.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("hocus is ready", |screen| !screen.contains("Allow? (y/n)"));
+    let tool = |name: &str, args: serde_json::Value, expected: &str| {
+        submit_awaiting(&zellij, &format!("/{name} {args}"), name);
+        zellij.wait_until(expected, |screen| {
+            screen.contains("fn:") && screen.contains(expected)
+        });
+        clear(&zellij, expected);
+    };
+    let source = "export default {async load() {await zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']); zellij.hocus.tools({forecast:{description:'Read a forecast', handler:async () => 'first forecast from TypeScript'}});}};";
+    tool(
+        "plugin_write",
+        serde_json::json!({"name":"hocus/weather.ts","source":source}),
+        "call plugin_reload",
+    );
+    tool(
+        "plugin_reload",
+        serde_json::json!({"name":"hocus/weather.ts"}),
+        "registered:",
+    );
+    tool(
+        "weather_forecast",
+        serde_json::json!({}),
+        "first forecast from TypeScript",
+    );
+    tool(
+        "plugin_edit",
+        serde_json::json!({"name":"hocus/weather.ts","old_string":"first forecast from TypeScript","new_string":"replacement forecast from TypeScript"}),
+        "edited hocus/weather.ts",
+    );
+    tool(
+        "plugin_reload",
+        serde_json::json!({"name":"hocus/weather.ts"}),
+        "registered:",
+    );
+    tool(
+        "weather_forecast",
+        serde_json::json!({}),
+        "replacement forecast from TypeScript",
+    );
+    zellij.quit();
+}

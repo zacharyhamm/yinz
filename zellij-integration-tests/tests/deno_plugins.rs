@@ -357,3 +357,48 @@ export default {{
     server.join().unwrap();
     zellij.quit();
 }
+
+#[test]
+fn deno_forms_and_markdown_render_beside_lua_and_wasm() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("forms.ts"),
+        include_str!("../../example-plugins/forms.ts"),
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("companion.lua"),
+        "return {render=function() return 'Lua companion' end}",
+    )
+    .unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!(
+            "user_plugin_dir \"{}\"",
+            directory.path().display()
+        ))
+        .with_layout(LayoutInfo::Stringified(
+            r#"layout {
+          tab name="Wasm companion" {
+            pane size=1 borderless=true {plugin location="zellij:tab-bar";}
+            pane size=3 {plugin location="file:companion.lua";}
+            pane focus=true {plugin location="file:forms.ts";}
+          }
+        }"#
+            .into(),
+        ))
+        .start();
+    zellij.wait_until(
+        "shared controls and Markdown render in the mixed session",
+        |screen| {
+            screen.contains("Wasm companion")
+                && screen.contains("Lua companion")
+                && screen.contains("Pane frames")
+                && screen.contains("Shared widgets")
+        },
+    );
+    zellij.send_stdin(b"x");
+    zellij.wait_until("Deno form edits Unicode text", |screen| {
+        screen.contains("日本語x")
+    });
+    zellij.quit();
+}

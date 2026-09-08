@@ -72,10 +72,14 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 50] = [
+pub const SECTIONS: [&str; 54] = [
     "index",
     "deno",
     "deno_data",
+    "deno_extensions",
+    "deno_ui",
+    "example_deno_extension",
+    "example_deno_forms",
     "quickstart",
     "contract",
     "events",
@@ -255,6 +259,10 @@ fn index() -> String {
     );
     for section in SECTIONS {
         let description = match section {
+            "deno_extensions" => "JS/TS Hocus tools".to_owned(),
+            "deno_ui" => "JS/TS widgets and Markdown".to_owned(),
+            "example_deno_extension" => "example: TypeScript Hocus extension".to_owned(),
+            "example_deno_forms" => "example: TypeScript forms and Markdown".to_owned(),
             "deno" => "JS/TS plugins: lifecycle, SDK and authoring".to_owned(),
             "deno_data" => "JS/TS filesystem, project configuration and persistence helpers".to_owned(),
             "index" => continue,
@@ -263,14 +271,14 @@ fn index() -> String {
             "example_capabilities" => "example: most of what a plugin can do, in one pane".to_owned(),
             "example_forms" => "example: shared forms, confirmation and scrollable Markdown".to_owned(),
             "prelude_widgets" => "shared widget constructors and event wrappers".to_owned(),
-            "example_agent_harness" => "example: an agent harness - spawn, prompt, check, hand failures back until green".to_owned(),
+            "example_agent_harness" => "example: agent harness and verification".to_owned(),
             "example_playground" => "example: every shape of command in use".to_owned(),
             "example_agent_commit" => "example: an agent_exit hook".to_owned(),
-            "example_dashboard" => "example: a themed dashboard - zellij.ui, a timer, a command, keys and the mouse".to_owned(),
+            "example_dashboard" => "example: dashboard, timers, commands and input".to_owned(),
             "example_workflow" => "example: a multi-step command sequence in one pane (pane_workflow)".to_owned(),
-            "example_todo_extension" => "example: a hocus extension owning a shared: data namespace - permissions, schema, registration, tools".to_owned(),
-            "example_hocus_complete" => "example: a plugin's own model turn, looping on the tool calls it gets back".to_owned(),
-            "example_todo_pane" => "example: the pane half of the same shared data - a watch, keys, and an input mode".to_owned(),
+            "example_todo_extension" => "example: Hocus tools with shared data".to_owned(),
+            "example_hocus_complete" => "example: model completion with tools".to_owned(),
+            "example_todo_pane" => "example: shared data watch and input".to_owned(),
             "example_hocus_todos" => "example: reading hocus's own todo rows out of the shared data store".to_owned(),
             "example_hocus_notes" => "example: hocus's notes, tags and todo links".to_owned(),
             "prelude" => "the Lua side of the API itself: events, commands, files, and every named wrapper".to_owned(),
@@ -341,14 +349,25 @@ pub fn section(name: &str) -> Option<String> {
         "prelude_data" => Some(fenced(prelude_part(6))),
         "prelude_ui" => Some(fenced(prelude_part(7))),
         "prelude_workflows" => Some(fenced(prelude_part(8))),
-        "deno" | "deno_data" => {
+        "example_deno_extension" => Some(format!(
+            "```ts\n{}\n```",
+            include_str!("../../../example-plugins/weather-extension.ts")
+        )),
+        "example_deno_forms" => Some(format!(
+            "```ts\n{}\n```",
+            include_str!("../../../example-plugins/forms.ts")
+        )),
+        "deno" | "deno_data" | "deno_extensions" | "deno_ui" => {
             let guide = include_str!("../../../docs/DENO_PLUGINS.md");
             let start = guide.find("## Files and project configuration")?;
+            let extensions = guide.find("## Hocus extensions")?;
+            let ui = guide.find("## Shared UI and terminal text")?;
             let end = guide.find("## Modules and checking")?;
-            Some(if name == "deno_data" {
-                guide[start..end].to_owned()
-            } else {
-                format!("{}\nFilesystem and persistence helpers: `plugin_docs section=deno_data`.\n\n{}", &guide[..start], &guide[end..])
+            Some(match name {
+                "deno_data" => guide[start..extensions].to_owned(),
+                "deno_extensions" => guide[extensions..ui].to_owned(),
+                "deno_ui" => guide[ui..end].to_owned(),
+                _ => format!("{}\nMore helpers: `plugin_docs section=deno_data`, `deno_extensions`, `deno_ui`.\n\n{}", &guide[..start], &guide[end..]),
             })
         },
         other => heading(other).and_then(|heading| guide_section(heading, cut(other))),

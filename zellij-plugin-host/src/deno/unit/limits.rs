@@ -107,3 +107,55 @@ fn deno_buffer_accounting_releases_frees_and_checks_overflow() {
     assert!(!limits.reserve(1));
     assert!(limits.check().is_err());
 }
+
+#[test]
+fn native_widgets_release_their_budget_on_collection_and_disposal() {
+    let limits = Limits::new("native-ui.ts".into());
+    let mut runtime = limits
+        .runtime(RuntimeOptions {
+            extensions: vec![super::super::zellij_host::init()],
+            ..Default::default()
+        })
+        .unwrap();
+    runtime.execute_script("sdk", super::super::SDK).unwrap();
+    let baseline = limits.live_buffers.load(Ordering::Acquire);
+    runtime.execute_script("widgets", "globalThis.widget = zellij.ui.textInput({value:'日'.repeat(1000)}); globalThis.markdown = zellij.ui.markdown('---\\n\\n'.repeat(100)); markdown.render({width:100,height:10});").unwrap();
+    let held = limits.live_buffers.load(Ordering::Acquire);
+    assert!(held > baseline + 100_000);
+    runtime.v8_isolate().low_memory_notification();
+    assert_eq!(limits.live_buffers.load(Ordering::Acquire), held);
+    runtime
+        .execute_script("drop", "widget = null; markdown = null;")
+        .unwrap();
+    runtime.v8_isolate().low_memory_notification();
+    assert_eq!(limits.live_buffers.load(Ordering::Acquire), baseline);
+    runtime
+        .execute_script("replacement", "globalThis.widget = zellij.ui.textInput();")
+        .unwrap();
+    drop(runtime);
+    assert_eq!(limits.live_buffers.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn native_markdown_cache_is_charged_before_width_amplification() {
+    let limits = Limits::with_budgets("native-ui.ts".into(), 32 << 20, 16 << 20);
+    let mut runtime = limits
+        .runtime(RuntimeOptions {
+            extensions: vec![super::super::zellij_host::init()],
+            ..Default::default()
+        })
+        .unwrap();
+    runtime.execute_script("sdk", super::super::SDK).unwrap();
+    runtime
+        .execute_script(
+            "markdown",
+            "globalThis.md = zellij.ui.markdown('---\\n\\n'.repeat(100));",
+        )
+        .unwrap();
+    assert!(runtime
+        .execute_script("cache", "md.render({width:10000,height:1});")
+        .is_err());
+    assert!(limits.exhausted());
+    drop(runtime);
+    assert_eq!(limits.live_buffers.load(Ordering::Acquire), 0);
+}

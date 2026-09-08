@@ -81,3 +81,22 @@ fn runtime_check_reports_syntax_semantics_and_confined_dependency_failures() {
         "{report:?}"
     );
 }
+
+#[test]
+fn hocus_tool_outlines_and_permission_warnings_respect_sdk_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    for (source, warns) in [
+        ("import {zellij as z} from 'zellij:plugin'; z.hocus.tools({forecast:{handler(){}}});", true),
+        ("zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']); zellij.hocus.tools({forecast:{handler(){}}});", false),
+    ] {
+        let report = check(&dir.path().join("weather.ts"), source, PluginCheckMode::Syntax);
+        assert!(report.outline.iter().any(|e| e.kind == OutlineKind::Tool && e.text == "forecast"));
+        assert_eq!(report.warnings.iter().any(|w| w.contains("registration requires")), warns);
+    }
+    let report = check(
+        &dir.path().join("shadow.ts"),
+        "function f(zellij) { zellij.hocus.tools({wrong:{}}); }",
+        PluginCheckMode::Syntax,
+    );
+    assert!(!report.outline.iter().any(|e| e.kind == OutlineKind::Tool));
+}

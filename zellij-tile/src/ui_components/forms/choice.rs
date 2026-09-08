@@ -117,6 +117,10 @@ impl RadioGroup {
         &self.options
     }
 
+    pub fn clear_selection(&mut self) {
+        self.selected = None;
+    }
+
     pub fn selected_index(&self) -> Option<usize> {
         self.selected
     }

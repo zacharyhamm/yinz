@@ -62,6 +62,16 @@ pub(crate) fn check(path: &Path, source: &str, mode: PluginCheckMode) -> PluginC
         }
     }
     program.visit_with(&mut analysis);
+    if report
+        .outline
+        .iter()
+        .any(|entry| entry.kind == OutlineKind::Tool)
+        && !report
+            .permissions
+            .contains(&PermissionType::MessageAndLaunchOtherPlugins)
+    {
+        report.warnings.push("Hocus tool registration requires MessageAndLaunchOtherPlugins; request it and wait for approval before calling zellij.hocus.tools".into());
+    }
     report.outline.sort_by_key(|entry| entry.line);
     let result = match mode {
         PluginCheckMode::Syntax => checker::check_syntax(path, source),
@@ -218,6 +228,31 @@ impl Visit for Analysis<'_> {
     fn visit_call_expr(&mut self, call: &CallExpr) {
         if let Callee::Expr(callee) = &call.callee {
             if let Expr::Member(member) = &**callee {
+                if property(&member.prop).as_deref() == Some("tools") {
+                    if let Expr::Member(hocus) = &*member.obj {
+                        if self.sdk_object(&hocus.obj)
+                            && property(&hocus.prop).as_deref() == Some("hocus")
+                        {
+                            self.entry(call.span, OutlineKind::Tool, "Hocus tools".into());
+                            if let Some(Expr::Object(object)) = call
+                                .args
+                                .first()
+                                .filter(|arg| arg.spread.is_none())
+                                .map(|arg| &*arg.expr)
+                            {
+                                for prop in &object.props {
+                                    if let PropOrSpread::Prop(prop) = prop {
+                                        if let Prop::KeyValue(prop) = &**prop {
+                                            if let Some(name) = key(&prop.key) {
+                                                self.entry(call.span, OutlineKind::Tool, name);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if self.sdk_object(&member.obj) {
                     let argument = |index: usize| {
                         call.args

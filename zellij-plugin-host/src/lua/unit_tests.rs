@@ -3305,8 +3305,7 @@ fn table_and_list_components_serialize_the_way_zellij_tile_does() {
         eval(
             r#"return zellij.ui.nested_list { "hi", { "go", indent = 1 }, zellij.ui.text("x"):opaque():disabled() }:render()"#
         ),
-        // Disabled is dropped on a list item: the host does not read it there.
-        "\u{1b}Pznested_list;104,105;|103,111;z120\u{1b}\\"
+        "\u{1b}Pznested_list;104,105;|103,111;zd120\u{1b}\\"
     );
     assert_eq!(
         eval(r#"return zellij.ui.nested_list():item("a"):item("b", 2):render()"#),
@@ -7830,6 +7829,8 @@ z.rpc.call=function(opts)
 end
 M.update{name='key',key='PageDown',modifiers={}}
 z.__update(M,{PastedText='return'})
+z.__update(M,{Key={bare_key='Tab',key_modifiers={}}})
+assert(M.focused_control() == 'submit')
 z.__update(M,{Key={bare_key='Enter',key_modifiers={}}})
 assert(submitted and not M.submitting, M.notice)
 "#).exec().unwrap();
