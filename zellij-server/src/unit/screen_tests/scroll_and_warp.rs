@@ -388,15 +388,82 @@ fn visible_and_hidden_plugin_companions_keep_their_launch_configuration() {
         .prepare_pane_group(Some(cover), ClientId::new(1))
         .expect("visible cover")
         .expect("group");
-    assert_eq!(terminals.len(), 2);
-    assert!(prepared
-        .floating_layout
+    assert_eq!(terminals, vec![TerminalId::new(60), TerminalId::new(1)]);
+    let relationships = prepared.relationships.as_ref().expect("relationships");
+    let links: HashMap<_, _> = relationships
+        .hidden
         .iter()
-        .any(|pane| pane.run == Some(run.clone())));
+        .map(|hidden| {
+            (
+                prepared.slots[hidden.pane as usize],
+                (
+                    hidden.restored_by.map(|id| prepared.slots[id as usize]),
+                    hidden.is_scrollback_editor,
+                ),
+            )
+        })
+        .collect();
     assert_eq!(
-        prepared.relationships.expect("relationships").hidden.len(),
-        2
+        links,
+        HashMap::from([
+            (plugin, (Some(cover), false)),
+            (PaneId::Terminal(TerminalId::new(1)), (Some(plugin), false)),
+        ])
     );
+    assert_eq!(
+        prepared
+            .floating_layout
+            .iter()
+            .filter(|pane| pane.run == Some(run.clone()))
+            .count(),
+        1
+    );
+
+    // Apply the transmitted layout with IDs allocated by the destination.
+    let destination_id = TabId::new(2);
+    screen
+        .new_tab(
+            destination_id,
+            (vec![], vec![]),
+            None,
+            Some(ClientId::new(1)),
+        )
+        .unwrap();
+    screen
+        .pending_warp_relationships
+        .insert(destination_id, prepared.relationships.unwrap());
+    let Run::Plugin(plugin_run) = run.clone() else {
+        unreachable!()
+    };
+    screen
+        .apply_layout(
+            prepared.tiled_layout,
+            prepared.floating_layout,
+            vec![(TerminalId::new(160), None)],
+            vec![(TerminalId::new(101), None)],
+            HashMap::from([(plugin_run, vec![crate::PluginId::new(150)])]),
+            destination_id,
+            true,
+            ClientId::new(1),
+            None,
+        )
+        .expect("reconstruct plugin companions");
+    let destination = screen.tabs.get_mut(&destination_id).unwrap();
+    let plugin = PaneId::Plugin(crate::PluginId::new(150));
+    let cover = PaneId::Terminal(TerminalId::new(160));
+    let subject = PaneId::Terminal(TerminalId::new(101));
+    assert!(destination.has_non_suppressed_pane_with_pid(&cover));
+    assert!(!destination.has_non_suppressed_pane_with_pid(&plugin));
+    assert!(!destination.has_non_suppressed_pane_with_pid(&subject));
+    assert_eq!(
+        destination.get_pane_with_id(plugin).unwrap().invoked_with(),
+        &Some(run)
+    );
+    destination.close_pane(cover, false, None);
+    assert!(destination.has_non_suppressed_pane_with_pid(&plugin));
+    assert!(!destination.has_non_suppressed_pane_with_pid(&subject));
+    destination.close_pane(plugin, false, None);
+    assert!(destination.has_non_suppressed_pane_with_pid(&subject));
 }
 
 #[test]
@@ -1320,31 +1387,59 @@ fn a_tab_that_does_not_exist_cannot_be_warped() {
     );
 }
 
+/// Compare identities after resolving payload-local references, independent of slot order.
+fn assert_hidden_warp(
+    terminals: &[TerminalId],
+    prepared: &crate::screen::PreparedTabWarp,
+    expected_terminals: &[u32],
+    expected_hidden: &[(u32, Option<u32>, bool)],
+) {
+    let mut actual: Vec<_> = terminals.iter().map(|id| id.get()).collect();
+    actual.sort_unstable();
+    assert_eq!(actual, expected_terminals);
+    let mut hidden: Vec<_> = prepared
+        .relationships
+        .as_ref()
+        .expect("relationships")
+        .hidden
+        .iter()
+        .map(|hidden| {
+            (
+                prepared.slots[hidden.pane as usize],
+                hidden.restored_by.map(|id| prepared.slots[id as usize]),
+                hidden.is_scrollback_editor,
+            )
+        })
+        .collect();
+    hidden.sort_unstable();
+    let mut expected: Vec<_> = expected_hidden
+        .iter()
+        .map(|(pane, cover, editor)| {
+            (
+                PaneId::Terminal(TerminalId::new(*pane)),
+                cover.map(|id| PaneId::Terminal(TerminalId::new(id))),
+                *editor,
+            )
+        })
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(hidden, expected);
+}
+
 #[test]
 fn a_tab_with_a_scrollback_editor_open_can_be_warped() {
-    // Refused for the same reason a single pane with one open is: the
-    // suppressed-pane bookkeeping is keyed by the visible pane, so closing the
-    // pair hands over the wrong pty.
+    // The editor and its subject travel with their restoration link.
     let mut screen = screen_with_a_scrollback_editor_open();
 
     let (_, terminals, prepared) = screen
         .check_tab_can_be_warped(Some(TabId::new(0)), ClientId::new(1))
         .expect("hidden contents travel");
-    let relationships = prepared.relationships.expect("hidden relationships");
-    assert!(!relationships.hidden.is_empty());
-    assert_eq!(
-        terminals.len(),
-        prepared.tiled_panes.len() + prepared.floating_panes.len()
-    );
+    assert_hidden_warp(&terminals, &prepared, &[1, 9], &[(1, Some(9), true)]);
 }
 
 #[test]
 fn a_tab_holding_a_pane_a_plugin_hid_can_be_warped() {
-    // Parked with nothing standing in for it, like a stack-list member - and
-    // unlike one, with no slot in the layout the tab travels as. A single such
-    // pane can be warped on its own (`a_pane_a_plugin_hid_can_be_warped`), because
-    // then it is the thing being moved; taking the tab out from under it would
-    // release a supervisor nobody at the far end is holding.
+    // A parked terminal travels with the tab and stays parked.
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
@@ -1365,19 +1460,45 @@ fn a_tab_holding_a_pane_a_plugin_hid_can_be_warped() {
     let (_, terminals, prepared) = screen
         .check_tab_can_be_warped(Some(TabId::new(0)), ClientId::new(1))
         .expect("hidden contents travel");
-    let relationships = prepared.relationships.expect("hidden relationships");
-    assert!(!relationships.hidden.is_empty());
-    assert_eq!(
-        terminals.len(),
-        prepared.tiled_panes.len() + prepared.floating_panes.len()
-    );
+    assert_hidden_warp(&terminals, &prepared, &[1, 3], &[(3, None, false)]);
+    let destination_id = TabId::new(2);
+    screen
+        .new_tab(
+            destination_id,
+            (vec![], vec![]),
+            None,
+            Some(ClientId::new(1)),
+        )
+        .unwrap();
+    screen
+        .pending_warp_relationships
+        .insert(destination_id, prepared.relationships.unwrap());
+    screen
+        .apply_layout(
+            prepared.tiled_layout,
+            prepared.floating_layout,
+            vec![(TerminalId::new(101), None)],
+            vec![(TerminalId::new(103), None)],
+            HashMap::new(),
+            destination_id,
+            true,
+            ClientId::new(1),
+            None,
+        )
+        .expect("apply parked companion with new IDs");
+    let destination = &screen.tabs[&destination_id];
+    assert!(destination.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(101))));
+    assert!(!destination.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(103))));
+    let parked: Vec<_> = destination
+        .get_suppressed_panes()
+        .map(|(id, pane)| (*id, pane.restored_by))
+        .collect();
+    assert_eq!(parked, vec![(PaneId::Terminal(TerminalId::new(103)), None)]);
 }
 
 #[test]
 fn a_tab_holding_a_hidden_floating_pane_can_be_warped() {
-    // The same refusal, asked of the one kind of pane that can never be the
-    // exception to it: a stack is a shape the *tiled* layout takes, so a hidden
-    // floating pane is a hidden pane and nothing else.
+    // A suppressed floating terminal travels as a parked companion.
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
@@ -1402,12 +1523,7 @@ fn a_tab_holding_a_hidden_floating_pane_can_be_warped() {
     let (_, terminals, prepared) = screen
         .check_tab_can_be_warped(Some(TabId::new(0)), ClientId::new(1))
         .expect("hidden contents travel");
-    let relationships = prepared.relationships.expect("hidden relationships");
-    assert!(!relationships.hidden.is_empty());
-    assert_eq!(
-        terminals.len(),
-        prepared.tiled_panes.len() + prepared.floating_panes.len()
-    );
+    assert_hidden_warp(&terminals, &prepared, &[1, 3], &[(3, None, false)]);
 }
 
 #[test]
@@ -1731,21 +1847,17 @@ fn a_tab_with_a_stack_list_can_be_warped() {
 
 #[test]
 fn a_tab_whose_stack_list_member_is_being_edited_can_be_warped() {
-    // The case the refusal is really for, in the middle of the thing the refusal
-    // makes an exception for. A stack-list member with a scrollback editor open on
-    // it is a pair: the editor is the member and travels, but the pane it is
-    // editing is parked behind it with no slot of its own. Letting the tab go
-    // would dismantle it around a pty nobody released.
+    // The hidden editor travels together with the subject it restores.
     let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
 
     let (_, terminals, prepared) = screen
         .check_tab_can_be_warped(Some(TabId::new(0)), ClientId::new(1))
         .expect("hidden contents travel");
-    let relationships = prepared.relationships.expect("hidden relationships");
-    assert!(!relationships.hidden.is_empty());
-    assert_eq!(
-        terminals.len(),
-        prepared.tiled_panes.len() + prepared.floating_panes.len()
+    assert_hidden_warp(
+        &terminals,
+        &prepared,
+        &[1, 2, 3, 8],
+        &[(2, None, false), (3, Some(8), true), (8, None, false)],
     );
 }
 
@@ -2022,11 +2134,7 @@ fn a_tab_whose_only_process_is_an_overlay_has_nothing_to_warp() {
 
 #[test]
 fn a_tab_with_a_replacement_chain_can_be_warped() {
-    // The pair this refusal is really about, and the one an `is_scrollback_editor`
-    // check would let through: `suppress_pane_and_replace_with_pid` sets that flag
-    // to `false` while parking the hidden pane behind the visible one - under its
-    // own id, with the stand-in named in `restored_by` - so closing the tab swaps
-    // it back in rather than removing it.
+    // Ordinary replacements preserve the same restoration link as editors.
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
@@ -2047,12 +2155,7 @@ fn a_tab_with_a_replacement_chain_can_be_warped() {
     let (_, terminals, prepared) = screen
         .check_tab_can_be_warped(Some(TabId::new(0)), ClientId::new(1))
         .expect("hidden contents travel");
-    let relationships = prepared.relationships.expect("hidden relationships");
-    assert!(!relationships.hidden.is_empty());
-    assert_eq!(
-        terminals.len(),
-        prepared.tiled_panes.len() + prepared.floating_panes.len()
-    );
+    assert_hidden_warp(&terminals, &prepared, &[1, 9], &[(1, Some(9), false)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -2447,5 +2550,155 @@ fn floating_stack_layout_serialization_keeps_every_subject_on_the_floating_layer
             pane.height,
             Some(PercentOrFixed::Fixed(full_rect.rows.as_usize()))
         );
+    }
+}
+
+#[test]
+fn companion_capability_refusal_and_expired_group_preserve_every_pane() {
+    for scenario in [
+        "old pane destination",
+        "old tab destination",
+        "expired group",
+    ] {
+        let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+        let pty = mock.pty_receiver.take().unwrap();
+        let client_id = mock.main_client_id;
+        let thread = mock.run(
+            Some(TiledPaneLayout {
+                children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
+                ..Default::default()
+            }),
+            vec![],
+        );
+        mock.to_screen
+            .send(ScreenInstruction::OpenInPlaceEditor(
+                PaneId::Terminal(TerminalId::new(9)),
+                ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(TerminalId::new(1))),
+            ))
+            .unwrap();
+        if scenario == "old tab destination" {
+            let (tx, rx) = crossbeam::channel::bounded(1);
+            mock.to_screen
+                .send(ScreenInstruction::WarpTab {
+                    supports_companions: false,
+                    tab_id: Some(TabId::new(0)),
+                    client_id,
+                    response_channel: tx,
+                    deadline: warp_deadline(),
+                })
+                .unwrap();
+            assert!(rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap_err()
+                .contains("does not support companion"));
+        } else {
+            let (tx, rx) = crossbeam::channel::bounded(1);
+            mock.to_screen
+                .send(ScreenInstruction::WarpPane {
+                    supports_companions: scenario == "expired group",
+                    pane_id: Some(PaneId::Terminal(TerminalId::new(9))),
+                    to_session: "elsewhere".to_owned().into(),
+                    placement: zellij_types::data::WarpPlacement::FocusedTab,
+                    client_id,
+                    response_channel: tx,
+                    deadline: if scenario == "expired group" {
+                        std::time::Instant::now() - std::time::Duration::from_secs(1)
+                    } else {
+                        warp_deadline()
+                    },
+                })
+                .unwrap();
+            if scenario == "expired group" {
+                let released = loop {
+                    let (instruction, _) =
+                        pty.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+                    if let PtyInstruction::ReleaseTerminalsForWarp { terminal_ids, .. } =
+                        instruction
+                    {
+                        break terminal_ids;
+                    }
+                };
+                let mut ids = released.clone();
+                ids.sort_unstable();
+                assert_eq!(ids, vec![TerminalId::new(1), TerminalId::new(9)]);
+                mock.to_screen
+                    .send(ScreenInstruction::TabReleasedForWarp {
+                        tab_index: TabId::new(0),
+                        released: released
+                            .iter()
+                            .map(|id| {
+                                (
+                                    *id,
+                                    Ok(ReleasedPane::Local(ReleasedPtyHost {
+                                        host_id: SupervisorId::new(format!("companion-{id}")),
+                                        host_pid: ProcessId::new(1),
+                                        control_socket: Some(PathBuf::from(format!(
+                                            "/tmp/companion-{id}.sock"
+                                        ))),
+                                    })),
+                                )
+                            })
+                            .collect(),
+                    })
+                    .unwrap();
+                let mut recovered = vec![];
+                while recovered.len() < 2 {
+                    let (instruction, _) =
+                        pty.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+                    match instruction {
+                        PtyInstruction::StrandPaneAfterWarp {
+                            terminal_id,
+                            recovery,
+                            ..
+                        } => {
+                            assert!(recovery
+                                .unwrap()
+                                .contains(&format!("companion-{terminal_id}")));
+                            recovered.push(terminal_id);
+                        },
+                        PtyInstruction::ClosePane(..) | PtyInstruction::CloseTab(..) => {
+                            panic!("closed released companion")
+                        },
+                        _ => {},
+                    }
+                }
+                recovered.sort_unstable();
+                assert_eq!(recovered, ids);
+                assert!(rx.try_recv().is_err());
+            } else {
+                assert!(rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap_err()
+                    .contains("does not support companion"));
+            }
+        }
+        // A synchronous query is a barrier: all warp handling precedes these observations.
+        for (id, hidden) in [(1, true), (9, false), (0, false)] {
+            let (tx, rx) = crossbeam::channel::bounded(1);
+            mock.to_screen
+                .send(ScreenInstruction::GetPaneInfo {
+                    pane_id: PaneId::Terminal(TerminalId::new(id)),
+                    response_channel: tx,
+                })
+                .unwrap();
+            let pane = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .expect("pane retained");
+            assert_eq!(pane.is_suppressed, hidden);
+        }
+        assert!(
+            pty.try_iter().all(|(instruction, _)| !matches!(
+                instruction,
+                PtyInstruction::ClosePane(..)
+                    | PtyInstruction::CloseTab(..)
+                    | PtyInstruction::ReleaseTerminalForWarp { .. }
+                    | PtyInstruction::ReleaseTerminalsForWarp { .. }
+            )),
+            "refusal must precede release and preserve processes"
+        );
+        mock.teardown(vec![thread]);
     }
 }

@@ -4912,9 +4912,9 @@ fn agent_double_escape_ipc_round_trip() {
 }
 
 #[test]
-fn warp_companion_relationships_roundtrip_and_reject_cycles() {
+fn warp_companion_relationships_roundtrip_and_reject_malformed_groups() {
     use zellij_types::data::{WarpHiddenPane, WarpRelationships, WarpStackList};
-    let mut relationships = WarpRelationships {
+    let relationships = WarpRelationships {
         hidden: vec![
             WarpHiddenPane {
                 pane: 1,
@@ -4939,20 +4939,55 @@ fn warp_companion_relationships_roundtrip_and_reject_cycles() {
         floating_panes: vec![WarpedPane::default(); 2],
         ..Default::default()
     };
-    test_client_roundtrip!(ClientToServerMsg::Action {
+    let message = |payload| ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
                 group: Some(Box::new(payload)),
                 ..Default::default()
             }),
-            placement: WarpPlacement::FocusedTab
+            placement: WarpPlacement::FocusedTab,
         },
         terminal_id: None,
         client_id: None,
         is_cli_client: true,
-    });
-    relationships.hidden[0].restored_by = Some(2);
-    assert!(relationships.validate(3).is_err());
-    relationships.hidden[0].restored_by = Some(3);
-    assert!(relationships.validate(3).is_err());
+    };
+    test_client_roundtrip!(message(payload.clone()));
+    for case in [
+        "cycle",
+        "out of range",
+        "duplicate hidden",
+        "duplicate cover",
+        "duplicate member",
+        "invalid selection",
+        "missing terminal",
+        "invalid shape",
+    ] {
+        let mut malformed = payload.clone();
+        let relationships = malformed.relationships.as_mut().unwrap();
+        match case {
+            "cycle" => relationships.hidden[0].restored_by = Some(2),
+            "out of range" => relationships.hidden[0].restored_by = Some(3),
+            "duplicate hidden" => relationships.hidden.push(relationships.hidden[0].clone()),
+            "duplicate cover" => relationships.hidden[0].restored_by = Some(1),
+            "duplicate member" => relationships.stacks[0].members.push(1),
+            "invalid selection" => relationships.stacks[0].selected = 2,
+            "missing terminal" => {
+                malformed.floating_panes.pop();
+            },
+            "invalid shape" => {
+                relationships.hidden.pop();
+            },
+            _ => unreachable!(),
+        }
+        use crate::client_server_contract::client_server_contract::ClientToServerMsg as ProtoMessage;
+        let wire: ProtoMessage = message(malformed)
+            .try_into()
+            .expect("encode malformed fixture");
+        let decoded =
+            ProtoMessage::decode(wire.encode_to_vec().as_slice()).expect("protobuf decode");
+        assert!(
+            ClientToServerMsg::try_from(decoded).is_err(),
+            "accepted {case}"
+        );
+    }
 }

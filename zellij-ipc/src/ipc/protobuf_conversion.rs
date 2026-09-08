@@ -1208,6 +1208,14 @@ fn warped_tab_from_protobuf(
         .map_err(|e| anyhow!("{e}"))?;
     Ok(payload)
 }
+fn pane_group_from_protobuf(
+    group: crate::client_server_contract::client_server_contract::AdoptTabAction,
+) -> Result<zellij_types::data::WarpedTab> {
+    let group = warped_tab_from_protobuf(group)?;
+    group.validate_pane_group().map_err(|e| anyhow!("{e}"))?;
+    Ok(group)
+}
+
 fn warp_relationships_to_protobuf(
     value: &zellij_types::data::WarpRelationships,
 ) -> crate::client_server_contract::client_server_contract::WarpRelationships {
@@ -1278,7 +1286,7 @@ fn warped_pane_from_protobuf(
     Ok(zellij_types::data::WarpedPane {
         group: pane
             .group
-            .map(warped_tab_from_protobuf)
+            .map(pane_group_from_protobuf)
             .transpose()?
             .map(Box::new),
         host_id: SupervisorId::new(pane.host_id),
@@ -3093,7 +3101,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         group: adopt_pane_action
                             .group
                             .clone()
-                            .map(warped_tab_from_protobuf)
+                            .map(pane_group_from_protobuf)
                             .transpose()?
                             .map(Box::new),
                         host_id: SupervisorId::new(adopt_pane_action.host_id.clone()),

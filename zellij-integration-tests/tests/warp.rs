@@ -57,20 +57,57 @@ fn start_with_a_shell() -> (TestSession, FakePtyHandle) {
 /// whole subject — "the focused pane" is what a warp with no `--pane-id` moves.
 /// So it is established the only way it can be observed: type something and see
 /// which pane's process receives it.
-/// The key is repeated rather than sent once: how many panes away the target is
-/// depends on what the test split off first, and moving left from the leftmost
-/// pane of a one-tab session goes nowhere.
 fn focus_and_confirm(zellij: &TestSession, focus_key: &[u8], expected: &FakePtyHandle) {
-    let probe = b'z';
-    for _ in 0..50 {
-        zellij.send_stdin(focus_key);
-        zellij.send_stdin(&[probe]);
-        if expected.stdin_bytes().contains(&probe) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    zellij.send_stdin(focus_key);
+    type_and_confirm(zellij, expected, b"focus-probe");
+}
+
+/// Record process identity before transfer, and observe keyboard routing afterwards.
+fn type_and_confirm(session: &TestSession, pane: &FakePtyHandle, marker: &[u8]) {
+    session.send_stdin(marker);
+    session.wait_until("input to reach the expected process", |_| {
+        pane.stdin_bytes()
+            .windows(marker.len())
+            .any(|bytes| bytes == marker)
+    });
+}
+
+fn adopted_with_marker<'a>(panes: &'a [FakePtyHandle], marker: &[u8]) -> &'a FakePtyHandle {
+    let matching: Vec<_> = panes
+        .iter()
+        .filter(|pane| {
+            pane.stdin_bytes()
+                .windows(marker.len())
+                .any(|bytes| bytes == marker)
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "exactly one process must retain {marker:?}"
+    );
+    matching[0]
+}
+
+fn assert_departed(session: &TestSession, panes: &[&FakePtyHandle]) {
+    let (code, listed) = session.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: true,
+        all: true,
+        json: true,
+    });
+    assert_eq!(code, 0, "{listed}");
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    for pane in panes {
+        assert!(
+            !listed.as_array().unwrap().iter().any(|item| {
+                item["is_plugin"] == false && item["id"] == pane.terminal_id().get()
+            }),
+            "transferred pane remains in source: {listed}"
+        );
     }
-    panic!("the pane never took the keyboard focus");
 }
 
 /// The pair a warp needs, **receiving session started first**.
@@ -217,14 +254,24 @@ fn assert_waiting_agent(
 /// A stack list keeps one member on screen and parks the rest, so what is on
 /// screen for the hidden ones is a single row each in a column of titles - which
 /// makes the column the only place the *shape* of the list can be read back from.
-/// The open member is the one its row is marked with a caret.
+/// The open member is the one its row is marked with a caret. Local numeric IDs
+/// and padding are excluded: both can change at the destination.
 fn stack_list_entries(zellij: &TestSession) -> Vec<String> {
     zellij
         .snapshot()
         .lines()
         .into_iter()
-        .filter(|line| line.contains("Pane #"))
-        .map(|line| line.trim().to_owned())
+        .filter(|line| {
+            line.contains("Pane #") || (line.contains("│ [") && line.contains("EDITING SCROLLBACK"))
+        })
+        .map(|line| {
+            let title = if let Some((_, suffix)) = line.split_once("Pane #") {
+                format!("Pane #{}", suffix.trim_end_matches([' ', '│']))
+            } else {
+                "EDITING SCROLLBACK".to_owned()
+            };
+            format!("{}{title}", if line.contains('>') { "> " } else { "" })
+        })
         .collect()
 }
 
@@ -679,6 +726,7 @@ fn one_unmovable_pane_stops_a_whole_tab_and_leaves_it_working() {
 fn warping_a_visible_editor_carries_its_subject_and_restores_it_on_close() {
     let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
     let being_edited = split_off_a_pane(&sender, "SCROLLBACK_MARKER");
+    type_and_confirm(&sender, &being_edited, b"subject-before");
     sender.send_stdin(&keys::ctrl('s'));
     sender.send_stdin(&keys::key('e'));
     let editor = sender.expect_pty_spawn();
@@ -689,19 +737,25 @@ fn warping_a_visible_editor_carries_its_subject_and_restores_it_on_close() {
     assert_ne!(exit_code, 0, "hidden selection must be refused");
     assert!(reported.contains("visible"), "{reported}");
     assert!(!being_edited.is_exited() && !editor.is_exited());
+    type_and_confirm(&sender, &editor, b"editor-before");
     let (exit_code, reported) = warp_pane_by_id(&sender, &receiver, editor.terminal_id());
     assert_eq!(exit_code, 0, "the warp was refused: {reported}");
-    let arrived_editor = receiver.expect_adopted_pty();
-    let arrived_subject = receiver.expect_adopted_pty();
+    let adopted = [receiver.expect_adopted_pty(), receiver.expect_adopted_pty()];
+    let arrived_editor = adopted_with_marker(&adopted, b"editor-before");
+    let arrived_subject = adopted_with_marker(&adopted, b"subject-before");
+    assert_departed(&sender, &[&editor, &being_edited]);
     receiver.wait_until("the editor to arrive", |grid| {
         grid.contains("EDITING SCROLLBACK")
     });
     assert!(!arrived_editor.is_exited() && !arrived_subject.is_exited());
+    receiver.send_stdin(&keys::alt('l'));
+    type_and_confirm(&receiver, arrived_editor, b"editor-focused-after");
     arrived_editor.exit(Some(0));
     arrived_subject.output(b"edited and then moved\r\n");
     receiver.wait_until("closing the editor restores its running subject", |grid| {
         grid.contains("edited and then moved") && !grid.contains("EDITING SCROLLBACK")
     });
+    type_and_confirm(&receiver, arrived_subject, b"restored-input");
 }
 
 #[test]
@@ -716,11 +770,14 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
     let first = sender.expect_pty_spawn();
     first.output(b"first-member\r\n$ ");
     sender.wait_for_app_load();
+    type_and_confirm(&sender, &first, b"tab-first-before");
 
     sender.send_stdin(&keys::ctrl('p'));
     sender.send_stdin(&keys::key('s'));
     let second = sender.expect_pty_spawn();
     second.output(b"second-member\r\n$ ");
+    sender.wait_until("second member ready", |grid| grid.contains("second-member"));
+    type_and_confirm(&sender, &second, b"tab-second-before");
     sender.send_stdin(&keys::ctrl('p'));
     sender.send_stdin(&keys::key('s'));
     let third = sender.expect_pty_spawn();
@@ -729,6 +786,7 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
         grid_snapshot.contains("third-member")
     });
 
+    type_and_confirm(&sender, &third, b"tab-third-before");
     let (exit_code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
         to_session: Some(receiver.session_name().to_owned()),
         from_session: None,
@@ -739,6 +797,9 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
     // Every member travels, hidden ones included: three panes were in the tab and
     // three supervisors have to be taken over, or one is stranded.
     let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
+    let _first = adopted_with_marker(&adopted, b"tab-first-before");
+    let second = adopted_with_marker(&adopted, b"tab-second-before");
+    let third = adopted_with_marker(&adopted, b"tab-third-before");
     for member in &adopted {
         assert!(
             !member.is_exited(),
@@ -752,6 +813,7 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
     // three loose panes would satisfy it just as well. The tab has to have
     // arrived as a *list* - an entry per member, in the order they were stacked,
     // with the one that was open still the open one.
+    type_and_confirm(&receiver, third, b"tab-selected-after");
     let entries = stack_list_entries(&receiver);
     assert_eq!(
         entries.len(),
@@ -774,30 +836,18 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
     // And it is a list rather than a picture of one: selecting a member that
     // travelled hidden brings its own scrollback forward, so its process and its
     // slot in the list are the same pane.
-    let mut selected = false;
-    for _ in 0..50 {
-        receiver.send_stdin(&keys::alt('k'));
-        if receiver.snapshot().contains("second-member") {
-            selected = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    assert!(
-        selected,
-        "a member that travelled hidden could not be selected in its new session",
-    );
-    // Deliberately nothing asked of `first`/`second`/`third`: those handles name
-    // terminal ids in the *sending* session's registry, which releasing them
-    // emptied. What became of the processes is a question only the receiving
-    // session can answer now, and it has just answered it.
-    drop((first, second, third));
+    receiver.send_stdin(&keys::alt('k'));
+    receiver.wait_until("select the hidden second member", |grid| {
+        grid.contains("second-member")
+    });
+    type_and_confirm(&receiver, second, b"tab-hidden-after");
 }
 
 #[test]
 fn warp_adoption_failure_returns_all_editor_companions_and_their_relationships() {
     let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
     let subject = split_off_a_pane(&sender, "ROLLBACK_SUBJECT");
+    type_and_confirm(&sender, &subject, b"rollback-subject-before");
     for index in 0..2 {
         sender.send_stdin(&keys::ctrl('s'));
         sender.send_stdin(&keys::key('e'));
@@ -805,14 +855,16 @@ fn warp_adoption_failure_returns_all_editor_companions_and_their_relationships()
         let marker = format!("EDITOR_READY_{index}");
         editor.output(format!("{marker}\r\n").as_bytes());
         sender.wait_until("editor to open", |grid| grid.contains(&marker));
+        type_and_confirm(&sender, &editor, marker.as_bytes());
     }
     subject.fail_warp(WarpFailure::UnadoptableOnce);
     let (exit_code, reported) = warp_focused_pane_to(&sender, &receiver, false);
     assert_ne!(exit_code, 0);
     assert!(reported.contains("back in this session"), "{reported}");
-    let newest_editor = sender.expect_adopted_pty();
-    let older_editor = sender.expect_adopted_pty();
-    let restored_subject = sender.expect_adopted_pty();
+    let adopted: Vec<_> = (0..3).map(|_| sender.expect_adopted_pty()).collect();
+    let newest_editor = adopted_with_marker(&adopted, b"EDITOR_READY_1");
+    let older_editor = adopted_with_marker(&adopted, b"EDITOR_READY_0");
+    let restored_subject = adopted_with_marker(&adopted, b"rollback-subject-before");
     sender.wait_until("rollback editor to appear", |grid| {
         grid.contains("EDITING SCROLLBACK")
     });
@@ -826,35 +878,147 @@ fn warp_adoption_failure_returns_all_editor_companions_and_their_relationships()
     sender.wait_until("second cover to close", |grid| {
         grid.contains("SUBJECT_RESTORED")
     });
+    type_and_confirm(&sender, restored_subject, b"rollback-restored-input");
     assert!(!restored_subject.is_exited());
 }
 
 #[test]
 fn a_visible_stack_warps_to_the_floating_layer_with_selectable_members() {
     let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
-    let _first = split_off_a_pane(&sender, "FIRST_FLOATING_MEMBER");
+    let first = split_off_a_pane(&sender, "FIRST_FLOATING_MEMBER");
+    type_and_confirm(&sender, &first, b"first-before");
+    let mut source = vec![first];
     for marker in ["SECOND_FLOATING_MEMBER", "THIRD_FLOATING_MEMBER"] {
         sender.send_stdin(&keys::ctrl('p'));
         sender.send_stdin(&keys::key('s'));
         let pane = sender.expect_pty_spawn();
         pane.output(format!("{marker}\r\n").as_bytes());
         sender.wait_until("stack member ready", |grid| grid.contains(marker));
+        type_and_confirm(&sender, &pane, marker.as_bytes());
+        source.push(pane);
     }
     warp_focused_pane_expecting_success(&sender, &receiver, true);
-    let third = receiver.expect_adopted_pty();
-    let first = receiver.expect_adopted_pty();
-    let second = receiver.expect_adopted_pty();
+    let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
+    let first = adopted_with_marker(&adopted, b"first-before");
+    let second = adopted_with_marker(&adopted, b"SECOND_FLOATING_MEMBER");
+    let third = adopted_with_marker(&adopted, b"THIRD_FLOATING_MEMBER");
+    assert_departed(&sender, &source.iter().collect::<Vec<_>>());
     receiver.wait_until("floating stack arrives", |grid| {
         grid.contains("THIRD_FLOATING_MEMBER")
     });
+    let (code, listed) = receiver.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: true,
+        all: true,
+        json: true,
+    });
+    assert_eq!(code, 0, "{listed}");
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let selected = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["is_plugin"] == false && pane["id"] == third.terminal_id().get())
+        .expect("selected stack member in manifest");
+    assert_eq!(selected["is_floating"], true, "{selected}");
+    // Hiding the floating layer must hide the transferred stack too.
+    receiver.send_stdin(&keys::ctrl('p'));
+    receiver.send_stdin(&keys::key('w'));
+    receiver.wait_until("floating stack hides", |grid| {
+        !grid.contains("THIRD_FLOATING_MEMBER") && !grid.contains("SECOND_FLOATING_MEMBER")
+    });
+    receiver.send_stdin(&keys::ctrl('p'));
+    receiver.send_stdin(&keys::key('w'));
+    receiver.wait_until("floating stack shows", |grid| {
+        grid.contains("THIRD_FLOATING_MEMBER")
+    });
+    type_and_confirm(&receiver, third, b"selected-after");
     receiver.send_stdin(&keys::alt('k'));
     receiver.wait_until("select hidden floating member", |grid| {
         grid.contains("SECOND_FLOATING_MEMBER")
     });
     assert_eq!(stack_list_entries(&receiver).len(), 3);
+    type_and_confirm(&receiver, second, b"hidden-after");
     second.exit(Some(0));
     receiver.wait_until("closing selected member promotes a survivor", |grid| {
         grid.contains("THIRD_FLOATING_MEMBER")
     });
     assert!(!first.is_exited() && !third.is_exited());
+}
+
+#[test]
+fn a_stack_with_a_hidden_editor_restores_after_id_remapping_and_source_shutdown() {
+    let (receiver, _) = start_with_a_shell();
+    // Allocate destination IDs before starting the source (session names are process-global).
+    let _ = split_off_a_pane(&receiver, "destination filler");
+    let _ = split_off_a_pane(&receiver, "another filler");
+    let (mut sender, _) = start_with_a_shell();
+    sender.send_stdin(&keys::ctrl('t'));
+    sender.send_stdin(&keys::key('n'));
+    let first = sender.expect_pty_spawn();
+    first.output(b"COMBINED_FIRST\r\n");
+    sender.wait_until("travelling tab opens", |grid| {
+        grid.contains("COMBINED_FIRST")
+    });
+    type_and_confirm(&sender, &first, b"combined-first-before");
+    sender.send_stdin(&keys::ctrl('p'));
+    sender.send_stdin(&keys::key('s'));
+    let subject = sender.expect_pty_spawn();
+    subject.output(b"COMBINED_SUBJECT\r\n");
+    sender.wait_until("subject opens", |grid| grid.contains("COMBINED_SUBJECT"));
+    type_and_confirm(&sender, &subject, b"combined-subject-before");
+    sender.send_stdin(&keys::ctrl('s'));
+    sender.send_stdin(&keys::key('e'));
+    let editor = sender.expect_pty_spawn();
+    sender.wait_until("editor opens", |grid| grid.contains("EDITING SCROLLBACK"));
+    type_and_confirm(&sender, &editor, b"combined-editor-before");
+    sender.send_stdin(&keys::alt('k'));
+    sender.wait_until("select first and hide editor", |grid| {
+        grid.contains("COMBINED_FIRST")
+    });
+    type_and_confirm(&sender, &first, b"first-selected-before");
+    let entries = stack_list_entries(&sender);
+    assert_eq!(entries, vec!["> Pane #1", "EDITING SCROLLBACK"]);
+
+    let (code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
+        to_session: Some(receiver.session_name().to_owned()),
+        from_session: None,
+        tab_id: None,
+    });
+    assert_eq!(code, 0, "{reported}");
+    let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
+    let arrived_first = adopted_with_marker(&adopted, b"combined-first-before");
+    let arrived_subject = adopted_with_marker(&adopted, b"combined-subject-before");
+    let arrived_editor = adopted_with_marker(&adopted, b"combined-editor-before");
+    for (before, after) in [
+        (&first, arrived_first),
+        (&subject, arrived_subject),
+        (&editor, arrived_editor),
+    ] {
+        assert_ne!(before.terminal_id(), after.terminal_id());
+    }
+    assert_departed(&sender, &[&first, &subject, &editor]);
+    receiver.wait_until("selected member arrives", |grid| {
+        grid.contains("COMBINED_FIRST")
+    });
+    assert_eq!(stack_list_entries(&receiver), entries);
+    type_and_confirm(&receiver, arrived_first, b"first-selected-after");
+    sender.quit();
+    receiver.send_stdin(&keys::alt('j'));
+    receiver.wait_until("select transferred editor", |grid| {
+        grid.contains("EDITING SCROLLBACK")
+    });
+    type_and_confirm(&receiver, arrived_editor, b"editor-selected-after");
+    arrived_editor.exit(Some(0));
+    receiver.wait_until("editor restores its own subject", |grid| {
+        grid.contains("COMBINED_SUBJECT") && !grid.contains("EDITING SCROLLBACK")
+    });
+    type_and_confirm(&receiver, arrived_subject, b"subject-restored-after");
+    arrived_subject.output(b"LIVE_AFTER_SOURCE_SHUTDOWN\r\n");
+    receiver.wait_until("live output after source shutdown", |grid| {
+        grid.contains("LIVE_AFTER_SOURCE_SHUTDOWN")
+    });
+    assert!(!arrived_first.is_exited() && !arrived_subject.is_exited());
 }
