@@ -6984,6 +6984,7 @@ local expected_vm='original-vm'
 z.rpc.call=function(request)
   assert(request.payload.directory=='/work/topic')
   assert(request.payload.inputs.firecracker==expected_vm)
+  assert(request.payload.inputs.sourcePane==7)
   assert(request.payload.work=='exit-token')
   return {}
 end
@@ -7139,9 +7140,70 @@ assert(call{method='observe',work='one',key='large'}.outcome=='completed')
 local oversized=prompt('oversized',string.rep('x',262145))
 assert(select(2,call(oversized)):find('262144'))
 assert(call{method='lookup',work='one',key='oversized'}==z.null)
-assert(call(prompt('exits','exits')).outcome=='pending')
+local waiting=prompt('exits','fast');waiting.waitForExit=true
+assert(call(waiting).outcome=='pending')
+assert(call{method='observe',work='one',key='exits'}.hook=='Stop','Completed turn is saved but process exit is still required')
 z.__update(M,{CommandPaneExited={7,0,{swamp_owner=owners[7],swamp_operation='agent'}}})
 assert(call{method='observe',work='one',key='exits'}.outcome=='process-exit')
+local exit_uid=z.json.encode({'host','session','one','exits'})
+local exit_rev=rows[exit_uid].rev
+z.__update(M,{CommandPaneExited={7,0,{swamp_owner=owners[7],swamp_operation='agent'}}})
+assert(rows[exit_uid].rev==exit_rev,'Repeated process exit cannot deliver the continuation twice')
+-- Pane actions explicitly address the held original, while the workflow view is focused.
+local old_info=z.get_pane_info
+z.get_plugin_ids=function() return {host_id='host',plugin_id=1} end
+z.get_pane_info=function(pane)
+  if pane.Plugin==42 then return {plugin_url='zellij:hocus-new-agent'} end
+  if pane.Terminal then return {target='Local',exited=true} end
+  return old_info(pane)
+end
+local original=z.json.decode(rows[z.json.encode({'host','session','one','agent'})].value)
+original.owner.agent='source';original.outstanding=nil
+local source_uid=z.json.encode({'host','session','one','source'})
+rows[source_uid]={value=z.json.encode(original),rev=1}
+local picked,reruns,closed,acks=0,0,0,0
+z.rerun_command_pane=function(pane) assert(pane==7);reruns=reruns+1 end
+z.close_plugin_pane=function() closed=closed+1 end
+z.message_to_plugin=function(opts)
+  if opts.message_name=='swamp-pane-ack' then assert(opts.destination_plugin_id==42);acks=acks+1;return end
+  picked=picked+1
+  assert(opts.plugin_config.caller_terminal_pane_id=='7')
+  assert(opts.plugin_config.fork_focused=='true' or opts.plugin_config.duplicate_focused=='true')
+end
+for _,action in ipairs{'fork','duplicate'} do
+  for _,choice in ipairs{'started','cancelled'} do
+    for _,reloaded in ipairs{false,true} do
+      local before_picked,before_acks=picked,acks
+      local operation_key='choice-'..action..'-'..choice..'-'..tostring(reloaded)
+      local request={method='pane_action',work='one',key=operation_key,action=action}
+      assert(call(request).outcome=='pending')
+      assert(call(request).outcome=='pending')
+      if reloaded then
+        -- Reload changes the dispatcher identity while retaining the stored claim.
+        z.instance_id=z.instance_id..'-reloaded'
+        assert(call{method='observe',work='one',key=request.key}.outcome=='unknown')
+      end
+      local reply={name='swamp-pane-result',source={Plugin=42},payload=z.json.encode{work='one',key=request.key,choice=choice}}
+      assert(not pcall(M.pipe,{name=reply.name,source={Plugin=43},payload=reply.payload}))
+      assert(acks==before_acks,'Only the picker can settle its result')
+      M.pipe(reply)
+      M.pipe(reply)
+      local observed=call{method='observe',work='one',key=request.key}
+      assert(observed.choice==choice and observed.outcome=='completed')
+      assert(picked==before_picked+1 and acks==before_acks+2,'Retries acknowledge without redispatching')
+      reply.payload=z.json.encode{work='one',key=request.key,choice=choice=='started' and 'cancelled' or 'started'}
+      assert(not pcall(M.pipe,reply),'A conflicting result cannot replace completion')
+      assert(acks==before_acks+2)
+    end
+  end
+end
+assert(picked==8 and reruns==0)
+assert(call{method='pane_action',work='one',key='restart',action='restart'}.outcome=='completed')
+assert(reruns==1)
+assert(call{method='pane_action',work='one',key='leave',action='leave'}.outcome=='completed')
+assert(picked==8 and reruns==1 and closed==0,'Leave preserves all resources')
+z.get_pane_info=old_info
+
 -- Pane IDs may change at restart; the supervisor and child remain the authority.
 panes[8]=nil;panes[18]=true;supervisors[18]=8;owners[18]=owners[8]
 local log_uid=z.json.encode({'host','session','two','agent'})

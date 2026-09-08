@@ -95,6 +95,9 @@ struct ForkContext {
 }
 
 struct State {
+    workflow_reply: Option<(u32, String, String)>,
+    workflow_result_pending: bool,
+    workflow_focus: Option<PaneId>,
     dialog: Dialog,
     /// The caller's cwd: the fallback source directory, and what the default
     /// project is derived from.
@@ -188,6 +191,9 @@ impl Default for State {
         // row from the start.
         let help = help_for(&form);
         Self {
+            workflow_reply: None,
+            workflow_result_pending: false,
+            workflow_focus: None,
             dialog: Dialog::new(Text::new("New agent").color_all(2), form)
                 .help(Text::new(help))
                 .status_row(),
@@ -212,6 +218,12 @@ impl ZellijPlugin for State {
             .get("caller_cwd")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
+        self.workflow_reply = configuration
+            .get("swamp_reply_plugin")
+            .and_then(|id| id.parse().ok())
+            .zip(configuration.get("swamp_work").cloned())
+            .zip(configuration.get("swamp_key").cloned())
+            .map(|((id, work), key)| (id, work, key));
         self.load_projects();
         self.fill_projects();
         self.plugin_id = get_plugin_ids().plugin_id;
@@ -282,7 +294,7 @@ impl ZellijPlugin for State {
                 self.finish_git_probe(exit_code, &String::from_utf8_lossy(&stdout), &context)
             },
             Event::Visible(false) => {
-                close_self();
+                self.finish_picker(None);
                 false
             },
             _ => false,
@@ -303,6 +315,25 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == "swamp-pane-ack" && self.workflow_result_pending {
+            if let Some((plugin, _, _)) = &self.workflow_reply {
+                if pipe_message.source
+                    == PipeSource::Plugin(zellij_tile::prelude::PluginId::new(*plugin))
+                {
+                    self.workflow_reply = None;
+                    self.workflow_result_pending = false;
+                    if let Some(pane) = self.workflow_focus.take() {
+                        hand_over_focus(pane);
+                    } else {
+                        close_self();
+                    }
+                }
+            }
+            return false;
+        }
+        if self.workflow_result_pending {
+            return false;
+        }
         if pipe_message.name == wire::AGENT_HELLO {
             if !matches!(self.job, Job::New) {
                 pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
@@ -336,7 +367,7 @@ impl ZellijPlugin for State {
                 // A pane that is not an agent leaves the New agent form up, which is what
                 // this modal is underneath.
                 if let Some(new_pane_id) = command.and_then(start) {
-                    hand_over_focus(new_pane_id);
+                    self.finish_launch(new_pane_id);
                 }
                 false
             },
@@ -759,9 +790,8 @@ fn duplicate_command(
 /// folder, and nothing of the old argv - a duplicate and a fork both start a fresh
 /// conversation, they only differ over which agent has it.
 fn command_in_context(pane: &AgentPane, kind: &str) -> CommandToRun {
-    // A pane on another machine, ssh or Firecracker, already reports a cwd on
-    // that machine, and the server hands a remote cwd over untranslated. Only a
-    // local pane gets `/host`, which the server maps to the caller's cwd.
+    // Use the source pane even when this picker was opened from a workflow view.
+    // An exited process loses its live cwd, but its agent record retains it.
     let mut target = PaneTarget::parse_display(pane.host.as_deref());
     if let PaneTarget::Firecracker {
         image, worktree, ..
@@ -770,11 +800,13 @@ fn command_in_context(pane: &AgentPane, kind: &str) -> CommandToRun {
         image.clone_from(&pane.firecracker_image);
         *worktree = pane.firecracker_worktree.clone().map(Into::into);
     }
-    let cwd = if target.is_local() {
-        Some("/host".to_owned())
-    } else {
-        pane.cwd.clone()
-    };
+    let cwd = pane
+        .agent
+        .as_ref()
+        .and_then(|agent| agent.cwd.as_ref())
+        .filter(|cwd| !cwd.is_empty())
+        .or(pane.cwd.as_ref())
+        .cloned();
     CommandToRun {
         path: launch::binary_for(kind).into(),
         cwd: cwd.map(Into::into),
@@ -790,12 +822,47 @@ fn command_in_context(pane: &AgentPane, kind: &str) -> CommandToRun {
 fn start(command: CommandToRun) -> Option<PaneId> {
     open_command_pane_near_plugin(
         command,
-        BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
+        BTreeMap::from([
+            (HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned()),
+            ("hocus_agent_host_cwd".to_owned(), "true".to_owned()),
+        ]),
     )
 }
 
 impl State {
+    fn finish_picker(&mut self, pane: Option<PaneId>) {
+        if self.workflow_result_pending {
+            return;
+        }
+        self.job = Job::New;
+        if let Some((plugin, work, key)) = &self.workflow_reply {
+            // Stay alive until the bridge authenticates and records this result.
+            self.workflow_result_pending = true;
+            self.workflow_focus = pane;
+            pipe_message_to_plugin(
+                MessageToPlugin::new("swamp-pane-result")
+                    .with_destination_plugin_id(zellij_tile::prelude::PluginId::new(*plugin))
+                    .with_payload(
+                        serde_json::json!({"work": work, "key": key,
+                    "choice": if pane.is_some() { "started" } else { "cancelled" }})
+                        .to_string(),
+                    ),
+            );
+        } else if let Some(pane) = pane {
+            hand_over_focus(pane);
+        } else {
+            close_self();
+        }
+    }
+
+    fn finish_launch(&mut self, pane: PaneId) {
+        self.finish_picker(Some(pane));
+    }
+
     fn handle(&mut self, event: FormEvent) -> bool {
+        if self.workflow_result_pending {
+            return false;
+        }
         match event {
             FormEvent::ButtonPressed(_) => {
                 if matches!(self.job, Job::Fork { .. }) {
@@ -805,7 +872,7 @@ impl State {
                 }
             },
             FormEvent::Cancel => {
-                close_self();
+                self.finish_picker(None);
                 false
             },
             FormEvent::FieldChanged(id) => {
@@ -928,7 +995,7 @@ impl State {
         };
         match start(command_in_context(&context.pane, &kind)) {
             Some(pane_id) => {
-                hand_over_focus(pane_id);
+                self.finish_launch(pane_id);
                 false
             },
             None => {
@@ -948,7 +1015,7 @@ impl State {
         let source = source_directory(self.dialog.form(), &self.projects, &self.source_directory);
         match launch::open(&spec(self.dialog.form()), source) {
             Ok(agent) => {
-                hand_over_focus(agent.pane_id);
+                self.finish_launch(agent.pane_id);
                 false
             },
             Err(error) => {
@@ -1716,7 +1783,7 @@ mod tests {
         };
         assert_eq!(
             command_in_context(&local, "claude").cwd,
-            Some("/host".into())
+            Some("/tmp/repo".into())
         );
 
         let vm = AgentPane {
@@ -1836,6 +1903,47 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_duplicate_ignores_late_snapshots_and_waits_for_its_bridge_ack() {
+        let mut state = State {
+            job: Job::Duplicate { pane_id: 7 },
+            workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
+            ..Default::default()
+        };
+        state.handle(FormEvent::Cancel);
+        assert!(state.workflow_result_pending);
+        assert!(matches!(state.job, Job::New));
+        let snapshot = PipeMessage::new(
+            PipeSource::Plugin(PluginId::new(1)),
+            wire::AGENT_SNAPSHOT,
+            &Some(serde_json::json!({"panes": [agent_pane("claude")], "activity": {}}).to_string()),
+            &None,
+            false,
+        );
+        // Ensure this is a launch-bearing snapshot, not a malformed payload ignored by parsing.
+        let reply: PollReply = serde_json::from_str(snapshot.payload.as_ref().unwrap()).unwrap();
+        assert!(duplicate_command(&reply.panes.unwrap()[0], &reply.manual_kinds).is_some());
+        assert!(!state.pipe(snapshot.clone()));
+        assert!(state.workflow_focus.is_none());
+        assert!(state.workflow_result_pending);
+
+        let mut ack = PipeMessage::new(
+            PipeSource::Plugin(PluginId::new(43)),
+            "swamp-pane-ack",
+            &None,
+            &None,
+            true,
+        );
+        state.pipe(ack.clone());
+        assert!(state.workflow_result_pending);
+        ack.source = PipeSource::Plugin(PluginId::new(42));
+        state.pipe(ack);
+        assert!(!state.workflow_result_pending);
+        assert!(state.workflow_reply.is_none());
+        assert!(!state.pipe(snapshot));
+        assert!(matches!(state.job, Job::New));
+    }
+
+    #[test]
     fn duplicate_uses_the_agent_kind_and_exact_location_without_old_args() {
         let pane = AgentPane {
             pane_id: 7,
@@ -1863,8 +1971,21 @@ mod tests {
             ..pane.clone()
         };
         let command = duplicate_command(&local_pane, &BTreeMap::new()).unwrap();
-        assert_eq!(command.cwd, Some("/host".into()));
+        assert_eq!(command.cwd, Some("/tmp/repo".into()));
         assert!(command.target.is_local());
+
+        let exited = AgentPane {
+            cwd: None,
+            agent: Some(agents::registered_agent(
+                "cursor",
+                Some("/tmp/repo".to_owned()),
+            )),
+            ..local_pane
+        };
+        assert_eq!(
+            duplicate_command(&exited, &BTreeMap::new()).unwrap().cwd,
+            Some("/tmp/repo".into())
+        );
 
         let firecracker_pane = AgentPane {
             host: Some("firecracker:review".to_owned()),

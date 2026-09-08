@@ -119,11 +119,35 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
             () => methods.rebase.execute({ ...args, key: "dirty" }, c),
             /dirty/,
         );
+        const beforeDiff = await git(source, ["status", "--porcelain=v1"]);
+        await Deno.writeTextFile(
+            source + "/untracked.txt",
+            "untracked contents\n",
+        );
+        await methods.show_diff.execute(args, c);
+        const output = String(saved.get("diff-current")?.output);
+        assert(
+            output.includes("Committed branch changes:") &&
+                output.includes("Staged changes:") &&
+                output.includes("Unstaged changes:"),
+        );
+        assert(
+            output.includes("+topic") && output.includes("untracked contents"),
+        );
+        await Deno.remove(source + "/untracked.txt");
+        assert(await git(source, ["status", "--porcelain=v1"]) === beforeDiff);
         await methods.guarded_commit.execute({
             ...args,
             key: "commit",
             message: "topic",
         }, c);
+        const committed = await git(source, ["rev-parse", "HEAD"]);
+        await methods.guarded_commit.execute({
+            ...args,
+            key: "empty-commit",
+            message: "skip",
+        }, c);
+        assert(await git(source, ["rev-parse", "HEAD"]) === committed);
         await methods.rebase.execute({ ...args, key: "rebase" }, c);
         await methods.verify_checkout.execute(args, c);
         const proof = Evidence.parse(saved.get("evidence-current"));
@@ -171,6 +195,71 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
             () => methods.integrate.execute({ ...ready, gate: ["false"] }, c),
             /Conflicting request/,
         );
+        // Local checkout evidence requires no worker/VM operation. Failed and skipped
+        // checks can be accepted explicitly, but never replace revision freshness.
+        Deno.Command = originalCommand;
+        const local = { ...args, vmSync: { mode: "local" as const } };
+        await methods.verify_checkout.execute(local, c);
+        const localProof = Evidence.parse(saved.get("evidence-current"));
+        for (
+            const checks of [
+                { review: null, test: null },
+                {
+                    review: {
+                        ...input.review,
+                        evidence: localProof,
+                        resolved: false,
+                        findings: [{
+                            severity: "error" as const,
+                            file: "file",
+                            message: "Unresolved finding",
+                        }],
+                    },
+                    test: {
+                        ...input.test,
+                        evidence: localProof,
+                        outcome: "failed",
+                        exitCode: 1,
+                        passed: false,
+                    },
+                },
+            ]
+        ) {
+            const informed = {
+                ...local,
+                key: checks.test ? "failed-checks" : "skipped-checks",
+                evidence: localProof,
+                ...checks,
+                approved: true as const,
+            };
+            await rejects(
+                () =>
+                    methods.integrate.execute(
+                        { ...informed, approved: false } as never,
+                        c,
+                    ),
+                /true/,
+            );
+            await methods.integrate.execute(informed, c);
+            assert(
+                saved.get("integrationDecision-current")?.integrated === true,
+            );
+        }
+        await Deno.writeTextFile(
+            source + "/late-untracked",
+            "changed after approval",
+        );
+        await methods.integrate.execute({
+            ...local,
+            key: "stale-skipped",
+            evidence: localProof,
+            review: null,
+            test: null,
+            approved: true,
+        }, c);
+        assert(saved.get("integrationDecision-current")?.integrated === false);
+        await Deno.remove(source + "/late-untracked");
+        Deno.Command = Command;
         await Deno.writeTextFile(source + "/keep", "important");
         await rejects(
             () =>

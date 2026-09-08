@@ -39,18 +39,55 @@ zellij workflow show RUN_ID --json
 `run` prints its launch token before dispatch. `--launch TOKEN` lets a caller retain a
 chosen token. Identical requests return the existing claim; changed arguments with the
 same token fail. `--no-view` starts an unattended run. It still suspends for questions.
-`--input` accepts a JSON object of declared workflow inputs. The supplied defaults use
-Codex, a separate review agent, two repair rounds, `cargo x ci check`, and local `main`.
-`agentCommand` and `agentArgs` select a custom agent command. `firecracker` and
-`firecrackerImage` select a VM for the worker. Its host worktree remains the source for
-review and integration.
+`--input` accepts a JSON object of declared workflow inputs. Tests default to
+`cargo x ci check`. The target defaults to local `main`. Both tests and agent review
+are optional. No step pushes commits or creates a pull request.
+
+The exit hook supplies the original terminal ID, agent kind, checkout, and VM context.
+For a manual launch, pass `sourcePane` to enable Restart, Duplicate, and Fork.
+`agentCommand` and `agentArgs` can select an explicit helper command.
+VM-backed runs require the original pane identity. Preparation synchronizes that VM
+without starting a worker. Local checkout evidence does not require a VM-sync record.
+
+## Exit and review choices
+
+1. Choose **Restart**, **Duplicate**, **Fork**, **Begin review**, or **Leave**.
+   Restart reruns the original command in the held pane. Duplicate starts a fresh
+   conversation of the same kind. Fork opens the existing agent-kind picker in the
+   same checkout and VM context. Cancel the picker to return to a fresh exit menu.
+   Leave restores the original scrollback and preserves all resources.
+2. After Begin review, choose **Show diff**, **Commit and rebase**, or **Leave**.
+   The saved diff includes committed branch changes relative to the local target,
+   staged changes, unstaged changes, and untracked files. It does not change files.
+   Commit and rebase skips empty commits and rebases onto the configured local target.
+3. If a rebase is paused, choose **Resolve with agent** or **Leave paused**.
+   Only approval starts a resolver. The agent stages resolutions. The workflow
+   inspects the result and continues the rebase. Further conflicts require another
+   decision. Other errors remain visible without automatic retries.
+4. After preparation, choose **Run tests**, **Start code review**, **Merge**, or **Leave**.
+   Passing tests return to this menu. Failed tests offer **Start fix agent**,
+   **Return to menu**, or **Leave**. A fix agent receives the saved failure output.
+   Its process exit returns to a fresh initial exit menu.
+5. A selected reviewer inspects the checkout. The workflow compares commits and all
+   tracked and untracked contents before and after the process exits. Changes return
+   to the initial menu. An unchanged checkout proceeds to merge confirmation with
+   the saved findings. Missing or malformed findings remain a failed review.
+6. Confirm the exact source and target revisions. The prompt states whether tests
+   and review passed, failed, or were skipped. You can explicitly accept failed or
+   skipped checks and unresolved findings. Decline to preserve everything and end.
+   Changed source or target state returns to preparation and requires fresh approval.
+   Integration uses local fast-forward only and retains checkout locks, live VM
+   verification, clean-state checks, and ancestry checks.
+7. After integration, choose **Remove clean worktree** or **Keep**. Removal uses the
+   existing guarded, non-force cleanup method. Changed state prevents removal.
 
 On agent exit, the workflow uses the exit pane for status, questions and interactive
 agents. The original terminal and its scrollback remain behind that view. Runners and
 noninteractive commands use supervised background panes. Active agents share the exit
 location in dispatch order. Other agents stay suppressed and continue their work.
-Verified turn completion, failure or process exit restores status or the next active
-agent. Agents remain available for later prompts.
+For review and repair helpers, process exit restores workflow status. A completed
+turn alone does not advance these decisions. Standalone agent-work remains available
+to explicit callers and retains its turn-based observation.
 
 Final results and errors stay visible. Enter restarts the original agent. Esc restores
 its scrollback and detaches the view. Delete closes the original terminal. Restart and
@@ -106,15 +143,16 @@ contents, gate argv and VM sync operation. Repairs, commits, rebases and target 
 invalidate earlier evidence. Final verification and fast-forward integration share both
 checkout locks. The live VM must have no outstanding changes or sync conflicts.
 
-A stale integration decision starts a new independent Swamp review cycle. New model and
-operation identities prevent old results from satisfying the new cycle. The new cycle
-requires another merge approval. After two unsuccessful repairs, the workflow asks for
-instructions; after the instructed work completes, another review cycle begins.
+A stale integration decision starts a fresh preparation run. Each repeated menu and
+agent-exit cycle has new run, model, question, and operation identities. Earlier
+answers and results cannot satisfy the new decision. Automatic repair rounds are
+removed. Apply these definitions to fresh runs. Do not resume a suspended older run
+with the new decision sequence.
 
 The bridge stores only ownership, operation claims, event delivery and attachment state
 outside Swamp. Ownership names the host, session, server incarnation, agent and work
 item. Supervisor and process identities verify a pane before input. One prompt may be
-outstanding per agent. Prompts are limited to 256 KiB (262,144 UTF-8 bytes), including generated repairs and reviews.
+outstanding per agent. Prompts are limited to 256 KiB (262,144 UTF-8 bytes), including generated fix and review prompts.
 Oversized prompts fail before a host claim is created. Repair instructions are never truncated.
 Bridge requests travel as one JSON line on stdin.
 Acceptance compares the expected SHA-256 digest with the host-computed digest when available.
@@ -231,7 +269,7 @@ cargo x firecracker-test --test
 ```
 
 The smoke runner creates disposable repositories and stub agents. It tests unattended
-questions, an interactive detachable view, stale evidence, both repair rounds,
+questions, an interactive detachable view, stale evidence, optional checks, informed merges, explicit conflict resolution,
 recorded-answer recovery, cancellation, and server crash/adoption. It prints the
 fixture directory containing its command transcript and terminal capture. The
 Firecracker suite also runs the typed bridge against a real guest, including a sync

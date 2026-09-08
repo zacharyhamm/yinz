@@ -5,6 +5,24 @@ export const PromptText = z.string().min(1).refine(
     (s) => new TextEncoder().encode(s).length <= 262144,
     "Prompt exceeds 256 KiB (262144 UTF-8 bytes)",
 );
+export function preparePrompt(prompt: string): string {
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(prompt);
+    if (bytes.length <= 262144) return PromptText.parse(prompt);
+    const notice =
+        "\n\n[Prompt truncated: middle omitted to fit 256 KiB. Beginning and end excerpts retained; full evidence remains saved in Swamp.]\n\n";
+    const budget = 262144 - encoder.encode(notice).length;
+    let head = Math.ceil(budget / 2);
+    let tail = bytes.length - Math.floor(budget / 2);
+    // Move cuts past UTF-8 continuation bytes without splitting characters.
+    while ((bytes[head] & 0xc0) === 0x80) head--;
+    while ((bytes[tail] & 0xc0) === 0x80) tail++;
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    return PromptText.parse(
+        decoder.decode(bytes.subarray(0, head)) + notice +
+            decoder.decode(bytes.subarray(tail)),
+    );
+}
 export const Owner = z.object({
     host_id: z.string().min(1),
     session: z.string().min(1),
@@ -48,6 +66,7 @@ export const Operation = z.object({
     processExited: z.boolean().optional(),
     outstanding: z.string().optional(),
     accepted: z.boolean().optional(),
+    choice: z.enum(["started", "cancelled"]).optional(),
     turn: z.string().optional(),
     ready: z.boolean().optional(),
     dispatched: z.boolean().optional(),
@@ -67,9 +86,16 @@ export const Session = z.object({
     binary: Literal.min(1).default("zellij"),
     timeoutMs: z.number().int().positive().default(30000),
 });
-export const Request = z.object({ work: Key, key: Key });
+export const Request = z.object({
+    work: Key,
+    key: Key,
+    session: Literal.min(1).optional(),
+    binary: Literal.min(1).optional(),
+});
 export const AgentSpec = z.object({
-    kind: z.enum(["codex", "claude", "cursor"]).optional(),
+    kind: z.enum(["", "codex", "claude", "cursor"]).transform((s) =>
+        s || undefined
+    ).optional(),
     command: Literal.transform((s) => s || undefined).optional(),
     args: z.array(Literal).optional(),
     model: Literal.optional(),
@@ -118,6 +144,18 @@ export async function bridge(
     return response.result;
 }
 export async function operation(c: Context, request: Record<string, unknown>) {
+    // Fresh ad-hoc models reached after resume can lack global arguments.
+    // Carry the declared session with the operation instead of using ambient focus.
+    if (request.session) {
+        c = {
+            ...c,
+            globalArgs: {
+                ...c.globalArgs,
+                session: request.session,
+                binary: request.binary ?? c.globalArgs.binary,
+            },
+        };
+    }
     if (request.method === "agent_prompt") {
         const prompt = PromptText.parse(request.prompt);
         const hash = await crypto.subtle.digest(
@@ -141,8 +179,19 @@ export async function observe(
 ) {
     const deadline = Date.now() + timeoutSeconds * 1000;
     while (true) {
-        const result = await operation(c, { method: "observe", ...args });
-        if (result.outcome !== "pending") return result;
+        const result = await operation(c, {
+            method: "observe",
+            ...args,
+            includeOutput: false,
+        });
+        const request = result.outcome === "unknown"
+            ? JSON.parse(result.request)
+            : null;
+        const awaitingPicker = request?.method === "pane_action" &&
+            ["fork", "duplicate"].includes(request.action);
+        if (result.outcome !== "pending" && !awaitingPicker) {
+            return operation(c, { method: "observe", ...args });
+        }
         if (Date.now() >= deadline) {
             throw new Error(
                 "Observation deadline reached; the operation remains attached and must not be dispatched again",

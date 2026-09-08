@@ -14,10 +14,11 @@ import {
 } from "./_lib/workflow.ts";
 
 import { Operation, operation } from "./_lib/bridge.ts";
-const Sync = Operation.extend({
+const VmSync = Operation.extend({
     outcome: z.literal("completed"),
     clean: z.literal(true),
 });
+export const Sync = z.union([VmSync, z.object({ mode: z.literal("local") })]);
 const Ref = Literal.min(1).refine((s) => !s.startsWith("-"));
 const Revision = z.object({
     checkout: z.string(),
@@ -41,18 +42,18 @@ export const Finding = z.object({
 });
 const Review = z.object({
     evidence: Evidence,
-    outcome: z.literal("completed"),
+    outcome: z.string(),
     findings: z.array(Finding),
     reviewer: z.string().min(1),
-    valid: z.literal(true),
-    resolved: z.literal(true),
+    valid: z.boolean(),
+    resolved: z.boolean(),
 });
 const Test = z.object({
     evidence: Evidence,
-    outcome: z.literal("completed"),
-    exitCode: z.literal(0),
+    outcome: z.string(),
+    exitCode: z.number().int().nullable(),
     log: z.string().min(1),
-    passed: z.literal(true),
+    passed: z.boolean(),
 });
 const Args = z.object({
     source: Literal.min(1),
@@ -65,8 +66,8 @@ const Args = z.object({
 const Mutation = Args.extend({ key: Key });
 const Integration = Mutation.extend({
     evidence: Evidence,
-    review: Review,
-    test: Test,
+    review: Review.nullable(),
+    test: Test.nullable(),
     approved: z.literal(true),
 });
 const git = (c: Context, path: string, args: string[]) =>
@@ -197,6 +198,7 @@ async function evidence(c: Context, args: z.infer<typeof Args>) {
     });
 }
 async function liveVm(c: Context, args: z.infer<typeof Args>) {
+    if ("mode" in args.vmSync) return true;
     const owner = args.vmSync.owner;
     if (!owner) throw new Error("VM sync evidence lacks agent ownership");
     const current = await operation({
@@ -301,6 +303,10 @@ const RebaseResult = z.object({
 export const extension = {
     type: "@swamp/git",
     resources: {
+        diff: resource(
+            z.object({ evidence: Evidence, output: z.string() }),
+            "Saved branch, staged, unstaged and untracked changes",
+        ),
         claim: claimResource,
         evidence: resource(
             Evidence,
@@ -342,6 +348,7 @@ export const extension = {
                                 "Resolve the rebase before committing",
                             );
                         }
+                        if (current.source.clean) return { dataHandles: [] };
                         return official.methods.commit.execute({
                             message: args.message,
                             addAll: true,
@@ -413,6 +420,62 @@ export const extension = {
                     ));
             },
         },
+        show_diff: {
+            description: "Save all checkout changes without mutation",
+            arguments: Args,
+            execute: async (input: z.infer<typeof Args>, c: Context) => {
+                const args = Args.parse(input);
+                const current = await evidence(c, args);
+                const output = [
+                    "Committed branch changes:\n" +
+                    await git(c, args.source, [
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        current.target.commit + "...HEAD",
+                        "--",
+                    ]),
+                    "Staged changes:\n" +
+                    await git(c, args.source, [
+                        "diff",
+                        "--cached",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--",
+                    ]),
+                    "Unstaged changes:\n" +
+                    await git(c, args.source, [
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--",
+                    ]),
+                ];
+                const paths = (await git(c, args.source, [
+                    "ls-files",
+                    "--others",
+                    "--exclude-standard",
+                    "-z",
+                ])).split("\0").filter(Boolean);
+                for (const path of paths) {
+                    const full = `${current.source.checkout}/${path}`;
+                    const info = await Deno.lstat(full);
+                    const bytes = info.isSymlink
+                        ? new TextEncoder().encode(await Deno.readLink(full))
+                        : await Deno.readFile(full);
+                    output.push(
+                        `Untracked ${JSON.stringify(path)}:\n` +
+                            (bytes.includes(0)
+                                ? `[binary: ${bytes.length} bytes]`
+                                : new TextDecoder().decode(bytes)),
+                    );
+                }
+                return save(c, "diff", {
+                    evidence: current,
+                    output: output.join("\n\n"),
+                });
+            },
+        },
         verify_checkout: {
             description: "Capture revision-bound review and gate inputs",
             arguments: Args,
@@ -442,7 +505,7 @@ export const extension = {
         },
         integrate: {
             description:
-                "Fast-forward under both checkout locks with fresh review, tests and explicit approval",
+                "Fast-forward under both checkout locks with revision-bound optional checks and explicit approval",
             arguments: Integration,
             execute: async (input: z.infer<typeof Integration>, c: Context) => {
                 const args = Integration.parse(input);
@@ -467,24 +530,19 @@ export const extension = {
                         for (
                             const proof of [
                                 args.evidence,
-                                args.review.evidence,
-                                args.test.evidence,
+                                ...(args.review ? [args.review.evidence] : []),
+                                ...(args.test ? [args.test.evidence] : []),
                             ]
                         ) {
                             if (await digest(current) !== await digest(proof)) {
                                 return {
                                     integrated: false,
                                     reason:
-                                        "Stale evidence: repeat review, rebase and tests",
+                                        "Stale evidence: repeat preparation and approval",
                                     evidence: current,
                                 };
                             }
                         }
-                        if (
-                            args.review.findings.some((f) =>
-                                f.severity !== "info"
-                            )
-                        ) throw new Error("Review findings remain unresolved");
                         if (
                             ![current.source, current.target].every((r) =>
                                 r.clean && !r.rebasing &&

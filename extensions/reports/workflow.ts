@@ -3,7 +3,7 @@ import { checked } from "../models/_lib/workflow.ts";
 export const report = {
     name: "@hammz/workflow",
     description:
-        "Findings, revisions, gate evidence, decisions and resource identities",
+        "User choices, exact revisions, optional check results, and guarded local integration",
     scope: "workflow",
     labels: ["review", "local-integration"],
     execute: async (context: {
@@ -65,6 +65,9 @@ export const report = {
                         "review",
                         "test",
                         "assessment",
+                        "checks",
+                        "diff",
+                        "checkoutSync",
                         "evidence",
                         "integration",
                         "integrationDecision",
