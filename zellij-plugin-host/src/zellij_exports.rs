@@ -426,6 +426,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::GenerateRandomName => generate_random_name(env),
             PluginCommand::DumpLayout(layout_name) => dump_layout(env, layout_name),
             PluginCommand::ParseLayout(layout_string) => parse_layout(env, layout_string),
+            PluginCommand::CheckPlugin { name, source, mode } => {
+                check_plugin(env, name, source, mode)
+            },
             PluginCommand::CheckLuaPlugin { name, source } => check_lua_plugin(env, name, source),
             PluginCommand::SetPaneAgent { pane_id, agent } => set_pane_agent(env, pane_id, agent),
             PluginCommand::SetPaneAgentRun { pane_id, run_id } => {
@@ -1165,6 +1168,9 @@ fn subscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Result<()> {
             env.plugin_id,
             env.client_id,
             event_list,
+            // The plugin thread must not lock this guest to inspect its metadata:
+            // the guest may already be waiting for a synchronous reply from it.
+            env.tab_index.is_none(),
         ))
 }
 
@@ -1746,6 +1752,41 @@ fn get_focused_pane_info(env: &mut PluginEnv) {
     let protobuf_response = ProtobufGetFocusedPaneInfoResponse::from(response);
     wasi_write_object(env, &protobuf_response.encode_to_vec())
         .with_context(err_context)
+        .non_fatal();
+}
+
+fn check_plugin(
+    env: &mut PluginEnv,
+    name: String,
+    source: String,
+    mode: zellij_types::authoring::PluginCheckMode,
+) {
+    use zellij_plugin_api::plugin_command::{check_plugin_response, ProtobufCheckPluginResponse};
+    let result = (|| -> Result<String> {
+        let dir = env
+            .user_plugin_dir
+            .clone()
+            .or_else(default_user_plugin_dir)
+            .context("no plugin folder is configured; set user_plugin_dir")?;
+        let path = zellij_plugin_api::authoring::resolve_plugin_file(&dir, &name)
+            .map_err(|e| anyhow!(e))?;
+        // Semantic checks may read imports. Refuse symlinks in either authoring component.
+        if path.is_symlink() || path.parent().is_some_and(std::path::Path::is_symlink) {
+            return Err(anyhow!(
+                "plugin file or folder is a symlink; refusing to check"
+            ));
+        }
+        let report = crate::plugin_authoring::check_source(&path, &source, mode);
+        serde_json::to_string(&report).context("serialize plugin check report")
+    })();
+    let response = ProtobufCheckPluginResponse {
+        result: Some(match result {
+            Ok(report) => check_plugin_response::Result::ReportJson(report),
+            Err(error) => check_plugin_response::Result::Error(format!("{error:#}")),
+        }),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .context("send plugin check report")
         .non_fatal();
 }
 
@@ -3896,6 +3937,7 @@ fn enqueue_queue_job(
                 let job_id = env.queues.lock().unwrap().enqueue(
                     &queue,
                     (env.plugin_id, env.client_id),
+                    env.deno_generation,
                     run_plugin_or_alias,
                     context,
                     Some(env.plugin_cwd.clone()),
@@ -8148,6 +8190,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         // asked. Listed so that the command is not permissionless on paper.
         CommandType::GrantPluginPermissions => PermissionType::ChangeApplicationState,
         CommandType::ProjectConfigRead
+        | CommandType::CheckPlugin
         | CommandType::FsRead
         | CommandType::FsList
         | CommandType::FsMetadata => PermissionType::ReadFiles,

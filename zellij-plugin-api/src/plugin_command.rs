@@ -11,14 +11,14 @@ pub use super::generated_api::api::{
     pane_frame_style::PaneFrameStyle as ProtobufPaneFrameStyle,
     plugin_command::{
         break_panes_to_new_tab_response, break_panes_to_tab_with_id_response,
-        break_panes_to_tab_with_index_response, data_apply_response, data_catalog_response,
-        data_count_response, data_define_response, data_fetch_response, data_unwatch_response,
-        data_watch_response, delete_layout_response, dump_layout_response,
-        dump_session_layout_response, edit_layout_response, enqueue_queue_job_response,
-        focus_or_create_tab_response, fs_list_response, fs_metadata_response, fs_mutate_response,
-        fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
-        get_pane_git_probe_response, get_pane_pid_response, get_pane_running_command_response,
-        get_session_list_response, hide_floating_panes_response,
+        break_panes_to_tab_with_index_response, check_plugin_payload, check_plugin_response,
+        data_apply_response, data_catalog_response, data_count_response, data_define_response,
+        data_fetch_response, data_unwatch_response, data_watch_response, delete_layout_response,
+        dump_layout_response, dump_session_layout_response, edit_layout_response,
+        enqueue_queue_job_response, focus_or_create_tab_response, fs_list_response,
+        fs_metadata_response, fs_mutate_response, fs_read_response, get_focused_pane_info_response,
+        get_pane_cwd_response, get_pane_git_probe_response, get_pane_pid_response,
+        get_pane_running_command_response, get_session_list_response, hide_floating_panes_response,
         highlight_style::Style as ProtobufHighlightStyleVariant, list_orphaned_panes_response,
         new_tab_response, new_tab_unfocused_response, open_command_pane_in_git_checkout_payload,
         open_command_pane_in_git_checkout_response, parse_layout_response, plugin_command::Payload,
@@ -33,7 +33,8 @@ pub use super::generated_api::api::{
         BreakPanesToTabWithIndexResponse as ProtobufBreakPanesToTabWithIndexResponse,
         CancelQueueJobPayload, CancelWebRequestPayload, ChangeFloatingPanesCoordinatesPayload,
         ChangeHostFolderPayload, ChangeOverlayCoordinatesPayload, CheckLuaPluginPayload,
-        CheckLuaPluginResponse as ProtobufCheckLuaPluginResponse, ClearPaneHighlightsPayload,
+        CheckLuaPluginResponse as ProtobufCheckLuaPluginResponse, CheckPluginPayload,
+        CheckPluginResponse as ProtobufCheckPluginResponse, ClearPaneHighlightsPayload,
         ClearScreenForPaneIdPayload, CliPipeOutputPayload, CloseMultiplePanesPayload,
         CloseTabWithIdPayload, CloseTabWithIndexPayload, CommandName, ConfigureQueuePayload,
         ContextItem, CopyToClipboardPayload, CreateTokenResponse as ProtobufCreateTokenResponse,
@@ -2990,6 +2991,22 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }),
                 _ => Err("Mismatched payload for SetQuitNotice"),
             },
+            Some(CommandName::CheckPlugin) => match protobuf_plugin_command.payload {
+                Some(Payload::CheckPluginPayload(payload)) => Ok(PluginCommand::CheckPlugin {
+                    name: payload.name,
+                    source: payload.source,
+                    mode: match check_plugin_payload::Mode::try_from(payload.mode) {
+                        Ok(check_plugin_payload::Mode::Syntax) => {
+                            zellij_types::authoring::PluginCheckMode::Syntax
+                        },
+                        Ok(check_plugin_payload::Mode::Semantic) => {
+                            zellij_types::authoring::PluginCheckMode::Semantic
+                        },
+                        Err(_) => return Err("Invalid CheckPlugin mode"),
+                    },
+                }),
+                _ => Err("Mismatched payload for CheckPlugin"),
+            },
             Some(CommandName::CheckLuaPlugin) => match protobuf_plugin_command.payload {
                 Some(Payload::CheckLuaPluginPayload(payload)) => {
                     Ok(PluginCommand::CheckLuaPlugin {
@@ -5361,6 +5378,21 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::SetQuitNoticePayload(SetQuitNoticePayload {
                     notice,
                     guard,
+                })),
+            }),
+            PluginCommand::CheckPlugin { name, source, mode } => Ok(ProtobufPluginCommand {
+                name: CommandName::CheckPlugin as i32,
+                payload: Some(Payload::CheckPluginPayload(CheckPluginPayload {
+                    name,
+                    source,
+                    mode: match mode {
+                        zellij_types::authoring::PluginCheckMode::Syntax => {
+                            check_plugin_payload::Mode::Syntax as i32
+                        },
+                        zellij_types::authoring::PluginCheckMode::Semantic => {
+                            check_plugin_payload::Mode::Semantic as i32
+                        },
+                    },
                 })),
             }),
             PluginCommand::CheckLuaPlugin { name, source } => Ok(ProtobufPluginCommand {
@@ -7844,6 +7876,7 @@ mod tests {
             Some(match command {
                 carried @ (PluginCommand::Subscribe(_)
                 | PluginCommand::CheckLuaPlugin { .. }
+                | PluginCommand::CheckPlugin { .. }
                 | PluginCommand::SetPaneAgent { .. }
                 | PluginCommand::SetPaneAgentRun { .. }
                 | PluginCommand::SpawnAgent { .. }

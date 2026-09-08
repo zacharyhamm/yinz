@@ -72,8 +72,10 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 48] = [
+pub const SECTIONS: [&str; 50] = [
     "index",
+    "deno",
+    "deno_data",
     "quickstart",
     "contract",
     "events",
@@ -244,19 +246,17 @@ fn section_for_sub(parent: &str, sub: &str) -> Option<&'static str> {
 /// piece of the guide worth having without asking.
 fn index() -> String {
     let mut out = String::from(
-        "Zellij Lua plugin reference. You write these yourself: `plugin_write` puts the complete \
-         file in the user's plugin folder once it compiles (`plugin_check` is that compile \
-         alone), and approving the write grants the permissions the source asks for. To change \
-         a plugin that works, `plugin_outline` or \
-         `plugin_search` finds the lines, `plugin_read` reads that range, `plugin_edit` \
-         replaces it - never re-send a file from memory. `plugin_reload` loads it and answers \
-         with its first render or the load error; `plugin_log` has what it logged. Never ask \
-         another agent to write a plugin. `plugin_docs query=<regex>` searches every section \
-         below (section:LINE:text); `section=` fetches one, or part of it with \
-         `start_line`/`line_count`:\n\n",
+        "Zellij Lua and JS/TS plugin reference. Never ask another agent to write a plugin. \
+         `plugin_write` checks syntax, asks approval and writes the source, then grants its literal permissions. \
+         `plugin_check` also checks JS/TS types and local imports. To edit, use `plugin_outline` or \
+         `plugin_search`, then `plugin_read` and `plugin_edit`. `plugin_reload` reports the first render \
+         or load error; `plugin_log` reads logs. `plugin_docs query=<regex>` searches sections \
+         (section:LINE:text); `section=` reads one, narrowed by `start_line`/`line_count`:\n\n",
     );
     for section in SECTIONS {
         let description = match section {
+            "deno" => "JS/TS plugins: lifecycle, SDK and authoring".to_owned(),
+            "deno_data" => "JS/TS filesystem, project configuration and persistence helpers".to_owned(),
             "index" => continue,
             "quickstart" => "a complete minimal plugin (below)".to_owned(),
             "example_clock" => "example: the small one".to_owned(),
@@ -308,7 +308,7 @@ fn index() -> String {
     }
     // The quickstart used to be appended here in full - 3.8 KB nobody asked for, on the first
     // call of every plugin conversation and on every round after it. It is one line above.
-    out.push_str("\nStart with `quickstart` unless you already know the shape.\n");
+    out.push_str("\nStart with `quickstart` for Lua or `deno` for JS/TS.\n");
     out
 }
 
@@ -341,6 +341,16 @@ pub fn section(name: &str) -> Option<String> {
         "prelude_data" => Some(fenced(prelude_part(6))),
         "prelude_ui" => Some(fenced(prelude_part(7))),
         "prelude_workflows" => Some(fenced(prelude_part(8))),
+        "deno" | "deno_data" => {
+            let guide = include_str!("../../../docs/DENO_PLUGINS.md");
+            let start = guide.find("## Files and project configuration")?;
+            let end = guide.find("## Modules and checking")?;
+            Some(if name == "deno_data" {
+                guide[start..end].to_owned()
+            } else {
+                format!("{}\nFilesystem and persistence helpers: `plugin_docs section=deno_data`.\n\n{}", &guide[..start], &guide[end..])
+            })
+        },
         other => heading(other).and_then(|heading| guide_section(heading, cut(other))),
     }
 }

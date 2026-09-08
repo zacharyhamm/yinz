@@ -1,5 +1,6 @@
 //! Offline authoring checks. Only the bundled compiler executes in this isolate;
 //! plugin source is passed to TypeScript as data, never loaded as an ES module.
+use super::limits::Limits;
 use super::loader::{file_specifier, transpile, PluginModuleLoader, SDK_SPECIFIER};
 use deno_core::{op2, JsRuntime, OpState, RuntimeOptions};
 use deno_error::JsErrorBox;
@@ -21,8 +22,7 @@ pub fn check_syntax(path: &Path, source: &str) -> Result<()> {
 pub fn check_plugin(path: &Path) -> Result<()> {
     let loader = PluginModuleLoader::for_check(path, false)?;
     let entry = loader.local_path(loader.entrypoint(), true)?;
-    let source = std::fs::read_to_string(&entry)
-        .with_context(|| format!("read plugin {}", path.display()))?;
+    let source = super::limits::read_source(&entry)?;
     check_semantic_source(path, &source)
 }
 
@@ -34,7 +34,6 @@ pub fn check_semantic_source(path: &Path, source: &str) -> Result<()> {
 
 struct CompilerFiles {
     loader: PluginModuleLoader,
-    source: Option<String>,
 }
 
 #[op2]
@@ -46,14 +45,7 @@ fn op_zellij_check_read(
     let files = state.borrow::<CompilerFiles>();
     let read = || -> Result<String> {
         let url = file_specifier(Path::new(name))?;
-        if url == *files.loader.entrypoint() {
-            if let Some(source) = &files.source {
-                return Ok(source.clone());
-            }
-        }
-        let path = files.loader.local_path(&url, true)?;
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("read check input {}", path.display()))
+        files.loader.read_source(&url, true)
     };
     read()
         .and_then(|source| {
@@ -93,7 +85,22 @@ deno_core::extension!(
 );
 
 fn check(path: &Path, source: Option<&str>) -> Result<()> {
-    let loader = PluginModuleLoader::for_check(path, source.is_some())?;
+    check_with_limits(
+        path,
+        source,
+        Limits::new(format!("{} (checker)", path.display())),
+    )
+}
+
+pub(super) fn check_with_limits(
+    path: &Path,
+    source: Option<&str>,
+    limits: std::sync::Arc<Limits>,
+) -> Result<()> {
+    let mut loader = PluginModuleLoader::for_check(path, source.is_some())?;
+    if let Some(source) = source {
+        loader.set_entry_source(source)?;
+    }
     let entry = loader
         .entrypoint()
         .to_file_path()
@@ -105,16 +112,17 @@ fn check(path: &Path, source: Option<&str>) -> Result<()> {
     });
     // A fresh runtime has no plugin extensions, filesystem/network runtime,
     // package resolver or module loader. The two ops enforce the loader root.
-    let mut runtime = JsRuntime::try_new(RuntimeOptions {
-        extensions: vec![zellij_checker::init()],
-        ..Default::default()
-    })
-    .context("create isolated TypeScript checker")?;
-    runtime.op_state().borrow_mut().put(CompilerFiles {
-        loader,
-        source: source.map(str::to_owned),
-    });
-    with_deadline(&mut runtime, Duration::from_secs(30), |runtime| {
+    let mut runtime = limits
+        .runtime(RuntimeOptions {
+            extensions: vec![zellij_checker::init()],
+            ..Default::default()
+        })
+        .context("create isolated TypeScript checker")?;
+    runtime
+        .op_state()
+        .borrow_mut()
+        .put(CompilerFiles { loader });
+    let result = with_deadline(&mut runtime, Duration::from_secs(30), |runtime| {
         runtime
             .execute_script(
                 "zellij:typescript-5.9.3",
@@ -137,7 +145,9 @@ fn check(path: &Path, source: Option<&str>) -> Result<()> {
             .execute_script("zellij:check", format!("zellijCheck({input});"))
             .with_context(|| format!("check plugin {}", path.display()))?;
         Ok(())
-    })
+    });
+    limits.check()?;
+    result
 }
 
 // The isolate stays on the calling thread. Only V8's thread-safe interrupt
@@ -150,15 +160,30 @@ fn with_deadline<T>(
     let interrupt = runtime.v8_isolate().thread_safe_handle();
     let (done, completion) = mpsc::channel();
     let timed_out = AtomicBool::new(false);
+    let limits = runtime
+        .op_state()
+        .borrow()
+        .try_borrow::<std::sync::Arc<Limits>>()
+        .cloned();
     let result = std::thread::scope(|scope| {
         let timed_out = &timed_out;
         scope.spawn(move || {
-            if matches!(
-                completion.recv_timeout(timeout),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ) {
-                timed_out.store(true, Ordering::Release);
-                interrupt.terminate_execution();
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                match completion.recv_timeout(remaining.min(Duration::from_millis(10))) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {},
+                }
+                if limits.as_ref().is_some_and(|limits| limits.exhausted()) {
+                    interrupt.terminate_execution();
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    timed_out.store(true, Ordering::Release);
+                    interrupt.terminate_execution();
+                    break;
+                }
             }
         });
         let result = check(runtime);

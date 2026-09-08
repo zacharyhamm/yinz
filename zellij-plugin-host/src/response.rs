@@ -302,6 +302,20 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
         },
         // `nil` for a plugin that compiles, the error text otherwise: a check is a question,
         // so a failing one is an answer rather than a raised error.
+        CommandType::CheckPlugin => {
+            use zellij_plugin_api::plugin_command::{
+                check_plugin_response, ProtobufCheckPluginResponse,
+            };
+            decode(bytes).and_then(|r: ProtobufCheckPluginResponse| match r.result {
+                Some(check_plugin_response::Result::ReportJson(json)) => {
+                    value(serde_json::from_str::<
+                        zellij_types::authoring::PluginCheckReport,
+                    >(&json)?)
+                },
+                Some(check_plugin_response::Result::Error(error)) => Err(anyhow!(error)),
+                None => Err(anyhow!("zellij answered with nothing")),
+            })
+        },
         CommandType::CheckLuaPlugin => {
             decode(bytes).and_then(|r: ProtobufCheckLuaPluginResponse| value(r.error))
         },

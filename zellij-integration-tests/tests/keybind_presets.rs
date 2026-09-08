@@ -1,10 +1,12 @@
 #![cfg(unix)]
 
 use insta::assert_snapshot;
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, keys, normalized, start_zellij, GridSnapshot,
     TestSession,
 };
+use zellij_types::data::InputMode;
 
 const ARROW_DOWN: &[u8] = b"\x1b[B";
 
@@ -69,12 +71,14 @@ fn switching_keybind_presets_updates_the_status_bar_without_a_new_tab() {
     open_presets_screen(&zellij);
     apply_selected_preset_and_close(&zellij, 2, "UNLOCK");
 
-    // Ctrl+g starts a timed prefix in Locked mode. Closing the configuration pane also
-    // updates passthrough state, which can clear that pending prefix before it expires.
-    // This test observes preset delivery; use an acknowledged mode change to reach its view.
-    zellij.run_cli_action(zellij_cli::args::CliAction::SwitchMode {
-        input_mode: zellij_types::data::InputMode::Normal,
+    // Ctrl+g starts a timed prefix in Locked mode, and reconfiguration updates client
+    // bindings asynchronously. Closing the configuration pane also updates passthrough
+    // state, which can clear a pending prefix before it expires. This test observes preset
+    // delivery: reach its view with an acknowledged mode change instead of the toggle.
+    let (code, output) = zellij.run_cli_action_reporting(CliAction::SwitchMode {
+        input_mode: InputMode::Normal,
     });
+    assert_eq!(code, 0, "{output}");
     let grid_snapshot = wait_for_unlock_first_status_bar(&zellij);
     assert_snapshot!(normalized(&grid_snapshot));
 

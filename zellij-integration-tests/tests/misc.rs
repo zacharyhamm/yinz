@@ -125,6 +125,11 @@ fn previous_swap_layout() {
             && grid_snapshot.contains("STACKED")
             && !grid_snapshot.contains("HALF-STACKED")
             && !grid_snapshot.contains("BASE")
+            // The tab bar is a plugin; wait for it to name the visible stack member.
+            && grid_snapshot
+                .lines()
+                .first()
+                .is_some_and(|bar| bar.contains("[1] Tab #1"))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();

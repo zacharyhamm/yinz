@@ -265,6 +265,7 @@ enum CommandName {
   SubscribePaneOutput = 286;
   SwampRequest = 287;
   SetPaneSubtitle = 288;
+  CheckPlugin = 289;
 }
 
 message PluginCommand {
@@ -461,6 +462,7 @@ message PluginCommand {
     SetContextMenuPayload set_context_menu_payload = 211;
     string register_default_keybindings_payload = 212;
     CheckLuaPluginPayload check_lua_plugin_payload = 213;
+    CheckPluginPayload check_plugin_payload = 230;
     SetPaneAgentPayload set_pane_agent_payload = 214;
     string reload_plugin_by_url_payload = 215;
     ReadPluginLogPayload read_plugin_log_payload = 216;
@@ -2054,4 +2056,18 @@ message SwampRequestPayload {
   string id = 2;
   string operation = 3;
   string payload = 4;
+}
+
+// The report uses the shared serde wire types, as project configuration does.
+message CheckPluginPayload {
+  string name = 1;
+  string source = 2;
+  enum Mode { Syntax = 0; Semantic = 1; }
+  Mode mode = 3;
+}
+message CheckPluginResponse {
+  oneof result {
+    string report_json = 1;
+    string error = 2;
+  }
 }

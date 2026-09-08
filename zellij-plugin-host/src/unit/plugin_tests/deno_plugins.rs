@@ -2,11 +2,378 @@
 //! Synchronization observes guest progress, never elapsed time or render counts.
 
 use super::*;
+use std::time::Duration;
 use zellij_types::internal_ids::{PluginId, TabId};
 
 const CLIENT: ClientId = ClientId::new(1);
 const PLUGIN: PluginId = PluginId::new(0);
 const SIZE: Size = Size { cols: 80, rows: 10 };
+
+#[test]
+fn deno_headless_hooks_deliver_the_first_payload_after_async_permissions_and_reload() {
+    use zellij_types::input::hooks::HookPoint;
+    let harness = Harness::new(
+        "ts",
+        r#"
+let ready;
+zellij.on('Hook', async event => {
+  await ready;
+  if (event.point !== 'pane_exit' || event.payload.exit_code !== 0 || !event.payload.held) throw Error('hook wire payload');
+  zellij.command('RenameTabWithId', [1, 'deno hook:' + event.payload.pane_id]);
+});
+export default {load() {zellij.subscribe(['Hook']); ready = zellij.waitForPermissions(['ChangeApplicationState']); return ready;}};
+"#,
+        PermissionStatus::Granted,
+    );
+    super::lua_plugins::bind_hook(
+        &harness.sender,
+        HookPoint::PaneExit,
+        run_plugin(&harness.path),
+    );
+    let fire = |id| {
+        harness
+            .sender
+            .send(PluginInstruction::RunHook {
+                point: HookPoint::PaneExit,
+                pane_id: Some(PaneId::Terminal(crate::TerminalId::new(id))),
+                payload: super::lua_plugins::pane_exit_payload(id),
+                client_id: CLIENT,
+            })
+            .unwrap()
+    };
+    let observed = |name: &str| {
+        harness.log.wait_until("the headless Deno hook changed the tab", std::time::Duration::from_secs(20), |log| {
+        log.iter().any(|instruction| matches!(instruction, ScreenInstruction::RenameTabWithId(_, bytes, _) if bytes == name.as_bytes())).then_some(())
+    })
+    };
+    // A headless launch can reuse a detached UI client's ID without inheriting its cancellation.
+    harness
+        .sender
+        .send(PluginInstruction::RemoveClient(CLIENT))
+        .unwrap();
+    fire(7);
+    observed("deno hook:7");
+    fire(8);
+    observed("deno hook:8");
+    harness.reload();
+    fire(9);
+    observed("deno hook:9");
+}
+
+#[test]
+fn deno_filesystem_helpers_keep_binary_data_confinement_and_config_revision_checks() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'starting';
+export default {
+  async load() { try {
+    const assert = (ok) => { if (!ok) throw Error('filesystem host assertion'); };
+    const refused = (call) => { try { call(); return false; } catch (_) { return true; } };
+    assert(refused(() => zellij.fs.read('/host/input')));
+    assert(refused(() => zellij.command('CheckPlugin', {name:'check.ts',source:'export default {};',mode:'Syntax'})));
+    await zellij.waitForPermissions(['ReadFiles', 'WriteFiles']);
+    zellij.fs.mkdir('/host/files/nested', {all: true});
+    const bytes = new Uint8Array([0, 128, 255, 10]);
+    assert(zellij.fs.write('/host/files/nested/b', bytes) === undefined);
+    assert([...zellij.fs.read('/host/files/nested/b')].join() === [...bytes].join());
+    assert(refused(() => zellij.fs.read('/host/files/nested/b', {maxBytes: 2})));
+    zellij.fs.write('/host/files/nested/a', 'hé🙂');
+    zellij.fs.write('/host/files/nested/a', '!', {append: true});
+    assert(zellij.decodeUtf8(zellij.fs.read('/host/files/nested/a')) === 'hé🙂!');
+    assert(zellij.fs.list('/host/files/nested').map(e => e.path.split('/').at(-1)).join() === 'a,b');
+    assert(zellij.fs.metadata('/host/files/missing') === null);
+    assert(zellij.fs.metadata('/host/files/nested/b').len === 4);
+    for (const path of ['/host/../escape', '/host/link/secret', '/host/link/new/nested']) {
+      assert(refused(() => zellij.fs.read(path)));
+      assert(refused(() => zellij.fs.write(path, 'bad', {createDirs: true})));
+      assert(refused(() => zellij.fs.rename('/host/files/nested/b', path)));
+      assert(refused(() => zellij.fs.rename(path, '/host/files/from-outside')));
+    }
+    zellij.fs.rename('/host/files/nested/b', '/host/files/moved');
+    assert(zellij.fs.metadata('/host/files/nested/b') === null);
+    assert([...zellij.fs.read('/host/files/moved')].join() === [...bytes].join());
+    zellij.fs.remove('/host/files', {recursive: true});
+    assert(zellij.fs.metadata('/host/files') === null);
+    const previous = zellij.projectConfig.read('.');
+    assert(previous.source === null);
+    assert(refused(() => zellij.projectConfig.write('.', 'agent_exit {}')));
+    const current = zellij.projectConfig.write('.', 'agent_exit { default_branch "main"; }', previous.source);
+    assert(current.config.default_branch === 'main');
+    assert(refused(() => zellij.projectConfig.write('.', 'agent_exit {}', previous.source)));
+    assert(zellij.projectConfig.read('.').source === current.source);
+    state = 'filesystem and project config verified';
+  } catch (error) {state = 'filesystem failed: ' + error.stack;} },
+  render() { return state; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    let outside = tempdir().unwrap();
+    std::fs::write(outside.path().join("secret"), "unchanged").unwrap();
+    std::os::unix::fs::symlink(outside.path(), harness.directory.path().join("link")).unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .arg(harness.directory.path())
+        .status()
+        .unwrap()
+        .success());
+    harness.load();
+    let frame = harness.rendered("filesystem");
+    assert!(
+        frame.contains("filesystem and project config verified"),
+        "{frame}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("secret")).unwrap(),
+        "unchanged"
+    );
+    assert!(!outside.path().join("new").exists());
+}
+
+#[test]
+fn deno_data_helpers_preserve_values_rollback_conflicts_watch_disposal_and_reload_persistence() {
+    data_helpers_persistence(None);
+}
+
+#[test]
+#[ignore = "requires cargo x postgres-test --build and ZELLIJ_PLUGIN_DATA_TEST_URL"]
+fn deno_data_helpers_on_postgres() {
+    let directory = tempdir().unwrap();
+    let url = std::env::var("ZELLIJ_PLUGIN_DATA_TEST_URL").expect("Postgres test URL");
+    data_helpers_persistence(Some(DataAccess::postgres(
+        &url,
+        "deno_sdk_tests",
+        directory.path(),
+    )));
+}
+
+fn data_helpers_persistence(data_access: Option<DataAccess>) {
+    let harness = Harness::with_services(
+        "ts",
+        r#"
+let state = 'starting';
+export default {
+  async load() { try {
+    await zellij.waitForPermissions(['PluginData']);
+    const d = zellij.data;
+    const assert = (ok) => { if (!ok) throw Error('data helper assertion'); };
+    let denial = '';
+    try {d.define('shared_item', {text:'Text'}, {namespace:'shared:deno_sdk'});} catch (error) {denial = String(error);}
+    if (!denial.includes('SharedPluginData') && !denial.includes('shared_plugin_data')) throw Error('shared permission denial: ' + denial);
+    await zellij.waitForPermissions(['SharedPluginData']);
+    d.define('shared_item', {text:'Text'}, {namespace:'shared:deno_sdk'});
+    d.apply([d.put('shared_item', {text:'shared from Deno'}, {uid:'shared'})], {namespace:'shared:deno_sdk'});
+    d.define('items', {n:'Int', r:'Real', text:'Text', json:'Json', blob:'Blob', flag:'Bool', nullable:'Text', host_id:'Text', zellij_session_name:'Text'});
+    const values = {n:9223372036854775807n, r:d.real(1), text:'hello', json:d.json({nested:[1,true]}),
+      blob:new Uint8Array([0,128,255]), flag:false, nullable:null, host_id:'author-host', zellij_session_name:'author-session'};
+    d.apply([d.put('items', values, {uid:'row', expectRev:0})]);
+    const query = {entity:'items', filter:d.eq('uid','row')};
+    const snapshot = d.fetch(query);
+    const first = snapshot.records[0], second = d.fetch(query).records[0];
+    assert(first.n === values.n && first.r === 1 && first.flag === false && first.nullable === null);
+    assert(first.json === '{"nested":[1,true]}' && [...first.blob].join() === '0,128,255');
+    assert(first.host_id === values.host_id && first.zellij_session_name === values.zellij_session_name);
+    assert(snapshot.raw.rows[0][snapshot.raw.columns.indexOf('r')].Real === 1);
+    assert(d.catalog().some(entry => entry.def.name === 'items'));
+    d.apply([d.update('items', d.eq('uid','row'), {text:'second author'}, {expectRev:second.rev})]);
+    let conflict = false;
+    try { d.apply([d.put('items', values, {uid:'rollback'}), d.update('items', d.eq('uid','row'), {text:'stale author'}, {expectRev:first.rev})]); }
+    catch (error) { conflict = d.isConflict(error); }
+    assert(conflict && d.count({entity:'items'}) === 1 && d.fetch(query).records[0].text === 'second author');
+    assert(d.fetch({entity:'items',filter:d.and(d.gt('n',0),d.not(d.eq('flag',true)),d.contains('text','author'))}).records.length === 1);
+    let changes = 0;
+    const watch = d.watch(query, snapshot => { changes++; assert(snapshot.records[0].text === 'watched'); });
+    assert(watch.initial.records[0].text === 'second author');
+    const changed = zellij.waitForEvent('PluginDataChanged', e => e.watch_id === watch.watchId);
+    d.apply([d.update('items',d.eq('uid','row'),{text:'watched'})]);
+    await changed;
+    assert(changes === 1);
+    watch.dispose(); watch.dispose();
+    d.apply([d.update('items',d.eq('uid','row'),{text:'persisted'})]);
+    // A later host event provides an ordering barrier without a sleep.
+    state = 'data helpers: watch disposed'; zellij.requestRender();
+    await zellij.waitForEvent('CustomMessage');
+    assert(changes === 1 && d.fetch(query).records[0].text === 'persisted');
+    state = 'data helpers verified';
+  } catch (error) {state = 'data helpers failed: ' + error.stack;} },
+  render() { return state; }
+};
+"#,
+        Some(PermissionStatus::Granted),
+        None,
+        data_access,
+    );
+    harness.load();
+    let frame = harness.rendered("data helpers");
+    assert!(frame.contains("watch disposed"), "{frame}");
+    harness.event(release_event());
+    harness.rendered("data helpers verified");
+    std::fs::write(
+        &harness.path,
+        r#"
+let state = 'reloading';
+export default {async load() {
+  await zellij.waitForPermissions(['PluginData']);
+  const row = zellij.data.fetch({entity:'items'}).records[0];
+  if (row.text !== 'persisted' || row.n !== 9223372036854775807n) throw Error('lost persistence');
+  state = 'same URL persistence verified';
+}, render() {return state;}};
+"#,
+    )
+    .unwrap();
+    harness.reload();
+    harness.rendered("same URL persistence verified");
+    let other = harness.directory.path().join("other.ts");
+    std::fs::write(
+        &other,
+        r#"
+let state='starting';
+export default {async load() {
+  await zellij.waitForPermissions(['PluginData']);
+  zellij.data.define('items', {text:'Text'});
+  if (zellij.data.count({entity:'items'}) !== 0) throw Error('namespace leaked');
+  await zellij.waitForPermissions(['SharedPluginData']);
+  if (zellij.data.fetch({entity:'shared_item',namespace:'shared:deno_sdk'}).records[0].text !== 'shared from Deno') throw Error('shared namespace missing');
+  state='different URL namespace verified';
+},render(){return state;}};
+"#,
+    )
+    .unwrap();
+    load(&harness.sender, run_plugin(&other));
+    harness.rendered("different URL namespace verified");
+    let lua = harness.directory.path().join("shared_reader.lua");
+    std::fs::write(
+        &lua,
+        r#"
+local z = require('zellij')
+local state = 'waiting'
+local M = {}
+function M.load()
+  z.subscribe {'permission_request_result'}
+  z.request_permission {'plugin_data', 'shared_plugin_data'}
+end
+z.on('permission_request_result', function()
+  local rows = z.data.fetch {entity='shared_item', namespace='shared:deno_sdk'}
+  assert(rows[1].text == 'shared from Deno')
+  state = 'Lua reads Deno shared data'
+end)
+function M.render() return state end
+return M
+"#,
+    )
+    .unwrap();
+    load(&harness.sender, run_plugin(&lua));
+    harness.rendered("Lua reads Deno shared data");
+}
+
+#[test]
+fn deno_integer_commands_keep_values_and_revision_guards_through_the_store() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'starting';
+export default {
+  async load() {
+    await zellij.waitForPermissions(['PluginData']);
+    const assert = (ok) => { if (!ok) throw Error('numeric host assertion'); };
+    const attr = (name, kind) => ({name, kind, indexed: false, full_text: false, unique: false, required: false, default: null});
+    zellij.command('DataDefineEntity', {namespace: null, allow_destructive: false,
+      def: {name: 'numbers', version: 1, attrs: [attr('n', 'Int'), attr('r', 'Real')]}});
+    const put = (n, r, expect_rev) => ({Put: {entity: 'numbers', uid: 'row',
+      values: [['n', {Int: n}], ['r', {Real: r}]], expect_rev}});
+    const apply = (...mutations) => zellij.command('DataApply', {namespace: null, mutations});
+    const read = () => zellij.command('DataFetch', {request: {namespace: null, entity: 'numbers',
+      filter: null, search: null, sort: [], select: [], limit: 100, offset: 0, after_id: null}});
+    const field = (rows, name) => rows.rows[0][rows.columns.indexOf(name)];
+    for (const n of [-9223372036854775808n, 9223372036854775807n, 9007199254740991, -9007199254740991]) {
+      apply(put(n, 1.5, null));
+      const rows = read();
+      assert(field(rows, 'n').Int === n);
+      assert(field(rows, 'r').Real === 1.5);
+    }
+    const before = read();
+    const rev = field(before, 'rev').Int;
+    for (const invalid of [NaN, Infinity, -Infinity, 0.5, -0.5, 9007199254740992, 18446744073709551616n]) {
+      let refused = false;
+      try { apply(put(10, 2, invalid)); } catch (_) { refused = true; }
+      assert(refused && field(read(), 'rev').Int === rev);
+    }
+    apply(put(42, 2, rev));
+    let conflict = false;
+    try { apply(put(99, 3, rev)); } catch (error) { conflict = String(error).includes('conflict'); }
+    assert(conflict && field(read(), 'n').Int === 42);
+    state = 'integer host path verified';
+  },
+  render() { return state; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    harness.rendered("integer host path verified");
+}
+
+#[test]
+fn deno_exhaustion_disposes_the_guest_and_reload_recovers_in_a_live_session() {
+    const CHILD: &str = "ZELLIJ_TEST_DENO_SMALL_BUDGET";
+    if std::env::var_os(CHILD).is_none() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "plugins::plugin_tests::deno_plugins::deno_exhaustion_disposes_the_guest_and_reload_recovers_in_a_live_session", "--nocapture"])
+            .env(CHILD, "1").spawn().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(40);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "session quota child: {status}");
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("session quota child exceeded deadline");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let harness = Harness::new(
+        "ts",
+        r#"
+export default {
+  load() { zellij.subscribe(['CustomMessage', 'BeforeClose']); },
+  update(event) {
+    if (event.CustomMessage) {
+      try { new Uint8Array(32 * 1024 * 1024); } catch (_) {}
+    }
+    if (event === 'BeforeClose') throw Error('EXHAUSTED GUEST CLEANUP RAN');
+  },
+  render() { return 'quota guest ready'; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    harness.rendered("quota guest ready");
+    harness.event(release_event());
+    harness.log.wait_until("allocation failure is reported", Duration::from_secs(10), |log| {
+        log.iter().any(|instruction| matches!(instruction,
+            ScreenInstruction::UpdatePluginLoadingStage(id, stage) if *id == PLUGIN && stage.is_error())).then_some(())
+    });
+    let survivor = harness.directory.path().join("survivor.js");
+    std::fs::write(
+        &survivor,
+        "export default {render() {return 'other plugin survived quota';}};",
+    )
+    .unwrap();
+    load(&harness.sender, run_plugin(&survivor));
+    harness.rendered("other plugin survived quota");
+    std::fs::write(
+        &harness.path,
+        "export default {render() {return 'quota replacement healthy';}};",
+    )
+    .unwrap();
+    harness.reload();
+    harness.rendered("quota replacement healthy");
+}
 
 // CustomMessage is ungated; InputReceived would require ReadApplicationState.
 fn release_event() -> Event {
@@ -75,6 +442,16 @@ impl Harness {
         status: Option<PermissionStatus>,
         event_sender: Option<SenderWithContext<PluginInstruction>>,
     ) -> Self {
+        Self::with_services(extension, source, status, event_sender, None)
+    }
+
+    fn with_services(
+        extension: &str,
+        source: &str,
+        status: Option<PermissionStatus>,
+        event_sender: Option<SenderWithContext<PluginInstruction>>,
+        data_access: Option<DataAccess>,
+    ) -> Self {
         let directory = tempdir().unwrap();
         let path = directory.path().join(format!("acceptance.{extension}"));
         std::fs::write(&path, source).unwrap();
@@ -83,7 +460,8 @@ impl Harness {
             None,
             None,
             Default::default(),
-            event_sender,
+            event_sender.clone(),
+            data_access,
         );
         let log = Watched::new(vec![]);
         let logger = match status {
@@ -91,7 +469,10 @@ impl Harness {
                 &log,
                 receiver,
                 directory.path().join("permissions.kdl"),
-                sender.clone(),
+                // An intercepted plugin bus must also carry permission answers:
+                // otherwise they can overtake CachePluginEvents on that bus and
+                // leave all subsequent events cached after the grant.
+                event_sender.unwrap_or_else(|| sender.clone()),
                 CLIENT,
                 status,
             ),
@@ -197,6 +578,8 @@ export default {
     catch (_) { helper = "rejected"; }
     const status = await answer;
     const ids = zellij.command("GetPluginIds");
+    const objectIds = zellij.command({GetPluginIds: null});
+    if (ids.plugin_id !== objectIds.plugin_id || ids.client_id !== objectIds.client_id) throw new Error("command forms disagree");
     let outcome = "returned";
     try { zellij.command("RenameTabWithId", [1, "after-grant"]); }
     catch (_) { outcome = "rejected"; }
@@ -242,6 +625,38 @@ fn deno_permission_grant_resumes_async_load_and_decodes_command_replies() {
 #[serial(plugin_tests)]
 fn deno_permission_denial_never_routes_the_protected_command() {
     assert!(permission_round_trip(PermissionStatus::Denied, "Denied").is_empty());
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_async_commands_reject_without_permission() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'starting';
+export default {
+  async load() {
+    const denied: string[] = [];
+    for (const [name, promise] of [
+      ['run', zellij.runCommand({command: ['/usr/bin/true']})],
+      ['web', zellij.webRequest({url: 'https://example.com'})],
+    ] as const) {
+      try { await promise; } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('permission')) throw error;
+        denied.push(`${name} denied`);
+      }
+    }
+    zellij.command('Unsubscribe', ['RunCommandResult', 'WebRequestResult']);
+    state = denied.join(',');
+  },
+  render() { return state; }
+};
+"#,
+        PermissionStatus::Denied,
+    );
+    harness.load();
+    harness.rendered("run denied,web denied");
+    harness.finish();
 }
 
 #[test]
@@ -624,6 +1039,7 @@ let state: string = "starting";
 export default {
   async load() {
     const event = zellij.waitForEvent("CustomMessage", ([name]) => name === "acceptance-release");
+    zellij.command("Unsubscribe", ["CustomMessage"]);
     state = `${label} awaiting input`;
     zellij.requestRender();
     await event;
@@ -662,6 +1078,116 @@ export default {
         1,
         "reload must retain the existing pane"
     );
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_command_helper_completes_and_reload_rejects_the_old_host_reply() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("command.ts");
+    let source = r#"
+const label = 'original';
+let state = 'pending';
+let replies = 0;
+let fences = 0;
+export default {
+  async load() {
+    zellij.subscribe(['CustomMessage']);
+    await zellij.waitForPermissions(['RunCommands']);
+    const command = zellij.runCommand({command: ['/usr/bin/true'], context: {label}});
+    zellij.command({Unsubscribe: ['RunCommandResult']});
+    const result = await command;
+    if (result.exitCode !== 7 || zellij.decodeUtf8(result.stdout) !== 'hé🙂'
+        || result.stderr[0] !== 255 || result.context.label !== label) throw Error('incorrect result');
+    state = 'completed';
+  },
+  update(event) {
+    if (typeof event !== 'object') return false;
+    if ('RunCommandResult' in event) replies++;
+    if ('CustomMessage' in event) fences++;
+    return true;
+  },
+  render() { return `${label} ${state} replies=${replies} fences=${fences}`; }
+};
+"#;
+    std::fs::write(&path, source).unwrap();
+    let (sender, jobs_receiver, receiver, teardown) =
+        create_plugin_thread_with_background_jobs_receiver(Some(directory.path().to_owned()), None);
+    let log = Watched::new(vec![]);
+    let logger = permissions_and_log_until_disconnect(
+        &log,
+        receiver,
+        directory.path().join("permissions.kdl"),
+        sender.clone(),
+        CLIENT,
+        PermissionStatus::Granted,
+    );
+    let jobs = Watched::new(vec![]);
+    let job_logger = log_until_disconnect(&jobs, jobs_receiver);
+    sender.send(PluginInstruction::AddClient(CLIENT)).unwrap();
+    let harness = Harness {
+        sender,
+        log,
+        directory,
+        path,
+        teardown: Some(teardown),
+        logger: Some(logger),
+    };
+    let completion = |index| {
+        jobs.wait_until(
+            "the helper dispatched its command",
+            default_timeout(),
+            |jobs| {
+                jobs.iter()
+                    .filter_map(|job| match job {
+                        BackgroundJob::RunCommand(
+                            plugin,
+                            client,
+                            _,
+                            _,
+                            _,
+                            _,
+                            context,
+                            _,
+                            generation,
+                        ) => Some(PluginInstruction::for_plugin_event(
+                            *plugin,
+                            *client,
+                            *generation,
+                            Event::RunCommandResult(
+                                Some(7),
+                                "hé🙂".as_bytes().to_vec(),
+                                vec![255],
+                                context.clone(),
+                            ),
+                        )),
+                        _ => None,
+                    })
+                    .nth(index)
+            },
+        )
+    };
+    harness.load();
+    let old = completion(0);
+    harness.rendered("original pending replies=0 fences=0");
+    std::fs::write(&harness.path, source.replace("'original'", "'replacement'")).unwrap();
+    harness.reload();
+    let current = completion(1);
+    harness.rendered("replacement pending replies=0 fences=0");
+    match (&old, &current) {
+        (
+            PluginInstruction::DenoEvent(_, _, old_generation, _),
+            PluginInstruction::DenoEvent(_, _, current_generation, _),
+        ) => assert_ne!(old_generation, current_generation),
+        _ => panic!("commands must carry their originating generation"),
+    }
+    harness.sender.send(old).unwrap();
+    harness.event(release_event());
+    harness.rendered("replacement pending replies=0 fences=1");
+    harness.sender.send(current).unwrap();
+    harness.rendered("replacement completed replies=1 fences=1");
+    harness.finish();
+    job_logger.join().unwrap();
 }
 
 #[test]
@@ -735,21 +1261,24 @@ export default {
         .sender
         .send(PluginInstruction::AddClient(CLIENT))
         .unwrap();
-    harness.log.wait_until_described(
-        "reattaching client 1 creates a fresh instance",
-        default_timeout(),
-        |log| {
-            rendered_assets(&log[before_reattach..])
-                .iter()
-                .any(|(client, frame)| {
-                    *client == CLIENT && frame.contains("client=1 keys=0 completed=0")
-                })
-                .then_some(())
-        },
-        |log| describe_renders(log),
-    );
+    let replacement_rendered = |expected: &str| {
+        harness.log.wait_until_described(
+            &format!("reattached client 1 renders {expected}"),
+            default_timeout(),
+            |log| {
+                rendered_assets(&log[before_reattach..])
+                    .iter()
+                    .any(|(client, frame)| *client == CLIENT && frame.contains(expected))
+                    .then_some(())
+            },
+            |log| describe_renders(log),
+        );
+    };
+    replacement_rendered("client=1 keys=0 completed=0");
     harness.event(Event::Key(KeyWithModifier::new(BareKey::Char('c'))));
-    harness.rendered("client=1 keys=1 completed=0");
+    // The removed instance also rendered keys=1. Only the replacement's frame
+    // proves its event waiter exists before broadcasting the release below.
+    replacement_rendered("client=1 keys=1 completed=0");
     if immediate {
         harness
             .sender
@@ -781,6 +1310,118 @@ export default {
     assert!(!rendered_assets(&log)
         .iter()
         .any(|(_, frame)| frame.contains("completed=2")));
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_disconnect_interrupts_attached_clients_infinite_load() {
+    disconnect_attached_runaway(true);
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_disconnect_interrupts_attached_clients_infinite_callback() {
+    disconnect_attached_runaway(false);
+}
+
+fn disconnect_attached_runaway(during_load: bool) {
+    let source = r#"
+let keys = 0;
+function runaway() {
+  if (zellij.getPluginIds().client_id !== 2) return;
+  zellij.command('SetSelectable', false);
+  for (;;) {}
+}
+export default {
+  load() { zellij.subscribe(['Key']); LOAD },
+  update(event) {
+    if (!event.Key) return false;
+    runaway();
+    keys++;
+    return true;
+  },
+  render() { return `client=${zellij.getPluginIds().client_id} keys=${keys}`; }
+};
+"#;
+    let harness = Harness::new(
+        "js",
+        &source.replace("LOAD", if during_load { "runaway();" } else { "" }),
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    harness.rendered("client=1 keys=0");
+    let other = ClientId::new(2);
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(other))
+        .unwrap();
+    if !during_load {
+        harness.rendered("client=2 keys=0");
+        harness
+            .sender
+            .send(PluginInstruction::Update(vec![(
+                Some(PLUGIN),
+                Some(other),
+                Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
+            )]))
+            .unwrap();
+    }
+    harness.log.wait_until(
+        "the attaching client's instance entered its loop",
+        default_timeout(),
+        |log| {
+            log.iter()
+                .any(|i| matches!(i, ScreenInstruction::SetSelectable(_, false)))
+                .then_some(())
+        },
+    );
+    harness
+        .sender
+        .send(PluginInstruction::RemoveClient(other))
+        .unwrap();
+    // This instance uses the same executor: a new frame proves cancellation freed it
+    // and did not cancel the original client's token.
+    harness.event(Event::Key(KeyWithModifier::new(BareKey::Char('b'))));
+    harness.rendered("client=1 keys=1");
+    harness.finish();
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_shared_instance_survives_its_owners_disconnect() {
+    let harness = Harness::new(
+        "js",
+        r#"
+let keys = 0;
+export default {
+  load() { zellij.subscribe(['Key']); },
+  update(event) { if (event.Key) { keys++; return true; } },
+  render() { return `shared keys=${keys}`; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    harness.load_shared();
+    harness.rendered("shared keys=0");
+    let other = ClientId::new(2);
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(other))
+        .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::RemoveClient(CLIENT))
+        .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::Update(vec![(
+            Some(PLUGIN),
+            Some(other),
+            Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
+        )]))
+        .unwrap();
+    harness.rendered("shared keys=1");
+    harness.finish();
 }
 
 #[test]
@@ -1277,4 +1918,91 @@ export default {
 "#,
         false,
     );
+}
+
+#[test]
+fn deno_reload_disposes_host_watches_and_rejects_their_queued_deliveries() {
+    let source = r#"
+const label = 'old';
+let changes = 0, fences = 0;
+export default {
+  async load() {
+    // The proxy must forward the fence subscription before capturing DataChanged.
+    zellij.subscribe(['CustomMessage']);
+    await zellij.waitForPermissions(['PluginData']);
+    const d = zellij.data;
+    d.define('watched', {value:'Text'});
+    d.watch({entity:'watched'}, () => {changes++; zellij.requestRender();});
+    d.apply([d.put('watched', {value:label}, {uid:'one'})]);
+  },
+  update(event) {if (event.CustomMessage) {fences++; return true;}},
+  render() {return `${label} changes=${changes} fences=${fences}`;}
+};
+"#;
+    let (to_proxy, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    let to_proxy = SenderWithContext::new(to_proxy);
+    let harness = Harness::with_event_sender(
+        "ts",
+        source,
+        Some(PermissionStatus::Granted),
+        Some(to_proxy.clone()),
+    );
+    let replies = Watched::new(Vec::<PluginInstruction>::new());
+    let proxy = std::thread::spawn({
+        let replies = replies.clone();
+        let sender = harness.sender.clone();
+        move || loop {
+            let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
+            match instruction {
+                PluginInstruction::Exit => break,
+                changed
+                @ PluginInstruction::DenoEvent(_, _, _, Event::PluginDataChanged { .. }) => {
+                    replies.lock().push(changed)
+                },
+                PluginInstruction::Update(ref events)
+                    if events
+                        .iter()
+                        .any(|(_, _, event)| matches!(event, Event::PluginDataChanged { .. })) =>
+                {
+                    replies.lock().push(instruction)
+                },
+                other => {
+                    let _ = sender.send(other);
+                },
+            }
+        }
+    });
+    harness.load();
+    let old = replies.wait_until("old host watch reply", Duration::from_secs(20), |events| {
+        events.first().cloned()
+    });
+    harness.rendered("old changes=0 fences=0");
+    std::fs::write(
+        &harness.path,
+        source.replace("label = 'old'", "label = 'new'"),
+    )
+    .unwrap();
+    harness.reload();
+    let current = replies.wait_until("new host watch reply", Duration::from_secs(20), |events| {
+        events.get(1).cloned()
+    });
+    harness.rendered("new changes=0 fences=0");
+    match (&old, &current) {
+        (
+            PluginInstruction::DenoEvent(_, _, old, _),
+            PluginInstruction::DenoEvent(_, _, new, _),
+        ) => assert_ne!(old, new),
+        _ => panic!("data replies require generations: {old:?}, {current:?}"),
+    }
+    // Each synchronous apply emits one change before its following render tick.
+    // A surviving old watch would have emitted a third change from the second apply.
+    assert_eq!(replies.lock().len(), 2);
+    harness.sender.send(old).unwrap();
+    harness.event(release_event());
+    harness.rendered("new changes=0 fences=1");
+    harness.sender.send(current).unwrap();
+    harness.rendered("new changes=1 fences=1");
+    harness.finish();
+    to_proxy.send(PluginInstruction::Exit).unwrap();
+    proxy.join().unwrap();
 }

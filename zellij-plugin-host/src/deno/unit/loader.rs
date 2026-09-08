@@ -1,5 +1,34 @@
 use super::*;
 
+#[test]
+fn deno_source_and_graph_budgets_apply_before_parsing() {
+    let (dir, loader) = fixture();
+    let oversized = " ".repeat(limits::MAX_SOURCE_BYTES + 1);
+    assert!(PluginModuleLoader::new(&dir.path().join("main.ts"), &oversized).is_err());
+    assert!(super::super::check_syntax(&dir.path().join("main.ts"), &oversized).is_err());
+    let path = dir.path().join("large.ts");
+    std::fs::write(&path, &oversized).unwrap();
+    assert!(loader
+        .read_source(&file_specifier(&path).unwrap(), true)
+        .is_err());
+    let source = " ".repeat(limits::MAX_SOURCE_BYTES);
+    for index in 0..8 {
+        let path = dir.path().join(format!("dep{index}.ts"));
+        std::fs::write(&path, &source).unwrap();
+        let url = file_specifier(&path).unwrap();
+        assert_eq!(loader.read_source(&url, true).unwrap().len(), source.len());
+        assert!(
+            loader.read_source(&url, true).is_ok(),
+            "reading a cached module must not double-charge"
+        );
+    }
+    assert!(loader
+        .read_source(loader.entrypoint(), true)
+        .unwrap_err()
+        .to_string()
+        .contains("module-graph budget"));
+}
+
 fn fixture() -> (tempfile::TempDir, PluginModuleLoader) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("main.ts"), "export const n: number = 1;").unwrap();

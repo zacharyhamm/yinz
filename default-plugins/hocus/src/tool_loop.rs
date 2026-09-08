@@ -1179,9 +1179,7 @@ impl State {
                 // The lint rides along with the compile result, which is the whole point of
                 // checking before writing: a source that compiles can still be spelling a
                 // namespace or a permission the store will refuse at run time.
-                (Some(name), Some(source)) => match tools::compile_report(name, source) {
-                    Ok(report) | Err(report) => tools::with_lint(report, name, source),
-                },
+                (Some(name), Some(source)) => tools::semantic_report(name, source),
             };
             self.finish_head(result);
             return true;
@@ -1314,12 +1312,18 @@ impl State {
                     true => tools::plugin_fs_read(&fs_path).ok(),
                     false => None,
                 };
+                let granted = match tools::source_permissions(&name, &source) {
+                    Ok(granted) => granted,
+                    Err(error) => {
+                        self.finish_head(error);
+                        return true;
+                    },
+                };
                 let result = match tools::plugin_fs_write(&fs_path, &source, args.overwrite) {
                     Ok(true) => {
                         // The user approved this source, and with it the permissions it asks
                         // for - the confirmation said so. Granting them now is what keeps the
                         // plugin from prompting in a pane nobody in this loop is looking at.
-                        let granted = tools::requested_permissions(&source);
                         if !granted.is_empty() {
                             tools::grant_permissions(&target, &granted);
                         }

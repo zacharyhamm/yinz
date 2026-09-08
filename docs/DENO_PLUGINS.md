@@ -26,9 +26,10 @@ import { definePlugin, zellij } from "zellij:plugin";
 let text = "Starting";
 
 export default definePlugin({
+  defaults: { greeting: "Hello from TypeScript" },
   async load(configuration) {
     await zellij.sleep(100);
-    text = configuration.greeting ?? "Hello from TypeScript";
+    text = configuration.greeting;
     zellij.requestRender();
   },
   render(rows, columns) {
@@ -37,7 +38,9 @@ export default definePlugin({
 });
 ```
 
-Configuration values are strings. `update` receives an event, and `pipe` receives a pipe message.
+Configuration values are strings. Optional `defaults` supply values that the caller's configuration can override, including with an empty string.
+The SDK validates defaults and passes a new, shallow-merged object to `load`. Neither input object changes.
+`update` receives an event, and `pipe` receives a pipe message.
 Return `true` from either callback to request a render. `render` returns terminal text, which can include ANSI escape sequences.
 Each callback can return a Promise.
 
@@ -84,6 +87,164 @@ Optional tuple fields remain `null`, so later fields keep their positions.
 `PaneRenderReport` uses string keys such as `terminal_7` and `plugin_7`, as the CLI event stream does.
 See [sdk.d.ts](../zellij-server/src/plugins/deno/sdk.d.ts) for the SDK declarations.
 
+## Numbers and allocation limits
+
+Safe integers arrive as `number`. Larger integer replies arrive as `bigint` and can be passed back unchanged.
+Integer inputs must be exact and fit the Rust destination type. Use BigInt for integers outside the JS safe range.
+Fractions and unsafe integer-shaped numbers remain usable in real-valued fields. Integer fields reject them.
+Commands reject `NaN`, infinities, unsupported values, cycles, proxies, and accessors, including in optional fields.
+Arrays, `Uint8Array`, and plain data objects are supported. Nesting is limited to 128 and conversion to a 64 MiB message budget.
+
+Each plugin and checker has a 1 GiB V8 heap quota and a separate 1 GiB live buffer quota.
+Memory is allocated on demand. Exceeding a quota permanently fails that runtime, even if JavaScript catches the allocation exception.
+The host removes its resources without calling guest cleanup code. Reload creates a healthy replacement.
+These quotas do not isolate the server from arbitrary native V8 crashes.
+
+Local source files are limited to 8 MiB each and 64 MiB per module graph before parsing.
+The offline checker also has a 30-second deadline.
+Resizable buffers and guest WebAssembly are unavailable because their allocations bypass V8's buffer allocator.
+Fixed `ArrayBuffer` and `SharedArrayBuffer` objects remain available.
+
+## Async helpers
+
+Use `runCommand` and `webRequest` after you receive their permissions:
+
+```ts
+await zellij.waitForPermissions(["RunCommands", "WebAccess"]);
+const command = zellij.runCommand({ command: ["/usr/bin/printf", "%s", "Hello 🙂"] });
+const request = zellij.webRequest({ url: "https://example.com" });
+try {
+  const [output, response] = await Promise.all([command, request]);
+  zellij.log(output.exitCode, zellij.decodeUtf8(output.stdout));
+  zellij.log(response.status, zellij.decodeUtf8(response.body));
+} finally {
+  command.cancel();
+  request.cancel();
+}
+```
+
+`runCommand` accepts `command` as a nonempty argv array, plus optional `envVariables`, `cwd`, `context`, and `maxBytesReturned`.
+The maps default to empty objects. The working directory defaults to `/host`. The host supplies the default output limit.
+`maxBytesReturned` sets the limit for each output stream and must be a nonnegative safe integer.
+The result contains `exitCode`, `stdout`, `stderr`, and `context`. Output streams are `Uint8Array` values. `exitCode` can be `null`.
+
+`webRequest` accepts `url`, plus optional `verb`, `headers`, `body`, `context`, and `proxy`.
+The verb defaults to `Get`. The other supported verbs are `Post`, `Put`, and `Delete`.
+Headers and context default to empty string maps. The body defaults to an empty string and accepts a string or `Uint8Array`.
+This helper buffers the response. Its result contains `status`, `headers`, `body` as `Uint8Array`, and `context`.
+Use `encodeUtf8(text)` and `decodeUtf8(bytes)` to convert between strings and bytes. Invalid UTF-8 decodes with replacement characters.
+
+Each operation receives its own result, even when replies arrive out of order. Nonzero command exits and HTTP error statuses resolve normally.
+Invalid options, permission failures, and dispatch errors reject the promise. Helpers do not request permissions automatically.
+Context values must be strings. The SDK copies the context and reserves `__zellij_async` for correlation. A caller-supplied reserved key rejects the operation.
+Helper results omit this key. Normal event handlers still receive the unchanged wire payload, including the correlation key and byte arrays.
+
+### Waits and cancellation
+
+`runCommand`, `webRequest`, `waitForEvent`, `waitForPipe`, and `sleep` return `CancellablePromise<T>`, a native promise with `cancel()`.
+Cancel an unsettled operation to reject it with an error named `AbortError`. Catch that rejection as you would any promise failure.
+Cancellation is idempotent. Calling it after settlement has no effect. Completion, cancellation, and dispatch failure remove the operation's listeners and timers.
+Already-started host actions continue. Late replies still reach normal event handlers.
+
+`Promise.all` and `Promise.race` compose these promises. They do not cancel their inputs. Chained promises have no `cancel()` method.
+Keep the original promises when you need cancellation. Permission promises keep their FIFO behavior and are not cancellable.
+The [shipped async example](../example-plugins/hello.ts) runs a command and HTTP request concurrently and cancels its waits after five seconds.
+
+`waitForEvent(type, predicate?)` resolves with the next matching event payload.
+`waitForPipe(name, predicate?)` resolves with the next matching `PipeMessage`:
+
+```ts
+const reply = await zellij.waitForPipe("reply", message => message.args.request === "42");
+zellij.log(reply.payload);
+```
+
+Both predicates are synchronous and optional. If a predicate throws, the wait rejects.
+Waits observe messages without consuming them. Pipe waiters are captured before `pipe` runs, so a wait created inside that callback starts with the next message.
+Required event subscriptions remain active while helpers need them, including across raw `Unsubscribe` calls.
+Subscriptions stay active after helpers finish. Use `unsubscribe` when you no longer need them.
+
+### Timers
+
+`sleep(milliseconds)` resolves without a value. `after(milliseconds, callback)` and `every(milliseconds, callback)` return a handle with `cancel()`.
+All durations must be finite numbers between 0 and 2147483647 milliseconds.
+
+```ts
+const refresh = zellij.every(1000, async () => {
+  await refreshState(); // Your plugin's function.
+  return true;
+});
+// Stop future invocations when the plugin no longer needs updates.
+refresh.cancel();
+```
+
+Callbacks retain the client that created the timer. They may return a promise and may return `true` to request rendering.
+`every` waits one interval after the previous callback settles, so its callbacks never overlap.
+Cancellation stops future invocations. A callback already in progress can finish and request rendering.
+A callback failure stops that timer and uses the existing lifecycle error reporting.
+
+## Files and project configuration
+
+These helpers are synchronous and use the existing host permissions and confined paths.
+`fs.read(path, {maxBytes?})` returns `Uint8Array`. `fs.list(path)` and `fs.metadata(path)` return typed host results;
+missing metadata is `null`. `fs.write(path, contents, {append?, createDirs?})` accepts UTF-8 strings or `Uint8Array`.
+`fs.remove(path, {recursive?})`, `fs.mkdir(path, {all?})`, and `fs.rename(from, to)` return normally on success and throw on failure.
+All flags default to false. Reads require `ReadFiles`; mutations require `WriteFiles`.
+Writing under `/plugins` also requires `AuthorPlugins`. Existing traversal, symlink, and size limits apply.
+
+```ts
+await zellij.waitForPermissions(['ReadFiles', 'WriteFiles']);
+zellij.fs.write('/host/result.bin', new Uint8Array([0, 128, 255]));
+const bytes = zellij.fs.read('/host/result.bin');
+const previous = zellij.projectConfig.read('.');
+zellij.projectConfig.write('.', 'agent_exit { default_branch "main"; }', previous.source);
+```
+
+Project configuration takes a host directory (relative to the plugin cwd, such as `.`).
+`projectConfig.write(directory, source, expectedSource)` requires the exact previous source, or `null` if absent.
+The host resolves the project control checkout and refuses a stale source. It does not run the configured jobs.
+
+## Persistent data
+
+`zellij.data` uses the existing plugin data store. Private namespaces follow the plugin URL across reloads.
+`PluginData` is required; explicit `shared:` namespaces also require `SharedPluginData`.
+The helpers do not change ownership columns or revisions, retry conflicts, or migrate storage.
+
+```ts
+const d = zellij.data;
+await zellij.waitForPermissions(['PluginData']);
+d.define('notes', {text: 'Text', score: 'Real', attachment: 'Blob'});
+d.apply([d.put('notes', {text: 'hello', score: d.real(1), attachment: new Uint8Array([255])}, {uid: 'first', expectRev: 0})]);
+const query = {entity: 'notes', filter: d.eq('uid', 'first')};
+const {records, raw} = d.fetch(query);
+const revision = records[0].rev;
+try {
+  d.apply([d.update('notes', query.filter, {text: 'edited'}, {expectRev: revision})]);
+} catch (error) {
+  if (!d.isConflict(error)) throw error;
+  // Show the conflict to the author; keep the revision they originally read.
+}
+const watch = d.watch(query, snapshot => zellij.log(snapshot.records));
+zellij.log(watch.initial.records);
+watch.dispose();
+```
+
+`define` defaults to schema version 1 and non-destructive changes. Attributes can be kind names or
+`{kind, indexed?, fullText?, unique?, required?, default?}`. `catalog(namespace?)` lists visible definitions.
+`fetch` and `count` accept `{entity, namespace?, filter?, search?, sort?, select?, limit?, offset?, afterId?}`.
+Fetch defaults are limit 100 and offset 0. `apply(mutations, {namespace?})` applies a whole transaction.
+`put`, `update`, and `delete` construct mutations; they do not dispatch by themselves.
+
+Predicates are `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `isNull`, `notNull`, `prefix`, `contains`, `and`, `or`, and `not`.
+`toValue`, `fromValue`, `fromRecord`, and `toRecords` convert between tagged values and convenient records.
+Plain safe integral numbers become `Int`. Use `int()` for explicit integers, `real()` for integer-shaped real values,
+and `json()` for serialized JSON text. Blob values become `Uint8Array`; JSON values remain encoded text.
+
+Fetch and watch snapshots contain `{records, raw}`. The raw rows retain tagged values, truncation, and cursors.
+`watch(query, onChange, {mode?})` defaults to row mode and returns `{watchId, initial, dispose()}`.
+Registration retains the listener before dispatch. Successful disposal unregisters the host watch and removes its listener;
+repeated successful disposal is harmless. Reload and disconnect remove the old runtime's watches.
+The shared store still only wakes watches for writes from the same server process.
+
 ## Modules and checking
 
 Local imports must name an explicit relative file, such as `./state.ts` or `./lib/format.js`.
@@ -123,8 +284,21 @@ Use `--overwrite` to replace a file. The previous version is preserved as `hello
 The existing directory and symlink protections also apply to these filenames.
 An extensionless authoring name still means a Lua plugin.
 
-The initial SDK does not include npm, JSR, general Deno I/O, Lua widgets, or agent helpers.
-The hocus authoring tools and `CheckLuaPlugin` protocol retain their Lua interface.
+The SDK does not include npm, JSR, general Deno I/O, Lua widgets, or agent helpers.
+Hocus supports the same names through `plugin_write`, `plugin_edit`, `plugin_list`, `plugin_read`,
+`plugin_search`, `plugin_outline`, `plugin_check`, `plugin_reload`, and `plugin_log`.
+`plugin_docs section=deno` serves the runtime and authoring guide; `section=deno_data` serves the filesystem and persistence helpers. Writes and edits check syntax before approval;
+explicit JS/TS `plugin_check` checks types and local imports. `CheckPlugin` exposes the report as
+`{diagnostics, outline, permissions, warnings}` with `Syntax` or `Semantic` mode and requires `ReadFiles`.
+`CheckLuaPlugin` remains compatible.
+
+Hocus infers grants only from literal SDK requests in the proposed entrypoint, using parsed JS/TS bindings.
+Imported default/named aliases and SDK namespace imports are recognized; comments and shadowed names grant nothing.
+Computed requests use normal runtime approval and produce warnings. Imported modules do not add inferred grants.
+The approval shows inferred grants; edits show newly requested grants. Grants are applied only after a successful write.
+
+Queued jobs keep running after their enqueuer reloads. Addressed start/finish events belong to the original Deno generation.
+The replacement can query `QueueStatus` and receive broadcast `QueueChanged` events.
 
 ## Build inputs
 

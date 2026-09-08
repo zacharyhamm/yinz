@@ -17,6 +17,67 @@ use {zellij_types::data::MessageToPlugin, zellij_types::data::PermissionStatus};
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
+#[test]
+fn deno_jobs_survive_enqueuer_reload_but_addressed_events_keep_the_original_generation() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let job = harness.write_plugin("job.ts", r#"
+export default {
+  load(config) { if (config.n === '2') zellij.command('FinishQueueJob', {success: true, payload: 'second'}); },
+  pipe(message) { if (message.name === 'finish') zellij.command('FinishQueueJob', {success: true, payload: 'first'}); }
+};
+"#);
+    let enqueuer = harness.write_plugin("enqueuer.ts", &format!(r#"
+let lines = [];
+export default {{
+  async load() {{
+    zellij.subscribe(['QueueJobStarted', 'QueueJobFinished', 'QueueChanged']);
+    await zellij.waitForPermissions(['MessageAndLaunchOtherPlugins', 'ReadApplicationState']);
+    for (const n of ['1', '2']) zellij.command('EnqueueQueueJob', {{queue: 'deno', plugin_url: {job:?}, config: {{n}}, context: {{n}}}});
+  }},
+  update(event) {{
+    if (event.QueueJobStarted) {{ const e = event.QueueJobStarted; lines.push(`started ${{e.job_id}} pid=${{e.plugin_id}} n=${{e.context.n}}`); }}
+    return true;
+  }},
+  render() {{ return lines.join('\n'); }}
+}};
+"#));
+    harness.load(&enqueuer);
+    let first = harness.wait_for_started(1);
+    harness.write_plugin(
+        "enqueuer.ts",
+        r#"
+let state = 'replacement loading', addressed = 0;
+export default {
+  async load() {
+    zellij.subscribe(['QueueJobStarted', 'QueueJobFinished', 'QueueChanged']);
+    await zellij.waitForPermissions(['ReadApplicationState']);
+    const q = zellij.command('QueueStatus', {queue: 'deno'})[0];
+    state = `replacement p=${q.pending.length} r=${q.running.length}`;
+  },
+  update(event) {
+    if (event.QueueJobStarted || event.QueueJobFinished) addressed++;
+    if (event.QueueChanged) {
+      const q = zellij.command('QueueStatus', {queue: 'deno'})[0];
+      state = `replacement p=${q.pending.length} r=${q.running.length} addressed=${addressed}`;
+    }
+    return true;
+  },
+  render() { return state; }
+};
+"#,
+    );
+    let run =
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(&enqueuer, &None, None, None)
+            .unwrap();
+    harness
+        .to_plugin
+        .send(PluginInstruction::ReloadPluginByUrl(run))
+        .unwrap();
+    harness.wait_for("replacement p=1 r=1");
+    harness.pipe_to(first, "finish");
+    harness.wait_for("replacement p=0 r=0 addressed=0");
+}
+
 /// What the enqueuer does on each key; see `enqueuer_source`.
 const ENQUEUE: char = 'e';
 const ENQUEUE_BAD_URL: char = 'b';
@@ -767,6 +828,60 @@ fn first_cli_pipe_reaches_a_plugin_loaded_without_an_attached_ui() {
     harness.write_plugin(
         "detached.lua",
         "return {render=function() return 'reload completed without UI' end}",
+    );
+    let run =
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(&plugin, &None, None, None)
+            .unwrap();
+    harness
+        .to_plugin
+        .send(PluginInstruction::Reload(
+            Some(false),
+            None,
+            run,
+            TabId::new(0),
+            Size { rows: 24, cols: 80 },
+            None,
+        ))
+        .unwrap();
+    harness.wait_for("reload completed without UI");
+}
+
+#[test]
+fn first_cli_pipe_and_reload_reach_deno_without_an_attached_ui() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let plugin = harness.write_plugin(
+        "detached.ts",
+        r#"
+let message = 'not delivered';
+export default {pipe(event) { message = 'received ' + event.payload; }, render() {return message;}};
+"#,
+    );
+    harness
+        .to_plugin
+        .send(PluginInstruction::RemoveClient(harness.client_id))
+        .unwrap();
+    harness
+        .to_plugin
+        .send(PluginInstruction::CliPipe {
+            pipe_id: "detached-first-pipe".into(),
+            name: "hello".into(),
+            payload: Some("initial delivery".into()),
+            plugin: Some(plugin.clone()),
+            args: None,
+            configuration: None,
+            floating: None,
+            pane_id_to_replace: None,
+            pane_title: None,
+            cwd: None,
+            skip_cache: false,
+            cli_client_id: harness.client_id,
+            source_pane_id: None,
+        })
+        .unwrap();
+    harness.wait_for("received initial delivery");
+    harness.write_plugin(
+        "detached.ts",
+        "export default {render() {return 'reload completed without UI';}};",
     );
     let run =
         zellij_runtime::plugin_location::run_plugin_or_alias_from_url(&plugin, &None, None, None)

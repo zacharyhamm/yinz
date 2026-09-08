@@ -109,7 +109,12 @@ pub fn search(files: &[(&str, &str)], search: &Search) -> Result<Option<String>,
 
 /// A plugin name as a listing prints it: `keys.lua`, whether or not the caller wrote the suffix.
 pub fn file_name(name: &str) -> String {
-    format!("{}.lua", name.trim().trim_end_matches(".lua"))
+    let name = name.trim();
+    if name.ends_with(".lua") || plugin_authoring::is_deno_plugin(std::path::Path::new(name)) {
+        name.to_owned()
+    } else {
+        format!("{name}.lua")
+    }
 }
 
 /// What `plugin_outline` answers: the file's length, then every entry of its outline on a line
@@ -120,7 +125,15 @@ pub fn outline_answer(name: &str, source: &str) -> String {
     if total == 0 {
         return "the file is empty".to_owned();
     }
-    let entries = plugin_authoring::outline(source);
+    let entries = match crate::tools::check_report(
+        name,
+        source,
+        zellij_tile::plugin_authoring::PluginCheckMode::Syntax,
+    ) {
+        Ok(report) if report.diagnostics.is_empty() => report.outline,
+        Ok(report) => return report.diagnostics.join("\n"),
+        Err(error) => return error,
+    };
     if entries.is_empty() {
         return format!(
             "{file}: {total} lines; nothing to outline - no functions, handlers, requires or \

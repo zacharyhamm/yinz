@@ -56,7 +56,7 @@ Options:
       --mouse-mode <MOUSE_MODE>
           Set the handling of mouse events (true or false) Can be temporarily bypassed by the
           [SHIFT] key
-
+          
           [possible values: true, false]
 
       --agent-double-escape <AGENT_DOUBLE_ESCAPE>
