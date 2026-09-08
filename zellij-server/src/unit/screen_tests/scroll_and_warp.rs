@@ -2438,6 +2438,83 @@ fn warp_group_acknowledges_new_tab_and_missing_destination() {
     }
 }
 
+#[test]
+fn warp_floating_stack_requires_room_for_headers_and_content() {
+    for floating_rows in [6, 5] {
+        let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
+        let selected = PaneId::Terminal(TerminalId::new(1));
+        let source_id = TabId::new(0);
+        let target_id = TabId::new(1);
+        let (_, _, prepared) = screen
+            .prepare_pane_group(Some(selected), ClientId::new(1))
+            .unwrap()
+            .unwrap();
+        let slots = prepared.slots;
+        let relationships = prepared.relationships.unwrap();
+        assert_eq!(relationships.stacks[0].members.len(), 3);
+        assert_eq!(slots.len(), 4); // Three members plus the hidden editor's subject.
+        screen
+            .resize_to_screen(Size {
+                cols: 80,
+                rows: floating_rows * 2,
+            })
+            .unwrap();
+        let destination = &screen.tabs[&target_id];
+        let original_ids = destination.get_all_pane_ids();
+        let original_geom = destination
+            .get_pane_with_id(PaneId::Terminal(TerminalId::new(9)))
+            .unwrap()
+            .position_and_size();
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        screen.pending_group_placements.insert(
+            source_id,
+            (
+                zellij_types::data::WarpPlacement::Floating,
+                Some(target_id),
+                ClientId::new(1),
+                Some(tx),
+            ),
+        );
+        screen
+            .finish_warp_group(source_id, &slots, &relationships)
+            .unwrap();
+        rx.try_recv().expect("placement acknowledged").unwrap();
+        let placed = floating_rows == 6;
+        let retained_id = if placed { target_id } else { source_id };
+        assert_eq!(screen.tabs.contains_key(&source_id), !placed);
+        let destination = &screen.tabs[&target_id];
+        assert_eq!(
+            destination
+                .get_pane_with_id(PaneId::Terminal(TerminalId::new(9)))
+                .unwrap()
+                .position_and_size(),
+            original_geom
+        );
+        if !placed {
+            assert_eq!(destination.get_all_pane_ids(), original_ids);
+            assert!(!destination.are_floating_panes_visible());
+        }
+        let retained = screen.tabs.get_mut(&retained_id).unwrap();
+        assert!(slots
+            .iter()
+            .all(|id| retained.get_pane_with_id(*id).is_some()));
+        assert_eq!(retained.warp_relationships(&slots), relationships);
+        if placed {
+            let pane = retained.get_pane_with_id(selected).unwrap();
+            assert_eq!(pane.rows(), floating_rows);
+            assert_eq!(pane.get_content_rows(), 1);
+            let offset = pane.get_content_offset();
+            assert_eq!(offset.top, relationships.stacks[0].members.len() + 1);
+            assert!(pane.y() + offset.top < pane.y() + pane.rows());
+            assert!(pane.y() + pane.rows() <= retained.get_viewport().rows);
+        }
+        let editor = PaneId::Terminal(TerminalId::new(8));
+        assert!(retained.focus_hidden_stack_list_member(editor, ClientId::new(1)));
+        retained.close_pane(editor, false, None);
+        assert!(retained.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(3))));
+    }
+}
+
 fn screen_with_a_transferred_floating_stack() -> Screen {
     let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
     let selected = PaneId::Terminal(TerminalId::new(1));

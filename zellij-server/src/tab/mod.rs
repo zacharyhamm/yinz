@@ -275,7 +275,9 @@ pub(crate) enum ExtractedPanePlacement {
     Tiled,
     Floating,
     /// Use destination geometry for a group extracted from a temporary tiled tab.
-    FloatingDefault,
+    FloatingDefault {
+        min_height: usize,
+    },
     /// [`OverlayCarry`] is the in-memory half of the overlay's wrapper - whether it was set
     /// aside, and whether where it sits is the user's doing. It rides here rather than in
     /// `OverlayPlacement` because that struct crosses the protobuf boundary and neither bit is
@@ -9264,8 +9266,13 @@ impl Tab {
                 )
                 .non_fatal();
             },
-            ExtractedPanePlacement::Floating | ExtractedPanePlacement::FloatingDefault => {
-                if self.floating_panes.find_room_for_new_pane().is_none() {
+            ExtractedPanePlacement::Floating | ExtractedPanePlacement::FloatingDefault { .. } => {
+                let Some(geometry) = self.floating_panes.find_room_for_new_pane() else {
+                    return AcceptedPane::NoRoom(pane);
+                };
+                if matches!(placement, ExtractedPanePlacement::FloatingDefault { min_height }
+                    if geometry.rows.as_usize() < min_height)
+                {
                     return AcceptedPane::NoRoom(pane);
                 }
                 let keep_geometry = matches!(placement, ExtractedPanePlacement::Floating);
