@@ -16,8 +16,8 @@
 //! Deliberately no `--plugin`: plugin identity is (location, configuration),
 //! and a bare `zellij:hocus-store` url carries none of the alias' `shared true`
 //! — so it would miss the running instance and launch a second store. A
-//! broadcast only ever reaches plugins that are already running, and these two
-//! message names are handled here and nowhere else, so it has one responder.
+//! host routes these two untargeted CLI message names to one existing store
+//! instance, regardless of its alias configuration or the number of clients.
 //!
 //! What this plugin no longer is, is the *holder* of that data. It keeps no
 //! registry and no lists of its own: with the rows in a shared namespace and
@@ -31,6 +31,10 @@
 mod arrangement;
 mod notes_ops;
 mod ops;
+
+#[cfg(test)]
+#[path = "unit/legacy_import.rs"]
+mod legacy_import_tests;
 
 use hocus_proto::store::{Backend, Host};
 use hocus_proto::wire::{self, Mutation, PollReply, Query};
@@ -253,26 +257,24 @@ impl State {
     fn handle_mutate(&mut self, source: PipeSource, payload: &str) {
         let outcome = match serde_json::from_str::<Mutation>(payload) {
             Ok(mutation) => (
-                mutation.request_id,
+                mutation.structured_reply,
                 ops::run_mutate(&Host::shared(), &mutation.op, &mutation.args),
             ),
-            Err(_) => (String::new(), Err("could not parse mutation".to_owned())),
+            Err(_) => (false, Err("could not parse mutation".to_owned())),
         };
         answer(source, outcome.0, outcome.1);
     }
 
     fn handle_query(&mut self, source: PipeSource, payload: &str) {
-        // A payload we could not parse has no id to echo, so an unparseable
-        // query from a plugin gets an answer it cannot correlate. Nothing
-        // better is available, and silence would be worse.
-        let (request_id, outcome) = match serde_json::from_str::<Query>(payload) {
+        // Malformed requests retain the raw error reply used by existing pipe clients.
+        let (structured_reply, outcome) = match serde_json::from_str::<Query>(payload) {
             Ok(query) => (
-                query.request_id,
+                query.structured_reply,
                 ops::run_query(&Host::shared(), &query.op, &query.args),
             ),
-            Err(_) => (String::new(), Err("could not parse query".to_owned())),
+            Err(_) => (false, Err("could not parse query".to_owned())),
         };
-        answer(source, request_id, outcome);
+        answer(source, structured_reply, outcome);
     }
 }
 
@@ -353,8 +355,8 @@ fn discover_from(
 /// Read the two JSON files in, once, if this is the first launch that has the
 /// store.
 ///
-/// Guarded by a marker row written in the same transaction as the rows it
-/// describes, so the import is atomic and cannot half-happen. A marker rather
+/// Guarded by marker rows written in the same transaction as each imported
+/// batch, so a failed import resumes at its first uncommitted level. A marker rather
 /// than "is the table empty?" — emptiness is a state a user can reach honestly,
 /// by crossing off and clearing the last todo, and that must not resurrect the
 /// file on the next launch.
@@ -366,24 +368,80 @@ fn import_legacy(backend: &impl Backend, host_id: &HostId) {
         mutations.push(marker(host_id, "projects"));
         let _ = backend.apply(mutations);
     }
+    if let Err(error) = import_todos(
+        backend,
+        host_id,
+        &todos::parse_legacy(&legacy_bytes(todos::FILE)),
+    ) {
+        eprintln!("hocus-store: legacy todo import incomplete: {error}");
+    }
+}
+
+fn import_todos(
+    backend: &impl Backend,
+    host_id: &HostId,
+    lists: &todos::Store,
+) -> Result<(), String> {
     if !imported(backend, host_id, "todos") {
-        let lists = todos::parse_legacy(&legacy_bytes(todos::FILE));
         // One apply per level per list, because a child's parent_id is the id
         // the store gave its parent, which is only known once that row exists.
-        for (root, list) in &lists {
-            let mut new_ids: BTreeMap<u64, DataRowId> = BTreeMap::new();
-            for level in todos::levels_for_import(list) {
-                let Ok(report) = backend.apply(todos::import_mutations(root, &level, &new_ids))
-                else {
-                    break;
-                };
-                for (pending, id) in level.iter().zip(report.ids) {
-                    new_ids.insert(pending.old_id, id);
+        for (root, list) in lists {
+            for (depth, level) in todos::levels_for_import(list).into_iter().enumerate() {
+                let checkpoint = format!("todos:{}", serde_json::json!([root, depth]));
+                // Unlike old completion markers, these checkpoints always name a host.
+                // A failed read must stop the import, not count as a completed level.
+                if !backend
+                    .fetch(&FetchRequest::entity("import_marker").filter(
+                        Pred::eq("host_id", host_id).and(Pred::eq("what", checkpoint.clone())),
+                    ))?
+                    .is_empty()
+                {
+                    continue;
                 }
+
+                // Keep UIDs to recover parents after a restart. Use this same snapshot
+                // for validation and the transaction guard.
+                let rows = backend.fetch(
+                    &FetchRequest::entity("todo")
+                        .filter(Pred::eq("root", root.as_str()))
+                        .sort_by("id", SortDir::Asc)
+                        .limit(store::LIST_FETCH_LIMIT),
+                )?;
+                if rows.truncated {
+                    return Err(format!("cannot import into a truncated todo list: {root}"));
+                }
+                let ids_by_uid: BTreeMap<_, _> = rows
+                    .rows
+                    .iter()
+                    .filter_map(|row| match (rows.get(row, "uid"), rows.get(row, "id")) {
+                        (Some(DataValue::Text(uid)), Some(DataValue::Int(id))) => {
+                            Some((uid.as_str(), DataRowId::new(*id)))
+                        },
+                        _ => None,
+                    })
+                    .collect();
+                let mut new_ids = BTreeMap::new();
+                for old_parent in level.iter().filter_map(|pending| pending.old_parent) {
+                    let uid = todos::import_uid(host_id, root, old_parent);
+                    let id = ids_by_uid.get(uid.as_str()).ok_or(
+                        "the imported todo parent is missing or moved; import remains incomplete",
+                    )?;
+                    new_ids.insert(old_parent, *id);
+                }
+                let current = todos::from_rows(&rows).remove(root).unwrap_or_default();
+                let mut mutations =
+                    todos::import_mutations(&current, root, &level, &new_ids, host_id)?;
+                let mut checkpoint = marker(host_id, &checkpoint);
+                if let zellij_tile::prelude::Mutation::Put { expect_rev, .. } = &mut checkpoint {
+                    *expect_rev = Some(REV_ABSENT);
+                }
+                mutations.push(checkpoint);
+                backend.apply(mutations)?;
             }
         }
-        let _ = backend.apply(vec![marker(host_id, "todos")]);
+        backend.apply(vec![marker(host_id, "todos")])?;
     }
+    Ok(())
 }
 
 /// The host is carried in from `load` rather than asked for here. `get_plugin_ids` is a host
@@ -419,11 +477,21 @@ fn legacy_bytes(_path: &str) -> Vec<u8> {
 /// A plugin gets nothing. Nothing pipes a change here from a plugin now that
 /// hocus writes the shared namespace itself, and a reply nobody waits for is a
 /// message name kept working for no reader.
-fn answer(source: PipeSource, _request_id: String, outcome: ops::OpResult) {
-    let message = match outcome {
-        Ok(message) => message,
-        Err(message) => message,
-    };
+fn reply_message(structured: bool, outcome: ops::OpResult) -> String {
+    if !structured {
+        return outcome.unwrap_or_else(|message| message);
+    }
+    match outcome {
+        Ok(message) => serde_json::json!({"ok": true, "data":
+            serde_json::from_str::<serde_json::Value>(&message)
+                .unwrap_or(serde_json::Value::String(message))})
+        .to_string(),
+        Err(error) => serde_json::json!({"ok": false, "error": error}).to_string(),
+    }
+}
+
+fn answer(source: PipeSource, structured: bool, outcome: ops::OpResult) {
+    let message = reply_message(structured, outcome);
     match source {
         PipeSource::Cli(pipe_id) => {
             cli_pipe_output(&pipe_id, &format!("{message}\n"));
@@ -439,6 +507,37 @@ fn answer(source: PipeSource, _request_id: String, outcome: ops::OpResult) {
 mod tests {
     use super::*;
     use hocus_proto::store::Local;
+
+    #[test]
+    fn structured_store_replies_are_opt_in_and_distinguish_failure() {
+        use serde_json::{json, Value};
+        assert_eq!(
+            reply_message(false, Ok("remembered p".into())),
+            "remembered p"
+        );
+        assert_eq!(
+            reply_message(false, Err("unknown project".into())),
+            "unknown project"
+        );
+        for (outcome, expected) in [
+            (
+                Ok("remembered p".into()),
+                json!({"ok":true,"data":"remembered p"}),
+            ),
+            (Ok(r#"{"id":7}"#.into()), json!({"ok":true,"data":{"id":7}})),
+            (
+                Err("unknown project".into()),
+                json!({"ok":false,"error":"unknown project"}),
+            ),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<Value>(&reply_message(true, outcome)).unwrap(),
+                expected
+            );
+        }
+        let raw: Query = serde_json::from_str(r#"{"op":"project_list"}"#).unwrap();
+        assert!(!raw.structured_reply);
+    }
 
     #[test]
     fn arrangement_waits_past_three_timers_for_a_snapshot() {

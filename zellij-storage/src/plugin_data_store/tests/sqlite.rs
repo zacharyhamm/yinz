@@ -12,6 +12,10 @@ fn store() -> (PluginDataStore, Guard) {
     (store, dir)
 }
 
+fn reopen(guard: &Guard) -> PluginDataStore {
+    PluginDataStore::new(guard.path())
+}
+
 fn defined() -> (PluginDataStore, Guard) {
     let (store, dir) = store();
     store.define_entity(NS, OWNER, &agent_def(), false).unwrap();

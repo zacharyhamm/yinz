@@ -69,7 +69,12 @@ fn switching_keybind_presets_updates_the_status_bar_without_a_new_tab() {
     open_presets_screen(&zellij);
     apply_selected_preset_and_close(&zellij, 2, "UNLOCK");
 
-    zellij.send_stdin(&keys::ctrl('g'));
+    // Ctrl+g starts a timed prefix in Locked mode. Closing the configuration pane also
+    // updates passthrough state, which can clear that pending prefix before it expires.
+    // This test observes preset delivery; use an acknowledged mode change to reach its view.
+    zellij.run_cli_action(zellij_cli::args::CliAction::SwitchMode {
+        input_mode: zellij_types::data::InputMode::Normal,
+    });
     let grid_snapshot = wait_for_unlock_first_status_bar(&zellij);
     assert_snapshot!(normalized(&grid_snapshot));
 

@@ -76,6 +76,10 @@ fn store() -> (PluginDataStore, Guard) {
     (store, guard)
 }
 
+fn reopen(guard: &Guard) -> PluginDataStore {
+    PluginDataStore::from_backend(Arc::new(guard.backend()))
+}
+
 fn defined() -> (PluginDataStore, Guard) {
     let (store, guard) = store();
     store.define_entity(NS, OWNER, &agent_def(), false).unwrap();

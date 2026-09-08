@@ -577,7 +577,7 @@ fn todo_result(state: &mut State, name: &str, arguments: &str) -> Option<String>
     if !matches!(name, "todo_add" | "todo_done" | "todo_edit") {
         return state.run_local(&call);
     }
-    Some(match state.todo_write(&call) {
+    Some(match state.todo_write(state.store(), &call) {
         Ok(message) => message,
         Err(error) => error,
     })
@@ -608,7 +608,7 @@ fn note_result(state: &mut State, name: &str, arguments: &str) -> Option<String>
     ) {
         return state.run_local(&call);
     }
-    Some(match state.note_write(&call) {
+    Some(match state.note_write(state.store(), &call) {
         Ok(message) => message,
         Err(error) => error,
     })

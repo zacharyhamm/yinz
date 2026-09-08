@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::DataRevision;
 use zellij_tile::prelude::DataRowId;
-use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir};
+use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, HostId, Mutation, Pred, SortDir};
 
 /// The file the lists lived in before the store. Read once, by the import.
 pub const FILE: &str = "/cache/todos.json";
@@ -29,8 +29,7 @@ pub const MAX_OPEN: usize = 200;
 /// why it is exactly `MAX_FETCH_ROWS`: a whole list is then always one fetch,
 /// and `from_rows` never has to page.
 ///
-/// ponytail: there is no tool that removes an item, so a list at this cap needs
-/// the file edited by hand.
+/// Delete completed items with `todo-delete` when a list reaches this cap.
 pub const MAX_ITEMS: usize = 1000;
 /// The most matches one search answers with.
 pub const MAX_MATCHES: usize = 50;
@@ -867,6 +866,32 @@ fn collect_text_trail(items: &[Item], id: u64, trail: &mut Vec<String>) -> bool 
     false
 }
 
+/// Guard the exact project list used to validate a topology or completion change.
+fn assert_snapshot(list: &List, root: &str) -> Mutation {
+    fn collect(items: &[Item], rows: &mut Vec<(DataRowId, DataRevision)>) {
+        for item in items {
+            rows.push((DataRowId::new(item.id as i64), item.rev));
+            collect(&item.children, rows);
+        }
+    }
+    let mut rows = Vec::new();
+    collect(&list.items, &mut rows);
+    Mutation::AssertRows {
+        entity: "todo".into(),
+        filter: Pred::eq("root", root),
+        rows,
+    }
+}
+
+/// Todo snapshot conflicts require fresh validation, never an automatic retry.
+pub fn topology_error(error: zellij_tile::prelude::WriteError) -> String {
+    if error.is_conflict() {
+        "the todo list changed; reload and retry".into()
+    } else {
+        error.into()
+    }
+}
+
 /// Plan adding an item, answering with the writes that do it.
 ///
 /// The checks are the ones [`add`] makes, against the same materialized list, so
@@ -909,7 +934,7 @@ pub fn plan_add(
     if let Some(parent_id) = parent_id {
         put = put.set("parent_id", parent_id);
     }
-    let mut mutations = vec![put.build()];
+    let mut mutations = vec![assert_snapshot(list, root), put.build()];
 
     // The new item is open, so nothing above it may stay crossed off.
     if let Some(parent_id) = parent_id {
@@ -948,6 +973,8 @@ fn open_mutation(ids: &[u64]) -> Mutation {
 /// [`set_done`] does the thinking, on a copy of the list, and what it reports
 /// having changed becomes the writes. One batch, so the item, the subtree it
 /// cascades to and the ancestors it reopens all move together or not at all.
+/// The project snapshot guards those decisions, including against unrelated edits
+/// and agreeing flag writes that advance a revision.
 pub fn plan_set_done(
     list: &List,
     root: &str,
@@ -958,7 +985,7 @@ pub fn plan_set_done(
     store.insert(root.to_owned(), list.clone());
     let change = set_done(&mut store, root, id, done)?;
 
-    let mut mutations = Vec::new();
+    let mut mutations = vec![assert_snapshot(list, root)];
     // The item itself and everything the cascade reached take the same value.
     let mut same: Vec<u64> = vec![change.id];
     same.extend(change.cascaded.iter().copied());
@@ -997,9 +1024,8 @@ pub fn plan_edit(
     // row somebody else has since edited destroys their wording outright — and the store is
     // shared by every session, and with Postgres by every machine, pointed at it.
     //
-    // Only here, and not on crossing an item off: `done` is a flag, two writers setting it
-    // agree, and guarding it would refuse a write that had nothing to disagree about. This is
-    // the write where a conflict is real.
+    // Completion instead guards the whole project snapshot: its cascade and reopening
+    // decisions depend on the tree, even when two writers agree on the flag itself.
     //
     // A `rev` of 0 means the item did not come from a store row — the legacy file — so there is
     // nothing to guard against and an unguarded write is the only one that can work. It must
@@ -1009,6 +1035,82 @@ pub fn plan_edit(
         update = update.expect_rev(rev);
     }
     Ok((vec![update.build()], text))
+}
+
+/// Delete the selected subtree and its links in one batch, leaving notes intact.
+pub fn plan_delete(
+    list: &List,
+    root: &str,
+    id: u64,
+    recursive: bool,
+) -> Result<(Vec<Mutation>, Vec<u64>), String> {
+    let item = item_of(list, id)
+        .ok_or_else(|| format!("no todo item {id} in this project; call todo_list"))?;
+    if !recursive && !item.children.is_empty() {
+        return Err(format!(
+            "todo item {id} has subtasks; use recursive to delete the subtree"
+        ));
+    }
+    fn collect(item: &Item, ids: &mut Vec<u64>) {
+        ids.push(item.id);
+        for child in &item.children {
+            collect(child, ids);
+        }
+    }
+    let mut ids = Vec::new();
+    collect(item, &mut ids);
+    Ok((
+        vec![
+            assert_snapshot(list, root),
+            Mutation::delete("note_link", Pred::is_in("todo_id", ids.iter().copied())),
+            Mutation::delete("todo", Pred::is_in("id", ids.iter().copied())),
+        ],
+        ids,
+    ))
+}
+
+/// Reparent only the subtree root. Descendants keep their IDs, state and links.
+pub fn plan_move(
+    list: &List,
+    root: &str,
+    id: u64,
+    parent_id: Option<u64>,
+    expect_rev: Option<DataRevision>,
+) -> Result<(Vec<Mutation>, Vec<u64>), String> {
+    let item = item_of(list, id)
+        .ok_or_else(|| format!("no todo item {id} in this project; call todo_list"))?;
+    fn height(item: &Item) -> usize {
+        1 + item.children.iter().map(height).max().unwrap_or(0)
+    }
+    let mut reopened = Vec::new();
+    if let Some(parent_id) = parent_id {
+        let parent_depth = depth_of(&list.items, parent_id, 1)
+            .ok_or_else(|| format!("no todo item {parent_id} in this project; parent_id must name an item in the same project"))?;
+        if id == parent_id || find_item(&item.children, parent_id).is_some() {
+            return Err("a todo cannot move under itself or its descendants".into());
+        }
+        if parent_depth + height(item) > MAX_DEPTH {
+            return Err(format!("todo items nest {MAX_DEPTH} levels deep at most"));
+        }
+        if !item.done {
+            if is_done(&list.items, parent_id) {
+                reopened.push(parent_id);
+            }
+            reopened.extend(ancestors_to_open(&list.items, parent_id));
+        }
+    }
+    let mut update = Mutation::update("todo", Pred::eq("id", id)).set(
+        "parent_id",
+        parent_id.map(DataValue::from).unwrap_or(DataValue::Null),
+    );
+    if let Some(rev) = crate::store::guarded_rev(expect_rev, item.rev) {
+        update = update.expect_rev(rev);
+    }
+    let mut mutations = vec![assert_snapshot(list, root), update.build()];
+    if !reopened.is_empty() {
+        mutations.push(open_mutation(&reopened));
+    }
+    Ok((mutations, reopened))
 }
 
 /// Plan moving a project's list to a new root.
@@ -1067,29 +1169,58 @@ fn collect_level(
     }
 }
 
-/// The inserts for one level of an import, given the ids the levels above got.
-///
-/// An item whose parent is missing from `new_ids` is written as a top-level
-/// item. That cannot happen from [`levels_for_import`], which always yields
-/// parents first; it is the safe answer if it ever does.
+/// Stable identity for an imported row, scoped to its source host and list.
+pub fn import_uid(host_id: &HostId, root: &str, old_id: u64) -> String {
+    serde_json::json!([host_id, root, old_id]).to_string()
+}
+
+/// Insert one legacy level against a fresh list, refusing missing or moved parents.
 pub fn import_mutations(
+    list: &List,
     root: &str,
     level: &[Pending],
     new_ids: &BTreeMap<u64, DataRowId>,
-) -> Vec<Mutation> {
-    level
-        .iter()
-        .map(|pending| {
-            let mut put = Mutation::put("todo")
-                .set("root", root)
-                .set("text", pending.text.clone())
-                .set("done", pending.done);
-            if let Some(parent) = pending.old_parent.and_then(|old| new_ids.get(&old)) {
-                put = put.set("parent_id", *parent);
+    host_id: &HostId,
+) -> Result<Vec<Mutation>, String> {
+    if counts(list).1 + level.len() > MAX_ITEMS {
+        return Err(format!("todo lists hold {MAX_ITEMS} items at most"));
+    }
+    let mut mutations = vec![assert_snapshot(list, root)];
+    let mut reopened = Vec::new();
+    for pending in level {
+        let mut put = Mutation::put("todo")
+            .uid(import_uid(host_id, root, pending.old_id))
+            .expect_absent()
+            .set("root", root)
+            .set("text", pending.text.clone())
+            .set("done", pending.done);
+        if let Some(old_parent) = pending.old_parent {
+            let parent = new_ids
+                .get(&old_parent)
+                .ok_or("the imported todo parent is missing; reload and retry")?;
+            let parent_id = parent.get() as u64;
+            let depth = depth_of(&list.items, parent_id, 1)
+                .ok_or("the imported todo parent is missing; reload and retry")?;
+            if depth >= MAX_DEPTH {
+                return Err(format!("todo items nest {MAX_DEPTH} levels deep at most"));
             }
-            put.build()
-        })
-        .collect()
+            put = put.set("parent_id", *parent);
+            // A committed ancestor may have been completed before this level resumed.
+            if !pending.done {
+                if is_done(&list.items, parent_id) {
+                    reopened.push(parent_id);
+                }
+                reopened.extend(ancestors_to_open(&list.items, parent_id));
+            }
+        }
+        mutations.push(put.build());
+    }
+    if !reopened.is_empty() {
+        reopened.sort_unstable();
+        reopened.dedup();
+        mutations.push(open_mutation(&reopened));
+    }
+    Ok(mutations)
 }
 
 // ---------------------------------------------------------------------------
@@ -1179,7 +1310,14 @@ mod tests {
     fn import(backend: &impl Backend, root: &str, list: &List) {
         let mut new_ids: BTreeMap<u64, DataRowId> = BTreeMap::new();
         for level in levels_for_import(list) {
-            let mutations = import_mutations(root, &level, &new_ids);
+            let mutations = import_mutations(
+                &fetch_list(backend, root).unwrap(),
+                root,
+                &level,
+                &new_ids,
+                &HostId::new("test-host"),
+            )
+            .unwrap();
             let report = backend.apply(mutations).expect("imported a level");
             for (pending, id) in level.iter().zip(report.ids) {
                 new_ids.insert(pending.old_id, id);
@@ -1352,11 +1490,14 @@ mod tests {
         assert_eq!(text, "ship it");
         assert_eq!(
             mutations,
-            vec![Mutation::put("todo")
-                .set("root", "/work")
-                .set("text", "ship it")
-                .set("done", false)
-                .build()]
+            vec![
+                assert_snapshot(&list, "/work"),
+                Mutation::put("todo")
+                    .set("root", "/work")
+                    .set("text", "ship it")
+                    .set("done", false)
+                    .build()
+            ]
         );
     }
 
@@ -1369,9 +1510,9 @@ mod tests {
             items: vec![done(item(1, "top", vec![done(item(2, "middle", vec![]))]))],
         };
         let (mutations, _) = plan_add(&list, "/work", "more work", Some(2)).expect("planned");
-        assert_eq!(mutations.len(), 2);
+        assert_eq!(mutations.len(), 3);
         assert_eq!(
-            mutations[1],
+            mutations[2],
             Mutation::update("todo", Pred::is_in("id", [2u64, 1]))
                 .set("done", false)
                 .build()
@@ -1385,7 +1526,7 @@ mod tests {
             items: vec![item(1, "top", vec![])],
         };
         let (mutations, _) = plan_add(&list, "/work", "more", Some(1)).expect("planned");
-        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations.len(), 2);
     }
 
     #[test]
@@ -1409,9 +1550,12 @@ mod tests {
         assert_eq!(change.cascaded, vec![2, 3]);
         assert_eq!(
             mutations,
-            vec![Mutation::update("todo", Pred::is_in("id", [1u64, 2, 3]))
-                .set("done", true)
-                .build()]
+            vec![
+                assert_snapshot(&list, "/work"),
+                Mutation::update("todo", Pred::is_in("id", [1u64, 2, 3]))
+                    .set("done", true)
+                    .build()
+            ]
         );
     }
 
@@ -1423,9 +1567,10 @@ mod tests {
         };
         let (mutations, change) = plan_set_done(&list, "/work", 2, false).expect("planned");
         assert_eq!(change.reopened, vec![1]);
-        assert_eq!(mutations.len(), 2);
+        assert_eq!(mutations.len(), 3);
+        assert_eq!(mutations[0], assert_snapshot(&list, "/work"));
         assert_eq!(
-            mutations[1],
+            mutations[2],
             Mutation::update("todo", Pred::is_in("id", [1u64]))
                 .set("done", false)
                 .build()
@@ -1569,37 +1714,27 @@ mod tests {
         );
     }
 
-    /// Crossing an item off is deliberately not guarded: two writers setting a flag the same way
-    /// are not disagreeing, and refusing the second would be a conflict about nothing.
+    /// Completion validates the entire project, even if only unrelated text changed.
     #[test]
-    fn crossing_an_item_off_is_not_guarded() {
+    fn crossing_an_item_off_conflicts_with_text_edits_and_agreeing_flag_writes() {
         use crate::store::{self, Backend};
 
-        let local = store::Local::shared("hocus");
-        local.define_all(&store::shared_defs()).unwrap();
-        local
-            .apply(
-                plan_add(&List::default(), "/work", "ship it", None)
+        for edit in [true, false] {
+            let local = store::Local::shared("hocus");
+            local.define_all(&store::shared_defs()).unwrap();
+            let id = add_stored(&local, None);
+            let unrelated = add_stored(&local, None);
+            let stale = fetch_list(&local, "/work").unwrap();
+            let first = if edit {
+                plan_edit(&stale, unrelated, "ship it soon", None)
                     .unwrap()
-                    .0,
-            )
-            .unwrap();
-        let stale = fetch_list(&local, "/work").unwrap();
-        let id = stale.items[0].id;
-
-        // Somebody edits the text, moving the row's revision on.
-        let fresh = fetch_list(&local, "/work").unwrap();
-        local
-            .apply(plan_edit(&fresh, id, "ship it soon", None).unwrap().0)
-            .unwrap();
-
-        // Crossing off from the older read still lands.
-        local
-            .apply(plan_set_done(&stale, "/work", id, true).unwrap().0)
-            .unwrap();
-        let after = fetch_list(&local, "/work").unwrap();
-        assert!(after.items[0].done);
-        assert_eq!(after.items[0].text, "ship it soon");
+                    .0
+            } else {
+                plan_set_done(&stale, "/work", id, true).unwrap().0
+            };
+            let completion = plan_set_done(&stale, "/work", id, true).unwrap().0;
+            commit_competing(&local, first, completion);
+        }
     }
 
     #[test]
@@ -2318,5 +2453,267 @@ mod tests {
             Err("no todo item 9 in this project; call todo_list".to_owned()),
         );
         assert!(set_done(&mut saved, "/work/other", 1, true).is_err());
+    }
+    fn add_stored(backend: &impl Backend, parent: Option<u64>) -> u64 {
+        let list = fetch_list(backend, "/work").unwrap();
+        let (mutations, _) = plan_add(&list, "/work", "item", parent).unwrap();
+        backend.apply(mutations).unwrap().ids[0].get() as u64
+    }
+
+    /// Inspect raw edges: materializing a list repairs cycles and orphans for display.
+    fn assert_raw_tree(backend: &impl Backend) {
+        let rows = backend.fetch(&FetchRequest::entity("todo")).unwrap();
+        let ids: BTreeSet<_> = rows
+            .rows
+            .iter()
+            .map(|row| int_at(&rows, row, "id").unwrap())
+            .collect();
+        let parents: BTreeMap<_, _> = rows
+            .rows
+            .iter()
+            .filter_map(|row| {
+                int_at(&rows, row, "parent_id")
+                    .map(|parent| (int_at(&rows, row, "id").unwrap(), parent))
+            })
+            .collect();
+        let completed: BTreeSet<_> = rows
+            .rows
+            .iter()
+            .filter(|row| matches!(rows.get(row, "done"), Some(DataValue::Bool(true))))
+            .map(|row| int_at(&rows, row, "id").unwrap())
+            .collect();
+        for (id, parent) in &parents {
+            assert!(ids.contains(parent), "orphan {id} -> {parent}");
+            assert!(!is_cyclic(*id, &parents), "cycle at {id}");
+            assert!(depth_via(*id, &parents) < MAX_DEPTH);
+            assert!(
+                !completed.contains(parent) || completed.contains(id),
+                "completed parent {parent} hides open child {id}"
+            );
+        }
+    }
+
+    fn commit_competing(backend: &store::Local, first: Vec<Mutation>, stale: Vec<Mutation>) {
+        let other = backend.joined(backend.namespace(), "other");
+        other.apply(first).unwrap();
+        let before = backend.fetch(&FetchRequest::entity("todo")).unwrap();
+        let links = backend.fetch(&FetchRequest::entity("note_link")).unwrap();
+        let error = backend.apply(stale).unwrap_err();
+        assert!(error.is_conflict(), "{error:?}");
+        assert_eq!(
+            backend.fetch(&FetchRequest::entity("todo")).unwrap(),
+            before
+        );
+        assert_eq!(
+            backend.fetch(&FetchRequest::entity("note_link")).unwrap(),
+            links
+        );
+        assert_raw_tree(backend);
+    }
+
+    #[test]
+    fn reciprocal_moves_from_one_snapshot_cannot_create_a_cycle() {
+        for reverse in [false, true] {
+            let backend = backend();
+            let a = add_stored(&backend, None);
+            let b = add_stored(&backend, None);
+            let list = fetch_list(&backend, "/work").unwrap();
+            let a_under_b = plan_move(&list, "/work", a, Some(b), None).unwrap().0;
+            let b_under_a = plan_move(&list, "/work", b, Some(a), None).unwrap().0;
+            let (first, stale) = if reverse {
+                (b_under_a, a_under_b)
+            } else {
+                (a_under_b, b_under_a)
+            };
+            commit_competing(&backend, first, stale);
+        }
+    }
+
+    #[test]
+    fn undo_and_move_under_a_completed_parent_conflict_in_both_orders() {
+        for undo_first in [false, true] {
+            let backend = backend();
+            let parent = add_stored(&backend, None);
+            let child = add_stored(&backend, Some(parent));
+            let destination = add_stored(&backend, None);
+            for id in [parent, destination] {
+                let list = fetch_list(&backend, "/work").unwrap();
+                backend
+                    .apply(plan_set_done(&list, "/work", id, true).unwrap().0)
+                    .unwrap();
+            }
+            let list = fetch_list(&backend, "/work").unwrap();
+            let undo = plan_set_done(&list, "/work", child, false).unwrap().0;
+            let moved = plan_move(&list, "/work", child, Some(destination), None)
+                .unwrap()
+                .0;
+            let (first, stale) = if undo_first {
+                (undo, moved)
+            } else {
+                (moved, undo)
+            };
+            commit_competing(&backend, first, stale);
+        }
+    }
+
+    #[test]
+    fn completion_and_child_insertion_or_deletion_conflict_in_both_orders() {
+        for delete in [false, true] {
+            for completion_first in [false, true] {
+                let backend = backend();
+                let parent = add_stored(&backend, None);
+                let child = add_stored(&backend, Some(parent));
+                let list = fetch_list(&backend, "/work").unwrap();
+                let completion = plan_set_done(&list, "/work", parent, true).unwrap().0;
+                let change = if delete {
+                    plan_delete(&list, "/work", child, false).unwrap().0
+                } else {
+                    plan_add(&list, "/work", "new child", Some(parent))
+                        .unwrap()
+                        .0
+                };
+                let (first, stale) = if completion_first {
+                    (completion, change)
+                } else {
+                    (change, completion)
+                };
+                commit_competing(&backend, first, stale);
+            }
+        }
+    }
+
+    #[test]
+    fn insertion_and_deletion_conflict_in_both_orders_without_losing_links() {
+        for recursive in [false, true] {
+            for delete_first in [false, true] {
+                let backend = backend();
+                let parent = add_stored(&backend, None);
+                if recursive {
+                    add_stored(&backend, Some(parent));
+                }
+                backend
+                    .apply(vec![Mutation::put("note_link")
+                        .set("todo_id", parent)
+                        .set("note_id", 99u64)
+                        .build()])
+                    .unwrap();
+                let list = fetch_list(&backend, "/work").unwrap();
+                let insert = plan_add(&list, "/work", "new child", Some(parent))
+                    .unwrap()
+                    .0;
+                let delete = plan_delete(&list, "/work", parent, recursive).unwrap().0;
+                let (first, stale) = if delete_first {
+                    (delete, insert)
+                } else {
+                    (insert, delete)
+                };
+                commit_competing(&backend, first, stale);
+            }
+        }
+    }
+
+    #[test]
+    fn destination_deletion_and_move_conflict_in_both_orders() {
+        for delete_first in [false, true] {
+            let backend = backend();
+            let source = add_stored(&backend, None);
+            let destination = add_stored(&backend, None);
+            let list = fetch_list(&backend, "/work").unwrap();
+            let moved = plan_move(&list, "/work", source, Some(destination), None)
+                .unwrap()
+                .0;
+            let deleted = plan_delete(&list, "/work", destination, false).unwrap().0;
+            let (first, stale) = if delete_first {
+                (deleted, moved)
+            } else {
+                (moved, deleted)
+            };
+            commit_competing(&backend, first, stale);
+        }
+    }
+
+    #[test]
+    fn deeper_ancestor_moves_cannot_create_a_cycle() {
+        let backend = backend();
+        let a = add_stored(&backend, None);
+        let child = add_stored(&backend, Some(a));
+        let b = add_stored(&backend, None);
+        let list = fetch_list(&backend, "/work").unwrap();
+        let a_under_b = plan_move(&list, "/work", a, Some(b), None).unwrap().0;
+        let b_under_child = plan_move(&list, "/work", b, Some(child), None).unwrap().0;
+        commit_competing(&backend, a_under_b, b_under_child);
+    }
+
+    #[test]
+    fn subtree_growth_and_ancestor_moves_cannot_exceed_depth_limit() {
+        for grow_subtree in [false, true] {
+            for reverse in [false, true] {
+                let backend = backend();
+                let source = add_stored(&backend, None);
+                let extra = add_stored(&backend, None);
+                let destination_top = add_stored(&backend, None);
+                let mut destination = destination_top;
+                for _ in 1..MAX_DEPTH - 1 {
+                    destination = add_stored(&backend, Some(destination));
+                }
+                let list = fetch_list(&backend, "/work").unwrap();
+                let moved = plan_move(&list, "/work", source, Some(destination), None)
+                    .unwrap()
+                    .0;
+                let changed = if grow_subtree {
+                    plan_add(&list, "/work", "child", Some(source)).unwrap().0
+                } else {
+                    plan_move(&list, "/work", destination_top, Some(extra), None)
+                        .unwrap()
+                        .0
+                };
+                let (first, stale) = if reverse {
+                    (moved, changed)
+                } else {
+                    (changed, moved)
+                };
+                commit_competing(&backend, first, stale);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_children_require_a_live_mapped_parent_and_guard_the_insertion() {
+        for delete_first in [false, true] {
+            let backend = backend();
+            let parent = add_stored(&backend, None);
+            let level = vec![Pending {
+                old_id: 2,
+                old_parent: Some(1),
+                text: "child".into(),
+                done: false,
+            }];
+            let ids = BTreeMap::from([(1, DataRowId::new(parent as i64))]);
+            let list = fetch_list(&backend, "/work").unwrap();
+            assert!(import_mutations(
+                &list,
+                "/work",
+                &level,
+                &BTreeMap::new(),
+                &HostId::new("test-host")
+            )
+            .is_err());
+            let insert =
+                import_mutations(&list, "/work", &level, &ids, &HostId::new("test-host")).unwrap();
+            let delete = plan_delete(&list, "/work", parent, true).unwrap().0;
+            let (first, stale) = if delete_first {
+                (delete, insert)
+            } else {
+                (insert, delete)
+            };
+            commit_competing(&backend, first, stale);
+            if delete_first {
+                let fresh = fetch_list(&backend, "/work").unwrap();
+                assert!(
+                    import_mutations(&fresh, "/work", &level, &ids, &HostId::new("test-host"))
+                        .is_err()
+                );
+            }
+        }
     }
 }

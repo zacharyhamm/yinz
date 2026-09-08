@@ -18,7 +18,7 @@
 
 use crate::store::Backend;
 use std::collections::{BTreeMap, BTreeSet};
-use zellij_tile::prelude::DataRevision;
+use zellij_tile::prelude::{DataRevision, DataRowId};
 use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir};
 
 /// The most notes one scope holds, live or archived. Equal to the most rows a
@@ -553,29 +553,42 @@ fn annotate_items(items: &mut serde_json::Value, links: &BTreeMap<u64, Vec<u64>>
     }
 }
 
-/// Confirm every id names a todo item, in any project.
+/// Confirm every id names a todo item, in any project, and guard those rows.
 ///
 /// A link is by id, and an id that names nothing would be a link to nothing.
 /// Any project rather than the note's own: a note about one project may well
 /// point at work in another.
-pub fn require_todos(backend: &impl Backend, todo_ids: &[u64]) -> Result<(), String> {
-    if todo_ids.is_empty() {
-        return Ok(());
-    }
+pub fn require_todos(backend: &impl Backend, todo_ids: &[u64]) -> Result<Vec<Mutation>, String> {
     let mut found: BTreeSet<u64> = BTreeSet::new();
+    let mut assertions = Vec::new();
     for chunk in todo_ids.chunks(IN_CHUNK) {
+        let filter = Pred::is_in("id", chunk.iter().copied());
         let rows = fetch_all(
             backend,
             FetchRequest::entity("todo")
-                .select(["id"])
-                .filter(Pred::is_in("id", chunk.iter().copied())),
+                .select(["id", "rev"])
+                .filter(filter.clone()),
         )?;
-        found.extend(rows.rows.iter().filter_map(|row| id_at(&rows, row, "id")));
+        let revisions = rows
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let id = id_at(&rows, row, "id")?;
+                let rev = int_at(&rows, row, "rev")?;
+                found.insert(id);
+                Some((DataRowId::new(id as i64), DataRevision::new(rev)))
+            })
+            .collect();
+        assertions.push(Mutation::AssertRows {
+            entity: "todo".into(),
+            filter,
+            rows: revisions,
+        });
     }
     if let Some(missing) = todo_ids.iter().find(|id| !found.contains(id)) {
         return Err(format!("no todo item {missing}; call todo_list"));
     }
-    Ok(())
+    Ok(assertions)
 }
 
 /// The notes whose title or body matches the query, most relevant first.
@@ -731,15 +744,23 @@ pub fn plan_add(
 
 /// The tag and link rows for a note that now has an id. Empty for a note with
 /// neither, so a caller can skip the second apply.
-pub fn plan_attach(note_id: u64, tags: &[String], todo_ids: &[u64]) -> Vec<Mutation> {
-    tags.iter()
-        .map(|tag| tag_mutation(note_id, tag))
-        .chain(
+/// Revalidate the todos after note creation and assert their revisions before
+/// writing any side rows, so deletion cannot leave dangling links or partial tags.
+pub fn plan_attach(
+    backend: &impl Backend,
+    note_id: u64,
+    tags: &[String],
+    todo_ids: &[u64],
+) -> Result<Vec<Mutation>, String> {
+    let mut mutations = require_todos(backend, todo_ids)?;
+    mutations.extend(
+        tags.iter().map(|tag| tag_mutation(note_id, tag)).chain(
             todo_ids
                 .iter()
                 .map(|todo_id| link_mutation(note_id, *todo_id)),
-        )
-        .collect()
+        ),
+    );
+    Ok(mutations)
 }
 
 fn tag_mutation(note_id: u64, tag: &str) -> Mutation {
@@ -860,8 +881,12 @@ pub fn plan_delete(note_id: u64) -> Vec<Mutation> {
 }
 
 /// Plan linking a note to a todo item. An upsert, so linking twice is once.
-pub fn plan_link(note_id: u64, todo_id: u64) -> Vec<Mutation> {
-    vec![link_mutation(note_id, todo_id)]
+pub fn plan_link(
+    backend: &impl Backend,
+    note_id: u64,
+    todo_id: u64,
+) -> Result<Vec<Mutation>, String> {
+    plan_attach(backend, note_id, &[], &[todo_id])
 }
 
 /// Plan removing that link. Unlinking what was never linked deletes nothing.
@@ -920,7 +945,7 @@ mod tests {
             plan_add(count, root, title, body, "user", &strings(tags), todo_ids).expect("planned");
         let report = backend.apply(mutations).expect("wrote the note");
         let id = u64::try_from(report.ids[0].get()).unwrap();
-        let attach = plan_attach(id, &draft.tags, &draft.todo_ids);
+        let attach = plan_attach(backend, id, &draft.tags, &draft.todo_ids).unwrap();
         if !attach.is_empty() {
             backend.apply(attach).expect("attached");
         }
@@ -1160,11 +1185,19 @@ mod tests {
         assert_eq!(draft.root.as_deref(), Some("/work/hocus"));
         assert_eq!(draft.tags, strings(&["a", "b"]));
         assert_eq!(draft.todo_ids, vec![3, 7]);
-        let attach = plan_attach(12, &draft.tags, &draft.todo_ids);
-        assert_eq!(attach.len(), 4);
-        assert_eq!(attach[0].entity(), "note_tag");
-        assert_eq!(attach[3].entity(), "note_link");
-        assert!(plan_attach(12, &[], &[]).is_empty());
+        let backend = backend();
+        let a = todo(&backend, "/work", "a");
+        let b = todo(&backend, "/other", "b");
+        let attach = plan_attach(&backend, 12, &draft.tags, &[a, b]).unwrap();
+        assert_eq!(attach.len(), 5);
+        assert!(matches!(attach[0], Mutation::AssertRows { .. }));
+        assert_eq!(attach[1].entity(), "note_tag");
+        assert_eq!(attach[4].entity(), "note_link");
+        assert!(plan_attach(&backend, 12, &[], &[]).unwrap().is_empty());
+        assert_eq!(
+            plan_attach(&backend, 12, &draft.tags, &[]).unwrap(),
+            vec![tag_mutation(12, "a"), tag_mutation(12, "b")]
+        );
     }
 
     #[test]
@@ -1380,8 +1413,8 @@ mod tests {
 
         backend.apply(plan_unlink(id, a)).unwrap();
         assert_eq!(fetch_note(&backend, id).unwrap().unwrap().todo_ids, vec![b]);
-        backend.apply(plan_link(id, a)).unwrap();
-        backend.apply(plan_link(id, a)).unwrap();
+        backend.apply(plan_link(&backend, id, a).unwrap()).unwrap();
+        backend.apply(plan_link(&backend, id, a).unwrap()).unwrap();
         assert_eq!(
             fetch_note(&backend, id).unwrap().unwrap().todo_ids,
             vec![a, b]
@@ -1584,6 +1617,128 @@ mod tests {
             error.contains(&format!("no todo item {}", item + 50)),
             "got: {error}"
         );
+        assert!(plan_link(&backend, 1, item + 50).is_err());
+        assert!(plan_attach(&backend, 1, &strings(&["tag"]), &[item + 50]).is_err());
+    }
+
+    #[test]
+    fn linking_and_attachment_cannot_leave_links_to_deleted_todos() {
+        use crate::todos;
+        for attach in [false, true] {
+            for recursive in [false, true] {
+                for delete_first in [false, true] {
+                    let backend = backend();
+                    let other = backend.joined(backend.namespace(), "other");
+                    let parent = todo(&backend, "/work", "parent");
+                    let target = if recursive {
+                        let list = todos::fetch_list(&backend, "/work").unwrap();
+                        backend
+                            .apply(
+                                todos::plan_add(&list, "/work", "child", Some(parent))
+                                    .unwrap()
+                                    .0,
+                            )
+                            .unwrap()
+                            .ids[0]
+                            .get() as u64
+                    } else {
+                        parent
+                    };
+                    let survivor = todo(&backend, "/other", "keep");
+                    let id = add(&backend, None, "note", "body", &[], &[]);
+                    let link = if attach {
+                        plan_attach(&backend, id, &strings(&["tag"]), &[survivor, target]).unwrap()
+                    } else {
+                        plan_link(&backend, id, target).unwrap()
+                    };
+                    let list = todos::fetch_list(&other, "/work").unwrap();
+                    let delete = todos::plan_delete(&list, "/work", parent, recursive)
+                        .unwrap()
+                        .0;
+                    if delete_first {
+                        other.apply(delete).unwrap();
+                        let error = backend.apply(link).unwrap_err();
+                        assert!(error.is_conflict(), "{error:?}");
+                        assert!(backend
+                            .fetch(&FetchRequest::entity("note_tag"))
+                            .unwrap()
+                            .is_empty());
+                        assert!(backend
+                            .fetch(&FetchRequest::entity("note_link"))
+                            .unwrap()
+                            .is_empty());
+                    } else {
+                        backend.apply(link).unwrap();
+                        other.apply(delete).unwrap();
+                    }
+                    assert!(
+                        fetch_note(&backend, id).unwrap().is_some(),
+                        "the created note survives"
+                    );
+                    // Read stored links directly: no join or display repair may hide a dangling ID.
+                    let links = backend.fetch(&FetchRequest::entity("note_link")).unwrap();
+                    for row in &links.rows {
+                        assert_eq!(id_at(&links, row, "todo_id"), Some(survivor));
+                    }
+                    assert_eq!(links.rows.len(), usize::from(attach && !delete_first));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn attachment_assertions_cover_chunked_duplicate_ids_across_projects() {
+        let backend = backend();
+        let ids: Vec<u64> = backend
+            .apply(
+                (0..=IN_CHUNK)
+                    .map(|n| {
+                        Mutation::put("todo")
+                            .set("root", if n % 2 == 0 { "/work" } else { "/other" })
+                            .set("text", "item")
+                            .build()
+                    })
+                    .collect(),
+            )
+            .unwrap()
+            .ids
+            .iter()
+            .map(|id| id.get() as u64)
+            .collect();
+        let unrelated = todo(&backend, "/work", "unrelated");
+        let id = add(&backend, Some("/notes"), "note", "body", &[], &[]);
+        let mut duplicates = ids.clone();
+        duplicates.extend_from_slice(&[ids[0], ids[0]]);
+        let mutations = plan_attach(&backend, id, &strings(&["tag"]), &duplicates).unwrap();
+        assert!(mutations[..2]
+            .iter()
+            .all(|m| matches!(m, Mutation::AssertRows { .. })));
+        let other = backend.joined(backend.namespace(), "other");
+        other
+            .apply(vec![Mutation::update("todo", Pred::eq("id", unrelated))
+                .set("text", "edited")
+                .build()])
+            .unwrap();
+        backend.apply(mutations).unwrap();
+        assert_eq!(fetch_note(&backend, id).unwrap().unwrap().todo_ids, ids);
+
+        // Edits in either chunk invalidate the whole attachment, including its tags.
+        for target in [ids[0], ids[IN_CHUNK]] {
+            let pending = plan_attach(&backend, id, &strings(&["new"]), &duplicates).unwrap();
+            other
+                .apply(vec![Mutation::update("todo", Pred::eq("id", target))
+                    .set("text", "edited")
+                    .build()])
+                .unwrap();
+            let before = fetch_note(&backend, id).unwrap();
+            assert!(backend.apply(pending).unwrap_err().is_conflict());
+            assert_eq!(fetch_note(&backend, id).unwrap(), before);
+        }
+        let mut missing = ids;
+        missing.push(unrelated + 100);
+        assert!(require_todos(&backend, &missing)
+            .unwrap_err()
+            .contains("no todo item"));
     }
 
     #[test]

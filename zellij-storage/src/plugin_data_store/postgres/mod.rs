@@ -385,6 +385,17 @@ impl Executor for PgExec<'_> {
         self.execute_batch(&format!("SELECT pg_advisory_xact_lock({SCHEMA_LOCK_KEY});"))
     }
 
+    fn lock_writes(&mut self, tables: &[String]) -> Result<(), DataError> {
+        // ponytail: guarded batches serialize table writes, including other projects.
+        // Use finer locking if throughput requires it, while still excluding unguarded writers.
+        let tables = tables
+            .iter()
+            .map(|table| quote_ident(table))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.execute_batch(&format!("LOCK TABLE {tables} IN SHARE ROW EXCLUSIVE MODE"))
+    }
+
     fn execute_batch(&mut self, sql: &str) -> Result<(), DataError> {
         self.0.run("statement failed", async {
             self.0
@@ -455,3 +466,7 @@ impl Executor for PgExec<'_> {
 #[cfg(all(test, feature = "postgres-tests"))]
 #[path = "unit/deadlines.rs"]
 mod deadline_tests;
+
+#[cfg(all(test, feature = "postgres-tests"))]
+#[path = "unit/snapshots.rs"]
+mod snapshot_tests;

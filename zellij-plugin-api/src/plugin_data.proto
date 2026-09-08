@@ -150,11 +150,23 @@ message Delete {
   Pred filter = 2;
 }
 
+message RowRevision {
+  int64 id = 1;
+  int64 rev = 2;
+}
+
+message AssertRows {
+  string entity = 1;
+  Pred filter = 2;
+  repeated RowRevision rows = 3;
+}
+
 message Mutation {
   oneof mutation {
     Put put = 1;
     Update update = 2;
     Delete delete = 3;
+    AssertRows assert_rows = 4;
   }
 }
 

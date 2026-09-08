@@ -1367,6 +1367,7 @@ pub fn actions_from_cli(
             let fragment = format!("hooks {{\n    {} {}\n}}\n", point, kdl_string(&url));
             Ok(vec![reconfigure_action(fragment, write, config)?])
         },
+        CliAction::NotesTodos(command) => Ok(vec![command.action(&mut std::io::stdin())?]),
         CliAction::Notify { text } => Ok(vec![Action::Notify(text)]),
         CliAction::Pipe {
             name,

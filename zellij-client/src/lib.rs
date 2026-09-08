@@ -720,3 +720,5 @@ pub fn start_server_detached(
 mod test_support;
 #[cfg(test)]
 mod unit;
+
+pub mod store_client;

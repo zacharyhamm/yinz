@@ -69,8 +69,7 @@ fn submit(zellij: &TestSession, line: &str) {
 ///
 /// Deliberately no `plugin` argument: a bare `zellij:hocus-store` url carries
 /// none of the alias' configuration, so it would miss the running instance and
-/// launch a second one. A broadcast reaches whatever is already running, and
-/// `store_mutate` is handled in exactly one place.
+/// launch a second one. The host resolves one existing store instance.
 fn pipe_to_store(zellij: &mut TestSession, payload: &str) {
     zellij.run_cli_action(CliAction::Pipe {
         name: Some("store_mutate".to_owned()),
@@ -216,5 +215,130 @@ fn a_note_written_from_the_cli_is_listed_and_read_in_hocus() {
     zellij.wait_until("and the todo names the note", |grid_snapshot| {
         grid_snapshot.contains("notes 1")
     });
+    zellij.quit();
+}
+
+/// The production one-request client talks to a real server and the wasm store.
+#[test]
+fn named_notes_todos_share_hocus_data_and_survive_reload() {
+    use serde_json::{json, Value};
+    use zellij_cli::notes_todos::NotesTodos;
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&HOCUS_CONFIG.replace(
+            "hocus-store location=\"zellij:hocus-store\"",
+            "hocus-store location=\"zellij:hocus-store\" { test_configuration \"retained\"; }",
+        ))
+        .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
+        .start();
+    zellij.wait_until("hocus asks for permissions", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("permissions accepted", |grid| {
+        !grid.contains("Allow? (y/n)")
+    });
+    // The store alias is deliberately nonshared. Both clients get an instance.
+    let second_client = zellij.attach_client(TERMINAL_SIZE);
+    second_client.wait_until("second client sees hocus", |grid| {
+        grid.contains("Ask something.")
+    });
+    let request = |command: NotesTodos| -> Value {
+        let action = command.action(&mut std::io::empty()).unwrap();
+        zellij_client::store_client::request(&zellij.session_name().into(), action).unwrap()
+    };
+    request(NotesTodos::ProjectRemember {
+        name: "named".into(),
+        root: "/work/named".into(),
+    });
+    let item = request(NotesTodos::TodoAdd {
+        text: "named command task".into(),
+        project: "named".into(),
+        parent_id: None,
+    });
+    let id = item["id"].as_u64().unwrap();
+    let note = request(NotesTodos::NoteAdd {
+        title: "named command finding".into(),
+        project: Some("named".into()),
+        global: false,
+        body: Some("first line\n\nsecond line".into()),
+        body_file: None,
+        tags: vec!["design".into()],
+        author: Some("codex".into()),
+        todo_ids: vec![id],
+    });
+    let note_id = note["id"].as_u64().unwrap();
+    assert_eq!(note["body"], "first line\n\nsecond line");
+    let list = request(NotesTodos::TodoList {
+        project: "named".into(),
+        include_done: true,
+    });
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    assert_eq!(list["items"][0]["notes"], json!([note_id]));
+    let notes = request(NotesTodos::NoteList {
+        project: Some("named".into()),
+        global: false,
+        include_archived: false,
+        tag: None,
+        todo_id: None,
+    });
+    assert_eq!(notes["notes"].as_array().unwrap().len(), 1);
+    submit(&zellij, r#"/todo_list {"project":"named"}"#);
+    zellij.wait_until("hocus sees the named command task", |grid| {
+        grid.contains("named command task")
+    });
+    // Reload through the existing acknowledged CLI route. A following request is
+    // delivered to the reloaded store, including while its wasm is loading.
+    zellij.run_cli_action(CliAction::StartOrReloadPlugin {
+        url: "hocus-store".into(),
+        configuration: None,
+    });
+    request(NotesTodos::TodoAdd {
+        text: "one request during reload".into(),
+        project: "named".into(),
+        parent_id: None,
+    });
+    let reloaded_list = request(NotesTodos::TodoList {
+        project: "named".into(),
+        include_done: true,
+    });
+    assert_eq!(reloaded_list["items"].as_array().unwrap().len(), 2);
+    let note_after = request(NotesTodos::NoteGet { id: note_id });
+    assert_eq!(note_after["body"], note["body"]);
+    assert_eq!(note_after["todo_ids"], json!([id]));
+    let missing = NotesTodos::NoteGet { id: 999999 }
+        .action(&mut std::io::empty())
+        .unwrap();
+    let error =
+        zellij_client::store_client::request(&zellij.session_name().into(), missing).unwrap_err();
+    assert!(error.to_string().contains("no note"));
+    second_client.quit();
+    zellij.quit();
+}
+
+#[test]
+fn named_notes_todos_fail_when_the_store_is_missing_without_launching_it() {
+    use zellij_cli::notes_todos::NotesTodos;
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let terminal = zellij.expect_pty_spawn();
+    terminal.output(b"session ready");
+    zellij.wait_until("session ready for CLI requests", |grid| {
+        grid.contains("session ready")
+    });
+    let action = NotesTodos::ProjectList
+        .action(&mut std::io::empty())
+        .unwrap();
+    let started = std::time::Instant::now();
+    let error =
+        zellij_client::store_client::request(&zellij.session_name().into(), action).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("No running hocus-store instance"),
+        "{error:#}"
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     zellij.quit();
 }

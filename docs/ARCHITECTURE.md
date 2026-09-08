@@ -116,7 +116,8 @@ firing a dead server's prompts at whoever upgrades first is worse than dropping 
 advances on every write that touches it, and a `Put` or `Update` may name the `rev` it expects —
 a compare-and-set, refused with `DataError::Conflict` and rolling the whole batch back. Used
 where a write replaces something composed from an earlier read (a todo's text, a note's body),
-and deliberately not where it sets a flag, since two writers agreeing is not a conflict.
+and not for independent flag writes such as note archiving. Todo completion also depends on
+the tree, so it uses the snapshot assertion described below.
 `ApplyReport.per_mutation` reports rows affected per mutation, for callers guarding by hand.
 
 **The `rev` has to be the one the value's author read.** A writer that fetches the row, builds
@@ -134,6 +135,27 @@ supplies none falls back to the fresh read, which is the old behaviour and nearl
 all. Note that a fetch naming its columns loses the ones the store adds unasked, `rev` among
 them, so a projection can silently turn a guarded write into an unguarded one —
 `notes::LIST_COLUMNS` names `rev` for that reason.
+
+**Todo topology and completion use a project snapshot.** Add, move, delete, completion,
+undo, and each legacy import level
+prepend `Mutation::AssertRows`, comparing the complete matching set of `(id, rev)` pairs in
+the batch transaction. Any insertion, removal, or edit since validation refuses the entire
+batch with `Conflict`; callers reload and decide again. The assertion writes no rows, returns
+no IDs, and contributes zero to `per_mutation`. A move also keeps the source author's
+`expect_rev`. Legacy children require their mapped parents to remain in the project.
+SQLite's `BEGIN IMMEDIATE` protects the comparison through commit. PostgreSQL takes
+`SHARE ROW EXCLUSIVE` locks on every table touched by a guarded batch, in stable table order,
+before checking any assertion. Ordinary writers are blocked too. This briefly serializes
+writes across projects in those tables, and unrelated edits within a project can conflict.
+Agreeing completion writes also advance revisions and can invalidate a pending plan.
+
+**Note links guard their target todos.** Link and attachment plans assert the `(id, rev)`
+pairs for the requested todo IDs, in chunks, before writing tags or links. Missing targets fail
+validation. Target edits or deletions before commit cause a conflict and roll back the batch.
+`note_add` checks targets before creating the note, then checks again after receiving its ID.
+If attachment planning or application fails, the note remains and the reply includes a warning.
+Both frontends report snapshot conflicts as “the todo list changed; reload and retry” without
+an automatic retry.
 
 **What is not handled:** a watch is only re-evaluated by writes made in the same server process
 (`refresh_watches` has one caller, in the local apply path), so on a shared Postgres another

@@ -6,7 +6,7 @@
 //! servers sharing one database — only arises on the engine the tests would have skipped.
 
 use super::*;
-use zellij_types::internal_ids::DataRevision;
+use zellij_types::internal_ids::{DataRevision, DataRowId};
 
 /// The `rev` of the single row an `agent` fetch returns.
 fn only_rev(store: &PluginDataStore) -> i64 {
@@ -551,4 +551,136 @@ fn guards_that_could_never_hold_are_rejected() {
             .expect_rev(DataRevision::new(-1))
             .build(),
     );
+}
+
+fn snapshot(store: &PluginDataStore) -> Mutation {
+    let rows = store
+        .fetch(
+            NS,
+            &FetchRequest::entity("agent").filter(Pred::eq("project", "zellij")),
+        )
+        .unwrap();
+    Mutation::AssertRows {
+        entity: "agent".into(),
+        filter: Pred::eq("project", "zellij"),
+        rows: column(&rows, "id")
+            .into_iter()
+            .zip(column(&rows, "rev"))
+            .map(|(id, rev)| match (id, rev) {
+                (DataValue::Int(id), DataValue::Int(rev)) => {
+                    (DataRowId::new(id), DataRevision::new(rev))
+                },
+                other => panic!("invalid snapshot {other:?}"),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn assertions_match_the_complete_set_without_changing_rows_or_report_ids() {
+    let (store, _guard) = defined();
+    let empty = snapshot(&store);
+    assert_eq!(
+        store
+            .apply(NS, std::slice::from_ref(&empty))
+            .unwrap()
+            .report,
+        ApplyReport {
+            per_mutation: vec![0],
+            ..ApplyReport::default()
+        }
+    );
+    put(&store, "elsewhere", "outside filter", 1);
+    store.apply(NS, std::slice::from_ref(&empty)).unwrap();
+    put(&store, "zellij", "one", 1);
+    put(&store, "zellij", "two", 1);
+    assert_err!(
+        store.apply(NS, std::slice::from_ref(&empty)).unwrap_err(),
+        DataError::Conflict(_)
+    );
+    let mut guard = snapshot(&store);
+    if let Mutation::AssertRows { rows, .. } = &mut guard {
+        rows.reverse();
+    }
+    let before = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+    assert_eq!(
+        store.apply(NS, &[guard]).unwrap().report,
+        ApplyReport {
+            per_mutation: vec![0],
+            ..ApplyReport::default()
+        }
+    );
+    assert_eq!(
+        store.fetch(NS, &FetchRequest::entity("agent")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn stale_assertions_roll_back_earlier_writes_and_deletes() {
+    for change in [
+        Mutation::put("agent").set("project", "zellij").build(),
+        Mutation::delete("agent", Pred::eq("project", "zellij")),
+        Mutation::update("agent", Pred::eq("project", "zellij"))
+            .set("summary", "edited")
+            .build(),
+        Mutation::update("agent", Pred::eq("project", "zellij"))
+            .set("project", "moved")
+            .build(),
+    ] {
+        let (store, guard) = defined();
+        let other = reopen(&guard);
+        put(&store, "zellij", "original", 1);
+        put(&store, "elsewhere", "keep", 1);
+        let assertion = snapshot(&store);
+        other.apply(NS, &[change]).unwrap();
+        let before = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+        let error = store
+            .apply(
+                NS,
+                &[
+                    Mutation::delete("agent", Pred::eq("project", "elsewhere")),
+                    Mutation::put("agent").set("project", "rollback").build(),
+                    assertion,
+                ],
+            )
+            .unwrap_err();
+        assert_err!(error, DataError::Conflict(_));
+        assert_eq!(
+            store.fetch(NS, &FetchRequest::entity("agent")).unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
+fn independent_writers_of_the_same_snapshot_cannot_both_commit() {
+    use std::sync::Barrier;
+    let (store, guard) = defined();
+    put(&store, "zellij", "original", 1);
+    let other = reopen(&guard);
+    // Both reads finish before either writer is released. Each owns a database connection.
+    let first = snapshot(&store);
+    let second = snapshot(&other);
+    let barrier = Barrier::new(2);
+    let write = |store: &PluginDataStore, assertion| {
+        barrier.wait();
+        store.apply(
+            NS,
+            &[
+                assertion,
+                Mutation::put("agent").set("project", "zellij").build(),
+            ],
+        )
+    };
+    let results = std::thread::scope(|scope| {
+        let a = scope.spawn(|| write(&store, first));
+        let b = scope.spawn(|| write(&other, second));
+        [a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert!(results
+        .iter()
+        .any(|r| matches!(r, Err(DataError::Conflict(_)))));
+    assert_eq!(store.count(NS, &FetchRequest::entity("agent")).unwrap(), 2);
 }

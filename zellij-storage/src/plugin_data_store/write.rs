@@ -234,6 +234,38 @@ pub(super) fn apply_one(
     let dialect = exec.dialect();
     let entity = &schema.def.name;
     match mutation {
+        Mutation::AssertRows { filter, rows, .. } => {
+            let table = schema.table();
+            let mut params = Params::new(dialect);
+            let mut predicate = String::new();
+            compile_pred(filter, schema, &table, &mut predicate, &mut params)?;
+            let sql = format!(
+                "SELECT \"id\", \"rev\" FROM {} WHERE {}",
+                quote_ident(&table),
+                predicate
+            );
+            let mut expected: std::collections::BTreeMap<_, _> = rows.iter().copied().collect();
+            let mismatch =
+                || DataError::Conflict(format!("the rows of `{entity}` changed; reload and retry"));
+            exec.query_rows(
+                &sql,
+                &params.into_values(),
+                &[AttrKind::Int, AttrKind::Int],
+                &mut |row| match row.as_slice() {
+                    [DataValue::Int(id), DataValue::Int(rev)]
+                        if expected.remove(&DataRowId::new(*id))
+                            == Some(DataRevision::new(*rev)) =>
+                    {
+                        Ok(true)
+                    },
+                    _ => Err(mismatch()),
+                },
+            )?;
+            if !expected.is_empty() {
+                return Err(mismatch());
+            }
+            report.per_mutation.push(0);
+        },
         Mutation::Put {
             uid,
             values,

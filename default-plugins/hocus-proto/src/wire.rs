@@ -357,6 +357,9 @@ pub struct Mutation {
     /// the answers apart.
     #[serde(default)]
     pub request_id: String,
+    /// Opt in to a JSON success/error envelope. Raw pipe replies remain the default.
+    #[serde(default)]
+    pub structured_reply: bool,
     pub op: String,
     #[serde(default)]
     pub args: serde_json::Value,
@@ -368,6 +371,9 @@ pub struct Query {
     /// Unused, for the reason given on `Mutation`.
     #[serde(default)]
     pub request_id: String,
+    /// Opt in to a JSON success/error envelope. Raw pipe replies remain the default.
+    #[serde(default)]
+    pub structured_reply: bool,
     pub op: String,
     #[serde(default)]
     pub args: serde_json::Value,

@@ -47,7 +47,23 @@ const SCRIPT_VERSION: u32 = 7;
 const MARKER: &str = "hocus-hook.sh";
 
 pub(crate) fn hocus(command: Hocus) -> Result<()> {
-    let Hocus::Hooks(hooks) = command;
+    let hooks = match command {
+        Hocus::Hooks(hooks) => hooks,
+        Hocus::Skills(zellij_cli::args::HocusSkills::Install {
+            agent,
+            dry_run,
+            force,
+        }) => {
+            return for_each_agent(selected_agents(Some(agent), false)?, |agent| {
+                let root = agent_root(agent, std::env::var_os("CODEX_HOME"), home)?;
+                crate::hocus_skills::install(
+                    &root.join("skills/zellij-notes-todos/SKILL.md"),
+                    dry_run,
+                    force,
+                )
+            });
+        },
+    };
     match hooks {
         HocusHooks::Install {
             agent,
