@@ -6910,7 +6910,16 @@ z.subscribe=function() end
 z.every=function() end
 z.show_cursor=function() end
 z.set_self_mouse_selection_support=function(enabled) assert(enabled) end
-z.ui.text=function(value) return {render=function() return value end} end
+z.ui.text=function(value) return {
+  dim=function(self) return self end,error=function(self) return self end,
+  render=function() return value end,
+} end
+z.ui.markdown=function(source) return {render=function(_,rect)
+  local lines=z.text.wrap(source,math.max(1,rect.width))
+  local visible={}
+  for i=(rect.scroll or 0)+1,math.min(#lines,(rect.scroll or 0)+rect.height) do visible[#visible+1]=lines[i] end
+  return table.concat(visible,'\n'),#lines
+end} end
 local polls,commands={},{}
 z.rpc.call=function()
   local future,resolve=z.async.future();polls[#polls+1]=resolve;return future
@@ -7133,6 +7142,69 @@ key('Enter')
 }
 
 #[test]
+fn swamp_workflow_dims_markdown_history_and_prioritizes_the_question() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.subscribe=function() end
+z.every=function() end
+z.show_cursor=function() end
+z.set_self_mouse_selection_support=function() end
+local native_markdown,native_text=z.ui.markdown,z.ui.text
+local created,painted,labels=0,{},{}
+z.ui.markdown=function(source,opts)
+  created=created+1
+  local widget=native_markdown(source,opts)
+  return {render=function(_,rect)
+    if rect.height>0 then painted[#painted+1]={source=source,dim=opts.dim,rect=rect} end
+    return widget:render(rect)
+  end}
+end
+z.ui.text=function(source)
+  local widget=native_text(source)
+  return {
+    dim=function(self) labels[source]='dim';widget=widget:dim();return self end,
+    error=function(self) labels[source]='error';widget=widget:error();return self end,
+    render=function(_,rect) return widget:render(rect) end,
+  }
+end
+M.load()
+local prompt='**Proceed** with the merge?'
+local logs='# Result\n\n- checked\n\n```\nline one\n\nline three\n```'
+M.pending={{model='questions',version=1,attributes={run='run',question='merge',prompt=prompt,answers={'yes'}}}}
+M.snapshot={history={status='suspended',workflowName='exit',id='run',jobs={{name='checks',steps={{name='test',status='failed'}}}}},logs=logs,
+  outputs={results={{model='test',name='output',version=1,attributes={output='**Saved** output'}}}}}
+M.status='Run run: suspended'
+M.refresh_error='Refresh failed'
+M.render(30,60)
+assert(labels[M.status]=='dim' and labels['checks/test: failed']=='error' and labels[M.refresh_error]=='error')
+local found={}
+for _,block in ipairs(painted) do
+  found[block.source]=true
+  assert(block.dim==(block.source~=prompt))
+  if block.source==prompt then assert(block.rect.y+block.rect.height==M.form_y) end
+end
+assert(found[prompt] and found[logs] and found['**Saved** output'])
+local count=created
+M.render(30,20)
+assert(created==count,'resize must reuse parsed Markdown')
+M.snapshot.logs='Updated log'
+M.render(30,20)
+assert(created==count+1,'only changed Markdown needs parsing')
+painted={}
+M.render(4,60)
+assert(painted[#painted].source==prompt and painted[#painted].rect.y==M.form_y-1,
+  'question must get footer space before status')
+"#).exec().unwrap();
+}
+
+#[test]
 fn swamp_workflow_all_wrapped_details_remain_reachable_in_small_panes() {
     let plugin =
         load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
@@ -7167,10 +7239,17 @@ M.snapshot={history={workflowName='workflow',id='history',status='suspended',
   jobs={{name='checks',steps={{name='test',status='failed'}}}}},
   logs=details[8]..'\n'..details[9]}
 local rendered
-z.ui.text=function(value) return {render=function(_,rect)
+z.ui.text=function(value) return {dim=function(self) return self end,error=function(self) return self end,render=function(_,rect)
   assert(rect.y>=0 and rect.y<M.form_y)
   rendered[#rendered+1]=value
   return ''
+end} end
+z.ui.markdown=function(source) return {render=function(_,rect)
+  local lines=z.text.wrap(source,math.max(1,rect.width))
+  for i=(rect.scroll or 0)+1,math.min(#lines,(rect.scroll or 0)+rect.height) do
+    rendered[#rendered+1]=lines[i]
+  end
+  return '',#lines
 end} end
 local function render(rows,cols)
   rendered={}
@@ -7297,7 +7376,16 @@ local snapshot={run='run',root="/work/it's here",history={status='suspended'},
 z.rpc.call=function()
   local a,r=z.async.future();r{result=snapshot};return a
 end
-z.ui.text=function(value) return {render=function() return value end} end
+z.ui.text=function(value) return {
+  dim=function(self) return self end,error=function(self) return self end,
+  render=function() return value end,
+} end
+z.ui.markdown=function(source) return {render=function(_,rect)
+  local lines=z.text.wrap(source,math.max(1,rect.width))
+  local visible={}
+  for i=(rect.scroll or 0)+1,math.min(#lines,(rect.scroll or 0)+rect.height) do visible[#visible+1]=lines[i] end
+  return table.concat(visible,'\n'),#lines
+end} end
 z.show_cursor=function() end
 M.load()
 M.attach{directory=snapshot.root,run='run'}

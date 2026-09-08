@@ -101,6 +101,7 @@ function M.attach(attachment)
   M.selected=1
   M.scroll=0
   M.notice=nil
+  M.notice_error=nil
   M.refresh_error=nil
   M.active=true
   M.status='Loading workflow...'
@@ -166,10 +167,12 @@ function M.update(event)
   else return true end
   generation=generation+1
   M.submitting=true
+  M.notice_error=false
   M.notice=success=='Answer recorded' and 'Submitting answer...' or 'Requesting cancellation...'
   z.task(function()
     local ok,result=pcall(function() return z.await(z.async.run_command {cwd=M.snapshot.root,context={swamp_owner='view'},command=command,max_bytes_returned=8192}) end)
     local accepted=ok and result.exit_code==0
+    M.notice_error=not accepted
     M.notice=accepted and success or (ok and ((result.stderr and result.stderr~='' and result.stderr) or (result.stdout and result.stdout~='' and result.stdout) or 'Command failed') or tostring(result))
     if accepted and command[3]=='answer' then
       answered[identity(entry)]=entry.version
@@ -183,76 +186,106 @@ function M.update(event)
   end)
   return true
 end
+local markdown_cache={}
+local function failed(status)
+  return status=='failed' or status=='error'
+end
 function M.render(rows,cols)
   controls()
-  local lines={}
+  local blocks={}
+  local cache={}
+  local function markdown(source,dim)
+    local slot=#cache+1
+    local previous=markdown_cache[slot]
+    local widget=previous and previous.source==source and previous.dim==dim and previous.widget
+      or z.ui.markdown(source,{dim=dim})
+    cache[slot]={source=source,dim=dim,widget=widget}
+    local _,count=widget:render{x=0,y=0,width=cols,height=0}
+    return {widget=widget,count=count,scroll=0}
+  end
+  local function add(source,important,is_markdown)
+    if is_markdown then
+      blocks[#blocks+1]=markdown(source,not important)
+    else
+      local lines=z.text.wrap(text(source),math.max(1,cols))
+      blocks[#blocks+1]={lines=lines,count=#lines,important=important,scroll=0}
+    end
+  end
   local entry=M.pending[M.selected]
+  local question=entry and markdown(entry.attributes.prompt,false)
+  add(M.status,M.snapshot and failed(M.snapshot.history.status))
+  if M.notice then add(M.notice,M.notice_error) end
+  if M.refresh_error then add(M.refresh_error,true) end
+  if not entry and M.active then add('Waiting for the workflow. No question pending.') end
   if M.snapshot then
     local histories={M.snapshot.history}
     for _,child in ipairs(M.snapshot.children or {}) do histories[#histories+1]=child end
     for _,history in ipairs(histories) do
-    lines[#lines+1]=text(history.workflowName).." / "..text(history.id)..": "..text(history.status)
+    add(text(history.workflowName).." / "..text(history.id)..": "..text(history.status), failed(history.status))
     for _,job in ipairs(history.jobs or {}) do
-      for _,step in ipairs(job.steps or {}) do lines[#lines+1]=text(job.name .. '/' .. step.name .. ': ' .. step.status) end
+      for _,step in ipairs(job.steps or {}) do add(text(job.name .. '/' .. step.name .. ': ' .. step.status), failed(step.status)) end
     end
     end
     for _,entry in ipairs((M.snapshot.outputs or {}).results or {}) do
-      lines[#lines+1]=text(entry.model..'/'..entry.name..' v'..entry.version)
+      add(text(entry.model..'/'..entry.name..' v'..entry.version))
       local attrs=entry.attributes or {}
       local review=attrs.review or attrs
-      for _,finding in ipairs(review.findings or {}) do lines[#lines+1]=text(finding.severity..' '..finding.file..': '..finding.message) end
-      if attrs.pane then lines[#lines+1]='Pane '..attrs.pane..' / '..text(attrs.log)..' / '..text(attrs.outcome) end
+      for _,finding in ipairs(review.findings or {}) do add(text(finding.severity..' '..finding.file..': '..finding.message), true) end
+      if attrs.pane then add('Pane '..attrs.pane..' / '..text(attrs.log)..' / '..text(attrs.outcome), failed(attrs.outcome)) end
       local function show_output(value,path)
         if not value.output then return end
         if value.previewTruncated then
-          lines[#lines+1]='Output preview (up to 16,384 characters). Retrieve the complete saved version:'
+          add('Output preview (up to 16,384 characters). Retrieve the complete saved version:')
           local predicate='modelName == '..z.json.encode(entry.model)..' && name == '..z.json.encode(entry.name)..' && version == '..entry.version
-          lines[#lines+1]=text('swamp data query '..quote(predicate)..' --select '..path..' --json --repo-dir '..quote(M.snapshot.root))
+          add(text('swamp data query '..quote(predicate)..' --select '..path..' --json --repo-dir '..quote(M.snapshot.root)))
         end
-        if value.outputTruncated then lines[#lines+1]='Retained command scrollback (may omit older output):' end
-        for line in value.output:gmatch('[^\n]+') do lines[#lines+1]=text(line) end
+        if value.outputTruncated then add('Retained command scrollback (may omit older output):') end
+        add(value.output, false, true)
       end
       show_output(attrs,'attributes.output')
-      if attrs.logError then lines[#lines+1]='Log unavailable: '..text(attrs.logError) end
+      if attrs.logError then add('Log unavailable: '..text(attrs.logError), true) end
       if attrs.test then
-        lines[#lines+1]='Gate '..text(attrs.test.outcome)..' / exit '..text(attrs.test.exitCode)..' / log '..text(attrs.test.log)
+        add('Gate '..text(attrs.test.outcome)..' / exit '..text(attrs.test.exitCode)..' / log '..text(attrs.test.log), failed(attrs.test.outcome) or (type(attrs.test.exitCode)=='number' and attrs.test.exitCode~=0))
         show_output(attrs.test,'attributes.test.output')
       end
       local evidence=attrs.evidence or (attrs.source and attrs)
-      if evidence then lines[#lines+1]='Source '..text(evidence.source.commit)..' / target '..text(evidence.target.commit) end
+      if evidence then add('Source '..text(evidence.source.commit)..' / target '..text(evidence.target.commit)) end
     end
-    lines[#lines+1]='Workflow log (last 100 lines):'
-    for line in (M.snapshot.logs or ''):gmatch('[^\n]+') do lines[#lines+1]=text(line) end
+    add('Workflow log (last 100 lines):')
+    add(M.snapshot.logs or '', false, true)
   end
-  local wrapped={}
-  for _,line in ipairs(lines) do
-    for _,part in ipairs(z.text.wrap(line,math.max(1,cols))) do wrapped[#wrapped+1]=part end
-  end
-  lines=wrapped
-  local pinned={text(M.status)}
-  if M.notice then pinned[#pinned+1]=text(M.notice) end
-  if M.refresh_error then pinned[#pinned+1]=text(M.refresh_error) end
-  if entry then pinned[#pinned+1]=text(entry.attributes.prompt)
-  elseif M.active then pinned[#pinned+1]='Waiting for the workflow. No question pending.' end
-  local footer={}
-  for _,line in ipairs(pinned) do
-    for _,part in ipairs(z.text.wrap(line,math.max(1,cols))) do footer[#footer+1]=part end
-  end
+  markdown_cache=cache
   local height=math.min(form_height,math.max(0,rows-(rows>=2 and 1 or 0)))
-  local footer_height=math.min(#footer,math.floor((rows-height)/2))
-  local content={}
-  for i=footer_height+1,#footer do content[#content+1]=footer[i] end
-  for _,line in ipairs(lines) do content[#content+1]=line end
-  lines=content
-  local page=math.max(0,rows-height-footer_height)
+  local footer_height=question and math.min(question.count,math.floor((rows-height)/2)) or 0
+  if question and question.count>footer_height then
+    table.insert(blocks,1,{widget=question.widget,count=question.count-footer_height,scroll=footer_height})
+  end
+  local separator=footer_height>0 and rows-height-footer_height>=2 and 1 or 0
+  local page=math.max(0,rows-height-footer_height-separator)
   content_height=page
-  M.form_y=page+footer_height
-  M.scroll=math.max(0,math.min(M.scroll,math.max(0,#lines-page)))
-  local visible={}
-  for i=M.scroll+1,math.min(#lines,M.scroll+page) do visible[#visible+1]=lines[i] end
+  M.form_y=rows-height
+  local total=0
+  for _,block in ipairs(blocks) do total=total+block.count end
+  M.scroll=math.max(0,math.min(M.scroll,math.max(0,total-page)))
   local frame={}
-  for i,line in ipairs(visible) do frame[#frame+1]=z.ui.text(z.text.truncate(line,cols)):render{x=0,y=i-1,width=cols,height=1} end
-  for i=1,footer_height do frame[#frame+1]=z.ui.text(footer[i]):render{x=0,y=page+i-1,width=cols,height=1} end
+  local function draw(block,y,skip,count)
+    if block.widget then
+      frame[#frame+1]=block.widget:render{x=0,y=y,width=cols,height=count,scroll=block.scroll+skip}
+    else
+      for i=1,count do
+        local line=z.ui.text(block.lines[skip+i])
+        line=block.important and line:error() or line:dim()
+        frame[#frame+1]=line:render{x=0,y=y+i-1,width=cols,height=1}
+      end
+    end
+  end
+  local skip,y=M.scroll,0
+  for _,block in ipairs(blocks) do
+    local count=math.min(math.max(0,block.count-skip),page-y)
+    if count>0 then draw(block,y,skip,count);y=y+count end
+    skip=math.max(0,skip-block.count)
+  end
+  if footer_height>0 then draw(question,page+separator,0,footer_height) end
   return table.concat(frame) .. form:render{x=0,y=M.form_y,width=cols,height=height}
 end
 return M

@@ -75,7 +75,7 @@ function M.render(rows,cols)
   if M.workflow then
     return view.render(math.max(0,rows-1),cols) .. z.ui.text(z.text.truncate(
       (M.busy or view.active) and 'Workflow active. Esc: scrollback (detach). Cancel run: explicit cancellation.'
-      or 'Enter: activate button  Esc: scrollback  Delete: close held pane',cols)):render{x=0,y=math.max(0,rows-1),width=cols,height=1}
+      or 'Enter: activate button  Esc: scrollback  Delete: close held pane',cols)):dim():render{x=0,y=math.max(0,rows-1),width=cols,height=1}
   end
   local lines={}
   for line in M.status:gmatch('[^\n]+') do lines[#lines+1]=line end
