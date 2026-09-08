@@ -95,6 +95,22 @@ fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
       const d = zellij.data;
       d.define('note', {text:'Text', score:{kind:'Real', default:d.real(1)}});
       d.apply([d.put('note', {text:'hello', bytes:new Uint8Array([255])}, {uid:'a', expectRev:1n})]);
+      d.apply([{AssertRows: {entity:'note', filter:d.and(), rows:[]}}]);
+      d.apply([{AssertRows: {entity:'note', filter:d.and(), rows:[[1, 2], [3n, 4n], [5, 6n], [7n, 8]]}}]);
+      zellij.command('DataApply', {namespace:null, mutations:[{AssertRows: {entity:'note', filter:d.and(), rows:[]}}]});
+      zellij.command({DataApply: {namespace:null, mutations:[{AssertRows: {entity:'note', filter:d.and(), rows:[[1, 2], [3n, 4n], [5, 6n], [7n, 8]]}}]}});
+      // @ts-expect-error snapshot pairs require an ID and revision
+      d.apply([{AssertRows: {entity:'note', filter:d.and(), rows:[[1]]}}]);
+      // @ts-expect-error snapshot pairs cannot have extra elements
+      d.apply([{AssertRows: {entity:'note', filter:d.and(), rows:[[1, 2, 3]]}}]);
+      // @ts-expect-error snapshot IDs cannot be text
+      d.apply([{AssertRows: {entity:'note', filter:d.and(), rows:[['1', 2]]}}]);
+      // @ts-expect-error snapshot revisions cannot be text
+      zellij.command('DataApply', {namespace:null, mutations:[{AssertRows: {entity:'note', filter:d.and(), rows:[[1, '2']]}}]});
+      // @ts-expect-error snapshot assertions require a filter
+      d.apply([{AssertRows: {entity:'note', rows:[]}}]);
+      // @ts-expect-error raw snapshot assertions also require a filter
+      zellij.command({DataApply: {namespace:null, mutations:[{AssertRows: {entity:'note', rows:[]}}]}});
       const rows = d.fetch({entity:'note', filter:d.and(d.eq('uid','a'),d.gt('score',0))});
       const raw: DataRows = rows.raw;
       for (const select of [undefined, ['uid', 'rev'], ['uid']]) {
