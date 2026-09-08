@@ -549,8 +549,15 @@ fn continuations_are_marked_without_changing_history_order_or_keys() {
     archived.origin_run_id = Some("claude:A".into());
     archived.previous_run_id = Some("claude:A".into());
     archived.started_at_ms = 20;
+    // A link across kinds, which the daemon cannot currently make - it only links a run to a
+    // predecessor of its own kind. Here so the row still spells a kind that says something,
+    // rather than the rule reading as "a continuation never names its agent".
+    let mut crossed = header("D", None);
+    crossed.origin_run_id = Some("codex:A".into());
+    crossed.previous_run_id = Some("codex:A".into());
+    crossed.started_at_ms = 15;
     // The daemon sends live headers first, then completed runs from the same pane.
-    state.merge_run_headers(vec![live, archived, header("A", None)]);
+    state.merge_run_headers(vec![live, archived, crossed, header("A", None)]);
     let rows = state.current_strip().rows;
     assert!(rows.iter().any(|row| matches!(row, agents::StripRow::Agent { pane_id: 3, text, .. } if text.trim_start().starts_with("↳ "))));
     let archive: Vec<_> = rows
@@ -563,7 +570,9 @@ fn continuations_are_marked_without_changing_history_order_or_keys() {
     assert_eq!(
         archive,
         vec![
-            ("claude:B", "↳ claude · hook history"),
+            // The ↳ carries the continuation; the kind it would repeat is dropped.
+            ("claude:B", "↳ hook history"),
+            ("claude:D", "↳ claude · hook history"),
             ("claude:A", "claude · hook history")
         ]
     );
