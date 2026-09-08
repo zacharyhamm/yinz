@@ -1,6 +1,199 @@
 use super::*;
 
 #[test]
+fn sdk_inventories_match_rust_commands_events_permissions_and_decoded_replies() {
+    use strum::IntoEnumIterator;
+    use zellij_types::data::{CommandType, EventType, PermissionType};
+    let commands = CommandType::iter()
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let events = EventType::iter()
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let permissions = PermissionType::iter()
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let replies = CommandType::iter()
+        .filter(|command| super::super::super::response::decode_response(*command, &[]).is_some())
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    // Enum Debug names are identifiers, so quote each union member for TS.
+    let quoted = |names: String| {
+        names
+            .split(" | ")
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let source = format!(
+        r#"
+      import type {{CommandArgs, CommandReplies, CommandResults, EventType, Permission}} from 'zellij:plugin';
+      type Equal<A, B> = [A, B] extends [B, A] ? true : false;
+      type Assert<T extends true> = T;
+      type Commands = Assert<Equal<keyof CommandArgs, {}>>;
+      type Results = Assert<Equal<keyof CommandResults, keyof CommandArgs>>;
+      type Events = Assert<Equal<EventType, {}>>;
+      type Permissions = Assert<Equal<Permission, {}>>;
+      type Replies = Assert<Equal<keyof CommandReplies, {}>>;
+    "#,
+        quoted(commands),
+        quoted(events),
+        quoted(permissions),
+        quoted(replies)
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("inventory.ts");
+    check_semantic_source(&path, &source).unwrap();
+    // Prove that this check fails when a Rust inventory grows independently.
+    let changed = source.replace(
+        "keyof CommandArgs,",
+        "keyof CommandArgs | 'UndeclaredHostCommand',",
+    );
+    assert!(check_semantic_source(&path, &changed).is_err());
+}
+
+#[test]
+fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("commands.ts"), r#"
+      import zellij, {type Integer, type PaneId, type DataRows} from 'zellij:plugin';
+      const pid: number = zellij.command('GetPluginIds').plugin_id;
+      const objectPid: number = zellij.command({GetPluginIds: null}).plugin_id;
+      const pane: PaneId | null = zellij.command('OpenFile', [{path: '/host/file'}, {}]);
+      const bytes: Uint8Array = zellij.command({FsRead: {path: '/host/file', max_bytes: 9223372036854775807n}});
+      const nothing: null = zellij.command('RenameTab', [0, 'renamed']);
+      const job: Integer = zellij.command('EnqueueQueueJob', {queue:'q',plugin_url:'x',config:{},context:{}});
+      zellij.command('RunAction', [{MoveFocus: {direction: 'Left'}}, {}]);
+      // @ts-expect-error unknown command
+      zellij.command('MadeUp');
+      // @ts-expect-error unknown object command
+      zellij.command({MadeUp: {}});
+      // @ts-expect-error unknown keys beside a known command
+      zellij.command({SetTimeout: 1, MadeUp: {}});
+      // @ts-expect-error one command per request
+      zellij.command({SetTimeout: 1, SwitchTabTo: 0});
+      // @ts-expect-error required tuple payload
+      zellij.command('RenameTab');
+      // @ts-expect-error wrong tuple position
+      zellij.command('RenameTab', ['name', 0]);
+      // @ts-expect-error unit command has no payload
+      zellij.command('GetPluginIds', {});
+      // @ts-expect-error wrong nested action
+      zellij.command('RunAction', [{MoveFocus: {direction: 'Diagonal'}}, {}]);
+      // @ts-expect-error raw byte read does not return a string
+      const text: string = zellij.command('FsRead', {path:'x', max_bytes:null});
+      // @ts-expect-error real values cannot be bigint
+      zellij.command('SetTimeout', 1n);
+      const file: Uint8Array = zellij.fs.read('/host/file', {maxBytes: 8n});
+      zellij.fs.write('/host/file', file, {append:true, createDirs:true});
+      const absent: import('zellij:plugin').FileMetadata | null = zellij.fs.metadata('/host/missing');
+      zellij.projectConfig.write('.', 'agent_exit {}', null);
+      const d = zellij.data;
+      d.define('note', {text:'Text', score:{kind:'Real', default:d.real(1)}});
+      d.apply([d.put('note', {text:'hello', bytes:new Uint8Array([255])}, {uid:'a', expectRev:1n})]);
+      const rows = d.fetch({entity:'note', filter:d.and(d.eq('uid','a'),d.gt('score',0))});
+      const raw: DataRows = rows.raw;
+      for (const select of [undefined, ['uid', 'rev'], ['uid']]) {
+        const record = d.fetch({entity:'note', select}).records[0];
+        const rev: Integer | undefined = record.rev;
+        d.put('note', {text:'edited'}, {uid:'a', expectRev:record.rev});
+        d.update('note', d.eq('uid', 'a'), {text:'edited'}, {expectRev:record.rev});
+        // @ts-expect-error projections can omit the revision
+        const requiredRev: Integer = record.rev;
+      }
+      const projected: import('zellij:plugin').DataRecord = {uid:'a'};
+      const revision: import('zellij:plugin').DataRecord = {rev:1n};
+      // @ts-expect-error a record revision cannot be text
+      const textRevision: import('zellij:plugin').DataRecord = {rev:'1'};
+      // @ts-expect-error a record revision cannot be null
+      const nullRevision: import('zellij:plugin').DataRecord = {rev:null};
+      // @ts-expect-error a record revision cannot be boolean
+      const boolRevision: import('zellij:plugin').DataRecord = {rev:true};
+      // @ts-expect-error update revisions cannot be text
+      d.update('note', d.eq('uid', 'a'), {}, {expectRev:'1'});
+      const watch = d.watch({entity:'note'}, change => {const raw: DataRows = change.raw;});
+      const watchId: Integer = watch.watchId;
+      watch.dispose();
+      // @ts-expect-error optimistic source guard is required
+      zellij.projectConfig.write('.', 'agent_exit {}');
+      // @ts-expect-error helpers use camelCase options
+      zellij.fs.write('/host/file', 'text', {create_dirs:true});
+      // @ts-expect-error file payloads are text or Uint8Array
+      zellij.fs.write('/host/file', [1,2]);
+      // @ts-expect-error revisions are integers, not strings
+      d.put('note', {}, {expectRev:'1'});
+      // @ts-expect-error actual JSON content cannot contain BigInt
+      d.json({n:1n});
+      // @ts-expect-error supported watch modes retain their raw names
+      d.watch({entity:'note'}, () => {}, {mode:'changes'});
+    "#).unwrap();
+}
+
+#[test]
+fn shim_reply_readers_independently_require_decoder_entries() {
+    use std::collections::{BTreeMap, BTreeSet};
+    use zellij_types::data::CommandType;
+    let source = include_str!("../../../../../zellij-tile/src/shim.rs");
+    let comments = regex::Regex::new(r"(?m)//[^\n]*").unwrap();
+    let source = comments.replace_all(source, "");
+    let functions = regex::Regex::new(r"(?m)^(?:pub )?fn (\w+)").unwrap();
+    let positions: Vec<_> = functions
+        .captures_iter(&source)
+        .map(|capture| (capture[1].to_owned(), capture.get(0).unwrap().start()))
+        .collect();
+    let bodies: BTreeMap<_, _> = positions
+        .iter()
+        .enumerate()
+        .map(|(index, (name, start))| {
+            (
+                name.as_str(),
+                &source[*start
+                    ..positions
+                        .get(index + 1)
+                        .map_or(source.len(), |(_, start)| *start)],
+            )
+        })
+        .collect();
+    let mut readers = BTreeSet::from(["bytes_from_stdin", "object_from_stdin"]);
+    loop {
+        let previous = readers.len();
+        for (name, body) in &bodies {
+            if readers.iter().any(|reader| {
+                body.contains(&format!("{reader}(")) || body.contains(&format!("{reader}::<"))
+            }) {
+                readers.insert(name);
+            }
+        }
+        if readers.len() == previous {
+            break;
+        }
+    }
+    let commands = regex::Regex::new(r"PluginCommand::(\w+)").unwrap();
+    let mut found = BTreeSet::new();
+    for reader in readers {
+        if let Some(body) = bodies.get(reader) {
+            for capture in commands.captures_iter(body) {
+                let name = &capture[1];
+                let command: CommandType = name.parse().unwrap();
+                assert!(
+                    super::super::super::response::decode_response(command, &[]).is_some(),
+                    "shim {reader} reads {name}, but its decoder is missing"
+                );
+                found.insert(name.to_owned());
+            }
+        }
+    }
+    assert!(
+        found.len() >= 90,
+        "shim analysis missed reply readers: {found:?}"
+    );
+}
+
+#[test]
 fn shipped_async_example_typechecks_offline() {
     check_plugin(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins/hello.ts"))
         .unwrap();
@@ -117,4 +310,205 @@ fn sdk_checks_imported_helpers_event_types_and_render_results() {
         assert!(error.contains(expected), "{error}");
         assert!(error.contains("main.ts(1,"), "{error}");
     }
+}
+
+#[test]
+fn sdk_async_helpers_have_precise_options_results_and_cancellation_types() {
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("async.ts"), r#"
+        import zellij, {definePlugin, type CancellablePromise, type RunCommandResult,
+            type WebRequestResult, type PipeMessage} from 'zellij:plugin';
+        export default definePlugin({defaults: {greeting: 'hello'}, async load(config) {
+            const command: CancellablePromise<RunCommandResult> = zellij.runCommand({
+                command: ['echo', config.greeting], cwd: '/host', envVariables: {LANG: 'C'},
+                maxBytesReturned: 1024, context: {tag: 'one'},
+            });
+            const web: CancellablePromise<WebRequestResult> = zellij.webRequest({
+                url: 'https://example.com', verb: 'Post', body: zellij.encodeUtf8('hello'),
+                headers: {'content-type': 'text/plain'}, proxy: 'http://localhost:8080', context: {},
+            });
+            const [result, response] = await Promise.all([command, web]);
+            const exit: number | null = result.exitCode;
+            const bytes: Uint8Array = result.stderr;
+            const status: number = response.status;
+            const text: string = zellij.decodeUtf8(response.body);
+            const context: Record<string, string> = result.context;
+            const pipe: CancellablePromise<PipeMessage> = zellij.waitForPipe('reply', msg => msg.payload !== null);
+            const event = zellij.waitForEvent('RunCommandResult', ([code]) => code === 0);
+            const raw: number[] = (await event)[1];
+            const timer = zellij.every(100, async () => { await zellij.sleep(1); return true; });
+            const once = zellij.after(0, () => {});
+            for (const handle of [command, web, pipe, event, timer, once, zellij.sleep(1)]) handle.cancel();
+            // @ts-expect-error command argv must be strings
+            zellij.runCommand({command: [1]});
+            // @ts-expect-error command is required
+            zellij.runCommand({cwd: '/host'});
+            // @ts-expect-error maximum is numeric
+            zellij.runCommand({command: ['true'], maxBytesReturned: '1'});
+            // @ts-expect-error context values must be strings
+            zellij.runCommand({command: ['true'], context: {tag: 1}});
+            // @ts-expect-error only host verbs are supported
+            zellij.webRequest({url: 'x', verb: 'Patch'});
+            // @ts-expect-error only strings or Uint8Array bodies
+            zellij.webRequest({url: 'x', body: [1]});
+            // @ts-expect-error buffered helper has no stream ID
+            zellij.webRequest({url: 'x', stream_id: 'stream'});
+            // @ts-expect-error exitCode can be null
+            const code: number = result.exitCode;
+            // @ts-expect-error helper output is bytes
+            const output: string = result.stdout;
+            // @ts-expect-error pipe names are strings
+            zellij.waitForPipe(1);
+            // @ts-expect-error predicates are synchronous
+            zellij.waitForPipe('reply', async () => true);
+            // @ts-expect-error callbacks only return boolean or void
+            zellij.after(0, () => 'render');
+            // @ts-expect-error chained promises have no cancel method
+            command.then(result => result).cancel();
+            // @ts-expect-error permission promises are not cancellable
+            zellij.waitForPermissions([]).cancel();
+            // @ts-expect-error decoding requires bytes
+            zellij.decodeUtf8('hello');
+        }});
+        // @ts-expect-error defaults must be strings
+        definePlugin({defaults: {count: 1}});
+    "#).unwrap();
+}
+
+#[test]
+fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
+    use zellij_types::internal_ids::*;
+    use zellij_types::{authoring::*, data::*, input::layout::*};
+    let fixture = |name: &str, ty: &str, value: serde_json::Value| {
+        format!("const {name} = {value} satisfies SDK.{ty};\n")
+    };
+    let mut source = "import type * as SDK from 'zellij:plugin';\n".to_owned();
+    macro_rules! fixture {
+        ($name:literal, $ty:literal, $value:expr) => {
+            source.push_str(&fixture($name, $ty, serde_json::to_value($value).unwrap()));
+        };
+    }
+    fixture!("mode", "Event", Event::ModeUpdate(ModeInfo::default()));
+    fixture!("tabs", "Event", Event::TabUpdate(vec![TabInfo::default()]));
+    fixture!("panes", "Event", Event::PaneUpdate(PaneManifest::default()));
+    fixture!("pane", "PaneInfo", PaneInfo::default());
+    fixture!("style", "Style", zellij_types::style::Style::default());
+    fixture!("layout", "TiledPaneLayout", TiledPaneLayout::default());
+    fixture!(
+        "floating",
+        "FloatingPaneLayout",
+        FloatingPaneLayout::default()
+    );
+    fixture!(
+        "config",
+        "CommandObject",
+        PluginCommand::ProjectConfigWrite {
+            directory: "/host".into(),
+            source: "agent_exit {}".into(),
+            expected: None
+        }
+    );
+    fixture!(
+        "check",
+        "CommandObject",
+        PluginCommand::CheckPlugin {
+            name: "example.ts".into(),
+            source: "export default {};".into(),
+            mode: PluginCheckMode::Semantic
+        }
+    );
+    fixture!(
+        "report",
+        "PluginCheckReport",
+        PluginCheckReport {
+            permissions: vec![PermissionType::ReadFiles],
+            outline: vec![OutlineEntry {
+                line: 1,
+                kind: OutlineKind::Permission,
+                text: "ReadFiles".into()
+            }],
+            ..Default::default()
+        }
+    );
+    fixture!(
+        "fs",
+        "FsEntry",
+        FsEntry {
+            path: "/host/file".into(),
+            metadata: Some(FileMetadata {
+                is_dir: false,
+                is_file: true,
+                is_symlink: false,
+                len: u64::MAX
+            })
+        }
+    );
+    fixture!(
+        "hook",
+        "Event",
+        Event::Hook {
+            point: zellij_types::input::hooks::HookPoint::PaneExit,
+            payload: HookPayload::PaneExit {
+                pane_id: TerminalId::new(1),
+                exit_code: Some(0),
+                cwd: Some("/host".into()),
+                command: Some("sh".into()),
+                held: true
+            }
+        }
+    );
+    fixture!(
+        "rows",
+        "DataRows",
+        DataRows {
+            columns: vec!["int".into(), "real".into(), "blob".into(), "null".into()],
+            rows: vec![vec![
+                DataValue::Int(i64::MAX),
+                DataValue::Real(1.5),
+                DataValue::Blob(vec![0, 128, 255]),
+                DataValue::Null
+            ]],
+            truncated: true,
+            next_cursor: Some(DataRowId::new(i64::MAX))
+        }
+    );
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("fixtures.ts"), &source).unwrap();
+    insta::assert_snapshot!("sdk_rust_fixtures", source);
+}
+
+#[test]
+fn host_wire_definitions_require_explicit_sdk_review() {
+    // Handwritten declarations have no production generator. Keep a readable structural
+    // snapshot so adding/changing a wire field forces a payload review as well as key coverage.
+    let mut wire = String::new();
+    for (name, source) in [
+        (
+            "commands",
+            include_str!("../../../../../zellij-plugin-api/src/plugin_command.proto"),
+        ),
+        (
+            "events",
+            include_str!("../../../../../zellij-plugin-api/src/event.proto"),
+        ),
+        (
+            "data",
+            include_str!("../../../../../zellij-plugin-api/src/plugin_data.proto"),
+        ),
+        (
+            "actions",
+            include_str!("../../../../../zellij-plugin-api/src/action.proto"),
+        ),
+    ] {
+        wire.push_str(&format!("{name}\n"));
+        for line in source
+            .lines()
+            .map(|line| line.split("//").next().unwrap().trim())
+            .filter(|line| !line.is_empty())
+        {
+            wire.push_str(line);
+            wire.push('\n');
+        }
+    }
+    insta::assert_snapshot!("sdk_wire_definitions", wire);
 }

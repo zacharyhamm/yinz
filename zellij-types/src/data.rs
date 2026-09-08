@@ -3239,6 +3239,11 @@ pub enum PluginCommand {
     /// (`keys.lua:3: ...`). Nothing is written or loaded: this is the check a writer runs before
     /// a reload, so a plugin that cannot parse is refused where the writer can see it rather than
     /// reported in a pane nobody is looking at.
+    CheckPlugin {
+        name: String,
+        source: String,
+        mode: crate::authoring::PluginCheckMode,
+    },
     CheckLuaPlugin {
         name: String,
         source: String,

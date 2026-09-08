@@ -49,8 +49,30 @@ pub struct PluginConfig {
 /// go on; anything else - a permission denied, a directory where a file was expected - is an
 /// error the user needs to see rather than a reason to keep looking and then report the wrong
 /// path as missing.
+pub const MAX_DENO_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+
 fn read_source_file(path: &Path) -> Result<Option<String>> {
-    match fs::read_to_string(path) {
+    use std::io::Read;
+    let read = || -> std::io::Result<String> {
+        if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("js" | "mjs" | "ts" | "mts")
+        ) {
+            let mut source = String::new();
+            fs::File::open(path)?
+                .take(MAX_DENO_SOURCE_BYTES as u64 + 1)
+                .read_to_string(&mut source)?;
+            if source.len() > MAX_DENO_SOURCE_BYTES {
+                return Err(std::io::Error::other(
+                    "Deno plugin exceeds 8 MiB source-file budget",
+                ));
+            }
+            Ok(source)
+        } else {
+            fs::read_to_string(path)
+        }
+    };
+    match read() {
         Ok(source) => Ok(Some(source)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(anyhow!("{}", e))

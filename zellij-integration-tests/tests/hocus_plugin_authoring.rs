@@ -473,3 +473,108 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
         "the agent's states as `zellij events` streamed them"
     );
 }
+
+#[test]
+fn wasm_hocus_checks_writes_edits_and_loads_typescript_with_literal_grants() {
+    let plugins = tempfile::tempdir().unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&hocus_config(&plugins.path().display().to_string()))
+        .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
+        .start();
+    zellij.wait_until("hocus asks for permissions", |screen| {
+        screen.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("hocus is ready", |screen| !screen.contains("Allow? (y/n)"));
+    let tool = |name: &str, args: serde_json::Value, expected: &str| {
+        submit_awaiting(&zellij, &format!("/{name} {args}"), name);
+        let result = zellij.wait_until(expected, |screen| {
+            screen.contains("fn:") && screen.contains(expected)
+        });
+        clear(&zellij, expected);
+        result
+    };
+    tool(
+        "plugin_write",
+        serde_json::json!({"name":"broken.ts", "source":"const broken = ;"}),
+        "parse plugin",
+    );
+    assert!(!plugins.path().join("broken.ts").exists());
+    let source = "import api from 'zellij:plugin';\nimport {title} from './title.ts';\nlet state = 'loading';\nexport default {async load() {await api.waitForPermissions(['ReadFiles']); state = title;}, render() {return state;}};";
+    tool(
+        "plugin_check",
+        serde_json::json!({"name":"probe.ts","source":source}),
+        "No such file",
+    );
+    // A write is syntax-only; its local dependency need not exist yet.
+    tool(
+        "plugin_write",
+        serde_json::json!({"name":"probe.ts","source":source}),
+        "call plugin_reload",
+    );
+    assert_eq!(
+        fs::read_to_string(plugins.path().join("probe.ts")).unwrap(),
+        format!("{source}\n")
+    );
+    assert!(!plugins.path().join("probe.ts.lua").exists());
+    tool(
+        "plugin_write",
+        serde_json::json!({"name":"title.ts","source":"export const title: string = 'typed plugin running';"}),
+        "call plugin_reload",
+    );
+    tool(
+        "plugin_check",
+        serde_json::json!({"name":"probe.ts","source":source}),
+        "literal permission requests",
+    );
+    tool(
+        "plugin_check",
+        serde_json::json!({"name":"title.ts","source":"export const title: number = 'bad type';"}),
+        "TS2322",
+    );
+    tool(
+        "plugin_outline",
+        serde_json::json!({"name":"probe.ts"}),
+        "render(...)",
+    );
+    tool(
+        "plugin_read",
+        serde_json::json!({"name":"probe.ts"}),
+        "waitForPermissions",
+    );
+    tool(
+        "plugin_search",
+        serde_json::json!({"name":"probe.ts","query":"waitForPermissions"}),
+        "probe.ts:4:",
+    );
+    tool(
+        "plugin_edit",
+        serde_json::json!({"name":"probe.ts","old_string":"state = title;","new_string":"state = ;"}),
+        "Expression expected",
+    );
+    assert_eq!(
+        fs::read_to_string(plugins.path().join("probe.ts")).unwrap(),
+        format!("{source}\n")
+    );
+    tool(
+        "plugin_edit",
+        serde_json::json!({"name":"probe.ts","old_string":"state = title;","new_string":"state = title + ':' + api.fs.metadata('/plugins/probe.ts').is_file;"}),
+        "edited probe.ts",
+    );
+    assert_eq!(
+        fs::read_to_string(plugins.path().join("probe.bak.ts")).unwrap(),
+        format!("{source}\n")
+    );
+    tool(
+        "plugin_list",
+        serde_json::json!({}),
+        "probe.bak.ts kept from an earlier edit",
+    );
+    submit(&zellij, r#"/plugin_reload {"name":"probe.ts"}"#);
+    let result = zellij.wait_until(
+        "authored Deno plugin uses its inferred ReadFiles grant",
+        |screen| screen.contains("typed plugin running:true") || screen.contains("Allow? (y/n)"),
+    );
+    assert!(result.contains("typed plugin running:true"), "{result}");
+    zellij.quit();
+}

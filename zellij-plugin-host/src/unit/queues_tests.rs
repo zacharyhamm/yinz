@@ -13,6 +13,7 @@ fn enqueue(queues: &mut Queues, queue: &str, job: &str) -> JobId {
     queues.enqueue(
         queue,
         (crate::PluginId::new(1), crate::ClientId::new(1)),
+        None,
         run_plugin(&format!("file:/plugins/{job}.lua")),
         context,
         None,

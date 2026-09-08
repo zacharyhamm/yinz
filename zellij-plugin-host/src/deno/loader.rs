@@ -1,4 +1,5 @@
 //! Local ES modules only. Runtime and checker share the same filesystem boundary.
+use super::limits;
 use deno_ast::{MediaType, ParseParams, ParsedSource};
 use deno_core::{
     error::ModuleLoaderError, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse,
@@ -32,12 +33,42 @@ impl PluginModuleLoader {
             .to_file_path()
             .map_err(|_| anyhow!("invalid plugin entrypoint"))?;
         media_type(&entry, false)?;
-        loader.entry_source = Some(source.to_owned());
+        loader.set_entry_source(source)?;
         Ok(loader)
     }
 
     pub fn entrypoint(&self) -> &ModuleSpecifier {
         &self.entrypoint
+    }
+
+    pub(super) fn set_entry_source(&mut self, source: &str) -> Result<()> {
+        limits::check_source(&self.root, source)?;
+        self.entry_source = Some(source.to_owned());
+        Ok(())
+    }
+
+    pub(super) fn read_source(&self, url: &ModuleSpecifier, declarations: bool) -> Result<String> {
+        if let Some(source) = self.sources.borrow().get(url.as_str()) {
+            return Ok(source.clone());
+        }
+        let source = match self
+            .entry_source
+            .as_ref()
+            .filter(|_| url == self.entrypoint())
+        {
+            Some(source) => source.clone(),
+            None => limits::read_source(&self.local_path(url, declarations)?)?,
+        };
+        let mut sources = self.sources.borrow_mut();
+        let total: usize = sources.values().map(String::len).sum();
+        if source.len() > limits::MAX_GRAPH_BYTES - total {
+            bail!(
+                "Deno plugin {} exceeds 64 MiB module-graph budget",
+                self.entrypoint
+            );
+        }
+        sources.insert(url.to_string(), source.clone());
+        Ok(source)
     }
 
     pub(super) fn for_check(path: &Path, unsaved: bool) -> Result<Self> {
@@ -135,27 +166,14 @@ impl PluginModuleLoader {
             super::SDK_MODULE.to_owned()
         } else {
             // Resolve again at load time: a symlink may have changed since resolve.
-            let (path, source) = match self
-                .entry_source
-                .as_ref()
-                .filter(|_| url == self.entrypoint())
-            {
-                Some(source) => (
-                    url.to_file_path()
-                        .map_err(|_| anyhow!("invalid plugin entrypoint"))?,
-                    source.clone(),
-                ),
-                None => {
-                    let path = self.local_path(url, false)?;
-                    let source = std::fs::read_to_string(&path)
-                        .with_context(|| format!("read module {}", path.display()))?;
-                    (path, source)
-                },
+            let path = if url == self.entrypoint() && self.entry_source.is_some() {
+                url.to_file_path()
+                    .map_err(|_| anyhow!("invalid plugin entrypoint"))?
+            } else {
+                self.local_path(url, false)?
             };
+            let source = self.read_source(url, false)?;
             let emitted = transpile(&path, &source, false)?;
-            self.sources
-                .borrow_mut()
-                .insert(url.to_string(), source.clone());
             if let Some(map) = emitted.source_map {
                 self.source_maps
                     .borrow_mut()
@@ -258,7 +276,8 @@ pub(super) fn media_type(path: &Path, declarations: bool) -> Result<MediaType> {
     }
 }
 
-fn parse(path: &Path, source: &str, declarations: bool) -> Result<ParsedSource> {
+pub(super) fn parse(path: &Path, source: &str, declarations: bool) -> Result<ParsedSource> {
+    limits::check_source(path, source)?;
     let parsed = deno_ast::parse_module(ParseParams {
         specifier: file_specifier(&absolute_path(path)?)?,
         text: source.to_owned().into(),

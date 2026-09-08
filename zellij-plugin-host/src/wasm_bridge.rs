@@ -182,8 +182,19 @@ impl LoadingContext {
                 .get(&plugin_id)
                 .cloned()
                 .unwrap_or_default(),
-            client_cancel: wasm_bridge.client_cancellations.lock().unwrap()
-                .entry(client_id).or_default().clone(),
+            client_cancel: if wasm_bridge.client_is_connected(&client_id) {
+                wasm_bridge
+                    .client_cancellations
+                    .lock()
+                    .unwrap()
+                    .entry(client_id)
+                    .or_default()
+                    .clone()
+            } else {
+                // A fresh CLI/headless load may reuse a detached UI's id. Its work
+                // has its own lifetime; the old UI token must remain cancelled.
+                Arc::default()
+            },
             client_cancellations: wasm_bridge.client_cancellations.clone(),
         })
     }
@@ -1005,8 +1016,9 @@ impl WasmBridge {
                         context: job.context.clone(),
                     };
                     let enqueuer = job.enqueuer;
+                    let deno_generation = job.deno_generation;
                     self.queues.lock().unwrap().on_job_launched(job, plugin_id);
-                    self.send_event_to(enqueuer, started);
+                    self.send_event_to(enqueuer, deno_generation, started);
                 },
                 Err(e) => {
                     finished.push(
@@ -1075,7 +1087,7 @@ impl WasmBridge {
                 payload: job.payload,
                 context: job.context,
             };
-            self.send_event_to(job.enqueuer, event);
+            self.send_event_to(job.enqueuer, job.deno_generation, event);
         }
     }
 
@@ -1098,12 +1110,20 @@ impl WasmBridge {
     /// Queue events go back through the bus like a `RunCommandResult` does, rather than being
     /// applied here: this can run from inside `unload_plugin`, and the update path takes the
     /// same locks.
-    fn send_event_to(&self, (plugin_id, client_id): (PluginId, ClientId), event: Event) {
-        let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
-            Some(plugin_id),
-            Some(client_id),
-            event,
-        )]));
+    fn send_event_to(
+        &self,
+        (plugin_id, client_id): (PluginId, ClientId),
+        deno_generation: Option<u64>,
+        event: Event,
+    ) {
+        let _ = self
+            .senders
+            .send_to_plugin(PluginInstruction::for_plugin_event(
+                plugin_id,
+                client_id,
+                deno_generation,
+                event,
+            ));
     }
     pub fn reload_plugin_with_id(&mut self, plugin_id: PluginId) -> Result<()> {
         // Configuration is cached outside the guest mutex. Interrupt Deno before any
@@ -1302,15 +1322,14 @@ impl WasmBridge {
 
         self.connected_clients.lock().unwrap().push(client_id);
         let mut new_plugins = HashSet::new();
-        {
+        let client_cancel = {
             let mut cancellations = self.client_cancellations.lock().unwrap();
-            if cancellations
-                .get(&client_id)
-                .is_some_and(|cancel| cancel.load(Ordering::Acquire))
-            {
-                cancellations.insert(client_id, Arc::default());
+            let cancel = cancellations.entry(client_id).or_default();
+            if cancel.load(Ordering::Acquire) {
+                *cancel = Arc::default();
             }
-        }
+            cancel.clone()
+        };
         log::info!(
             "attach trace: WasmBridge::add_client client_id={client_id} waiting for plugin_map lock"
         );
@@ -1392,7 +1411,7 @@ impl WasmBridge {
             // So the context below shares the plugin's token rather than getting one nobody
             // sets; a no-op when the plugin is registered, as it normally is here.
             self.cancel_token(plugin_id);
-            let loading_context = LoadingContext::new(
+            let mut loading_context = LoadingContext::new(
                 &self,
                 cwd,
                 plugin_config,
@@ -1401,6 +1420,8 @@ impl WasmBridge {
                 tab_index,
                 size,
             )?;
+            // This attachment is not connected yet, but must share the token remove_client sets.
+            loading_context.client_cancel = client_cancel.clone();
 
             log::info!(
                 "attach trace: WasmBridge::add_client client_id={client_id} plugin_id={plugin_id} executor enqueue begin"
@@ -1497,10 +1518,6 @@ impl WasmBridge {
             .collect();
         for (plugin_id, client_id, running_plugin) in plugins_to_resize {
             if plugin_id == pid {
-                let event_id = running_plugin
-                    .lock()
-                    .unwrap()
-                    .next_event_id(AtomicEvent::Resize);
                 let render_clients = if self.plugin_is_shared(&plugin_id) {
                     self.connected_clients.lock().unwrap().clone()
                 } else {
@@ -1514,6 +1531,10 @@ impl WasmBridge {
                         let _s = shutdown_sender.clone();
                         move |senders, _plugin_map, _connected_clients, _plugin_cache, _engine| {
                             let mut running_plugin = running_plugin.lock().unwrap();
+                            // This executor preserves request order. Allocate the id
+                            // here so the plugin thread can answer synchronous guest
+                            // queries while a previous callback owns the guest lock.
+                            let event_id = running_plugin.next_event_id(AtomicEvent::Resize);
                             let _s = _s; // guard to allow the task to complete before cleanup/shutdown
                             if running_plugin.apply_event_id(AtomicEvent::Resize, event_id) {
                                 let old_rows = running_plugin.rows;
@@ -2354,33 +2375,6 @@ impl WasmBridge {
         Ok(())
     }
 
-    pub fn notify_screen_of_background_plugin_subscriptions(
-        &self,
-        plugin_id: PluginId,
-        client_id: ClientId,
-        events: HashSet<EventType>,
-    ) {
-        // Check if this plugin is a background plugin (tab_index == None)
-        let is_background = {
-            let mut plugin_map = self.plugin_map.lock().unwrap();
-            plugin_map
-                .running_plugins_and_subscriptions()
-                .iter()
-                .any(|(pid, cid, rp, _)| {
-                    *pid == plugin_id
-                        && *cid == client_id
-                        && rp.lock().unwrap().env().tab_index.is_none()
-                })
-        };
-        if is_background {
-            let _ = self.senders.send_to_screen(
-                ScreenInstruction::UpdateBackgroundPluginSubscriptions(
-                    plugin_id, client_id, events,
-                ),
-            );
-        }
-    }
-
     /// Replay the last broadcast `HostTerminalThemeChanged` to a plugin that
     /// subscribed to it after the broadcast. Nothing is sent while the hue is
     /// still unknown.
@@ -2403,17 +2397,13 @@ impl WasmBridge {
     }
 
     pub fn send_initial_keybinds_to_plugin(&self, plugin_id: PluginId, client_id: ClientId) {
-        let keybinds = {
-            let mut plugin_map = self.plugin_map.lock().unwrap();
-            plugin_map
-                .running_plugins_and_subscriptions()
-                .iter()
-                .find(|(pid, cid, _, _)| *pid == plugin_id && *cid == client_id)
-                .map(|(_, _, rp, _)| rp.lock().unwrap().env().keybinds.to_keybinds_vec())
-        };
-        if let Some(keybinds) = keybinds {
-            self.send_keybinds_payload_to_plugin(plugin_id, client_id, keybinds);
-        }
+        // Use the same authoritative input as LoadingContext and reconfigure.
+        // Reading a guest's copy here can deadlock its synchronous host request.
+        let keybinds = self
+            .keybinds
+            .get(&client_id)
+            .unwrap_or(&self.default_keybinds);
+        self.send_keybinds_payload_to_plugin(plugin_id, client_id, keybinds.to_keybinds_vec());
     }
 
     fn send_keybinds_payload_to_plugin(

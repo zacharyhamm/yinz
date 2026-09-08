@@ -1,7 +1,10 @@
 //! A Send plugin handle with its V8 isolate confined to the pinned executor thread.
+pub(crate) mod analysis;
 mod checker;
 mod event;
+mod limits;
 mod loader;
+mod transport;
 
 pub use checker::{check_plugin, check_syntax};
 
@@ -28,6 +31,7 @@ use super::zellij_exports::{check_command_permission, run_plugin_command};
 use super::{PluginId, PluginInstruction};
 use zellij_bus::global_async_runtime::get_tokio_runtime;
 use zellij_bus::{ClientId, ThreadSenders};
+use limits::op_zellij_encode;
 
 const SDK: &str = include_str!("sdk.js");
 pub(crate) const SDK_MODULE: &str = "export const zellij = globalThis.zellij; export const definePlugin = zellij.definePlugin; export default zellij;";
@@ -43,12 +47,30 @@ struct HostState {
 
 #[op2]
 #[serde]
-fn op_zellij_command(
+fn op_zellij_command<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
     state: &mut OpState,
-    #[serde] value: serde_json::Value,
+    value: v8::Local<'s, v8::Value>,
     #[smi] client: u32,
 ) -> std::result::Result<serde_json::Value, JsErrorBox> {
-    dispatch(state, value, client).map_err(|error| JsErrorBox::generic(format!("{error:#}")))
+    state
+        .borrow::<Arc<limits::Limits>>()
+        .check()
+        .and_then(|_| transport::from_v8(scope, value))
+        .and_then(|value| dispatch(state, value, client))
+        .map_err(|error| JsErrorBox::generic(format!("{error:#}")))
+}
+
+// Validate before the SDK inspects permission/unsubscribe payloads. Otherwise
+// its bookkeeping could invoke an accessor or proxy before the command op.
+#[op2(fast)]
+fn op_zellij_validate<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: v8::Local<'s, v8::Value>,
+) -> std::result::Result<(), JsErrorBox> {
+    transport::from_v8(scope, value)
+        .map(|_| ())
+        .map_err(|error| JsErrorBox::generic(format!("{error:#}")))
 }
 
 fn dispatch(state: &mut OpState, value: Value, client: u32) -> Result<Value> {
@@ -103,7 +125,15 @@ fn op_zellij_log(state: &OpState, #[string] line: &str) -> std::result::Result<(
     Ok(())
 }
 
-deno_core::extension!(zellij_host, ops = [op_zellij_command, op_zellij_log]);
+deno_core::extension!(
+    zellij_host,
+    ops = [
+        op_zellij_command,
+        op_zellij_validate,
+        op_zellij_encode,
+        op_zellij_log
+    ]
+);
 
 struct TickWake {
     senders: ThreadSenders,
@@ -144,6 +174,7 @@ struct RuntimeInstance {
     terminate: v8::IsolateHandle,
     wake: Arc<TickWake>,
     parked: bool,
+    limits: Arc<limits::Limits>,
 }
 
 /// The watcher and invocation boundaries share this lock, so an interrupt cannot
@@ -399,7 +430,8 @@ impl DenoPlugin {
         else {
             return Ok(T::default());
         };
-        let _entered = get_tokio_runtime().enter();
+        // Host operations run synchronously on the pinned executor. Entering
+        // Tokio here prevents the PostgreSQL backend from driving its own runtime.
         RUNTIMES.with(|instances| {
             let mut instances = instances
                 .try_borrow_mut()
@@ -414,7 +446,10 @@ impl DenoPlugin {
                 env: &mut self.env,
                 state,
             };
-            call(&mut runtime, env)
+            runtime.limits.check()?;
+            let result = call(&mut runtime, env);
+            runtime.limits.check()?;
+            result
         })
     }
 
@@ -485,12 +520,14 @@ impl RuntimeInstance {
         };
         let _entered = get_tokio_runtime().enter();
         let loader = Rc::new(loader::PluginModuleLoader::new(path, source)?);
-        let mut runtime = JsRuntime::try_new(RuntimeOptions {
-            module_loader: Some(loader.clone()),
-            extensions: vec![zellij_host::init()],
-            ..Default::default()
-        })
-        .context("creating Deno runtime")?;
+        let limits = limits::Limits::new(path.display().to_string());
+        let mut runtime = limits
+            .runtime(RuntimeOptions {
+                module_loader: Some(loader.clone()),
+                extensions: vec![zellij_host::init()],
+                ..Default::default()
+            })
+            .context("creating Deno runtime")?;
         runtime.op_state().borrow_mut().put(HostState { env: None });
         let bridge = runtime
             .execute_script("zellij:sdk-bootstrap", SDK)
@@ -509,6 +546,7 @@ impl RuntimeInstance {
         let alive = wake.clone();
         let client_cancel = client_cancel.clone();
         let active = active.clone();
+        let allocation_limits = limits.clone();
         // ponytail: one 100 Hz cancellation watcher per isolate; use a shared
         // thread-safe isolate-handle registry if plugin counts make polling costly.
         let watcher = get_tokio_runtime().spawn(async move {
@@ -517,6 +555,10 @@ impl RuntimeInstance {
                     break;
                 }
                 interrupt_active(&active, &cancel, &client_cancel, &tripped, &interrupt);
+                if allocation_limits.exhausted() {
+                    interrupt.terminate_execution();
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
@@ -528,10 +570,13 @@ impl RuntimeInstance {
             terminate,
             wake,
             parked: false,
+            limits,
         };
         let module = get_tokio_runtime()
             .block_on(instance.runtime.load_main_es_module(loader.entrypoint()))
-            .context("loading Deno plugin modules")?;
+            .context("loading Deno plugin modules");
+        instance.limits.check()?;
+        let module = module?;
         let evaluation = instance.runtime.mod_evaluate(module);
         instance.poll()?;
         evaluation
@@ -548,7 +593,9 @@ impl RuntimeInstance {
             let value: v8::Local<v8::Value> = value.into();
             v8::Global::new(scope, value)
         };
-        instance.call_value("bind", namespace, None)?;
+        let bound = instance.call_value("bind", namespace, None);
+        instance.limits.check()?;
+        bound?;
         instance.park();
         Ok(instance)
     }
@@ -556,13 +603,15 @@ impl RuntimeInstance {
     fn poll(&mut self) -> Result<()> {
         let waker = Waker::from(self.wake.clone());
         let mut context = TaskContext::from_waker(&waker);
-        match self
+        let result = match self
             .runtime
             .poll_event_loop(&mut context, Default::default())
         {
             Poll::Ready(result) => result.context("polling Deno plugin event loop"),
             Poll::Pending => Ok(()),
-        }
+        };
+        self.limits.check()?;
+        result
     }
 
     fn call(&mut self, name: &str, arg: Value, client: Option<ClientId>) -> Result<Value> {
@@ -614,17 +663,26 @@ mod sdk_tests {
     struct TestHost {
         commands: Vec<(Value, u32)>,
         fail_permission_client: Option<u32>,
+        fail_command: Option<&'static str>,
     }
 
     #[op2]
     #[serde]
-    fn op_zellij_command(
+    fn op_zellij_command<'s>(
+        scope: &mut v8::PinScope<'s, '_>,
         state: &mut OpState,
-        #[serde] command: serde_json::Value,
+        command: v8::Local<'s, v8::Value>,
         #[smi] client: u32,
     ) -> std::result::Result<serde_json::Value, JsErrorBox> {
+        let command = transport::from_v8(scope, command)
+            .map_err(|error| JsErrorBox::generic(format!("{error:#}")))?;
         let host = state.borrow_mut::<TestHost>();
         host.commands.push((command.clone(), client));
+        if let Some(name) = host.fail_command {
+            if command.get(name).is_some() {
+                return Err(JsErrorBox::generic(format!("{name} dispatch failed")));
+            }
+        }
         if command.get("RequestPluginPermissions").is_some()
             && host.fail_permission_client == Some(client)
         {
@@ -640,13 +698,23 @@ mod sdk_tests {
     #[op2(fast)]
     fn op_zellij_log(#[string] _line: &str) {}
 
-    deno_core::extension!(sdk_test_host, ops = [op_zellij_command, op_zellij_log]);
+    deno_core::extension!(
+        sdk_test_host,
+        ops = [
+            op_zellij_command,
+            op_zellij_validate,
+            op_zellij_encode,
+            op_zellij_log
+        ]
+    );
 
     fn sdk() -> JsRuntime {
-        let mut runtime = JsRuntime::new(RuntimeOptions {
-            extensions: vec![sdk_test_host::init()],
-            ..Default::default()
-        });
+        let mut runtime = limits::Limits::new("sdk-test".into())
+            .runtime(RuntimeOptions {
+                extensions: vec![sdk_test_host::init()],
+                ..Default::default()
+            })
+            .unwrap();
         runtime.op_state().borrow_mut().put(TestHost::default());
         run(&mut runtime, &format!("globalThis.bridge = {SDK}; globalThis.bind = (plugin) => bridge('bind', {{default: plugin}}); globalThis.check = (ok) => {{ if (!ok) throw new Error('SDK assertion failed'); }};"));
         runtime
@@ -672,6 +740,457 @@ mod sdk_tests {
                 .get("RequestPluginPermissions")
                 .map(|permissions| (permissions, client)))
             .collect::<Vec<_>>())
+    }
+
+    fn capture_commands(runtime: &mut JsRuntime) {
+        let commands = json!(runtime.op_state().borrow().borrow::<TestHost>().commands);
+        run(runtime, &format!("globalThis.sent = {commands}"));
+    }
+
+    #[test]
+    fn async_requests_correlate_out_of_order_replies_and_preserve_wire_payloads() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            globalThis.results = []; globalThis.operations = []; globalThis.raw = [];
+            globalThis.context = Object.freeze({tag: 'caller'});
+            bind({ load({kind}) {
+                zellij.on(kind === 'command' ? 'RunCommandResult' : 'WebRequestResult', payload => { raw.push(payload); });
+                const promise = kind === 'command'
+                    ? zellij.runCommand({command: ['echo', 'hello'], context})
+                    : zellij.webRequest({url: 'https://example.com', body: 'hé🙂', context});
+                check(promise instanceof Promise && typeof promise.cancel === 'function');
+                operations.push(promise);
+                const chained = promise.then(result => { results.push([zellij.getPluginIds().client_id, result]); });
+                check(chained.cancel === undefined);
+            } });
+            bridge('load', {kind: 'command'}, 1);
+            bridge('load', {kind: 'command'}, 2);
+            bridge('load', {kind: 'web'}, 3);
+            bridge('load', {kind: 'web'}, 4);
+            bridge('update', {RunCommandResult: [0, [], [], {tag: 'unrelated'}]}, 9);
+            bridge('update', {WebRequestResult: [200, {}, [], {}]}, 9);
+            check(results.length === 0 && !Object.hasOwn(context, '__zellij_async'));
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            r#"
+            const commands = sent.filter(([cmd]) => cmd.RunCommand).map(([cmd]) => cmd.RunCommand);
+            const requests = sent.filter(([cmd]) => cmd.WebRequest).map(([cmd]) => cmd.WebRequest);
+            check(commands.length === 2 && requests.length === 2);
+            check(JSON.stringify(commands[0].slice(0, 3)) === '[[' + '"echo","hello"],{},"/host"]');
+            check(commands[0][4] === null);
+            check(requests[0][1] === 'Get' && requests[0][5] === null && requests[0][6] === null);
+            check(zellij.decodeUtf8(new Uint8Array(requests[0][3])) === 'hé🙂');
+            const contexts = [...commands.map(args => args[3]), ...requests.map(args => args[4])];
+            check(new Set(contexts.map(ctx => ctx.__zellij_async)).size === 4);
+            bridge('update', {WebRequestResult: [503, {server: 'test'}, [0, 255, 128], contexts[3]]}, 9);
+            bridge('update', {RunCommandResult: [7, [104, 105], [255], contexts[1]]}, 9);
+            bridge('update', {RunCommandResult: [null, [], [], contexts[0]]}, 9);
+            bridge('update', {WebRequestResult: [200, {}, requests[0][3], contexts[2]]}, 9);
+        "#,
+        );
+        run(
+            &mut runtime,
+            r#"
+            check(results.map(([id]) => id).join() === '4,2,1,3');
+            const [web, cmd, killed, unicode] = results.map(([,result]) => result);
+            check(web.status === 503 && web.body instanceof Uint8Array && web.body.join() === '0,255,128');
+            check(cmd.exitCode === 7 && zellij.decodeUtf8(cmd.stdout) === 'hi' && cmd.stderr[0] === 255);
+            check(killed.exitCode === null && zellij.decodeUtf8(unicode.body) === 'hé🙂');
+            for (const [,result] of results) check(JSON.stringify(result.context) === '{"tag":"caller"}');
+            check(raw.length === 12 && raw.slice(4).every(payload => payload[3].__zellij_async));
+            cmd.stdout[0] = 0; web.headers.server = 'edited';
+            check(raw[4][1].server === 'test' && raw[6][1][0] === 104);
+            for (const operation of operations) { operation.cancel(); operation.cancel(); }
+            check(results.length === 4);
+        "#,
+        );
+    }
+
+    #[test]
+    fn cancellation_removes_waiters_and_guards_all_unsubscribe_entrypoints() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            globalThis.errors = []; globalThis.matched = 0; globalThis.seen = 0;
+            globalThis.operations = [];
+            bind({ load() {
+                const wait = zellij.waitForEvent('Key', () => { matched++; return true; });
+                const second = zellij.waitForEvent('Key');
+                const pipe = zellij.waitForPipe('reply', () => { matched++; return true; });
+                operations = [wait, second, pipe, zellij.sleep(0),
+                    zellij.runCommand({command: ['true']}), zellij.webRequest({url: 'https://example.com'})];
+                for (const promise of operations) promise.catch(error => { errors.push(error.name); });
+                zellij.on('RunCommandResult', () => { seen++; });
+                const events = Object.freeze(['Key', 'Timer', 'RunCommandResult', 'WebRequestResult', 'Visible']);
+                zellij.unsubscribe(events);
+                zellij.command('Unsubscribe', events);
+                zellij.command({Unsubscribe: events});
+                wait.cancel();
+                zellij.unsubscribe(['Key']); // The second waiter still needs Key.
+                for (const promise of operations) { promise.cancel(); promise.cancel(); }
+                zellij.command({Unsubscribe: events});
+            } });
+            bridge('load', {}, 1);
+            bridge('update', {Key: 'late'}, 2);
+            bridge('pipe', {name: 'reply'}, 2);
+            bridge('update', {Timer: 1}, 2);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            r#"
+            const unsubscribes = sent.filter(([cmd]) => cmd.Unsubscribe).map(([cmd]) => cmd.Unsubscribe);
+            check(JSON.stringify(unsubscribes) === '[["Visible"],["Visible"],["Visible"],[],["Key","Timer","RunCommandResult","WebRequestResult","Visible"]]');
+            const command = sent.find(([cmd]) => cmd.RunCommand)[0].RunCommand;
+            const web = sent.find(([cmd]) => cmd.WebRequest)[0].WebRequest;
+            bridge('update', {RunCommandResult: [0, [], [], command[3]]}, 2);
+            bridge('update', {WebRequestResult: [200, {}, [], web[4]]}, 2);
+            check(errors.length === 6 && errors.every(name => name === 'AbortError'));
+            check(matched === 0 && seen === 1);
+        "#,
+        );
+    }
+
+    #[test]
+    fn pipe_waits_snapshot_before_callback_and_reject_predicate_errors() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            globalThis.calls = [];
+            bind({
+                load() {
+                    zellij.waitForPipe('reply', msg => msg.payload === 'a').then(msg => { calls.push(`load:${msg.payload}`); });
+                    zellij.waitForPipe('reply', () => { throw Error('predicate'); }).catch(error => { calls.push(error.message); });
+                },
+                async pipe(msg) {
+                    calls.push(`pipe:${msg.payload}`);
+                    if (msg.payload === 'a') {
+                        const next = await zellij.waitForPipe('reply');
+                        calls.push(`next:${next.payload}:${zellij.getPluginIds().client_id}`);
+                    }
+                }
+            });
+            bridge('load', {}, 1);
+            bridge('pipe', {name: 'other', payload: 'ignored'}, 9);
+            bridge('pipe', {name: 'reply', payload: 'a'}, 2);
+        "#,
+        );
+        run(
+            &mut runtime,
+            r#"
+            check(calls.join() === 'pipe:ignored,pipe:a,load:a,predicate');
+            bridge('pipe', {name: 'reply', payload: 'b'}, 3);
+        "#,
+        );
+        run(
+            &mut runtime,
+            "check(calls.join() === 'pipe:ignored,pipe:a,load:a,predicate,pipe:b,next:b:2')",
+        );
+    }
+
+    #[test]
+    fn dispatch_failures_remove_async_listeners_and_timers() {
+        for command in ["Subscribe", "RunCommand", "WebRequest", "SetTimeout"] {
+            let mut runtime = sdk();
+            runtime
+                .op_state()
+                .borrow_mut()
+                .borrow_mut::<TestHost>()
+                .fail_command = Some(command);
+            run(
+                &mut runtime,
+                r#"
+                globalThis.errors = []; globalThis.operations = [];
+                bind({ load() {
+                    operations = [zellij.runCommand({command: ['true']}), zellij.webRequest({url: 'https://example.com'}), zellij.sleep(0)];
+                    for (const promise of operations) promise.catch(error => { errors.push(error.message); });
+                } });
+                bridge('load', {}, 1);
+            "#,
+            );
+            run(&mut runtime, &format!("check(errors.length === {} && errors.every(error => error === '{command} dispatch failed'))", if command == "Subscribe" { 3 } else { 1 }));
+            run(
+                &mut runtime,
+                r#"
+                bind({load() {
+                    zellij.unsubscribe(['RunCommandResult', 'WebRequestResult', 'Timer']);
+                    for (const promise of operations) promise.cancel();
+                    zellij.unsubscribe(['RunCommandResult', 'WebRequestResult', 'Timer']);
+                }});
+                bridge('load', {}, 1);
+            "#,
+            );
+            capture_commands(&mut runtime);
+            let expected = match command {
+                "Subscribe" => json!(["RunCommandResult", "WebRequestResult", "Timer"]),
+                "RunCommand" => json!(["RunCommandResult"]),
+                "WebRequest" => json!(["WebRequestResult"]),
+                "SetTimeout" => json!(["Timer"]),
+                _ => unreachable!(),
+            };
+            run(
+                &mut runtime,
+                &format!(
+                    r#"
+                const unsubscribes = sent.filter(([cmd]) => cmd.Unsubscribe).map(([cmd]) => cmd.Unsubscribe);
+                check(JSON.stringify(unsubscribes[0]) === JSON.stringify({expected}));
+                check(unsubscribes[1].length === 3);
+            "#
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn callback_timers_keep_clients_do_not_overlap_and_rearm_stale_events() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            globalThis.now = 1000; Date.now = () => now;
+            globalThis.calls = []; globalThis.release = null; globalThis.interval = null;
+            bind({ load() {
+                const cancelled = zellij.after(1, () => { throw Error('cancelled callback ran'); });
+                cancelled.cancel(); cancelled.cancel();
+                zellij.after(5, () => { calls.push(`after:${zellij.getPluginIds().client_id}`); return true; });
+                interval = zellij.every(10, async () => {
+                    calls.push(`start:${zellij.getPluginIds().client_id}`);
+                    await new Promise(resolve => { release = resolve; });
+                    calls.push(`end:${zellij.getPluginIds().client_id}`);
+                    return true;
+                });
+            } });
+            bridge('load', {}, 1);
+            bridge('status');
+            now = 1002; bridge('update', {Timer: 0}, 9);
+            check(calls.length === 0);
+            now = 1005; bridge('update', {Timer: 0}, 9);
+            check(calls.join() === 'after:1' && bridge('status') === true);
+            now = 1010; bridge('update', {Timer: 0}, 9);
+            now = 1100; bridge('update', {Timer: 0}, 9);
+            check(calls.join() === 'after:1,start:1');
+            release();
+        "#,
+        );
+        run(
+            &mut runtime,
+            r#"
+            check(calls.join() === 'after:1,start:1,end:1' && bridge('status') === true);
+            now = 1109; bridge('update', {Timer: 0}, 9);
+            check(calls.length === 3);
+            now = 1110; bridge('update', {Timer: 0}, 9);
+            check(calls.join() === 'after:1,start:1,end:1,start:1');
+            interval.cancel(); interval.cancel(); release();
+        "#,
+        );
+        run(
+            &mut runtime,
+            r#"
+            now = 1200; bridge('update', {Timer: 0}, 9);
+            check(calls.join() === 'after:1,start:1,end:1,start:1,end:1');
+            bind({load() { zellij.unsubscribe(['Timer']); }}); bridge('load', {}, 1);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            r#"
+            const scheduled = sent.filter(([cmd]) => cmd.SetTimeout);
+            check(scheduled.length === 5 && scheduled.every(([,client]) => client === 1));
+            check(JSON.stringify(sent.at(-1)[0]) === '{"Unsubscribe":["Timer"]}');
+        "#,
+        );
+    }
+
+    #[test]
+    fn timer_callback_failures_use_lifecycle_error_reporting_and_release_subscriptions() {
+        for callback in [
+            "() => { throw Error('callback failed'); }",
+            "async () => { throw Error('callback failed'); }",
+        ] {
+            let mut runtime = sdk();
+            run(
+                &mut runtime,
+                &format!(
+                    r#"
+                bind({{load() {{ zellij.every(0, {callback}); }}}});
+                bridge('load', {{}}, 1);
+                bridge('update', {{Timer: 0}}, 9);
+            "#
+                ),
+            );
+            let error = runtime
+                .execute_script("timer-error.js", "bridge('status')")
+                .unwrap_err();
+            assert!(error.to_string().contains("callback failed"));
+            run(
+                &mut runtime,
+                r#"
+                bind({load() { zellij.unsubscribe(['Timer']); }}); bridge('load', {}, 1);
+                bridge('update', {Timer: 0}, 9);
+            "#,
+            );
+            capture_commands(&mut runtime);
+            run(
+                &mut runtime,
+                "check(JSON.stringify(sent.at(-1)[0]) === '{\"Unsubscribe\":[\"Timer\"]}')",
+            );
+        }
+    }
+
+    #[test]
+    fn stale_timer_dispatch_failure_rejects_sleep_and_cleans_up() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            globalThis.now = 1000; Date.now = () => now;
+            globalThis.errors = [];
+            bind({load() {
+                zellij.sleep(100).catch(error => { errors.push(error.message); });
+                zellij.sleep(200).catch(error => { errors.push(error.message); });
+            }}); bridge('load', {}, 1);
+        "#,
+        );
+        runtime
+            .op_state()
+            .borrow_mut()
+            .borrow_mut::<TestHost>()
+            .fail_command = Some("SetTimeout");
+        run(&mut runtime, "bridge('update', {Timer: 0}, 9)");
+        run(
+            &mut runtime,
+            r#"
+            check(errors.join() === 'SetTimeout dispatch failed,SetTimeout dispatch failed');
+            bind({load() { zellij.unsubscribe(['Timer']); }}); bridge('load', {}, 1);
+            now = 1300; bridge('update', {Timer: 0}, 9);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            "check(JSON.stringify(sent.at(-1)[0]) === '{\"Unsubscribe\":[\"Timer\"]}')",
+        );
+    }
+
+    #[test]
+    fn async_options_copy_binary_bodies_and_keep_permissions_subscribed() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            globalThis.done = false;
+            bind({load() {
+                const bytes = new Uint8Array([42, 0, 255, 128, 42]);
+                for (const verb of ['Post', 'Put', 'Delete']) {
+                    const request = zellij.webRequest({url: 'https://example.com', verb,
+                        headers: {'content-type': 'application/octet-stream'}, body: bytes.subarray(1, 4),
+                        context: {verb}, proxy: 'socks5://localhost:1080'});
+                    request.catch(() => {}); request.cancel();
+                }
+                bytes.fill(0);
+                const command = zellij.runCommand({command: ['echo', 'hello'],
+                    envVariables: {LANG: 'C'}, cwd: '/host/project', maxBytesReturned: 0});
+                command.catch(() => {}); command.cancel();
+                const permission = zellij.waitForPermissions(['RunCommands']);
+                zellij.command({Unsubscribe: ['PermissionRequestResult']});
+                permission.then(() => { done = true; });
+            }}); bridge('load', {}, 1);
+            bridge('update', {PermissionRequestResult: 'Granted'}, 9);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            r#"
+            check(done);
+            for (const [cmd] of sent.filter(([cmd]) => cmd.WebRequest)) {
+                check(cmd.WebRequest[3].join() === '0,255,128');
+                check(cmd.WebRequest[2]['content-type'] === 'application/octet-stream');
+                check(cmd.WebRequest[4].verb === cmd.WebRequest[1]);
+                check(cmd.WebRequest[5] === null && cmd.WebRequest[6] === 'socks5://localhost:1080');
+            }
+            const command = sent.find(([cmd]) => cmd.RunCommand)[0].RunCommand;
+            check(command[1].LANG === 'C' && command[2] === '/host/project' && command[4] === 0);
+            check(JSON.stringify(sent.at(-1)[0]) === '{"Unsubscribe":[]}');
+            bind({load() { zellij.unsubscribe(['PermissionRequestResult']); }}); bridge('load', {}, 1);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(&mut runtime, "check(JSON.stringify(sent.at(-1)[0]) === '{\"Unsubscribe\":[\"PermissionRequestResult\"]}')");
+    }
+
+    #[test]
+    fn defaults_options_and_utf8_validate_without_mutating_inputs() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            const defaults = Object.freeze({greeting: 'hello', fallback: 'default'});
+            const config = Object.freeze({greeting: 'override', extra: 'supplied'});
+            bind({defaults, load(values) {
+                check(JSON.stringify(values) === '{"greeting":"override","fallback":"default","extra":"supplied"}');
+                values.fallback = 'changed';
+            }});
+            bridge('load', config, 1);
+            check(defaults.fallback === 'default' && config.fallback === undefined);
+            for (const defaults of [null, [], 'bad', {value: 1}]) {
+                let rejected = false;
+                try { bind({defaults}); } catch (error) { rejected = error instanceof TypeError; }
+                check(rejected);
+            }
+            check(zellij.decodeUtf8(zellij.encodeUtf8('hé\0🙂')) === 'hé\0🙂');
+            check(zellij.decodeUtf8(new Uint8Array([0, 104, 105, 0]).subarray(1, 3)) === 'hi');
+            check(zellij.decodeUtf8(new Uint8Array([255])) === '\uFFFD');
+            globalThis.errors = [];
+            const invalid = [
+                () => zellij.runCommand(null), () => zellij.runCommand({command: []}),
+                () => zellij.runCommand({command: ['', 'arg']}), () => zellij.runCommand({command: [3]}),
+                () => zellij.runCommand({command: ['true'], envVariables: {A: 1}}),
+                () => zellij.runCommand({command: ['true'], cwd: null}),
+                () => zellij.runCommand({command: ['true'], maxBytesReturned: -1}),
+                () => zellij.runCommand({command: ['true'], maxBytesReturned: 1.5}),
+                () => zellij.runCommand({command: ['true'], context: {__zellij_async: 'collision'}}),
+                () => zellij.webRequest({url: ''}), () => zellij.webRequest({url: 'x', verb: 'Patch'}),
+                () => zellij.webRequest({url: 'x', body: [1]}), () => zellij.webRequest({url: 'x', headers: []}),
+                () => zellij.webRequest({url: 'x', proxy: 1}),
+                () => zellij.webRequest({url: 'x', context: {__zellij_async: 'collision'}}),
+                () => zellij.waitForEvent('Key', null), () => zellij.waitForPipe('pipe', null),
+                () => zellij.sleep(NaN), () => zellij.sleep(-1), () => zellij.sleep(2147483648),
+            ];
+            bind({load() {
+                for (const call of invalid) {
+                    const promise = call(); check(typeof promise.cancel === 'function');
+                    promise.catch(error => { errors.push(error instanceof TypeError); });
+                }
+                for (const call of [() => zellij.after(-1, () => {}), () => zellij.every(1, null),
+                    () => zellij.encodeUtf8(1), () => zellij.decodeUtf8([1])]) {
+                    let rejected = false;
+                    try { call(); } catch (error) { rejected = error instanceof TypeError; }
+                    check(rejected);
+                }
+            }}); bridge('load', {}, 1);
+            globalThis.expectedErrors = invalid.length;
+        "#,
+        );
+        run(
+            &mut runtime,
+            "check(errors.length === expectedErrors && errors.every(Boolean))",
+        );
+        assert!(runtime
+            .op_state()
+            .borrow()
+            .borrow::<TestHost>()
+            .commands
+            .is_empty());
     }
 
     #[test]
@@ -926,6 +1445,7 @@ mod sdk_tests {
             };
             let terminate = runtime.v8_isolate().thread_safe_handle();
             let mut instance = RuntimeInstance {
+                limits: limits::Limits::new("sdk-test".into()),
                 bridge,
                 runtime,
                 watcher: get_tokio_runtime().spawn(std::future::pending()),

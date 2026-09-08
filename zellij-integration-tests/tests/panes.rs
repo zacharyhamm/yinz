@@ -160,7 +160,12 @@ fn close_pane() {
 
     let grid_snapshot =
         zellij.wait_until("right pane closed, focus back on first", |grid_snapshot| {
-            grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(1))
+            grid_snapshot.status_bar_appears()
+                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot
+                    .lines()
+                    .first()
+                    .is_some_and(|bar| bar.contains("[0] Tab #1"))
         });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -225,7 +230,12 @@ fn pane_closes_when_its_process_exits() {
 
     let grid_snapshot =
         zellij.wait_until("right pane closed, focus back on first", |grid_snapshot| {
-            grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(1))
+            grid_snapshot.status_bar_appears()
+                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot
+                    .lines()
+                    .first()
+                    .is_some_and(|bar| bar.contains("[0] Tab #1"))
         });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();

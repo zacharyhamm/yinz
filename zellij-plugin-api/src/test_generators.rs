@@ -1597,6 +1597,15 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         })),
         CommandType::GetPluginIds => PluginCommand::GetPluginIds,
         CommandType::GetZellijVersion => PluginCommand::GetZellijVersion,
+        CommandType::CheckPlugin => PluginCommand::CheckPlugin {
+            name: strings(tc),
+            source: strings(tc),
+            mode: if booleans(tc) {
+                zellij_types::authoring::PluginCheckMode::Syntax
+            } else {
+                zellij_types::authoring::PluginCheckMode::Semantic
+            },
+        },
         CommandType::CheckLuaPlugin => PluginCommand::CheckLuaPlugin {
             name: strings(tc),
             source: strings(tc),

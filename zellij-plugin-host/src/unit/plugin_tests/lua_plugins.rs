@@ -1240,7 +1240,7 @@ fn headless_hook_plugin(user_plugin_dir: &std::path::Path) -> RunPluginOrAlias {
     )
 }
 
-fn bind_hook(
+pub(super) fn bind_hook(
     plugin_thread_sender: &SenderWithContext<PluginInstruction>,
     point: HookPoint,
     plugin: RunPluginOrAlias,
@@ -1259,7 +1259,7 @@ fn bind_hook(
     });
 }
 
-fn pane_exit_payload(pane_id: u32) -> HookFiring {
+pub(super) fn pane_exit_payload(pane_id: u32) -> HookFiring {
     HookFiring::Headless(HookPayload::PaneExit {
         pane_id: crate::TerminalId::new(pane_id),
         exit_code: Some(0),

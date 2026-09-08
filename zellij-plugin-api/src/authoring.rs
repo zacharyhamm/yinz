@@ -735,36 +735,7 @@ fn line_of(source: &str, offset: usize) -> usize {
 
 // The shape of a source ---------------------------------------------------------------------
 
-/// What one entry of an [`outline`] is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum OutlineKind {
-    /// `require "name"`.
-    Require,
-    /// `request_permission { ... }`, with every name it asks for.
-    Permission,
-    /// A named function in either spelling: `function M.load(config)`, `local function tick()`
-    /// or `M.render = function(rows, cols)`.
-    Function,
-    /// `on "event"`: a handler registered with `zellij.on`.
-    Handler,
-    /// `data.define "entity"`.
-    Define,
-    /// A hocus extension's registration message.
-    Registration,
-    /// One tool that registration offers hocus.
-    Tool,
-}
-
-/// One line of an [`outline`]: what is defined or hooked there, and where.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OutlineEntry {
-    /// 1-based, as an editor counts them.
-    pub line: usize,
-    pub kind: OutlineKind,
-    /// The entry as an outline prints it: a signature cut after its parameter list, or a call
-    /// with the one literal that says what it is about.
-    pub text: String,
-}
+pub use zellij_types::authoring::{OutlineEntry, OutlineKind, PluginCheckMode, PluginCheckReport};
 
 /// What a source defines and hooks, with the line each is on: the map a reader needs before
 /// reading a range of it rather than a page.

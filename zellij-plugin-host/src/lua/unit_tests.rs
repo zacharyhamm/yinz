@@ -3432,6 +3432,7 @@ fn require_without_a_folder_serves_only_zellij() {
 /// other direction. Add to this list when the shim gains a reply, and to `response.rs` with it.
 const REPLYING_COMMANDS: &[CommandType] = &[
     CommandType::CheckLuaPlugin,
+    CommandType::CheckPlugin,
     CommandType::ReadPluginLog,
     CommandType::GetPluginIds,
     CommandType::GetZellijVersion,

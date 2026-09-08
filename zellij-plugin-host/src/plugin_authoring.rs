@@ -18,6 +18,28 @@ pub fn check_plugin(path: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// Analyze only the proposed entrypoint; dependency reads are confined by the semantic checker.
+pub fn check_source(
+    path: &Path,
+    source: &str,
+    mode: zellij_types::authoring::PluginCheckMode,
+) -> zellij_types::authoring::PluginCheckReport {
+    use zellij_types::authoring::PluginCheckReport;
+    if is_deno_plugin(path) {
+        return crate::deno::analysis::check(path, source, mode);
+    }
+    let name = path.to_string_lossy();
+    PluginCheckReport {
+        diagnostics: crate::check_lua_plugin(source, &name)
+            .err()
+            .into_iter()
+            .collect(),
+        outline: zellij_plugin_api::authoring::outline(source),
+        permissions: zellij_plugin_api::authoring::requested_permissions(source).known,
+        warnings: zellij_plugin_api::authoring::lint(&name, source),
+    }
+}
+
 /// A plugin written, and the copy kept of whatever it replaced.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Written {

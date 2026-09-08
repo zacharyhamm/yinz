@@ -81,6 +81,7 @@ fn launch_job(bridge: &mut WasmBridge, queue: &str, plugin_id: PluginId) {
     queues.enqueue(
         queue,
         (crate::PluginId::new(1), crate::ClientId::new(1)),
+        None,
         zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
             "file:/plugins/job.lua",
             &None,

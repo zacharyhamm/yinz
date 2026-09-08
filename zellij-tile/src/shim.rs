@@ -2642,6 +2642,30 @@ pub fn get_local_utc_offset(epoch_ms: SignedUnixMillis) -> Result<i32, String> {
     Ok(response.offset_seconds)
 }
 
+/// Check proposed Lua/JS/TS source without executing it. Semantic checks read local imports.
+pub fn check_plugin(
+    name: &str,
+    source: &str,
+    mode: zellij_types::authoring::PluginCheckMode,
+) -> Result<zellij_types::authoring::PluginCheckReport, String> {
+    use zellij_plugin_api::plugin_command::{check_plugin_response, ProtobufCheckPluginResponse};
+    let response: ProtobufCheckPluginResponse = command_response(
+        PluginCommand::CheckPlugin {
+            name: name.to_owned(),
+            source: source.to_owned(),
+            mode,
+        },
+        "CheckPlugin",
+    )?;
+    match response.result {
+        Some(check_plugin_response::Result::ReportJson(json)) => {
+            serde_json::from_str(&json).map_err(|e| e.to_string())
+        },
+        Some(check_plugin_response::Result::Error(error)) => Err(error),
+        None => Err("zellij answered with nothing".into()),
+    }
+}
+
 /// Compiles `source` as a Lua plugin without loading it. `Err` carries the compile error, which
 /// names `name` the way a load error would (`keys.lua:3: ...`). A plugin that compiles can still
 /// fail at load, so this is the check to run *before* a write, not a promise about the reload.

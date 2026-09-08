@@ -167,7 +167,7 @@ pub enum PluginInstruction {
         message: String,
         payload: String,
     },
-    PluginSubscribedToEvents(PluginId, ClientId, HashSet<EventType>),
+    PluginSubscribedToEvents(PluginId, ClientId, HashSet<EventType>, bool), // is_background
     /// A `zellij events` client asking for the session's state events, by name.
     SubscribeCliClientToEvents {
         client_id: ClientId,

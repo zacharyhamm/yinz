@@ -307,13 +307,14 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         },
         "plugin_write" => {
             let name = args.name.as_deref().unwrap_or("a plugin");
+            let file = plugin_source::file_name(name);
             let mut sentence = match args.overwrite {
-                true => format!("replaces {name}.lua in your Zellij plugin folder"),
-                false => format!("writes {name}.lua into your Zellij plugin folder"),
+                true => format!("replaces {file} in your Zellij plugin folder"),
+                false => format!("writes {file} into your Zellij plugin folder"),
             };
             // The approval of the source is the approval of what it asks for: saying yes here
             // is what grants these, so they have to be in the sentence being said yes to.
-            let granted = requested_permissions(args.source.as_deref().unwrap_or(""));
+            let granted = source_permissions(name, args.source.as_deref().unwrap_or("" )).unwrap_or_default();
             if !granted.is_empty() {
                 sentence.push_str(&format!(
                     ", and grants it: {}",
@@ -327,11 +328,12 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         // and applying the edit to the complete source.
         "plugin_edit" => {
             let name = args.name.as_deref().unwrap_or("a plugin");
+            let file = plugin_source::file_name(name);
             match args.edits.as_ref().map_or(1, Vec::len) {
                 n if n > 1 => {
-                    format!("changes {name}.lua in your Zellij plugin folder in {n} places")
+                    format!("changes {file} in your Zellij plugin folder in {n} places")
                 },
-                _ => format!("changes {name}.lua in your Zellij plugin folder"),
+                _ => format!("changes {file} in your Zellij plugin folder"),
             }
         },
         "skill_write" => {
@@ -362,6 +364,7 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
 /// out differently. A name zellij does not know is dropped rather than refused - the plugin's
 /// own call reports it - but [`lint`] says so before the write, since a dropped name is a
 /// denial nobody sees until the plugin runs.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn requested_permissions(source: &str) -> Vec<PermissionType> {
     plugin_authoring::requested_permissions(source).known
 }
@@ -385,8 +388,10 @@ pub fn edit_source_and_permissions(
         }
         error
     })?;
-    let before = requested_permissions(source);
-    let added = requested_permissions(&edited.source)
+    let name = args.name.as_deref().unwrap_or("");
+    let before = source_permissions(name, source).unwrap_or_default();
+    let added = source_permissions(name, &edited.source)
+        .map_err(|error| edit_compile_report(name, &error))?
         .into_iter()
         .filter(|permission| !before.contains(permission))
         .collect();
@@ -402,7 +407,17 @@ pub fn permission_names(permissions: &[PermissionType]) -> Vec<String> {
 ///
 /// Never a refusal: see `plugin_authoring::lint`.
 pub fn lint(name: &str, source: &str) -> Vec<String> {
-    plugin_authoring::lint(name, source)
+    if plugin_authoring::is_deno_plugin(std::path::Path::new(name)) {
+        check_report(
+            name,
+            source,
+            zellij_tile::plugin_authoring::PluginCheckMode::Syntax,
+        )
+        .map(|report| report.warnings)
+        .unwrap_or_else(|error| vec![error])
+    } else {
+        plugin_authoring::lint(name, source)
+    }
 }
 
 /// A compile result with the lint's findings under it, which is what `plugin_check` and
@@ -1526,7 +1541,7 @@ pub fn specs() -> Value {
         tool(
             "agent_spawn",
             "Start a coding agent in a new pane; `branch` cuts a git worktree for it first. Not \
-             for writing Zellij Lua plugins - use plugin_write.",
+             for writing Zellij plugins - use plugin_write.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1801,10 +1816,10 @@ pub fn specs() -> Value {
         ),
         // Property descriptions are folded into the tool descriptions throughout: guidance
         // costs one copy per tool there, against one copy per property here. `name` is a bare
-        // file name with an optional `.lua` for all three tools that take one.
+        // Shared authoring names select Lua by default or JS/TS by extension.
         tool(
             "plugin_docs",
-            "How to write a Zellij Lua plugin. Call before writing one. `section` defaults to \
+            "How to write Zellij plugins; section=deno covers JS/TS. Call before writing one. `section` defaults to \
              index, which lists the rest with sizes. `query` (a regex) searches every section, \
              or only `section`, answering section:LINE:text - find where something is spelled \
              before fetching a section; `start_line`/`line_count` then read that part of it.",
@@ -1822,7 +1837,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_list",
-            "List the user's Lua plugins with their length, and which have a .bak from an \
+            "List the user's Lua and JS/TS plugins with their length, and which have a .bak from an \
              earlier edit.",
             json!({ "type": "object", "properties": {} }),
         ),
@@ -1841,7 +1856,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_search",
-            "Regex search over the user's Lua plugins, or only `name`. Answers file:LINE:text \
+            "Regex search over the user's Lua and JS/TS plugins, or only `name`. Answers file:LINE:text \
              per hit, file-LINE-text for `context` lines (default 0), `--` between groups. The \
              text after the second separator is the line verbatim: copy that, never the prefix, \
              into plugin_edit old_string. `max_results` defaults to 40. Search or outline before \
@@ -1862,7 +1877,7 @@ pub fn specs() -> Value {
         tool("project_config_write", "Confirm and write .zellij/swamp-workflows.kdl. expected is the exact previous source, null if absent. Does not execute CI.", json!({"type":"object","properties":{"source":{"type":"string"},"expected":{"type":["string","null"]}},"required":["source","expected"]})),
         tool(
             "plugin_read",
-            "Read user Lua plugin source: 300 lines from start_line=1 unless line_count is set. name may omit .lua. Use plugin_outline or plugin_search before you edit.",
+            "Read Lua or JS/TS plugin source: 300 lines from start_line=1 unless line_count is set. Use .js, .mjs, .ts or .mts for Deno; extensionless names select Lua. Use plugin_outline or plugin_search before you edit.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1875,7 +1890,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_check",
-            "Compile Lua without writing or loading. plugin_write already compiles before confirmation. Use plugin_reload to check runtime behavior.",
+            "Check proposed Lua or JS/TS without execution; JS/TS includes types and local imports. Report diagnostics, literal permissions and warnings. Writes/edits check syntax before confirmation.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1887,7 +1902,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_write",
-            "Write complete Lua source after compilation and confirmation. Approval grants requested permissions. overwrite is required for existing files. name accepts folder/module for require. Use plugin_edit for edits, then plugin_reload.",
+            "Write Lua or JS/TS after syntax checking and confirmation. Show literal SDK permission requests before approval; grant after writing. Computed requests use runtime approval. Use .js/.mjs/.ts/.mts for Deno, otherwise Lua. Existing files need overwrite. name accepts folder/module. Use plugin_edit for edits, then plugin_reload.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1900,7 +1915,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_edit",
-            "Replace exact old_string with new_string once, or all with replace_all. Alternatively apply edits in order. Confirm once; not written at all if compilation or any match fails. Keep the previous source as <name>.bak; report changed lines.",
+            "Replace exact old_string with new_string once, or all with replace_all. Alternatively apply edits in order. Confirm once; not written at all if compilation or any match fails. Keep the previous source as <stem>.bak.<extension>; report changed lines and newly requested permissions.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1926,7 +1941,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_reload",
-            "Load or reload one of the user's Lua plugins, opening it in a pane if it is not \
+            "Load or reload one of the user's Lua and JS/TS plugins, opening it in a pane if it is not \
              running. Answers with the pane id and what it shows - the first render, or the \
              load error. plugin_log has what it logged. With `headless` the plugin runs \
              without a pane, as one shared instance for the session - for a plugin that \
@@ -2246,7 +2261,7 @@ pub const FAMILIES: &[Family] = &[
     },
     Family {
         name: "plugin",
-        summary: "write, edit, search, check, reload and read Zellij Lua plugins",
+        summary: "write, edit, search, check, reload and read Zellij Lua and JS/TS plugins",
         deferred: true,
         tools: &[
             "project_config_read",
@@ -3337,45 +3352,98 @@ pub const PLUGIN_TOOLS: [&str; 12] = [
     "plugin_log",
 ];
 
-/// Compile `source` as the plugin `name` would be loaded, answering the compile error.
-///
-/// The host does the compiling (`zellij.check_lua_plugin`), with the same interpreter the
-/// loader uses, so what passes here parses there. Off wasm there is no host, and every source
-/// compiles: the tests exercise what is said around the answer, not the Lua parser.
+/// Ask the host to analyze proposed source without executing it.
 #[cfg(target_arch = "wasm32")]
-pub fn compile_check(name: &str, source: &str) -> Result<(), String> {
-    zellij_tile::shim::check_lua_plugin(&chunk_name(name), source)
+pub fn check_report(
+    name: &str,
+    source: &str,
+    mode: zellij_tile::plugin_authoring::PluginCheckMode,
+) -> Result<zellij_tile::plugin_authoring::PluginCheckReport, String> {
+    zellij_tile::shim::check_plugin(name, source, mode)
 }
 
+// Native formatting tests have no interpreter. JS/TS checks must use the actual host path.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn compile_check(_name: &str, _source: &str) -> Result<(), String> {
-    Ok(())
+pub fn check_report(
+    name: &str,
+    source: &str,
+    _mode: zellij_tile::plugin_authoring::PluginCheckMode,
+) -> Result<zellij_tile::plugin_authoring::PluginCheckReport, String> {
+    if plugin_authoring::is_deno_plugin(std::path::Path::new(name)) {
+        return Err("JS/TS analysis requires the plugin host".into());
+    }
+    Ok(zellij_tile::plugin_authoring::PluginCheckReport {
+        diagnostics: vec![],
+        outline: plugin_authoring::outline(source),
+        permissions: requested_permissions(source),
+        warnings: plugin_authoring::lint(name, source),
+    })
 }
 
-/// The name a compile error reports the plugin under: the file the loader would name, so a
-/// `folder/module` reads as `module.lua` here as it does in a load error.
+pub fn compile_check(name: &str, source: &str) -> Result<(), String> {
+    let report = check_report(
+        name,
+        source,
+        zellij_tile::plugin_authoring::PluginCheckMode::Syntax,
+    )?;
+    if report.diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(report.diagnostics.join("\n"))
+    }
+}
+
 pub fn chunk_name(name: &str) -> String {
-    let file = std::path::Path::new(name.trim())
-        .file_name()
-        .map(|file| file.to_string_lossy().to_string())
-        .unwrap_or_else(|| name.trim().to_owned());
-    match file.ends_with(".lua") {
-        true => file,
-        false => format!("{file}.lua"),
+    plugin_source::file_name(
+        std::path::Path::new(name.trim())
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(name.trim()),
+    )
+}
+
+pub fn compile_report(name: &str, source: &str) -> Result<String, String> {
+    compile_check(name, source).map(|()| format!("{} compiles", chunk_name(name)))
+        .map_err(|error| format!("{} does not compile: {error}\nFix it and try again - plugin_edit to change a file that exists, plugin_write for a new one.", chunk_name(name)))
+}
+
+pub fn semantic_report(name: &str, source: &str) -> String {
+    match check_report(
+        name,
+        source,
+        zellij_tile::plugin_authoring::PluginCheckMode::Semantic,
+    ) {
+        Err(error) => error,
+        Ok(report) => {
+            let mut answer = if report.diagnostics.is_empty() {
+                format!("{} compiles", chunk_name(name))
+            } else {
+                report.diagnostics.join("\n")
+            };
+            if !report.permissions.is_empty() {
+                answer.push_str(&format!(
+                    "\nliteral permission requests: {}",
+                    permission_names(&report.permissions).join(", ")
+                ));
+            }
+            if !report.warnings.is_empty() {
+                answer.push_str(&format!("\nwarnings:\n{}", report.warnings.join("\n")));
+            }
+            answer
+        },
     }
 }
 
-/// What `plugin_check` answers, and what `plugin_write` says instead of asking to write a
-/// plugin that cannot be loaded. The error is the interpreter's, which names the line.
-pub fn compile_report(name: &str, source: &str) -> Result<String, String> {
-    let chunk = chunk_name(name);
-    match compile_check(name, source) {
-        Ok(()) => Ok(format!("{chunk} compiles")),
-        Err(error) => Err(format!(
-            "{chunk} does not compile: {error}\nFix it and try again - plugin_edit to change a \
-             file that exists, plugin_write for a new one."
-        )),
+pub fn source_permissions(name: &str, source: &str) -> Result<Vec<PermissionType>, String> {
+    let report = check_report(
+        name,
+        source,
+        zellij_tile::plugin_authoring::PluginCheckMode::Syntax,
+    )?;
+    if !report.diagnostics.is_empty() {
+        return Err(report.diagnostics.join("\n"));
     }
+    Ok(report.permissions)
 }
 
 /// The same refusal for an edit, which is a different situation and used to be told otherwise.
@@ -3423,19 +3491,16 @@ pub const PLUGIN_LOG_LINES: usize = 50;
 /// something rather than shown nothing; the host's own error - no log yet, no plugin folder -
 /// is passed on as it is.
 pub fn plugin_log_answer(name: &str, lines: Result<String, String>) -> String {
-    let name = name.trim_end_matches(".lua");
+    let name = plugin_source::file_name(name);
     match lines {
         Ok(lines) if lines.trim().is_empty() => format!(
-            "no log lines from {name}.lua yet. A plugin writes one with zellij.log(...) or \
+            "no log lines from {name} yet. A plugin writes one with zellij.log(...) or \
              print(...); a load or runtime error is shown in its pane, not here."
         ),
         Ok(lines) => lines.trim_end_matches('\n').to_owned(),
         Err(error) => error,
     }
 }
-
-/// The longest plugin name accepted, so a name cannot be used to build an unreasonable path.
-const MAX_PLUGIN_NAME_LEN: usize = 64;
 
 /// Said by every plugin tool when the host could not resolve a folder, so the answer to "where
 /// would this go" is the same one whichever tool was asked.
@@ -3450,7 +3515,7 @@ pub const NO_PLUGIN_FOLDER: &str = "no plugin folder is configured; set `user_pl
 /// shell-side symlink guard these tools used to run in front of every open.
 pub const PLUGINS_ROOT: &str = "/plugins";
 
-/// `/plugins/<name>.lua`: the path the host's `fs_*` commands take for a plugin the model named.
+/// `/plugins/<file>`: the host filesystem path for a shared authoring name.
 /// The same rules as `resolve_plugin_file`, against the root instead of the real folder.
 pub fn plugin_fs_path(name: Option<&str>) -> Result<String, String> {
     resolve_plugin_file(PLUGINS_ROOT, name)
@@ -3464,7 +3529,7 @@ pub fn plugin_fs_path(name: Option<&str>) -> Result<String, String> {
 /// containment check at the end can never actually fire — it is kept as the second wall, so
 /// that relaxing the character rule later cannot silently become a traversal.
 ///
-/// The name is accepted with or without its `.lua`, and always resolves to the `.lua` file:
+/// Extensionless names resolve to Lua; explicit supported extensions select their runtime:
 /// `plugin_reload` resolves through here too, so the URL it loads and the file that was written
 /// cannot disagree.
 ///
@@ -3477,51 +3542,8 @@ pub fn resolve_plugin_file(dir: &str, name: Option<&str>) -> Result<String, Stri
     if dir.is_empty() {
         return Err(NO_PLUGIN_FOLDER.to_owned());
     }
-    let name = name.map(str::trim).unwrap_or_default();
-    if name.is_empty() {
-        return Err("name is required and must not be empty".to_owned());
-    }
-    let name = name.strip_suffix(".lua").unwrap_or(name);
-    if name.len() > MAX_PLUGIN_NAME_LEN {
-        return Err(format!(
-            "a plugin name may be at most {MAX_PLUGIN_NAME_LEN} characters"
-        ));
-    }
-    let components: Vec<&str> = name.split('/').collect();
-    if components.len() > 2 {
-        return Err(format!(
-            "{name:?} is not a plugin name: at most one folder, for a module a plugin requires"
-        ));
-    }
-    for component in &components {
-        if component.is_empty() || *component == "." || *component == ".." {
-            return Err(format!("{name:?} is not a plugin name"));
-        }
-        // One rule that refuses `\`, NUL, spaces and every traversal at once.
-        if !component
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        {
-            return Err(
-                "a plugin name is a file name, or folder/file: letters, digits, '.', '_' and \
-                 '-' only"
-                    .to_owned(),
-            );
-        }
-        // Never option-shaped, even though every path below follows a `--` or sits in `"$1"`.
-        if component.starts_with('-') {
-            return Err("a plugin name may not start with '-'".to_owned());
-        }
-    }
-
-    let dir = paths::normalize(dir)
-        .map_err(|_| "the configured plugin folder is not an absolute path".to_owned())?;
-    let path = paths::normalize(&format!("{dir}/{name}.lua"))
-        .map_err(|_| format!("{name:?} is not a plugin name"))?;
-    if !std::path::Path::new(&path).starts_with(&dir) {
-        return Err(format!("{name:?} is not a plugin name"));
-    }
-    Ok(path)
+    plugin_authoring::resolve_plugin_file(std::path::Path::new(dir), name.unwrap_or_default())
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 /// The source a `plugin_write` carries, with exactly one trailing newline so the file is
@@ -3598,13 +3620,16 @@ pub fn lines_in_range(contents: &str, start: usize, end: usize) -> String {
         .join("\n")
 }
 
-/// The plugin names a listing answers with: every `.lua` under `root`, one folder deep, as the
+/// The plugin names a listing answers with: supported sources under `root`, one folder deep, as the
 /// name the tools take back (`keys.lua`, `app/ui.lua`) rather than as a path.
 pub fn listing_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) -> Vec<String> {
     let prefix = format!("{}/", root.trim_end_matches('/'));
     let mut names: Vec<String> = entries
         .iter()
-        .filter(|entry| entry.path.ends_with(".lua"))
+        .filter(|entry| {
+            entry.path.ends_with(".lua")
+                || plugin_authoring::is_deno_plugin(std::path::Path::new(&entry.path))
+        })
         // A backup is a copy of a plugin, not a plugin: listing it would offer the model a
         // second file to edit and a name that reloads the version it just replaced.
         .filter(|entry| !plugin_authoring::is_backup_name(&entry.path))
@@ -3681,13 +3706,13 @@ pub fn keep_replaced(name: &str, replaced: Option<&str>, written: &str) -> Kept 
 
 /// What a `plugin_write` answers once the file is there, and its permissions granted.
 pub fn write_report(name: &str, granted: &[PermissionType], backup: &Kept) -> String {
-    let name = name.trim().trim_end_matches(".lua");
+    let name = plugin_source::file_name(name);
     let kept = kept_sentence(backup);
     if granted.is_empty() {
-        return format!("wrote {name}.lua; call plugin_reload to load it{kept}");
+        return format!("wrote {name}; call plugin_reload to load it{kept}");
     }
     format!(
-        "wrote {name}.lua and granted it {}; call plugin_reload to load it{kept}",
+        "wrote {name} and granted it {}; call plugin_reload to load it{kept}",
         permission_names(granted).join(", ")
     )
 }
@@ -3700,7 +3725,7 @@ pub fn edit_report(
     backup: &Kept,
     edited: &Edited,
 ) -> String {
-    let name = name.trim().trim_end_matches(".lua");
+    let name = plugin_source::file_name(name);
     let kept = kept_sentence(backup);
     let total = edited.source.lines().count();
     let at = match edited.changed.is_empty() {
@@ -3711,9 +3736,7 @@ pub fn edit_report(
         true => String::new(),
         false => format!(" and granted it {}", permission_names(granted).join(", ")),
     };
-    format!(
-        "edited {name}.lua{at} (now {total} lines){granted}; call plugin_reload to load it{kept}"
-    )
+    format!("edited {name}{at} (now {total} lines){granted}; call plugin_reload to load it{kept}")
 }
 
 /// A `plugin_search` or a `plugin_docs query=` as the model asked for it, clamped to what a
@@ -3764,17 +3787,18 @@ pub fn backed_up_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) ->
         .filter(|entry| plugin_authoring::is_backup_name(&entry.path))
         .filter_map(|entry| {
             let name = entry.path.strip_prefix(&prefix).unwrap_or(&entry.path);
-            name.strip_suffix(".bak.lua")
-                .map(|stem| format!("{stem}.lua"))
+            let (stem, extension) = name.rsplit_once('.')?;
+            stem.strip_suffix(".bak")
+                .map(|stem| format!("{stem}.{extension}"))
         })
         .collect()
 }
 
 /// What a `plugin_write` says about a file that is already there.
 pub fn exists_report(name: &str) -> String {
-    let name = name.trim().trim_end_matches(".lua");
+    let name = plugin_source::file_name(name);
     format!(
-        "{name}.lua already exists; pass overwrite=true to replace it, or read it first with \
+        "{name} already exists; pass overwrite=true to replace it, or read it first with \
          plugin_read"
     )
 }
@@ -5159,6 +5183,7 @@ pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> St
     // the success cap below is small enough that the luck would have run out.
     let whole = observed.contents.trim_end();
     let failed = whole.contains("failed to load the Lua plugin")
+        || whole.contains("failed to load the Deno plugin")
         || whole.contains("failed to run the plugin's")
         || whole.contains("Panic!");
     let verdict = if failed { "FAILED to load" } else { "loaded" };
