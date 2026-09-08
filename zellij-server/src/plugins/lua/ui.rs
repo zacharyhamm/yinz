@@ -274,6 +274,7 @@ struct Markdown {
     width: Option<usize>,
     lines: Vec<markdown::MdLine>,
     compact: bool,
+    dim: bool,
 }
 impl UserData for Markdown {
     fn add_methods<M: UserDataMethods<Self>>(m: &mut M) {
@@ -294,7 +295,7 @@ impl UserData for Markdown {
                 if width > 0 {
                     for (row, line) in this.lines.iter().skip(scroll).take(height).enumerate() {
                         output.push_str(&serialize_text_with_coordinates(
-                            &markdown::style_text(&line.text, &line.styles, false),
+                            &markdown::style_text(&line.text, &line.styles, this.dim),
                             x,
                             y + row,
                             Some(width),
@@ -330,12 +331,13 @@ pub(super) fn install(lua: &Lua, zellij: &Table) -> mlua::Result<()> {
     )?;
     native.set(
         "markdown",
-        lua.create_function(|_, (source, compact): (String, bool)| {
+        lua.create_function(|_, (source, compact, dim): (String, bool, bool)| {
             Ok(Markdown {
                 blocks: markdown::parse(&source),
                 width: None,
                 lines: vec![],
                 compact,
+                dim,
             })
         })?,
     )?;
@@ -622,11 +624,19 @@ mod tests {
         let source =
             "# 日本語\n\n**bold** ~~gone~~\n\n- [x] done\n\n\u{1b}[31mred\n\n|a|b|\n|-|-|\n|1|2|";
         lua.globals().set("source", source).unwrap();
-        lua.load("md = zellij.ui.markdown(source)").exec().unwrap();
-        for width in [30, 1, 0, 12, 30] {
+        lua.load(
+            "md = zellij.ui.markdown(source); dimmed = zellij.ui.markdown(source, {dim=true})",
+        )
+        .exec()
+        .unwrap();
+        for (width, dim) in [false, true]
+            .into_iter()
+            .flat_map(|dim| [30, 1, 0, 12, 30].map(|width| (width, dim)))
+        {
             lua.globals().set("width", width).unwrap();
+            lua.globals().set("dim", dim).unwrap();
             let (actual, count): (String, usize) = lua
-                .load("return md:render{x=0,y=0,width=width,height=3,scroll=1}")
+                .load("return (dim and dimmed or md):render{x=0,y=0,width=width,height=3,scroll=1}")
                 .eval()
                 .unwrap();
             let lines = markdown::render(source, width, markdown::Options::default());
@@ -640,7 +650,7 @@ mod tests {
                     .enumerate()
                     .map(|(row, l)| {
                         serialize_text_with_coordinates(
-                            &markdown::style_text(&l.text, &l.styles, false),
+                            &markdown::style_text(&l.text, &l.styles, dim),
                             0,
                             row,
                             Some(width),
