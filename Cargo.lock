@@ -4871,6 +4871,7 @@ dependencies = [
  "zellij-config",
  "zellij-ipc",
  "zellij-runtime",
+ "zellij-session",
  "zellij-test-support",
  "zellij-types",
 ]

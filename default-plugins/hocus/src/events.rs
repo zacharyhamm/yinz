@@ -413,9 +413,11 @@ impl State {
     }
 
     pub(crate) fn on_sessions(&mut self, sessions: Vec<SessionInfo>) -> bool {
+        let previous_companion = self.verified_vm_companion();
         let current = sessions
             .into_iter()
             .find(|session| session.is_current_session);
+        self.vm_panel_owner = current.as_ref().and_then(hocus_proto::vms::panel_owner);
         // A plugin pane's id is the plugin's id, so the manifest says which instances have a
         // pane; the plugin list alone cannot tell a headless instance from a pane's copy.
         let pane_ids: BTreeSet<zellij_tile::prelude::PluginId> = current
@@ -449,6 +451,16 @@ impl State {
                 (*id, instance)
             })
             .collect();
+        if self
+            .vm_panel_pending
+            .as_ref()
+            .is_some_and(|(sender, _)| self.verified_vm_companion() != Some(*sender))
+        {
+            self.vm_panel_pending = None;
+        }
+        if previous_companion != self.verified_vm_companion() {
+            self.send_vm_panel_visibility(!self.hidden);
+        }
         let instances = plugins
             .into_iter()
             .filter_map(|(id, plugin)| {
@@ -679,6 +691,7 @@ impl State {
             });
             if self.agents_tab_index.is_none() {
                 self.agents_plugin = None;
+                self.vm_panel_pending = None;
                 // Nobody here asked for it to go, so it was closed from outside - and a closure is
                 // not a missing half to grow back. Without this the repair arm below would read
                 // the `None` this line just wrote as a panel owing itself a list and launch
@@ -700,6 +713,9 @@ impl State {
         // Held for `on_tabs`, which has no manifest of its own and has to know whether there is
         // anything on screen to carry to the tab the user switched to, and read below to catch
         // the two halves disagreeing about whether the panel is up.
+        if self.agents_visible != agents_visible {
+            self.send_vm_panel_visibility(agents_visible);
+        }
         self.agents_visible = agents_visible;
         // The one thing about the list that reaches the *cut*: a panel with a second half is
         // split, one without takes the whole width for the conversation. Visibility is not part
@@ -1922,6 +1938,7 @@ impl State {
                 ),
             },
             "vm_sync" => "synced: the VM's work is merged into its host worktree".to_owned(),
+            "vm_close" if !stdout.trim().is_empty() => stdout.trim().to_owned(),
             _ => "VM stop request completed; this does not confirm a merge or destruction. \
                   Use vm_list to see remaining VMs and retained disks."
                 .to_owned(),
@@ -2211,7 +2228,7 @@ impl State {
         // (os error 2)", naming nothing. For a Slack tool the model never sees
         // the argv, so that message is undiagnosable from inside the
         // conversation: say which binary, and which setting names it.
-        let mut result = match self
+        let result = match self
             .slack_exec_hint(exit_code, stderr)
             .or_else(|| self.project_exec_hint(exit_code, stderr))
             .or_else(|| self.vm_exec_hint(exit_code, stderr))
@@ -2238,18 +2255,6 @@ impl State {
                 result
             },
         };
-
-        if head.name == "vm_close" {
-            if let Some(requested) = context.get(tools::VM_CLOSED_PANES_CONTEXT) {
-                let panes: Vec<&str> = requested.split(',').filter(|id| !id.is_empty()).collect();
-                if !panes.is_empty() {
-                    result.push_str(&format!(
-                        "; requested closure of panes {}",
-                        panes.join(", ")
-                    ));
-                }
-            }
-        }
 
         self.finish_head(result);
         self.pump_tools();

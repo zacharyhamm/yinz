@@ -44,6 +44,8 @@ use {
 // them without blocking other instances
 #[derive(Default)]
 pub struct PluginMap {
+    // Immutable launch identity, readable without locking a busy plugin runtime.
+    plugin_metadata: BTreeMap<PluginId, RunPlugin>,
     plugin_assets: HashMap<
         (PluginId, ClientId),
         (
@@ -93,6 +95,7 @@ impl PluginMap {
             HashMap<String, UnboundedSender<MessageToWorker>>,
         ),
     > {
+        self.plugin_metadata.remove(&pid);
         let mut removed = HashMap::new();
         let ids_in_plugin_map: Vec<(PluginId, ClientId)> =
             self.plugin_assets.keys().copied().collect();
@@ -278,6 +281,18 @@ impl PluginMap {
         subscriptions: Arc<Mutex<Subscriptions>>,
         running_workers: HashMap<String, UnboundedSender<MessageToWorker>>,
     ) {
+        let metadata = {
+            let plugin = running_plugin.lock().unwrap();
+            let config = &plugin.env().plugin;
+            RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: config.location.clone(),
+                configuration: config.initial_userspace_configuration.clone(),
+                initial_cwd: config.initial_cwd.clone(),
+                relative_path: config.relative_path.clone(),
+            }
+        };
+        self.plugin_metadata.insert(plugin_id, metadata);
         self.plugin_assets.insert(
             (plugin_id, client_id),
             (running_plugin, subscriptions, running_workers),
@@ -311,48 +326,10 @@ impl PluginMap {
             .collect()
     }
     pub fn run_plugin_of_plugin_id(&self, plugin_id: PluginId) -> Option<RunPlugin> {
-        self.plugin_assets
-            .iter()
-            .find_map(|((p_id, _), (running_plugin, _, _))| {
-                if *p_id == plugin_id {
-                    let running_plugin = running_plugin.lock().unwrap();
-                    let plugin_config = &running_plugin.env().plugin;
-                    let run_plugin_location = plugin_config.location.clone();
-                    let run_plugin_configuration =
-                        plugin_config.initial_userspace_configuration.clone();
-                    let initial_cwd = plugin_config.initial_cwd.clone();
-                    Some(RunPlugin {
-                        _allow_exec_host_cmd: false,
-                        location: run_plugin_location,
-                        configuration: run_plugin_configuration,
-                        initial_cwd,
-                        // Carried, so a plugin named by a relative `file:` URL can still be
-                        // found in the user's plugin folder when this is used to start it
-                        // again - resurrecting a session, say.
-                        relative_path: plugin_config.relative_path.clone(),
-                    })
-                } else {
-                    None
-                }
-            })
+        self.plugin_metadata.get(&plugin_id).cloned()
     }
     pub fn list_plugins(&self) -> BTreeMap<PluginId, RunPlugin> {
-        let all_plugin_ids: HashSet<PluginId> = self
-            .all_plugin_ids()
-            .into_iter()
-            .map(|(plugin_id, _client_id)| plugin_id)
-            .collect();
-        let mut plugin_ids_to_cmds: BTreeMap<PluginId, RunPlugin> = BTreeMap::new();
-        for plugin_id in all_plugin_ids {
-            let plugin_cmd = self.run_plugin_of_plugin_id(plugin_id);
-            match plugin_cmd {
-                Some(plugin_cmd) => {
-                    plugin_ids_to_cmds.insert(plugin_id, plugin_cmd.clone());
-                },
-                None => log::error!("Plugin with id: {plugin_id} not found"),
-            }
-        }
-        plugin_ids_to_cmds
+        self.plugin_metadata.clone()
     }
 }
 

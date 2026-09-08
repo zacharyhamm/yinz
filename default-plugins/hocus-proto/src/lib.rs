@@ -31,3 +31,5 @@ pub mod store;
 pub mod text;
 pub mod todos;
 pub mod wire;
+
+pub mod vms;

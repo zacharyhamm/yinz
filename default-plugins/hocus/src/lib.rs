@@ -23,6 +23,7 @@ mod skills;
 mod tool_loop;
 mod tools;
 mod transitions;
+mod vm_panel;
 pub use transitions::{Confirmation, PromptKind};
 use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::HostId;
@@ -615,6 +616,10 @@ pub struct State {
     /// `perms`, which is also true after a denial: this is what says the gated
     /// host calls will actually be answered.
     granted: bool,
+    vm_panel_owner: Option<PluginId>,
+    vm_panel_pending: Option<(PluginId, hocus_proto::vms::Request)>,
+    vm_panel_snapshot: hocus_proto::vms::Snapshot,
+    vm_panel_current_session: Option<String>,
     /// Project names and roots persist across sessions.
     ///
     /// A copy, kept current by a watch on the `project` rows rather than by a
@@ -1004,6 +1009,10 @@ impl Default for State {
             mono_ms: 0,
             log_seq: 0,
             granted: false,
+            vm_panel_owner: None,
+            vm_panel_pending: None,
+            vm_panel_snapshot: Default::default(),
+            vm_panel_current_session: None,
             projects: BTreeMap::new(),
             project_watch: DataWatchId::new(0),
             #[cfg(not(target_family = "wasm"))]
@@ -1218,6 +1227,9 @@ impl ZellijPlugin for State {
             };
             return self.on_extension_result(owner, pipe_message.payload.as_deref());
         }
+        if pipe_message.name == hocus_proto::vms::REQUEST {
+            return self.on_vm_panel_request(pipe_message);
+        }
         match pipe_message.name.as_str() {
             wire::AGENT_HELLO => {
                 self.subscribe_to_agentd();
@@ -1376,6 +1388,9 @@ impl State {
                 None => self.on_chunk(&stream_id, &chunk, done, error),
             },
             Event::RunCommandResult(exit_code, stdout, stderr, context) => {
+                if context.contains_key(vm_panel::CONTEXT) {
+                    return self.on_vm_panel_result(exit_code, &stdout, &stderr, &context);
+                }
                 if context.contains_key(extensions::SCAN_CONTEXT) {
                     return self.on_extension_scan_result(exit_code, &stdout);
                 }
@@ -1434,6 +1449,7 @@ impl State {
             // from a probe the client sends at startup, so it lands after the first render and
             // flips the empty-chat splash over from text to the real wand.
             Event::ModeUpdate(mode_info) => {
+                self.vm_panel_current_session = mode_info.session_name.map(|name| name.to_string());
                 if mode_info.capabilities.kitty_graphics {
                     self.kitty_graphics.insert(self.client)
                 } else {

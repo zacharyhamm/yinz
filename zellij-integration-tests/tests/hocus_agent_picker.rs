@@ -581,7 +581,7 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
             .lines()
             .enumerate()
             .find_map(|(row, line)| {
-                line.find("no agents")
+                line.find("[Agents]")
                     .map(|byte_index| (row, line[..byte_index].chars().count()))
             })
     }
@@ -664,4 +664,80 @@ fn ctrl_p_shift_f_covers_the_tab_bar_too() {
     zellij.wait_until("the panel covers the tab bar", |grid_snapshot| {
         grid_snapshot.row_of_line("Tab #1").is_none() && grid_snapshot.contains("no agents")
     });
+}
+
+#[test]
+fn vm_tab_focuses_a_pane_in_another_session_and_dismisses_the_panel() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = TestRunner::new(TERMINAL_SIZE)
+        .skip_concurrency_slot()
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(
+            r#"layout { pane command="sh" firecracker_vm="api" name="vm-focus-target"; }"#.into(),
+        ))
+        .start();
+    let terminal = remote.expect_pty_spawn();
+    remote.wait_until("remote VM pane registered", |screen| {
+        screen.cursor.is_some()
+    });
+    terminal.output(b"remote-vm-focus-proof\r\n$ ");
+    remote.wait_until("remote VM pane rendered", |screen| {
+        screen.contains("remote-vm-focus-proof")
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let stub = dir.path().join("zellij");
+    let listing = serde_json::json!({"vms": [{"session": remote.session_name(), "name": "api", "state": "running", "vm_id": "physical-api", "panes": [{"id": terminal.terminal_id().get(), "title": "vm-focus-target", "agent": false}]}], "recoveries": []});
+    std::fs::write(&stub, format!("#!/bin/sh\nprintf '%s' '{listing}'\n")).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(std::process::Command::new(&stub)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let config = HOCUS_CONFIG.replace(
+        "hocus location=\"zellij:hocus\" {",
+        &format!(
+            "hocus location=\"zellij:hocus\" {{\n    zellij_path \"{}\"",
+            stub.display()
+        ),
+    );
+    let mut source = TestRunner::new(TERMINAL_SIZE)
+        .skip_concurrency_slot()
+        .with_config(&config)
+        .with_layout(LayoutInfo::Stringified(NO_SIDEBAR_LAYOUT.into()))
+        .start();
+    source.expect_pty_spawn().output(b"$ ");
+    open_sidebar(&source);
+    source.send_stdin(&keys::SHIFT_TAB);
+    source.send_stdin(b"\x1b[C");
+    source.wait_until(
+        "the VM tab has the remote VM and associated pane",
+        |screen| screen.contains("[VMs]") && screen.contains("vm-focus-target"),
+    );
+    source.send_stdin(&keys::TAB);
+    source.send_stdin(&keys::ENTER);
+    source.send_stdin(&keys::ENTER);
+    let destination = source.take_session_switch();
+    assert_eq!(
+        destination.name.as_ref().map(|name| name.as_str()),
+        Some(remote.session_name())
+    );
+    assert_eq!(
+        destination.pane_id,
+        Some(zellij_types::data::PaneId::Terminal(terminal.terminal_id()))
+    );
+    assert!(!source.snapshot().contains("hocus — "));
+    let client = remote.attach_client_with_focus(TERMINAL_SIZE, destination.pane_id);
+    client.wait_until("the destination pane is visible", |screen| {
+        screen.contains("remote-vm-focus-proof")
+    });
+    client.send_stdin(b"vm-focus-input-proof");
+    terminal.wait_for_stdin("input reached the pane in the other session", |bytes| {
+        bytes
+            .windows(b"vm-focus-input-proof".len())
+            .any(|window| window == b"vm-focus-input-proof")
+    });
+    client.quit();
+    source.quit();
+    remote.quit();
 }

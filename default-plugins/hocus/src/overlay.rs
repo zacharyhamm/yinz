@@ -1419,7 +1419,7 @@ impl State {
     /// Only reached with nothing to complete - a blank box, or one the user released with Esc -
     /// so the box's own claim on Tab is already settled by the time this is called.
     pub(crate) fn ring_forward_from_input(&mut self) -> bool {
-        if self.hand_keyboard_to_agents(hocus_proto::wire::STOP_LIST) {
+        if self.hand_keyboard_to_agents(hocus_proto::vms::STOP_TABS) {
             return true;
         }
         // A panel with one half is a ring with two stops, and Tab wraps round it.
@@ -1596,6 +1596,11 @@ impl State {
     /// Record a `show`/`hide` for the tests - see [`State::visibility_calls`]. Compiled away
     /// outside them.
     pub(crate) fn note_visibility(&mut self, pane: PaneId, shown: bool) {
+        if let PaneId::Plugin(id) = pane {
+            if self.agents_plugin == Some(id) {
+                self.send_vm_panel_visibility(shown);
+            }
+        }
         #[cfg(test)]
         self.visibility_calls.push((pane, shown));
         #[cfg(not(test))]

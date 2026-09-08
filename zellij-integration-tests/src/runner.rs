@@ -110,6 +110,7 @@ impl TestRunner {
             config.clone(),
             config_options.clone(),
             ClientInfo::New(session_name.clone().into(), layout_info, None),
+            None,
         );
 
         TestSession {
@@ -213,12 +214,12 @@ fn spawn_client_thread(
     config: zellij_config::config::Config,
     config_options: Options,
     client_info: ClientInfo,
+    pane_id_to_focus: Option<zellij_types::data::PaneId>,
 ) -> JoinHandle<Option<SessionConnection>> {
     std::thread::Builder::new()
         .name("in_process_zellij_client".to_string())
         .spawn(move || {
             let tab_number_to_focus = None;
-            let pane_id_to_focus = None;
             let is_a_reconnect = false;
             let start_detached_and_exit = false;
             zellij_client::start_client(
@@ -467,6 +468,11 @@ impl TestSession {
         self.fake_server_os_api.firecracker_session_stops()
     }
 
+    /// Make shutdown wait for the same file lock a guarded VM close holds.
+    pub fn set_firecracker_provider_lock(&self, path: PathBuf) {
+        self.fake_server_os_api.set_firecracker_provider_lock(path);
+    }
+
     /// A handle on the next pane this session took over from another one.
     ///
     /// Deliberately not `expect_pty_spawn`: nothing was spawned. The handle
@@ -537,7 +543,21 @@ impl TestSession {
         self.fake_server_os_api.written_files()
     }
 
+    pub fn take_session_switch(&mut self) -> SessionConnection {
+        self.main_client
+            .join()
+            .expect("client did not request a session switch")
+    }
+
     pub fn attach_client(&self, size: Size) -> TestClient {
+        self.attach_client_with_focus(size, None)
+    }
+
+    pub fn attach_client_with_focus(
+        &self,
+        size: Size,
+        pane: Option<zellij_types::data::PaneId>,
+    ) -> TestClient {
         let (fake_client_os_api, fake_client_handle) = FakeClientOsApi::new(size, None);
         let thread = spawn_client_thread(
             fake_client_os_api,
@@ -548,6 +568,7 @@ impl TestSession {
                 self.session_name.clone().into(),
                 self.config_options.clone(),
             ),
+            pane,
         );
         TestClient {
             fake_client_handle,
@@ -566,6 +587,7 @@ impl TestSession {
                 self.session_name.clone().into(),
                 self.config_options.clone(),
             ),
+            None,
         );
         TestClient {
             fake_client_handle,
@@ -712,6 +734,7 @@ impl TestSession {
             self.config.clone(),
             self.config_options.clone(),
             ClientInfo::Resurrect(self.session_name.clone().into(), layout_path, false, None),
+            None,
         );
         self.fake_server_os_api = fake_server_os_api;
         self.server_thread = server_thread;
@@ -857,13 +880,18 @@ impl TestSession {
     pub fn quit(&mut self) {
         if self.main_client.thread.is_some() {
             self.main_client.fake_client_handle.kill_session();
-            self.main_client.join();
         } else {
             zellij_session::sessions::kill_session(&zellij_types::internal_ids::SessionName::new(
                 &self.session_name,
             ))
             .expect("failed to deliver the integration-test server shutdown request");
         }
+        self.wait_for_exit();
+    }
+
+    /// Join a session that is already exiting, for example after its final pane closes.
+    pub fn wait_for_exit(&mut self) {
+        self.main_client.join();
         if let Some(server_thread) = self.server_thread.lock().unwrap().take() {
             join_server_thread_with_timeout(server_thread);
         }
