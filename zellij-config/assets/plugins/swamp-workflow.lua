@@ -112,17 +112,22 @@ function M.render(rows,cols)
       local review=attrs.review or attrs
       for _,finding in ipairs(review.findings or {}) do lines[#lines+1]=text(finding.severity..' '..finding.file..': '..finding.message) end
       if attrs.pane then lines[#lines+1]='Pane '..attrs.pane..' / '..text(attrs.log)..' / '..text(attrs.outcome) end
-      if attrs.output then
-        if attrs.previewTruncated then
-          lines[#lines+1]='Diff preview (up to 16,384 characters). Retrieve the complete saved version:'
+      local function show_output(value,path)
+        if not value.output then return end
+        if value.previewTruncated then
+          lines[#lines+1]='Output preview (up to 16,384 characters). Retrieve the complete saved version:'
           local predicate='modelName == '..z.json.encode(entry.model)..' && name == '..z.json.encode(entry.name)..' && version == '..entry.version
-          lines[#lines+1]=text('swamp data query '..quote(predicate)..' --select attributes.output --json --repo-dir '..quote(M.snapshot.root))
+          lines[#lines+1]=text('swamp data query '..quote(predicate)..' --select '..path..' --json --repo-dir '..quote(M.snapshot.root))
         end
-        if attrs.outputTruncated then lines[#lines+1]='Retained command scrollback (may omit older output):' end
-        for line in attrs.output:gmatch('[^\n]+') do lines[#lines+1]=text(line) end
+        if value.outputTruncated then lines[#lines+1]='Retained command scrollback (may omit older output):' end
+        for line in value.output:gmatch('[^\n]+') do lines[#lines+1]=text(line) end
       end
+      show_output(attrs,'attributes.output')
       if attrs.logError then lines[#lines+1]='Log unavailable: '..text(attrs.logError) end
-      if attrs.test then lines[#lines+1]='Gate '..text(attrs.test.outcome)..' / exit '..text(attrs.test.exitCode)..' / log '..text(attrs.test.log) end
+      if attrs.test then
+        lines[#lines+1]='Gate '..text(attrs.test.outcome)..' / exit '..text(attrs.test.exitCode)..' / log '..text(attrs.test.log)
+        show_output(attrs.test,'attributes.test.output')
+      end
       local evidence=attrs.evidence or (attrs.source and attrs)
       if evidence then lines[#lines+1]='Source '..text(evidence.source.commit)..' / target '..text(evidence.target.commit) end
     end

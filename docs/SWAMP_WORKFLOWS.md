@@ -1,7 +1,8 @@
 # Project-owned Swamp workflows
 
-Install Swamp and build Zellij with `cargo x build`. The local extensions require the
-official Git model:
+Install Swamp and build Zellij with `cargo x build`. The server also needs `bash` and
+`jq` on its `PATH` to filter workflow history responses. The local extensions require
+the official Git model:
 
 ```sh
 swamp extension pull @swamp/git
@@ -106,6 +107,11 @@ zellij workflow cancel RUN_ID
 
 Cancellation stops active runs in the attached workflow family and preserves panes,
 checkouts and VMs. It does not approve cleanup.
+
+Diffs and test logs in the view use previews of up to 16,384 UTF-16 units.
+Each shortened preview includes a command to retrieve the complete saved version.
+Snapshots omit duplicate test logs from continuation history inputs. Saved evidence
+does not change.
 
 ## Questions and answers
 

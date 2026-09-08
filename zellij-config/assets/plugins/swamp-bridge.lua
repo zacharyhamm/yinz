@@ -129,6 +129,12 @@ local function finish_agent(owner, event, raw)
   present(owner.work)
 end
 local function command(argv, cwd)
+  if argv[1]=='swamp' and argv[2]=='workflow' and argv[3]=='history' and argv[4]~='logs' then
+    -- History has no --select. Omit the redundant continuation log before stdout is capped;
+    -- the saved test resource below supplies its preview and exact-version retrieval.
+    argv={'bash','-o','pipefail','-c',[["$@" | jq -c 'del(.inputs.state.test.output, .results[]?.inputs.state.test.output)']],
+      'workflow-history',table.unpack(argv)}
+  end
   local r = z.await(z.async.run_command {command=argv, cwd=cwd or '/', context={swamp_owner=encode(identity)}, max_bytes_returned=1048576})
   if r.exit_code ~= 0 then
     error('Host command failed: ' .. encode(argv) .. '\nDirectory: ' .. (cwd or '/') ..
@@ -267,15 +273,34 @@ handle = function(args)
     for id in pairs(runs.entries) do ids[#ids+1]=id end
     local predicate='has(tags.specName) && tags.specName == "question" && attributes.run in '..encode(ids)
     local questions=decode(command({'swamp','data','query',predicate,'--select','{"model": modelName, "version": version, "attributes": attributes}','--json'},config.root))
-    -- Bound saved diffs before RunCommand serializes stdout; its byte cap would cut JSON.
+    -- Bound every saved log copy before RunCommand serializes stdout; its byte cap would cut JSON.
     -- CEL substring uses UTF-16 offsets: back off if the cut would split a surrogate pair.
+    local function preview(path)
+      return ([["output":has(VALUE.output) ? (VALUE.output.size() > 16384 ? VALUE.output.substring(0,
+        VALUE.output.substring(16383,16384).matches(r"[\uD800-\uDBFF]") ? 16383 : 16384) : VALUE.output) : "",
+        "previewTruncated":has(VALUE.output) && VALUE.output.size() > 16384]]):gsub('VALUE',path)
+    end
+    local function test_preview(path)
+      return ('{"evidence":'..path..'.evidence,"outcome":'..path..'.outcome,"exitCode":'..path..'.exitCode,'..
+        '"log":'..path..'.log,"passed":'..path..'.passed,'..preview(path)..'}')
+    end
     local output_projection=[[{"model":modelName,"name":name,"version":version,"attributes":
-      specName == "diff" && has(attributes.output)
-        ? {"evidence":attributes.evidence,
-           "output":attributes.output.size() > 16384 ? attributes.output.substring(0,
-             attributes.output.substring(16383,16384).matches(r"[\uD800-\uDBFF]") ? 16383 : 16384) : attributes.output,
-           "previewTruncated":attributes.output.size() > 16384}
-        : attributes}]]
+      specName == "diff" ? {"evidence":attributes.evidence,]]..preview('attributes')..[[} :
+      specName == "test" ? ]]..test_preview('attributes')..[[ :
+      specName == "operation" && has(attributes.output) ? {
+        "outcome":attributes.outcome,"pane":has(attributes.pane) ? attributes.pane : false,
+        "log":has(attributes.log) ? attributes.log : "",
+        "exitCode":has(attributes.exitCode) ? attributes.exitCode : null,
+        "outputTruncated":has(attributes.outputTruncated) && attributes.outputTruncated,
+        "logError":has(attributes.logError) ? attributes.logError : false,]]..preview('attributes')..[[} :
+      specName in ["checks","assessment"] ? {
+        "review":attributes.review,
+        "test":attributes.test == null ? attributes.test : ]]..test_preview('attributes.test')..[[,
+        "evidence":has(attributes.evidence) ? attributes.evidence : null,
+        "tests":has(attributes.tests) ? attributes.tests : "",
+        "codeReview":has(attributes.codeReview) ? attributes.codeReview : "",
+        "ready":has(attributes.ready) && attributes.ready}
+      : attributes}]]
     local outputs=decode(command({'swamp','data','query','has(tags.workflowRunId) && tags.workflowRunId in '..encode(ids),'--select',output_projection,'--json'},config.root))
     local children={}
     for _,id in ipairs(ids) do

@@ -39,6 +39,10 @@ z.agent.spawn_details=function(opts)
 end
 z.async.run_command=function(opts)
   local argv=opts.command
+  if argv[1]=='bash' then
+    assert(argv[6]=='workflow-history')
+    argv={table.unpack(argv,7)}
+  end
   local stdout=''
   if argv[1]=='git' then stdout='/host\n'
   elseif argv[2]=='pty-host' then stdout=z.json.encode(hosts)
