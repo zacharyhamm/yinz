@@ -6,6 +6,8 @@ mod limits;
 mod loader;
 mod transport;
 mod ui;
+mod worker;
+pub use worker::run_compilation_worker;
 
 pub use checker::{check_plugin, check_syntax};
 
@@ -47,7 +49,9 @@ struct HostState {
     env: Option<PluginEnv>,
 }
 
-#[op2]
+// CheckPlugin's semantic check enters a separate compiler isolate. Its ops cannot
+// reach this plugin or its borrowed host state, but Deno's op guard is thread-local.
+#[op2(reentrant)]
 #[serde]
 fn op_zellij_command<'s>(
     scope: &mut v8::PinScope<'s, '_>,
@@ -61,6 +65,27 @@ fn op_zellij_command<'s>(
         .and_then(|_| transport::from_v8(scope, value))
         .and_then(|value| dispatch(state, value, client))
         .map_err(|error| JsErrorBox::generic(format!("{error:#}")))
+}
+
+#[op2]
+#[serde]
+fn op_zellij_workflow_remote_panes(
+    state: &OpState,
+) -> std::result::Result<serde_json::Value, JsErrorBox> {
+    let query = || -> Result<Value> {
+        state.borrow::<Arc<limits::Limits>>().check()?;
+        let env = state
+            .borrow::<HostState>()
+            .env
+            .as_ref()
+            .context("host commands are unavailable during module initialization")?;
+        if env.cancel.load(Ordering::Acquire) {
+            bail!(CANCELLED_BY_HOST);
+        }
+        let rows = super::host_bridge::workflow_remote_panes(&env.plugin.location, &env.senders)?;
+        Ok(json!(rows))
+    };
+    query().map_err(|error| JsErrorBox::generic(format!("{error:#}")))
 }
 
 // Validate before the SDK inspects permission/unsubscribe payloads. Otherwise
@@ -122,7 +147,7 @@ fn op_zellij_log(state: &OpState, #[string] line: &str) -> std::result::Result<(
         .as_ref()
         .and_then(|path| path.file_name())
         .map(|name| name.to_string_lossy())
-        .unwrap_or_default();
+        .unwrap_or_else(|| env.plugin.path.to_string_lossy());
     log::info!("[deno:{}] {}", name, line);
     Ok(())
 }
@@ -131,6 +156,7 @@ deno_core::extension!(
     zellij_host,
     ops = [
         op_zellij_command,
+        op_zellij_workflow_remote_panes,
         op_zellij_validate,
         op_zellij_encode,
         op_zellij_log,
@@ -524,7 +550,12 @@ impl RuntimeInstance {
             bail!(CANCELLED_BY_HOST);
         };
         let _entered = get_tokio_runtime().enter();
-        let loader = Rc::new(loader::PluginModuleLoader::new(path, source)?);
+        let loader = Rc::new(match &env.plugin.location {
+            zellij_types::input::layout::RunPluginLocation::Zellij(tag) => {
+                loader::PluginModuleLoader::embedded(&tag.to_string(), source)?
+            },
+            _ => loader::PluginModuleLoader::new(path, source)?,
+        });
         let limits = limits::Limits::new(path.display().to_string());
         let mut runtime = limits
             .runtime(RuntimeOptions {
@@ -577,7 +608,15 @@ impl RuntimeInstance {
             parked: false,
             limits,
         };
-        instance.call("initialize", json!(uuid::Uuid::new_v4().to_string()), None)?;
+        instance.call(
+            "initialize",
+            json!({
+                "instanceId": uuid::Uuid::new_v4().to_string(),
+                "identity": super::host_bridge::server_identity()?,
+                "workflowBridge": super::host_bridge::is_workflow_bridge(&env.plugin.location),
+            }),
+            None,
+        )?;
         let module = get_tokio_runtime()
             .block_on(instance.runtime.load_main_es_module(loader.entrypoint()))
             .context("loading Deno plugin modules");
@@ -733,7 +772,10 @@ mod sdk_tests {
         run(&mut runtime, &format!("globalThis.bridge = {SDK}; globalThis.bind = (plugin) => bridge('bind', {{default: plugin}}); globalThis.check = (ok) => {{ if (!ok) throw new Error('SDK assertion failed'); }};"));
         run(
             &mut runtime,
-            &format!("bridge('initialize', '{}')", uuid::Uuid::new_v4()),
+            &format!(
+                "bridge('initialize', {{instanceId: '{}', identity: {{}}}})",
+                uuid::Uuid::new_v4()
+            ),
         );
         runtime
     }
@@ -1704,3 +1746,7 @@ mod sdk_tests {
     include!("unit/agent_sdk.rs");
     include!("unit/completion_sdk.rs");
 }
+
+#[cfg(test)]
+#[path = "unit/builtins.rs"]
+mod builtin_tests;

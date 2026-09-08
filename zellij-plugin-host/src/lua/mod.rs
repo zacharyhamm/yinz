@@ -19,7 +19,7 @@ mod loader;
 mod response;
 mod ui;
 #[cfg(test)]
-mod unit_tests;
+pub(crate) mod unit_tests;
 
 pub use loader::{check_lua_plugin, load_lua_plugin};
 

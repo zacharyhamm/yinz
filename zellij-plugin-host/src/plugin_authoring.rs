@@ -222,6 +222,20 @@ mod tests {
                 std::fs::read_to_string(&backup).unwrap(),
                 format!("{source}\n")
             );
+            let recursive = format!(
+                "export default {}0{};",
+                "[".repeat(10_000),
+                "]".repeat(10_000)
+            );
+            assert!(write(dir.path(), &name, &recursive, true, true).is_err());
+            assert_eq!(
+                std::fs::read_to_string(&written.path).unwrap(),
+                "export default {};\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&backup).unwrap(),
+                format!("{source}\n")
+            );
             #[cfg(unix)]
             {
                 let linked = format!("linked.{extension}");

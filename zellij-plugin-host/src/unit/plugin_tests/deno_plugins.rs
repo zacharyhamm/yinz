@@ -2219,13 +2219,13 @@ fn deno_completion_real_dispatch_permissions_and_reload_isolation() {
     SenderWithContext::new(tx)
         .send(BackgroundJob::Exit)
         .unwrap();
-    crate::background_jobs::background_jobs_main(
+    zellij_bus::background_jobs::background_jobs_main(
         Bus::new(vec![rx], None, None, None, None, None, None, None).should_silently_fail(),
         None,
         true,
     )
     .unwrap();
-    let scan = crate::background_jobs::session_scan_state().unwrap();
+    let scan = zellij_bus::background_jobs::session_scan_state().unwrap();
     *scan.current_session_name.lock().unwrap() = "deno-completion-test".into();
     scan.current_session_info.lock().unwrap().name = "deno-completion-test".into();
     scan.current_session_plugin_list.lock().unwrap().insert(
@@ -2366,4 +2366,36 @@ export default {
     assert!(!rendered_assets(&log)
         .iter()
         .any(|(_, s)| s.contains("old agent=Stop")));
+}
+
+#[test]
+fn deno_native_compilation_crashes_allow_healthy_entrypoints_and_imports_afterward() {
+    for extension in ["js", "ts"] {
+        for imported in [false, true] {
+            let recursive = format!(
+                "export default {}0{};",
+                "[".repeat(10_000),
+                "]".repeat(10_000)
+            );
+            let entry = format!("import './dep.{extension}'; export default {{}};");
+            let harness = Harness::new(
+                extension,
+                if imported { &entry } else { &recursive },
+                PermissionStatus::Granted,
+            );
+            let dep = harness.directory.path().join(format!("dep.{extension}"));
+            if imported {
+                std::fs::write(&dep, &recursive).unwrap();
+            }
+            harness.load();
+            harness.log.wait_until("native compilation failure is reported", Duration::from_secs(40), |log| {
+                log.iter().any(|instruction| matches!(instruction,
+                    ScreenInstruction::UpdatePluginLoadingStage(id, stage) if *id == PLUGIN && stage.is_error())).then_some(())
+            });
+            std::fs::write(&dep, "export default {};").unwrap();
+            std::fs::write(&harness.path, format!("import './dep.{extension}'; export default {{render() {{return 'healthy after native compilation failure';}}}};")).unwrap();
+            harness.reload();
+            harness.rendered("healthy after native compilation failure");
+        }
+    }
 }

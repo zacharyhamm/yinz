@@ -227,6 +227,9 @@ fn a_load_report_names_the_outcome_before_the_pane_text() {
     assert!(fine.contains("only proves it loads"), "{fine}");
 
     for error in [
+        "failed to start the script plugin at '/x/main.ts': resolve module /x/missing.ts: No such file or directory (os error 2)",
+        "failed to start the script plugin at '/x/main.ts': TypeError: plugin must default-export a lifecycle object",
+        "failed to load the Deno plugin at '/x/main.ts'",
         "failed to load the Lua plugin at '/x/keys.lua'. A plugin must return a table",
         "Panic!\nfailed to run the plugin's `update`: keys.lua:12: attempt to index nil",
     ] {
@@ -1311,5 +1314,28 @@ fn later_replacements_remap_changed_span_endpoints() {
         let edited = apply_edits(source, &edits).unwrap();
         assert_eq!(edited.source, expected);
         assert_eq!(edited.changed, changed, "{edits:?}");
+    }
+}
+
+#[test]
+fn script_load_diagnostics_beyond_the_success_allowance_survive() {
+    for diagnostic in [
+        "resolve module /x/missing.ts: No such file or directory (os error 2)",
+        "TypeError: plugin must default-export a lifecycle object",
+    ] {
+        let contents = format!(
+            "{}failed to start the script plugin at '/x/main.ts': {diagnostic}",
+            "earlier output\n".repeat(200)
+        );
+        let report = plugin_load_report(
+            "/x/main.ts",
+            Some(PluginObservation {
+                pane_id: 7,
+                contents,
+            }),
+        );
+        assert!(report.contains("FAILED to load"), "{report}");
+        assert!(!report.contains("only proves it loads"), "{report}");
+        assert!(report.contains(diagnostic), "{report}");
     }
 }

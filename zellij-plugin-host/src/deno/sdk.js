@@ -5,6 +5,8 @@
   const dispatch = core.ops.op_zellij_command;
   const validate = core.ops.op_zellij_validate;
   const log = core.ops.op_zellij_log;
+  const workflowRemotePanes = core.ops.op_zellij_workflow_remote_panes;
+  let metadata;
   const contexts = new WeakMap();
   const stack = [];
   // Promise context is host bookkeeping: guest prototype edits must not alter it.
@@ -810,7 +812,11 @@
   for (const kind of ['textInput','checkbox','radioGroup','select','combo','button']) ui[kind] = (d = {}) => construct([{...d,kind}],true);
   Object.freeze(ui);
 
-  const api = Object.freeze({
+  const api = {
+    get serverBinary() { return metadata.serverBinary; },
+    get serverSession() { return metadata.serverSession; },
+    get serverIncarnation() { return metadata.serverIncarnation; },
+    get instanceId() { return rpcPrefix; },
     command,
     definePlugin: (value) => value,
     subscribe: (events) => command("Subscribe", events),
@@ -841,7 +847,7 @@
     },
     waitForEvent,
     waitForPermissions: (permissions) => new Promise((resolve, reject) => enqueuePermissions(permissions, resolve, reject)),
-  });
+  };
   Object.defineProperty(globalThis, "zellij", { value: api });
 
   function lifecycle(name, arg) {
@@ -938,7 +944,13 @@
       if (failure) { const error = failure; failure = null; throw error; }
       if (action === "initialize") {
         if (rpcPrefix !== null) throw new Error("SDK already initialized");
-        rpcPrefix = arg;
+        rpcPrefix = arg.instanceId;
+        metadata = arg.identity;
+        if (arg.workflowBridge) api.workflowRemotePanes = () => {
+          if (client === null) throw new Error("host commands are unavailable during module initialization");
+          return workflowRemotePanes();
+        };
+        Object.freeze(api);
       } else if (action === "bind") {
         plugin = arg.default;
         if (plugin === null || typeof plugin !== "object") {

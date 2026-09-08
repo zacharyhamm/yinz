@@ -228,15 +228,15 @@ impl<'a> PluginLoader<'a> {
         // Which of the two candidate files was actually read - `location` cannot say, and a
         // reload arrives naming this path in full. `create_plugin_env` is shared with the wasm
         // runtime, so it is recorded here rather than threaded through as a parameter.
-        plugin_env.resolved_source_path = Some(resolved_path);
+        plugin_env.resolved_source_path = if self.plugin_config.builtin_deno_source().is_some() {
+            None
+        } else {
+            Some(resolved_path.clone())
+        };
         let subscriptions = plugin_env.subscriptions.clone();
         let chunk_name = self.plugin_config.path.display().to_string();
         let running = if self.plugin_config.runtime() == PluginRuntime::Deno {
-            let path = plugin_env
-                .resolved_source_path
-                .as_deref()
-                .context("Deno plugin has no resolved source path")?
-                .to_owned();
+            let path = resolved_path;
             let client_cancel = if self.plugin_config.is_shared() {
                 Arc::default()
             } else {

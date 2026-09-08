@@ -1,0 +1,490 @@
+use super::*;
+use crate::lua::unit_tests::test_env;
+use zellij_types::{
+    data::{EventType, PluginTag},
+    input::layout::RunPluginLocation,
+    internal_ids::{ContextMenuItemId, ContextMenuRequestId},
+};
+
+fn load_builtin(name: &str, source: &str, mut env: PluginEnv) -> Result<DenoPlugin> {
+    env.plugin.location = RunPluginLocation::Zellij(PluginTag::new(name));
+    DenoPlugin::new(
+        source,
+        Path::new("/nonexistent/builtin.ts"),
+        env,
+        Arc::default(),
+    )
+}
+
+/// The context-menu hook has no `render`, so a load-and-draw check would prove nothing about it.
+/// What it does instead is transform an event into an answer, and that is what is exercised here:
+/// a syntax error, a bad field name or a broken filter would otherwise go unnoticed until somebody
+/// right-clicked.
+#[test]
+fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
+    use zellij_bus::screen::ScreenInstruction;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
+    use {
+        zellij_types::data::ContextMenuContext, zellij_types::data::ContextMenuItem,
+        zellij_types::data::ContextMenuLink,
+    };
+
+    let source =
+        zellij_config::consts::builtin_deno_plugin("context-menu").expect("the hook is a builtin");
+    let configured = vec![
+        ContextMenuItem::new("Copy", vec![]).with_id(ContextMenuItemId::new(0)),
+        ContextMenuItem::separator().with_id(ContextMenuItemId::new(1)),
+        ContextMenuItem::new("Close pane", vec![]).with_id(ContextMenuItemId::new(2)),
+    ];
+
+    // The answer goes to the screen thread, so the env gets a real channel rather than the
+    // silently-failing default every other test here uses.
+    let answer_for = |mut context: ContextMenuContext| -> Vec<ContextMenuItem> {
+        context.request_id = ContextMenuRequestId::new(73);
+        let expected_request = context.request_id;
+        let (to_screen, screen_receiver) =
+            zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+        let mut env = test_env();
+        env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+
+        let mut plugin = load_builtin("context-menu", source, env).unwrap();
+        plugin.load(&BTreeMap::new()).unwrap();
+        plugin
+            .update(&Event::ContextMenuRequested(Box::new(context)))
+            .expect("the hook should answer");
+
+        screen_receiver
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                ScreenInstruction::SetContextMenu {
+                    items, request_id, ..
+                } => {
+                    assert_eq!(request_id, expected_request);
+                    Some(items)
+                },
+                _ => None,
+            })
+            .expect("the hook answers with a menu")
+    };
+
+    // No selection: "Copy" would copy nothing, so it is not offered.
+    let without_selection = answer_for(ContextMenuContext {
+        items: configured.clone(),
+        ..Default::default()
+    });
+    assert!(
+        !without_selection.iter().any(|item| item.label == "Copy"),
+        "got: {without_selection:?}"
+    );
+    assert!(without_selection
+        .iter()
+        .any(|item| item.label == "Close pane"));
+
+    // With one, it is - and it says what it would copy.
+    let with_selection = answer_for(ContextMenuContext {
+        items: configured.clone(),
+        selected_text: Some("hello".to_owned()),
+        ..Default::default()
+    });
+    assert!(
+        with_selection
+            .iter()
+            .any(|item| item.label == r#"Copy "hello""#),
+        "got: {with_selection:?}"
+    );
+    assert!(
+        with_selection
+            .iter()
+            .find(|item| item.label.starts_with("Copy"))
+            .and_then(|item| item.id)
+            == Some(ContextMenuItemId::new(0)),
+        "the id has to survive the relabelling, or the actions do not come back"
+    );
+
+    let unicode = answer_for(ContextMenuContext {
+        items: configured.clone(),
+        selected_text: Some(format!("  {}\n", "🙂".repeat(25))),
+        ..Default::default()
+    });
+    assert_eq!(unicode[0].label, format!("Copy \"{}…\"", "🙂".repeat(24)));
+    assert!(answer_for(ContextMenuContext {
+        items: vec![ContextMenuItem::separator(), ContextMenuItem::separator()],
+        ..Default::default()
+    })
+    .is_empty());
+
+    // Filtering "Copy" out would otherwise strand the rule that used to sit under it, leaving a
+    // menu whose first row is a horizontal line.
+    assert!(
+        !without_selection[0].separator,
+        "a menu must not lead with a separator: {without_selection:?}"
+    );
+    assert!(
+        !without_selection.last().unwrap().separator,
+        "nor trail with one: {without_selection:?}"
+    );
+    assert!(
+        !without_selection
+            .windows(2)
+            .any(|pair| pair[0].separator && pair[1].separator),
+        "nor have two in a row: {without_selection:?}"
+    );
+
+    // A link under the cursor leads, and is an item the plugin made up rather than a configured one.
+    let with_link = answer_for(ContextMenuContext {
+        items: configured.clone(),
+        link: Some(ContextMenuLink {
+            matched: "https://example.com".to_owned(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    assert_eq!(with_link[0].label, "Open https://example.com");
+    assert_eq!(with_link[0].id, None);
+    assert_eq!(
+        with_link[0].context.get("url").map(|s| s.as_str()),
+        Some("https://example.com")
+    );
+}
+
+/// The shipped hook opens a link with whichever of `xdg-open`/`open` the machine actually has,
+/// which it learns by probing both at load. Worth a test of its own: the probe answers
+/// asynchronously, so a selection made before it lands has to wait rather than be dropped, and
+/// nothing about either path is visible until somebody right-clicks a URL on a Mac.
+#[test]
+fn the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has() {
+    use zellij_bus::background_jobs::BackgroundJob;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::data::ContextMenuContext;
+    use zellij_types::diagnostics::ErrorContext;
+
+    let source =
+        zellij_config::consts::builtin_deno_plugin("context-menu").expect("the hook is a builtin");
+    let (to_background_jobs, background_jobs) =
+        zellij_runtime::channels::unbounded::<(BackgroundJob, ErrorContext)>();
+    let mut env = test_env();
+    env.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
+
+    let mut plugin = load_builtin("context-menu", source, env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    assert!(plugin.render(1, 80).unwrap().is_empty());
+    let subscriptions = plugin.env().subscriptions.lock().unwrap().clone();
+    assert_eq!(
+        subscriptions,
+        [
+            EventType::ContextMenuRequested,
+            EventType::ContextMenuItemSelected,
+            EventType::RunCommandResult
+        ]
+        .into_iter()
+        .collect()
+    );
+
+    let commands =
+        |receiver: &zellij_runtime::channels::Receiver<(BackgroundJob, ErrorContext)>| {
+            receiver
+                .try_iter()
+                .filter_map(|(job, _)| match job {
+                    BackgroundJob::RunCommand(_, _, command, args, env, _, _, cap, _) => {
+                        assert!(env.is_empty());
+                        assert_eq!(cap, Some(64));
+                        Some((command, args))
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+    // Both candidates are probed at load, so the answer is there before the first selection.
+    let probes = commands(&background_jobs);
+    assert_eq!(
+        probes,
+        vec![
+            ("xdg-open".to_owned(), vec!["--help".to_owned()]),
+            ("open".to_owned(), vec!["--help".to_owned()]),
+        ],
+        "both openers are probed"
+    );
+
+    let select = |plugin: &mut DenoPlugin| {
+        plugin
+            .update(&Event::ContextMenuItemSelected {
+                label: "Open https://example.com".to_owned(),
+                item_context: [
+                    ("action".to_owned(), "open_link".to_owned()),
+                    ("url".to_owned(), "https://example.com".to_owned()),
+                ]
+                .into_iter()
+                .collect(),
+                context: Box::new(ContextMenuContext::default()),
+            })
+            .expect("the hook should take the selection");
+    };
+
+    // A selection before either probe answers is held, not dropped and not guessed at.
+    select(&mut plugin);
+    assert!(
+        commands(&background_jobs).is_empty(),
+        "nothing is run until an opener is known"
+    );
+
+    // This machine turns out to be a Mac: `xdg-open` is absent, `open` is not.
+    let probe_result = |executable: &str, exit_code: Option<i32>| {
+        Event::RunCommandResult(
+            exit_code,
+            vec![],
+            vec![],
+            [("probe".to_owned(), executable.to_owned())]
+                .into_iter()
+                .collect(),
+        )
+    };
+    plugin.update(&probe_result("xdg-open", Some(1))).unwrap();
+    assert!(
+        commands(&background_jobs).is_empty(),
+        "a probe that failed is not an opener"
+    );
+    plugin.update(&probe_result("open", Some(0))).unwrap();
+    assert_eq!(
+        commands(&background_jobs),
+        vec![("open".to_owned(), vec!["https://example.com".to_owned()])],
+        "the held url is opened as soon as an opener is known"
+    );
+
+    // xdg-open wins even when open's successful result arrived first.
+    plugin.update(&probe_result("xdg-open", Some(0))).unwrap();
+    plugin.update(&probe_result("open", Some(0))).unwrap();
+    select(&mut plugin);
+    assert_eq!(
+        commands(&background_jobs),
+        vec![(
+            "xdg-open".to_owned(),
+            vec!["https://example.com".to_owned()]
+        )]
+    );
+
+    // ...and from here on it goes straight out.
+    select(&mut plugin);
+    assert_eq!(
+        commands(&background_jobs),
+        vec![(
+            "xdg-open".to_owned(),
+            vec!["https://example.com".to_owned()]
+        )]
+    );
+}
+
+#[test]
+fn embedded_loading_imports_diagnostics_and_compiler_recovery() {
+    for import in [
+        "./sibling.ts",
+        "../escape.ts",
+        "file:///tmp/a.ts",
+        "/tmp/a.ts",
+        "npm:pkg",
+        "pkg",
+        "https://example.com/a.ts",
+    ] {
+        let source = format!("import {import:?}; export default {{}};");
+        let error = load_builtin("broken", &source, test_env()).err().unwrap();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains(import) && error.contains("zellij-builtin:///broken.ts"),
+            "{error}"
+        );
+    }
+    let error = load_builtin("broken", "const x: = ;", test_env())
+        .err()
+        .unwrap();
+    assert!(format!("{error:#}").contains("broken.ts"));
+    let mut healthy = load_builtin("healthy", "import z from 'zellij:plugin'; const n: number = 42; export default {render() {return String(n);}};", test_env()).unwrap();
+    assert_eq!(healthy.render(1, 80).unwrap(), b"42");
+    let mut throwing = load_builtin(
+        "throws",
+        "const n: number = 42;\nexport default {render() {throw Error('mapped');}};",
+        test_env(),
+    )
+    .unwrap();
+    let error = format!("{:#}", throwing.render(1, 80).unwrap_err());
+    assert!(error.contains("throws.ts:2"), "{error}");
+}
+
+#[test]
+fn lua_and_deno_share_server_identity_but_reload_replaces_instance_identity() {
+    let mut lua = crate::lua::load_lua_plugin(
+        "local z=require('zellij'); return {render=function() return z.json.encode({z.server_binary,z.server_session,z.server_incarnation}) end}",
+        "identity.lua", test_env()).unwrap();
+    let lua: Value = serde_json::from_slice(&lua.render(1, 1000).unwrap()).unwrap();
+    let source = r#"
+const identity = [zellij.serverBinary, zellij.serverSession, zellij.serverIncarnation, zellij.instanceId];
+if (!Object.isFrozen(zellij) || 'workflowRemotePanes' in zellij) throw Error('SDK exposure');
+let refused = false;
+try { zellij.command('GetPluginIds'); } catch (_) { refused = true; }
+if (!refused) throw Error('initialization commands allowed');
+try { zellij.serverIncarnation = 'forged'; } catch (_) {}
+if (identity[2] !== zellij.serverIncarnation) throw Error('mutable metadata');
+export default {render() {return JSON.stringify(identity);}};
+"#;
+    let first = {
+        let mut plugin = load_builtin("identity", source, test_env()).unwrap();
+        serde_json::from_slice::<Value>(&plugin.render(1, 1000).unwrap()).unwrap()
+    };
+    let mut reloaded = load_builtin("identity", source, test_env()).unwrap();
+    let second: Value = serde_json::from_slice(&reloaded.render(1, 1000).unwrap()).unwrap();
+    for i in 0..3 {
+        assert_eq!(first[i], lua[i]);
+        assert_eq!(first[i], second[i]);
+    }
+    assert_ne!(first[3], second[3]);
+    for value in [&first[2], &first[3], &second[3]] {
+        uuid::Uuid::parse_str(value.as_str().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn workflow_query_is_private_and_rechecks_host_location() {
+    use zellij_bus::pty::PtyInstruction;
+    use zellij_runtime::channels::SenderWithContext;
+    let (tx, rx) = zellij_runtime::channels::unbounded();
+    let mut env = test_env();
+    env.senders.to_pty = Some(SenderWithContext::new(tx));
+    let source = r#"
+if (typeof zellij.workflowRemotePanes !== 'function') throw Error('missing query');
+let refused = false;
+try { zellij.workflowRemotePanes(); } catch (_) { refused = true; }
+if (!refused) throw Error('initialization query allowed');
+export default {render() {return JSON.stringify(zellij.workflowRemotePanes());}};
+"#;
+    let mut plugin = load_builtin("swamp-bridge", source, env).unwrap();
+    let rows = json!([{"terminal_id": 3, "host_id": "remote-id", "remote_host": "remote", "pane_token": "token", "owner": "owner"}]);
+    let reply = rows.clone();
+    let responder = std::thread::spawn(move || {
+        for rows in [reply, json!([])] {
+            let (PtyInstruction::WorkflowRemotePanes(tx), _) = rx.recv().unwrap() else {
+                panic!("wrong query")
+            };
+            tx.send(serde_json::from_value(rows).unwrap()).unwrap();
+        }
+    });
+    assert_eq!(
+        serde_json::from_slice::<Value>(&plugin.render(1, 1000).unwrap()).unwrap(),
+        rows
+    );
+    // A changed size invalidates the cached frame and issues another query.
+    assert_eq!(plugin.render(2, 1000).unwrap(), b"[]");
+    responder.join().unwrap();
+    for location in [
+        RunPluginLocation::File("swamp-bridge.ts".into()),
+        RunPluginLocation::Zellij(PluginTag::new("context-menu")),
+    ] {
+        plugin.env_mut().plugin.location = location;
+        let error = format!("{:#}", plugin.render(3, 1000).unwrap_err());
+        assert!(
+            error.contains("restricted to zellij:swamp-bridge"),
+            "{error}"
+        );
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("swamp-bridge.ts");
+    let mut env = test_env();
+    env.plugin.location = RunPluginLocation::File(path.clone());
+    env.plugin
+        .initial_userspace_configuration
+        .insert("workflowBridge", "true");
+    let mut ordinary = DenoPlugin::new(
+        "export default {render() {return String('workflowRemotePanes' in zellij);}}",
+        &path,
+        env,
+        Arc::default(),
+    )
+    .unwrap();
+    assert_eq!(ordinary.render(1, 80).unwrap(), b"false");
+}
+
+#[test]
+fn workflow_query_reports_transport_disconnect_and_timeout() {
+    use zellij_bus::pty::PtyInstruction;
+    use zellij_runtime::channels::SenderWithContext;
+    for timeout in [false, true] {
+        let (tx, rx) = zellij_runtime::channels::unbounded();
+        let mut env = test_env();
+        env.senders.to_pty = Some(SenderWithContext::new(tx));
+        let responder = std::thread::spawn(move || {
+            let (PtyInstruction::WorkflowRemotePanes(tx), _) = rx.recv().unwrap() else {
+                panic!("wrong query")
+            };
+            if timeout {
+                // Keep the reply channel alive until the production five-second deadline.
+                let (_stop_tx, stop_rx) = crossbeam::channel::bounded::<()>(0);
+                let _ = stop_rx.recv_timeout(Duration::from_secs(6));
+            }
+            drop(tx);
+        });
+        let mut plugin = load_builtin(
+            "swamp-bridge",
+            "export default {render() {return JSON.stringify(zellij.workflowRemotePanes());}}",
+            env,
+        )
+        .unwrap();
+        let error = format!("{:#}", plugin.render(1, 80).unwrap_err());
+        assert!(
+            error.contains("receive remote workflow pane identities from PTY"),
+            "{error}"
+        );
+        assert!(
+            error.contains(if timeout { "timed out" } else { "disconnected" }),
+            "{error}"
+        );
+        responder.join().unwrap();
+    }
+    let mut env = test_env();
+    env.senders = ThreadSenders::default();
+    let mut plugin = load_builtin(
+        "swamp-bridge",
+        "export default {render() {return JSON.stringify(zellij.workflowRemotePanes());}}",
+        env,
+    )
+    .unwrap();
+    assert!(format!("{:#}", plugin.render(1, 80).unwrap_err())
+        .contains("request remote workflow pane identities"));
+}
+
+#[test]
+fn embedded_builtin_loads_without_a_working_directory() {
+    const CHILD: &str = "ZELLIJ_TEST_EMBEDDED_NO_CWD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "plugins::deno::builtin_tests::embedded_builtin_loads_without_a_working_directory",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    // Only the isolated child changes its cwd; other tests can keep using relative paths.
+    let directory = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(directory.path()).unwrap();
+    directory.close().unwrap();
+    assert!(std::env::current_dir().is_err());
+    let source = zellij_config::consts::builtin_deno_plugin("context-menu").unwrap();
+    let mut plugin = load_builtin("context-menu", source, test_env()).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert!(plugin.render(1, 80).unwrap().is_empty());
+}
+
+#[test]
+fn shipped_context_menu_passes_the_typescript_checker() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../zellij-config/assets/plugins/context-menu.ts");
+    check_plugin(&path).unwrap();
+}
