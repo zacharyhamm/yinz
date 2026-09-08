@@ -6141,10 +6141,12 @@ impl Tab {
     }
     pub(crate) fn should_retain_tab(&self) -> bool {
         self.has_selectable_panes()
-            || self
-                .get_all_pane_ids()
-                .iter()
-                .any(|id| matches!(id, PaneId::Terminal(_)))
+            || self.get_all_pane_ids().iter().any(|id| {
+                matches!(id, PaneId::Terminal(_))
+                    && self
+                        .get_pane_with_id(*id)
+                        .is_some_and(|pane| !pane.exited())
+            })
     }
 
     pub fn resize_pty_all_panes(&mut self) -> Result<()> {
