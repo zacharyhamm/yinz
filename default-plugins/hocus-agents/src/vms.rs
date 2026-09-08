@@ -26,6 +26,13 @@ pub(super) struct View {
     max_scroll: usize,
 }
 impl View {
+    pub(super) fn clear_dimensions(&mut self) {
+        self.last_list_rows = 0;
+        self.last_details_rows = 0;
+        self.window = 0;
+        self.max_scroll = 0;
+    }
+
     pub(super) fn has_error(&self) -> bool {
         !self.error.is_empty()
     }
@@ -1113,6 +1120,77 @@ mod tests {
             assert_eq!(state.vms.last_details_rows, 0);
         }
     }
+    #[test]
+    fn vm_mouse_ignores_the_header_and_empty_panes_without_losing_its_place() {
+        let mut state = state();
+        let identity = state.vms.snapshot.vms[1].identity();
+        state.vms.results.push((identity, "warning\n".repeat(100)));
+        state.vms.selected = 1;
+        state.vms.details = true;
+        state.vms.scroll = 3;
+        state.tabs_focused = true;
+        state.render(20, 40);
+        let position = |state: &State| {
+            (
+                state.vms.selected,
+                state.vms.scroll,
+                state.vms.details,
+                state.vms.pane,
+                state.tabs_focused,
+            )
+        };
+        let before = position(&state);
+        let dimensions = |state: &State| {
+            [
+                state.vms.last_list_rows,
+                state.vms.last_details_rows,
+                state.vms.window,
+                state.vms.max_scroll,
+            ]
+        };
+        let visible = dimensions(&state);
+        // VM wheels keep scrolling details everywhere in the content area.
+        for line in [1, 19] {
+            state.on_mouse(Mouse::Hover(line, 39));
+            assert!(state.on_mouse(Mouse::ScrollDown(1)));
+            assert_eq!(state.vms.scroll, 4);
+            assert!(state.on_mouse(Mouse::ScrollUp(1)));
+            assert_eq!(position(&state), before);
+        }
+        for (line, column) in [(0, 0), (-1, 0), (20, 0), (1, 40)] {
+            state.on_mouse(Mouse::Hover(line, column));
+            assert!(!state.on_mouse(Mouse::ScrollUp(1)));
+            assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+            if line != 0 {
+                assert!(!state.on_mouse(Mouse::LeftClick(line, column)));
+            }
+            assert_eq!(position(&state), before);
+        }
+        for (rows, cols) in [(1, 40), (0, 40), (20, 0)] {
+            state.render(rows, cols);
+            assert_eq!((state.last_rows, state.last_cols), (rows, cols));
+            assert_eq!(dimensions(&state), [0; 4]);
+            state.mouse_position = None;
+            assert!(!state.on_mouse(Mouse::ScrollUp(1)));
+            assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+            state.on_mouse(Mouse::Hover(1, 0));
+            assert!(!state.on_mouse(Mouse::ScrollUp(1)));
+            assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+            assert!(!state.on_mouse(Mouse::LeftClick(1, 0)));
+            assert_eq!(position(&state), before);
+
+            let header_visible = rows > 0 && cols > 0;
+            assert_eq!(state.on_mouse(Mouse::LeftClick(0, 0)), header_visible);
+            assert_eq!(state.vm_tab, !header_visible);
+            assert_eq!(state.on_mouse(Mouse::LeftClick(0, 10)), header_visible);
+            assert!(state.vm_tab);
+
+            state.render(20, 40);
+            assert_eq!(dimensions(&state), visible);
+            assert_eq!(position(&state), before);
+        }
+    }
+
     #[test]
     fn vm_pane_navigation_reveals_the_cursor_after_wrapped_titles() {
         let mut state = state();
