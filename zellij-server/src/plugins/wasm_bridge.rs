@@ -633,6 +633,10 @@ impl WasmBridge {
         plugin_map_deadline: Option<Instant>,
     ) -> Result<()> {
         info!("Bye from plugin {}", pid);
+        // The screen may exit before plugins during shutdown; cleanup must still complete.
+        let _ = self
+            .senders
+            .send_to_screen(ScreenInstruction::UnsubscribePaneOutput(pid));
         // The plugin's cancel token. Not set here: a plugin that is unloaded because it asked
         // to close itself is usually still inside the `update()` that asked, with more to do
         // (quit-confirmation closes itself and *then* sends `Quit`), and a token set now would
@@ -3212,7 +3216,7 @@ fn check_event_permission(
         // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
         // need nothing more than the permission it enqueued with.
         EventType::QueueChanged => PermissionType::ReadApplicationState,
-        EventType::PaneRenderReport => PermissionType::ReadPaneContents,
+        EventType::PaneOutput | EventType::PaneRenderReport => PermissionType::ReadPaneContents,
         EventType::UserAction => PermissionType::InterceptInput,
         // Ungated on purpose. These are either addressed to this plugin alone (its own input,
         // timers, lifecycle, worker messages and the replies to commands it was already
@@ -3230,6 +3234,7 @@ fn check_event_permission(
         | EventType::InitialKeybinds
         | EventType::HostTerminalThemeChanged
         | EventType::ActionComplete
+        | EventType::RunCommandOutput
         | EventType::RunCommandResult
         | EventType::WebRequestResult
         | EventType::WebRequestStreamChunk

@@ -125,6 +125,22 @@ fn shutting_down_cancels_a_plugin_that_is_still_loading() {
 }
 
 #[test]
+fn shutting_down_after_screen_exit_cancels_a_plugin_that_is_still_loading() {
+    let mut test = TestBridge::new();
+    drop(test._receivers.remove(1)); // Disconnect the screen channel.
+    test.bridge.senders.should_silently_fail = false;
+    test.bridge
+        .loading_plugins
+        .insert((crate::PluginId::new(7), run_plugin()));
+
+    test.bridge
+        .cleanup(std::time::Instant::now() + std::time::Duration::from_secs(1));
+
+    assert_eq!(cancellation_marks(&test.bridge), vec![PluginId::new(7)]);
+    assert!(test.bridge.loading_plugins.is_empty());
+}
+
+#[test]
 fn a_job_whose_load_failed_leaves_no_cancellation_mark() {
     let mut test = TestBridge::new();
     launch_job(&mut test.bridge, "merge", crate::PluginId::new(7));

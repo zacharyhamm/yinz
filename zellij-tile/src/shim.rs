@@ -1064,6 +1064,7 @@ pub fn run_command(cmd: &[&str], context: BTreeMap<String, String>) {
         PathBuf::from("."),
         context,
         None,
+        None,
     );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1083,6 +1084,7 @@ pub fn run_command_with_env_variables_and_cwd(
         env_variables,
         cwd,
         context,
+        None,
         None,
     );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -1105,9 +1107,42 @@ pub fn run_command_with_output_limit(
         cwd,
         context,
         Some(max_output_bytes),
+        None,
     );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Stream stdout/stderr as `RunCommandOutput`, then receive `RunCommandResult` after drain.
+/// Subscribe to both events before calling. The completion output is capped per stream.
+pub fn run_command_stream(
+    cmd: &[&str],
+    env_variables: BTreeMap<String, String>,
+    cwd: PathBuf,
+    context: BTreeMap<String, String>,
+    max_output_bytes: usize,
+) {
+    let command = PluginCommand::RunCommand(
+        cmd.iter().map(|s| (*s).to_owned()).collect(),
+        env_variables,
+        cwd,
+        context,
+        Some(max_output_bytes),
+        Some(true),
+    );
+    let protobuf: ProtobufPluginCommand = command.try_into().unwrap();
+    object_to_stdout(&protobuf.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Observe terminal output matching a nonempty command context. `None` removes the
+/// subscription without stopping any process. Subscribe to `PaneOutput` before dispatch.
+pub fn subscribe_pane_output(context: Option<BTreeMap<String, String>>) {
+    let protobuf: ProtobufPluginCommand = PluginCommand::SubscribePaneOutput(context)
+        .try_into()
+        .unwrap();
+    object_to_stdout(&protobuf.encode_to_vec());
     unsafe { host_run_plugin_command() };
 }
 

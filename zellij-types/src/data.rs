@@ -213,6 +213,16 @@ pub enum Event {
         Vec<SessionInfo>,
         Vec<(SessionName, Duration)>, // resurrectable sessions
     ),
+    PaneOutput {
+        pane_id: u32,
+        data: Vec<u8>,
+        context: BTreeMap<String, String>,
+    },
+    RunCommandOutput {
+        data: Vec<u8>,
+        stderr: bool,
+        context: BTreeMap<String, String>,
+    },
     RunCommandResult(Option<i32>, Vec<u8>, Vec<u8>, BTreeMap<String, String>), // exit_code, STDOUT, STDERR,
     // context
     WebRequestResult(
@@ -2639,12 +2649,14 @@ pub enum PluginCommand {
     OpenTerminalInPlace(FileToOpen), // only used for the path as cwd
     OpenFileInPlace(FileToOpen, Context),
     OpenCommandPaneInPlace(CommandToRun, Context),
+    SubscribePaneOutput(Option<BTreeMap<String, String>>),
     RunCommand(
         Vec<String>,              // command
         BTreeMap<String, String>, // env_variables
         PathBuf,                  // cwd
         BTreeMap<String, String>, // context
         Option<usize>,            // max bytes returned for each output stream
+        Option<bool>,             // opt-in chunk events
     ),
     WebRequest(
         String, // url

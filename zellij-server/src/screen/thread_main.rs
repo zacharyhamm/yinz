@@ -476,16 +476,55 @@ pub(crate) fn screen_thread_main(
         }
 
         match event {
+            ScreenInstruction::SubscribePaneOutput(plugin, client, context) => {
+                screen.pane_output_subscriptions.remove(&(plugin, client));
+                if let Some(context) = context {
+                    screen
+                        .pane_output_subscriptions
+                        .insert((plugin, client), context);
+                }
+            },
+            ScreenInstruction::UnsubscribePaneOutput(plugin) => {
+                screen
+                    .pane_output_subscriptions
+                    .retain(|(id, _), _| *id != plugin);
+            },
             ScreenInstruction::PtyBytes(pid, vte_bytes) => {
                 screen
                     .pane_output_activity
                     .insert(PaneId::Terminal(pid), Instant::now());
                 let mut vte_bytes = Some(vte_bytes);
                 {
-                    let all_tabs = screen.get_tabs_mut();
-                    for tab in all_tabs.values_mut() {
+                    for tab in screen.tabs.values_mut() {
                         if tab.has_terminal_pid(pid) {
                             if let Some(bytes) = vte_bytes.take() {
+                                if let Some(zellij_types::input::layout::Run::Command(command)) =
+                                    tab.get_pane_with_id(PaneId::Terminal(pid))
+                                        .and_then(|p| p.invoked_with().as_ref())
+                                {
+                                    if let Some(origin) = &command.originating_plugin {
+                                        for ((plugin, client), filter) in
+                                            &screen.pane_output_subscriptions
+                                        {
+                                            if filter
+                                                .iter()
+                                                .all(|(k, v)| origin.context.get(k) == Some(v))
+                                            {
+                                                let _ = screen.bus.senders.send_to_plugin(
+                                                    PluginInstruction::Update(vec![(
+                                                        Some(*plugin),
+                                                        Some(*client),
+                                                        Event::PaneOutput {
+                                                            pane_id: pid.get(),
+                                                            data: bytes.clone(),
+                                                            context: origin.context.clone(),
+                                                        },
+                                                    )]),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                                 tab.handle_pty_bytes(pid, bytes)
                                     .context("failed to process pty bytes")?;
                             }

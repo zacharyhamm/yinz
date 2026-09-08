@@ -1779,6 +1779,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             paths(tc),
             context(tc),
             optional_usize_as_u32(tc),
+            None,
         ),
         CommandType::WebRequest => PluginCommand::WebRequest(
             strings(tc),
@@ -2086,6 +2087,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::GetFocusedPaneInfo => PluginCommand::GetFocusedPaneInfo,
         CommandType::SaveSession => PluginCommand::SaveSession,
         CommandType::CurrentSessionLastSavedTime => PluginCommand::CurrentSessionLastSavedTime,
+        CommandType::SubscribePaneOutput => PluginCommand::SubscribePaneOutput(Some(context(tc))),
         CommandType::GetPaneInfo => PluginCommand::GetPaneInfo(pane_id(tc)),
         // `GetTabInfoPayload.tab_id` is a `uint64`, which holds any `usize`.
         CommandType::GetTabInfo => {
