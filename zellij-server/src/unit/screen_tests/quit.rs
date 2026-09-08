@@ -224,7 +224,11 @@ fn a_hidden_terminal_keeps_the_session_alive_until_it_exits() {
     assert!(!std::iter::from_fn(|| server_receiver.try_recv().ok())
         .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
 
-    close_pane(&mut screen, pane_id);
+    screen
+        .tabs
+        .get_mut(&TabId::new(1))
+        .expect("TEST")
+        .hold_pane(pane_id, Some(0), false, RunCommand::default());
     screen.render_to_clients().expect("TEST");
     assert!(screen.tabs.is_empty());
     assert!(std::iter::from_fn(|| server_receiver.try_recv().ok())

@@ -259,5 +259,11 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
         }
     }
     assert!(pane_events > 0 && tab_events > 0);
-    zellij.quit();
+    assert_eq!(
+        zellij.run_cli_action(CliAction::ClosePane {
+            pane_id: Some(format!("terminal_{}", original.terminal_id())),
+        }),
+        0
+    );
+    zellij.wait_for_exit();
 }
