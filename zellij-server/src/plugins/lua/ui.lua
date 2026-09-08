@@ -132,8 +132,9 @@ function ui.markdown(source, opts)
   typed(source, "string", "Markdown source")
   opts = default(opts, {})
   typed(opts, "table", "Markdown options")
-  for k in pairs(opts) do assert(k == "compact", "unknown Markdown option: " .. tostring(k)) end
-  local state = native.markdown(source, typed(default(opts.compact, false), "boolean", "compact"))
+  for k in pairs(opts) do assert(k == "compact" or k == "dim", "unknown Markdown option: " .. tostring(k)) end
+  local state = native.markdown(source, typed(default(opts.compact, false), "boolean", "compact"),
+    typed(default(opts.dim, false), "boolean", "dim"))
   return {
     render = function(_, c)
       local x,y,width,height = coords(c)
