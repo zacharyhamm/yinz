@@ -1918,10 +1918,8 @@ fn run_hook(
         log::error!("hook '{point}' names a plugin that could not be resolved");
         return;
     };
-    let pane_title = match (point, pane_id) {
-        (HookPoint::AgentExit, PaneId::Terminal(id)) => payload
-            .get("agent_pane_title")
-            .map(|title| format!("[{id}] {title}")),
+    let agent_pane_title = match point {
+        HookPoint::AgentExit => payload.get("agent_pane_title").cloned(),
         _ => None,
     };
     // Merged rather than replaced: a hook declared with its own configuration block keeps it,
@@ -1944,6 +1942,12 @@ fn run_hook(
         Some(client_id),
     ) {
         Ok((plugin_id, client_id)) => {
+            // The id that addresses the pane the user is looking at, which is the hook pane in
+            // front rather than the terminal suppressed behind it. A terminal frame leads with
+            // its own id (`TerminalPane::framed_title`) because that is how the pane is named
+            // from outside; a plugin frame does not label itself at all, so the id is written
+            // into the name here - and it is this plugin pane's, or it names something else.
+            let pane_title = agent_pane_title.map(|title| format!("[{plugin_id}] {title}"));
             drop(bus.senders.send_to_screen(add_plugin_pane_in_place_of(
                 RunPluginOrAlias::RunPlugin(run_plugin),
                 plugin_id,
