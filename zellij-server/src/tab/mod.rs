@@ -1423,6 +1423,11 @@ impl Tab {
         }
     }
     fn stack_list_member_at_point(&self, pane_id: PaneId, point: &Position) -> PaneId {
+        if self.floating_panes.fullscreen_pane_id().is_some()
+            && self.floating_panes.get_pane(pane_id).is_some()
+        {
+            return pane_id;
+        }
         let Some(stack_list_id) = self.stack_list_id_of_member(&pane_id) else {
             return pane_id;
         };
