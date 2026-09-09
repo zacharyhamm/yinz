@@ -952,7 +952,7 @@ fn commands_cannot_be_called_outside_an_entrypoint() {
 fn example_plugin(name: &str) -> String {
     std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../example-plugins")
+            .join("src/plugins/lua/fixtures")
             .join(name),
     )
     .expect("the example plugin should be in the repo")
@@ -960,7 +960,7 @@ fn example_plugin(name: &str) -> String {
 
 #[test]
 fn the_shipped_example_plugin_loads_and_renders() {
-    // `example-plugins/clock.lua` is what the docs point new plugin authors at, so it should not
+    // `Lua compatibility fixture clock.lua` is what the docs point new plugin authors at, so it should not
     // be allowed to rot.
     let source = example_plugin("clock.lua");
     let mut plugin = load_lua_plugin(&source, "clock.lua", test_env()).unwrap();
@@ -981,7 +981,7 @@ fn the_shipped_example_plugin_loads_and_renders() {
     assert!(rendered.contains("the time is"), "got: {}", rendered);
 }
 
-/// `example-plugins/agent-harness.lua` is what the model reads when asked to run agents: its
+/// `Lua compatibility fixture agent-harness.lua` is what the model reads when asked to run agents: its
 /// task must start, ask for its permissions and wait for them, and the pane must render.
 #[test]
 fn the_agent_harness_example_loads_and_waits_for_its_permissions() {
@@ -999,7 +999,7 @@ fn the_agent_harness_example_loads_and_waits_for_its_permissions() {
     );
 }
 
-/// `example-plugins/hocus-complete.lua` is what the completions documentation points at, and
+/// `Lua compatibility fixture hocus-complete.lua` is what the completions documentation points at, and
 /// it is the only worked example of the loop — ask, run the model's tool, ask again — so drive
 /// the whole of it rather than only the load.
 #[test]
@@ -1090,7 +1090,7 @@ fn the_hocus_complete_example_runs_a_whole_tool_loop() {
 
 #[test]
 fn the_agent_commit_example_loads_and_stages_on_c() {
-    // `example-plugins/agent-commit.lua` is what the hooks documentation points at, so it should
+    // `Lua compatibility fixture agent-commit.lua` is what the hooks documentation points at, so it should
     // not be allowed to rot. Pressing `c` marshals a `RunCommand`, which is the shape most
     // likely to be got wrong.
     let source = example_plugin("agent-commit.lua");
@@ -1115,104 +1115,9 @@ fn the_agent_commit_example_loads_and_stages_on_c() {
     assert!(rendered.contains("staging"), "got: {rendered}");
 }
 
-/// The agent-policy hook is headless: a syntax error in it would surface the first time an agent
-/// stopped for a question, which is the moment its notification is for. So it is loaded and
-/// fired at here, and what is checked is its one visible act - the notification, addressed to
-/// the pane that is waiting - and that the other points it may be bound to stay quiet.
-#[test]
-fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
-    use crate::PaneId;
-    use zellij_bus::screen::ScreenInstruction;
-    use zellij_runtime::channels::SenderWithContext;
-    use zellij_types::diagnostics::ErrorContext;
-    use zellij_types::input::hooks::HookPoint;
-
-    let source =
-        zellij_config::consts::builtin_lua_plugin("agent-policy").expect("the hook is a builtin");
-    let (to_screen, screen_receiver) =
-        zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
-    let mut env = test_env();
-    env.senders.to_screen = Some(SenderWithContext::new(to_screen));
-    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
-
-    let mut plugin = load_lua_plugin(source, "agent-policy.lua", env).unwrap();
-    plugin.load(&BTreeMap::new()).unwrap();
-
-    let notifications =
-        |receiver: &zellij_runtime::channels::Receiver<(ScreenInstruction, ErrorContext)>| {
-            receiver
-                .try_iter()
-                .filter_map(|(instruction, _)| match instruction {
-                    ScreenInstruction::Notify(text, pane_id, _, _) => Some((text, pane_id)),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-
-    use zellij_types::agent::AgentState;
-    let payload =
-        |state: AgentState, detail: Option<&str>| zellij_types::data::HookPayload::Agent {
-            pane_id: zellij_types::internal_ids::TerminalId::new(7),
-            agent: zellij_types::agent::AgentInfo {
-                kind: "claude".to_owned(),
-                state,
-                source: zellij_types::agent::AgentSource::Reported,
-                detail: detail.map(str::to_owned),
-                waiting_on: None,
-                wait_needs_a_person: state == AgentState::Waiting,
-                cwd: Some("/work".to_owned()),
-                session_id: None,
-                run_id: None,
-            },
-            previous_state: None,
-            command: None,
-        };
-
-    plugin
-        .update(&Event::Hook {
-            point: HookPoint::AgentStart,
-            payload: payload(AgentState::Busy, None),
-        })
-        .unwrap();
-    assert!(
-        notifications(&screen_receiver).is_empty(),
-        "an agent starting is logged, not announced"
-    );
-
-    plugin
-        .update(&Event::Hook {
-            point: HookPoint::AgentWaiting,
-            payload: payload(AgentState::Waiting, Some("Allow Bash(cargo test)?")),
-        })
-        .unwrap();
-    assert_eq!(
-        notifications(&screen_receiver),
-        vec![(
-            "claude in pane 7: Allow Bash(cargo test)?".to_owned(),
-            Some(PaneId::Terminal(crate::TerminalId::new(7))),
-        )],
-        "a waiting agent is announced, and the toast focuses its pane"
-    );
-
-    plugin
-        .update(&Event::Hook {
-            point: HookPoint::AgentWaiting,
-            payload: payload(AgentState::Waiting, None),
-        })
-        .unwrap();
-    assert_eq!(
-        notifications(&screen_receiver),
-        vec![(
-            "claude in pane 7: is waiting for you".to_owned(),
-            Some(PaneId::Terminal(crate::TerminalId::new(7))),
-        )],
-        "a wait with no detail still says who is waiting"
-    );
-}
-
 #[test]
 fn the_playground_plugin_loads_and_runs_every_key_it_advertises() {
-    // `example-plugins/playground.lua` is the worked example for the command surface, so it is
+    // `Lua compatibility fixture playground.lua` is the worked example for the command surface, so it is
     // worth more than a load-and-render check: every key it offers is pressed here. None of them
     // can do anything in a fixture with no threads behind it, but all of them go through
     // marshalling, and a shape this file gets wrong fails here rather than in front of a user.
@@ -3753,7 +3658,7 @@ fn a_pane_that_could_not_be_opened_is_nil() {
 
 // -- The dashboard example, the data sugar, and intervals -----------------------------------------
 
-/// `example-plugins/dashboard.lua` is the worked example for rendering, so it is loaded, fed the
+/// `Lua compatibility fixture dashboard.lua` is the worked example for rendering, so it is loaded, fed the
 /// events it subscribes to, and pressed, the way the playground is.
 #[test]
 fn the_dashboard_example_loads_renders_components_and_takes_input() {
@@ -4084,7 +3989,7 @@ fn the_catalog_answers_with_the_entities_the_plugin_may_see() {
     assert_eq!(out.trim(), "note@2[title:text:false,done:bool:true]");
 }
 
-/// `example-plugins/hocus-todos.lua` is what "Hocus data" in the guide points at, so it should not
+/// `Lua compatibility fixture hocus-todos.lua` is what "Hocus data" in the guide points at, so it should not
 /// be allowed to rot - and it is the end-to-end proof that a Lua plugin reads hocus's rows with no
 /// bridge and no declaration of its own: the store here is seeded the way `hocus-store` seeds it.
 #[test]
@@ -4195,7 +4100,7 @@ fn the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
     assert!(child.starts_with('|'), "not indented: {child}");
 }
 
-/// `example-plugins/hocus-notes.lua` is the other plugin "Hocus data" points at. It reads three
+/// `Lua compatibility fixture hocus-notes.lua` is the other plugin "Hocus data" points at. It reads three
 /// entities - the notes, then their tags and links by id - so the store here is seeded with all
 /// three, exactly as `hocus-proto`'s `store::shared_defs()` declares them.
 #[test]
@@ -5140,7 +5045,7 @@ fn a_remote_replacement_does_not_inherit_the_plugins_cwd() {
 
 #[test]
 fn the_workflow_example_loads_and_runs_on_r() {
-    // `example-plugins/workflow.lua` is what the pane-workflows documentation points at, so it
+    // `Lua compatibility fixture workflow.lua` is what the pane-workflows documentation points at, so it
     // should not be allowed to rot. Pressing `r` starts the workflow, which opens a real
     // command pane through the host - the marshalling most likely to be got wrong.
     let source = example_plugin("workflow.lua");
@@ -6822,7 +6727,7 @@ fn swamp_requests_are_builtin_only_even_with_all_permissions() {
 
 #[test]
 fn swamp_workflow_answer_requires_the_submit_button() {
-    let source = zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap();
+    let source = include_str!("workflow_view.lua");
     let plugin = load(source).unwrap();
     plugin
         .lua
@@ -6875,7 +6780,7 @@ fn swamp_workflow_answer_requires_the_submit_button() {
 
 #[test]
 fn swamp_answer_bridge_heartbeats_target_the_requester_and_stop_on_ready_or_failure() {
-    let plugin = load(zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap()).unwrap();
+    let plugin = load(include_str!("fixtures/swamp-bridge.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -6942,7 +6847,7 @@ end
 #[test]
 fn swamp_answer_deadline_renews_only_for_current_submission_and_reconciles_on_loss() {
     let plugin =
-        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+        load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -7023,8 +6928,7 @@ assert(not M.submitting and not M.notice_error,'completed RPC timer is cancelled
 
 #[test]
 fn swamp_workflow_question_transitions_survive_polling_and_submission_races() {
-    let plugin =
-        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    let plugin = load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -7146,8 +7050,7 @@ key('Esc')
 
 #[test]
 fn swamp_workflow_off_form_release_keeps_offscreen_choices_clickable() {
-    let plugin =
-        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    let plugin = load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -7208,8 +7111,7 @@ assert(commands[1].method=='workflow_answer' and commands[1].inputs.answer=='beg
 
 #[test]
 fn swamp_workflow_restricted_answers_and_free_text_transitions() {
-    let plugin =
-        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    let plugin = load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -7280,8 +7182,7 @@ key('Enter')
 
 #[test]
 fn swamp_workflow_dims_markdown_history_and_prioritizes_the_question() {
-    let plugin =
-        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    let plugin = load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -7344,8 +7245,7 @@ assert(painted[#painted].source==prompt and painted[#painted].rect.y==M.form_y-1
 
 #[test]
 fn swamp_workflow_all_wrapped_details_remain_reachable_in_small_panes() {
-    let plugin =
-        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    let plugin = load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -7452,7 +7352,7 @@ assert(submitted)
 
 #[test]
 fn swamp_workflow_renders_only_for_input_and_refresh_completion() {
-    let source = zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap();
+    let source = include_str!("workflow_view.lua");
     let plugin = load(source).unwrap();
     plugin
         .lua
@@ -7558,8 +7458,7 @@ assert(M.refresh_queued,'a change during submission must not be lost')
 
 #[test]
 fn swamp_output_preview_names_the_saved_version_and_keeps_return_actionable() {
-    let plugin =
-        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    let plugin = load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -7616,9 +7515,8 @@ z.rpc.call=function(opts)
   local a,r=z.async.future();r{result={}};return a
 end
 M.update{name='key',key='PageDown',modifiers={}}
-z.__update(M,{PastedText='return'})
-z.__update(M,{Key={bare_key='Tab',key_modifiers={}}})
-assert(M.focused_control() == 'submit')
+-- A restricted question exposes its Return choice, not a free-text Submit control.
+assert(M.focused_control() == 'choice_1')
 z.__update(M,{Key={bare_key='Enter',key_modifiers={}}})
 assert(submitted and not M.submitting, M.notice)
 "#).exec().unwrap();
@@ -7628,7 +7526,7 @@ assert(submitted and not M.submitting, M.notice)
 fn swamp_exit_launch_deadline_renews_until_ready_and_reconciles_without_redispatch() {
     for ending in ["lost", "ready", "completed"] {
         let plugin =
-            load(zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap()).unwrap();
+            load(include_str!("fixtures/agent-exit.lua")).unwrap();
         plugin
             .lua
             .globals()
@@ -7692,7 +7590,7 @@ assert(not M.busy and launches==1,'late progress cannot revive a completed RPC')
 
 #[test]
 fn swamp_exit_enter_activates_the_focused_workflow_button() {
-    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
+    let source = include_str!("fixtures/agent-exit.lua");
     let plugin = load(source).unwrap();
     plugin
         .lua
@@ -7817,7 +7715,7 @@ assert(seen('restart')==0 and seen('fork')==0)
 
 #[test]
 fn swamp_exit_preserves_scrollback_and_does_not_launch_unconfigured_or_managed_work() {
-    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
+    let source = include_str!("fixtures/agent-exit.lua");
     let plugin = load(source).unwrap();
     plugin
         .lua
@@ -7924,7 +7822,7 @@ assert(rerun==6 and closed==1)
 
 #[test]
 fn swamp_bridge_timing_is_opt_in_and_excludes_payloads() {
-    let plugin = load(zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap()).unwrap();
+    let plugin = load(include_str!("fixtures/swamp-bridge.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -7975,7 +7873,7 @@ assert(awaited.elapsedMs==25 and awaited.outcome=='ok')
 
 #[test]
 fn swamp_bridge_claims_ownership_before_dispatch_and_never_infers_completion_from_idle() {
-    let source = zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap();
+    let source = include_str!("fixtures/swamp-bridge.lua");
     let plugin = load(source).unwrap();
     plugin
         .lua
@@ -9087,7 +8985,7 @@ fn swamp_closing_owned_panes_cancels_the_lifecycle_and_rejects_late_results() {
 #[test]
 fn workflow_scroll_indicators_track_wrapped_rows_and_stay_above_pinned_controls() {
     let plugin =
-        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+        load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -9243,7 +9141,7 @@ end
 #[test]
 fn workflow_stream_tail_preserves_utf8_and_status_while_scrolled() {
     let plugin =
-        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+        load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()

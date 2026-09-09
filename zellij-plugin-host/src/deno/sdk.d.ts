@@ -639,7 +639,7 @@ export interface UserInterface {
   button(options?: ButtonOptions): ButtonControl;
   form(fields: FieldDescriptor[]): FormWidget;
   dialog(options: {title: string; message?: string; help?: string; fields?: FieldDescriptor[]}): DialogWidget;
-  markdown(source: string, options?: {compact?: boolean}): MarkdownComponent;
+  markdown(source: string, options?: {compact?: boolean; dim?: boolean}): MarkdownComponent;
 }
 export interface TerminalText {
   width(text: string): number;

@@ -281,3 +281,30 @@ fn embedded_source_maps_keep_the_private_module_url_and_typescript_source() {
         }
     }
 }
+
+#[test]
+fn registered_workflow_module_is_embedded_and_cannot_import_files() {
+    let loader = PluginModuleLoader::embedded(
+        "view-test",
+        "import {view} from 'zellij:workflow-view'; export default view;",
+    )
+    .unwrap();
+    let url = loader
+        .resolve_local(WORKFLOW_SPECIFIER, loader.entrypoint().as_str(), false)
+        .unwrap();
+    assert_eq!(loader.read_source(&url, false).unwrap(), WORKFLOW_SOURCE);
+    assert!(loader.load_source(&url).is_ok());
+    for specifier in [
+        "./workflow-view.ts",
+        "file:///tmp/workflow-view.ts",
+        "zellij:workflow-view?x",
+        "zellij:missing",
+    ] {
+        assert!(loader
+            .resolve_local(specifier, loader.entrypoint().as_str(), false)
+            .is_err());
+        assert!(loader
+            .resolve_local(specifier, WORKFLOW_SPECIFIER, false)
+            .is_err());
+    }
+}

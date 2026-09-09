@@ -68,6 +68,8 @@ enum Create {
     Markdown {
         source: String,
         compact: bool,
+        #[serde(default)]
+        dim: bool,
     },
 }
 #[derive(Deserialize)]
@@ -130,9 +132,11 @@ pub(super) fn op_zellij_ui_create<'s>(
                     Widget::Form(form)
                 })
             },
-            Create::Markdown { source, compact } => {
-                State::Markdown(Markdown::new(&source, compact, false))
-            },
+            Create::Markdown {
+                source,
+                compact,
+                dim,
+            } => State::Markdown(Markdown::new(&source, compact, dim)),
         };
         Ok(NativeUi {
             state: RefCell::new(state),

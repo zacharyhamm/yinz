@@ -1,7 +1,10 @@
 //! Offline authoring checks. Only the bundled compiler executes in this isolate;
 //! plugin source is passed to TypeScript as data, never loaded as an ES module.
 use super::limits::Limits;
-use super::loader::{file_specifier, transpile, PluginModuleLoader, SDK_SPECIFIER};
+use super::loader::{
+    file_specifier, transpile, PluginModuleLoader, SDK_SPECIFIER, WORKFLOW_PATH, WORKFLOW_SOURCE,
+    WORKFLOW_SPECIFIER,
+};
 use deno_core::{op2, JsRuntime, OpState, RuntimeOptions};
 use deno_error::JsErrorBox;
 use std::path::Path;
@@ -44,6 +47,9 @@ fn op_zellij_check_read(
 ) -> std::result::Result<String, JsErrorBox> {
     let files = state.borrow::<CompilerFiles>();
     let read = || -> Result<String> {
+        if name == WORKFLOW_PATH {
+            return Ok(WORKFLOW_SOURCE.to_owned());
+        }
         let url = file_specifier(Path::new(name))?;
         files.loader.read_source(&url, true)
     };
@@ -63,8 +69,14 @@ fn op_zellij_check_resolve(
     #[string] referrer: &str,
 ) -> std::result::Result<String, JsErrorBox> {
     let resolve = || -> Result<String> {
+        if name == WORKFLOW_SPECIFIER {
+            return Ok(WORKFLOW_PATH.to_owned());
+        }
         if name == SDK_SPECIFIER {
             return Ok("/$zellij/sdk.d.ts".to_owned());
+        }
+        if referrer == WORKFLOW_PATH {
+            bail!("embedded modules may import only registered modules");
         }
         let files = state.borrow::<CompilerFiles>();
         let referrer = file_specifier(Path::new(referrer))?;

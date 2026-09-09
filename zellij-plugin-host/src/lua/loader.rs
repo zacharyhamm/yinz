@@ -206,10 +206,7 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
                     return Ok(cached);
                 }
                 let module: LuaValue = lua
-                    .load(
-                        zellij_config::consts::builtin_lua_plugin("swamp-workflow")
-                            .ok_or_else(|| mlua::Error::runtime("missing workflow view"))?,
-                    )
+                    .load(include_str!("workflow_view.lua"))
                     .set_name("zellij:swamp-workflow")
                     .eval()?;
                 loaded.set(name.as_str(), module.clone())?;

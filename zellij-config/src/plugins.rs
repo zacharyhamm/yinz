@@ -636,7 +636,7 @@ mod tests {
         fs::write(plugin_dir.path().join("agent-exit.lua"), "-- impostor").unwrap();
 
         let (_path, source) = builtin_plugin("agent-exit")
-            .resolve_lua_source(Some(plugin_dir.path()))
+            .resolve_source(Some(plugin_dir.path()))
             .unwrap();
         assert!(
             source.contains("Agent exited."),
@@ -689,7 +689,7 @@ mod tests {
             );
             assert!(crate::consts::builtin_lua_plugin(name).is_none());
         }
-        assert_eq!(crate::consts::BUILTIN_LUA_PLUGINS.len(), 4);
+        assert!(crate::consts::BUILTIN_LUA_PLUGINS.is_empty());
         assert_eq!(
             file_plugin("context-menu.ts").runtime(),
             super::PluginRuntime::Deno
@@ -698,30 +698,8 @@ mod tests {
     }
 
     #[test]
-    fn a_builtin_lua_plugin_resolves_to_the_lua_runtime() {
-        // A builtin's `path` is the bare tag with no extension, so the extension rule that
-        // identifies every other Lua plugin cannot see this one. Every entry in the table,
-        // so that a shipped plugin whose name is misspelt in the table is caught here rather
-        // than by a user binding it.
-        for (name, _) in builtin_lua_plugins_for_tests() {
-            let plugin = builtin_plugin(name);
-            assert_eq!(plugin.runtime(), super::PluginRuntime::Lua, "{name}");
-            assert!(
-                plugin.is_builtin(),
-                "{name}: so that it bypasses permission prompts"
-            );
-        }
-    }
-
-    fn builtin_lua_plugins_for_tests() -> &'static [(&'static str, &'static str)] {
-        crate::consts::BUILTIN_LUA_PLUGINS
-    }
-
-    #[test]
-    fn a_builtin_lua_plugin_serves_its_compiled_in_source() {
-        let (_path, source) = builtin_plugin("agent-exit")
-            .resolve_lua_source(None)
-            .unwrap();
+    fn a_builtin_deno_plugin_serves_its_compiled_in_source() {
+        let (_path, source) = builtin_plugin("agent-exit").resolve_source(None).unwrap();
         assert!(
             source.contains("Agent exited."),
             "the source comes from the embedded asset, not from disk"

@@ -74,7 +74,7 @@ the target dir leaves them with no builtins. Symlink `target/` instead. See CONT
 
 Builtin plugin wasm is not checked in: it is built under `target/wasm32-wasip1/` and
 installed by `cargo x install` to `<data dir>/builtins/<version>` (`--builtins-dir`,
-`--no-builtins` to override). `zellij-config/assets/plugins/` holds the embedded Lua and TypeScript builtins.
+`--no-builtins` to override). `zellij-config/assets/plugins/` holds the embedded TypeScript builtins.
 
 **There is no CI in this fork.** `.github/workflows` was deleted deliberately (`c456d1cdf`), so
 nothing checks a branch unless a person runs it. The gate is:
@@ -366,8 +366,7 @@ reader of the manifest and broadcasts the event itself to the plugins. See `docs
 
 ## Lua plugins
 
-Plugins support Wasm, Lua, and Deno. The context-menu builtin uses embedded TypeScript; four
-builtins still use Lua. See
+Plugins support Wasm, Lua, and Deno. All script builtins use embedded TypeScript. Lua plugins and configuration remain supported. See
 `zellij-plugin-host/src/lua/CLAUDE.md` before changing the Lua runtime; `docs/LUA_PLUGINS.md`
 is the user-facing guide.
 

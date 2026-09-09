@@ -488,3 +488,192 @@ fn shipped_context_menu_passes_the_typescript_checker() {
         .join("../zellij-config/assets/plugins/context-menu.ts");
     check_plugin(&path).unwrap();
 }
+
+/// The agent-policy hook is headless: a syntax error in it would surface the first time an agent
+/// stopped for a question, which is the moment its notification is for. So it is loaded and
+/// fired at here, and what is checked is its one visible act - the notification, addressed to
+/// the pane that is waiting - and that the other points it may be bound to stay quiet.
+#[test]
+fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
+    use zellij_types::pane_id::PaneId;
+    use zellij_bus::screen::ScreenInstruction;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
+    use zellij_types::input::hooks::HookPoint;
+
+    let source =
+        zellij_config::consts::builtin_deno_plugin("agent-policy").expect("the hook is a builtin");
+    let (to_screen, screen_receiver) =
+        zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+    let mut env = test_env();
+    env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+
+    let mut plugin = load_builtin("agent-policy", source, env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let notifications =
+        |receiver: &zellij_runtime::channels::Receiver<(ScreenInstruction, ErrorContext)>| {
+            receiver
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    ScreenInstruction::Notify(text, pane_id, _, _) => Some((text, pane_id)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+    use zellij_types::agent::AgentState;
+    let payload =
+        |state: AgentState, detail: Option<&str>| zellij_types::data::HookPayload::Agent {
+            pane_id: zellij_types::internal_ids::TerminalId::new(7),
+            agent: zellij_types::agent::AgentInfo {
+                kind: "claude".to_owned(),
+                state,
+                source: zellij_types::agent::AgentSource::Reported,
+                detail: detail.map(str::to_owned),
+                waiting_on: None,
+                wait_needs_a_person: state == AgentState::Waiting,
+                cwd: Some("/work".to_owned()),
+                session_id: None,
+                run_id: None,
+            },
+            previous_state: None,
+            command: None,
+        };
+
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::AgentStart,
+            payload: payload(AgentState::Busy, None),
+        })
+        .unwrap();
+    assert!(
+        notifications(&screen_receiver).is_empty(),
+        "an agent starting is logged, not announced"
+    );
+
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::AgentWaiting,
+            payload: payload(AgentState::Waiting, Some("Allow Bash(cargo test)?")),
+        })
+        .unwrap();
+    assert_eq!(
+        notifications(&screen_receiver),
+        vec![(
+            "claude in pane 7: Allow Bash(cargo test)?".to_owned(),
+            Some(PaneId::Terminal(crate::TerminalId::new(7))),
+        )],
+        "a waiting agent is announced, and the toast focuses its pane"
+    );
+
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::AgentWaiting,
+            payload: payload(AgentState::Waiting, None),
+        })
+        .unwrap();
+    assert_eq!(
+        notifications(&screen_receiver),
+        vec![(
+            "claude in pane 7: is waiting for you".to_owned(),
+            Some(PaneId::Terminal(crate::TerminalId::new(7))),
+        )],
+        "a wait with no detail still says who is waiting"
+    );
+}
+
+#[test]
+fn shipped_bridge_reads_lua_delivery_rows_after_reload_without_dispatching_again() {
+    use crate::ServerInstruction;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::data::{PipeMessage, PipeSource};
+    zellij_runtime::envs::set_session_name("bridge-migration".into());
+    let directory = tempfile::tempdir().unwrap();
+    let data = Arc::new(zellij_storage::data_access::DataAccess::sqlite(
+        directory.path(),
+    ));
+    let (server_tx, server_rx) = zellij_runtime::channels::unbounded();
+    let (pty_tx, pty_rx) = zellij_runtime::channels::unbounded();
+    let env = || {
+        let mut env = test_env();
+        env.plugin.location = RunPluginLocation::Zellij(PluginTag::new("swamp-bridge"));
+        env.data_access = data.clone();
+        env.plugin_own_data_dir = directory.path().to_owned();
+        env.senders.to_server = Some(SenderWithContext::new(server_tx.clone()));
+        env.senders.to_pty = Some(SenderWithContext::new(pty_tx.clone()));
+        env
+    };
+    // The former runtime creates the row in the actual URL-owned SQLite namespace.
+    let mut legacy = crate::lua::load_lua_plugin(r#"
+local z=require('zellij')
+return {load=function()
+  z.data.define{name='delivery',version=1,attrs={{'value','text',required=true}}}
+  local request={method='agent_spawn',work='legacy',key='agent',spec={kind='codex',cwd='/work'},inputs={empty={},ratio=1.0}}
+  local uid=z.json.encode{z.get_plugin_ids().host_id,z.server_session,'legacy','agent'}
+  z.data.apply(z.data.put('delivery',{value=z.json.encode{request=z.json.encode(request),outcome='pending',dispatcher='old-lua-instance',pane=7}},uid,z.data.REV_ABSENT))
+end}
+"#, "old-bridge.lua", env()).unwrap();
+    legacy.load(&BTreeMap::new()).unwrap();
+    drop(legacy);
+    let source = zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap();
+    for _ in 0..2 {
+        let mut bridge = load_builtin("swamp-bridge", source, env()).unwrap();
+        bridge.load(&BTreeMap::new()).unwrap();
+        for request in [
+            json!({"method":"agent_spawn","work":"legacy","key":"agent","spec":{"kind":"codex","cwd":"/work"},"inputs":{"empty":{},"nullable":null,"ratio":1}}),
+            json!({"method":"observe","work":"legacy","key":"agent","includeOutput":false}),
+        ] {
+            bridge
+                .pipe(&PipeMessage::new(
+                    PipeSource::Cli("migration".into()),
+                    "swamp",
+                    &Some(request.to_string()),
+                    &None,
+                    false,
+                ))
+                .unwrap();
+            bridge.tick().unwrap();
+            let reply = server_rx
+                .try_iter()
+                .find_map(|(instruction, _)| match instruction {
+                    ServerInstruction::CliPipeOutput(_, output) => Some(output),
+                    _ => None,
+                })
+                .expect("the bridge answers the CLI call");
+            let reply: Value = serde_json::from_str(&reply).unwrap();
+            assert!(reply.get("error").is_none(), "{reply}");
+            assert_eq!(reply["result"]["pane"], 7);
+            if request["method"] == "observe" {
+                assert_eq!(reply["result"]["outcome"], "unknown");
+            }
+        }
+        assert!(
+            pty_rx.try_iter().next().is_none(),
+            "a saved claim must not spawn or query a supervisor"
+        );
+    }
+}
+
+#[test]
+fn typescript_reference_examples_load_and_render_in_deno() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins");
+    let store = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|s| s.to_str()) != Some("ts") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        let mut env = test_env();
+        env.data_access = Arc::new(zellij_storage::data_access::DataAccess::sqlite(
+            store.path(),
+        ));
+        let mut plugin = load_builtin("example", &source, env)
+            .unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
+        plugin.load(&BTreeMap::new()).unwrap();
+        plugin
+            .render(10, 80)
+            .unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
+    }
+}

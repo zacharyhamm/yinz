@@ -1,6 +1,6 @@
 # Deno capability and verification status
 
-Updated 2026-09-07. The seven requested changes are implemented in this checkout:
+Updated 2026-09-08. The seven requested changes are implemented in this checkout:
 exact numeric inputs, runtime/checker quotas, host-path tests and queue ownership,
 complete raw SDK declarations, filesystem/configuration helpers, persistence helpers,
 and runtime-aware Hocus authoring. The existing asynchronous SDK remains in place.
@@ -9,6 +9,39 @@ This is a capability record, not a claim of full Wasm/Lua/Deno parity.
 **Verified** below means the stated outcome has passed a named Linux test. Raw access
 and compiler inventory coverage do not establish every command's host behavior.
 Native macOS verification requires a macOS host and remains outstanding.
+
+## Builtin and example migration (2026-09-08)
+
+All shipped script builtins and reference examples now use TypeScript. `agent-policy`,
+`swamp-bridge`, `swamp-workflow`, and `agent-exit` keep their builtin URLs. The last
+two import the registered embedded `zellij:workflow-view` module, which has no
+filesystem fallback and participates in semantic TypeScript checking. Hocus's
+quickstart and authoring guidance recommend explicit `.ts` filenames.
+
+Lua configuration, user plugins, the Lua checker, and extensionless Lua filenames
+remain supported. Bridge delivery records retain their namespace and schema.
+Tests cover authenticated and denied callers, duplicate claims, revision conflicts,
+agent and terminal completion, and reloading Deno over records written by Lua in
+the real SQLite store without dispatching work again. Shared-view tests cover
+question/poll races, focus, keyboard and mouse input, previews, small panes,
+scrolling, and restart guards. Both whole-session Swamp exit tests use the migrated
+TypeScript builtins. Every shipped TypeScript builtin and example passes semantic
+checking; every reference example also loads and renders in Deno.
+
+The historical Lua preview failure recorded below was reproduced and corrected in
+the test: its question offered only a return choice, but the test tried to submit
+free text. The corrected test selects that choice and passes; Lua behavior is
+unchanged. Historical red gate results below do not describe the current checkout.
+
+Migration verification: `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` passed
+formatting, lint, 7,976 enabled unit tests, doctests, and all 388 integration tests.
+After adding the pane-sequence cancellation regression, the final gate passed
+formatting, lint, all 7,977 enabled unit tests (47 skipped), and doctests. Its
+integration phase passed 387 of 388 tests. The untouched
+`stacked_pane_list::splitting_a_new_pane_reforms_the_list_around_it` snapshot lacked
+the tab's `[2]` count; pane content matched. It passed immediately alone at `-j 16`.
+No snapshots were accepted. The last complete gate run is therefore red despite
+the earlier green gate and the successful isolated recheck.
 
 ## Capability matrix
 
