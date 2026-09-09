@@ -2872,6 +2872,75 @@ fn mouse_selects_hidden_members_of_a_transferred_floating_stack() {
 }
 
 #[test]
+fn fullscreen_floating_stack_content_targets_the_displayed_member() {
+    use zellij_types::mouse::MouseEvent;
+    use zellij_types::position::Position;
+
+    for no_ui in [false, true] {
+        let mut screen = screen_with_a_transferred_floating_stack();
+        let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+        let client_id = ClientId::new(1);
+        let displayed = PaneId::Terminal(TerminalId::new(1));
+        let hidden = [2, 8].map(|id| PaneId::Terminal(TerminalId::new(id)));
+        let slots = tab.warp_pane_ids(Some(displayed)).unwrap();
+        let members: Vec<_> = tab.warp_relationships(&slots).stacks[0]
+            .members
+            .iter()
+            .map(|slot| slots[*slot as usize])
+            .collect();
+        tab.show_floating_panes();
+        tab.handle_pty_bytes(
+            TerminalId::new(1),
+            (0..50)
+                .map(|line| format!("line {line}\r\n"))
+                .collect::<String>()
+                .into_bytes(),
+        )
+        .unwrap();
+        if no_ui {
+            tab.toggle_active_pane_no_ui_fullscreen(client_id);
+        } else {
+            tab.toggle_active_pane_fullscreen(client_id);
+        }
+
+        let geom = tab.get_pane_with_id(displayed).unwrap().current_geom();
+        let content = Position::new((geom.y + 1) as i32, (geom.x + 2) as u16);
+        for event in [
+            MouseEvent::new_left_press_event(content),
+            MouseEvent::new_left_release_event(content),
+            MouseEvent::new_scroll_up_event(content),
+        ] {
+            tab.handle_mouse_event(&event, client_id).unwrap();
+        }
+        assert_eq!(tab.get_active_pane_id(client_id), Some(displayed));
+        assert!(!tab.pane_is_hidden_stack_list_member(&displayed));
+        assert!(hidden
+            .iter()
+            .all(|id| tab.pane_is_hidden_stack_list_member(id)));
+        assert!(tab.get_pane_with_id(displayed).unwrap().scroll_position().0 > 0);
+
+        if no_ui {
+            tab.toggle_active_pane_no_ui_fullscreen(client_id);
+        } else {
+            tab.toggle_active_pane_fullscreen(client_id);
+        }
+        let geom = tab.get_pane_with_id(displayed).unwrap().current_geom();
+        let header = Position::new((geom.y + 1) as i32, (geom.x + 2) as u16);
+        let selected = members[1];
+        assert!(tab.pane_is_hidden_stack_list_member(&selected));
+        for event in [
+            MouseEvent::new_left_press_event(header),
+            MouseEvent::new_left_release_event(header),
+        ] {
+            tab.handle_mouse_event(&event, client_id).unwrap();
+        }
+        assert_eq!(tab.get_active_pane_id(client_id), Some(selected));
+        assert!(!tab.pane_is_hidden_stack_list_member(&selected));
+        assert!(tab.pane_is_hidden_stack_list_member(&displayed));
+    }
+}
+
+#[test]
 fn tiled_mutations_preserve_a_transferred_floating_stack() {
     let mut screen = screen_with_a_transferred_floating_stack();
     let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
