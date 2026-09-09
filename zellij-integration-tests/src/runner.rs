@@ -979,12 +979,18 @@ fn replace_unique_session_name(text: &str) -> String {
         .to_string()
 }
 
+/// The swap layout the tab is on, which `override_layout` shows and then takes away again.
+///
+/// Anchored with `(?m)$` rather than a literal newline, as [`strip_status_bar_clock`] is: a bar
+/// drawn on the terminal's *last* row - which is where a compact bar sits - has no newline after
+/// it, and a trailing-newline anchor silently leaves the indicator in that one place it matters
+/// most.
 fn strip_swap_layout_indication(text: &str) -> String {
     let swap_layout_name =
         "BASE|VERTICAL|THREE-COLUMNS|HORIZONTAL|STACKED|STAGGERED|ENLARGED|SPREAD";
     let powerline_separated_or_plain = |prefix: &str| {
         regex::Regex::new(&format!(
-            "{} [\u{e0b0}]? ?(?:{}) ?[\u{e0b0}]?[ ]*\n",
+            "(?m){} [\u{e0b0}]? ?(?:{}) ?[\u{e0b0}]?[ ]*$",
             prefix, swap_layout_name
         ))
         .unwrap()
@@ -993,14 +999,14 @@ fn strip_swap_layout_indication(text: &str) -> String {
     let tmux_mode_1 = powerline_separated_or_plain("Alt \\[\\|SPACE\\|Alt \\]");
     let tmux_mode_2 = powerline_separated_or_plain("Alt \\[\\|Alt \\]\\|SPACE");
     let tab_bar = regex::Regex::new(&format!(
-        " {{2,}}[\u{e0b0}]? ?(?:{}) ?[\u{e0b0}]?[ ]*\n",
+        "(?m) {{2,}}[\u{e0b0}]? ?(?:{}) ?[\u{e0b0}]?[ ]*$",
         swap_layout_name
     ))
     .unwrap();
-    let text = normal_mode.replace_all(text, "\n");
-    let text = tmux_mode_1.replace_all(&text, "\n");
-    let text = tmux_mode_2.replace_all(&text, "\n");
-    tab_bar.replace_all(&text, "\n").to_string()
+    let text = normal_mode.replace_all(text, "");
+    let text = tmux_mode_1.replace_all(&text, "");
+    let text = tmux_mode_2.replace_all(&text, "");
+    tab_bar.replace_all(&text, "").to_string()
 }
 
 fn strip_trailing_whitespace(text: &str) -> String {
@@ -1013,6 +1019,24 @@ fn strip_trailing_whitespace(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A compact bar is drawn on the terminal's last row, which has no newline after it. An
+    /// end-anchored strip has to reach it there too, or the indicator only ever survives into
+    /// the snapshots of the one layout that puts the bar last.
+    #[test]
+    fn the_swap_layout_indicator_is_stripped_on_the_last_row_too() {
+        let bar = " Zellij (test) NORMAL  [0] Tab #1";
+        let indicator = format!("{bar}{}BASE ", " ".repeat(20));
+        assert_eq!(
+            strip_trailing_whitespace(&strip_swap_layout_indication(&format!("$ \n{indicator}\n"))),
+            format!("$\n{bar}\n"),
+        );
+        assert_eq!(
+            strip_trailing_whitespace(&strip_swap_layout_indication(&indicator)),
+            bar,
+            "the last row carries no newline to anchor against",
+        );
+    }
 
     /// Rows arrive here padded to the terminal width, so a clock shape in the middle of a
     /// pane's line is followed by the rest of that row. Only the bar's own clock is flush

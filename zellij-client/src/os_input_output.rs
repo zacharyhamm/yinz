@@ -547,7 +547,18 @@ mod tests {
                 serde_json::from_str(json.to_str().unwrap()).unwrap();
             assert_eq!(snapshot, Some(WireTermios::from_termios(&original)));
             client.unset_raw_mode().unwrap();
-            assert_eq!(termios::tcgetattr(io::stdin()).unwrap(), original);
+            // Field by field rather than as a whole: XNU sets PENDIN when canonical mode comes
+            // back, so that pending input is retyped. It is kernel status, not part of what the
+            // restore wrote.
+            let restored = termios::tcgetattr(io::stdin()).unwrap();
+            assert_eq!(restored.input_flags, original.input_flags);
+            assert_eq!(restored.output_flags, original.output_flags);
+            assert_eq!(restored.control_flags, original.control_flags);
+            assert_eq!(
+                restored.local_flags - LocalFlags::PENDIN,
+                original.local_flags - LocalFlags::PENDIN,
+            );
+            assert_eq!(restored.control_chars, original.control_chars);
             return;
         }
         // Raw mode and stdin are process-global: isolate them from the test runner.
