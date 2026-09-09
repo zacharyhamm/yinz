@@ -147,11 +147,10 @@ fn keep_backup(
     Ok(Some(backup))
 }
 
-/// The last `lines` lines of `log_file` about the plugin at `path`: the runtime tags a
-/// plugin's `zellij.log` and `print` output `[lua:<path>]`, and its loader errors name the
-/// path, so both are matched on the file name. A builtin's path is its bare tag - `agent-policy`,
-/// no extension - so the tag spelt with the file's stem is matched too, and `zellij plugins log
-/// agent-policy` reads a shipped hook's lines the same way it reads a written one's.
+/// The last `lines` lines of `log_file` about the plugin at `path`. Lua and Deno
+/// output uses `[lua:<path>]` and `[deno:<path>]` tags; loader errors also name the
+/// file. Match filenames and exact bare builtin tags. Registered Deno builtins
+/// also match through the extensionless authoring name's `.lua` resolution.
 pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<String> {
     let file_name = path
         .file_name()
@@ -161,6 +160,11 @@ pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<St
         .file_stem()
         .map(|stem| format!("[lua:{}]", stem.to_string_lossy()))
         .unwrap_or_default();
+    let deno_builtin_tag = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| zellij_config::consts::builtin_deno_plugin(stem).is_some())
+        .map(|stem| format!("[deno:{stem}]"));
     let log = match std::fs::read_to_string(log_file) {
         Ok(log) => log,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -171,7 +175,11 @@ pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<St
     let matching: Vec<&str> = log
         .lines()
         .filter(|line| {
-            line.contains(&file_name) || (!is_deno_plugin(path) && line.contains(&builtin_tag))
+            line.contains(&file_name)
+                || (!is_deno_plugin(path) && line.contains(&builtin_tag))
+                || deno_builtin_tag
+                    .as_ref()
+                    .is_some_and(|tag| line.contains(tag))
         })
         .collect();
     let start = matching.len().saturating_sub(lines.max(1));
@@ -291,6 +299,48 @@ mod tests {
         assert_eq!(
             log_tail(&log, Path::new("/plugins/keys.ts"), 2).unwrap(),
             "[deno:/plugins/keys.ts] one\n[deno:/plugins/keys.ts] two\n"
+        );
+    }
+
+    #[test]
+    fn deno_builtin_logs_match_legacy_names_and_explicit_typescript() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("zellij.log");
+        let builtin = "[deno:agent-policy]";
+        std::fs::write(
+            &log,
+            format!(
+                "{builtin} one\n[deno:agent-exit] other\n[lua:agent-policy-mine.lua] other\n\
+             [deno:agent-policy-mine.ts] other\n[deno:agent-policy-extra] other\n\
+             [lua:/plugins/agent-policy.lua] lua file\n[deno:/plugins/agent-policy.ts] ts file\n\
+             [lua:agent-policy] lua builtin\n{builtin} two\n{builtin} three\n"
+            ),
+        )
+        .unwrap();
+        for name in ["agent-policy", "agent-policy.lua", "agent-policy.ts"] {
+            let path = zellij_plugin_api::authoring::resolve_plugin_file(dir.path(), name).unwrap();
+            let file_lines = if name.ends_with(".ts") {
+                "[deno:/plugins/agent-policy.ts] ts file\n"
+            } else {
+                "[lua:/plugins/agent-policy.lua] lua file\n[lua:agent-policy] lua builtin\n"
+            };
+            assert_eq!(
+                log_tail(&log, &path, 20).unwrap(),
+                format!("{builtin} one\n{file_lines}{builtin} two\n{builtin} three\n")
+            );
+            assert_eq!(
+                log_tail(&log, &path, 2).unwrap(),
+                format!("{builtin} two\n{builtin} three\n")
+            );
+            assert_eq!(
+                log_tail(&log, &path, 0).unwrap(),
+                format!("{builtin} three\n")
+            );
+        }
+        std::fs::write(&log, "[deno:unregistered] other\n").unwrap();
+        assert_eq!(
+            log_tail(&log, Path::new("unregistered.ts"), 20).unwrap(),
+            ""
         );
     }
 

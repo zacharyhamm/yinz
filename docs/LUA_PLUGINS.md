@@ -1764,6 +1764,12 @@ pane_update`), and every task it starts and finishes. `zellij plugins log <name>
 `plugin_log`) then reads as a transcript of what the plugin did, which for a plugin with no pane
 is the whole of the evidence.
 
+Log retrieval matches the requested filename, including its extension, in Lua and Deno output and loader errors.
+It also matches exact builtin tags: `[lua:<name>]` for Lua requests and `[deno:<name>]` for registered Deno builtins.
+For example, `zellij plugins log agent-policy` and `zellij plugins log agent-policy.ts` both include `[deno:agent-policy]` lines.
+The extensionless request still resolves to `agent-policy.lua` and retains Lua log matching.
+Other files with the same stem and a different extension do not match the requested filename.
+
 ## Files
 
 A plugin can read and write inside the four folders zellij gives it, which are the same four a

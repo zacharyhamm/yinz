@@ -351,7 +351,11 @@ async function handle(input: Partial<Request>): Promise<unknown> {
     assert(!args.spec.prompt, 'Spawn without prompt, then call agent_prompt to register observation first');
     const owner = {...identity, work: args.work, agent: args.key};
     value.owner = owner; value.outcome = 'pending'; put(uid!, value, row);
-    const opts = {...args.spec, sourceDirectory: args.spec.source_directory, automaticFirecrackerVm: args.spec.automatic_firecracker_vm, context: {swamp_owner: encode(owner), swamp_operation: args.key}, startSuppressed: !!read(scope(args.work, 'view'))[0]};
+    const {source_directory, automatic_firecracker_vm, ...spec} = args.spec;
+    const opts = {...spec,
+      ...(source_directory !== undefined ? {sourceDirectory: source_directory} : {}),
+      ...(automatic_firecracker_vm !== undefined ? {automaticFirecrackerVm: automatic_firecracker_vm} : {}),
+      context: {swamp_owner: encode(owner), swamp_operation: args.key}, startSuppressed: !!read(scope(args.work, 'view'))[0]};
     const spawned = z.agent.spawnDetails(opts);
     assert('Terminal' in spawned.pane_id, 'Expected an agent terminal');
     value = result(uid!); [, row] = read(uid!);

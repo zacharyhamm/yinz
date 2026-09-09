@@ -120,6 +120,10 @@ export interface Zellij {
   after(milliseconds: number, callback: TimerCallback): TimerHandle;
   /** Waits one interval after the previous callback settles. Callbacks never overlap. */
   every(milliseconds: number, callback: TimerCallback): TimerHandle;
+  paneSequence(options: PaneSequenceOptions): PaneSequence;
+  /** Observes any terminal pane. Requires ReadApplicationState. Already-exited or missing panes resolve immediately. */
+  waitForPaneExit(pane: AgentPane): CancellablePromise<PaneExit>;
+  runInPane(pane: AgentPane, step: PaneStep): CancellablePromise<PaneExit>;
   /** Requires RunCommands. Defaults: empty maps, /host, host output limit. Nonzero exits resolve. */
   runCommand(options: RunCommandOptions): CancellablePromise<RunCommandResult>;
   /** Requires WebAccess. Default Get. With streamId, resolves the leading response (empty body for 2xx).
@@ -128,6 +132,8 @@ export interface Zellij {
   encodeUtf8(text: string): Uint8Array;
   decodeUtf8(bytes: Uint8Array): string;
   getPluginIds(): PluginIds;
+  /** Enable names-only tracing (default true), or disable it with false. */
+  trace(enabled?: boolean): void;
   log(...values: unknown[]): void;
   /** Waits for a matching future event, excluding the event currently being delivered. */
   waitForEvent<K extends EventType>(type: K, predicate?: (payload: EventPayload<K>, event: Event) => boolean): CancellablePromise<EventPayload<K>>;
@@ -684,4 +690,20 @@ export interface CompletionOptions {
 }
 export interface CompletionResult {
   content: string; toolCalls: CompletionToolCall[]; finishReason: string; usage: CompletionUsage | null; model: string;
+}
+
+export interface PaneStep extends CommandToRun {name?: string; stdin?: string; timeoutMs?: number;}
+export interface PaneExit {paneId: {Terminal: number}; exitCode: number | null; closed: boolean;}
+export type PaneSequenceOutcome = 'success' | 'failed' | 'cancelled' | 'pane_closed';
+export interface PaneSequenceResult {status: PaneSequenceOutcome; paneId: PaneId | null; exitCodes: (number | null)[]; failedStep: number | null;}
+export interface PaneSequenceOptions {
+  steps: PaneStep[]; name?: string; floating?: boolean | FloatingPaneCoordinates;
+  stopOnFailure?: boolean; closeOnSuccess?: boolean; onCancel?: 'close' | 'keep';
+  keepScrollback?: boolean; killGraceMs?: number;
+  onStep?: (number: number, step: PaneStep, exitCode: number | null) => void | Promise<void>;
+  onDone?: (result: PaneSequenceResult) => void | Promise<void>;
+}
+export interface PaneSequence {
+  readonly paneId: PaneId | null; readonly status: 'running' | 'cancelling' | PaneSequenceOutcome;
+  readonly done: Promise<PaneSequenceResult>; push(step: PaneStep): void; cancel(): void;
 }

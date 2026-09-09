@@ -498,3 +498,199 @@ context_menu {
     });
     zellij.quit();
 }
+
+#[test]
+fn deno_pane_sequence_reuses_one_host_pane_and_cancels_its_child() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("sequence.ts");
+    fs::write(&plugin, r#"
+let state='starting';
+export default {
+  async load() {
+    await zellij.waitForPermissions(['RunCommands','ReadApplicationState','ChangeApplicationState','WriteToStdin']);
+    const sequence=zellij.paneSequence({steps:[{path:'first',stdin:'first-ready'},{path:'second',stdin:'second-ready'}]});
+    const result=await sequence.done;
+    if(result.status!=='success' || result.exitCodes.join()!=='0,0')throw Error('sequence result');
+    state='sequence success';zellij.requestRender();
+    const cancelled=zellij.paneSequence({steps:[{path:'cancel',stdin:'cancel-ready'}],killGraceMs:0});
+    const started=zellij.waitForEvent('CommandPaneOpened',([id])=>id===cancelled.paneId.Terminal);
+    await started;cancelled.cancel();cancelled.cancel();
+    const stopped=await cancelled.done;
+    if(stopped.status!=='cancelled')throw Error('cancel result');
+    state='sequence and cancellation verified';zellij.requestRender();
+  }, render(){return state;}
+};
+"#).unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{\n tab {{\n pane {{plugin location=\"file:{}\";}}\n }}\n}}",
+            plugin.display()
+        )))
+        .start();
+    zellij.wait_until("sequence permissions", |screen| {
+        screen.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    let pane = zellij.expect_pty_spawn();
+    pane.wait_for_stdin("first command starts before its stdin", |bytes| {
+        bytes.ends_with(b"first-ready")
+    });
+    pane.exit(Some(0));
+    pane.wait_for_stdin("second command reuses the first pane", |bytes| {
+        bytes.ends_with(b"second-ready")
+    });
+    pane.exit(Some(0));
+    let cancelled = zellij.expect_pty_spawn();
+    cancelled.wait_for_stdin("cancellable command starts", |bytes| {
+        bytes.ends_with(b"cancel-ready")
+    });
+    zellij.wait_until("sequence and cancellation finish", |screen| {
+        screen.contains("sequence and cancellation verified")
+    });
+    assert!(cancelled.is_exited());
+    zellij.quit();
+}
+
+#[test]
+fn deno_pane_sequence_reload_does_not_advance_the_old_steps() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("reload-sequence.ts");
+    fs::write(&plugin, r#"
+export default {async load(){
+  await zellij.waitForPermissions(['RunCommands','ReadApplicationState','WriteToStdin']);
+  const sequence=zellij.paneSequence({steps:[{path:'old',stdin:'old-ready'},{path:'must-not-start',stdin:'old-late'}]});
+  await sequence.done;
+},render(){return 'old sequence';}};
+"#).unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{\n tab {{\n pane {{plugin location=\"file:{}\";}}\n }}\n}}",
+            plugin.display()
+        )))
+        .start();
+    zellij.wait_until("old sequence permissions", |screen| {
+        screen.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    let pane = zellij.expect_pty_spawn();
+    pane.wait_for_stdin("old step started", |bytes| bytes.ends_with(b"old-ready"));
+    fs::write(
+        &plugin,
+        format!(
+            r#"
+let state='starting replacement';
+export default {{async load(){{
+  await zellij.waitForPermissions(['RunCommands','ReadApplicationState','WriteToStdin']);
+  const waiting=zellij.runInPane({},{{path:'replacement',stdin:'replacement-ready'}});
+  state='replacement loaded';zellij.requestRender();
+  const result=await waiting;
+  if(result.exitCode!==0)throw Error('replacement exit');
+  state='replacement exit verified';zellij.requestRender();
+}},render(){{return state;}}}};
+"#,
+            pane.terminal_id()
+        ),
+    )
+    .unwrap();
+    let (code, output) = zellij.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
+        url: format!("file:{}", plugin.display()),
+        configuration: None,
+    });
+    assert_eq!(code, 0, "{output}");
+    zellij.wait_until("replacement loaded", |screen| {
+        screen.contains("replacement loaded")
+    });
+    pane.exit(Some(0));
+    pane.wait_for_stdin("replacement starts on old pane", |bytes| {
+        bytes.ends_with(b"replacement-ready")
+    });
+    pane.exit(Some(0));
+    zellij.wait_until("replacement observes its own exit", |screen| {
+        screen.contains("replacement exit verified")
+    });
+    assert!(!String::from_utf8_lossy(&pane.stdin_bytes()).contains("old-late"));
+    zellij.quit();
+}
+
+#[test]
+fn deno_pane_exit_observes_a_held_cli_pane() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("observer.ts");
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config("load_plugins clear-defaults=true {}")
+        .start();
+    zellij_integration_tests::claim_first_terminal_and_wait_for_prompt(&zellij);
+    let (code, output) = zellij.run_cli_action_reporting(CliAction::NewPane {
+        direction: None,
+        command: vec!["controlled-command".to_owned()],
+        remote_host: None,
+        firecracker: None,
+        firecracker_image: None,
+        firecracker_worktree: None,
+        plugin: None,
+        cwd: None,
+        floating: false,
+        in_place: false,
+        close_replaced_pane: false,
+        pane_id: None,
+        name: None,
+        close_on_exit: false,
+        start_suspended: false,
+        configuration: None,
+        skip_plugin_cache: false,
+        x: None,
+        y: None,
+        width: None,
+        height: None,
+        pinned: None,
+        overlay: None,
+        modal: None,
+        stacked: false,
+        blocking: false,
+        block_until_exit_success: false,
+        block_until_exit_failure: false,
+        block_until_exit: false,
+        unblock_condition: None,
+        near_current_pane: false,
+        no_focus: false,
+        borderless: None,
+        tab_id: None,
+    });
+    assert_eq!(code, 0, "{output}");
+    let pane = zellij.expect_pty_spawn();
+    fs::write(&plugin, format!(r#"
+let state='starting observer';
+export default {{async load(){{
+  await zellij.waitForPermissions(['ReadApplicationState']);
+  const waiting=zellij.waitForPaneExit({id});
+  state='observer ready';zellij.requestRender();
+  const result=await waiting;
+  const info=zellij.command('GetPaneInfo',{{Terminal:{id}}});
+  if(result.paneId.Terminal!=={id} || result.exitCode!==23 || result.closed || !info?.is_held || !info.exited || info.exit_status!==23)throw Error('held exit mismatch');
+  state='held CLI exit verified';zellij.requestRender();
+}},render(){{return state;}}}};
+"#, id=pane.terminal_id())).unwrap();
+    let (code, output) = zellij.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
+        url: format!("file:{}", plugin.display()),
+        configuration: None,
+    });
+    assert_eq!(code, 0, "{output}");
+    zellij.wait_until("observer permission prompt", |screen| {
+        screen.contains("Allow? (y/n)")
+    });
+    assert_eq!(zellij.run_cli_action(CliAction::FocusNextPane), 0);
+    zellij.send_stdin(b"y");
+    zellij.wait_until("observer registered before the exit", |screen| {
+        screen.contains("observer ready")
+    });
+    pane.exit(Some(23));
+    zellij.wait_until("separate observer sees held CLI exit status", |screen| {
+        screen.contains("held CLI exit verified")
+    });
+    zellij.quit();
+}

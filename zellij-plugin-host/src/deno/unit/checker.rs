@@ -629,3 +629,44 @@ fn embedded_workflow_view_has_semantic_types_without_a_sibling_file() {
     )
     .is_err());
 }
+
+#[test]
+fn pane_sequence_types_check_steps_options_results_and_primitives() {
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("sequence.ts"), r#"
+      import z, {type PaneSequenceResult, type PaneExit} from 'zellij:plugin';
+      const seq=z.paneSequence({steps:[{path:'cat',stdin:'hello',timeoutMs:10,cwd:'inherit',target:{Ssh:{host:'host'}}}],
+        floating:true,stopOnFailure:false,closeOnSuccess:true,onCancel:'close',keepScrollback:false,killGraceMs:50,
+        onStep(n,step,code){const value:number|null=code;seq.push({path:'true'});},onDone(result){const r:PaneSequenceResult=result;}});
+      seq.cancel();seq.done.then(r=>r.failedStep);const pane=seq.paneId;
+      z.waitForPaneExit(7).then((r:PaneExit)=>r.closed);z.runInPane({Terminal:7},{path:'true'}).cancel();
+      // @ts-expect-error timeout is milliseconds and numeric
+      z.paneSequence({steps:[{path:'cat',timeoutMs:'10'}]});
+      // @ts-expect-error stdin is text
+      z.runInPane(7,{stdin:4});
+      // @ts-expect-error terminal panes only
+      z.waitForPaneExit({Plugin:7});
+      // @ts-expect-error unknown cancellation policy
+      z.paneSequence({steps:[],onCancel:'kill'});
+      // @ts-expect-error result codes can be unavailable
+      seq.done.then(r=>{const codes:number[]=r.exitCodes;});
+    "#).unwrap();
+}
+
+#[test]
+fn sdk_trace_accepts_only_optional_booleans() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("trace.ts");
+    check_semantic_source(
+        &path,
+        "import z from 'zellij:plugin'; z.trace(); z.trace(true); z.trace(false);",
+    )
+    .unwrap();
+    for argument in ["1", "'true'", "null", "{}"] {
+        assert!(check_semantic_source(
+            &path,
+            &format!("import z from 'zellij:plugin'; z.trace({argument});")
+        )
+        .is_err());
+    }
+}

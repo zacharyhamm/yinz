@@ -1,6 +1,6 @@
 # Deno capability and verification status
 
-Updated 2026-09-08. The seven requested changes are implemented in this checkout:
+Updated 2026-09-09. The seven requested changes are implemented in this checkout:
 exact numeric inputs, runtime/checker quotas, host-path tests and queue ownership,
 complete raw SDK declarations, filesystem/configuration helpers, persistence helpers,
 and runtime-aware Hocus authoring. The existing asynchronous SDK remains in place.
@@ -33,16 +33,6 @@ the test: its question offered only a return choice, but the test tried to submi
 free text. The corrected test selects that choice and passes; Lua behavior is
 unchanged. Historical red gate results below do not describe the current checkout.
 
-Migration verification: `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` passed
-formatting, lint, 7,976 enabled unit tests, doctests, and all 388 integration tests.
-After adding the pane-sequence cancellation regression, the final gate passed
-formatting, lint, all 7,977 enabled unit tests (47 skipped), and doctests. Its
-integration phase passed 387 of 388 tests. The untouched
-`stacked_pane_list::splitting_a_new_pane_reforms_the_list_around_it` snapshot lacked
-the tab's `[2]` count; pane content matched. It passed immediately alone at `-j 16`.
-No snapshots were accepted. The last complete gate run is therefore red despite
-the earlier green gate and the successful isolated recheck.
-
 ## Capability matrix
 
 Test names are in the linked files. The full repository gate is recorded below.
@@ -69,24 +59,15 @@ Test names are in the linked files. The full repository gate is recorded below.
 | Remaining host command families | **Typed raw access available.** Common dispatch covers keybindings, clipboard, pane placement, actions and other host operations. The representative session test does not exhaust these families. |
 | Agent helpers | **Verified on Linux.** spawn details/ID, manifest cache, event subscriptions, bracketed paste, cancellable state/event/turn waits, and prompt ordering. SDK tests cover transitions, cancellation, validation, and dispatch cleanup. Real plugin tests cover agent event delivery and reload. |
 | Hocus completion client | **Verified on Linux.** exact daemon discovery, typed transcript/tool-call round trips, reply provenance, request byte limits, errors, deadlines, cancellation, and cleanup. SDK tests and Rust-backed TypeScript fixtures cover the protocol. Real dispatch tests use a deterministic local peer and check permissions and reload isolation. |
-| Streaming helpers, pane command sequencing and workers | **Excluded from this work.** Raw commands/events expose applicable host operations, but do not provide these SDK conveniences or CPU parallelism. |
+| Pane command sequencing | **Verified on Linux.** `pane_sequence_reuses_pane_matches_fast_and_stale_events_and_appends`, `pane_sequence_validation_failure_policies_and_observation_cancellation`, `pane_sequence_cwd_preserves_targets_and_resolves_only_at_dispatch`, `pane_sequence_timeout_cancel_grace_refusal_and_cleanup`, `pane_sequence_types_check_steps_options_results_and_primitives`, `pane_sequence_close_policies_and_exits_cancel_remaining_signals`, and the SDK-backed example regression passed. Whole-session tests verify pane reuse, child cancellation, and reload isolation (see current verification). |
+| Streaming conveniences | **Not implemented.** Typed chunk events and buffered promises exist. There is no async iterator for streamed HTTP or command output. |
+| Guest workers | **Not implemented.** No guest worker API or guest CPU parallelism. Host compilation subprocesses do not provide guest workers. |
+| Tracing | **Implemented and SDK-tested.** Opt-in `zellij.trace()` and merged `trace` configuration record command/event/pipe names and existing async lifecycle markers through the Deno log. Payloads and exception text are excluded. |
+| Remote module loading | **Not supported.** Remote URLs and package imports are rejected by the Deno loader. This restriction does not prohibit commands in remote panes. Remote pane sequence execution has not been verified against SSH or Firecracker here. |
 
 RPC now has shared version-1 dispatch through `zellij.rpc.call()` and `zellij.rpc.handle()`.
 SDK regressions cover results, errors, provenance, cancellation, deadlines, cleanup, message limits, and ordinary pipes.
 Real plugin tests exercise Deno and Lua peers, URL launch/configuration, ID addressing, reverse calls, permission denial, and old replies after reload.
-RPC verification: focused tests passed. `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` passed format, lint, doctests, and all 386 integration tests.
-The unit phase passed 7,936 tests and failed `plugins::lua::unit_tests::swamp_output_preview_names_the_saved_version_and_keeps_return_actionable`.
-That unchanged Lua test also fails alone at its submit-focus assertion. The gate remains red.
-The historical gate results below predate this addition.
-
-Agent/completion verification (2026-09-08): all new SDK, TypeScript, Rust fixture, and real-dispatch tests passed.
-`cargo x ci check` passed format, lint, and doctests. The unit phase passed 7,944 of 7,946 tests.
-The existing Lua preview test named above still fails alone at its submit-focus assertion.
-`plugins::plugin_tests::run_and_pipe_commands::unblock_input_plugin_command` had an extra filesystem event in its snapshot and passed alone.
-The integration phase passed 385 of 386 tests at the gate's 16-worker setting.
-`stacked_pane_list::floating_the_visible_member_promotes_its_neighbor` showed tab count `[1]` instead of `[2]` and passed alone at `-j 16`.
-No snapshots were accepted. The full gate remains red; the reproducible blocker is the unchanged Lua preview test.
-
 ## Public contracts
 
 `command(name, payload)` and `command({Name: payload})` use known Rust command names,
@@ -125,7 +106,98 @@ harmless. Private namespaces remain URL-based and shared namespaces still requir
 only after a successful write. Explicit JS/TS `plugin_check` semantically checks confined local
 imports. Extensionless authoring remains Lua. See [the Deno guide][guide] for the public API.
 
-## Verification
+## Current verification (2026-09-09)
+
+The seven named SDK, TypeScript, and example tests above passed with
+`cargo x test -p zellij-server -E 'test(pane_sequence_)'`.
+The broader `cargo x test -p zellij-server -E 'test(deno)'` run passed all 157 selected tests.
+`cargo x integration-test -E 'test(deno_pane_sequence_)'` passed both
+`deno_pane_sequence_reuses_one_host_pane_and_cancels_its_child` and
+`deno_pane_sequence_reload_does_not_advance_the_old_steps`. These exercise real host
+command/event routing with the existing deterministic PTY backend, not an external shell.
+Initial fixture failures (invalid KDL and missing replacement permissions) were corrected.
+The first full gate passed format, lint, doctests, and all 390 integration tests.
+Its unit phase passed 7,984 of 7,985 tests. `lua_docs::tests::no_section_is_anywhere_near_the_tool_output_cap`
+failed because the expanded Deno guide exceeded Hocus's response limit. The guide now
+exposes a separate `deno_async` section, with shorter index descriptions. All 29 focused
+documentation and sequencing checks passed after that change.
+The final `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` **passed** formatting,
+lint, all 7,985 enabled unit tests (47 skipped), doctests, and all 390 integration tests
+at the gate's 16-worker setting. This was a complete gate rerun, not an isolated retry.
+No snapshots were accepted.
+Native macOS remains unverified. Exhaustive command/permission combinations, filesystem
+notification disconnect behavior and remote SSH/Firecracker sequencing
+remain outside the verified coverage. Existing capability evidence above does not establish these paths.
+
+## Arbitrary-pane exit verification (2026-09-09)
+
+`waitForPaneExit` now observes terminal panes opened by the CLI or another plugin.
+It subscribes to pane metadata before querying `GetPaneInfo`. An already-exited pane
+resolves with its recorded status, and a missing pane resolves as closed.
+Later metadata omissions do not imply closure. `runInPane` and `paneSequence` still
+match their command contexts and ignore metadata from earlier exits.
+The public signature and existing `ReadApplicationState` requirement are unchanged.
+
+All 191 focused Deno, pane-sequencing, and Hocus documentation tests passed,
+including the documentation size guard. SDK regressions cover broadcast-only exits,
+recorded and missing panes, unrelated and plugin IDs, null status, duplicate events,
+cancellation, query errors, originating clients, and observer cleanup.
+All three focused pane integration tests passed. The new regression creates a held
+command pane through the CLI, starts a separate Deno observer, waits for readiness,
+and exits the controlled PTY with status 23. The observer verifies that the pane
+remains held. No plugin events are injected. The initial fixture run failed because
+keyboard focus remained on the command pane. Explicit observer focus corrected it.
+
+The first `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` passed format, lint,
+all 7,993 enabled unit tests (47 skipped), and doctests. Integration passed 390 of 391.
+`stacked_pane_list::a_stack_list_dissolves_into_a_normal_pane_at_one_member` showed
+`[0]` instead of `[1]` in the tab count and passed alone at `-j 16`.
+The second complete gate **passed** format, lint, all 7,993 enabled unit tests
+(47 skipped), doctests, and all 391 integration tests at 16 workers.
+No snapshots were accepted. These runs used Linux and the deterministic PTY backend.
+Native macOS and real SSH/Firecracker observation remain unverified.
+
+## Tracing verification (2026-09-09)
+
+The focused Deno, authoring-log, and Hocus documentation run passed all 174 tests,
+including the documentation size guard. New SDK checks cover configuration precedence,
+runtime toggles, fresh runtime state, raw and internal commands, consumed pipes, event
+names, originating clients, async success/rejection/cancellation, dispatch failures,
+watch disposal, escaped and bounded names, and payload exclusion. The TypeScript checker
+accepts the optional boolean API and rejects other argument types.
+
+The required `cargo x ci check` passed formatting, lint, all 7,989 enabled unit tests
+(47 skipped), doctests, and all 390 integration tests with local socket access.
+No snapshots were changed. Native macOS and real SSH/Firecracker verification remain follow-ups.
+
+## Historical gate runs (2026-09-08)
+
+These results describe earlier checkouts. A passing isolated retry does not make a red
+full gate green. The later correction to the Lua preview test is recorded in the migration section.
+
+Migration verification: `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` passed
+formatting, lint, 7,976 enabled unit tests, doctests, and all 388 integration tests.
+After adding the pane-sequence cancellation regression, the final gate passed
+formatting, lint, all 7,977 enabled unit tests (47 skipped), and doctests. Its
+integration phase passed 387 of 388 tests. The untouched
+`stacked_pane_list::splitting_a_new_pane_reforms_the_list_around_it` snapshot lacked
+the tab's `[2]` count; pane content matched. It passed immediately alone at `-j 16`.
+No snapshots were accepted. That complete gate run was red despite
+the earlier green gate and the successful isolated recheck.
+
+RPC verification: focused tests passed. `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` passed format, lint, doctests, and all 386 integration tests.
+The unit phase passed 7,936 tests and failed `plugins::lua::unit_tests::swamp_output_preview_names_the_saved_version_and_keeps_return_actionable`.
+At that point, the Lua test also failed alone at its submit-focus assertion. That gate was red.
+
+Agent/completion verification (2026-09-08): all new SDK, TypeScript, Rust fixture, and real-dispatch tests passed.
+`cargo x ci check` passed format, lint, and doctests. The unit phase passed 7,944 of 7,946 tests.
+At that point, the Lua preview test named above still failed alone at its submit-focus assertion.
+`plugins::plugin_tests::run_and_pipe_commands::unblock_input_plugin_command` had an extra filesystem event in its snapshot and passed alone.
+The integration phase passed 385 of 386 tests at the gate's 16-worker setting.
+`stacked_pane_list::floating_the_visible_member_promotes_its_neighbor` showed tab count `[1]` instead of `[2]` and passed alone at `-j 16`.
+No snapshots were accepted. That full gate was red. The Lua preview test was the reproducible blocker.
+
+## Historical verification before pane sequencing
 
 All listed runs use the existing Cargo xtask, plugin and whole-session harnesses on Linux.
 Quota exhaustion runs only in supervised subprocesses with reduced internal test budgets.

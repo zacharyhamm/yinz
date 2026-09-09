@@ -72,9 +72,10 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 54] = [
+pub const SECTIONS: [&str; 55] = [
     "index",
     "deno",
+    "deno_async",
     "deno_data",
     "deno_extensions",
     "deno_ui",
@@ -263,8 +264,9 @@ fn index() -> String {
             "deno_ui" => "JS/TS widgets and Markdown".to_owned(),
             "example_deno_extension" => "example: TypeScript Hocus extension".to_owned(),
             "example_deno_forms" => "example: TypeScript forms and Markdown".to_owned(),
-            "deno" => "JS/TS plugins: lifecycle, SDK and authoring".to_owned(),
-            "deno_data" => "JS/TS filesystem, project configuration and persistence helpers".to_owned(),
+            "deno" => "JS/TS lifecycle and SDK".to_owned(),
+            "deno_async" => "waits, timers, pane sequences".to_owned(),
+            "deno_data" => "files, config, persistence".to_owned(),
             "index" => continue,
             "quickstart" => "a complete minimal TypeScript plugin".to_owned(),
             "example_clock" => "example: the small one".to_owned(),
@@ -358,17 +360,19 @@ pub fn section(name: &str) -> Option<String> {
             "```ts\n{}\n```",
             include_str!("../../../example-plugins/forms.ts")
         )),
-        "deno" | "deno_data" | "deno_extensions" | "deno_ui" => {
+        "deno" | "deno_async" | "deno_data" | "deno_extensions" | "deno_ui" => {
             let guide = include_str!("../../../docs/DENO_PLUGINS.md");
+            let async_start = guide.find("## Async helpers")?;
             let start = guide.find("## Files and project configuration")?;
             let extensions = guide.find("## Hocus extensions")?;
             let ui = guide.find("## Shared UI and terminal text")?;
             let end = guide.find("## Modules and checking")?;
             Some(match name {
+                "deno_async" => guide[async_start..start].to_owned(),
                 "deno_data" => guide[start..extensions].to_owned(),
                 "deno_extensions" => guide[extensions..ui].to_owned(),
                 "deno_ui" => guide[ui..end].to_owned(),
-                _ => format!("{}\nMore helpers: `plugin_docs section=deno_data`, `deno_extensions`, `deno_ui`.\n\n{}", &guide[..start], &guide[end..]),
+                _ => format!("{}\nMore helpers: `plugin_docs section=deno_async`, `deno_data`, `deno_extensions`, `deno_ui`.\n\n{}", &guide[..async_start], &guide[end..]),
             })
         },
         other => heading(other).and_then(|heading| guide_section(heading, cut(other))),
