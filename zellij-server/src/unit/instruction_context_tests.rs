@@ -307,6 +307,16 @@ pin_context_to_instruction! {
             "HandlePtyBytes"
         ),
         (
+            "SubscribePaneOutput",
+            ScreenInstruction::SubscribePaneOutput(PluginId::new(1), ClientId::new(1), None),
+            "HandlePtyBytes"
+        ),
+        (
+            "UnsubscribePaneOutput",
+            ScreenInstruction::UnsubscribePaneOutput(PluginId::new(1)),
+            "HandlePtyBytes"
+        ),
+        (
             "RemotePaneReady",
             ScreenInstruction::RemotePaneReady(TerminalId::new(1)),
             "HandlePtyBytes"

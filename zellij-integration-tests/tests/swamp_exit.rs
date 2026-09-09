@@ -90,18 +90,19 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     fs::write(&path, fixture()).unwrap();
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(
-            "mouse_mode true\ncopy_clipboard \"system\"\nload_plugins clear-defaults=true {{}}\nhooks {{ agent_exit \"file:{}\"; }}",
+            "pane_frame_style \"full\"\nmouse_mode true\ncopy_clipboard \"system\"\nload_plugins clear-defaults=true {{}}\nhooks {{ agent_exit \"file:{}\"; }}",
             path.display()
         ))
         .with_layout(LayoutInfo::Stringified(
             if status_bar {
-                "layout { pane command=\"claude\" focus=true; pane size=2 borderless=true { plugin location=\"zellij:status-bar\"; }; }"
+                "layout { pane command=\"claude\" name=\"Review topic\" focus=true; pane size=2 borderless=true { plugin location=\"zellij:status-bar\"; }; }"
             } else {
-                "layout { pane command=\"claude\"; }"
+                "layout { pane command=\"claude\" name=\"Review topic\"; }"
             }.into(),
         ))
         .start();
     let original = zellij.expect_pty_spawn();
+    let original_title = format!("[{}] Review topic", original.terminal_id());
     original.output(b"ORIGINAL SCROLLBACK\r\n");
     zellij.wait_until("original output", |s| s.contains("ORIGINAL SCROLLBACK"));
     let events = zellij.stream_events(&["pane_update", "tab_update"]);
@@ -123,7 +124,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     zellij.wait_until("hook permissions", |s| s.contains("Allow? (y/n)"));
     zellij.send_stdin(b"y");
     zellij.wait_until("workflow status in exit pane", |s| {
-        s.contains("Run run: running")
+        s.contains("Run run: running") && s.contains(&original_title)
     });
     let runner = zellij.expect_pty_spawn();
     runner.output(b"BACKGROUND RUNNER\r\n");
@@ -223,7 +224,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
         zellij.resize(TERMINAL_SIZE);
     }
     zellij.wait_until("final result stays visible", |s| {
-        s.contains("Run run: completed")
+        s.contains("Run run: completed") && s.contains(&original_title)
     });
     // A managed helper's process exit must not replace status with another hook.
     worker.exit(Some(0));
@@ -233,7 +234,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     });
     zellij.send_stdin(&keys::ESC);
     zellij.wait_until("detach restores original scrollback", |s| {
-        s.contains("ORIGINAL SCROLLBACK")
+        s.contains("ORIGINAL SCROLLBACK") && s.contains(&original_title)
     });
 
     let (mut pane_events, mut tab_events) = (0, 0);

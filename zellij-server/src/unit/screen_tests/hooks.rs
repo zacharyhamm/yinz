@@ -431,6 +431,10 @@ fn an_exiting_agent_pane_fires_the_agent_exit_hook() {
     let payload = config(payload);
     assert_eq!(payload.get("agent_pane_id").map(String::as_str), Some("2"));
     assert_eq!(
+        payload.get("agent_pane_title").map(String::as_str),
+        Some("codex")
+    );
+    assert_eq!(
         payload.get("agent_cwd").map(String::as_str),
         Some("/work/.worktrees/topic"),
         "the hook is told where the agent was working, which is what it offers to restart in"
@@ -438,6 +442,29 @@ fn an_exiting_agent_pane_fires_the_agent_exit_hook() {
     assert_eq!(
         payload.get("agent_exit_code").map(String::as_str),
         Some("0")
+    );
+}
+
+#[test]
+fn agent_exit_captures_the_custom_title_with_host_and_checkout_prefixes() {
+    let pane = PaneId::Terminal(TERMINAL_2);
+    let fired = hooks_fired_by(vec![
+        new_pane(2, None),
+        ScreenInstruction::RenamePane(pane, b"Review topic".to_vec(), None),
+        ScreenInstruction::UpdatePaneHost(TERMINAL_2, Some("build-box".to_owned()), None),
+        ScreenInstruction::SetPaneTitlePrefix(pane, Some("topic".to_owned())),
+        hold(2, agent_command("/work/topic")),
+    ]);
+    let payload = config(
+        &fired
+            .iter()
+            .find(|(point, _, _)| *point == HookPoint::AgentExit)
+            .unwrap()
+            .2,
+    );
+    assert_eq!(
+        payload.get("agent_pane_title").unwrap(),
+        "build-box topic: Review topic"
     );
 }
 

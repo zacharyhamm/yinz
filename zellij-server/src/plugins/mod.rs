@@ -1918,6 +1918,12 @@ fn run_hook(
         log::error!("hook '{point}' names a plugin that could not be resolved");
         return;
     };
+    let pane_title = match (point, pane_id) {
+        (HookPoint::AgentExit, PaneId::Terminal(id)) => payload
+            .get("agent_pane_title")
+            .map(|title| format!("[{id}] {title}")),
+        _ => None,
+    };
     // Merged rather than replaced: a hook declared with its own configuration block keeps it,
     // and the payload wins where the two name the same key.
     let run_plugin = run_plugin.merge_configuration(&Some(payload));
@@ -1942,6 +1948,7 @@ fn run_hook(
                 RunPluginOrAlias::RunPlugin(run_plugin),
                 plugin_id,
                 pane_id,
+                pane_title,
                 cwd,
                 client_id,
             )));
@@ -2164,12 +2171,12 @@ pub(crate) fn add_plugin_pane_in_place_of(
     run_plugin_or_alias: RunPluginOrAlias,
     plugin_id: PluginId,
     pane_id_to_replace: PaneId,
+    pane_title: Option<String>,
     cwd: Option<PathBuf>,
     client_id: ClientId,
 ) -> ScreenInstruction {
     let should_float = Some(false);
     let should_be_open_in_place = true;
-    let pane_title = None;
     let start_suppressed = false;
     let should_focus = Some(false);
     ScreenInstruction::AddPlugin(
