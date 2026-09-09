@@ -788,6 +788,10 @@ fn agent_exit_payload() -> BTreeMap<String, String> {
     BTreeMap::from([
         ("agent_target".to_owned(), "ssh".to_owned()),
         ("agent_pane_id".to_owned(), "7".to_owned()),
+        (
+            "agent_pane_title".to_owned(),
+            "build-box topic: Review".to_owned(),
+        ),
         ("agent_cwd".to_owned(), "/work/.worktrees/topic".to_owned()),
         ("agent_exit_code".to_owned(), "0".to_owned()),
         ("agent_command".to_owned(), "codex".to_owned()),
@@ -920,6 +924,13 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
     teardown();
 
     let opened = hook_panes_opened(&received_screen_instructions.lock());
+    assert!(received_screen_instructions
+        .lock()
+        .iter()
+        .any(|instruction| {
+            matches!(instruction, ScreenInstruction::AddPlugin(_, _, _, _, Some(title), ..)
+            if title == "[7] build-box topic: Review")
+        }));
     assert_eq!(
         opened.iter().map(|(_, pane)| *pane).collect::<Vec<_>>(),
         vec![PaneId::Terminal(crate::TerminalId::new(7))],

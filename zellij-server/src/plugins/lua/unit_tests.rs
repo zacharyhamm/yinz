@@ -8243,6 +8243,98 @@ assert(select(2,call{method='identity'}))
 }
 
 #[test]
+fn workflow_scroll_indicators_track_wrapped_rows_and_stay_above_pinned_controls() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.every=function() end
+z.after=function() end
+z.subscribe=function() end
+z.set_self_mouse_selection_support=function() end
+z.show_cursor=function() end
+local labels,content={},{}
+z.ui.text=function(value)
+  local dim=false
+  return {dim=function(self) dim=true;return self end,error=function(self) return self end,
+    render=function(_,rect)
+      if value:find('↑',1,true) or value:find('↓',1,true) then
+        assert(dim and rect.height==1)
+        assert(z.text.width(value)<=rect.width)
+        labels[#labels+1]={value=value,y=rect.y}
+      else
+        content[#content+1]={value=value,y=rect.y}
+      end
+      return value
+    end}
+end
+local function render(rows,cols)
+  labels,content={},{};M.render(rows,cols or 80)
+  for _,label in ipairs(labels) do
+    for _,line in ipairs(content) do assert(label.y~=line.y,'indicator overwrites content') end
+  end
+  return labels
+end
+local function label(index,value,y)
+  assert(labels[index] and labels[index].value==value and labels[index].y==y,z.json.encode(labels))
+end
+M.load()
+local lines={}
+for i=1,20 do lines[i]='line '..i end
+M.status=table.concat(lines,'\n')
+render(6);assert(#labels==1);label(1,'↓ 16 more',4)
+M.scroll=7;render(6);assert(#labels==1)
+label(1,'↑ 7 more  ↓ 9 more',4)
+M.scroll=math.huge;render(6);assert(M.scroll==16 and #labels==1);label(1,'↑ 16 more',4)
+render(11);assert(M.scroll==11 and #labels==1);label(1,'↑ 11 more',9)
+render(30);assert(M.scroll==0 and #labels==0)
+M.scroll=5;render(2);assert(#labels==0 and content[1].value=='line 6')
+render(2,4);assert(#labels==0)
+render(3,4);assert(#labels==1 and labels[1].y==1)
+-- Paging in either direction exposes every line, even with one content row.
+for _,rows in ipairs{2,3,6} do
+  for _,key in ipairs{'PageDown','PageUp'} do
+    local seen={}
+    M.scroll=key=='PageDown' and 0 or math.huge
+    for step=1,21 do
+      render(rows)
+      for _,line in ipairs(content) do seen[line.value]=true end
+      M.update{name='key',key=key}
+    end
+    for _,line in ipairs(lines) do assert(seen[line],key..' skipped '..line) end
+  end
+end
+render(1);assert(#labels==0)
+render(0);assert(#labels==0)
+render(3,0);assert(#labels==0)
+M.status=string.rep('x',40);M.scroll=0
+render(3,10);assert(#labels==1);label(1,'↓ 3 more',1)
+M.scroll=3;render(3,10);assert(#labels==1);label(1,'↑ 3 more',1)
+render(3,20);assert(M.scroll==0 and #labels==0)
+M.status=table.concat(lines,'\n');M.notice='Submitting answer...'
+M.pending={{model='model',version=1,attributes={run='run',question='q',prompt='Pinned question',answers={'yes'}}}}
+M.scroll=5;render(8);assert(#labels==1)
+label(1,'↑ 5 more  ↓ 13 more',3)
+assert(labels[1].y<M.form_y-2,'indicators stay above question, status and controls')
+M.pending={};M.notice=nil
+M.output('command','stdout','live\noutput')
+render(6)
+M.update{name='key',key='PageUp'}
+render(6)
+local offset=M.scroll
+local before=tonumber(labels[1].value:match('↓ (%d+) more'))
+M.output('command','stdout','\nnext\nlast')
+render(6);assert(M.scroll==offset)
+label(1,'↑ '..offset..' more  ↓ '..(before+2)..' more',4)
+"#).exec().unwrap();
+}
+
+#[test]
 fn workflow_stream_tail_preserves_utf8_and_status_while_scrolled() {
     let plugin =
         load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();

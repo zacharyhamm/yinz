@@ -3112,6 +3112,12 @@ impl Screen {
         // find that out.
         let mut payload = BTreeMap::new();
         payload.insert("agent_pane_id".to_owned(), terminal_pane_id.to_string());
+        if let Some(pane) = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.get_pane_with_id(pane_id))
+        {
+            payload.insert("agent_pane_title".to_owned(), pane.display_title());
+        }
         // Persisted in the hook plugin's configuration: reloads attach, later exits get
         // a new token even when the supervisor reuses the terminal pane.
         payload.insert(

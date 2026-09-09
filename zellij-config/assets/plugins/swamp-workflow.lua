@@ -334,13 +334,15 @@ function M.render(rows,cols)
   end
   local separator=footer_height>0 and rows-height-status_height-footer_height>=2 and 1 or 0
   local page=math.max(0,rows-height-status_height-footer_height-separator)
-  content_height=page
   M.form_y=rows-height
   local total,live_end=0,nil
   for _,block in ipairs(blocks) do
     total=total+block.count
     if block.live then live_end=total end
   end
+  local indicator_height=total>page and page>=2 and cols>0 and 1 or 0
+  page=page-indicator_height
+  content_height=page
   if #streams>0 and follow_live then M.scroll=math.max(0,(live_end or total)-page) end
   M.scroll=math.max(0,math.min(M.scroll,math.max(0,total-page)))
   local frame={}
@@ -361,7 +363,14 @@ function M.render(rows,cols)
     if count>0 then draw(block,y,skip,count);y=y+count end
     skip=math.max(0,skip-block.count)
   end
-  if footer_height>0 then draw(question,page+separator,0,footer_height) end
+  if indicator_height>0 then
+    local above=M.scroll>0 and ('↑ '..M.scroll..' more') or nil
+    local below=total-M.scroll-page
+    below=below>0 and ('↓ '..below..' more') or nil
+    local label=above and below and (above..'  '..below) or above or below
+    frame[#frame+1]=z.ui.text(z.text.truncate(label,cols)):dim():render{x=0,y=page,width=cols,height=1}
+  end
+  if footer_height>0 then draw(question,page+indicator_height+separator,0,footer_height) end
   if status_height>0 then
     local status=(M.action or '')..': '..M.notice
     if M.started then status=status..' ('..math.max(0,os.time()-M.started)..'s)' end
