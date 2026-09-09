@@ -33,24 +33,7 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
 ///
 /// Kept separate from `BUILTIN_PLUGIN_NAMES` rather than merged into it because everything
 /// that reads that list is looking for something to load wasm for.
-pub const BUILTIN_LUA_PLUGINS: &[(&str, &str)] = &[
-    (
-        "swamp-bridge",
-        include_str!("../assets/plugins/swamp-bridge.lua"),
-    ),
-    (
-        "swamp-workflow",
-        include_str!("../assets/plugins/swamp-workflow.lua"),
-    ),
-    (
-        "agent-exit",
-        include_str!("../assets/plugins/agent-exit.lua"),
-    ),
-    (
-        "agent-policy",
-        include_str!("../assets/plugins/agent-policy.lua"),
-    ),
-];
+pub const BUILTIN_LUA_PLUGINS: &[(&str, &str)] = &[];
 
 /// The source of a builtin Lua plugin, if `name` names one.
 pub fn builtin_lua_plugin(name: &str) -> Option<&'static str> {
@@ -61,10 +44,28 @@ pub fn builtin_lua_plugin(name: &str) -> Option<&'static str> {
 }
 
 /// TypeScript builtins are compiled into the server and transpiled by its worker.
-pub const BUILTIN_DENO_PLUGINS: &[(&str, &str)] = &[(
-    "context-menu",
-    include_str!("../assets/plugins/context-menu.ts"),
-)];
+pub const BUILTIN_DENO_PLUGINS: &[(&str, &str)] = &[
+    (
+        "context-menu",
+        include_str!("../assets/plugins/context-menu.ts"),
+    ),
+    (
+        "agent-policy",
+        include_str!("../assets/plugins/agent-policy.ts"),
+    ),
+    (
+        "swamp-bridge",
+        include_str!("../assets/plugins/swamp-bridge.ts"),
+    ),
+    (
+        "swamp-workflow",
+        include_str!("../assets/plugins/swamp-workflow.ts"),
+    ),
+    (
+        "agent-exit",
+        include_str!("../assets/plugins/agent-exit.ts"),
+    ),
+];
 
 pub fn builtin_deno_plugin(name: &str) -> Option<&'static str> {
     BUILTIN_DENO_PLUGINS

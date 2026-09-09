@@ -790,8 +790,8 @@
       for (const k of Object.keys(d)) if (!['fields','title','message','help'].includes(k)) throw new TypeError('unknown dialog field: ' + k);
       return construct(d.fields ?? [],false,{title:d.title, message:d.message ?? null, help:d.help ?? null});
     },
-    markdown(source, {compact = false} = {}) {
-      const state = core.ops.op_zellij_ui_create({kind:'Markdown',source,compact});
+    markdown(source, {compact = false, dim = false} = {}) {
+      const state = core.ops.op_zellij_ui_create({kind:'Markdown',source,compact,dim});
       return {render: (c) => core.ops.op_zellij_ui_call(state,{op:'Render',args:coordinates(c)})};
     },
     table(rows = []) {

@@ -278,7 +278,7 @@ beside a first. What landed, all in `docs/LUA_PLUGINS.md`:
   cached grant synchronously), and `zellij.async.permissions` for the first load.
 - **`zellij.trace`**, `zellij.web_request` callable from Lua (`zellij.null` for a tuple's
   optional slot), hocus `plugin_reload headless=true` answered from the log,
-  `example-plugins/agent-harness.lua`.
+  `example-plugins/agent-harness.ts`.
 
 The proof is `zellij-integration-tests/tests/lua_agent_harness.rs`: a written plugin spawns a
 fake `claude` through the planner, awaits its record moving to `waiting` off `zellij events`'

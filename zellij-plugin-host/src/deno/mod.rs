@@ -783,7 +783,7 @@ mod sdk_tests {
     fn run(runtime: &mut JsRuntime, source: &str) {
         runtime
             .execute_script("sdk-test.js", source.to_owned())
-            .unwrap();
+            .unwrap_or_else(|error| panic!("{error}\nScript:\n{source}"));
         get_tokio_runtime()
             .block_on(runtime.run_event_loop(Default::default()))
             .unwrap();
@@ -1745,6 +1745,7 @@ mod sdk_tests {
     include!("unit/rpc_sdk.rs");
     include!("unit/agent_sdk.rs");
     include!("unit/completion_sdk.rs");
+    include!("unit/consumer_sdk.rs");
 }
 
 #[cfg(test)]

@@ -27,18 +27,18 @@ pub const MAX_DOCS_OUTPUT: usize = 16_000;
 
 /// The guide, verbatim.
 const GUIDE: &str = include_str!("../../../docs/LUA_PLUGINS.md");
-const EXAMPLE_CLOCK: &str = include_str!("../../../example-plugins/clock.lua");
-const EXAMPLE_PLAYGROUND: &str = include_str!("../../../example-plugins/playground.lua");
-const EXAMPLE_AGENT_COMMIT: &str = include_str!("../../../example-plugins/agent-commit.lua");
-const EXAMPLE_DASHBOARD: &str = include_str!("../../../example-plugins/dashboard.lua");
-const EXAMPLE_WORKFLOW: &str = include_str!("../../../example-plugins/workflow.lua");
-const EXAMPLE_TODO_EXTENSION: &str = include_str!("../../../example-plugins/todo-extension.lua");
-const EXAMPLE_HOCUS_COMPLETE: &str = include_str!("../../../example-plugins/hocus-complete.lua");
-const EXAMPLE_TODO_PANE: &str = include_str!("../../../example-plugins/todo-pane.lua");
-const EXAMPLE_HOCUS_TODOS: &str = include_str!("../../../example-plugins/hocus-todos.lua");
-const EXAMPLE_HOCUS_NOTES: &str = include_str!("../../../example-plugins/hocus-notes.lua");
-const EXAMPLE_CAPABILITIES: &str = include_str!("../../../example-plugins/capabilities.lua");
-const EXAMPLE_AGENT_HARNESS: &str = include_str!("../../../example-plugins/agent-harness.lua");
+const EXAMPLE_CLOCK: &str = include_str!("../../../example-plugins/clock.ts");
+const EXAMPLE_PLAYGROUND: &str = include_str!("../../../example-plugins/playground.ts");
+const EXAMPLE_AGENT_COMMIT: &str = include_str!("../../../example-plugins/agent-commit.ts");
+const EXAMPLE_DASHBOARD: &str = include_str!("../../../example-plugins/dashboard.ts");
+const EXAMPLE_WORKFLOW: &str = include_str!("../../../example-plugins/workflow.ts");
+const EXAMPLE_TODO_EXTENSION: &str = include_str!("../../../example-plugins/todo-extension.ts");
+const EXAMPLE_HOCUS_COMPLETE: &str = include_str!("../../../example-plugins/hocus-complete.ts");
+const EXAMPLE_TODO_PANE: &str = include_str!("../../../example-plugins/todo-pane.ts");
+const EXAMPLE_HOCUS_TODOS: &str = include_str!("../../../example-plugins/hocus-todos.ts");
+const EXAMPLE_HOCUS_NOTES: &str = include_str!("../../../example-plugins/hocus-notes.ts");
+const EXAMPLE_CAPABILITIES: &str = include_str!("../../../example-plugins/capabilities.ts");
+const EXAMPLE_AGENT_HARNESS: &str = include_str!("../../../example-plugins/agent-harness.ts");
 /// The Lua half of the API, verbatim: the argument sugar and the named wrappers live here, so
 /// a model that has read it does not have to guess how a command is spelled. Served in nine
 /// parts, cut at its own section markers, so that none is more than a tool call should cost.
@@ -250,7 +250,7 @@ fn section_for_sub(parent: &str, sub: &str) -> Option<&'static str> {
 /// piece of the guide worth having without asking.
 fn index() -> String {
     let mut out = String::from(
-        "Zellij Lua and JS/TS plugin reference. Never ask another agent to write a plugin. \
+        "Zellij TypeScript plugin reference, with Lua compatibility sections. Never ask another agent to write a plugin. \
          `plugin_write` checks syntax, asks approval and writes the source, then grants its literal permissions. \
          `plugin_check` also checks JS/TS types and local imports. To edit, use `plugin_outline` or \
          `plugin_search`, then `plugin_read` and `plugin_edit`. `plugin_reload` reports the first render \
@@ -266,7 +266,7 @@ fn index() -> String {
             "deno" => "JS/TS plugins: lifecycle, SDK and authoring".to_owned(),
             "deno_data" => "JS/TS filesystem, project configuration and persistence helpers".to_owned(),
             "index" => continue,
-            "quickstart" => "a complete minimal plugin (below)".to_owned(),
+            "quickstart" => "a complete minimal TypeScript plugin".to_owned(),
             "example_clock" => "example: the small one".to_owned(),
             "example_capabilities" => "example: most of what a plugin can do, in one pane".to_owned(),
             "example_forms" => "example: shared forms, confirmation and scrollable Markdown".to_owned(),
@@ -275,7 +275,7 @@ fn index() -> String {
             "example_playground" => "example: every shape of command in use".to_owned(),
             "example_agent_commit" => "example: an agent_exit hook".to_owned(),
             "example_dashboard" => "example: dashboard, timers, commands and input".to_owned(),
-            "example_workflow" => "example: a multi-step command sequence in one pane (pane_workflow)".to_owned(),
+            "example_workflow" => "example: a multi-step command sequence in one pane".to_owned(),
             "example_todo_extension" => "example: Hocus tools with shared data".to_owned(),
             "example_hocus_complete" => "example: model completion with tools".to_owned(),
             "example_todo_pane" => "example: shared data watch and input".to_owned(),
@@ -316,7 +316,7 @@ fn index() -> String {
     }
     // The quickstart used to be appended here in full - 3.8 KB nobody asked for, on the first
     // call of every plugin conversation and on every round after it. It is one line above.
-    out.push_str("\nStart with `quickstart` for Lua or `deno` for JS/TS.\n");
+    out.push_str("\nStart with `quickstart` for TypeScript. Use explicit `.ts` filenames. Extensionless names retain Lua compatibility.\n");
     out
 }
 
@@ -324,9 +324,10 @@ fn index() -> String {
 pub fn section(name: &str) -> Option<String> {
     match name {
         "index" => Some(index()),
+        "quickstart" => Some(format!("Write `clock.ts` with `plugin_write`, check it with `plugin_check`, then call `plugin_reload name=clock.ts`. Use explicit `.ts` filenames. Extensionless names still select Lua.\n\n```ts\n{EXAMPLE_CLOCK}\n```\n\nRead `deno` for the SDK and module rules.")),
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),
         "example_capabilities" => Some(fenced(EXAMPLE_CAPABILITIES)),
-        "example_forms" => Some(fenced(include_str!("../../../example-plugins/forms.lua"))),
+        "example_forms" => Some(fenced(include_str!("../../../example-plugins/forms.ts"))),
         "prelude_widgets" => Some(fenced(include_str!(
             "../../../zellij-plugin-host/src/lua/ui.lua"
         ))),
@@ -375,7 +376,12 @@ pub fn section(name: &str) -> Option<String> {
 }
 
 fn fenced(source: &str) -> String {
-    format!("```lua\n{}\n```", source.trim_end())
+    let language = if source.trim_start().starts_with("--") {
+        "lua"
+    } else {
+        "ts"
+    };
+    format!("```{language}\n{}\n```", source.trim_end())
 }
 
 /// Answer a `plugin_docs` call.

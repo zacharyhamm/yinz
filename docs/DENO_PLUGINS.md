@@ -307,10 +307,17 @@ Lua callers retain their existing `{result}` or `{error}` wrapper.
 
 ## Embedded builtins and server identity
 
-`zellij:context-menu` runs the compiled-in TypeScript source as a headless context-menu hook.
-It does not need source files on disk. Embedded plugins can import only `zellij:plugin`.
-Filesystem plugins retain their existing directory confinement.
-The other four Lua builtins and Lua configuration remain supported.
+The script builtins `context-menu`, `agent-policy`, `swamp-bridge`, `swamp-workflow`, and
+`agent-exit` use embedded TypeScript. Their `zellij:` URLs remain unchanged.
+The bridge retains its delivery namespace, schema, correlation keys, and revision guards.
+
+Embedded plugins can import `zellij:plugin` and the registered `zellij:workflow-view` module.
+The shared view resolves from embedded source during execution and semantic checking.
+There is no filesystem fallback. Filesystem plugins retain their directory confinement.
+
+New plugins and reference examples use explicit `.ts` filenames. Extensionless authoring
+names still select Lua. Lua plugins, `require('zellij.workflow_view')`, `CheckLuaPlugin`,
+and `config.lua` remain supported.
 
 The SDK exposes four readonly strings during module initialization:
 
@@ -433,6 +440,7 @@ See [weather-extension.ts](../example-plugins/weather-extension.ts), or `plugin_
 ## Shared UI and terminal text
 
 `zellij.ui` uses the same Rust rendering toolkit as Lua and Wasm plugins.
+Use `zellij.ui.markdown(source, {dim: true})` for subdued history output.
 Construct components during module initialization if needed. Rendering returns terminal strings.
 The plugin controls subscriptions, host commands, and submission behavior.
 

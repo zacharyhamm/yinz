@@ -1380,7 +1380,7 @@ return M
         ] {
             let source = std::fs::read_to_string(
                 Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../example-plugins")
+                    .join("../zellij-server/src/plugins/lua/fixtures")
                     .join(file),
             )
             .expect("the example plugin should be in the repo");
@@ -1501,7 +1501,8 @@ end)
     #[test]
     fn an_outline_of_the_todo_extension_names_its_lifecycle() {
         let source = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins/todo-extension.lua"),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../zellij-server/src/plugins/lua/fixtures/todo-extension.lua"),
         )
         .expect("the example plugin should be in the repo");
         let entries = outline(&source);

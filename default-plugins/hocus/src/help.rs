@@ -299,7 +299,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "agent_spawn",
-        "Start a coding agent in a new pane. Give agent for a known agent, or command for a different program; a call with neither is an error. Give kind to name an agent that hocus does not know: lowercase letters, digits, _ or -, up to 32 characters. Give branch to cut a new branch. The branch gets a git worktree of its own, named after it, in worktree_dir under the repository root (.worktrees/ by default); with worktree set to false, this checkout moves to the new branch instead. A branch or worktree name already taken is cut afresh as <branch>-2, unless reuse says the existing one is the work you mean. An agent that would start anywhere but a linked worktree - the primary checkout, or a folder that is no repository - is refused unless allow_outside_worktree says so. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a zellij Lua plugin, use plugin_write instead of an agent.",
+        "Start a coding agent in a new pane. Give agent for a known agent, or command for a different program; a call with neither is an error. Give kind to name an agent that hocus does not know: lowercase letters, digits, _ or -, up to 32 characters. Give branch to cut a new branch. The branch gets a git worktree of its own, named after it, in worktree_dir under the repository root (.worktrees/ by default); with worktree set to false, this checkout moves to the new branch instead. A branch or worktree name already taken is cut afresh as <branch>-2, unless reuse says the existing one is the work you mean. An agent that would start anywhere but a linked worktree - the primary checkout, or a folder that is no repository - is refused unless allow_outside_worktree says so. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a zellij TypeScript plugin, use plugin_write instead of an agent.",
     ),
     (
         "slack_status",
@@ -367,25 +367,25 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_docs",
-        "Read the guide for zellij Lua plugins. Without a section, the tool lists the sections with their sizes. Give a query, which is a regular expression, to find the section that holds a subject. Then read that section, or a part of it.",
+        "Read the guide for zellij TypeScript plugins. Without a section, the tool lists the sections with their sizes. Give a query, which is a regular expression, to find the section that holds a subject. Then read that section, or a part of it.",
     ),
     (
         "plugin_list",
-        "Show the Lua plugins of the user, with the length of each one, and which of them have a .bak file from an earlier edit.",
+        "Show the TypeScript and Lua plugins of the user, with the length of each one, and which of them have a .bak file from an earlier edit.",
     ),
     (
         "plugin_outline",
-        "Show the shape of one Lua plugin without its code: every function, every zellij.on handler, every require, every permission request, every data.define and every hocus tool, each with its line number. Use these line numbers to read only the part you need.",
+        "Show the shape of one TypeScript or Lua plugin without its code: every function, every zellij.on handler, every require, every permission request, every data.define and every hocus tool, each with its line number. Use these line numbers to read only the part you need.",
     ),
     (
         "plugin_search",
-        "Search the Lua plugins of the user with a regular expression. Each hit gives file:LINE:text, and each context line gives file-LINE-text, with two hyphens between the groups. The text after the second separator is the line exactly as it is in the file: copy that text, and not the prefix, into the old_string of plugin_edit. The answer gives 40 hits, and 200 with max_results; context is 0 lines, and 10 at the most. A search of every plugin stops after a number of files, and says how many files it left out.",
+        "Search the TypeScript and Lua plugins of the user with a regular expression. Each hit gives file:LINE:text, and each context line gives file-LINE-text, with two hyphens between the groups. The text after the second separator is the line exactly as it is in the file: copy that text, and not the prefix, into the old_string of plugin_edit. The answer gives 40 hits, and 200 with max_results; context is 0 lines, and 10 at the most. A search of every plugin stops after a number of files, and says how many files it left out.",
     ),
     ("project_config_read", "Read the active project workflow settings and their exact source. Missing configuration has a null source. Invalid configuration returns an error."),
     ("project_config_write", "Validate and write .zellij/swamp-workflows.kdl after confirmation. Supply the complete source and the exact previous source as expected, or null for an absent file. Stale changes are refused. This does not execute CI or grant permissions."),
     (
         "plugin_read",
-        "Read one Lua plugin of the user. The .lua at the end of the name is optional. The tool reads 300 lines from start_line. Use plugin_outline or plugin_search first, then read only the range that you must change.",
+        "Read one TypeScript or Lua plugin of the user. Use explicit .ts filenames for new plugins. Extensionless names select Lua. The tool reads 300 lines from start_line. Use plugin_outline or plugin_search first, then read only the range that you must change.",
     ),
     (
         "plugin_check",
@@ -393,19 +393,19 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_write",
-        "Write a complete Lua plugin file. The source is the whole file, not a patch. Overwrite is necessary to replace a file that exists, and the earlier version stays as <name>.bak. The name can be folder/module, for a file that a plugin loads with require. Approval of the write also grants the permissions that the source asks for. Hocus compiles the source of the model first, and refuses a source that fails; a write that you type goes to disk uncompiled, thus use plugin_check first. Use plugin_reload after this, and plugin_edit to change a plugin that works.",
+        "Write a complete TypeScript plugin with an explicit .ts filename. Lua remains supported. The source is the whole file, not a patch. Overwrite is necessary to replace a file that exists, and the earlier version stays as <name>.bak. The name can be folder/module, for a file that a plugin loads with require. Approval of the write also grants the permissions that the source asks for. Hocus compiles the source of the model first, and refuses a source that fails; a write that you type goes to disk uncompiled, thus use plugin_check first. Use plugin_reload after this, and plugin_edit to change a plugin that works.",
     ),
     (
         "plugin_edit",
-        "Change a part of a Lua plugin. The old_string becomes the new_string, and the old_string must match the file exactly and one time only, unless you set replace_all. Give edits for more than one change under one approval. Hocus compiles the result, and writes nothing if any change misses or the result does not compile. The earlier version stays as <name>.bak, unless the new file is the same as the old one.",
+        "Change a part of a TypeScript or Lua plugin. The old_string becomes the new_string, and the old_string must match the file exactly and one time only, unless you set replace_all. Give edits for more than one change under one approval. Hocus compiles the result, and writes nothing if any change misses or the result does not compile. The earlier version stays as <name>.bak, unless the new file is the same as the old one.",
     ),
     (
         "plugin_reload",
-        "Load one Lua plugin of the user again. A plugin that does not run opens in a pane, and the answer gives the pane ID and the first thing the plugin shows. A plugin in an extension namespace loads without a pane, and the answer says whether it registered its hocus tools. A name with no file is an error. Use plugin_log to see what the plugin wrote.",
+        "Load one TypeScript or Lua plugin of the user again. A plugin that does not run opens in a pane, and the answer gives the pane ID and the first thing the plugin shows. A plugin in an extension namespace loads without a pane, and the answer says whether it registered its hocus tools. A name with no file is an error. Use plugin_log to see what the plugin wrote.",
     ),
     (
         "plugin_log",
-        "Show the last lines that a Lua plugin wrote with zellij.log or with print. The tool gives 50 lines.",
+        "Show the last lines that a plugin wrote with zellij.log. The tool gives 50 lines.",
     ),
     (
         "vm_list",
@@ -710,7 +710,7 @@ pub fn lookup(name: &str, extensions: &extensions::Registry) -> Option<String> {
         &tool.description,
         (tool.safety == Safety::Confirm).then_some(CONFIRMS),
         Some(format!(
-            "From the {} extension, which is a Lua plugin and not a part of hocus.",
+            "From the {} extension, which is a plugin and not a part of hocus.",
             tool.namespace
         )),
     ))

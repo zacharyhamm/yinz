@@ -210,12 +210,23 @@ fn shim_reply_readers_independently_require_decoder_entries() {
 }
 
 #[test]
+fn shipped_builtins_typecheck_offline() {
+    for (name, source) in zellij_config::consts::BUILTIN_DENO_PLUGINS {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../zellij-config/assets/plugins/{name}.ts"));
+        check_semantic_source(&path, source).unwrap();
+    }
+}
+
+#[test]
 fn shipped_async_example_typechecks_offline() {
-    for example in ["hello.ts", "forms.ts", "weather-extension.ts"] {
-        check_plugin(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../example-plugins/{example}")),
-        )
-        .unwrap();
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins");
+    for entry in std::fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        assert_ne!(path.extension().and_then(|s| s.to_str()), Some("lua"));
+        if path.extension().and_then(|s| s.to_str()) == Some("ts") {
+            check_plugin(&path).unwrap();
+        }
     }
 }
 
@@ -605,4 +616,16 @@ fn sdk_agent_and_completion_types_check_rust_completion_fixtures() {
     );
     let dir = tempfile::tempdir().unwrap();
     check_semantic_source(&dir.path().join("agents.ts"), &source).unwrap();
+}
+
+#[test]
+fn embedded_workflow_view_has_semantic_types_without_a_sibling_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("view.ts");
+    check_semantic_source(&path, "import {view} from 'zellij:workflow-view'; view.attach({directory:'/work'}); view.render(8,24);").unwrap();
+    assert!(check_semantic_source(
+        &path,
+        "import {view} from 'zellij:workflow-view'; view.attach({directory:42});"
+    )
+    .is_err());
 }

@@ -1899,7 +1899,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_write",
-            "Write Lua or JS/TS after syntax checking and confirmation. Show literal SDK permission requests before approval; grant after writing. Computed requests use runtime approval. Use .js/.mjs/.ts/.mts for Deno, otherwise Lua. Existing files need overwrite. name accepts folder/module. Use plugin_edit for edits, then plugin_reload.",
+            "Write Lua or JS/TS after syntax checking and confirmation. Show literal SDK permission requests before approval; grant after writing. Computed requests use runtime approval. Prefer explicit .ts filenames for new plugins. Extensionless names retain Lua compatibility. Existing files need overwrite. name accepts folder/module. Use plugin_edit for edits, then plugin_reload.",
             json!({
                 "type": "object",
                 "properties": {

@@ -11,94 +11,60 @@ use zellij_types::pane_size::Size;
 // queries are fixtures: terminal processes use this suite's fake PTYs. Pane creation,
 // replacement, input, hook delivery, rendering and the data store use the real host.
 fn fixture() -> String {
-    let bridge = zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap();
-    let exit = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
+    fn body(source: &str) -> String {
+        let mut source = source.to_owned();
+        while let Some(start) = source.find("import ") {
+            let end = start + source[start..].find(';').unwrap() + 1;
+            source.replace_range(start..end, "");
+        }
+        source
+            .replace("export default definePlugin", "return definePlugin")
+            .replace("export const view", "const view")
+    }
+    let bridge = body(zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap());
+    let exit = body(zellij_config::consts::builtin_deno_plugin("agent-exit").unwrap());
+    let view = body(include_str!(
+        "../../zellij-config/assets/plugins/workflow-view.ts"
+    ));
     format!(
-        "{}\nlocal bridge=(function()\n{bridge}\nend)()\nlocal hook=(function()\n{exit}\nend)()\n{}",
-        include_str!("swamp_exit_fixture.lua"),
+        "{}\nconst view=(()=>{{{view}\nreturn view;}})();\nconst bridge=(()=>{{{bridge}}})();\nconst hook=(()=>{{{exit}}})();\n{}",
+        include_str!("swamp_exit_fixture.ts"),
         r#"
-local M,source={}
-function M.load(config)
-  z.task(function()
-    z.await(z.async.permissions{'read_application_state','change_application_state','run_commands','write_to_stdin','read_cli_pipes','plugin_data','read_pane_contents','message_and_launch_other_plugins'})
-    bridge.load()
-    config.agent_cwd='/host'
-    token=config.agent_exit_token
-    source=tonumber(config.agent_pane_id)
-    hosts[#hosts+1]={terminal_id=source,attached=true,session_name=z.server_session,host_id='source-'..source,child_pid=100+source}
-    hook.load(config)
-  end)
-end
-function M.update(event) return hook.update(event) end
-function M.render(rows,cols) return hook.render(rows,cols) end
-function M.pipe(message)
-  if message.name=='agent_subscribe' then
-    z.message_to_plugin{destination_plugin_id=message.source.Plugin,message_name='agent_snapshot',message_payload='{"panes":[],"activity":{}}'}
-    return
-  elseif message.name=='swamp-pane-result' then
-    local reply=z.json.decode(message.payload,true)
-    if reply.choice=='started' then
-      assert(type(reply.pane_id)=='table' and reply.pane_id.Terminal==source,
-        'the fork picker must report the terminal it reused')
-    else
-      assert(reply.pane_id==z.null,'cancelled picker results must carry a null pane ID')
-    end
-    bridge.pipe(message)
-    if reply.choice=='cancelled' then
-      local result=call{method='lookup',work=reply.work,key=reply.key}
-      if result.outcome=='completed' then status='suspended';require('zellij.workflow_view').refresh() end
-    end
-    return
-  end
-  if message.name~='fixture' then hook.pipe(message);return end
-  z.task(function()
-    if message.payload=='fork' then
-      call{method='pane_action',work=token,key='fork',action='fork'}
-    elseif message.payload=='restart' then
-      z.rerun_command_pane(source)
-    elseif message.payload=='close-source' then
-      z.close_terminal_pane(source)
-    elseif message.payload=='manual-close-source' then
-      -- Manual picker operations have no persisted lifecycle view.
-      local uid=z.json.encode{z.get_plugin_ids().host_id,z.server_session,token,'view'}
-      z.data.apply(z.data.delete('delivery',z.data.eq('uid',uid)))
-      z.hide_pane_with_id(z.plugin_pane(z.get_plugin_ids().plugin_id))
-      z.close_terminal_pane(source)
-    elseif message.payload=='state' then
-      local result=call{method='lookup',work=token,key='fork'}
-      local pipe=message.source.Cli
-      z.cli_pipe_output(pipe,z.json.encode(result));z.unblock_cli_pipe_input(pipe)
-      return
-    elseif message.payload=='status' then
-      local pipe=message.source.Cli
-      z.cli_pipe_output(pipe,status);z.unblock_cli_pipe_input(pipe)
-      return
-    elseif message.payload=='agent' then
-      local agent=call{method='agent_spawn',work=token,key='worker',spec={kind='claude',cwd='/host',allow_outside_worktree=true}}
-      worker=agent.pane
-      emit('SessionStart')
-      call{method='agent_prompt',work=token,key='turn',agent='worker',prompt='work'}
-      step='agent'
-      require('zellij.workflow_view').refresh()
-    elseif message.payload=='test' then
-      step='test'
-      require('zellij.workflow_view').refresh()
-    elseif message.payload=='refresh-failed' then
-      refresh_failed=true
-      require('zellij.workflow_view').refresh()
-    elseif message.payload=='done' then
-      refresh_failed=false
-      step='choose'
-      emit('UserPromptSubmit','work')
-      emit('Stop')
-      status='suspended'
-      require('zellij.workflow_view').refresh()
-    end
-    local pipe=message.source.Cli
-    z.cli_pipe_output(pipe,'ok');z.unblock_cli_pipe_input(pipe)
-  end)
-end
-return M
+let source: number;
+export default definePlugin({
+  async load(config) {
+    await real.waitForPermissions(['ReadApplicationState','ChangeApplicationState','RunCommands','WriteToStdin','ReadCliPipes','PluginData','ReadPaneContents','MessageAndLaunchOtherPlugins']);
+    bridge.load(); config.agent_cwd='/host'; token=config.agent_exit_token;
+    source=Number(config.agent_pane_id);
+    hosts.push({terminal_id:source,attached:true,session_name:real.serverSession,host_id:'source-'+source,child_pid:100+source});
+    hook.load(config);
+  },
+  update: event => hook.update(event),
+  render: (rows,cols) => hook.render(rows,cols),
+  async pipe(message) {
+    if(message.name==='agent_subscribe') {
+      real.command('MessageToPlugin',{destination_plugin_id:message.source.Plugin,message_name:'agent_snapshot',message_payload:'{"panes":[],"activity":{}}'}); return;
+    }
+    if(message.name==='swamp-pane-result') {
+      bridge.pipe(message);
+      if(JSON.parse(message.payload).choice==='cancelled') {status='suspended';await view.refresh();}
+      return;
+    }
+    if(message.name!=='fixture') {hook.pipe?.(message);return;}
+    if(message.payload==='fork') await call({method:'pane_action',work:token,key:'fork',action:'fork'});
+    else if(message.payload==='restart') real.command('RerunCommandPane',source);
+    else if(message.payload==='close-source') real.command('CloseTerminalPane',source);
+    else if(message.payload==='agent') {
+      const agent=await call({method:'agent_spawn',work:token,key:'worker',spec:{kind:'claude',cwd:'/host',allow_outside_worktree:true}});
+      worker=agent.pane; emit('SessionStart');
+      await call({method:'agent_prompt',work:token,key:'turn',agent:'worker',prompt:'work'});
+    } else if(message.payload==='done') {emit('UserPromptSubmit','work');emit('Stop');status='suspended';await view.refresh();}
+    if(typeof message.source==='object' && 'Cli' in message.source) {
+      real.command('CliPipeOutput',[message.source.Cli,'ok']);real.command('UnblockCliPipeInput',message.source.Cli);
+    }
+  },
+});
+
 "#
     )
 }
@@ -135,7 +101,7 @@ fn swamp_exit_status_bar_tracks_mode_changes_while_the_workflow_view_is_active()
 fn swamp_exit_with_status_bar(status_bar: bool) {
     let root = zellij_integration_tests::test_env::init().join("swamp-exit");
     fs::create_dir_all(&root).unwrap();
-    let path = root.join("exit.lua");
+    let path = root.join("exit.ts");
     fs::write(&path, fixture()).unwrap();
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(

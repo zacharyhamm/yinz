@@ -1,4 +1,4 @@
-//! Filesystem modules share the checker boundary; embedded entrypoints can import only the SDK.
+//! Filesystem modules share the checker boundary; embedded entrypoints can import only explicitly registered modules.
 use super::limits;
 use deno_ast::{MediaType, ParseParams, ParsedSource};
 use deno_core::{
@@ -15,6 +15,10 @@ use std::{
 use zellij_runtime::errors::prelude::*;
 
 pub const SDK_SPECIFIER: &str = "zellij:plugin";
+pub(super) const WORKFLOW_SPECIFIER: &str = "zellij:workflow-view";
+pub(super) const WORKFLOW_PATH: &str = "/__zellij_builtin__/workflow-view.ts";
+pub(super) const WORKFLOW_SOURCE: &str =
+    include_str!("../../../../zellij-config/assets/plugins/workflow-view.ts");
 
 pub struct PluginModuleLoader {
     root: PathBuf,
@@ -67,13 +71,17 @@ impl PluginModuleLoader {
         if let Some(source) = self.sources.borrow().get(url.as_str()) {
             return Ok(source.clone());
         }
-        let source = match self
-            .entry_source
-            .as_ref()
-            .filter(|_| url == self.entrypoint())
-        {
-            Some(source) => source.clone(),
-            None => limits::read_source(&self.local_path(url, declarations)?)?,
+        let source = if url.as_str() == WORKFLOW_SPECIFIER {
+            WORKFLOW_SOURCE.to_owned()
+        } else {
+            match self
+                .entry_source
+                .as_ref()
+                .filter(|_| url == self.entrypoint())
+            {
+                Some(source) => source.clone(),
+                None => limits::read_source(&self.local_path(url, declarations)?)?,
+            }
         };
         let mut sources = self.sources.borrow_mut();
         let total: usize = sources.values().map(String::len).sum();
@@ -126,7 +134,7 @@ impl PluginModuleLoader {
     pub(super) fn local_path(&self, url: &ModuleSpecifier, declarations: bool) -> Result<PathBuf> {
         if self.embedded {
             bail!(
-                "embedded plugin {} cannot load module {url}; only zellij:plugin is supported",
+                "embedded plugin {} cannot load module {url}; only registered embedded modules are supported",
                 self.entrypoint
             );
         }
@@ -164,11 +172,15 @@ impl PluginModuleLoader {
         referrer: &str,
         declarations: bool,
     ) -> Result<ModuleSpecifier> {
+        if specifier == WORKFLOW_SPECIFIER {
+            return ModuleSpecifier::parse(WORKFLOW_SPECIFIER)
+                .context("resolve embedded workflow view");
+        }
         if specifier == SDK_SPECIFIER {
             return ModuleSpecifier::parse(SDK_SPECIFIER).context("resolve embedded plugin SDK");
         }
-        if self.embedded {
-            bail!("unsupported import {specifier:?} from {referrer}: embedded plugins may import only zellij:plugin");
+        if self.embedded || referrer == WORKFLOW_SPECIFIER {
+            bail!("unsupported import {specifier:?} from {referrer}: embedded plugins may import only registered modules (zellij:plugin, zellij:workflow-view)");
         }
         if !(specifier.starts_with("./") || specifier.starts_with("../"))
             || specifier.contains(['\\', '?', '#'])
@@ -192,7 +204,9 @@ impl PluginModuleLoader {
             super::SDK_MODULE.to_owned()
         } else {
             // Resolve again at load time: a symlink may have changed since resolve.
-            let path = if self.embedded && url == self.entrypoint() {
+            let path = if url.as_str() == WORKFLOW_SPECIFIER {
+                PathBuf::from(WORKFLOW_PATH)
+            } else if self.embedded && url == self.entrypoint() {
                 self.root.clone()
             } else if url == self.entrypoint() && self.entry_source.is_some() {
                 url.to_file_path()

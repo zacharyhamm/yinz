@@ -436,13 +436,13 @@ load_plugins {
 //               arrives as configuration: agent_pane_id, agent_cwd,
 //               agent_exit_code, agent_command.
 //
-// The default is a Lua plugin shipped with zellij. Your own is a plugin you
-// write into your plugin folder - `zellij-config/assets/plugins/agent-exit.lua`
+// The default is a TypeScript plugin shipped with zellij. Your own is a plugin you
+// write into your plugin folder - `zellij-config/assets/plugins/agent-exit.ts`
 // is the reference implementation to read - and then bind here by name. See
-// docs/LUA_PLUGINS.md.
+// docs/DENO_PLUGINS.md.
 hooks {
     agent_exit "zellij:agent-exit"
-    // agent_exit "file:my-agent-exit.lua"   // from your plugin folder
+    // agent_exit "file:my-agent-exit.ts"   // from your plugin folder
     // agent_exit ""   // turn it off: the pane just holds
 
     // context_menu  a right-click asked for a menu. Unlike agent_exit this plugin

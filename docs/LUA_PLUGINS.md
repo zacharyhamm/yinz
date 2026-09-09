@@ -1,7 +1,8 @@
 # Lua plugins
 
 Zellij runs Wasm, Lua, and [JavaScript and TypeScript](DENO_PLUGINS.md) plugins.
-Most builtins use Wasm. Four builtins use Lua, and `zellij:context-menu` uses embedded TypeScript.
+Most builtins use Wasm. All script builtins and reference examples now use TypeScript.
+This guide retains the Lua API for existing plugins. Use explicit `.ts` filenames for new plugins.
 A Lua plugin is a script file that needs no separate build step.
 
 All three runtimes receive the same public events and host commands, with the same permission checks.
@@ -349,7 +350,7 @@ Underneath it is one command, usable on its own: `zellij.run_command_in_pane { p
 context, keep_scrollback }` runs a *different* command in an existing (held) command pane,
 keeping the pane's id. The `context` round-trips on the resulting `command_pane_exited`, and a
 replacement sent while the pane's command is still running starts when it exits (last write
-wins). `example-plugins/workflow.lua` (`section=example_workflow`) is the worked example.
+wins). `example-plugins/workflow.ts` (`section=example_workflow`) is the worked example.
 
 ### Permissions
 
@@ -440,7 +441,7 @@ A plugin of your own goes in the plugin folder, written there with `plugin_write
 these from a checkout instead:
 
 ```sh
-zellij plugin --floating -- file:$PWD/example-plugins/clock.lua
+zellij plugin --floating -- file:$PWD/example-plugins/clock.ts
 ```
 
 ## Tasks
@@ -506,8 +507,8 @@ event still arrives asynchronously.
 ## Agents
 
 A plugin can run coding agents in panes and drive them to an outcome: spawn one, hear what it
-says, hand it the next thing, and read its state off the pane. `example-plugins/agent-harness.lua`
-is all of this in ninety lines.
+says, hand it the next thing, and read its state off the pane. `example-plugins/agent-harness.ts`
+shows the TypeScript equivalent.
 
 ### Spawning
 
@@ -661,7 +662,7 @@ for _ = 1, 5 do                              -- a bound, not `while true`: it is
 end
 ```
 
-`example-plugins/hocus-complete.lua` is that loop as a working pane.
+`example-plugins/hocus-complete.ts` is that loop as a working pane.
 
 **The reply.** `{ content, tool_calls, finish_reason, usage, model }` on success, and
 `{ error = "..." }` on anything else — no API key, a rate limit, a refusal, a timeout. `error`
@@ -848,7 +849,7 @@ Markdown does not change the cursor. Render the active form to place or hide it.
 Run the interactive form and Markdown demo from the checkout in a session built from this branch:
 
 ```sh
-zellij plugin --floating -- "file:$PWD/example-plugins/forms.lua"
+zellij plugin --floating -- "file:$PWD/example-plugins/forms.ts"
 ```
 
 The demo uses every form widget. Preview renders the submitted settings and Markdown description after confirmation.
@@ -1098,8 +1099,8 @@ local todos = data.fetch {
 }
 ```
 
-`example-plugins/hocus-todos.lua` is a working read-only plugin over exactly this, and
-`example-plugins/hocus-notes.lua` is the same over the notes and their side tables.
+`example-plugins/hocus-todos.ts` is a working read-only plugin over exactly this, and
+`example-plugins/hocus-notes.ts` is the same over the notes and their side tables.
 
 **Read these; do not write them.** Nothing blocks a write, but hocus maintains invariants the
 rows do not carry - list caps, tree shape, project discovery, a note's tags and links - so a
@@ -1530,7 +1531,7 @@ still under way is held for the loading instance and delivered once it is up, in
 points firing within a few milliseconds of each other reach one plugin, not two.
 
 **Quickstart.** A headless hook ships with zellij, `zellij:agent-policy`
-(`zellij-config/assets/plugins/agent-policy.lua` in the source tree). It logs every firing it
+(`zellij-config/assets/plugins/agent-policy.ts` in the source tree). It logs every firing it
 receives and raises a notification when an agent stops for a question. Nothing binds it by
 default. To see the shape work, from a shell in the session:
 
@@ -1688,8 +1689,8 @@ hooks {
 
 which leaves the pane simply holding, as any other command pane does.
 
-The shipped `agent_exit` hook is itself a Lua plugin - `zellij-config/assets/plugins/agent-exit.lua`
-in the source tree. `example-plugins/agent-commit.lua` is a small commit-only example
+The shipped `agent_exit` hook is a TypeScript plugin - `zellij-config/assets/plugins/agent-exit.ts`
+in the source tree. `example-plugins/agent-commit.ts` is a small commit-only example
 (`plugin_docs section=example_agent_commit`). Read them; do not copy them. Your own hook is a
 plugin you write: `plugin_write name=my-agent-exit`, then bind it. A file-loaded copy needs
 permissions for commands, project config reads outside its directory, pane state and changes,
