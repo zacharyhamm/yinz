@@ -199,6 +199,84 @@ shutil.copy(source / '.zellij/.swamp-workflows.kdl', main / '.zellij/.swamp-work
 (main / '.git/info/exclude').write_text('.swamp*\n.gitignore\nextensions/\nworkflows/\nmodels/\n.zellij/\nAGENTS.md\nCLAUDE.md\n')
 for name in ('agent-work', 'review-integration', 'question', 'agent-exit'):
     swamp('workflow', 'validate', '@hammz/zellij-' + name)
+if args.source_diff_only:
+    # Exercise the exact workflow argv with a capturing pager, so assertions cover
+    # all output (including lines outside the terminal viewport).
+    workflow = swamp('workflow', 'get', '@hammz/zellij-review-integration')
+    diff = next(s['task']['inputs'] for j in workflow['jobs'] for s in j['steps'] if s['name'] == 'diff')
+    assert diff['cwd'] == '${{ inputs.checkout }}'
+    for name in ('agent-exit', 'review-integration'):
+        definition = swamp('workflow', 'get', '@hammz/zellij-' + name)
+        for job in definition['jobs']:
+            for step in job['steps']:
+                task = step['task']
+                if task.get('methodName') == 'continue_flow':
+                    assert task['inputs']['inputs']['checkout'] == '${{ inputs.checkout }}'
+    pager_bin = root / 'capture-bin'
+    pager_bin.mkdir()
+    pager = pager_bin / 'less'
+    pager.write_text('#!/bin/bash\ncat -- "${@: -1}"\n')
+    pager.chmod(0o755)
+    sibling = root / 'sibling'
+    run('git', 'worktree', 'add', '-b', 'sibling', sibling)
+    viewer_tmp = topic / 'tmp [viewer]'
+    viewer_tmp.mkdir()
+    viewer_env = dict(env, TMPDIR=str(viewer_tmp), PATH=str(pager_bin) + os.pathsep + env['PATH'])
+    argv = [str(topic) if a == '${{ inputs.checkout }}' else a for a in diff['argv']]
+
+    def capture(overrides=None, checkout=topic):
+        result = subprocess.run(argv[:-1] + [str(checkout)], cwd=main,
+                                env=dict(viewer_env, **(overrides or {})),
+                                text=True, capture_output=True, timeout=30)
+        assert not list(viewer_tmp.iterdir()), 'Viewer must remove all temporary files'
+        return result
+
+    (topic / 'file').write_text('base\n')
+    clean = capture()
+    assert clean.returncode == 0, clean.stderr
+    assert 'No unstaged or untracked changes.' in clean.stdout
+    assert 'diff --git' not in clean.stdout
+    nested = topic / "nested 'repo\nname"
+    run('git', 'init', nested)
+    (nested / 'private').write_text('NESTED CONTENT MUST NOT APPEAR\n')
+    result = capture()
+    assert result.returncode == 0, result.stderr
+    assert 'Untracked nested repository:' in result.stdout
+    assert "\\nname/" in result.stdout, result.stdout
+    assert 'NESTED CONTENT' not in result.stdout
+    assert 'No unstaged or untracked changes.' not in result.stdout
+    shutil.rmtree(nested)
+    for directory, label in ((main, 'MAIN'), (sibling, 'SIBLING'), (topic, 'AGENT')):
+        (directory / 'file').write_text(label + ' TRACKED\n')
+        (directory / ('-untracked ' + label + '\nfile')).write_text(label + ' UNTRACKED\n')
+    (topic / 'second').write_text('STAGED MUST NOT APPEAR\n')
+    run('git', 'add', 'second', cwd=topic)
+
+    def repository_state(directory):
+        return [run('git', *args, cwd=directory).stdout for args in (
+            ('status', '--porcelain=v1'), ('diff',), ('diff', '--cached'), ('rev-parse', 'HEAD'))]
+
+    before = [repository_state(d) for d in (main, sibling, topic)]
+    for other in (None, main, sibling):
+        overrides = {} if other is None else dict(
+            GIT_DIR=run('git', 'rev-parse', '--absolute-git-dir', cwd=other).stdout.strip(),
+            GIT_WORK_TREE=str(other), GIT_COMMON_DIR=str(main / '.git'),
+            GIT_INDEX_FILE=run('git', 'rev-parse', '--path-format=absolute', '--git-path', 'index', cwd=other).stdout.strip(),
+            GIT_OBJECT_DIRECTORY=str(main / '.git/objects'))
+        result = capture(overrides)
+        assert result.returncode == 0, result.stderr
+        assert 'AGENT TRACKED' in result.stdout and 'AGENT UNTRACKED' in result.stdout
+        assert not any(label in result.stdout for label in ('MAIN', 'SIBLING', 'STAGED MUST', 'zellij-show-diff.'))
+        assert [repository_state(d) for d in (main, sibling, topic)] == before
+    missing = capture(checkout=root / 'missing-checkout')
+    assert missing.returncode != 0 and 'checkout unavailable' in missing.stderr
+    for directory, label in ((main, 'MAIN'), (sibling, 'SIBLING'), (topic, 'AGENT')):
+        (directory / 'file').write_text('base\n')
+        (directory / ('-untracked ' + label + '\nfile')).unlink()
+    (topic / 'second').write_text('base\n')
+    run('git', 'reset', '--', 'second', cwd=topic)
+    (topic / 'file').write_text('topic\n')
+    print('PASS: exact viewer argv isolates checkout and index, quotes nested repositories, excludes its own TMPDIR, and fails for a missing checkout', flush=True)
 (root / 'config/zellij').mkdir(exist_ok=True)
 (root / 'config/zellij/config.kdl').write_text('show_release_notes false\nshow_startup_tips false\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/zellij-firecracker')) + '\n')
 observer = root / 'snapshot.lua'
@@ -312,7 +390,7 @@ try:
             second_contents = (topic / 'second').read_text()
             (topic / 'second').write_text('staged changes stay outside Show diff\n')
             run('git', 'add', 'second', cwd=topic)
-            (topic / 'untracked-diff-fixture').write_text('untracked changes stay outside Show diff\n')
+            untracked = topic / 'untracked diff\nfixture'
             staged = run('git', 'diff', '--cached', cwd=topic).stdout
             # The viewer must ignore both Git's pager and less's auto-exit options.
             run('git', 'config', 'core.pager', 'false')
@@ -321,12 +399,18 @@ try:
                                         ('long', ''.join(f'foreground diff line {i:03d}\n' for i in range(200))),
                                         ('empty', '')]:
                     (topic / 'file').write_text(base_contents + addition)
+                    if shape == 'empty':
+                        if untracked.exists():
+                            untracked.unlink()
+                    else:
+                        untracked.write_text('untracked diff contents\n')
                     for dismiss in ('q', 'Esc'):
                         expected = run('git', 'diff', '--no-ext-diff', cwd=topic).stdout
                         previous = choose(token, 'prepare', 'show-diff')
                         def viewer():
                             return next((p for p in json.loads(zellij('action', 'list-panes', '--json'))
                                          if not p['is_plugin'] and not p['exited']
+                                         and (not view or not p['is_suppressed'])
                                          and '--lesskey-src=' in (p.get('terminal_command') or '')), None)
                         terminal = until('persistent diff viewer', viewer)
                         pane = 'terminal_' + str(terminal['id'])
@@ -343,9 +427,10 @@ try:
                             assert next(p for p in panes if p['is_plugin'] and p['id'] == view['id'])['is_suppressed']
                         def screen():
                             return zellij('action', 'dump-screen', '--pane-id', pane)
-                        until('viewer renders ' + shape, lambda: ('No unstaged changes' if shape == 'empty'
+                        until('viewer renders ' + shape, lambda: ('No unstaged or untracked changes.' if shape == 'empty'
                               else 'foreground diff line') in screen())
                         until('viewer prompt', lambda: 'q to return' in screen())
+                        assert 'staged changes stay outside Show diff' not in screen()
                         if shape == 'long':
                             first = screen()
                             send(b'\x1b[B')
@@ -354,6 +439,9 @@ try:
                             until('up arrow scrolls back', lambda: screen() == first)
                             send(b'/foreground diff line 190\r')
                             until('search finds later line', lambda: 'foreground diff line 199' in screen())
+                        if shape != 'empty':
+                            send(b'/untracked diff contents\r')
+                            until('untracked contents render', lambda: 'untracked diff contents' in screen())
                         # This is a persistence assertion: short/empty output must not auto-exit.
                         time.sleep(1)
                         assert viewer(), (shape, dismiss)
@@ -369,15 +457,19 @@ try:
                         assert (topic / 'file').read_text() == base_contents + addition
                         assert run('git', 'diff', '--no-ext-diff', cwd=topic).stdout == expected
                         assert run('git', 'diff', '--cached', cwd=topic).stdout == staged
-                        assert (topic / 'untracked-diff-fixture').read_text() == 'untracked changes stay outside Show diff\n'
+                        if shape == 'empty':
+                            assert not untracked.exists()
+                        else:
+                            assert untracked.read_text() == 'untracked diff contents\n'
                         assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout == before_head
-                        assert not list((root / 'tmp').glob('zellij-show-diff.*'))
+                        assert not list(Path(env['TMPDIR']).glob('zellij-show-diff.*'))
                         print('PASS:', token, shape, dismiss, 'persists and restores preparation without mutation', flush=True)
             finally:
                 (topic / 'file').write_text(contents)
                 (topic / 'second').write_text(second_contents)
                 run('git', 'reset', '--', 'second', cwd=topic)
-                (topic / 'untracked-diff-fixture').unlink()
+                if untracked.exists():
+                    untracked.unlink()
                 run('git', 'config', '--unset', 'core.pager')
             assert run('git', 'status', '--porcelain=v1', cwd=topic).stdout == before_diff
 
