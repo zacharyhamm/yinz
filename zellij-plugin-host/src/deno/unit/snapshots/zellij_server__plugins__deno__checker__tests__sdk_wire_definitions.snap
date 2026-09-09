@@ -264,7 +264,8 @@ ProjectConfigRead = 282;
 ProjectConfigWrite = 283;
 SetRelatedPanes = 284;
 ArrangeProjectPanes = 285;
-CheckPlugin = 286;
+SubscribePaneOutput = 286;
+CheckPlugin = 287;
 }
 message PluginCommand {
 reserved 108, 109, 110, 164, 165, 167, 173, 187;
@@ -460,7 +461,7 @@ GrantPluginPermissionsPayload grant_plugin_permissions_payload = 210;
 SetContextMenuPayload set_context_menu_payload = 211;
 string register_default_keybindings_payload = 212;
 CheckLuaPluginPayload check_lua_plugin_payload = 213;
-CheckPluginPayload check_plugin_payload = 227;
+CheckPluginPayload check_plugin_payload = 228;
 SetPaneAgentPayload set_pane_agent_payload = 214;
 string reload_plugin_by_url_payload = 215;
 ReadPluginLogPayload read_plugin_log_payload = 216;
@@ -474,6 +475,7 @@ string project_config_read_payload = 223;
 ProjectConfigWritePayload project_config_write_payload = 224;
 SetRelatedPanesPayload set_related_panes_payload = 225;
 ArrangeProjectPanesPayload arrange_project_panes_payload = 226;
+PaneOutputSubscription pane_output_subscription = 227;
 }
 }
 message FsReadPayload {
@@ -1101,6 +1103,7 @@ repeated EnvVariable env_variables = 2;
 string cwd = 3;
 repeated ContextItem context = 4;
 optional uint64 max_output_bytes = 5;
+optional bool stream_output = 6;
 }
 message WebRequestPayload {
 string url = 1;
@@ -1688,6 +1691,10 @@ string name = 2;
 optional string configuration_root = 3;
 repeated uint32 pane_ids = 4;
 }
+message PaneOutputSubscription {
+bool enabled = 1;
+repeated ContextItem context = 2;
+}
 message ArrangeProjectPanesPayload { repeated ProjectPaneGroup groups = 1; }
 message CheckPluginPayload {
 string name = 1;
@@ -1767,6 +1774,8 @@ ContextMenuItemSelected = 56;
 Hook = 57;
 AgentEvent = 58;
 ModifiersHeld = 59;
+RunCommandOutput = 60;
+PaneOutput = 61;
 }
 message EventNameList {
 repeated EventType event_types = 1;
@@ -1823,7 +1832,19 @@ ContextMenuItemSelectedPayload context_menu_item_selected_payload = 50;
 HookPayload hook_payload = 51;
 AgentEventPayload agent_event_payload = 52;
 ModifiersHeldPayload modifiers_held_payload = 53;
+RunCommandOutputPayload run_command_output_payload = 54;
+PaneOutputPayload pane_output_payload = 55;
 }
+}
+message PaneOutputPayload {
+uint32 pane_id = 1;
+bytes data = 2;
+repeated ContextItem context = 3;
+}
+message RunCommandOutputPayload {
+bytes data = 1;
+bool stderr = 2;
+repeated ContextItem context = 3;
 }
 message ModifiersHeldPayload {
 repeated api.key.Key.KeyModifier modifiers = 1;

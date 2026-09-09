@@ -327,6 +327,7 @@ fn close_plugin_instance(
     }
 
     running_plugin.lock().unwrap().dispose();
+    let _ = senders.send_to_screen(ScreenInstruction::UnsubscribePaneOutput(plugin_id));
     drop(running_plugin);
     drop(subscriptions);
 }
@@ -1264,6 +1265,8 @@ impl WasmBridge {
                         }
                     }
                 }
+                // A replacement must opt in again, including when BeforeClose resubscribed.
+                let _ = senders.send_to_screen(ScreenInstruction::UnsubscribePaneOutput(plugin_id));
                 match PluginLoader::new(
                     skip_cache,
                     loading_context,

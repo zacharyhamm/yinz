@@ -8984,8 +8984,7 @@ fn swamp_closing_owned_panes_cancels_the_lifecycle_and_rejects_late_results() {
 
 #[test]
 fn workflow_scroll_indicators_track_wrapped_rows_and_stay_above_pinned_controls() {
-    let plugin =
-        load(include_str!("workflow_view.lua")).unwrap();
+    let plugin = load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -9140,8 +9139,7 @@ end
 
 #[test]
 fn workflow_stream_tail_preserves_utf8_and_status_while_scrolled() {
-    let plugin =
-        load(include_str!("workflow_view.lua")).unwrap();
+    let plugin = load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()

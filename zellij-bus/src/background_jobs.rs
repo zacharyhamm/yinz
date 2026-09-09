@@ -221,6 +221,103 @@ mod command_output_tests {
         assert!(received.try_recv().is_err());
     }
 
+    #[test]
+    fn real_command_streams_before_exit_with_generation_and_drains_beyond_cap() {
+        use std::io::Write;
+        use std::os::unix::ffi::OsStrExt;
+        use zellij_runtime::channels::{unbounded, SenderWithContext};
+        let directory = tempfile::tempdir().unwrap();
+        let fifo = directory.path().join("release");
+        let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let mut release = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&fifo)
+            .unwrap();
+        let (jobs, receiver) = unbounded();
+        let jobs = SenderWithContext::new(jobs);
+        let (events, received) = unbounded();
+        let events = SenderWithContext::new(events);
+        let mut bus = Bus::new(
+            vec![receiver],
+            None,
+            None,
+            Some(&events),
+            None,
+            None,
+            None,
+            None,
+        );
+        bus.senders.should_silently_fail = true;
+        let worker = std::thread::spawn(move || background_jobs_main(bus, None, true));
+        let context = BTreeMap::from([("operation".into(), "live".into())]);
+        jobs.send(BackgroundJob::RunCommand(
+            PluginId::new(1),
+            ClientId::new(2),
+            "/bin/sh".into(),
+            vec![
+                "-c".into(),
+                "printf out; printf err >&2; read line < \"$1\"; printf tail; printf tail >&2"
+                    .into(),
+                "sh".into(),
+                fifo.display().to_string(),
+            ],
+            BTreeMap::new(),
+            directory.path().to_owned(),
+            context.clone(),
+            Some(2),
+            Some(true),
+            Some(42),
+        ))
+        .unwrap();
+        let mut stdout = vec![];
+        let mut stderr = vec![];
+        let mut released = false;
+        loop {
+            let (instruction, _) = received.recv_timeout(Duration::from_secs(10)).unwrap();
+            let PluginInstruction::DenoEvent(plugin, client, generation, event) = instruction
+            else {
+                panic!("live output must carry its generation: {instruction:?}");
+            };
+            assert_eq!(
+                (plugin, client, generation),
+                (PluginId::new(1), ClientId::new(2), 42)
+            );
+            match event {
+                Event::RunCommandOutput {
+                    data,
+                    stderr: is_stderr,
+                    context: actual,
+                } => {
+                    assert_eq!(actual, context);
+                    if is_stderr {
+                        stderr.extend(data);
+                    } else {
+                        stdout.extend(data);
+                    }
+                    if !released && stdout == b"out" && stderr == b"err" {
+                        // The child cannot exit until we observe both live chunks.
+                        release.write_all(b"go\n").unwrap();
+                        released = true;
+                    }
+                },
+                Event::RunCommandResult(Some(0), out, err, actual) => {
+                    assert!(released);
+                    assert_eq!(actual, context);
+                    assert!(out.len() <= 2 && err.len() <= 2);
+                    break;
+                },
+                event => panic!("unexpected event: {event:?}"),
+            }
+        }
+        assert_eq!(stdout, b"outtail");
+        assert_eq!(stderr, b"errtail");
+        jobs.send(BackgroundJob::Exit).unwrap();
+        worker.join().unwrap().unwrap();
+        assert!(received.try_recv().is_err());
+    }
+
     #[tokio::test]
     async fn chunks_arrive_before_exit_and_both_streams_drain_after_release() {
         let (mut out, stdout) = tokio::io::duplex(8);
@@ -634,16 +731,18 @@ pub fn background_jobs_main(
                             })?;
                             let emit = |stderr, data: &[u8]| {
                                 if stream_output == Some(true) {
-                                    let _ =
-                                        senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                            Some(plugin_id),
-                                            Some(client_id),
+                                    let _ = senders.send_to_plugin(
+                                        PluginInstruction::for_plugin_event(
+                                            plugin_id,
+                                            client_id,
+                                            deno_generation,
                                             Event::RunCommandOutput {
                                                 data: data.to_vec(),
                                                 stderr,
                                                 context: context.clone(),
                                             },
-                                        )]));
+                                        ),
+                                    );
                                 }
                             };
                             let (stdout, stderr, status) = tokio::join!(
@@ -3121,6 +3220,7 @@ mod web_request_stream_tests {
                 vec![],
                 BTreeMap::new(),
                 Some(stream_id.to_owned()),
+                None,
                 None,
             )
         };

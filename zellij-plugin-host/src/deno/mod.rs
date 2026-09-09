@@ -820,6 +820,91 @@ mod sdk_tests {
     }
 
     #[test]
+    fn command_output_callbacks_correlate_clients_and_release_listeners() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+          globalThis.chunks=[]; globalThis.results=[]; globalThis.errors=[]; globalThis.operations=[]; globalThis.raw=[];
+          bind({load({tag}) {
+            operations.push(zellij.runCommand({command:['true'], context:{tag}, onOutput(output) {
+              check(output.data instanceof Uint8Array && !('__zellij_async' in output.context));
+              chunks.push([tag, zellij.getPluginIds().client_id, [...output.data], output.stderr]);
+              if(tag==='throws') throw Error('callback failed');
+              return true;
+            }}));
+            operations.at(-1).then(r=>results.push(r),e=>errors.push(e.message));
+          }});
+          zellij.on('RunCommandOutput', payload=>{raw.push(payload);});
+          for(const [i,tag] of ['one','two','cancel','throws'].entries()) bridge('load',{tag},i+1);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            r#"
+          globalThis.commands=sent.filter(([c])=>c.RunCommand).map(([c])=>c.RunCommand);
+          check(commands.length===4 && commands.every(c=>c.length===6 && c[5]===true));
+          globalThis.emit=(index,stderr=false)=>bridge('update',{RunCommandOutput:{data:[0,128,255],stderr,context:index===null?{}:commands[index][3]}},9);
+          globalThis.finish=index=>bridge('update',{RunCommandResult:[7,[1],[2],commands[index][3]]},9);
+          emit(null); emit(1,true); emit(0); operations[2].cancel(); emit(2); emit(3); emit(3);
+          check(chunks.length===3 && chunks[0][0]==='two' && chunks[0][1]===2 && chunks[0][3]);
+          check(chunks[1][0]==='one' && chunks[1][1]===1 && chunks[1][2].join()==='0,128,255');
+          check(raw.length===6 && raw[1].context.__zellij_async===commands[1][3].__zellij_async);
+          bind({load(){zellij.unsubscribe(['RunCommandOutput','RunCommandResult']);}}); bridge('load',{},1);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            r#"
+          check(sent.at(-1)[0].Unsubscribe.length===0);
+          finish(1); finish(0); finish(2); finish(3); emit(0); emit(1);
+          bridge('load',{},1);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            r#"
+          check(chunks.length===3 && results.length===2 && errors.join()==='operation cancelled,callback failed');
+          check(results[0].exitCode===7 && results[0].stdout[0]===1 && results[0].stderr[0]===2);
+          check(results[0].context.tag==='two' && !('__zellij_async' in results[0].context));
+          check(sent.at(-1)[0].Unsubscribe.join()==='RunCommandOutput,RunCommandResult');
+        "#,
+        );
+    }
+
+    #[test]
+    fn raw_command_output_accepts_legacy_and_explicit_streaming_forms() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+          bind({load() {
+            const legacy=Object.freeze([['true'],{},'/host',{},null]);
+            zellij.command('RunCommand',legacy); zellij.command({RunCommand:legacy});
+            check(legacy.length===5);
+            let rejected=false;
+            try {zellij.command({RunCommand:legacy, extra:NaN});} catch {rejected=true;}
+            check(rejected);
+            zellij.command('RunCommand',[...legacy,true]); zellij.command({RunCommand:[...legacy,false]});
+            const buffered=zellij.runCommand({command:['true']}); buffered.catch(()=>{}); buffered.cancel();
+          }}); bridge('load',{},1);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            r#"
+          const commands=sent.filter(([c])=>c.RunCommand).map(([c])=>c.RunCommand);
+          check(commands.length===5 && commands.every(c=>c.length===6));
+          check(commands.map(c=>c[5]).join()===',,true,false,');
+        "#,
+        );
+    }
+
+    #[test]
     fn async_requests_correlate_out_of_order_replies_and_preserve_wire_payloads() {
         let mut runtime = sdk();
         run(
@@ -1037,7 +1122,7 @@ mod sdk_tests {
                 r#"
                 globalThis.errors = []; globalThis.operations = [];
                 bind({ load() {
-                    operations = [zellij.runCommand({command: ['true']}), zellij.webRequest({url: 'https://example.com'}), zellij.sleep(0)];
+                    operations = [zellij.runCommand({command: ['true'], onOutput() {throw Error('failed dispatch emitted output');}}), zellij.webRequest({url: 'https://example.com'}), zellij.sleep(0)];
                     for (const promise of operations) promise.catch(error => { errors.push(error.message); });
                 } });
                 bridge('load', {}, 1);
@@ -1048,17 +1133,22 @@ mod sdk_tests {
                 &mut runtime,
                 r#"
                 bind({load() {
-                    zellij.unsubscribe(['RunCommandResult', 'WebRequestResult', 'Timer']);
+                    zellij.unsubscribe(['RunCommandOutput', 'RunCommandResult', 'WebRequestResult', 'Timer']);
                     for (const promise of operations) promise.cancel();
-                    zellij.unsubscribe(['RunCommandResult', 'WebRequestResult', 'Timer']);
+                    zellij.unsubscribe(['RunCommandOutput', 'RunCommandResult', 'WebRequestResult', 'Timer']);
                 }});
                 bridge('load', {}, 1);
             "#,
             );
             capture_commands(&mut runtime);
             let expected = match command {
-                "Subscribe" => json!(["RunCommandResult", "WebRequestResult", "Timer"]),
-                "RunCommand" => json!(["RunCommandResult"]),
+                "Subscribe" => json!([
+                    "RunCommandOutput",
+                    "RunCommandResult",
+                    "WebRequestResult",
+                    "Timer"
+                ]),
+                "RunCommand" => json!(["RunCommandOutput", "RunCommandResult"]),
                 "WebRequest" => json!(["WebRequestResult"]),
                 "SetTimeout" => json!(["Timer"]),
                 _ => unreachable!(),
@@ -1069,7 +1159,7 @@ mod sdk_tests {
                     r#"
                 const unsubscribes = sent.filter(([cmd]) => cmd.Unsubscribe).map(([cmd]) => cmd.Unsubscribe);
                 check(JSON.stringify(unsubscribes[0]) === JSON.stringify({expected}));
-                check(unsubscribes[1].length === 3);
+                check(unsubscribes[1].length === 4);
             "#
                 ),
             );
@@ -1279,6 +1369,7 @@ mod sdk_tests {
             check(zellij.decodeUtf8(new Uint8Array([255])) === '\uFFFD');
             globalThis.errors = [];
             const invalid = [
+                () => zellij.runCommand({command: ['true'], onOutput: true}),
                 () => zellij.runCommand(null), () => zellij.runCommand({command: []}),
                 () => zellij.runCommand({command: ['', 'arg']}), () => zellij.runCommand({command: [3]}),
                 () => zellij.runCommand({command: ['true'], envVariables: {A: 1}}),

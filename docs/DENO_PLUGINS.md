@@ -123,10 +123,44 @@ try {
 }
 ```
 
-`runCommand` accepts `command` as a nonempty argv array, plus optional `envVariables`, `cwd`, `context`, and `maxBytesReturned`.
+`runCommand` accepts `command` as a nonempty argv array, plus optional `envVariables`, `cwd`, `context`, `maxBytesReturned`, and `onOutput`.
 The maps default to empty objects. The working directory defaults to `/host`. The host supplies the default output limit.
 `maxBytesReturned` sets the limit for each output stream and must be a nonnegative safe integer.
 The result contains `exitCode`, `stdout`, `stderr`, and `context`. Output streams are `Uint8Array` values. `exitCode` can be `null`.
+
+Supply `onOutput({data, stderr, context})` to receive live command output. `data` is a `Uint8Array`.
+Callbacks run synchronously in delivery order under the client that started the command. Return values are ignored, including promises.
+A synchronous exception rejects the command promise. Completion waits for stdout and stderr to drain.
+`maxBytesReturned` limits buffered results only. Live chunks continue beyond that limit.
+Completion, cancellation, and failures remove helper listeners. Cancellation stops observation without killing the host process.
+Callback context omits `__zellij_async`. Ordinary event handlers still receive unchanged `RunCommandOutput` events.
+
+```ts
+const result = await zellij.runCommand({
+  command: ["/usr/bin/printf", "hello"],
+  onOutput({data, stderr}) { zellij.log(`${stderr ? "stderr" : "stdout"}: ${data.length} bytes`); },
+});
+```
+
+Both raw command forms accept `RunCommand: [argv, env, cwd, context, maxBytesReturned, streamOutput]`.
+Use `true` for live events, or `false`/`null` for buffered output. Existing five-field calls remain supported.
+
+To observe command panes, request `ReadPaneContents`, subscribe to `PaneOutput`, then register a nonempty context filter:
+
+```ts
+zellij.subscribe(["PaneOutput"]);
+const off = zellij.on("PaneOutput", ({pane_id, data, context}) => {
+  zellij.log(`pane ${pane_id}: ${data.length} bytes`);
+});
+zellij.command("SubscribePaneOutput", {work: "one"});
+// Later, stop host observation and remove this handler:
+zellij.command("SubscribePaneOutput", null);
+off();
+```
+
+Every filter entry must match the command pane's launch context. Raw `PaneOutput.data` is a JSON byte array.
+A new registration replaces that plugin/client pair's filter. Disconnect removes that client's registration. Unload or reload removes the plugin's registrations.
+A replacement plugin can subscribe to existing panes. Queued chunks from its predecessor cannot reach the replacement.
 
 `webRequest` accepts `url`, plus optional `verb`, `headers`, `body`, `context`, `proxy`, and `streamId`.
 The verb defaults to `Get`. The other supported verbs are `Post`, `Put`, and `Delete`.

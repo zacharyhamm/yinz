@@ -638,7 +638,7 @@ export default {
   async load() {
     const denied: string[] = [];
     for (const [name, promise] of [
-      ['run', zellij.runCommand({command: ['/usr/bin/true']})],
+      ['run', zellij.runCommand({command: ['/usr/bin/true'], onOutput() {throw Error('denied command emitted output');}})],
       ['web', zellij.webRequest({url: 'https://example.com'})],
     ] as const) {
       try { await promise; } catch (error) {
@@ -1088,13 +1088,16 @@ fn deno_command_helper_completes_and_reload_rejects_the_old_host_reply() {
     let source = r#"
 const label = 'original';
 let state = 'pending';
-let replies = 0;
+let replies = 0, chunks = 0;
 let fences = 0;
 export default {
   async load() {
     zellij.subscribe(['CustomMessage']);
     await zellij.waitForPermissions(['RunCommands']);
-    const command = zellij.runCommand({command: ['/usr/bin/true'], context: {label}});
+    const command = zellij.runCommand({command: ['/usr/bin/true'], context: {label}, onOutput(output) {
+      if (output.data[0] !== 255 || output.context.label !== label) throw Error('incorrect chunk');
+      chunks++; zellij.requestRender();
+    }});
     zellij.command({Unsubscribe: ['RunCommandResult']});
     const result = await command;
     if (result.exitCode !== 7 || zellij.decodeUtf8(result.stdout) !== 'hé🙂'
@@ -1107,7 +1110,7 @@ export default {
     if ('CustomMessage' in event) fences++;
     return true;
   },
-  render() { return `${label} ${state} replies=${replies} fences=${fences}`; }
+  render() { return `${label} ${state} replies=${replies} fences=${fences} chunks=${chunks}`; }
 };
 "#;
     std::fs::write(&path, source).unwrap();
@@ -1149,6 +1152,7 @@ export default {
                             _,
                             context,
                             _,
+                            _,
                             generation,
                         ) => Some(PluginInstruction::for_plugin_event(
                             *plugin,
@@ -1169,11 +1173,11 @@ export default {
     };
     harness.load();
     let old = completion(0);
-    harness.rendered("original pending replies=0 fences=0");
+    harness.rendered("original pending replies=0 fences=0 chunks=0");
     std::fs::write(&harness.path, source.replace("'original'", "'replacement'")).unwrap();
     harness.reload();
     let current = completion(1);
-    harness.rendered("replacement pending replies=0 fences=0");
+    harness.rendered("replacement pending replies=0 fences=0 chunks=0");
     match (&old, &current) {
         (
             PluginInstruction::DenoEvent(_, _, old_generation, _),
@@ -1181,13 +1185,108 @@ export default {
         ) => assert_ne!(old_generation, current_generation),
         _ => panic!("commands must carry their originating generation"),
     }
+    let chunk = |instruction: &PluginInstruction| match instruction {
+        PluginInstruction::DenoEvent(
+            plugin,
+            client,
+            generation,
+            Event::RunCommandResult(_, _, _, context),
+        ) => PluginInstruction::for_plugin_event(
+            *plugin,
+            *client,
+            Some(*generation),
+            Event::RunCommandOutput {
+                data: vec![255],
+                stderr: true,
+                context: context.clone(),
+            },
+        ),
+        _ => panic!("expected generated command result"),
+    };
+    harness.sender.send(chunk(&old)).unwrap();
     harness.sender.send(old).unwrap();
     harness.event(release_event());
-    harness.rendered("replacement pending replies=0 fences=1");
+    harness.rendered("replacement pending replies=0 fences=1 chunks=0");
+    harness.sender.send(chunk(&current)).unwrap();
     harness.sender.send(current).unwrap();
-    harness.rendered("replacement completed replies=1 fences=1");
+    harness.rendered("replacement completed replies=1 fences=1 chunks=1");
     harness.finish();
     job_logger.join().unwrap();
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_pane_output_subscriptions_reload_with_new_generations() {
+    let source = r#"
+const label='old'; let chunks=0, fences=0;
+export default {
+  async load() {
+    zellij.subscribe(['CustomMessage', 'PaneOutput']);
+    await zellij.waitForPermissions(['ReadPaneContents']);
+    zellij.command('SubscribePaneOutput', {work:'one'});
+  },
+  update(event) {
+    if(event.PaneOutput) {
+      if(event.PaneOutput.pane_id!==7 || event.PaneOutput.data[0]!==255) throw Error('bad output');
+      chunks++;
+    }
+    if(event.CustomMessage) fences++;
+    return true;
+  },
+  render() {return `${label} chunks=${chunks} fences=${fences}`;}
+};
+"#;
+    let harness = Harness::new("ts", source, PermissionStatus::Granted);
+    let subscription = |index| {
+        harness.log.wait_until(
+            "pane output subscription",
+            default_timeout(),
+            |instructions| {
+                instructions
+                    .iter()
+                    .filter_map(|instruction| match instruction {
+                        ScreenInstruction::SubscribePaneOutput(
+                            plugin,
+                            client,
+                            Some(context),
+                            generation,
+                        ) => {
+                            assert_eq!(context.get("work").map(String::as_str), Some("one"));
+                            Some((*plugin, *client, *generation))
+                        },
+                        _ => None,
+                    })
+                    .nth(index)
+            },
+        )
+    };
+    harness.load();
+    let old = subscription(0);
+    harness.rendered("old chunks=0 fences=0");
+    std::fs::write(&harness.path, source.replace("label='old'", "label='new'")).unwrap();
+    harness.reload();
+    let current = subscription(1);
+    assert!(old.2.is_some() && current.2.is_some());
+    assert_ne!(old.2, current.2);
+    assert!(harness.log.lock().iter().any(|instruction| matches!(instruction, ScreenInstruction::UnsubscribePaneOutput(plugin) if *plugin==old.0)));
+    let chunk = |(plugin, client, generation)| {
+        PluginInstruction::for_plugin_event(
+            plugin,
+            client,
+            generation,
+            Event::PaneOutput {
+                pane_id: 7,
+                data: vec![255],
+                context: BTreeMap::from([("work".into(), "one".into())]),
+            },
+        )
+    };
+    harness.sender.send(chunk(old)).unwrap();
+    harness.event(release_event());
+    harness.rendered("new chunks=0 fences=1");
+    harness.sender.send(chunk(current)).unwrap();
+    harness.rendered("new chunks=1 fences=1");
+    harness.finish();
 }
 
 #[test]
