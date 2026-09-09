@@ -3484,6 +3484,32 @@ impl Tab {
         })
     }
 
+    pub(crate) fn create_warp_companion(
+        &mut self,
+        id: PaneId,
+        layout: FloatingPaneLayout,
+        held_command: HoldForCommand,
+    ) -> Result<()> {
+        let initial_title = match &layout.run {
+            Some(Run::Command(command)) => Some(command.to_string()),
+            Some(Run::Plugin(plugin)) => Some(plugin.location_string()),
+            _ => None,
+        };
+        let mut pane = self.build_pane(id, initial_title, layout.run, None)?;
+        pane.update_name("\0");
+        pane.update_name(&layout.name.unwrap_or_default());
+        pane.set_borderless(layout.borderless.unwrap_or(false));
+        pane.set_pane_default_colors(layout.default_fg, layout.default_bg);
+        if let Some(contents) = layout.pane_initial_contents {
+            pane.handle_pty_bytes(contents.into_bytes());
+            pane.handle_pty_bytes(b"\n\r".to_vec());
+        }
+        if let Some(command) = held_command {
+            pane.hold(None, true, command);
+        }
+        self.park_new_pane(pane)
+    }
+
     /// Park a pane in the suppressed panes rather than placing it, giving it a plausible geometry
     /// so that it looks right the moment something takes it back out.
     fn park_new_pane(&mut self, mut new_pane: Box<dyn Pane>) -> Result<()> {

@@ -344,126 +344,162 @@ pub fn focusing_a_scrolled_pane_enters_scroll_mode_with_locked_default() {
 
 #[test]
 fn visible_and_hidden_plugin_companions_keep_their_launch_configuration() {
-    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    let (to_plugin, _plugin_receiver) = channels::unbounded();
-    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
-    new_tab(&mut screen, 1, TabId::new(0));
-    new_tab(&mut screen, 2, TabId::new(1));
-    let plugin = PaneId::Plugin(crate::PluginId::new(50));
-    let run = Run::Plugin(RunPluginOrAlias::RunPlugin(
-        zellij_runtime::plugin_location::run_plugin_from_url("zellij:strider")
-            .expect("plugin configuration"),
-    ));
-    screen
-        .replace_pane(
-            plugin,
-            None,
-            Some(run.clone()),
-            None,
-            false,
-            ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(TerminalId::new(1))),
-        )
-        .expect("plugin cover");
-    let (_, terminals, prepared) = screen
-        .prepare_pane_group(Some(plugin), ClientId::new(1))
-        .expect("visible plugin")
-        .expect("group");
-    assert_eq!(terminals, vec![TerminalId::new(1)]);
-    assert_eq!(prepared.tiled_layout.run, Some(run.clone()));
-    let cover = PaneId::Terminal(TerminalId::new(60));
-    screen
-        .replace_pane(
-            cover,
-            None,
-            None,
-            None,
-            false,
-            ClientTabIndexOrPaneId::PaneId(plugin),
-        )
-        .expect("terminal cover");
-    assert!(screen
-        .prepare_pane_group(Some(plugin), ClientId::new(1))
-        .is_err());
-    let (_, terminals, prepared) = screen
-        .prepare_pane_group(Some(cover), ClientId::new(1))
-        .expect("visible cover")
-        .expect("group");
-    assert_eq!(terminals, vec![TerminalId::new(60), TerminalId::new(1)]);
-    let relationships = prepared.relationships.as_ref().expect("relationships");
-    let links: HashMap<_, _> = relationships
-        .hidden
-        .iter()
-        .map(|hidden| {
-            (
-                prepared.slots[hidden.pane as usize],
-                (
-                    hidden.restored_by.map(|id| prepared.slots[id as usize]),
-                    hidden.is_scrollback_editor,
-                ),
+    use zellij_types::data::WarpPlacement;
+    for placement in [
+        Some(WarpPlacement::FocusedTab),
+        Some(WarpPlacement::NewTab),
+        None,
+    ] {
+        let mut screen = create_new_screen(Size { cols: 80, rows: 8 }, false, false);
+        let (to_plugin, _plugin_receiver) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
+        let plugin = PaneId::Plugin(crate::PluginId::new(50));
+        let run = Run::Plugin(RunPluginOrAlias::RunPlugin(
+            zellij_runtime::plugin_location::run_plugin_from_url("zellij:strider")
+                .expect("plugin configuration"),
+        ));
+        screen
+            .replace_pane(
+                plugin,
+                None,
+                Some(run.clone()),
+                None,
+                false,
+                ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(TerminalId::new(1))),
             )
-        })
-        .collect();
-    assert_eq!(
-        links,
-        HashMap::from([
-            (plugin, (Some(cover), false)),
-            (PaneId::Terminal(TerminalId::new(1)), (Some(plugin), false)),
-        ])
-    );
-    assert_eq!(
-        prepared
-            .floating_layout
+            .expect("plugin cover");
+        let (_, terminals, prepared) = screen
+            .prepare_pane_group(Some(plugin), ClientId::new(1))
+            .expect("visible plugin")
+            .expect("group");
+        assert_eq!(terminals, vec![TerminalId::new(1)]);
+        assert_eq!(prepared.tiled_layout.run, Some(run.clone()));
+        let cover = PaneId::Terminal(TerminalId::new(60));
+        screen
+            .replace_pane(
+                cover,
+                None,
+                None,
+                None,
+                false,
+                ClientTabIndexOrPaneId::PaneId(plugin),
+            )
+            .expect("terminal cover");
+        assert!(screen
+            .prepare_pane_group(Some(plugin), ClientId::new(1))
+            .is_err());
+        let (_, terminals, prepared) = screen
+            .prepare_pane_group(Some(cover), ClientId::new(1))
+            .expect("visible cover")
+            .expect("group");
+        assert_eq!(terminals, vec![TerminalId::new(60), TerminalId::new(1)]);
+        let prepared = if placement.is_none() {
+            screen
+                .check_tab_can_be_warped(Some(TabId::new(0)), ClientId::new(1))
+                .unwrap()
+                .2
+        } else {
+            prepared
+        };
+        let relationships = prepared.relationships.as_ref().expect("relationships");
+        let links: HashMap<_, _> = relationships
+            .hidden
             .iter()
-            .filter(|pane| pane.run == Some(run.clone()))
-            .count(),
-        1
-    );
+            .map(|hidden| {
+                (
+                    prepared.slots[hidden.pane as usize],
+                    (
+                        hidden.restored_by.map(|id| prepared.slots[id as usize]),
+                        hidden.is_scrollback_editor,
+                    ),
+                )
+            })
+            .collect();
+        assert_eq!(
+            links,
+            HashMap::from([
+                (plugin, (Some(cover), false)),
+                (PaneId::Terminal(TerminalId::new(1)), (Some(plugin), false)),
+            ])
+        );
+        assert_eq!(
+            prepared
+                .floating_layout
+                .iter()
+                .filter(|pane| pane.run == Some(run.clone()))
+                .count(),
+            1
+        );
 
-    // Apply the transmitted layout with IDs allocated by the destination.
-    let destination_id = TabId::new(2);
-    screen
-        .new_tab(
-            destination_id,
-            (vec![], vec![]),
-            None,
-            Some(ClientId::new(1)),
-        )
-        .unwrap();
-    screen
-        .pending_warp_relationships
-        .insert(destination_id, prepared.relationships.unwrap());
-    let Run::Plugin(plugin_run) = run.clone() else {
-        unreachable!()
-    };
-    screen
-        .apply_layout(
-            prepared.tiled_layout,
-            prepared.floating_layout,
-            vec![(TerminalId::new(160), None)],
-            vec![(TerminalId::new(101), None)],
-            HashMap::from([(plugin_run, vec![crate::PluginId::new(150)])]),
-            destination_id,
-            true,
-            ClientId::new(1),
-            None,
-        )
-        .expect("reconstruct plugin companions");
-    let destination = screen.tabs.get_mut(&destination_id).unwrap();
-    let plugin = PaneId::Plugin(crate::PluginId::new(150));
-    let cover = PaneId::Terminal(TerminalId::new(160));
-    let subject = PaneId::Terminal(TerminalId::new(101));
-    assert!(destination.has_non_suppressed_pane_with_pid(&cover));
-    assert!(!destination.has_non_suppressed_pane_with_pid(&plugin));
-    assert!(!destination.has_non_suppressed_pane_with_pid(&subject));
-    assert_eq!(
-        destination.get_pane_with_id(plugin).unwrap().invoked_with(),
-        &Some(run)
-    );
-    destination.close_pane(cover, false, None);
-    assert!(destination.has_non_suppressed_pane_with_pid(&plugin));
-    assert!(!destination.has_non_suppressed_pane_with_pid(&subject));
-    destination.close_pane(plugin, false, None);
-    assert!(destination.has_non_suppressed_pane_with_pid(&subject));
+        // Apply the transmitted layout with IDs allocated by the destination.
+        let destination_id = TabId::new(2);
+        screen
+            .new_tab(
+                destination_id,
+                (vec![], vec![]),
+                None,
+                Some(ClientId::new(1)),
+            )
+            .unwrap();
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        if let Some(placement) = placement {
+            screen.pending_group_placements.insert(
+                destination_id,
+                (placement, Some(TabId::new(1)), ClientId::new(1), Some(tx)),
+            );
+        }
+        screen
+            .pending_warp_relationships
+            .insert(destination_id, prepared.relationships.unwrap());
+        let Run::Plugin(plugin_run) = run.clone() else {
+            unreachable!()
+        };
+        screen
+            .apply_layout(
+                prepared.tiled_layout,
+                prepared.floating_layout,
+                vec![(TerminalId::new(160), None)],
+                vec![(TerminalId::new(101), None)],
+                HashMap::from([(plugin_run, vec![crate::PluginId::new(150)])]),
+                destination_id,
+                true,
+                ClientId::new(1),
+                None,
+            )
+            .expect("reconstruct plugin companions");
+        if placement.is_some() {
+            rx.try_recv()
+                .expect("placement reply")
+                .expect("placement succeeded");
+        }
+        let final_tab = if placement == Some(WarpPlacement::FocusedTab) {
+            TabId::new(1)
+        } else {
+            destination_id
+        };
+        assert_eq!(
+            screen.get_active_pane_id(&ClientId::new(1)),
+            Some(PaneId::Terminal(TerminalId::new(160)))
+        );
+        let destination = screen.tabs.get_mut(&final_tab).unwrap();
+        let plugin = PaneId::Plugin(crate::PluginId::new(150));
+        let cover = PaneId::Terminal(TerminalId::new(160));
+        let subject = PaneId::Terminal(TerminalId::new(101));
+        assert!(destination.has_non_suppressed_pane_with_pid(&cover));
+        assert!(!destination.has_non_suppressed_pane_with_pid(&plugin));
+        assert!(!destination.has_non_suppressed_pane_with_pid(&subject));
+        assert_eq!(
+            destination.get_pane_with_id(plugin).unwrap().invoked_with(),
+            &Some(run)
+        );
+        destination.close_pane(cover, false, None);
+        assert!(destination.has_non_suppressed_pane_with_pid(&plugin));
+        assert!(!destination.has_non_suppressed_pane_with_pid(&subject));
+        destination.close_pane(plugin, false, None);
+        assert!(destination.has_non_suppressed_pane_with_pid(&subject));
+    }
 }
 
 #[test]
@@ -2270,6 +2306,10 @@ fn warp_group_restores_a_hidden_editor_chain_and_selected_stack_member() {
     let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
     new_tab(&mut screen, 99, TabId::new(1));
     let selected = PaneId::Terminal(TerminalId::new(1));
+    let (_, _, prepared) = screen
+        .prepare_pane_group(Some(selected), ClientId::new(1))
+        .unwrap()
+        .unwrap();
     let source = screen.tabs.get_mut(&TabId::new(0)).expect("source");
     let slots = source
         .warp_pane_ids(Some(selected))
@@ -2282,30 +2322,46 @@ fn warp_group_restores_a_hidden_editor_chain_and_selected_stack_member() {
     }
     let relationships = source.warp_relationships(&slots);
     let original = source.arrangement_stacks();
-    let panes = source.extract_warp_panes(&slots);
+    source.extract_warp_panes(&slots);
     assert!(slots
         .iter()
         .all(|id| source.get_pane_with_id(*id).is_none()));
-    let destination = screen.tabs.get_mut(&TabId::new(1)).expect("destination");
-    for pane in panes {
-        let id = pane.pid();
-        if id == selected {
-            destination
-                .add_tiled_pane(pane, id, true, Some(ClientId::new(1)))
-                .expect("visible pane");
-        } else {
-            destination.add_suppressed_panes(HashMap::from([(
-                id,
-                crate::tab::SuppressedPane {
-                    pane,
-                    restored_by: None,
-                },
-            )]));
-        }
-    }
-    destination
-        .restore_warp_relationships(&slots, &relationships)
-        .expect("restore");
+    let mut destination_screen = create_new_screen(Size { cols: 80, rows: 8 }, false, false);
+    let destination_id = TabId::new(0);
+    destination_screen
+        .new_tab(
+            destination_id,
+            (vec![], vec![]),
+            None,
+            Some(ClientId::new(1)),
+        )
+        .unwrap();
+    destination_screen
+        .pending_warp_relationships
+        .insert(destination_id, relationships.clone());
+    let terminal_ids: Vec<_> = prepared
+        .slots
+        .iter()
+        .map(|id| match id {
+            PaneId::Terminal(id) => (*id, None),
+            PaneId::Plugin(_) => unreachable!(),
+        })
+        .collect();
+    destination_screen
+        .apply_layout(
+            prepared.tiled_layout,
+            prepared.floating_layout,
+            terminal_ids[..1].to_vec(),
+            terminal_ids[1..].to_vec(),
+            HashMap::new(),
+            destination_id,
+            true,
+            ClientId::new(1),
+            None,
+        )
+        .expect("construct stack companions in a short tab");
+    let destination = destination_screen.tabs.get_mut(&destination_id).unwrap();
+    assert_eq!(destination.warp_relationships(&slots), relationships);
     let restored = destination.arrangement_stacks();
     assert_eq!(restored[0].members, original[0].members);
     assert_eq!(restored[0].visible, selected);
@@ -2313,6 +2369,111 @@ fn warp_group_restores_a_hidden_editor_chain_and_selected_stack_member() {
     assert!(destination.focus_hidden_stack_list_member(editor, ClientId::new(1)));
     destination.close_pane(editor, false, None);
     assert!(destination.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(3))));
+}
+
+#[test]
+fn warp_mixed_floating_slots_preserve_repeated_plugin_id_order() {
+    use zellij_types::data::{WarpHiddenPane, WarpRelationships};
+    use zellij_types::input::layout::FloatingPaneLayout;
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    let (to_plugin, _receiver) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    let tab_id = TabId::new(0);
+    screen
+        .new_tab(tab_id, (vec![], vec![]), None, Some(ClientId::new(1)))
+        .unwrap();
+    let plugin = RunPluginOrAlias::RunPlugin(
+        zellij_runtime::plugin_location::run_plugin_from_url("zellij:strider").unwrap(),
+    );
+    let plugin_layout = |name: &str| FloatingPaneLayout {
+        run: Some(Run::Plugin(plugin.clone())),
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    screen.pending_warp_relationships.insert(
+        tab_id,
+        WarpRelationships {
+            hidden: vec![
+                WarpHiddenPane {
+                    pane: 2,
+                    restored_by: Some(0),
+                    is_scrollback_editor: false,
+                },
+                WarpHiddenPane {
+                    pane: 4,
+                    restored_by: Some(3),
+                    is_scrollback_editor: false,
+                },
+            ],
+            stacks: vec![],
+        },
+    );
+    let command = zellij_types::input::command::RunCommand {
+        command: "/usr/bin/true".into(),
+        ..Default::default()
+    };
+    screen
+        .apply_layout(
+            TiledPaneLayout {
+                run: Some(Run::Plugin(plugin.clone())),
+                ..Default::default()
+            },
+            vec![
+                FloatingPaneLayout::default(),
+                plugin_layout("hidden"),
+                plugin_layout("visible"),
+                FloatingPaneLayout {
+                    run: Some(Run::Command(command.clone())),
+                    name: Some("held subject".into()),
+                    borderless: Some(true),
+                    ..Default::default()
+                },
+            ],
+            vec![],
+            vec![
+                (TerminalId::new(10), None),
+                (TerminalId::new(11), Some(command.clone())),
+            ],
+            HashMap::from([(
+                plugin,
+                vec![
+                    crate::PluginId::new(22),
+                    crate::PluginId::new(21),
+                    crate::PluginId::new(20),
+                ],
+            )]),
+            tab_id,
+            true,
+            ClientId::new(1),
+            None,
+        )
+        .expect("apply mixed slots");
+    let tab = screen.tabs.get_mut(&tab_id).unwrap();
+    let hidden = PaneId::Plugin(crate::PluginId::new(21));
+    let visible = PaneId::Plugin(crate::PluginId::new(22));
+    assert_eq!(
+        tab.get_pane_with_id(hidden).unwrap().current_title(),
+        "hidden"
+    );
+    assert_eq!(
+        tab.get_pane_with_id(visible).unwrap().current_title(),
+        "visible"
+    );
+    assert!(!tab.has_non_suppressed_pane_with_pid(&hidden));
+    assert!(tab.has_non_suppressed_pane_with_pid(&visible));
+    assert!(tab.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(10))));
+    assert!(!tab.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(11))));
+    let subject = tab
+        .get_pane_with_id(PaneId::Terminal(TerminalId::new(11)))
+        .unwrap();
+    assert_eq!(subject.current_title(), "held subject");
+    assert_eq!(subject.invoked_with(), &Some(Run::Command(command)));
+    assert!(subject.borderless());
+    assert!(subject.is_held());
+    tab.close_pane(PaneId::Plugin(crate::PluginId::new(20)), false, None);
+    assert!(tab.has_non_suppressed_pane_with_pid(&hidden));
+    tab.close_pane(visible, false, None);
+    assert!(tab.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(11))));
 }
 
 fn queue_warp_group(

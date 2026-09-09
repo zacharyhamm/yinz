@@ -1888,10 +1888,10 @@ impl Screen {
     pub fn apply_layout(
         &mut self,
         layout: TiledPaneLayout,
-        floating_panes_layout: Vec<FloatingPaneLayout>,
+        mut floating_panes_layout: Vec<FloatingPaneLayout>,
         new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
-        new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
-        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        mut new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        mut new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         tab_id: TabId,
         should_change_client_focus: bool,
         client_id: ClientId,
@@ -1959,6 +1959,53 @@ impl Screen {
             None
         };
 
+        let mut hidden_companions = vec![];
+        if let (Some(slots), Some(relationships)) = (
+            warp_slots.as_ref(),
+            self.pending_warp_relationships.get(&tab_id),
+        ) {
+            relationships
+                .validate(slots.len())
+                .map_err(|e| anyhow!("{e}"))?;
+            let tiled_slots = layout.extract_run_instructions().len();
+            if relationships
+                .hidden
+                .iter()
+                .any(|hidden| (hidden.pane as usize) < tiled_slots)
+            {
+                return Err(anyhow!("hidden warp companion occupies a tiled slot"));
+            }
+            let hidden_ids: HashSet<_> = relationships
+                .hidden
+                .iter()
+                .map(|hidden| slots[hidden.pane as usize])
+                .collect();
+            let mut terminals = new_floating_terminal_ids.iter();
+            let mut visible_layout = vec![];
+            for (pane_layout, id) in floating_panes_layout.into_iter().zip(&slots[tiled_slots..]) {
+                let held_command = match id {
+                    PaneId::Terminal(_) => terminals
+                        .next()
+                        .context("missing warp terminal slot")?
+                        .1
+                        .clone(),
+                    PaneId::Plugin(_) => None,
+                };
+                if hidden_ids.contains(id) {
+                    hidden_companions.push((*id, pane_layout, held_command));
+                } else {
+                    visible_layout.push(pane_layout);
+                }
+            }
+            floating_panes_layout = visible_layout;
+            new_floating_terminal_ids
+                .retain(|(id, _)| !hidden_ids.contains(&PaneId::Terminal(*id)));
+            for ids in new_plugin_ids.values_mut() {
+                // Keep pop order for repeated configurations across tiled and floating slots.
+                ids.retain(|id| !hidden_ids.contains(&PaneId::Plugin(*id)));
+            }
+        }
+
         // move the relevant clients out of the current tab and place them in the new one
         let drained_clients = if should_change_client_focus {
             if self.session_is_mirrored {
@@ -2009,6 +2056,10 @@ impl Screen {
             .get_mut(&tab_id)
             .context("couldn't find tab with index {tab_id}")
             .and_then(|tab| {
+                // Buffered output is replayed by apply_layout, so companions must already exist.
+                for (id, pane_layout, held_command) in hidden_companions {
+                    tab.create_warp_companion(id, pane_layout, held_command)?;
+                }
                 tab.apply_layout(
                     layout,
                     floating_panes_layout,
