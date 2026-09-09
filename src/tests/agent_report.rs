@@ -34,6 +34,25 @@ fn command(dir: &std::path::Path) -> Command {
     cmd
 }
 
+/// Pay macOS's first-exec cost before a test arms its clock.
+///
+/// macOS validates a freshly built binary's code signature on its first exec and caches it per
+/// file: measured here at 5.4s for the 138MB debug `zellij`, against 50ms for every later exec.
+/// A test whose subject is a deadline must not be timing that. Same trap, and same remedy, as
+/// `zellij_test_support::write_warm_script`.
+fn warm_binary() {
+    static WARM: std::sync::Once = std::sync::Once::new();
+    WARM.call_once(|| {
+        Command::new(env!("CARGO_BIN_EXE_zellij"))
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to warm the zellij binary");
+    });
+}
+
 fn listener(dir: &std::path::Path) -> interprocess::local_socket::Listener {
     let socket_dir = dir.join(&*zellij_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
     std::fs::create_dir_all(&socket_dir).unwrap();
@@ -69,6 +88,7 @@ fn diagnostics(dir: &std::path::Path) -> String {
 
 #[test]
 fn reporter_requires_its_exact_acceptance_and_bounds_stalled_peers() {
+    warm_binary();
     for response in [
         "accepted",
         "mismatch",
@@ -150,6 +170,7 @@ fn reporter_requires_its_exact_acceptance_and_bounds_stalled_peers() {
 
 #[test]
 fn reporter_bounds_unclosed_stdin_even_when_diagnostics_cannot_be_written() {
+    warm_binary();
     for broken_log in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut cmd = command(dir.path());
