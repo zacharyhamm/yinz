@@ -2476,6 +2476,97 @@ fn warp_mixed_floating_slots_preserve_repeated_plugin_id_order() {
     assert!(tab.has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(11))));
 }
 
+#[test]
+fn warp_adoption_preserves_explicit_floating_layouts_over_destination_template() {
+    use zellij_types::data::{WarpPlacement, WarpedTab};
+    use zellij_types::input::layout::FloatingPaneLayout;
+
+    for placement in [Some(WarpPlacement::NewTab), None] {
+        for floating_layout in [
+            vec![],
+            vec![FloatingPaneLayout {
+                name: Some("transferred floating pane".into()),
+                ..Default::default()
+            }],
+        ] {
+            let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+            screen.default_layout.template = Some((
+                TiledPaneLayout::default(),
+                vec![FloatingPaneLayout::default()],
+            ));
+            let (to_plugin, receiver) = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+            let plugin = RunPluginOrAlias::RunPlugin(
+                zellij_runtime::plugin_location::run_plugin_from_url("zellij:strider").unwrap(),
+            );
+            screen
+                .place_adopted_tab(
+                    WarpedTab {
+                        tiled_layout: TiledPaneLayout {
+                            run: Some(Run::Plugin(plugin.clone())),
+                            focus: Some(true),
+                            ..Default::default()
+                        },
+                        floating_layout: floating_layout.clone(),
+                        relationships: Some(Default::default()),
+                        ..Default::default()
+                    },
+                    crate::pty::AdoptedTabPanes {
+                        tiled: vec![],
+                        floating: vec![],
+                    },
+                    ClientId::new(1),
+                    placement,
+                    None,
+                )
+                .expect("queue adoption");
+            let (layout, transmitted_floating, tab_id, focus, client_id) = receiver
+                .try_iter()
+                .find_map(|(instruction, _)| match instruction {
+                    PluginInstruction::NewTab(
+                        _,
+                        _,
+                        layout,
+                        floating,
+                        tab,
+                        _,
+                        _,
+                        focus,
+                        client,
+                        _,
+                    ) => Some((layout.unwrap(), floating, tab, focus, client)),
+                    _ => None,
+                })
+                .expect("adoption requested a new tab");
+            assert_eq!(transmitted_floating, Some(floating_layout.clone()));
+            if !floating_layout.is_empty() {
+                continue;
+            }
+
+            // Resolve the same fallback as the plugin thread, then apply only the allocated ID.
+            let floating =
+                transmitted_floating.unwrap_or_else(|| screen.default_layout.new_tab().1);
+            let plugin_id = crate::PluginId::new(150);
+            screen
+                .apply_layout(
+                    layout,
+                    floating,
+                    vec![],
+                    vec![],
+                    HashMap::from([(plugin, vec![plugin_id])]),
+                    tab_id,
+                    focus,
+                    client_id,
+                    None,
+                )
+                .expect("apply standalone plugin without destination template slots");
+            let pane_id = PaneId::Plugin(plugin_id);
+            assert!(screen.tabs[&tab_id].has_non_suppressed_pane_with_pid(&pane_id));
+            assert_eq!(screen.get_active_pane_id(&client_id), Some(pane_id));
+        }
+    }
+}
+
 fn queue_warp_group(
     screen: &mut Screen,
     placement: zellij_types::data::WarpPlacement,

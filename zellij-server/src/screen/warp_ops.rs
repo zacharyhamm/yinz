@@ -997,7 +997,7 @@ impl Screen {
                 None,
                 None,
                 Some(tiled_layout),
-                (!payload.floating_layout.is_empty()).then_some(payload.floating_layout),
+                Some(payload.floating_layout),
                 tab_index,
                 None,
                 false,
