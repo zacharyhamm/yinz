@@ -707,9 +707,11 @@ mod sdk_tests {
     #[derive(Default)]
     struct TestHost {
         commands: Vec<(Value, u32)>,
+        logs: Vec<String>,
         fail_permission_client: Option<u32>,
         fail_command: Option<&'static str>,
         session_list: Value,
+        pane_info: Value,
     }
 
     #[op2]
@@ -738,6 +740,14 @@ mod sdk_tests {
             Ok(json!({ "json": { "client_id": client } }))
         } else if command == json!("GetSessionList") {
             Ok(json!({ "json": host.session_list }))
+        } else if command.get("DataWatch").is_some() {
+            Ok(json!({"json":{"watch_id":1,"rows":{"columns":[],"rows":[]}}}))
+        } else if command.get("GetPaneInfo").is_some() {
+            Ok(json!({"json":host.pane_info}))
+        } else if command.get("OpenCommandPane").is_some()
+            || command.get("OpenCommandPaneFloating").is_some()
+        {
+            Ok(json!({"json":{"Terminal":7}}))
         } else if command.get("SpawnAgent").is_some() {
             Ok(json!({"json":{"pane_id":{"Terminal":7},"branch":null,"cwd":null}}))
         } else {
@@ -746,7 +756,9 @@ mod sdk_tests {
     }
 
     #[op2(fast)]
-    fn op_zellij_log(#[string] _line: &str) {}
+    fn op_zellij_log(state: &mut OpState, #[string] line: &str) {
+        state.borrow_mut::<TestHost>().logs.push(line.to_owned());
+    }
 
     deno_core::extension!(
         sdk_test_host,
@@ -1741,9 +1753,11 @@ mod sdk_tests {
         fn assert_send<T: Send>() {}
         assert_send::<DenoPlugin>();
     }
+    include!("unit/trace_sdk.rs");
     include!("unit/ui_sdk.rs");
     include!("unit/rpc_sdk.rs");
     include!("unit/agent_sdk.rs");
+    include!("unit/pane_sdk.rs");
     include!("unit/completion_sdk.rs");
     include!("unit/consumer_sdk.rs");
 }

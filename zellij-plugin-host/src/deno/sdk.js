@@ -2,7 +2,7 @@
 (() => {
   "use strict";
   const core = Deno.core;
-  const dispatch = core.ops.op_zellij_command;
+  const hostDispatch = core.ops.op_zellij_command;
   const validate = core.ops.op_zellij_validate;
   const log = core.ops.op_zellij_log;
   const workflowRemotePanes = core.ops.op_zellij_workflow_remote_panes;
@@ -51,15 +51,49 @@
   const pending = new Set();
   const timers = new Set();
   let timerDeadline = null;
+  let tracing = false;
+  let nextTrace = 0n;
+  function trace(enabled = true) {
+    if (typeof enabled !== "boolean") throw new TypeError("trace requires a boolean");
+    tracing = enabled;
+  }
+  function transcript(marker, origin = client) {
+    if (!tracing) return;
+    // Diagnostics must not replace a dispatch error or interrupt SDK cleanup.
+    try { log(`trace instance=${rpcPrefix} client=${origin} ${marker}`); } catch (_) {}
+  }
+  function traceName(name) {
+    return JSON.stringify(name.slice(0, 200)).replace(/[\u007f-\u009f\u2028\u2029]/g,
+      c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+  }
+  function validateCommand(value, origin = client) {
+    try { validate(value); }
+    catch (error) { transcript("command invalid", origin); throw error; }
+  }
+  function dispatch(value, origin) {
+    if (tracing) {
+      validateCommand(value, origin);
+      const name = typeof value === "string" ? value :
+        value !== null && typeof value === "object" ? Object.keys(value)[0] : undefined;
+      transcript(name === undefined ? "command invalid" : `command ${traceName(name)}`, origin);
+    }
+    return hostDispatch(value, origin);
+  }
+  function traceTask(label) {
+    const id = ++nextTrace, origin = client;
+    transcript(`${label} ${id} started`, origin);
+    return outcome => transcript(`${label} ${id} ${outcome}`, origin);
+  }
   function invalidate() { version++; dirty = true; }
   function fail(error) { failure ??= error instanceof Error ? error : new Error(String(error)); }
   function track(value, settled, rejected = fail) {
     if (value !== null && (typeof value === "object" || typeof value === "function") && typeof value.then === "function") {
       const promise = Promise.resolve(value);
+      const terminal = traceTask("task");
       pending.add(promise);
       promise.then(
-        (result) => { pending.delete(promise); settled(result); },
-        (error) => { pending.delete(promise); rejected(error); },
+        (result) => { pending.delete(promise); terminal("finished"); settled(result); },
+        (error) => { pending.delete(promise); terminal("failed"); rejected(error); },
       );
     } else settled(value);
   }
@@ -68,7 +102,7 @@
     let value = typeof name === "string"
       ? (args.length ? { [name]: args[0] } : name)
       : name;
-    validate(value);
+    validateCommand(value);
     if (value !== null && typeof value === "object" && Object.keys(value).length === 1 && Object.hasOwn(value, "RequestPluginPermissions")) {
       enqueuePermissions(value.RequestPluginPermissions);
       return null;
@@ -98,21 +132,23 @@
     };
   }
   function cancellable(start) {
+    const terminal = traceTask("operation");
     const operation = { active: true, cleanup: () => {} };
     const promise = new Promise((resolve, reject) => {
-      const settle = (finish, value) => {
+      const settle = (finish, value, outcome) => {
         if (!operation.active) return;
         operation.active = false;
         operation.cleanup();
+        terminal(outcome);
         finish(value);
       };
-      operation.resolve = (value) => settle(resolve, value);
-      operation.reject = (error) => settle(reject, error);
+      operation.resolve = (value) => settle(resolve, value, "finished");
+      operation.reject = (error, outcome = "failed") => settle(reject, error, outcome);
     });
     promise.cancel = () => {
       const error = new Error("operation cancelled");
       error.name = "AbortError";
-      operation.reject(error);
+      operation.reject(error, "cancelled");
     };
     try { start(operation); } catch (error) { operation.reject(error); }
     return promise;
@@ -194,6 +230,195 @@
         [...argv], stringMap(envVariables, "envVariables"), cwd, stringMap(context, "context"), maxBytesReturned ?? null,
       ], 3, ([exitCode, stdout, stderr]) => ({ exitCode, stdout: new Uint8Array(stdout), stderr: new Uint8Array(stderr) }));
     });
+  }
+  function paneStep(value) {
+    const {name, stdin, timeoutMs, ...cmd} = record(value, 'pane step');
+    if (cmd.path !== undefined && typeof cmd.path !== 'string') throw new TypeError('path must be a string');
+    if (!cmd.path && cmd.remote_default_shell !== true) throw new TypeError('pane step needs a path or remote_default_shell');
+    if (name !== undefined && typeof name !== 'string') throw new TypeError('step name must be a string');
+    if (stdin !== undefined && typeof stdin !== 'string') throw new TypeError('stdin must be a string');
+    if (timeoutMs !== undefined) validateTimerDuration(timeoutMs);
+    validate(cmd);
+    if (cmd.args !== undefined && (!Array.isArray(cmd.args) || Array.from(cmd.args).some(arg => typeof arg !== 'string'))) throw new TypeError('args must be strings');
+    for (const key of ['cwd', 'remote_host', 'firecracker_vm', 'firecracker_image', 'firecracker_worktree']) if (cmd[key] != null && typeof cmd[key] !== 'string') throw new TypeError(`${key} must be a string or null`);
+    if (cmd.remote_default_shell !== undefined && typeof cmd.remote_default_shell !== 'boolean') throw new TypeError('remote_default_shell must be a boolean');
+    if (cmd.target != null && cmd.target !== 'Local') {
+      const target = record(cmd.target, 'target');
+      if (Object.keys(target).length !== 1 || (!target.Ssh && !target.Firecracker)) throw new TypeError('invalid pane target');
+      const fields = record(target.Ssh ?? target.Firecracker, 'target fields');
+      if (typeof fields[target.Ssh ? 'host' : 'vm'] !== 'string') throw new TypeError('target needs a host or vm');
+      for (const key of ['image', 'worktree']) if (fields[key] != null && typeof fields[key] !== 'string') throw new TypeError(`target ${key} must be a string or null`);
+    }
+    if (cmd.target == null) {
+      if (cmd.remote_host?.trim() && cmd.firecracker_vm?.trim()) throw new TypeError('remote_host and firecracker_vm conflict');
+      if (!cmd.firecracker_vm?.trim() && (cmd.firecracker_image?.trim() || cmd.firecracker_worktree)) throw new TypeError('image and worktree need firecracker_vm');
+      if (cmd.firecracker_vm?.trim()) {
+        for (const name of [cmd.firecracker_vm.trim(), cmd.firecracker_image?.trim()].filter(Boolean)) if (!/^[a-zA-Z0-9._-]{1,64}$/.test(name)) throw new TypeError('invalid Firecracker name');
+        if (cmd.firecracker_worktree && !cmd.firecracker_worktree.startsWith('/')) throw new TypeError('firecracker_worktree must be absolute');
+      }
+    }
+    // Copy nested command data so a caller cannot change a validated queued step.
+    return {...JSON.parse(JSON.stringify(cmd)), name, stdin, timeoutMs};
+  }
+  function paneTarget(cmd) {
+    const target = cmd.target ?? (cmd.firecracker_vm?.trim() ? {Firecracker: {vm: cmd.firecracker_vm.trim(), image: cmd.firecracker_image?.trim() || null, worktree: cmd.firecracker_worktree || null}} : cmd.remote_host?.trim() ? {Ssh: {host: cmd.remote_host.trim()}} : 'Local');
+    return target === 'Local' ? ['Local'] : target.Ssh ? ['Ssh', target.Ssh.host] : ['Firecracker', target.Firecracker.vm, target.Firecracker.image ?? null, target.Firecracker.worktree ?? null];
+  }
+  function paneCommand(step, pane) {
+    const {name, stdin, timeoutMs, ...cmd} = step;
+    if (cmd.cwd === 'inherit') {
+      const info = pane && command('GetPaneInfo', pane);
+      cmd.cwd = info && JSON.stringify(paneTarget(info)) === JSON.stringify(paneTarget(cmd)) ? info.cwd : null;
+    }
+    return cmd;
+  }
+  // One observer owns both startup and exit, including events queued during pane creation.
+  function observePane(operation, pane, context, started = () => {}) {
+    const origin = client, cleanup = [], queued = [];
+    let id = pane, hasStarted = false;
+    operation.cleanup = () => { for (const dispose of cleanup.splice(0)) dispose(); };
+    const receive = (type, payload) => {
+      if (!operation.active) return;
+      if (id === null) { queued.push([type, payload]); return; }
+      const previous = client; client = origin;
+      try {
+        if (type === 'PaneClosed') {
+          if (payload.Terminal === id) operation.resolve({paneId: {Terminal:id}, exitCode:null, closed:true});
+        } else if (payload[0] === id && (!context || payload.at(-1).__zellij_pane_step === context.__zellij_pane_step)) {
+          if (type === 'CommandPaneExited') operation.resolve({paneId:{Terminal:id}, exitCode:payload[1], closed:false});
+          else if (!hasStarted) { hasStarted = true; started(); }
+        }
+      } catch (error) { operation.reject(error); }
+      finally { client = previous; }
+    };
+    for (const type of ['CommandPaneOpened', 'CommandPaneReRun', 'CommandPaneExited', 'PaneClosed']) {
+      cleanup.push(on(type, payload => receive(type, payload)));
+      cleanup.push(retainEvent(type));
+    }
+    return pane => { id = terminalId(pane); for (const event of queued.splice(0)) receive(...event); };
+  }
+  function waitForPaneExit(pane) {
+    return cancellable(operation => {
+      const id = terminalId(pane);
+      observePane(operation, id, null);
+      const dispose = operation.cleanup;
+      const exited = info => info?.id === id && !info.is_plugin && info.exited === true;
+      const result = info => ({paneId:{Terminal:id}, exitCode:info.exit_status, closed:false});
+      try {
+        observeEvent(operation, 'PaneUpdate', () => exited(agentPanes.get(id)), () => result(agentPanes.get(id)));
+      } finally {
+        const disposeMetadata = operation.cleanup;
+        operation.cleanup = () => { dispose(); disposeMetadata(); };
+      }
+      const info = command('GetPaneInfo', {Terminal:id});
+      if (info === null) operation.resolve({paneId:{Terminal:id}, exitCode:null, closed:true});
+      else if (exited(info)) operation.resolve(result(info));
+    });
+  }
+  function runInPane(pane, value) {
+    return cancellable(operation => {
+      const id = terminalId(pane), step = paneStep(value);
+      const context = {__zellij_pane_step: `${rpcPrefix}:${++nextAsync}`};
+      let timer;
+      observePane(operation, id, context, () => {
+        if (step.stdin !== undefined) command('WriteCharsToPaneId', [step.stdin, {Terminal:id}]);
+        if (step.timeoutMs !== undefined) timer = addTimer(step.timeoutMs, () => operation.reject(new Error('pane wait timed out')), operation.reject);
+      });
+      const dispose = operation.cleanup;
+      operation.cleanup = () => { dispose(); timer?.cancel(); };
+      command('RunCommandInPane', {pane_id:{Terminal:id}, command:paneCommand(step, {Terminal:id}), context, keep_scrollback:true});
+    });
+  }
+  function paneSequence(value) {
+    const opts = {...record(value, 'paneSequence options')};
+    if (!Array.isArray(opts.steps) || !opts.steps.length) throw new TypeError('paneSequence needs nonempty steps');
+    const steps = Array.from(opts.steps, paneStep);
+    for (const key of ['stopOnFailure', 'closeOnSuccess', 'keepScrollback']) if (opts[key] !== undefined && typeof opts[key] !== 'boolean') throw new TypeError(`${key} must be a boolean`);
+    for (const key of ['onStep', 'onDone']) if (opts[key] !== undefined && typeof opts[key] !== 'function') throw new TypeError(`${key} must be a function`);
+    if (opts.name !== undefined && typeof opts.name !== 'string') throw new TypeError('name must be a string');
+    if (opts.onCancel !== undefined && !['close', 'keep'].includes(opts.onCancel)) throw new TypeError('onCancel must be close or keep');
+    if (opts.floating !== undefined && typeof opts.floating !== 'boolean') record(opts.floating, 'floating coordinates');
+    const grace = opts.killGraceMs ?? 5000;
+    validateTimerDuration(grace);
+    if (opts.floating && opts.floating !== true) {
+      validate(opts.floating);
+      opts.floating = {...opts.floating};
+      for (const key of ['pinned', 'borderless']) if (opts.floating[key] != null && typeof opts.floating[key] !== 'boolean') throw new TypeError(`${key} must be a boolean`);
+      for (const key of ['x', 'y', 'width', 'height']) {
+        const v = opts.floating[key];
+        if (v == null) continue;
+        record(v, key);
+        const names = Object.keys(v), n = v[names[0]];
+        if (names.length !== 1 || !['Percent', 'Fixed'].includes(names[0]) || (typeof n !== 'bigint' && !Number.isSafeInteger(n)) || n < 0) throw new TypeError(`invalid floating ${key}`);
+        opts.floating[key] = {...v};
+      }
+    }
+    let paneId = null, status = 'running', index = 0, failedStep = null, current, timer, ending = null;
+    const exitCodes = [];
+    const report = error => log(String(error?.stack ?? error));
+    const callback = (fn, ...args) => { try { if (fn) track(fn(...args), () => {}, report); } catch (error) { report(error); } };
+    let resolve, reject;
+    const done = new Promise((yes, no) => { resolve = yes; reject = no; });
+    const clean = () => { if (current) {current.active = false; current.cleanup();} timer?.cancel(); timer = null; };
+    const failure = error => { clean(); status = 'failed'; reject(error); };
+    const finish = outcome => {
+      clean(); status = outcome;
+      try {
+        if ((outcome === 'success' && opts.closeOnSuccess) || (outcome === 'cancelled' && opts.onCancel === 'close')) command('CloseTerminalPane', paneId.Terminal);
+        const result = {status, paneId, exitCodes:[...exitCodes], failedStep};
+        callback(opts.onDone, result); resolve(result);
+      } catch (error) { failure(error); }
+    };
+    const exited = result => {
+      clean();
+      if (result.closed) { finish('pane_closed'); return; }
+      exitCodes.push(result.exitCode);
+      if ((!ending && result.exitCode !== 0) || ending === 'failed') failedStep ??= index + 1;
+      callback(opts.onStep, index + 1, {...steps[index]}, result.exitCode);
+      if (ending) finish(ending);
+      else if (failedStep && opts.stopOnFailure !== false) finish('failed');
+      else if (++index === steps.length) finish(failedStep ? 'failed' : 'success');
+      else launch();
+    };
+    const escalate = outcome => {
+      if (status !== 'running' || ending) return;
+      // A refused initial cancellation must not change the running sequence.
+      command('SendSigintToPaneId', paneId);
+      ending = outcome; status = outcome === 'cancelled' ? 'cancelling' : 'running';
+      timer?.cancel();
+      try {
+        timer = addTimer(grace, () => {
+          try {
+            command('SendSigkillToPaneId', paneId);
+            timer?.cancel();
+            timer = addTimer(grace, () => exited({exitCode:null, closed:false}), failure);
+          } catch (error) { failure(error); }
+        }, failure);
+      } catch (error) { failure(error); }
+    };
+    function launch() {
+      try {
+        const step = steps[index], context = {__zellij_pane_step: `${rpcPrefix}:${++nextAsync}`};
+        current = {active:true, cleanup:() => {}, resolve:exited, reject:failure};
+        const setPane = observePane(current, paneId?.Terminal ?? null, context, () => {
+          if (step.stdin !== undefined) command('WriteCharsToPaneId', [step.stdin, paneId]);
+          if (step.timeoutMs !== undefined && !ending) timer = addTimer(step.timeoutMs, () => {try {escalate('failed');} catch (error) {failure(error);}}, failure);
+        });
+        const cmd = paneCommand(step, paneId);
+        if (paneId) command('RunCommandInPane', {pane_id:paneId, command:cmd, context, keep_scrollback:opts.keepScrollback !== false});
+        else {
+          paneId = opts.floating ? command('OpenCommandPaneFloating', [cmd, opts.floating === true ? null : opts.floating, context]) : command('OpenCommandPane', [cmd, context]);
+          if (!paneId) throw new Error('No pane was returned');
+          if (opts.name !== undefined) command('RenameTerminalPane', [terminalId(paneId), opts.name]);
+          setPane(paneId);
+        }
+      } catch (error) { failure(error); }
+    }
+    const handle = {get paneId() {return paneId;}, get status() {return status;}, done,
+      push(step) {if (status === 'running' && !ending) steps.push(paneStep(step));},
+      cancel() {escalate('cancelled');}};
+    launch();
+    return handle;
   }
   function webRequest(options) {
     return cancellable((operation) => {
@@ -818,6 +1043,7 @@
     get serverIncarnation() { return metadata.serverIncarnation; },
     get instanceId() { return rpcPrefix; },
     command,
+    trace,
     definePlugin: (value) => value,
     subscribe: (events) => command("Subscribe", events),
     unsubscribe: (events) => command("Unsubscribe", events),
@@ -828,6 +1054,9 @@
     after: (milliseconds, callback) => callbackTimer(milliseconds, callback, false),
     every: (milliseconds, callback) => callbackTimer(milliseconds, callback, true),
     runCommand,
+    paneSequence,
+    waitForPaneExit,
+    runInPane,
     webRequest,
     fs,
     projectConfig,
@@ -852,11 +1081,16 @@
 
   function lifecycle(name, arg) {
     if (name === "load") {
+      arg = { ...defaults, ...arg };
+      if (arg.trace === "true") trace(true);
+      else if (arg.trace === "false") trace(false);
       const namespace = arg.hocus_extension_name, path = arg.hocus_extension_path;
       hocusIdentity = typeof namespace === "string" && namespace && typeof path === "string" && path ? {namespace, path} : null;
     }
+    if (tracing && name === "pipe") transcript(`pipe ${traceName(arg.name)}`);
     if (name === "pipe" && (completionPipe(arg) || rpcPipe(arg) || hocusPipe(arg))) return;
     const type = name === "update" ? (typeof arg === "string" ? arg : Object.keys(arg)[0]) : undefined;
+    if (tracing && name === "update") transcript(`event ${traceName(type)}`);
     const payload = name === "update" && typeof arg !== "string" ? arg[type] : undefined;
     if (type === "PaneUpdate") {
       agentPanes = new Map(Object.values(payload.panes).flat().filter(p => !p.is_plugin).map(p => [p.id, {...p, agent:p.agent && {...p.agent}}]));
@@ -866,7 +1100,7 @@
     // Starts are ordered by the executor. Promises are observed, never awaited here:
     // load may be waiting for the very permission event that update must deliver.
     if (typeof plugin[name] === "function") {
-      track(plugin[name](name === "load" ? { ...defaults, ...arg } : arg), (result) => { if (result === true || name === "load") invalidate(); });
+      track(plugin[name](arg), (result) => { if (result === true || name === "load") invalidate(); });
     }
     for (const waiter of waiters) waiter(arg);
     if (name === "update") {

@@ -20,6 +20,52 @@ fn consumer(runtime: &mut JsRuntime, name: &str) {
 }
 
 #[test]
+fn deno_bridge_spawn_options_use_sdk_validation_and_defaults() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    run(&mut runtime, r#"
+      mock.agent=zellij.agent;
+      panes[7]=true; // The test host replies to SpawnAgent with terminal 7.
+    "#);
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load(); globalThis.done=0;
+      const options=[{}, {source_directory:'/source'}, {automatic_firecracker_vm:true},
+        {source_directory:'/source',automatic_firecracker_vm:false},
+        {source_directory:'/source',automatic_firecracker_vm:true}];
+      for(const [i,extra] of options.entries()) {
+        bind({load() { (async()=>{
+          const args={method:'agent_spawn',work:'options-'+i,key:'agent',spec:{kind:'codex',cwd:'/work',...extra}};
+          const first=await handler(args,{source:{Plugin:1}});
+          check(first.outcome==='completed' && first.pane===7 && first.supervisor==='supervisor-7');
+          check((await handler(args,{source:{Plugin:1}})).pane===7);
+          let rejected=false;
+          try {await handler({...args,spec:{...args.spec,cwd:'/wrong'}},{source:{Plugin:1}});}
+          catch(e) {check(String(e).includes('Conflicting'));rejected=true;}
+          check(rejected);
+          done++;
+        })().catch(e=>{failure=String(e.stack)}); }});
+        bridge('load',{},2);
+      }
+    "#);
+    run(&mut runtime, "if(failure) throw Error(failure); check(done===5);");
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const spawns=sent.map(([c])=>c.SpawnAgent).filter(Boolean);
+      check(spawns.length===5); // Retries and conflicting requests never dispatch again.
+      for(const [i,payload] of spawns.entries()) {
+        check(JSON.stringify(payload.spec)==='{"kind":"codex"}');
+        check(payload.cwd==='/work' && payload.name===null && payload.start_suppressed===false);
+        check(payload.source_directory===([null,'/source',null,'/source','/source'][i]));
+        check(payload.automatic_firecracker_vm===([false,false,true,false,true][i]));
+        const owner=JSON.parse(payload.context.swamp_owner);
+        check(owner.host_id==='host' && owner.session==='session' && owner.incarnation==='incarnation');
+        check(owner.work==='options-'+i && owner.agent==='agent' && payload.context.swamp_operation==='agent');
+      }
+    "#);
+}
+
+#[test]
 fn deno_bridge_guards_claims_callers_turns_and_reload_recovery() {
     let mut runtime = sdk();
     run(&mut runtime, include_str!("bridge_fixture.js"));
@@ -191,30 +237,24 @@ fn deno_workflow_view_keeps_restart_explicit_and_all_details_reachable() {
 fn typescript_pane_sequence_reuses_scrollback_and_escalates_cancellation() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
-      globalThis.effects=[];globalThis.timers=[];globalThis.listeners=[];globalThis.keyHandler=null;
-      globalThis.mock={...zellij, subscribe(){},requestPermission(){},requestRender(){},
-        on(_name,fn){keyHandler=fn;},
-        command(name,args){effects.push([name,args]);if(name==='OpenCommandPaneFloating')return {Terminal:7};},
-        after(ms,fn){const timer={ms,fn,cancelled:false,cancel(){this.cancelled=true;}};timers.push(timer);return timer;},
-        waitForEvent(name,predicate){let resolve;const promise=new Promise(r=>resolve=r);promise.cancel=()=>{};listeners.push({predicate,resolve});return promise;}};
-      globalThis.finish=code=>{const operation=effects.filter(([name])=>name==='OpenCommandPaneFloating'||name==='RunCommandInPane').at(-1);
-        const context=operation[0]==='RunCommandInPane'?operation[1].context:operation[1][2];const event=[7,code,context];
-        const listener=listeners.shift();check(listener.predicate(event));listener.resolve(event);};
+      globalThis.mock=zellij;globalThis.now=100;Date.now=()=>now;
     "#);
     consumer(&mut runtime, "workflow");
-    run(&mut runtime, "M.load({skill:'deploy'});keyHandler({bare_key:{Char:'r'}});finish(0);");
-    run(&mut runtime, r#"
-      check(effects.filter(([name])=>name==='OpenCommandPaneFloating').length===1);
-      check(effects.at(-1)[0]==='RunCommandInPane' && effects.at(-1)[1].pane_id.Terminal===7 && effects.at(-1)[1].keep_scrollback);
-      finish(0);
-    "#);
-    run(&mut runtime, "finish(0);");
+    run(&mut runtime, "bind(M);bridge('load',{skill:'deploy'},2);bridge('update',{Key:{bare_key:{Char:'r'}}},2)");
+    for _ in 0..3 {
+        pane_context(&mut runtime);
+        run(&mut runtime, "event('CommandPaneOpened');event('CommandPaneExited')");
+    }
+    capture_commands(&mut runtime);
     run(&mut runtime, r#"
       check(M.render().includes('sequence completed; exit codes: [0,0,0]'));
-      keyHandler({bare_key:{Char:'r'}});keyHandler({bare_key:{Char:'c'}});
-      check(effects.at(-1)[0]==='SendSigintToPaneId');
-      check(timers.at(-1).ms===2000);timers.at(-1).fn();
-      check(effects.at(-1)[0]==='SendSigkillToPaneId');finish(1);
+      check(sent.filter(([c])=>c.OpenCommandPaneFloating).length===1);
+      check(sent.filter(([c])=>c.RunCommandInPane).every(([c])=>c.RunCommandInPane.keep_scrollback && c.RunCommandInPane.pane_id.Terminal===7));
+      bridge('update',{Key:{bare_key:{Char:'r'}}},2);
+      bridge('update',{Key:{bare_key:{Char:'c'}}},2);
+      now+=2000;bridge('update',{Timer:0},2);
     "#);
-    run(&mut runtime, "check(M.render().includes('sequence cancelled'));check(timers.at(-1).cancelled);");
+    pane_context(&mut runtime);
+    run(&mut runtime, "check(sent.some(([c])=>c.SendSigkillToPaneId));event('CommandPaneExited',1)");
+    run(&mut runtime, "check(M.render().includes('sequence cancelled'));now+=4000;bridge('update',{Timer:0},2)");
 }

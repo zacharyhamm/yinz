@@ -161,6 +161,87 @@ const response = await zellij.webRequest({ url: "https://example.com", streamId 
 The wrapper does not subscribe to or buffer chunks.
 `.cancel()` cancels only the response wait. Stop host streaming with `zellij.command("CancelWebRequest", streamId)`.
 
+### Commands in one pane
+
+`paneSequence` runs commands in order and reuses one terminal pane. Project automation
+still uses Swamp workflows. See [the pane example](../example-plugins/workflow.ts).
+
+```ts
+const sequence = zellij.paneSequence({
+  name: 'Checks',
+  steps: [
+    {path: 'sh', args: ['-c', 'echo first']},
+    {path: 'cat', stdin: 'input\n\x04', timeoutMs: 30_000},
+  ],
+  onStep(number, step, exitCode) {
+    zellij.log(`step ${number}: ${exitCode}`);
+    // sequence.push({path: 'true'}) can append work here.
+  },
+});
+const result = await sequence.done;
+// sequence.cancel() signals the child. Repeated cancellation is harmless.
+```
+
+Steps accept all `CommandToRun` fields, including SSH and Firecracker targets, plus
+`name`, `stdin`, and `timeoutMs`. The helper writes `stdin` once, after the matching
+process starts. It does not add a newline or EOF. The timeout starts at that same event.
+All helper durations use **milliseconds**. An omitted timeout has no deadline.
+
+`cwd: 'inherit'` reads the latest pane metadata when dispatching the step. It uses the
+reported directory only if the execution target matches. Otherwise it uses the host's
+default directory. The first step has no preceding pane directory.
+
+| Option | Default and behavior |
+| --- | --- |
+| `name` | Optional pane title. Step names label callbacks. |
+| `floating` | `false`: tiled pane. Accepts `true` or `FloatingPaneCoordinates`. |
+| `stopOnFailure` | `true`: stop at the first nonzero or unavailable exit code. With `false`, continue, but report `failed` if any step failed. |
+| `keepScrollback` | `true`: preserve output between commands. |
+| `closeOnSuccess` | `false`: leave the pane open. |
+| `onCancel` | `'keep'`: leave the pane open. `'close'` closes it after cancellation settles. |
+| `killGraceMs` | `5000`: delay between SIGINT and SIGKILL, and the final wait after SIGKILL. |
+| `onStep` | Optional `(number, step, exitCode)` callback. Step numbers start at one. |
+| `onDone` | Optional `(result)` callback, once for a resolved outcome. |
+
+The handle exposes `paneId`, `status`, `done`, `push(step)`, and `cancel()`.
+`paneId` is a `PaneId` known after a successful open. It remains `null` if opening fails.
+`status` starts as `running`, changes to `cancelling` after accepted cancellation,
+and ends with `success`, `failed`, `cancelled`, or `pane_closed`.
+
+`done` resolves with `{status, paneId, exitCodes, failedStep}`. Codes are numbers or
+`null` when unavailable. `failedStep` is the first failed step number, or `null`.
+Closing the pane settles immediately without reporting an exit for the unfinished step.
+A timeout uses the cancellation escalation but ends with `failed`, even with
+`stopOnFailure: false`. After both grace periods expire, the current exit code is `null`.
+An initial cancellation signal refusal throws and leaves the sequence running.
+
+Initial options and all steps are validated synchronously before any pane opens.
+Host failures reject `done` after cleanup. Callback exceptions are logged. Callback
+promises do not delay progression, so append synchronously within `onStep` to extend
+the sequence before it completes. `push` validates and copies appended steps while
+running. Additions after cancellation or completion are ignored.
+
+Permissions: `RunCommands` opens and replaces commands. `ReadApplicationState` allows
+startup, exit, closure, and pane metadata observation. `ChangeApplicationState` is needed
+for naming, timeout signals, cancellation, and closing. `WriteToStdin` is needed for `stdin`.
+Obtain permissions before starting the helper.
+
+`waitForPaneExit(pane)` observes any terminal pane, including panes opened by the CLI or another plugin.
+It requires `ReadApplicationState`. An already-exited pane resolves immediately with its recorded exit status.
+A missing pane resolves immediately with `exitCode: null` and `closed: true`.
+`runInPane(pane, step)` registers observation, then replaces the command in an existing
+pane with scrollback preserved. Both accept a terminal number or `{Terminal: number}`
+and return cancellable promises of `{paneId, exitCode, closed}`. They reject with
+`AbortError` when cancelled. Their cancellation stops **observation only** and does not
+signal the child. For `runInPane`, `timeoutMs` also stops observation only, with a timeout
+error. Use `paneSequence` when a timeout must signal the child.
+
+Listeners and helper timers are removed on completion or rejection. For `runInPane` and
+`paneSequence`, unique instance and step contexts exclude exits from earlier commands.
+Reload or disposal discards pending sequences and their timers. It does not stop an
+already started child, resume the sequence, or run `onDone` in the replacement instance.
+A disconnected callback cannot signal work through a newly attached client's identity.
+
 ### Waits and cancellation
 
 `runCommand`, `webRequest`, `waitForEvent`, `waitForPipe`, and `sleep` return `CancellablePromise<T>`, a native promise with `cancel()`.
@@ -503,6 +584,23 @@ There are no declarations for general Deno I/O or browser APIs that this runtime
 Each instance holds its own source and source maps. Reload reads dependencies again.
 Reload discards pending JavaScript callbacks and ignores timer and command replies from the old instance.
 Host actions already started can still finish; reload does not undo their side effects.
+
+### Tracing
+
+Call `zellij.trace()` or `zellij.trace(true)` to enable a transcript. Call `zellij.trace(false)` to disable it.
+Other argument types throw. Each runtime starts with tracing disabled.
+The merged configuration applies `trace: "true"` or `trace: "false"` before `load`, with configuration overriding plugin defaults.
+Absent or other values preserve the current setting. Runtime calls can change it afterward.
+
+Read the existing `[deno:<plugin>]` log output with `zellij plugins log hello.ts` or Hocus `plugin_log`.
+Trace lines contain the instance ID, originating client ID, command names, event types, and pipe names, including SDK-consumed pipes.
+Existing SDK promise observers emit numbered `task` markers. Cancellable helpers emit numbered `operation` markers.
+Both use `started` and `finished`, `failed`, or `cancelled` outcomes.
+Tracing does not observe arbitrary guest promises.
+
+Arguments, payloads, results, and exception text are excluded. Invalid command values receive a generic marker.
+Names are limited to 200 characters, with control characters escaped.
+Disabling tracing suppresses subsequent lines. Reload starts fresh and does not manufacture completion lines for discarded callbacks.
 
 ## Authoring loop
 
