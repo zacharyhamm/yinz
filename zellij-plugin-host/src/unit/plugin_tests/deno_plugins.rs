@@ -1573,6 +1573,102 @@ export default {
 
 #[test]
 #[serial(plugin_tests)]
+fn deno_timer_before_unload_interrupts_initial_load() {
+    cancel_load_after_timer(PluginInstruction::Unload(PLUGIN));
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_timer_before_disconnect_interrupts_initial_load() {
+    cancel_load_after_timer(PluginInstruction::RemoveClient(CLIENT));
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_timer_before_shutdown_interrupts_initial_load() {
+    cancel_load_after_timer(PluginInstruction::Exit);
+}
+
+fn cancel_load_after_timer(cancellation: PluginInstruction) {
+    let (finished, completion) = std::sync::mpsc::channel();
+    let test = std::thread::spawn(move || {
+        let (to_proxy, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
+        let to_proxy = SenderWithContext::new(to_proxy);
+        let harness = Harness::with_event_sender(
+            "js",
+            r#"
+export default {
+  load() {
+    zellij.command("SetTimeout", 0);
+    for (;;) {}
+  },
+  render() { return "runaway load completed"; }
+};
+"#,
+            None,
+            Some(to_proxy.clone()),
+        );
+        let completions = Watched::new(Vec::new());
+        let proxy = std::thread::spawn({
+            let completions = completions.clone();
+            let sender = harness.sender.clone();
+            move || loop {
+                let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
+                match instruction {
+                    PluginInstruction::Exit => break,
+                    timer @ PluginInstruction::DenoEvent(_, _, _, Event::Timer(_)) => {
+                        completions.lock().push(timer);
+                    },
+                    other => {
+                        let _ = sender.send(other);
+                    },
+                }
+            }
+        });
+        harness.load();
+        let timer = completions.wait_until(
+            "the looping load produced a real host timer completion",
+            default_timeout(),
+            |events| events.first().cloned(),
+        );
+        // These share a FIFO: cancellation must be reachable after the real completion.
+        harness.sender.send(timer).unwrap();
+        let shutdown = matches!(cancellation, PluginInstruction::Exit);
+        let disconnect = matches!(cancellation, PluginInstruction::RemoveClient(_));
+        std::fs::write(&harness.path, "export default {};").unwrap();
+        harness.sender.send(cancellation).unwrap();
+        if !shutdown {
+            if disconnect {
+                harness
+                    .sender
+                    .send(PluginInstruction::AddClient(ClientId::new(2)))
+                    .unwrap();
+            }
+            let survivor = harness.directory.path().join("survivor.js");
+            std::fs::write(
+                &survivor,
+                "export default { render() { return 'survived timer cancellation'; } };",
+            )
+            .unwrap();
+            load(&harness.sender, run_plugin(&survivor));
+            harness.rendered("survived timer cancellation");
+        }
+        let log = harness.finish();
+        assert!(!rendered_assets(&log)
+            .iter()
+            .any(|(_, frame)| frame.contains("runaway load completed")));
+        to_proxy.send(PluginInstruction::Exit).unwrap();
+        proxy.join().unwrap();
+        finished.send(()).unwrap();
+    });
+    completion
+        .recv_timeout(default_timeout() * 3)
+        .expect("timer cancellation and teardown must complete");
+    test.join().unwrap();
+}
+
+#[test]
+#[serial(plugin_tests)]
 fn deno_disconnect_interrupts_initial_load_before_the_instance_is_published() {
     let harness = Harness::new(
         "js",

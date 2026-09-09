@@ -1703,22 +1703,82 @@ impl WasmBridge {
         event: Event,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
-        // Reload invalidates the old generation before enqueueing its replacement.
-        // Check before update_plugins can cache the event for that replacement.
-        let current = self
-            .plugin_map
-            .lock()
-            .unwrap()
-            .contains_deno_generation(plugin_id, generation);
-        if current {
-            if let Some(cached) = self.cached_events_for_pending_plugins.get_mut(&plugin_id) {
-                cached.push(EventOrPipeMessage::DenoEvent(client_id, generation, event));
-            } else {
-                self.update_plugins(
-                    vec![(Some(plugin_id), Some(client_id), event)],
-                    shutdown_sender,
-                )?;
-            }
+        // Loading can hold the map while guest code runs. The plugin thread must
+        // remain free to process the cancellation that interrupts that code.
+        let message = EventOrPipeMessage::DenoEvent(client_id, generation, event);
+        if let Some(cached) = self.cached_events_for_pending_plugins.get_mut(&plugin_id) {
+            cached.push(message);
+        } else {
+            self.plugin_executor.execute_for_plugin_tagged(
+                plugin_id,
+                "deno_event",
+                false,
+                move |senders, plugin_map, connected_clients, _, _| {
+                    let _shutdown = shutdown_sender;
+                    let instances = {
+                        let mut map = plugin_map.lock().unwrap();
+                        if !map.contains_deno_generation(plugin_id, generation) {
+                            return;
+                        }
+                        map.running_plugins_and_subscriptions()
+                    };
+                    let connected_clients = connected_clients.lock().unwrap().clone();
+                    for (id, owner, instance, subscriptions) in instances {
+                        if id != plugin_id {
+                            continue;
+                        }
+                        let subs = subscriptions.lock().unwrap().clone();
+                        let mut plugin = instance.lock().unwrap();
+                        let shared = plugin.env().plugin.is_shared();
+                        let Some(client_id) =
+                            message.client_for_replay(owner, plugin.deno_generation(), shared)
+                        else {
+                            continue;
+                        };
+                        let EventOrPipeMessage::DenoEvent(_, _, event) = &message else {
+                            unreachable!();
+                        };
+                        let event_type = EventType::from(event);
+                        if !subs.contains(&event_type)
+                            && event_type != EventType::PermissionRequestResult
+                        {
+                            return;
+                        }
+                        let clients = if shared {
+                            connected_clients.clone()
+                        } else {
+                            vec![owner]
+                        };
+                        let mut assets = vec![];
+                        let result = apply_event_to_plugin(
+                            plugin_id,
+                            client_id,
+                            &clients,
+                            &mut plugin,
+                            event,
+                            &mut assets,
+                            senders.clone(),
+                            &subs,
+                        );
+                        let disposed = plugin.is_disposed();
+                        drop(plugin);
+                        match result {
+                            Ok(()) => {
+                                let _ =
+                                    senders.send_to_screen(ScreenInstruction::PluginBytes(assets));
+                            },
+                            Err(_) if disposed => {},
+                            Err(error) => handle_plugin_crash(
+                                plugin_id,
+                                Some(generation),
+                                format!("{error:#}"),
+                                senders.clone(),
+                            ),
+                        }
+                        break;
+                    }
+                },
+            );
         }
         Ok(())
     }
