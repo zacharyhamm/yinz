@@ -1422,18 +1422,29 @@ impl Tab {
             None => false,
         }
     }
+    fn floating_stack_headers_visible(&self, list: &StackList) -> bool {
+        self.floating_panes.fullscreen_pane_id().is_none()
+            && self
+                .floating_panes
+                .get_pane(list.visible)
+                .map(|pane| {
+                    let bottom_frame = usize::from(!pane.borderless());
+                    pane.rows() > list.members.len() + 1 + bottom_frame
+                })
+                .unwrap_or(false)
+    }
     fn stack_list_member_at_point(&self, pane_id: PaneId, point: &Position) -> PaneId {
-        if self.floating_panes.fullscreen_pane_id().is_some()
-            && self.floating_panes.get_pane(pane_id).is_some()
-        {
-            return pane_id;
-        }
         let Some(stack_list_id) = self.stack_list_id_of_member(&pane_id) else {
             return pane_id;
         };
         let Some(list) = self.stack_lists.get(&stack_list_id) else {
             return pane_id;
         };
+        if self.floating_panes.panes_contain(&list.visible)
+            && !self.floating_stack_headers_visible(list)
+        {
+            return list.visible;
+        }
         let Some(pane) = self
             .tiled_panes
             .get_pane(pane_id)
@@ -1974,10 +1985,17 @@ impl Tab {
     }
     fn resize_stack_list_hidden_members(&mut self, stack_list_id: StackListId) {
         if let Some(list) = self.stack_lists.get(&stack_list_id) {
+            let headers_visible = self.floating_stack_headers_visible(list);
             if self.floating_panes.fullscreen_pane_id() != Some(list.visible) {
                 if let Some(pane) = self.floating_panes.get_pane_mut(list.visible) {
-                    let mut offset = pane.get_content_offset();
-                    offset.top = list.members.len() + 1;
+                    let mut offset = if pane.borderless() {
+                        Offset::default()
+                    } else {
+                        Offset::frame(1)
+                    };
+                    if headers_visible {
+                        offset.top = list.members.len() + 1;
+                    }
                     if pane.get_content_offset() != offset {
                         pane.set_content_offset(offset);
                         resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
@@ -2011,9 +2029,14 @@ impl Tab {
         for member in hidden_members {
             if let Some(suppressed) = self.suppressed_panes.get_mut(&member) {
                 let pane = &mut suppressed.pane;
-                pane.set_geom(visible_geom);
-                pane.set_content_offset(visible_offset);
-                let _ = resize_pty!(pane, self.os_api, self.senders, self.character_cell_size);
+                if pane.position_and_size() != visible_geom
+                    || pane.get_content_offset() != visible_offset
+                {
+                    pane.set_geom(visible_geom);
+                    pane.set_content_offset(visible_offset);
+                    resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                        .non_fatal();
+                }
             }
         }
     }
@@ -2063,7 +2086,7 @@ impl Tab {
         let lists: Vec<StackList> = self.stack_lists.values().cloned().collect();
         for list in lists {
             if self.floating_panes.panes_contain(&list.visible) != floating
-                || (floating && self.floating_panes.fullscreen_pane_id().is_some())
+                || (floating && !self.floating_stack_headers_visible(&list))
             {
                 continue;
             }
@@ -5907,12 +5930,7 @@ impl Tab {
             let resize: Vec<_> = self
                 .stack_lists
                 .iter()
-                .filter_map(|(id, list)| {
-                    self.floating_panes
-                        .get_pane(list.visible)
-                        .filter(|pane| pane.get_content_offset().top != list.members.len() + 1)
-                        .map(|_| *id)
-                })
+                .filter_map(|(id, list)| self.floating_panes.get_pane(list.visible).map(|_| *id))
                 .collect();
             for id in resize {
                 self.resize_stack_list_hidden_members(id);
