@@ -924,12 +924,14 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
     teardown();
 
     let opened = hook_panes_opened(&received_screen_instructions.lock());
+    // The id in the title is the hook pane's own, not the terminal suppressed behind it, so it
+    // is read off the same instruction rather than written out.
     assert!(received_screen_instructions
         .lock()
         .iter()
         .any(|instruction| {
-            matches!(instruction, ScreenInstruction::AddPlugin(_, _, _, _, Some(title), ..)
-            if title == "[7] build-box topic: Review")
+            matches!(instruction, ScreenInstruction::AddPlugin(_, _, _, _, Some(title), _, plugin_id, ..)
+            if title == &format!("[{plugin_id}] build-box topic: Review"))
         }));
     assert_eq!(
         opened.iter().map(|(_, pane)| *pane).collect::<Vec<_>>(),

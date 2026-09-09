@@ -102,7 +102,12 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
         ))
         .start();
     let original = zellij.expect_pty_spawn();
+    // The terminal frame labels itself with its own id; the exit panel that replaces it is a
+    // plugin pane, which does not - so the hook writes an id into its name, and that id is the
+    // panel's own. Its value is not known here, so the screen is matched on the rest of the
+    // title and the id itself is pinned off the pane events below.
     let original_title = format!("[{}] Review topic", original.terminal_id());
+    let panel_title = "] Review topic";
     original.output(b"ORIGINAL SCROLLBACK\r\n");
     zellij.wait_until("original output", |s| s.contains("ORIGINAL SCROLLBACK"));
     let events = zellij.stream_events(&["pane_update", "tab_update"]);
@@ -124,7 +129,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     zellij.wait_until("hook permissions", |s| s.contains("Allow? (y/n)"));
     zellij.send_stdin(b"y");
     zellij.wait_until("workflow status in exit pane", |s| {
-        s.contains("Run run: running") && s.contains(&original_title)
+        s.contains("Run run: running") && s.contains(panel_title)
     });
     let runner = zellij.expect_pty_spawn();
     runner.output(b"BACKGROUND RUNNER\r\n");
@@ -224,7 +229,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
         zellij.resize(TERMINAL_SIZE);
     }
     zellij.wait_until("final result stays visible", |s| {
-        s.contains("Run run: completed") && s.contains(&original_title)
+        s.contains("Run run: completed") && s.contains(panel_title)
     });
     // A managed helper's process exit must not replace status with another hook.
     worker.exit(Some(0));
@@ -237,7 +242,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
         s.contains("ORIGINAL SCROLLBACK") && s.contains(&original_title)
     });
 
-    let (mut pane_events, mut tab_events) = (0, 0);
+    let (mut pane_events, mut tab_events, mut panel_titles) = (0, 0, 0);
     for (kind, json) in events.streamed_events() {
         let event: serde_json::Value = serde_json::from_str(&json).unwrap();
         if kind == "PaneUpdate" {
@@ -254,12 +259,29 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
                 "extra visible pane: {json}"
             );
             assert!(panes.iter().all(|p| p["is_floating"] == false), "{json}");
+            for pane in panes.iter().filter(|p| {
+                p["is_plugin"] == true
+                    && p["title"]
+                        .as_str()
+                        .is_some_and(|t| t.ends_with(panel_title))
+            }) {
+                panel_titles += 1;
+                assert_eq!(
+                    pane["title"].as_str().unwrap(),
+                    format!("[{}] Review topic", pane["id"].as_u64().unwrap()),
+                    "the exit panel names the pane it is, not the one suppressed behind it: {json}"
+                );
+            }
         } else if kind == "TabUpdate" {
             tab_events += 1;
             assert_eq!(event["TabUpdate"].as_array().unwrap().len(), 1, "{json}");
         }
     }
     assert!(pane_events > 0 && tab_events > 0);
+    assert!(
+        panel_titles > 0,
+        "no pane event carried the exit panel's title"
+    );
     assert_eq!(
         zellij.run_cli_action(CliAction::ClosePane {
             pane_id: Some(format!("terminal_{}", original.terminal_id())),
