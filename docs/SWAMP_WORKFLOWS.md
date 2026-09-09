@@ -59,9 +59,11 @@ without starting a worker. Local checkout evidence does not require a VM-sync re
    same checkout and VM context. Cancel the picker to return to a fresh exit menu.
    Leave restores the original scrollback and preserves all resources.
 2. After Begin review, choose **Show diff**, **Commit and rebase**, or **Leave**.
-   Show diff displays unstaged changes to tracked files after VM synchronization.
+   Show diff displays unstaged changes to tracked files and untracked, non-ignored files after VM synchronization.
+   Only the agent’s checkout is included, even when inherited Git settings point to another worktree.
+   Untracked nested repositories appear as safely quoted directory entries. Their contents are not traversed.
    A persistent `less` viewer temporarily occupies the workflow pane, including for short or empty diffs.
-   Empty diffs show “No unstaged changes”. Press `q` or `Esc` to return to the Begin review preparation menu.
+   Empty diffs show “No unstaged or untracked changes.” Staged-only changes are excluded. Press `q` or `Esc` to return to the Begin review preparation menu.
    Arrow keys scroll, and `/` searches. Pager settings are overridden only for this viewer.
    Temporary output and key bindings are removed on exit. Command failures appear in the workflow view.
    Commit and rebase skips empty commits and rebases onto the configured local target.
@@ -283,7 +285,7 @@ The smoke runner creates disposable repositories and stub agents. It tests unatt
 questions, an interactive detachable view, stale evidence, optional checks, informed merges, explicit conflict resolution,
 recorded-answer recovery, cancellation, and server crash/adoption. It prints the
 fixture directory containing its command transcript and terminal capture. The
-`--source-diff-only` path checks short, long, and empty diffs in manual, agent-exit,
-and unattended views, including dismissal, scrolling, search, and checkout preservation. The
+`--source-diff-only` path checks short, long, untracked, staged-only, and empty diffs in manual, agent-exit,
+and unattended views, including dismissal, scrolling, search, checkout isolation, nested repositories, and temporary-file cleanup. The
 Firecracker suite also runs the typed bridge against a real guest, including a sync
 conflict. Run socket and KVM tests outside a sandbox that blocks those facilities.
