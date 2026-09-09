@@ -399,6 +399,21 @@ mod compatibility_tests {
     use super::*;
 
     #[test]
+    fn escape_is_disambiguated_only_in_kitty_mode() {
+        let escape = KeyWithModifier::new(BareKey::Esc);
+        assert_eq!(serialize_kitty(&escape).as_deref(), Some("\x1b[27;1u"));
+        assert_eq!(serialize_non_kitty(&escape).as_deref(), Some("\x1b"));
+        assert_eq!(
+            serialize_kitty(&KeyWithModifier::new(BareKey::Down)).as_deref(),
+            Some("\x1b[B")
+        );
+        assert_eq!(
+            serialize_kitty(&KeyWithModifier::new(BareKey::Enter)).as_deref(),
+            Some("\r")
+        );
+    }
+
+    #[test]
     fn terminal_keys_preserve_bytes_and_binding_precedence() {
         let enter = KeyEvent {
             key: KeyCode::Enter,
