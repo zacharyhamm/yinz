@@ -453,7 +453,13 @@ impl KeyCode {
                     Escape => '\x1b',
                     _ => unreachable!(),
                 };
-                if mods.contains(Modifiers::SHIFT) || mods.contains(Modifiers::CTRL) {
+                let disambiguate_escape = key == Escape
+                    && matches!(modes.encoding, KeyboardEncoding::Kitty(flags)
+                        if flags.contains(KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES));
+                if disambiguate_escape
+                    || mods.contains(Modifiers::SHIFT)
+                    || mods.contains(Modifiers::CTRL)
+                {
                     csi_u_encode(&mut buf, c, mods, &modes)?;
                 } else {
                     if mods.contains(Modifiers::ALT) {

@@ -47,6 +47,8 @@ for name, directory in [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data')
     env[name] = str(root / directory)
     (root / directory).mkdir()
 env['SWAMP_SMOKE_ZELLIJ'] = str(binary)
+if args.source_diff_only:
+    env.update(GIT_PAGER='false', PAGER='false', LESS='-F -E')
 real_swamp = shutil.which('swamp')
 assert real_swamp, 'Swamp is required'
 fixture_bin = root / 'bin'
@@ -306,38 +308,84 @@ try:
             before_diff = run('git', 'status', '--porcelain=v1', cwd=topic).stdout
             before_head = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
             contents = (topic / 'file').read_text()
-            # A long tracked diff keeps less open even with the usual -F default.
-            (topic / 'file').write_text(contents + 'foreground diff line\n' * 200)
-            run('git', 'config', 'core.pager', 'less' if view else 'cat')
+            base_contents = run('git', 'show', 'HEAD:file', cwd=topic).stdout
+            second_contents = (topic / 'second').read_text()
+            (topic / 'second').write_text('staged changes stay outside Show diff\n')
+            run('git', 'add', 'second', cwd=topic)
+            (topic / 'untracked-diff-fixture').write_text('untracked changes stay outside Show diff\n')
+            staged = run('git', 'diff', '--cached', cwd=topic).stdout
+            # The viewer must ignore both Git's pager and less's auto-exit options.
+            run('git', 'config', 'core.pager', 'false')
             try:
-                previous = choose(token, 'prepare', 'show-diff')
-                if view:
-                    def viewer():
-                        return next((p for p in json.loads(zellij('action', 'list-panes', '--json'))
-                                     if not p['is_plugin'] and not p['is_suppressed']
-                                     and p.get('terminal_command') == 'git diff'), None)
-                    terminal = until('foreground git diff', viewer)
-                    for field in ('pane_x', 'pane_y', 'pane_rows', 'pane_columns', 'is_floating'):
-                        assert terminal[field] == view[field], (field, terminal, view)
-                    panes = json.loads(zellij('action', 'list-panes', '--json'))
-                    assert next(p for p in panes if p['is_plugin'] and p['id'] == view['id'])['is_suppressed']
-                    until('pager renders tracked diff', lambda: 'foreground diff line' in zellij('action', 'dump-screen'))
-                    os.write(ui_fd, b'q')
-                fresh = until('pager exit returns to preparation', lambda: pending(token, 'prepare'))
-                assert fresh['attributes']['run'] != previous['attributes']['run']
-                if view:
-                    until('preparation menu renders again', lambda: 'Show diff' in zellij('action', 'dump-screen'))
-                    restored = next(p for p in json.loads(zellij('action', 'list-panes', '--json'))
-                                    if p['is_plugin'] and p['id'] == view['id'])
-                    assert not restored['is_suppressed']
+                for shape, addition in [('short', 'foreground diff line\n'),
+                                        ('long', ''.join(f'foreground diff line {i:03d}\n' for i in range(200))),
+                                        ('empty', '')]:
+                    (topic / 'file').write_text(base_contents + addition)
+                    for dismiss in ('q', 'Esc'):
+                        expected = run('git', 'diff', '--no-ext-diff', cwd=topic).stdout
+                        previous = choose(token, 'prepare', 'show-diff')
+                        def viewer():
+                            return next((p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                                         if not p['is_plugin'] and not p['exited']
+                                         and '--lesskey-src=' in (p.get('terminal_command') or '')), None)
+                        terminal = until('persistent diff viewer', viewer)
+                        pane = 'terminal_' + str(terminal['id'])
+                        def send(data):
+                            if view:
+                                os.write(ui_fd, data)
+                            else:
+                                zellij('action', 'write', '--pane-id', pane, *map(str, data))
+                        if view:
+                            assert not terminal['is_suppressed']
+                            for field in ('pane_x', 'pane_y', 'pane_rows', 'pane_columns', 'is_floating'):
+                                assert terminal[field] == view[field], (field, terminal, view)
+                            panes = json.loads(zellij('action', 'list-panes', '--json'))
+                            assert next(p for p in panes if p['is_plugin'] and p['id'] == view['id'])['is_suppressed']
+                        def screen():
+                            return zellij('action', 'dump-screen', '--pane-id', pane)
+                        until('viewer renders ' + shape, lambda: ('No unstaged changes' if shape == 'empty'
+                              else 'foreground diff line') in screen())
+                        until('viewer prompt', lambda: 'q to return' in screen())
+                        if shape == 'long':
+                            first = screen()
+                            send(b'\x1b[B')
+                            until('down arrow scrolls', lambda: screen() != first)
+                            send(b'\x1b[A')
+                            until('up arrow scrolls back', lambda: screen() == first)
+                            send(b'/foreground diff line 190\r')
+                            until('search finds later line', lambda: 'foreground diff line 199' in screen())
+                        # This is a persistence assertion: short/empty output must not auto-exit.
+                        time.sleep(1)
+                        assert viewer(), (shape, dismiss)
+                        # Suppressed viewers need explicit input too; encode Esc as Zellij does.
+                        send(b'q' if dismiss == 'q' else (b'\x1b' if view else b'\x1b[27u'))
+                        fresh = until('pager exit returns to preparation', lambda: pending(token, 'prepare'))
+                        assert fresh['attributes']['run'] != previous['attributes']['run']
+                        if view:
+                            until('preparation menu renders again', lambda: 'Show diff' in zellij('action', 'dump-screen'))
+                            restored = next(p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                                            if p['is_plugin'] and p['id'] == view['id'])
+                            assert not restored['is_suppressed']
+                        assert (topic / 'file').read_text() == base_contents + addition
+                        assert run('git', 'diff', '--no-ext-diff', cwd=topic).stdout == expected
+                        assert run('git', 'diff', '--cached', cwd=topic).stdout == staged
+                        assert (topic / 'untracked-diff-fixture').read_text() == 'untracked changes stay outside Show diff\n'
+                        assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout == before_head
+                        assert not list((root / 'tmp').glob('zellij-show-diff.*'))
+                        print('PASS:', token, shape, dismiss, 'persists and restores preparation without mutation', flush=True)
             finally:
                 (topic / 'file').write_text(contents)
+                (topic / 'second').write_text(second_contents)
+                run('git', 'reset', '--', 'second', cwd=topic)
+                (topic / 'untracked-diff-fixture').unlink()
                 run('git', 'config', '--unset', 'core.pager')
-            assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout == before_head
             assert run('git', 'status', '--porcelain=v1', cwd=topic).stdout == before_diff
-            print('PASS: plain git diff is read-only; pager exit opens a fresh preparation menu', flush=True)
 
         if args.source_diff_only:
+            launch('unattended-diff')
+            choose('unattended-diff', 'exit', 'begin-review')
+            exercise_diff('unattended-diff')
+            choose('unattended-diff', 'prepare', 'leave')
             launch('previews')
             choose('previews', 'exit', 'begin-review')
             preparation = until('manual preparation', lambda: pending('previews', 'prepare'))
