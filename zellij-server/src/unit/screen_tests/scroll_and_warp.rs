@@ -2803,6 +2803,191 @@ fn screen_with_a_transferred_floating_stack() -> Screen {
     screen
 }
 
+fn render_floating_stack(tab: &mut crate::tab::Tab) -> String {
+    let mut output = zellij_terminal::output::Output::new(
+        Default::default(),
+        Default::default(),
+        true,
+        true,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
+    tab.render(&mut output, Some(ClientId::new(1))).unwrap();
+    let rendered = output
+        .serialize()
+        .unwrap()
+        .remove(&ClientId::new(1))
+        .unwrap_or_default();
+    let mut grid = grid_for_render_snapshot(Size { cols: 80, rows: 24 });
+    take_snapshot_and_cursor_coordinates(&rendered, &mut grid).1
+}
+
+#[test]
+fn floating_stack_resize_synchronizes_hidden_members_without_redundant_requests() {
+    use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
+
+    let mut screen = screen_with_a_transferred_floating_stack();
+    let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    let displayed = PaneId::Terminal(TerminalId::new(1));
+    let (tx, rx) = channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    tab.senders.to_pty_writer = Some(SenderWithContext::new(tx));
+    tab.show_floating_panes();
+    render_floating_stack(tab);
+    let offset = tab
+        .get_pane_with_id(displayed)
+        .unwrap()
+        .get_content_offset();
+
+    for direction in [Direction::Right, Direction::Down] {
+        let before = tab.get_pane_with_id(displayed).unwrap().current_geom();
+        tab.resize_pane_with_id(
+            ResizeStrategy::new(Resize::Increase, Some(direction)),
+            displayed,
+        )
+        .unwrap();
+        rx.try_iter().for_each(drop);
+        render_floating_stack(tab);
+        let visible = tab.get_pane_with_id(displayed).unwrap();
+        assert_ne!(visible.current_geom(), before);
+        assert_eq!(visible.get_content_offset(), offset);
+        let dimensions = (visible.get_content_columns(), visible.get_content_rows());
+        let visible_geom = visible.current_geom();
+        let resizes: Vec<_> = rx
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PtyWriteInstruction::ResizePty(id, cols, rows, _, _) => Some((id, cols, rows)),
+                _ => None,
+            })
+            .collect();
+        for id in [2, 8].map(TerminalId::new) {
+            let hidden = tab.get_pane_with_id(PaneId::Terminal(id)).unwrap();
+            assert_eq!(hidden.current_geom(), visible_geom);
+            assert_eq!(hidden.get_content_offset(), offset);
+            assert_eq!(
+                (hidden.get_content_columns(), hidden.get_content_rows()),
+                dimensions
+            );
+            assert_eq!(
+                resizes
+                    .iter()
+                    .filter(|(resized, _, _)| *resized == id)
+                    .copied()
+                    .collect::<Vec<_>>(),
+                vec![(id, dimensions.0 as u16, dimensions.1 as u16)]
+            );
+            // Cursor clamping observes the grid's actual size, not just pane geometry.
+            tab.handle_pty_bytes(id, b"\x1b[999;999H".to_vec()).unwrap();
+            assert_eq!(
+                tab.get_pane_with_id(PaneId::Terminal(id))
+                    .unwrap()
+                    .cursor_coordinates(None)
+                    .map(|(x, y, _)| (x, y)),
+                Some((
+                    dimensions.0 - 1 + offset.left,
+                    dimensions.1 - 1 + offset.top
+                ))
+            );
+        }
+        render_floating_stack(tab);
+        assert!(!rx.try_iter().any(|(instruction, _)| matches!(instruction,
+            PtyWriteInstruction::ResizePty(id, ..) if [TerminalId::new(2), TerminalId::new(8)].contains(&id))));
+    }
+}
+
+#[test]
+fn floating_stack_shrink_hides_headers_and_growth_restores_mouse_selection() {
+    use zellij_types::geometry::FloatingPaneCoordinates;
+    use zellij_types::mouse::MouseEvent;
+    use zellij_types::position::Position;
+
+    for terminal_resize in [false, true] {
+        let mut screen = screen_with_a_transferred_floating_stack();
+        let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+        let client = ClientId::new(1);
+        let displayed = PaneId::Terminal(TerminalId::new(1));
+        tab.show_floating_panes();
+        tab.rename_pane_by_pane_id(
+            PaneId::Terminal(TerminalId::new(2)),
+            b"hidden header".to_vec(),
+        )
+        .unwrap();
+        assert!(render_floating_stack(tab).contains("hidden header"));
+        tab.handle_pty_bytes(
+            TerminalId::new(1),
+            (0..50)
+                .map(|i| format!("line {i}\r\n"))
+                .collect::<String>()
+                .into_bytes(),
+        )
+        .unwrap();
+        if terminal_resize {
+            tab.resize_whole_tab(Size { cols: 80, rows: 5 }).unwrap();
+        } else {
+            tab.change_floating_pane_coordinates(
+                &displayed,
+                FloatingPaneCoordinates::new(None, None, None, Some("5".to_owned()), None, None)
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        let rendered = render_floating_stack(tab);
+        assert!(!rendered.contains("hidden header"));
+        assert!(rendered.contains("line 49"));
+        let pane = tab.get_pane_with_id(displayed).unwrap();
+        assert_eq!(pane.rows(), 5);
+        assert_eq!(
+            pane.get_content_offset(),
+            zellij_types::pane_size::Offset::frame(1)
+        );
+        assert_eq!(pane.get_content_rows(), 3);
+        let geom = pane.current_geom();
+        let content = Position::new((geom.y + 1) as i32, (geom.x + 2) as u16);
+        for event in [
+            MouseEvent::new_left_press_event(content),
+            MouseEvent::new_left_release_event(content),
+            MouseEvent::new_scroll_up_event(content),
+        ] {
+            tab.handle_mouse_event(&event, client).unwrap();
+        }
+        assert_eq!(tab.get_active_pane_id(client), Some(displayed));
+        assert!(tab.get_pane_with_id(displayed).unwrap().scroll_position().0 > 0);
+        for id in [2, 8].map(|id| PaneId::Terminal(TerminalId::new(id))) {
+            assert!(tab.pane_is_hidden_stack_list_member(&id));
+            assert_eq!(tab.get_pane_with_id(id).unwrap().get_content_rows(), 3);
+        }
+        if terminal_resize {
+            tab.resize_whole_tab(Size { cols: 80, rows: 24 }).unwrap();
+        }
+        // Six rows fit exactly: three headers, padding, content, bottom frame.
+        tab.change_floating_pane_coordinates(
+            &displayed,
+            FloatingPaneCoordinates::new(None, None, None, Some("6".to_owned()), None, None)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(render_floating_stack(tab).contains("hidden header"));
+        let pane = tab.get_pane_with_id(displayed).unwrap();
+        assert_eq!(pane.get_content_offset().top, 4);
+        assert_eq!(pane.get_content_rows(), 1);
+        let geom = pane.current_geom();
+        let header = Position::new((geom.y + 1) as i32, (geom.x + 2) as u16);
+        for event in [
+            MouseEvent::new_left_press_event(header),
+            MouseEvent::new_left_release_event(header),
+        ] {
+            tab.handle_mouse_event(&event, client).unwrap();
+        }
+        assert_eq!(
+            tab.get_active_pane_id(client),
+            Some(PaneId::Terminal(TerminalId::new(2)))
+        );
+        assert!(tab.pane_is_hidden_stack_list_member(&displayed));
+    }
+}
+
 #[test]
 fn mouse_selects_hidden_members_of_a_transferred_floating_stack() {
     use zellij_types::mouse::MouseEvent;
