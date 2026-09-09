@@ -607,12 +607,18 @@ impl MouseHandler {
                 .floating_panes
                 .get_pinned_pane_id_at(&event.position, true)
                 .ok()
-                .flatten();
+                .flatten()
+                .map(|id| tab.stack_list_member_at_point(id, &event.position))
+                .filter(|id| {
+                    tab.get_pane_with_id(*id)
+                        .is_some_and(|pane| pane.selectable())
+                });
             let unselectable = tab
                 .floating_panes
                 .get_pinned_pane_id_at(&event.position, false)
                 .ok()
-                .flatten();
+                .flatten()
+                .map(|id| tab.stack_list_member_at_point(id, &event.position));
             (selectable, unselectable)
         } else {
             (None, None)
@@ -993,9 +999,8 @@ impl MouseHandler {
                 position,
                 event: click_event,
             } => Self::execute_focus_pane_and_click_through(tab, position, click_event, client_id),
-            MouseAction::ShowFloatingPanesAndFocus { pane_id } => {
-                tab.show_floating_panes();
-                tab.floating_panes.focus_pane(pane_id, client_id);
+            MouseAction::ShowFloatingPanesAndFocus { pane_id: _ } => {
+                Self::focus_pane_at(tab, &event.position, client_id).with_context(err_context)?;
                 Ok(MouseEffect::state_changed())
             },
             MouseAction::StartSelection { pane_id, position } => {
@@ -2172,7 +2177,16 @@ impl MouseHandler {
                 .get_pane_id_at(point, true)
                 .with_context(err_context)?
             {
-                tab.floating_panes.focus_pane(clicked_pane, client_id);
+                let clicked_pane = tab.stack_list_member_at_point(clicked_pane, point);
+                if !tab
+                    .get_pane_with_id(clicked_pane)
+                    .is_some_and(|pane| pane.selectable())
+                {
+                    return Ok(());
+                }
+                if !tab.focus_hidden_stack_list_member(clicked_pane, client_id) {
+                    tab.floating_panes.focus_pane(clicked_pane, client_id);
+                }
                 tab.set_pane_active_at(clicked_pane);
                 tab.release_overlay_focus_to_lower_layer(client_id);
                 return Ok(());
@@ -2185,7 +2199,10 @@ impl MouseHandler {
                 .get_pinned_pane_id_at(point, search_selectable)
                 .with_context(err_context)?
             {
-                tab.floating_panes.focus_pane(pane_id, client_id);
+                let pane_id = tab.stack_list_member_at_point(pane_id, point);
+                if !tab.focus_hidden_stack_list_member(pane_id, client_id) {
+                    tab.floating_panes.focus_pane(pane_id, client_id);
+                }
                 tab.set_pane_active_at(pane_id);
                 tab.show_floating_panes();
                 tab.release_overlay_focus_to_lower_layer(client_id);
@@ -2439,7 +2456,10 @@ impl MouseHandler {
                 .get_pane_id_at(point, search_selectable)
                 .with_context(err_context)?
             {
-                return Ok(tab.floating_panes.get_pane_mut(pane_id));
+                let pane_id = tab.stack_list_member_at_point(pane_id, point);
+                return Ok(tab
+                    .get_pane_with_id_mut(pane_id)
+                    .filter(|pane| !search_selectable || pane.selectable()));
             }
         } else {
             if tab.floating_panes.has_pinned_panes() {
@@ -2448,7 +2468,10 @@ impl MouseHandler {
                     .get_pinned_pane_id_at(point, search_selectable)
                     .with_context(err_context)?
                 {
-                    return Ok(tab.floating_panes.get_pane_mut(pane_id));
+                    let pane_id = tab.stack_list_member_at_point(pane_id, point);
+                    return Ok(tab
+                        .get_pane_with_id_mut(pane_id)
+                        .filter(|pane| !search_selectable || pane.selectable()));
                 }
             }
         }
