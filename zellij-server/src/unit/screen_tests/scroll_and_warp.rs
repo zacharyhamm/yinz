@@ -2804,6 +2804,74 @@ fn screen_with_a_transferred_floating_stack() -> Screen {
 }
 
 #[test]
+fn mouse_selects_hidden_members_of_a_transferred_floating_stack() {
+    use zellij_types::mouse::MouseEvent;
+    use zellij_types::position::Position;
+
+    for pinned in [false, true] {
+        let mut screen = screen_with_a_transferred_floating_stack();
+        let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+        let client_id = ClientId::new(1);
+        let mut selected = PaneId::Terminal(TerminalId::new(1));
+        let slots = tab.warp_pane_ids(Some(selected)).unwrap();
+        let members: Vec<_> = tab.warp_relationships(&slots).stacks[0]
+            .members
+            .iter()
+            .map(|slot| slots[*slot as usize])
+            .collect();
+        tab.show_floating_panes();
+        for member in &members {
+            tab.set_floating_pane_pinned(*member, pinned);
+        }
+
+        for id in [2, 8, 1].map(|id| PaneId::Terminal(TerminalId::new(id))) {
+            if pinned {
+                tab.hide_floating_panes();
+            }
+            let geom = tab.get_pane_with_id(selected).unwrap().current_geom();
+            let rank = members.iter().position(|member| *member == id).unwrap();
+            let header = Position::new((geom.y + rank) as i32, (geom.x + 2) as u16);
+            assert!(tab.pane_is_hidden_stack_list_member(&id));
+
+            tab.handle_mouse_event(&MouseEvent::new_buttonless_motion(header), client_id)
+                .unwrap();
+            assert!(tab.pane_is_hidden_stack_list_member(&id));
+            assert!(tab
+                .get_floating_panes()
+                .any(|(pane_id, _)| *pane_id == selected));
+            assert_eq!(tab.are_floating_panes_visible(), !pinned);
+
+            for event in [
+                MouseEvent::new_left_press_event(header),
+                MouseEvent::new_left_release_event(header),
+            ] {
+                tab.handle_mouse_event(&event, client_id).unwrap();
+            }
+            assert_eq!(tab.get_active_pane_id(client_id), Some(id));
+            assert!(!tab.pane_is_hidden_stack_list_member(&id));
+            assert!(tab.pane_is_hidden_stack_list_member(&selected));
+            assert!(tab.get_floating_panes().any(|(pane_id, _)| *pane_id == id));
+            assert!(tab.are_floating_panes_visible());
+            assert_eq!(
+                tab.get_pane_with_id(id).unwrap().current_geom().is_pinned,
+                pinned
+            );
+
+            let content = Position::new((geom.y + members.len() + 1) as i32, (geom.x + 2) as u16);
+            for event in [
+                MouseEvent::new_left_press_event(content),
+                MouseEvent::new_left_release_event(content),
+            ] {
+                tab.handle_mouse_event(&event, client_id).unwrap();
+            }
+            assert_eq!(tab.get_active_pane_id(client_id), Some(id));
+            assert!(!tab.pane_is_hidden_stack_list_member(&id));
+            selected = id;
+        }
+    }
+}
+
+#[test]
 fn tiled_mutations_preserve_a_transferred_floating_stack() {
     let mut screen = screen_with_a_transferred_floating_stack();
     let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
