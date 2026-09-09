@@ -66,7 +66,12 @@ use {
 /// that mapping is total.
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
-    SubscribePaneOutput(PluginId, ClientId, Option<BTreeMap<String, String>>),
+    SubscribePaneOutput(
+        PluginId,
+        ClientId,
+        Option<BTreeMap<String, String>>,
+        Option<u64>,
+    ),
     UnsubscribePaneOutput(PluginId),
     PtyBytes(TerminalId, VteBytes),
     RemotePaneReady(TerminalId),

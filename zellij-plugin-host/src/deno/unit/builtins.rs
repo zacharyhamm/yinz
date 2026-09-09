@@ -187,7 +187,7 @@ fn the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has() 
             receiver
                 .try_iter()
                 .filter_map(|(job, _)| match job {
-                    BackgroundJob::RunCommand(_, _, command, args, env, _, _, cap, _) => {
+                    BackgroundJob::RunCommand(_, _, command, args, env, _, _, cap, _, _) => {
                         assert!(env.is_empty());
                         assert_eq!(cap, Some(64));
                         Some((command, args))

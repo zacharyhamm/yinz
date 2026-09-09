@@ -831,7 +831,9 @@ pub(crate) struct Screen {
     /// Session-lifetime tombstones, relying on terminal and plugin IDs not being reused.
     /// Absent panes with these IDs are already closed; unknown IDs may be awaiting creation.
     destroyed_panes: HashSet<PaneId>,
-    pane_output_subscriptions: HashMap<(PluginId, ClientId), BTreeMap<String, String>>,
+    pane_output_subscriptions:
+        HashMap<(PluginId, ClientId), (BTreeMap<String, String>, Option<u64>)>,
+
     /// Whether each client's host terminal currently has keyboard focus, as reported through
     /// DECSET 1004. A client that never reported counts as focused.
     client_host_focused: HashMap<ClientId, bool>,
@@ -2094,6 +2096,8 @@ impl Screen {
     pub fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to remove client {client_id}");
 
+        self.pane_output_subscriptions
+            .retain(|(_, client), _| *client != client_id);
         self.notification_mouse_captures.remove(&client_id);
         // No force-render: the client is going, and the cells its menu occupied belong to a screen
         // nobody is looking at any more.

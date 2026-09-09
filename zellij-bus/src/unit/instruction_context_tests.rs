@@ -334,7 +334,7 @@ pin_context_to_instruction! {
         ),
         (
             "SubscribePaneOutput",
-            ScreenInstruction::SubscribePaneOutput(PluginId::new(1), ClientId::new(1), None),
+            ScreenInstruction::SubscribePaneOutput(PluginId::new(1), ClientId::new(1), None, None),
             "HandlePtyBytes"
         ),
         (
@@ -370,6 +370,18 @@ pin_context_to_instruction! {
             vec![],
         ),
         "PostMessageToPluginWorker"
+    ), (
+        "DenoTick",
+        PluginInstruction::DenoTick(PluginId::new(1), ClientId::new(1), 1),
+        "Update"
+    ), (
+        "DenoEvent",
+        PluginInstruction::DenoEvent(PluginId::new(1), ClientId::new(1), 1, zellij_types::data::Event::BeforeClose),
+        "Update"
+    ), (
+        "DenoDispose",
+        PluginInstruction::DenoDispose(PluginId::new(1), 1),
+        "Unload"
     )];
 }
 

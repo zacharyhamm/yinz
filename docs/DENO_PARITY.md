@@ -10,6 +10,47 @@ This is a capability record, not a claim of full Wasm/Lua/Deno parity.
 and compiler inventory coverage do not establish every command's host behavior.
 Native macOS verification requires a macOS host and remains outstanding.
 
+## Live-output parity (2026-09-09)
+
+This chunk adds synchronous `runCommand({onOutput})` callbacks, typed raw
+`SubscribePaneOutput`, `PaneOutput`, and `RunCommandOutput`, and the sixth
+`RunCommand` field. Both raw command forms preserve existing five-field calls.
+Command chunks and completions carry the same Deno generation. Pane chunks carry
+the subscribing instance's generation, even when it observes an existing pane.
+Disconnect clears only that client's subscriptions. Reload clears registrations
+after `BeforeClose` and before the replacement loads. Unload also clears them
+after guest cleanup.
+
+The focused regressions cover concurrent commands, binary stdout/stderr, original
+clients, unchanged raw events, token stripping, cancellation, callback exceptions,
+and listener retention and cleanup. A real shell command must deliver both live
+streams before the test releases it to exit. Its final result is capped, while
+live delivery contains all bytes and precedes completion. Screen tests cover
+client removal, replacement subscriptions, explicit unsubscribe, and Lua/Wasm
+routing. Guest tests reject old command and pane chunks after reload. Type checks
+compare both raw forms and events against serialized Rust fixtures.
+
+The initial focused run failed only the stale wire snapshot after the three
+stale Rust tuple sites were repaired. Snapshot review included the existing
+`CheckPlugin` wire-number shift beside the new pane subscription. A new lifecycle
+test then exposed missing subscription cleanup in the separate reload path.
+That path now clears subscriptions before replacement.
+
+The final focused run passed all 210 selected tests, including Hocus's
+`no_section_is_anywhere_near_the_tool_output_cap`. The first full gate passed
+format, lint, doctests, and all 391 integration tests. Its unit phase exposed four
+stale tests: three missing Deno instruction-context samples, an old `RunCommand`
+snapshot, and two Lua tests looking up the removed builtin instead of the retained
+Lua fixture. All four failures reproduced alone. The repaired tests passed in the
+210-test run. The final `cargo x ci check` passed format, lint, all 8,041 enabled
+unit tests (47 skipped), doctests, and all 391 integration tests with 16 workers.
+The gate completed in 131 seconds on Linux.
+
+Native macOS,
+real SSH/Firecracker sequencing, and dedicated Deno filesystem notifications
+remain unverified here. Guest workers, async iterators, awaited output callbacks,
+process cancellation, and remote module support remain outside this chunk.
+
 ## Builtin and example migration (2026-09-08)
 
 All shipped script builtins and reference examples now use TypeScript. `agent-policy`,
@@ -60,7 +101,7 @@ Test names are in the linked files. The full repository gate is recorded below.
 | Agent helpers | **Verified on Linux.** spawn details/ID, manifest cache, event subscriptions, bracketed paste, cancellable state/event/turn waits, and prompt ordering. SDK tests cover transitions, cancellation, validation, and dispatch cleanup. Real plugin tests cover agent event delivery and reload. |
 | Hocus completion client | **Verified on Linux.** exact daemon discovery, typed transcript/tool-call round trips, reply provenance, request byte limits, errors, deadlines, cancellation, and cleanup. SDK tests and Rust-backed TypeScript fixtures cover the protocol. Real dispatch tests use a deterministic local peer and check permissions and reload isolation. |
 | Pane command sequencing | **Verified on Linux.** `pane_sequence_reuses_pane_matches_fast_and_stale_events_and_appends`, `pane_sequence_validation_failure_policies_and_observation_cancellation`, `pane_sequence_cwd_preserves_targets_and_resolves_only_at_dispatch`, `pane_sequence_timeout_cancel_grace_refusal_and_cleanup`, `pane_sequence_types_check_steps_options_results_and_primitives`, `pane_sequence_close_policies_and_exits_cancel_remaining_signals`, and the SDK-backed example regression passed. Whole-session tests verify pane reuse, child cancellation, and reload isolation (see current verification). |
-| Streaming conveniences | **Not implemented.** Typed chunk events and buffered promises exist. There is no async iterator for streamed HTTP or command output. |
+| Live output | **Implemented.** `runCommand({onOutput})` delivers binary stdout/stderr chunks with synchronous callbacks. Typed raw pane observation and generation-safe routing cover reload and client cleanup. Async iterators remain outside this contract. |
 | Guest workers | **Not implemented.** No guest worker API or guest CPU parallelism. Host compilation subprocesses do not provide guest workers. |
 | Tracing | **Implemented and SDK-tested.** Opt-in `zellij.trace()` and merged `trace` configuration record command/event/pipe names and existing async lifecycle markers through the Deno log. Payloads and exception text are excluded. |
 | Remote module loading | **Not supported.** Remote URLs and package imports are rejected by the Deno loader. This restriction does not prohibit commands in remote panes. Remote pane sequence execution has not been verified against SSH or Firecracker here. |

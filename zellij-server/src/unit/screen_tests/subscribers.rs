@@ -1036,3 +1036,87 @@ fn integration_subscriber_survives_after_regular_client_detach() {
         subscriber_msgs
     );
 }
+
+#[test]
+fn pane_output_uses_subscriber_generations_and_cleans_up_each_client() {
+    use zellij_types::internal_ids::PluginId;
+    let plugin = PluginId::new(4);
+    let other_plugin = PluginId::new(5);
+    let client = ClientId::new(1);
+    let other_client = ClientId::new(2);
+    let filter = BTreeMap::from([("work".into(), "one".into())]);
+    let origin = zellij_types::data::OriginatingPlugin::new(plugin, client, filter.clone());
+    let layout = TiledPaneLayout {
+        run: Some(Run::Command(RunCommand {
+            command: "/usr/bin/true".into(),
+            originating_plugin: Some(origin),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 20 });
+    mock.drop_all_pty_messages();
+    let received = mock.plugin_receiver.take().unwrap();
+    let screen_thread = mock.run(Some(layout), vec![]);
+    let subscribe = |plugin, client, generation| {
+        ScreenInstruction::SubscribePaneOutput(plugin, client, Some(filter.clone()), generation)
+    };
+    let output = |n| ScreenInstruction::PtyBytes(TerminalId::new(0), vec![n]);
+    for instruction in [
+        subscribe(plugin, client, Some(10)),
+        subscribe(plugin, other_client, Some(11)),
+        subscribe(other_plugin, other_client, None),
+        output(1),
+        ScreenInstruction::RemoveClient(client),
+        output(2),
+        // Reusing the client ID alone does not restore its old registration.
+        ScreenInstruction::SubscribePaneOutput(plugin, client, None, Some(12)),
+        output(3),
+        subscribe(plugin, client, Some(12)),
+        output(4),
+        ScreenInstruction::UnsubscribePaneOutput(plugin),
+        output(5),
+        subscribe(plugin, client, Some(13)),
+        output(6),
+        ScreenInstruction::SubscribePaneOutput(plugin, client, None, Some(13)),
+        output(7),
+    ] {
+        mock.to_screen.send(instruction).unwrap();
+    }
+    mock.teardown(vec![screen_thread]);
+    let mut deliveries = received
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::DenoEvent(
+                plugin,
+                client,
+                generation,
+                Event::PaneOutput { data, .. },
+            ) => vec![(data[0], plugin, client, Some(generation))],
+            PluginInstruction::Update(events) => events
+                .into_iter()
+                .filter_map(|(plugin, client, event)| match event {
+                    Event::PaneOutput { data, .. } => {
+                        Some((data[0], plugin.unwrap(), client.unwrap(), None))
+                    },
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![],
+        })
+        .collect::<Vec<_>>();
+    deliveries.sort();
+    let mut expected = vec![
+        (1, plugin, client, Some(10)),
+        (4, plugin, client, Some(12)),
+        (6, plugin, client, Some(13)),
+    ];
+    for n in 1..=4 {
+        expected.push((n, plugin, other_client, Some(11)));
+    }
+    for n in 1..=7 {
+        expected.push((n, other_plugin, other_client, None));
+    }
+    expected.sort();
+    assert_eq!(deliveries, expected);
+}

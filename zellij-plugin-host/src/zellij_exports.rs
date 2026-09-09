@@ -415,6 +415,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         env.plugin_id,
                         env.client_id,
                         context,
+                        env.deno_generation,
                     ))?;
             },
             PluginCommand::Subscribe(event_list) => subscribe(env, event_list)?,

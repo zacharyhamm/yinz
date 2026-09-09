@@ -103,6 +103,9 @@
       ? (args.length ? { [name]: args[0] } : name)
       : name;
     validateCommand(value);
+    if (Array.isArray(value?.RunCommand) && value.RunCommand.length === 5) {
+      value = { ...value, RunCommand: [...value.RunCommand, null] };
+    }
     if (value !== null && typeof value === "object" && Object.keys(value).length === 1 && Object.hasOwn(value, "RequestPluginPermissions")) {
       enqueuePermissions(value.RequestPluginPermissions);
       return null;
@@ -204,7 +207,7 @@
     if (!(bytes instanceof Uint8Array)) throw new TypeError("decodeUtf8 requires a Uint8Array");
     return core.decode(bytes);
   }
-  function requestResult(operation, name, args, contextIndex, project) {
+  function requestResult(operation, name, args, contextIndex, project, onOutput) {
     const context = args[contextIndex];
     if (Object.hasOwn(context, "__zellij_async")) throw new TypeError("context key __zellij_async is reserved");
     const token = String(++nextAsync);
@@ -214,11 +217,29 @@
       delete context.__zellij_async;
       return { ...project(payload), context };
     });
+    if (onOutput) {
+      const origin = client;
+      const cleanup = operation.cleanup;
+      let release = () => {};
+      const off = on("RunCommandOutput", (payload) => {
+        if (!operation.active || payload.context.__zellij_async !== token) return;
+        const previous = client;
+        client = origin;
+        try {
+          const context = { ...payload.context };
+          delete context.__zellij_async;
+          onOutput({ data: new Uint8Array(payload.data), stderr: payload.stderr, context });
+        } catch (error) { operation.reject(error); }
+        finally { client = previous; }
+      });
+      operation.cleanup = () => { cleanup(); off(); release(); };
+      release = retainEvent("RunCommandOutput", origin);
+    }
     command(name, args);
   }
   function runCommand(options) {
     return cancellable((operation) => {
-      const { command: argv, envVariables, cwd = "/host", context, maxBytesReturned } = record(options, "runCommand options");
+      const { command: argv, envVariables, cwd = "/host", context, maxBytesReturned, onOutput } = record(options, "runCommand options");
       if (!Array.isArray(argv) || !argv.length || argv.some((arg) => typeof arg !== "string") || argv[0] === "") {
         throw new TypeError("command must be a nonempty array of strings with an executable");
       }
@@ -226,9 +247,10 @@
       if (maxBytesReturned !== undefined && (!Number.isSafeInteger(maxBytesReturned) || maxBytesReturned < 0)) {
         throw new TypeError("maxBytesReturned must be a nonnegative safe integer");
       }
+      if (onOutput !== undefined && typeof onOutput !== "function") throw new TypeError("onOutput must be a function");
       requestResult(operation, "RunCommand", [
-        [...argv], stringMap(envVariables, "envVariables"), cwd, stringMap(context, "context"), maxBytesReturned ?? null,
-      ], 3, ([exitCode, stdout, stderr]) => ({ exitCode, stdout: new Uint8Array(stdout), stderr: new Uint8Array(stderr) }));
+        [...argv], stringMap(envVariables, "envVariables"), cwd, stringMap(context, "context"), maxBytesReturned ?? null, onOutput ? true : null,
+      ], 3, ([exitCode, stdout, stderr]) => ({ exitCode, stdout: new Uint8Array(stdout), stderr: new Uint8Array(stderr) }), onOutput);
     });
   }
   function paneStep(value) {

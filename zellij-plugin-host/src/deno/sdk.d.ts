@@ -18,6 +18,8 @@ export interface EventPayloads {
   FileSystemUpdate: [string, FileMetadata | null][]; FileSystemDelete: [string, FileMetadata | null][];
   PermissionRequestResult: PermissionStatus; SessionUpdate: [SessionInfo[], [string, Duration][]];
   RunCommandResult: [number | null, number[], number[], StringMap]; WebRequestResult: [number, StringMap, number[], StringMap];
+  RunCommandOutput: {data: number[]; stderr: boolean; context: StringMap};
+  PaneOutput: {pane_id: number; data: number[]; context: StringMap};
   WebRequestStreamChunk: {stream_id: string; chunk: number[]; done: boolean; error: string | null};
   CommandPaneOpened: [number, StringMap]; CommandPaneExited: [number, number | null, StringMap]; PaneClosed: PaneId;
   EditPaneOpened: [number, StringMap]; EditPaneExited: [number, number | null, StringMap]; CommandPaneReRun: [number, StringMap];
@@ -68,6 +70,8 @@ export interface RunCommandOptions {
   cwd?: string;
   context?: Record<string, string>;
   maxBytesReturned?: number;
+  /** Synchronous, ordered chunks. Return values are ignored. Throws reject the command. */
+  onOutput?: (output: {data: Uint8Array; stderr: boolean; context: StringMap}) => void;
 }
 export interface RunCommandResult {
   exitCode: number | null;
@@ -183,7 +187,8 @@ export interface CommandArgs {
   ReportPanic: string; RequestPluginPermissions: Permission[]; SwitchSession: ConnectToSession;
   DeleteDeadSession: string; DeleteAllDeadSessions: undefined; OpenTerminalInPlace: FileToOpen;
   OpenFileInPlace: [FileToOpen, StringMap]; OpenCommandPaneInPlace: [CommandToRun, StringMap];
-  RunCommand: [string[], StringMap, string, StringMap, Integer | null];
+  SubscribePaneOutput: StringMap | null;
+  RunCommand: [string[], StringMap, string, StringMap, Integer | null] | [string[], StringMap, string, StringMap, Integer | null, boolean | null];
   WebRequest: [string, HttpVerb, StringMap, Bytes, StringMap, string | null, string | null];
   CancelWebRequest: string; RenameSession: string; Notify: [string, PaneId | null, NotifyClick | null];
   UnblockCliPipeInput: string; BlockCliPipeInput: string; CliPipeOutput: [string, string];

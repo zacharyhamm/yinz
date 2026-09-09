@@ -61,6 +61,24 @@ fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
     let dir = tempfile::tempdir().unwrap();
     check_semantic_source(&dir.path().join("commands.ts"), r#"
       import zellij, {type Integer, type PaneId, type DataRows} from 'zellij:plugin';
+      zellij.command('RunCommand', [['true'], {}, '/host', {}, null]);
+      zellij.command({RunCommand: [['true'], {}, '/host', {}, 0, true]});
+      zellij.command('RunCommand', [['true'], {}, '/host', {}, null, false]);
+      zellij.command({RunCommand: [['true'], {}, '/host', {}, null]});
+      zellij.command('SubscribePaneOutput', {work:'one'});
+      zellij.command({SubscribePaneOutput: null});
+      zellij.on('PaneOutput', p=>{const id:number=p.pane_id; const data:number[]=p.data; const context:string=p.context.work;});
+      zellij.on('RunCommandOutput', p=>{const stderr:boolean=p.stderr; const data:number[]=p.data;});
+      // @ts-expect-error streaming flag is boolean or null
+      zellij.command('RunCommand', [['true'], {}, '/host', {}, null, 1]);
+      // @ts-expect-error streaming flag is boolean or null in object form too
+      zellij.command({RunCommand: [['true'], {}, '/host', {}, null, 'yes']});
+      // @ts-expect-error context values are strings
+      zellij.command('SubscribePaneOutput', {work:1});
+      // @ts-expect-error raw output has JSON bytes
+      zellij.on('PaneOutput', p=>{const bytes:Uint8Array=p.data;});
+      // @ts-expect-error command output has no pane ID
+      zellij.on('RunCommandOutput', p=>p.pane_id);
       const pid: number = zellij.command('GetPluginIds').plugin_id;
       const objectPid: number = zellij.command({GetPluginIds: null}).plugin_id;
       const pane: PaneId | null = zellij.command('OpenFile', [{path: '/host/file'}, {}]);
@@ -353,6 +371,7 @@ fn sdk_async_helpers_have_precise_options_results_and_cancellation_types() {
             const command: CancellablePromise<RunCommandResult> = zellij.runCommand({
                 command: ['echo', config.greeting], cwd: '/host', envVariables: {LANG: 'C'},
                 maxBytesReturned: 1024, context: {tag: 'one'},
+                onOutput(output) {const bytes:Uint8Array=output.data; const stderr:boolean=output.stderr; const tag:string=output.context.tag;},
             });
             const web: CancellablePromise<WebRequestResult> = zellij.webRequest({
                 url: 'https://example.com', verb: 'Post', body: zellij.encodeUtf8('hello'),
@@ -400,6 +419,10 @@ fn sdk_async_helpers_have_precise_options_results_and_cancellation_types() {
             command.then(result => result).cancel();
             // @ts-expect-error permission promises are not cancellable
             zellij.waitForPermissions([]).cancel();
+            // @ts-expect-error callback must be callable
+            zellij.runCommand({command:['true'], onOutput:true});
+            // @ts-expect-error callback receives binary bytes
+            zellij.runCommand({command:['true'], onOutput(output) {const text:string=output.data;}});
             // @ts-expect-error decoding requires bytes
             zellij.decodeUtf8('hello');
         }});
@@ -421,6 +444,44 @@ fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
             source.push_str(&fixture($name, $ty, serde_json::to_value($value).unwrap()));
         };
     }
+    fixture!(
+        "stream_command",
+        "CommandObject",
+        PluginCommand::RunCommand(
+            vec!["true".into()],
+            Default::default(),
+            "/host".into(),
+            Default::default(),
+            Some(4),
+            Some(true)
+        )
+    );
+    fixture!(
+        "subscribe_output",
+        "CommandObject",
+        PluginCommand::SubscribePaneOutput(Some(std::collections::BTreeMap::from([(
+            "work".into(),
+            "one".into()
+        )])))
+    );
+    fixture!(
+        "pane_output",
+        "Event",
+        Event::PaneOutput {
+            pane_id: 7,
+            data: vec![0, 128, 255],
+            context: Default::default()
+        }
+    );
+    fixture!(
+        "command_output",
+        "Event",
+        Event::RunCommandOutput {
+            data: vec![0, 128, 255],
+            stderr: true,
+            context: Default::default()
+        }
+    );
     fixture!("mode", "Event", Event::ModeUpdate(ModeInfo::default()));
     fixture!("tabs", "Event", Event::TabUpdate(vec![TabInfo::default()]));
     fixture!("panes", "Event", Event::PaneUpdate(PaneManifest::default()));

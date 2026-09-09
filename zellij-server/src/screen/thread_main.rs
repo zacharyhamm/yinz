@@ -502,12 +502,12 @@ pub(crate) fn screen_thread_main(
         };
         'instruction: {
             match event {
-                ScreenInstruction::SubscribePaneOutput(plugin, client, context) => {
+                ScreenInstruction::SubscribePaneOutput(plugin, client, context, generation) => {
                     screen.pane_output_subscriptions.remove(&(plugin, client));
                     if let Some(context) = context {
                         screen
                             .pane_output_subscriptions
-                            .insert((plugin, client), context);
+                            .insert((plugin, client), (context, generation));
                     }
                 },
                 ScreenInstruction::UnsubscribePaneOutput(plugin) => {
@@ -531,7 +531,7 @@ pub(crate) fn screen_thread_main(
                                         .and_then(|p| p.invoked_with().as_ref())
                                     {
                                         if let Some(origin) = &command.originating_plugin {
-                                            for ((plugin, client), filter) in
+                                            for ((plugin, client), (filter, generation)) in
                                                 &screen.pane_output_subscriptions
                                             {
                                                 if filter
@@ -539,15 +539,16 @@ pub(crate) fn screen_thread_main(
                                                     .all(|(k, v)| origin.context.get(k) == Some(v))
                                                 {
                                                     let _ = screen.bus.senders.send_to_plugin(
-                                                        PluginInstruction::Update(vec![(
-                                                            Some(*plugin),
-                                                            Some(*client),
+                                                        PluginInstruction::for_plugin_event(
+ *plugin,
+ *client,
+ *generation,
                                                             Event::PaneOutput {
                                                                 pane_id: pid.get(),
                                                                 data: bytes.clone(),
                                                                 context: origin.context.clone(),
                                                             },
-                                                        )]),
+),
                                                     );
                                                 }
                                             }
