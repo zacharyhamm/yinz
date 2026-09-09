@@ -373,7 +373,29 @@ jobs:
       inputs:
         work: "${{ inputs.launch }}"
         key: ${{ run.id + "-diff" }}
-        argv: ["git", "diff"]
+        argv:
+        - sh
+        - -c
+        - |
+          set -eu
+          viewer=$(mktemp -d "${TMPDIR:-/tmp}/zellij-show-diff.XXXXXX")
+          trap 'rm -rf "$viewer"' EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          git --no-pager diff --color=always > "$viewer/diff"
+          if [ ! -s "$viewer/diff" ]; then
+            printf 'No unstaged changes\n' > "$viewer/diff"
+          fi
+          # Distinguish Escape from arrows; -X keeps less from resetting this mode.
+          printf '\033[>1u'
+          trap 'printf "\033[<u"; rm -rf "$viewer"' EXIT
+          printf '%s\n' '#command' '\e[27u quit' '\e[27;1u quit' 'q quit' \
+            '\e[A back-line' '\e[B forw-line' \
+            '\e[C right-scroll' '\e[D left-scroll' > "$viewer/keys"
+          LESS= LESSOPEN= LESSCLOSE= LESSKEY= LESSKEYIN= LESSKEYIN_SYSTEM= LESSKEY_SYSTEM= LESSHISTFILE=- \
+            less --lesskey-src="$viewer/keys" -RX -+F -+E -+e \
+            -P 'Show diff — q to return' -- "$viewer/diff"
         cwd: "${{ inputs.checkout }}"
         foreground: true
     dependsOn:
