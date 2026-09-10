@@ -84,8 +84,76 @@ Use `getPluginIds()` for the typed plugin identity. Async callbacks retain the c
 
 Events retain their JSON variant names. For example, a timer is `{ Timer: seconds }` and a unit event is a string.
 Optional tuple fields remain `null`, so later fields keep their positions.
-`PaneRenderReport` uses string keys such as `terminal_7` and `plugin_7`, as the CLI event stream does.
+`PaneRenderReport` uses string keys such as `terminal_7` and `plugin_7`, as the CLI event stream does; `zellij.paneKey(paneId)` spells them.
 See [sdk.d.ts](../zellij-server/src/plugins/deno/sdk.d.ts) for the SDK declarations.
+
+## Host command helpers
+
+`zellij.host` names every host command with its first letter lowercased and dispatches it through `zellij.command`,
+so validation, permission checks, and tracing are unchanged:
+
+```ts
+const ids = zellij.host.getPluginIds();
+zellij.host.switchTabTo(2);
+zellij.host.renameTab(0, "logs");            // positional tuple fields
+zellij.host.renameTab([0, "logs"]);          // or the raw array
+zellij.host.renameTab({ tabIndex: 0, name: "logs" });
+```
+
+A unit command takes no argument. A tuple command takes its fields as positional arguments or one array.
+Any other command takes its payload as one argument. These tuple commands also accept one object of camelCase named fields;
+an omitted field becomes `null`, which an optional slot reads as absent, and an unknown field throws:
+
+| Helper | Named fields |
+| --- | --- |
+| `renameTab`, `renameTabWithId`, `renameTerminalPane`, `renamePluginPane` | `tabIndex` / `tabId` / `paneId`, `name` |
+| `focusTerminalPane`, `focusPluginPane` | `paneId`, `shouldFloatIfHidden`, `shouldBeInPlaceIfHidden` |
+| `showPaneWithId` | `paneId`, `shouldFloatIfHidden`, `shouldFocusPane` |
+| `setFloatingPanePinned`, `setPaneBorderless` | `paneId`, `shouldBePinned` / `borderless` |
+| `revealPaneWithId` | `paneId`, `label` |
+| `notify` | `message`, `paneId`, `click` |
+| `cliPipeOutput` | `pipeName`, `output` |
+| `reconfigure` | `configuration`, `writeToDisk` |
+| `runCommand` | `command`, `envVariables`, `cwd`, `context`, `maxBytesReturned`, `streamOutput` |
+| `openCommandPaneInGitCheckoutNearPlugin` | `command`, `sourceDirectory`, `checkout` |
+
+`zellij.host.runCommand` is the raw command; `zellij.runCommand` remains the promise-returning helper.
+`PostMessageTo` throws before dispatch: Deno plugins have no workers. Use timers, the async helpers, or a work queue.
+
+The root object also carries the Lua prelude's conveniences:
+
+- `keyName(bareKey)`: `"t"`, `"Esc"`, `"F2"`. `mouse(event)` returns `{kind, line, col}` or `{kind, lines}` with the Rust variant name as `kind`.
+- `paneKey(paneId)`: `"terminal_3"`, the `PaneRenderReport` key. `terminalPane(id)` and `pluginPane(id)` build `PaneId` values.
+- `bytes(value)`: a `Uint8Array` from raw event bytes, text, or an existing array. `text.sanitizeBytes(bytes)` decodes and sanitizes.
+- `write(text)` and `writeToPaneId(text, paneId)` encode text as UTF-8 (`WriteToStdin`).
+- `readPluginLog(name, lines = 50)` (`AuthorPlugins`), `openTerminal(cwd?)` (`OpenTerminalsOrPlugins`), `closeSelf()`, `setSelectable(boolean)`.
+
+## Default keybindings
+
+A plugin can register fallback keybindings. User configuration always wins; a default is active only while its
+mode and key are otherwise unbound. Registrations are owned by the plugin, replaced by its next call, and removed
+when it unloads. If plugins collide, the lower plugin id wins until it unloads. Registration needs `Reconfigure`:
+
+```ts
+let open = false;
+export default {
+  async load() {
+    await zellij.waitForPermissions(["Reconfigure"]);
+    zellij.registerDefaultKeybindings([
+      { mode: "normal", key: "Ctrl g", handler(message) { open = !open; return true; } },
+      { mode: "normal", key: "Ctrl n", actions: [zellij.action("NewPane")] },
+    ]);
+  },
+};
+```
+
+Each entry has `mode`, `key`, and exactly one of `handler` or `actions`. Handlers receive the keybinding pipe message,
+run with the client that pressed the key, and re-render when they return `true`. Their pipe names start with
+`__zellij_default_keybinding:`; the SDK consumes those messages before `pipe` and pipe waits see them.
+Actions are ordinary keybinding actions: a bare name, `zellij.action(name, ...args)` for positional arguments,
+`zellij.action(name, {prop: value})` for properties, or `zellij.action(name, {args, props, children})`.
+Values are strings, finite numbers, or booleans. A refused registration keeps the previous handlers.
+See [keybindings.ts](../example-plugins/keybindings.ts).
 
 ## Numbers and allocation limits
 
@@ -590,7 +658,7 @@ Native state belongs to one isolate and is released on garbage collection or run
 Native allocations share the isolate's backing-store budget. Mutation inputs are conservatively charged until collection, including retained capacity and caches.
 Input, coordinates, and output are bounded by transport limits. Excessive native allocations exhaust the isolate's budget.
 
-`zellij.text` provides `width`, `truncate`, `pad`, `padLeft`, `center`, `wrap`, and `sanitize`.
+`zellij.text` provides `width`, `truncate`, `pad`, `padLeft`, `center`, `wrap`, `sanitize`, and `sanitizeBytes`.
 Widths measure terminal columns. `truncate` defaults to `…` and accepts a replacement ellipsis as its third argument.
 Padding truncates oversized text without an ellipsis. `wrap` and `sanitize` use the shared Rust implementation.
 
@@ -628,6 +696,7 @@ Absent or other values preserve the current setting. Runtime calls can change it
 
 Read the existing `[deno:<plugin>]` log output with `zellij plugins log hello.ts` or Hocus `plugin_log`.
 Trace lines contain the instance ID, originating client ID, command names, event types, and pipe names, including SDK-consumed pipes.
+`zellij.host` helpers trace under the underlying command name; a refused `PostMessageTo` gets its own `refused` marker.
 Existing SDK promise observers emit numbered `task` markers. Cancellable helpers emit numbered `operation` markers.
 Both use `started` and `finished`, `failed`, or `cancelled` outcomes.
 Tracing does not observe arbitrary guest promises.
@@ -655,7 +724,7 @@ An extensionless authoring name still means a Lua plugin.
 The SDK does not include npm, JSR, general Deno I/O, or workers.
 Hocus supports the same names through `plugin_write`, `plugin_edit`, `plugin_list`, `plugin_read`,
 `plugin_search`, `plugin_outline`, `plugin_check`, `plugin_reload`, and `plugin_log`.
-`plugin_docs section=deno` serves the runtime and authoring guide; `section=deno_data` serves the filesystem and persistence helpers. Writes and edits check syntax before approval;
+`plugin_docs section=deno` serves the runtime and authoring guide; `section=deno_commands` serves the command helpers and default keybindings; `section=deno_data` serves the filesystem and persistence helpers. Writes and edits check syntax before approval;
 explicit JS/TS `plugin_check` checks types and local imports. `CheckPlugin` exposes the report as
 `{diagnostics, outline, permissions, warnings}` with `Syntax` or `Semantic` mode and requires `ReadFiles`.
 `CheckLuaPlugin` remains compatible.

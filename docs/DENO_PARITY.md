@@ -1,6 +1,6 @@
 # Deno capability and verification status
 
-Updated 2026-09-09. The seven requested changes are implemented in this checkout:
+Updated 2026-09-10. The seven requested changes are implemented in this checkout:
 exact numeric inputs, runtime/checker quotas, host-path tests and queue ownership,
 complete raw SDK declarations, filesystem/configuration helpers, persistence helpers,
 and runtime-aware Hocus authoring. The existing asynchronous SDK remains in place.
@@ -9,6 +9,44 @@ This is a capability record, not a claim of full Wasm/Lua/Deno parity.
 **Verified** below means the stated outcome has passed a named Linux test. Raw access
 and compiler inventory coverage do not establish every command's host behavior.
 Native macOS verification requires a macOS host and remains outstanding.
+
+## SDK ergonomics parity (2026-09-10)
+
+This chunk gives the Deno SDK the Lua prelude's conveniences. `zellij.host` names every
+`PluginCommand` with its first letter lowercased and dispatches through `command()`, so
+validation, the permission pre-flight, the `RunCommand` sixth slot, the permission queue,
+`Unsubscribe` filtering, and tracing are unchanged. The fifteen tuple commands Lua names in
+`tuple_fields` accept one object of camelCase fields; omitted fields become `null`.
+`registerDefaultKeybindings` and `zellij.action` emit the same KDL as the Lua prelude, with
+1-based `__zellij_default_keybinding:<n>` handler pipes that the SDK consumes before `pipe`.
+Root helpers add `keyName`, `paneKey` (the `terminal_3` spelling of `PaneRenderReport`),
+`mouse`, `bytes`, `terminalPane`, `pluginPane`, `write`, `writeToPaneId`, `readPluginLog`,
+`openTerminal`, `closeSelf`, `setSelectable`, and `text.sanitizeBytes`. `PostMessageTo` is
+refused by the SDK before dispatch, as Lua refuses it by name; the host's cache for messages to
+a worker that has not started stays for Wasm. Permission inference recognises
+`zellij.host.requestPluginPermissions` and outlines `registerDefaultKeybindings`.
+Raw command and event shapes are unchanged. No Rust runtime change was needed.
+
+Tests: `host_sdk.rs` (inventory against `CommandType::iter()`, named/positional/array forms,
+refusal in every form, helper payloads, Lua-identical KDL parsed back with the host's parser,
+reserved-pipe dispatch and cleanup, failed registrations), checker fixtures for `HostCommands`,
+named args, keybinding and helper types, the analysis inference test, and three plugin-thread
+tests including `deno_default_keybindings_register_after_the_reconfigure_grant_and_dispatch_their_reserved_pipe`,
+which captures the server's `RebindKeys` with the rewritten plugin id. `example-plugins/keybindings.ts`
+is served as part of the new Hocus `deno_commands` section.
+
+Verification: the focused `cargo x test -p zellij-server -E 'test(/deno/) | test(/analysis/) | test(/checker/)'`
+run passed all 187 selected tests, and the 24 Hocus `lua_docs` tests passed. Two Hocus size
+caps moved: the `plugin_docs` index bound (4,100 to 4,300 bytes) and the fully loaded tool
+payload bound (37,000 to 37,500 bytes), each by one section name. Three complete
+`ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` runs each passed format, lint, doctests,
+and (in the third) all 8,077 enabled unit tests (47 skipped). No run was fully green at 16
+integration workers: the first and third lost `hocus_agent_picker::the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back`
+to a viewport-restore timeout, and the second lost the hegel health check in
+`zellij-session::warped_tab::test::a_stacks_members_arrive_in_the_order_they_were_stacked`.
+Both predate this chunk and both pass alone (the session test five times in a row). A separate
+`cargo x integration-test -j 4` then passed all 395 integration tests. No snapshots were
+accepted or changed. Native macOS remains unverified.
 
 ## Live-output parity (2026-09-09)
 
@@ -97,12 +135,15 @@ Test names are in the linked files. The full repository gate is recorded below.
 | CLI and Hocus authoring | **Verified.** Shared filename rules support `.lua`, `.js`, `.mjs`, `.ts`, `.mts` and extensionless Lua. [The actual Wasm Hocus test][hocus-test] checks TypeScript syntax/semantics, sibling imports, write/edit refusal, backups, list/read/search/outline, inferred grants and reload. Existing Lua authoring remains supported. |
 | Parsed permission inference | **Verified.** [Analysis tests][analysis-tests] cover literal arrays on SDK bindings, imported aliases, namespace imports and raw permission commands. Comments and shadowed names grant nothing. Computed requests warn and use normal runtime approval. Imported source cannot silently add grants. |
 | Legacy filesystem scan/watch events | **Raw commands and typed events available.** Existing host tests cover the shared implementation; dedicated Deno change-notification and disconnect coverage is not established by the new data-watch tests. |
-| Remaining host command families | **Typed raw access available.** Common dispatch covers keybindings, clipboard, pane placement, actions and other host operations. The representative session test does not exhaust these families. |
+| Remaining host command families | **Typed raw access and named helpers available.** `zellij.host.<command>` covers every variant; the representative session test does not exhaust these families. |
+| Command sugar and named arguments | **Verified.** `host_sugar_covers_the_rust_command_inventory_and_is_frozen`, `host_sugar_builds_unit_positional_array_and_named_payloads`, and `sdk_host_sugar_types_derive_from_command_args` cover the inventory, all fifteen named forms, passthrough, unknown fields, and the queue and filter paths. |
+| Default keybindings | **Verified on Linux.** `default_keybindings_emit_lua_identical_kdl_and_dispatch_reserved_pipes` parses the emitted KDL with the host's parser; the plugin-thread test captures `RebindKeys` with the rewritten plugin id and dispatches the reserved pipe, including a stale index; the denied variant sees the pre-flight refusal. |
+| Prelude helper parity | **Verified.** `helpers_encode_writes_spell_pane_keys_and_normalize_keys_mouse_and_bytes` and `sdk_keybinding_and_helper_types_check_modes_actions_and_pane_keys`. Not ported: `snake_case`/`pascal_case` name conversion, `zellij.null`, and event-shape normalization; raw shapes stay as declared. |
 | Agent helpers | **Verified on Linux.** spawn details/ID, manifest cache, event subscriptions, bracketed paste, cancellable state/event/turn waits, and prompt ordering. SDK tests cover transitions, cancellation, validation, and dispatch cleanup. Real plugin tests cover agent event delivery and reload. |
 | Hocus completion client | **Verified on Linux.** exact daemon discovery, typed transcript/tool-call round trips, reply provenance, request byte limits, errors, deadlines, cancellation, and cleanup. SDK tests and Rust-backed TypeScript fixtures cover the protocol. Real dispatch tests use a deterministic local peer and check permissions and reload isolation. |
 | Pane command sequencing | **Verified on Linux.** `pane_sequence_reuses_pane_matches_fast_and_stale_events_and_appends`, `pane_sequence_validation_failure_policies_and_observation_cancellation`, `pane_sequence_cwd_preserves_targets_and_resolves_only_at_dispatch`, `pane_sequence_timeout_cancel_grace_refusal_and_cleanup`, `pane_sequence_types_check_steps_options_results_and_primitives`, `pane_sequence_close_policies_and_exits_cancel_remaining_signals`, and the SDK-backed example regression passed. Whole-session tests verify pane reuse, child cancellation, and reload isolation (see current verification). |
 | Live output | **Implemented.** `runCommand({onOutput})` delivers binary stdout/stderr chunks with synchronous callbacks. Typed raw pane observation and generation-safe routing cover reload and client cleanup. Async iterators remain outside this contract. |
-| Guest workers | **Not implemented.** No guest worker API or guest CPU parallelism. Host compilation subprocesses do not provide guest workers. |
+| Guest workers | **Not implemented.** No guest worker API or guest CPU parallelism. Host compilation subprocesses do not provide guest workers. `PostMessageTo` is refused by the SDK before dispatch (`post_message_to_is_refused_before_dispatch_in_every_form`, `deno_post_message_to_never_reaches_the_host`), so the host never caches a message for a worker a Deno plugin cannot have. |
 | Tracing | **Implemented and SDK-tested.** Opt-in `zellij.trace()` and merged `trace` configuration record command/event/pipe names and existing async lifecycle markers through the Deno log. Payloads and exception text are excluded. |
 | Remote module loading | **Not supported.** Remote URLs and package imports are rejected by the Deno loader. This restriction does not prohibit commands in remote panes. Remote pane sequence execution has not been verified against SSH or Firecracker here. |
 

@@ -267,6 +267,21 @@ impl Visit for Analysis<'_> {
                         }
                     }
                 }
+                // zellij.host.requestPluginPermissions([...]) is the raw command's sugar.
+                if property(&member.prop).as_deref() == Some("requestPluginPermissions") {
+                    if let Expr::Member(host) = &*member.obj {
+                        if self.sdk_object(&host.obj)
+                            && property(&host.prop).as_deref() == Some("host")
+                        {
+                            let argument = call
+                                .args
+                                .first()
+                                .filter(|arg| arg.spread.is_none())
+                                .map(|arg| &*arg.expr);
+                            self.permissions(call.span, argument);
+                        }
+                    }
+                }
                 if self.sdk_object(&member.obj) {
                     let argument = |index: usize| {
                         call.args
@@ -302,6 +317,13 @@ impl Visit for Analysis<'_> {
                             if let Some(name) = argument(0).and_then(literal) {
                                 self.entry(call.span, OutlineKind::Handler, format!("on {name}"));
                             }
+                        },
+                        Some("registerDefaultKeybindings") => {
+                            self.entry(
+                                call.span,
+                                OutlineKind::Handler,
+                                "default keybindings".into(),
+                            );
                         },
                         _ => {},
                     }

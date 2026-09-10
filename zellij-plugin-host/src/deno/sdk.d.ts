@@ -135,6 +135,31 @@ export interface Zellij {
   webRequest(options: WebRequestOptions): CancellablePromise<WebRequestResult>;
   encodeUtf8(text: string): Uint8Array;
   decodeUtf8(bytes: Uint8Array): string;
+  /** Raw host commands by camelCased name: zellij.host.renameTab(0, "logs") or renameTab({tabIndex: 0, name: "logs"}). */
+  readonly host: HostCommands;
+  /** A Uint8Array from raw event bytes (number[]), text, or an existing Uint8Array (returned as is). */
+  bytes(value: Bytes | string): Uint8Array;
+  /** "t", "Esc", "F2": the key as the user names it. */
+  keyName(key: BareKey): string;
+  /** The PaneRenderReport spelling of a pane id: {Terminal: 3} -> "terminal_3". */
+  paneKey(pane: PaneId | number): PaneKey;
+  mouse(event: Mouse | {Mouse: Mouse}): MouseSummary;
+  terminalPane(id: number): {Terminal: number};
+  pluginPane(id: number): {Plugin: number};
+  /** Requires WriteToStdin. Text is UTF-8 encoded. */
+  write(text: string | Uint8Array): void;
+  writeToPaneId(text: string | Uint8Array, pane: PaneId): void;
+  /** Requires AuthorPlugins. The last lines (default 50) zellij logged about the named plugin. */
+  readPluginLog(name: string, lines?: number): string;
+  /** Requires OpenTerminalsOrPlugins. A new terminal pane, optionally in cwd. */
+  openTerminal(cwd?: string | {cwd?: string | null; path?: string | null} | null): PaneId | null;
+  closeSelf(): void;
+  setSelectable(selectable: boolean): void;
+  /** A keybinding action: positional arguments, one object of properties, or {args, props, children}. */
+  action(name: string, ...args: KdlScalar[]): KeybindAction;
+  action(name: string, spec: {args?: KdlScalar[]; props?: Record<string, KdlScalar>; children?: Record<string, KdlScalar>} | Record<string, KdlScalar>): KeybindAction;
+  /** Requires Reconfigure. Replaces this plugin's previous defaults. Handlers run from the reserved keybinding pipe and re-render when they return true. */
+  registerDefaultKeybindings(bindings: DefaultKeybinding[]): void;
   getPluginIds(): PluginIds;
   /** Enable names-only tracing (default true), or disable it with false. */
   trace(enabled?: boolean): void;
@@ -166,7 +191,8 @@ export interface CommandArgs {
   OpenCommandPane: [CommandToRun, StringMap]; OpenCommandPaneFloating: [CommandToRun, FloatingPaneCoordinates | null, StringMap];
   OpenCommandPaneOverlay: [CommandToRun, OverlayPlacement, StringMap];
   SwitchTabTo: number; SetTimeout: number; ExecCmd: string[];
-  PostMessageTo: PluginMessage; PostMessageToPlugin: PluginMessage;
+  /** Refused by the SDK: Deno plugins have no workers. Use zellij.after/every, the async helpers, or a work queue. */
+  PostMessageTo: PluginMessage & {__deno_has_no_workers: never}; PostMessageToPlugin: PluginMessage;
   HideSelf: undefined; ShowSelf: boolean; SwitchToMode: InputMode; NewTabsWithLayout: string;
   NewTab: {name: string | null; cwd: string | null}; NewTabUnfocused: CommandArgs['NewTab'];
   NewTiledPaneInTab: {tab_id: number}; ToggleFloatingPanes: {tab_id: number | null};
@@ -298,6 +324,39 @@ export interface CommandReplies {
   GenerateRandomName: string;
 }
 export type CommandResults = {[K in CommandName]: K extends keyof CommandReplies ? CommandReplies[K] : null};
+
+type IsTuple<T> = T extends readonly unknown[] ? (number extends T["length"] ? false : true) : false;
+/** Tuple payloads spread as positional arguments or pass as one array; other payloads are one argument. */
+export type HostArgs<K extends CommandName> = CommandArgs[K] extends undefined ? []
+  : IsTuple<CommandArgs[K]> extends true ? [...Extract<CommandArgs[K], readonly unknown[]>] | [payload: CommandArgs[K]]
+  : [payload: CommandArgs[K]];
+/** Named-argument forms of the tuple commands. Omitted optional fields become null. */
+export interface HostNamedArgs {
+  renameTab: {tabIndex: number; name: string}; renameTabWithId: {tabId: number; name: string};
+  renameTerminalPane: {paneId: number; name: string}; renamePluginPane: {paneId: number; name: string};
+  focusTerminalPane: {paneId: number; shouldFloatIfHidden: boolean; shouldBeInPlaceIfHidden: boolean};
+  focusPluginPane: {paneId: number; shouldFloatIfHidden: boolean; shouldBeInPlaceIfHidden: boolean};
+  showPaneWithId: {paneId: PaneId; shouldFloatIfHidden: boolean; shouldFocusPane: boolean};
+  setFloatingPanePinned: {paneId: PaneId; shouldBePinned: boolean}; setPaneBorderless: {paneId: PaneId; borderless: boolean};
+  revealPaneWithId: {paneId: PaneId; label?: string | null}; notify: {message: string; paneId?: PaneId | null; click?: NotifyClick | null};
+  cliPipeOutput: {pipeName: string; output: string}; reconfigure: {configuration: string; writeToDisk: boolean};
+  runCommand: {command: string[]; envVariables: StringMap; cwd: string; context: StringMap; maxBytesReturned?: Integer | null; streamOutput?: boolean | null};
+  openCommandPaneInGitCheckoutNearPlugin: {command: CommandToRun; sourceDirectory: string; checkout: GitCheckout};
+}
+/** Every PluginCommand with its first letter lowercased, dispatched through command(). */
+type HostCommand<K extends CommandName, N> = N extends keyof HostNamedArgs
+  ? (...args: HostArgs<K> | [named: HostNamedArgs[N]]) => CommandResults[K]
+  : (...args: HostArgs<K>) => CommandResults[K];
+export type HostCommands = {readonly [K in CommandName as Uncapitalize<K>]: HostCommand<K, Uncapitalize<K>>};
+export type PaneKey = keyof EventPayloads["PaneRenderReport"];
+export type KdlScalar = string | number | boolean;
+export interface KeybindAction {name: string; args: KdlScalar[]; props: Record<string, KdlScalar>; children?: Record<string, KdlScalar>;}
+export type KeybindMode = Lowercase<InputMode> | "shared";
+export type DefaultKeybinding = {mode: KeybindMode; key: string} & (
+  | {actions: (string | KeybindAction)[]; handler?: never}
+  | {handler: (message: PipeMessage) => boolean | void | Promise<boolean | void>; actions?: never});
+export type MouseSummary = {kind: 'LeftClick' | 'RightClick' | 'Hold' | 'Release' | 'Hover'; line: Integer; col: Integer}
+  | {kind: 'ScrollUp' | 'ScrollDown' | 'ScrollLeft' | 'ScrollRight'; lines: Integer};
 
 export type Direction = 'Left' | 'Right' | 'Up' | 'Down';
 export type Resize = 'Increase' | 'Decrease';
@@ -660,6 +719,8 @@ export interface TerminalText {
   center(text: string, width: number): string;
   wrap(text: string, width: number): string[];
   sanitize(text: string): string;
+  /** sanitize() over lossily decoded UTF-8 bytes. */
+  sanitizeBytes(bytes: Bytes | string): string;
 }
 
 export type AgentPane = number | {Terminal: number};

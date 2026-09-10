@@ -72,9 +72,10 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 55] = [
+pub const SECTIONS: [&str; 56] = [
     "index",
     "deno",
+    "deno_commands",
     "deno_async",
     "deno_data",
     "deno_extensions",
@@ -265,6 +266,7 @@ fn index() -> String {
             "example_deno_extension" => "example: TypeScript Hocus extension".to_owned(),
             "example_deno_forms" => "example: TypeScript forms and Markdown".to_owned(),
             "deno" => "JS/TS lifecycle and SDK".to_owned(),
+            "deno_commands" => "zellij.host helpers, default keybindings".to_owned(),
             "deno_async" => "waits, timers, pane sequences".to_owned(),
             "deno_data" => "files, config, persistence".to_owned(),
             "index" => continue,
@@ -360,19 +362,22 @@ pub fn section(name: &str) -> Option<String> {
             "```ts\n{}\n```",
             include_str!("../../../example-plugins/forms.ts")
         )),
-        "deno" | "deno_async" | "deno_data" | "deno_extensions" | "deno_ui" => {
+        "deno" | "deno_commands" | "deno_async" | "deno_data" | "deno_extensions" | "deno_ui" => {
             let guide = include_str!("../../../docs/DENO_PLUGINS.md");
+            let commands = guide.find("## Host command helpers")?;
+            let commands_end = guide.find("## Numbers and allocation limits")?;
             let async_start = guide.find("## Async helpers")?;
             let start = guide.find("## Files and project configuration")?;
             let extensions = guide.find("## Hocus extensions")?;
             let ui = guide.find("## Shared UI and terminal text")?;
             let end = guide.find("## Modules and checking")?;
             Some(match name {
+                "deno_commands" => guide[commands..commands_end].to_owned(),
                 "deno_async" => guide[async_start..start].to_owned(),
                 "deno_data" => guide[start..extensions].to_owned(),
                 "deno_extensions" => guide[extensions..ui].to_owned(),
                 "deno_ui" => guide[ui..end].to_owned(),
-                _ => format!("{}\nMore helpers: `plugin_docs section=deno_async`, `deno_data`, `deno_extensions`, `deno_ui`.\n\n{}", &guide[..async_start], &guide[end..]),
+                _ => format!("{}{}\nMore helpers: `plugin_docs section=deno_commands`, `deno_async`, `deno_data`, `deno_extensions`, `deno_ui`.\n\n{}", &guide[..commands], &guide[commands_end..async_start], &guide[end..]),
             })
         },
         other => heading(other).and_then(|heading| guide_section(heading, cut(other))),
@@ -576,9 +581,10 @@ mod tests {
         assert!(!index.contains("## A plugin"), "{index}");
         assert!(index.contains("quickstart"), "but it still points at it");
         // The budget grew with the tasks, agents, rpc and completion parts of the prelude and
-        // the guide sections that go with them; it is still one short listing.
+        // the guide sections that go with them, then with the Deno command helpers; it is still
+        // one short listing.
         assert!(
-            index.len() < 4_100,
+            index.len() < 4_300,
             "the index is {} bytes and is paid for on every later turn",
             index.len()
         );
@@ -743,6 +749,31 @@ mod tests {
                 "the guide's permission table has no `{name}`"
             );
         }
+    }
+
+    /// The keybinding pipe prefix is matched by name on the host and consumed by name in the SDK;
+    /// the section that teaches `registerDefaultKeybindings` must state it.
+    #[test]
+    fn the_deno_commands_section_names_the_keybinding_pipe_prefix() {
+        let commands = section("deno_commands").expect("the deno_commands section");
+        assert!(
+            commands.contains("__zellij_default_keybinding:"),
+            "{commands}"
+        );
+        assert!(
+            commands.contains("registerDefaultKeybindings"),
+            "{commands}"
+        );
+        assert!(commands.contains("zellij.host"), "{commands}");
+        let deno = section("deno").expect("the deno section");
+        assert!(
+            !deno.contains("## Host command helpers"),
+            "the deno section carries the split-out text"
+        );
+        assert!(
+            deno.contains("section=deno_commands"),
+            "the deno section does not point at the helpers"
+        );
     }
 
     /// The two store rules that cost the most to learn at run time: a namespace that is not

@@ -1851,6 +1851,7 @@ mod sdk_tests {
     include!("unit/pane_sdk.rs");
     include!("unit/completion_sdk.rs");
     include!("unit/consumer_sdk.rs");
+    include!("unit/host_sdk.rs");
 }
 
 #[cfg(test)]

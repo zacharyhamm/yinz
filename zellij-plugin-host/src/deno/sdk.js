@@ -103,6 +103,11 @@
       ? (args.length ? { [name]: args[0] } : name)
       : name;
     validateCommand(value);
+    const key = typeof value === "string" ? value : value !== null && typeof value === "object" ? Object.keys(value)[0] : undefined;
+    if (key === "PostMessageTo") {
+      transcript(`command ${traceName(key)} refused`);
+      throw new Error("PostMessageTo is not available from Deno: Deno plugins have no workers; use zellij.after/every, the async helpers, or a work queue");
+    }
     if (Array.isArray(value?.RunCommand) && value.RunCommand.length === 5) {
       value = { ...value, RunCommand: [...value.RunCommand, null] };
     }
@@ -966,7 +971,139 @@
     pad: (s, width) => pure('Pad', [s, uiInteger(width,'width')]),
     padLeft: (s, width) => pure('PadLeft', [s, uiInteger(width,'width')]),
     center: (s, width) => pure('Center', [s, uiInteger(width,'width')]),
+    sanitizeBytes: (value) => pure('Sanitize', decodeUtf8(bytes(value))),
   });
+  // Every PluginCommand, first letter lowercased. The inventory is checked against the Rust enum.
+  const HOST_COMMANDS = "CheckPlugin Subscribe Unsubscribe SetSelectable ShowCursor GetPluginIds GetZellijVersion OpenFile OpenFileFloating OpenTerminal OpenTerminalFloating OpenCommandPane OpenCommandPaneFloating OpenCommandPaneOverlay SwitchTabTo SetTimeout ExecCmd PostMessageTo PostMessageToPlugin HideSelf ShowSelf SwitchToMode NewTabsWithLayout NewTab NewTabUnfocused NewTiledPaneInTab ToggleFloatingPanes NewPane GoToNextTab GoToPreviousTab Resize ResizeWithDirection FocusNextPane FocusPreviousPane FocusLastPane MoveFocus MoveFocusOrTab Detach EditScrollback Write WriteChars ToggleTab MovePane MovePaneWithDirection ClearScreen ScrollUp ScrollDown ScrollToTop ScrollToBottom PageScrollUp PageScrollDown ToggleFocusFullscreen ToggleFocusNoUiFullscreen TogglePaneFrames SetPaneFrameStyle TogglePaneEmbedOrEject UndoRenamePane CloseFocus ToggleActiveTabSync CloseFocusedTab UndoRenameTab QuitZellij PreviousSwapLayout NextSwapLayout GoToTabName FocusOrCreateTab GoToTab StartOrReloadPlugin CloseTerminalPane ClosePluginPane FocusTerminalPane FocusPluginPane RenameTerminalPane RenamePluginPane RenameTab ReportPanic RequestPluginPermissions SwitchSession DeleteDeadSession DeleteAllDeadSessions OpenTerminalInPlace OpenFileInPlace OpenCommandPaneInPlace SubscribePaneOutput RunCommand WebRequest CancelWebRequest RenameSession Notify UnblockCliPipeInput BlockCliPipeInput CliPipeOutput MessageToPlugin DisconnectOtherClients KillSessions ScanHostFolder WatchFilesystem FsRead FsList FsMetadata FsWrite FsRemove FsCreateDir FsRename GrantPluginPermissions DumpSessionLayout CloseSelf NewTabsWithLayoutInfo Reconfigure HidePaneWithId ShowPaneWithId OpenCommandPaneBackground RerunCommandPane RunCommandInPane ResizePaneIdWithDirection EditScrollbackForPaneWithId GetPaneScrollback WriteToPaneId WriteCharsToPaneId SendSigintToPaneId SendSigkillToPaneId GetPanePid GetPaneRunningCommand GetPaneCwd GetPaneGitProbe MovePaneWithPaneId MovePaneWithPaneIdInDirection ClearScreenForPaneId ScrollUpInPaneId ScrollDownInPaneId ScrollToTopInPaneId ScrollToBottomInPaneId PageScrollUpInPaneId PageScrollDownInPaneId TogglePaneIdFullscreen TogglePaneEmbedOrEjectForPaneId CloseTabWithIndex BreakPanesToNewTab BreakPanesToTabWithIndex SwitchTabToId GoToTabWithId CloseTabWithId RenameTabWithId ArrangeProjectPanes SetTabProjects BreakPanesToTabWithId ReloadPlugin LoadNewPlugin RebindKeys RegisterDefaultKeybindings ListClients ChangeHostFolder SetFloatingPanePinned StackPanes ChangeFloatingPanesCoordinates ChangeOverlayCoordinates TogglePaneBorderless SetPaneBorderless OpenCommandPaneNearPlugin OpenCommandPaneInGitCheckoutNearPlugin OpenTerminalNearPlugin OpenTerminalFloatingNearPlugin OpenTerminalInPlaceOfPlugin OpenCommandPaneFloatingNearPlugin OpenCommandPaneInPlaceOfPlugin OpenFileNearPlugin OpenFileFloatingNearPlugin OpenFileInPlaceOfPlugin GroupAndUngroupPanes HighlightAndUnhighlightPanes SetRelatedPanes RevealPaneWithId CloseMultiplePanes FloatMultiplePanes EmbedMultiplePanes SetSelfMouseSelectionSupport InterceptKeyPresses ClearKeyPressesIntercepts ReplacePaneWithExistingPane RunAction CopyToClipboard OverrideLayout SaveLayout DeleteLayout RenameLayout EditLayout GenerateRandomName DumpLayout ParseLayout GetLayoutDir GetUserPluginDir GetFocusedPaneInfo SaveSession CurrentSessionLastSavedTime GetPaneInfo GetTabInfo GetSessionEnvironmentVariables GetPluginAliasConfiguration OpenCommandPaneInNewTab OpenPluginPaneInNewTab OpenEditorPaneInNewTab OpenCommandPaneInPlaceOfPaneId OpenTerminalPaneInPlaceOfPaneId OpenEditPaneInPlaceOfPaneId HideFloatingPanes ShowFloatingPanes SetPaneColor SetPaneRegexHighlights SetContextMenu ClearPaneHighlights OpenPluginPaneFloating GetSessionList KillSessionsAndReply DeleteDeadSessionAndReply DeleteAllDeadSessionsAndReply FocusHostSession ListRecordings ListNotifications SearchRecordings WarpPaneToSession WarpPaneFromSession WarpTabToSession WarpTabFromSession ListOrphanedPanes AdoptOrphanedPane DataDefineEntity DataApply DataFetch DataCount DataWatch DataUnwatch DataCatalog SetPaneTitlePrefix EnqueueQueueJob ConfigureQueue CancelQueueJob QueueStatus FinishQueueJob CheckLuaPlugin SetPaneAgent SetPaneAgentRun ProjectConfigRead ProjectConfigWrite SpawnAgent SetQuitNotice ReloadPluginByUrl ReadPluginLog GetLocalUtcOffset".split(" ");
+  // Tuple commands that also accept one object of named arguments. Omitted fields become null,
+  // which keeps the arity serde counts and reads as absent for an Option slot.
+  const tupleFields = {
+    RenameTab: ["tabIndex", "name"], RenameTabWithId: ["tabId", "name"],
+    RenameTerminalPane: ["paneId", "name"], RenamePluginPane: ["paneId", "name"],
+    FocusTerminalPane: ["paneId", "shouldFloatIfHidden", "shouldBeInPlaceIfHidden"],
+    FocusPluginPane: ["paneId", "shouldFloatIfHidden", "shouldBeInPlaceIfHidden"],
+    ShowPaneWithId: ["paneId", "shouldFloatIfHidden", "shouldFocusPane"],
+    SetFloatingPanePinned: ["paneId", "shouldBePinned"], SetPaneBorderless: ["paneId", "borderless"],
+    RevealPaneWithId: ["paneId", "label"], Notify: ["message", "paneId", "click"],
+    CliPipeOutput: ["pipeName", "output"], Reconfigure: ["configuration", "writeToDisk"],
+    RunCommand: ["command", "envVariables", "cwd", "context", "maxBytesReturned", "streamOutput"],
+    OpenCommandPaneInGitCheckoutNearPlugin: ["command", "sourceDirectory", "checkout"],
+  };
+  function positional(name, arg) {
+    const fields = tupleFields[name];
+    if (!fields || arg === null || typeof arg !== "object" || Array.isArray(arg) || arg instanceof Uint8Array) return arg;
+    validate(arg);
+    record(arg, `${name} arguments`);
+    for (const field of Object.keys(arg)) if (!fields.includes(field)) throw new TypeError(`unknown ${name} argument: ${field}`);
+    return fields.map((field) => arg[field] === undefined ? null : arg[field]);
+  }
+  const host = Object.freeze(Object.fromEntries(HOST_COMMANDS.map((name) => [
+    name[0].toLowerCase() + name.slice(1),
+    (...args) => args.length === 0 ? command(name) : args.length === 1 ? command(name, positional(name, args[0])) : command(name, args),
+  ])));
+  function bytes(value) {
+    if (value instanceof Uint8Array) return value;
+    if (typeof value === "string") return encodeUtf8(value);
+    if (!Array.isArray(value) || value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
+      throw new TypeError("bytes requires a Uint8Array, a string, or an array of integers 0-255");
+    }
+    return Uint8Array.from(value);
+  }
+  function keyName(bareKey) {
+    if (typeof bareKey === "string") return bareKey;
+    validate(bareKey);
+    if (bareKey === null || typeof bareKey !== "object" || Object.keys(bareKey).length !== 1) throw new TypeError("keyName requires a BareKey");
+    const [variant, value] = Object.entries(bareKey)[0];
+    return variant === "Char" ? String(value) : variant + String(value);
+  }
+  function paneKey(pane) {
+    if (typeof pane === "number") return `terminal_${terminalId(pane)}`;
+    validate(pane);
+    if (pane === null || typeof pane !== "object" || Object.keys(pane).length !== 1) throw new TypeError("paneKey requires a PaneId");
+    const [variant, id] = Object.entries(pane)[0];
+    if (!["Terminal", "Plugin"].includes(variant) || !Number.isSafeInteger(id) || id < 0 || id > 4294967295) throw new TypeError("paneKey requires a PaneId");
+    return `${variant.toLowerCase()}_${id}`;
+  }
+  function mouse(raw) {
+    validate(raw);
+    const payload = raw !== null && typeof raw === "object" && Object.keys(raw).length === 1 && Object.hasOwn(raw, "Mouse") ? raw.Mouse : raw;
+    if (payload === null || typeof payload !== "object" || Object.keys(payload).length !== 1) throw new TypeError("mouse requires a Mouse event");
+    const [kind, value] = Object.entries(payload)[0];
+    if (Array.isArray(value) && value.length === 2) return { kind, line: value[0], col: value[1] };
+    if (typeof value === "number" || typeof value === "bigint") return { kind, lines: value };
+    throw new TypeError("mouse requires a Mouse event");
+  }
+  const KEYBINDING_PIPE = "__zellij_default_keybinding:";
+  let keybindingHandlers = new Map();
+  function kdlQuote(value) {
+    if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) return String(value);
+    if (typeof value !== "string") throw new TypeError("KDL values must be strings, finite numbers, or booleans");
+    return '"' + value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t") + '"';
+  }
+  function kdlName(value) {
+    return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(value) ? value : kdlQuote(value);
+  }
+  function kdlEntries(values) {
+    return Object.keys(values).sort().map((key) => `${kdlName(key)} ${kdlQuote(values[key])}`);
+  }
+  function action(name, ...args) {
+    if (typeof name !== "string" || !name) throw new TypeError("an action needs a name");
+    if (args.length === 1 && args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0])) {
+      validate(args[0]);
+      const spec = record(args[0], "action");
+      if (["args", "props", "children"].some((key) => Object.hasOwn(spec, key))) {
+        for (const key of Object.keys(spec)) if (!["args", "props", "children"].includes(key)) throw new TypeError(`unknown action field: ${key}`);
+        return Object.freeze({ name, args: [...(spec.args ?? [])], props: { ...(spec.props ?? {}) }, ...(spec.children ? { children: { ...spec.children } } : {}) });
+      }
+      return Object.freeze({ name, args: [], props: { ...spec } });
+    }
+    return Object.freeze({ name, args: [...args], props: {} });
+  }
+  function actionKdl(value) {
+    if (typeof value === "string") return kdlName(value);
+    validate(value);
+    const spec = record(value, "action");
+    if (typeof spec.name !== "string" || !spec.name) throw new TypeError("an action needs a name");
+    const out = [kdlName(spec.name)];
+    for (const arg of spec.args ?? []) out.push(kdlQuote(arg));
+    for (const key of Object.keys(spec.props ?? {}).sort()) out.push(`${kdlName(key)}=${kdlQuote(spec.props[key])}`);
+    if (spec.children) out.push(`{ ${kdlEntries(spec.children).join("; ")}; }`);
+    return out.join(" ");
+  }
+  function registerDefaultKeybindings(bindings) {
+    if (!Array.isArray(bindings)) throw new TypeError("default keybindings must be an array");
+    const replacement = new Map();
+    const modes = [];
+    bindings.forEach((binding, position) => {
+      const index = position + 1;
+      // A handler is a function, which the transport validator rejects; check the fields instead.
+      record(binding, `default keybinding ${index}`);
+      for (const key of Object.keys(binding)) if (!["mode", "key", "actions", "handler"].includes(key)) throw new TypeError(`unknown default keybinding field: ${key}`);
+      const hasActions = binding.actions !== undefined, hasHandler = typeof binding.handler === "function";
+      if (hasActions === hasHandler) throw new TypeError(`default keybinding ${index} needs exactly one of actions or handler`);
+      if (typeof binding.mode !== "string" || !binding.mode) throw new TypeError(`default keybinding ${index} needs a mode`);
+      if (typeof binding.key !== "string" || !binding.key) throw new TypeError(`default keybinding ${index} needs a key`);
+      let actions;
+      if (hasHandler) {
+        const name = KEYBINDING_PIPE + index;
+        replacement.set(name, binding.handler);
+        actions = [`MessagePlugin { name ${kdlQuote(name)}; }`];
+      } else {
+        validate(binding.actions);
+        if (!Array.isArray(binding.actions)) throw new TypeError(`default keybinding ${index} actions must be an array`);
+        actions = binding.actions.map(actionKdl);
+      }
+      modes.push(`${kdlName(binding.mode)} { bind ${kdlQuote(binding.key)} { ${actions.join("; ")}; }; }`);
+    });
+    command("RegisterDefaultKeybindings", `keybinds clear-defaults=true { ${modes.join("; ")}${modes.length ? "; " : ""}}`);
+    keybindingHandlers = replacement;
+  }
+  function keybindingPipe(message) {
+    if (typeof message.name !== "string" || !message.name.startsWith(KEYBINDING_PIPE)) return false;
+    const handler = message.source === "Keybind" ? keybindingHandlers.get(message.name) : undefined;
+    if (handler) track(handler(message), (result) => { if (result === true) invalidate(); });
+    return true;
+  }
   const styled = new WeakMap();
   function textDescriptor(value) {
     if (styled.has(value)) return structuredStyle(styled.get(value));
@@ -1090,6 +1227,37 @@
     data,
     encodeUtf8,
     decodeUtf8,
+    host,
+    bytes,
+    keyName,
+    paneKey,
+    mouse,
+    terminalPane: (id) => ({ Terminal: terminalId(id) }),
+    pluginPane: (id) => {
+      if (!Number.isSafeInteger(id) || id < 0 || id > 4294967295) throw new TypeError("plugin pane ID must fit u32");
+      return { Plugin: id };
+    },
+    write: (text) => command("Write", bytes(text)),
+    writeToPaneId: (text, pane) => command("WriteToPaneId", [bytes(text), pane]),
+    readPluginLog: (name, lines = 50) => {
+      if (!Number.isSafeInteger(lines) || lines < 0) throw new TypeError("readPluginLog lines must be a nonnegative integer");
+      return command("ReadPluginLog", { name, lines });
+    },
+    openTerminal: (cwd) => {
+      if (cwd !== undefined && cwd !== null && typeof cwd !== "string") {
+        validate(cwd);
+        cwd = record(cwd, "openTerminal cwd").cwd ?? cwd.path ?? null;
+      }
+      // FileToOpen defaults an absent path; a null one is refused.
+      return command("OpenTerminal", cwd == null ? {} : { path: cwd });
+    },
+    closeSelf: () => command("CloseSelf"),
+    setSelectable: (selectable) => {
+      if (typeof selectable !== "boolean") throw new TypeError("setSelectable requires a boolean");
+      return command("SetSelectable", selectable);
+    },
+    action,
+    registerDefaultKeybindings,
     waitForPipe,
     getPluginIds: () => command("GetPluginIds"),
     log: (...values) => {
@@ -1110,7 +1278,7 @@
       hocusIdentity = typeof namespace === "string" && namespace && typeof path === "string" && path ? {namespace, path} : null;
     }
     if (tracing && name === "pipe") transcript(`pipe ${traceName(arg.name)}`);
-    if (name === "pipe" && (completionPipe(arg) || rpcPipe(arg) || hocusPipe(arg))) return;
+    if (name === "pipe" && (completionPipe(arg) || rpcPipe(arg) || hocusPipe(arg) || keybindingPipe(arg))) return;
     const type = name === "update" ? (typeof arg === "string" ? arg : Object.keys(arg)[0]) : undefined;
     if (tracing && name === "update") transcript(`event ${traceName(type)}`);
     const payload = name === "update" && typeof arg !== "string" ? arg[type] : undefined;
