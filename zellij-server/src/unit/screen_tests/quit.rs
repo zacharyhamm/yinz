@@ -363,3 +363,296 @@ fn a_notice_is_dropped_with_its_plugin() {
     screen.drop_quit_notice(HOCUS_PLUGIN_ID);
     assert!(!screen.quit_is_guarded());
 }
+
+// ---------------------------------------------------------------------------
+// A hook pane standing in for the pane it replaced
+//
+// `agent_exit` opens its plugin in place of the exited agent pane, which is suppressed
+// behind it (`add_plugin_pane_in_place_of` -> `suppress_pane_and_replace_with_pid`). Closing
+// that hook pane with the close-pane binding is the gesture these pin: the tab it was the
+// last pane of has to go away, and the client has to land somewhere it can see and type.
+// ---------------------------------------------------------------------------
+
+/// A screen whose tabs can hold plugin panes: `Tab` clones the senders when it is built, so
+/// the plugin channel has to be in place before any tab is made. Otherwise as
+/// `screen_with_a_single_pane`.
+fn screen_with_plugin_senders(
+    tab_ids: &[TabId],
+) -> (
+    Screen,
+    ScreenReceiver,
+    Receiver<(ServerInstruction, ErrorContext)>,
+) {
+    let size = Size { cols: 80, rows: 24 };
+    let mut screen = create_new_screen(size, true, true);
+    let (to_plugin, _plugin_receiver): ChannelWithContext<PluginInstruction> =
+        channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(to_server));
+    for (index, tab_id) in tab_ids.iter().enumerate() {
+        new_tab(&mut screen, index as u32 + 1, *tab_id);
+    }
+    // The sweep that decides an emptied tab's fate only runs for regular clients, so the screen
+    // needs one attached for any of this to happen at all.
+    screen.add_client(crate::ClientId::new(1)).expect("TEST");
+    let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    (screen, screen_receiver, server_receiver)
+}
+
+/// The shape `agent_exit` leaves behind: `tab_id` holds a plugin pane standing in for the
+/// held, exited terminal it replaced.
+fn hook_pane_over_a_held_terminal(
+    screen: &mut Screen,
+    tab_id: TabId,
+    terminal_id: crate::TerminalId,
+    plugin_id: PluginId,
+) {
+    let tab = screen.tabs.get_mut(&tab_id).expect("TEST");
+    tab.suppress_pane_and_replace_with_pid(
+        PaneId::Terminal(terminal_id),
+        PaneId::Plugin(plugin_id),
+        false, // close_replaced_pane
+        None,  // run
+        None,  // completion_tx
+        None,  // borderless
+    )
+    .expect("TEST");
+    // The agent's command exited before the hook fired, which is what makes the pane held.
+    let is_first_run = false;
+    tab.hold_pane(
+        PaneId::Terminal(terminal_id),
+        Some(0),
+        is_first_run,
+        RunCommand::default(),
+    );
+}
+
+/// Every client can still see a tab and type into it: its `active_tab_ids` entry names a live
+/// tab, and that tab counts it among its connected clients. A client that fails either half
+/// gets no output and no input handling, with nothing to repair it short of a reattach.
+fn assert_every_client_has_a_tab(screen: &Screen) {
+    for (client_id, tab_id) in &screen.active_tab_ids {
+        let tab = screen.tabs.get(tab_id).unwrap_or_else(|| {
+            panic!("client {client_id} is on tab {tab_id}, which no longer exists")
+        });
+        assert!(
+            tab.has_connected_client(client_id),
+            "client {client_id} names tab {tab_id}, which does not count it as connected",
+        );
+    }
+}
+
+/// The last tab: closing the hook pane takes the dead terminal with it and ends the session.
+#[test]
+fn closing_a_hook_pane_over_a_dead_terminal_closes_the_last_tab() {
+    let (mut screen, _screen_receiver, server_receiver) =
+        screen_with_plugin_senders(&[TabId::new(1)]);
+    let client_id = crate::ClientId::new(1);
+    hook_pane_over_a_held_terminal(
+        &mut screen,
+        TabId::new(1),
+        crate::TerminalId::new(1),
+        PluginId::new(42),
+    );
+
+    screen.close_focused_pane(client_id, None).expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    assert!(
+        screen.tabs.is_empty(),
+        "the hook pane and the dead terminal go together, and the tab with them",
+    );
+    assert!(
+        std::iter::from_fn(|| server_receiver.try_recv().ok())
+            .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))),
+        "the session ends when the last tab closes",
+    );
+}
+
+/// With another tab open, the client lands on it - seeing it and able to type into it.
+#[test]
+fn closing_a_hook_pane_over_a_dead_terminal_rehomes_the_client() {
+    let (mut screen, _screen_receiver, _server_receiver) =
+        screen_with_plugin_senders(&[TabId::new(1), TabId::new(2)]);
+    let client_id = crate::ClientId::new(1);
+    screen
+        .go_to_tab(zellij_types::internal_ids::TabNumber::new(1), client_id)
+        .expect("TEST");
+    assert_eq!(screen.active_tab_ids.get(&client_id), Some(&TabId::new(1)));
+
+    hook_pane_over_a_held_terminal(
+        &mut screen,
+        TabId::new(1),
+        crate::TerminalId::new(1),
+        PluginId::new(42),
+    );
+
+    screen.close_focused_pane(client_id, None).expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    assert_eq!(
+        screen.tabs.keys().copied().collect::<Vec<_>>(),
+        vec![TabId::new(2)],
+        "the emptied tab is swept and the other one survives",
+    );
+    assert_every_client_has_a_tab(&screen);
+}
+
+/// The destination matters as much as the tab that closes. A tab whose only pane is floating
+/// has nothing tiled in it, and used to refuse the arriving client outright - leaving it named
+/// in `active_tab_ids` and counted by no tab, which is a client that receives no frames and
+/// whose keys reach nothing until it reattaches.
+#[test]
+fn a_client_re_homed_into_a_tab_with_only_floating_panes_can_still_see_and_type() {
+    let (mut screen, _screen_receiver, _server_receiver) =
+        screen_with_plugin_senders(&[TabId::new(1), TabId::new(2)]);
+    let client_id = crate::ClientId::new(1);
+    // Tab 2 keeps a floating pane and nothing tiled, so it survives the sweep with no tiled
+    // pane for an arriving client to be focused on.
+    let tab_two = screen.tabs.get_mut(&TabId::new(2)).expect("TEST");
+    tab_two
+        .new_floating_pane(
+            PaneId::Terminal(crate::TerminalId::new(9)),
+            None,
+            None,
+            false,
+            true,
+            None,
+            None,
+        )
+        .expect("TEST");
+    tab_two.close_pane(PaneId::Terminal(crate::TerminalId::new(2)), false, None);
+
+    screen
+        .go_to_tab(zellij_types::internal_ids::TabNumber::new(1), client_id)
+        .expect("TEST");
+    hook_pane_over_a_held_terminal(
+        &mut screen,
+        TabId::new(1),
+        crate::TerminalId::new(1),
+        PluginId::new(42),
+    );
+
+    screen.close_focused_pane(client_id, None).expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    assert_eq!(
+        screen.tabs.keys().copied().collect::<Vec<_>>(),
+        vec![TabId::new(2)],
+        "the emptied tab is swept and the floating-only one survives",
+    );
+    assert_every_client_has_a_tab(&screen);
+}
+
+/// A plugin pane closed with the close-pane binding drops whatever it said about a quit.
+///
+/// `Screen::close_focused_pane` reaches `Tab::close_focused_pane` directly rather than through
+/// `ScreenInstruction::ClosePane`, so it used to skip `drop_quit_notice` - and a guard nothing
+/// can lift is a session that can never close its last pane again.
+#[test]
+fn closing_a_guarding_plugin_pane_by_keybinding_drops_its_guard() {
+    let (mut screen, _screen_receiver, _server_receiver) =
+        screen_with_plugin_senders(&[TabId::new(1)]);
+    let client_id = crate::ClientId::new(1);
+    let plugin_id = PluginId::new(42);
+    hook_pane_over_a_held_terminal(
+        &mut screen,
+        TabId::new(1),
+        crate::TerminalId::new(1),
+        plugin_id,
+    );
+    screen.set_quit_notice(plugin_id, Some("still working".to_owned()), true);
+    assert!(screen.quit_is_guarded(), "precondition");
+
+    screen.close_focused_pane(client_id, None).expect("TEST");
+
+    assert!(
+        !screen.quit_is_guarded(),
+        "the guard goes with the pane that raised it",
+    );
+}
+
+/// The close-pane gesture from a client with no tab of its own falls back to the first client
+/// there is - and the teardown has to follow it to *that* client's pane.
+///
+/// `Screen::close_focused_pane` used to read the pane off the requesting client while letting
+/// `active_tab_and_connected_client_id!` close the fallback client's pane, so the pane that
+/// actually went away kept its quit guard: a session that can never close its last pane again.
+#[test]
+fn closing_a_pane_for_a_client_with_no_tab_tears_down_the_pane_that_closed() {
+    let (mut screen, _screen_receiver, _server_receiver) =
+        screen_with_plugin_senders(&[TabId::new(1)]);
+    let plugin_id = PluginId::new(42);
+    hook_pane_over_a_held_terminal(
+        &mut screen,
+        TabId::new(1),
+        crate::TerminalId::new(1),
+        plugin_id,
+    );
+    screen.set_quit_notice(plugin_id, Some("still working".to_owned()), true);
+    assert!(screen.quit_is_guarded(), "precondition");
+    assert!(
+        screen.get_active_tab(CLIENT_2).is_err(),
+        "precondition: client 2 is not attached",
+    );
+
+    let closed = screen.close_focused_pane(CLIENT_2, None).expect("TEST");
+
+    assert_eq!(
+        closed,
+        Some(PaneId::Plugin(plugin_id)),
+        "the fallback client's pane is the one that closed, and is what is reported",
+    );
+    assert!(
+        !screen.quit_is_guarded(),
+        "the guard goes with the pane that actually closed",
+    );
+}
+
+/// The dead terminal a hook pane takes with it takes its nested-guest state too.
+///
+/// `Tab::close_dead_subject_of` destroys the suppressed terminal from inside the tab, so the
+/// screen only ever heard about the stand-in - and the guest state keyed on a terminal id that
+/// gets recycled becomes some later pane's passthrough and ascend keys.
+#[test]
+fn closing_a_hook_pane_over_a_dead_terminal_clears_the_terminals_guest_state() {
+    let (mut screen, _screen_receiver, _server_receiver) =
+        screen_with_plugin_senders(&[TabId::new(1)]);
+    let client_id = crate::ClientId::new(1);
+    let subject = PaneId::Terminal(crate::TerminalId::new(1));
+    hook_pane_over_a_held_terminal(
+        &mut screen,
+        TabId::new(1),
+        crate::TerminalId::new(1),
+        PluginId::new(42),
+    );
+    screen
+        .nested_guest_tracker
+        .on_announce(subject, std::time::Instant::now());
+    screen.nested_guest_choices.insert(
+        (client_id, subject),
+        super::super::NestedGuestChoice::Descend,
+    );
+    screen
+        .pane_output_activity
+        .insert(subject, std::time::Instant::now());
+
+    screen.close_focused_pane(client_id, None).expect("TEST");
+
+    assert!(
+        !screen.nested_guest_tracker.is_tracked(subject),
+        "the terminal that went with the hook pane is no longer a tracked guest",
+    );
+    assert!(
+        !screen
+            .nested_guest_choices
+            .contains_key(&(client_id, subject)),
+        "and no client is left descended into it",
+    );
+    assert!(
+        !screen.pane_output_activity.contains_key(&subject),
+        "and nothing is left keyed on an id that will be handed out again",
+    );
+}
