@@ -218,14 +218,32 @@ local function dispatch(uid,root,operation,payload)
   local reply=decode(swamp({operation=operation,payload=payload,id=value.requestId,started=true},root))
   value,row=read(uid)
   if reply.runId then value.run=reply.runId end
-  if value.outcome=='unknown' then value.outcome='pending' end
+  if value.outcome=='unknown' and tracked[value.requestId] then value.outcome='pending' end
   put(uid,value,row)
   return value
 end
 local function serve_observe(uid,operation,row)
+  local attachment
   for attempt=1,8 do
-  if operation.outcome=='failed' then return operation end
+  if operation.outcome~='pending' and operation.outcome~='unknown' then return operation end
   local request=decode(operation.request)
+  if request.operation=='model.method.run' then
+    if operation.run then
+      local id=z.instance_id..'-attach-'..uid
+      local tracking=false
+      for _,tracked_uid in pairs(tracked) do if tracked_uid==uid then tracking=true;break end end
+      if not tracking and not attachment then
+        tracked[id]=uid -- replay can arrive before the request returns
+        attachment=table.pack(pcall(swamp,{operation='run.attach',payload={runId=operation.run,afterSeq=0},id=id,started=true},operation.checkout))
+        if not attachment[1] then tracked[id]=nil end
+      end
+      if attachment then
+        operation.outcome=attachment[1] and tracked[id] and 'pending' or 'unknown'
+        if attachment[1] then operation.dispatcher=z.instance_id
+        else operation.error=tostring(attachment[2]) end
+      end
+    else operation.outcome='unknown' end
+  else
   if request.operation=='workflow.resume' then operation.run=operation.run or request.payload.runId end
   if not operation.run and request.operation~='workflow.resume' then
     local history=decode(swamp({operation='workflow.history.search',payload={filter='has(tags.zellijOperation) && tags.zellijOperation == '..encode(operation.correlation)}},operation.checkout))
@@ -246,6 +264,7 @@ local function serve_observe(uid,operation,row)
       elseif history.status=='failed' or history.status=='cancelled' or history.status=='interrupted' then operation.outcome='failed';operation.exitCode=1 end
     end
   end
+  end
   local ok,err=pcall(put,uid,operation,row)
   if ok then return operation end
   if not D.is_conflict(err) or attempt==8 then error(err) end
@@ -264,21 +283,36 @@ z.on('custom_message',function(event)
   local operation,row=read(uid)
   if not operation then return end
   local write=false
+  local pending=operation.outcome=='pending' or operation.outcome=='unknown'
+  local method=decode(operation.request).operation=='model.method.run'
   if frame.event and frame.event.runId then
     operation.run=frame.event.runId
-    if operation.outcome~='failed' then operation.outcome='pending' end
+    if pending then operation.outcome='pending' end
     write=true
   end
-  if frame.event and frame.event.kind=='error' then
+  if pending and method and frame.event and (frame.event.kind=='completed' or frame.event.kind=='cancelled') then
+    local succeeded=frame.event.kind=='completed' and frame.event.run and frame.event.run.status=='succeeded'
+    operation.outcome=succeeded and 'completed' or 'failed'
+    operation.exitCode=succeeded and 0 or 1
+    if not succeeded then operation.error=encode(frame.event) end
+    write=true
+  end
+  if pending and frame.event and frame.event.kind=='error' then
     operation.error=encode(frame.event.error)
     operation.outcome='failed';operation.exitCode=1;write=true
   end
   if frame.type=='done' then
-    if operation.outcome~='failed' then operation.outcome='completed';operation.exitCode=0 end
+    if operation.outcome=='pending' or operation.outcome=='unknown' then
+      operation.outcome=method and 'unknown' or 'completed'
+      if not method then operation.exitCode=0 end
+    end
     tracked[frame.id]=nil;write=true
   elseif frame.type=='error' then
+    if pending then
     operation.error=encode(frame.error)
-    operation.outcome=(frame.error.code=='transport_unknown' or frame.error.code=='host_error' or frame.error.code=='not_found') and 'unknown' or 'failed'
+    local attaching=method and frame.id==z.instance_id..'-attach-'..uid
+    operation.outcome=(attaching or frame.error.code=='transport_unknown' or frame.error.code=='host_error' or frame.error.code=='not_found') and 'unknown' or 'failed'
+    end
     tracked[frame.id]=nil;write=true
   end
   if write then put(uid,operation,row) end
@@ -586,7 +620,8 @@ handle = function(args, manual_view)
     assert(not config.error, config.error)
     local name = args.workflow or config.config.workflow
     assert(name and name ~= '', 'No exit workflow configured. Use Hocus /project-setup.')
-    swamp({operation='workflow.validate',payload={workflowIdOrName=name}},config.root)
+    local validation=swamp({operation='workflow.validate',payload={workflowIdOrName=name}},config.root)
+    assert(decode(validation).passed==true,'Workflow validation failed: '..validation)
     local inputs = args.inputs or {}
     inputs.launch, inputs.session = args.work, identity.session
     inputs.binary=z.server_binary or 'zellij'

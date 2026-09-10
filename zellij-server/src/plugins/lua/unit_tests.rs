@@ -7673,7 +7673,7 @@ end
 z.data.put=function(_,v,uid,rev) return {uid=uid,value=v.value,rev=rev} end
 z.data.apply=function(changes)
   if changes.uid then changes={changes} end
-  for _,c in ipairs(changes) do assert(c.rev==(rows[c.uid] and rows[c.uid].rev or 0),'CAS conflict') end
+  for _,c in ipairs(changes) do assert(c.rev==(rows[c.uid] and rows[c.uid].rev or 0),'data conflict: revision changed') end
   for _,c in ipairs(changes) do
     next_row=next_row+1
     rows[c.uid]={value=c.value,rev=c.rev+1,id=rows[c.uid] and rows[c.uid].id or next_row}
@@ -7866,27 +7866,35 @@ end
 -- A method's error event is its outcome; done only closes the stream.
 z.set_timeout=function() end
 local normal_service=z.async.swamp_request
-for _,fails in ipairs{false,true} do
+for _,case in ipairs{
+  {key='success',event={kind='completed',run={status='succeeded'}},outcome='completed',code=0},
+  {key='failure',event={kind='completed',run={status='failed',error='concrete diagnostic'}},outcome='failed',code=1},
+  {key='cancelled',event={kind='cancelled',run={status='failed'},reason='concrete diagnostic'},outcome='failed',code=1},
+  {key='error',event={kind='error',error={message='concrete diagnostic'}},outcome='failed',code=1},
+  {key='done',outcome='unknown'},
+} do
+  local dispatched=0
   z.async.swamp_request=function(opts)
-    if opts.operation=='workflow.history.search' then
-      local a,r=z.async.future();r{results={}};return a
-    end
-    assert(opts.operation=='model.method.run')
+    assert(opts.operation=='model.method.run','methods never search workflow history')
+    dispatched=dispatched+1
     local function frame(value)
       value.id=opts.id
       z.__update(M,{CustomMessage={'swamp-response',z.json.encode(value)}})
     end
-    if fails then frame{type='event',event={kind='error',error={code='method_failed',message='concrete diagnostic'}}} end
+    if case.event then
+      frame{type='event',event=case.event}
+      frame{type='event',event={kind='output',runId='late-run'}}
+    end
     frame{type='done'}
     local a,r=z.async.future();r{};return a
   end
-  local key=fails and 'method-error' or 'method-success'
-  local request={method='swamp_dispatch',work='stream',key=key,directory='/control',operation='model.method.run',payload={}}
-  for _,value in ipairs{assert(call(request)),assert(call{method='observe',work='stream',key=key}),assert(call(request))} do
-    assert(value.outcome==(fails and 'failed' or 'completed'))
-    assert(value.exitCode==(fails and 1 or 0))
-    if fails then assert(z.json.decode(value.error).message=='concrete diagnostic') end
+  local request={method='swamp_dispatch',work='stream',key=case.key,directory='/control',operation='model.method.run',payload={}}
+  for _,value in ipairs{assert(call(request)),assert(call{method='observe',work='stream',key=case.key}),assert(call(request))} do
+    assert(value.outcome==case.outcome)
+    assert(value.exitCode==case.code)
+    if case.outcome=='failed' then assert(value.error:find('concrete diagnostic',1,true)) end
   end
+  assert(dispatched==1)
 end
 z.async.swamp_request=normal_service
 local source_root='/work/topic \n' -- preserve path whitespace, including a trailing newline
@@ -7910,7 +7918,7 @@ z.async.run_command=function(opts)
     if opts.command[3]=='history' then
       assert(opts.command[4]=='search')
       stdout=z.json.encode{results={}}
-    else assert(opts.command[3]=='validate' and opts.command[4]=='configured') end
+    else assert(opts.command[3]=='validate' and opts.command[4]=='configured');stdout=z.json.encode{passed=true} end
   end
   local a,r=z.async.future();r{exit_code=exit_code,stdout=stdout,stderr=stderr};return a
 end
@@ -7949,6 +7957,17 @@ z.async.swamp_request=function(opts)
 end
 assert(call{method='observe',work='workflow',key='launch'}.outcome=='completed' and raced)
 z.async.swamp_request=service
+-- A normal validation response must explicitly pass before dispatch.
+local validation_service=z.async.swamp_request
+z.async.swamp_request=function(opts)
+  assert(opts.operation=='workflow.validate')
+  local a,r=z.async.future();r{passed=false,diagnostics={'invalid workflow'}};return a
+end
+local rejected=launch('validation-rejected')
+assert(tostring(select(2,call(rejected))):find('invalid workflow',1,true))
+assert(call(rejected).outcome=='failed' and service_runs==2 and resolved==2)
+assert(call{method='workflow_show',launch=rejected.work,directory='/invalid'}.logs:find('invalid workflow',1,true))
+z.async.swamp_request=validation_service
 -- Validation diagnostics may be JSON on stdout, stderr, or absent altogether.
 for i,output in ipairs{{'{"error":"extension unavailable"}',''}, {'','validation failed'}, {'',''}, {'details','warning'}} do
   local commands=0
@@ -8000,7 +8019,7 @@ end
 z.project_config.read=function() return {root='/control',config={workflow='configured'}} end
 z.async.run_command=function(opts)
   unwrap_history(opts)
-  local stdout=''
+  local stdout=z.json.encode{passed=true}
   if opts.command[2]=='pty-host' then
     local hosts={}
     for pane in pairs(panes) do hosts[#hosts+1]={terminal_id=pane,attached=true,session_name='session',host_id='supervisor-'..pane,child_pid=100+pane} end
@@ -8316,6 +8335,46 @@ for _,outcome in ipairs{'pending','unknown'} do
   end
 end
 assert(replacements==before_reload,'reload never recovers placement')
+-- Method recovery shares observation/reconciliation and registers before replay.
+for _,via in ipairs{'observe','reconcile'} do
+  for _,initial in ipairs{'pending','unknown'} do
+    for _,mode in ipairs{'live','replay','failure','missing'} do
+      local key=via..'-'..initial..'-'..mode
+      local request={method='swamp_dispatch',work='recover-method',key=key,directory='/control',operation='model.method.run',payload={}}
+      local uid=z.json.encode{'host','session',request.work,key}
+      rows[uid]={rev=1,value=z.json.encode{work=request.work,key=key,request=z.json.encode(request),transport='serve',checkout='/control',outcome=initial,run=mode~='missing' and key or nil}}
+      z.instance_id=z.instance_id..'-reload'
+      M=reload_bridge();M.load{}
+      local attachments=0
+      z.async.swamp_request=function(opts)
+        assert(opts.operation=='run.attach','recovery must never redispatch or search workflow history')
+        attachments=attachments+1
+        assert(opts.id and opts.started==true and opts.payload.runId==key and opts.payload.afterSeq==0)
+        local function frame(value)
+          value.id=opts.id
+          handlers.custom_message{message='swamp-response',payload=z.json.encode(value)}
+        end
+        if mode=='replay' then
+          frame{type='event',event={kind='completed',run={status='succeeded'}}}
+          frame{type='done'}
+        end
+        if mode=='failure' then frame{type='error',error={code='permission_denied',message='attachment diagnostic'}} end
+        local a,r=z.async.future()
+        r(mode=='failure' and {error={code='permission_denied',message='attachment diagnostic'}} or {})
+        return a
+      end
+      local observed=assert(call{method=via,work=request.work,key=key,operation=key})
+      assert(observed.outcome==(mode=='replay' and 'completed' or mode=='live' and 'pending' or 'unknown'))
+      if mode=='failure' then assert(observed.error:find('attachment diagnostic',1,true)) end
+      if mode=='replay' then assert(observed.exitCode==0) end
+      if mode~='failure' then
+        assert(call{method='observe',work=request.work,key=key}.outcome==observed.outcome)
+        assert(attachments==(mode=='missing' and 0 or 1),'live tracking prevents duplicate attachment')
+      end
+      assert(call(request).outcome==observed.outcome,'saved claims never redispatch')
+    end
+  end
+end
 -- A caller cannot proxy an unprivileged plugin through the builtin bridge.
 z.get_pane_info=function() return {plugin_url='file:untrusted.lua'} end
 assert(select(2,call{method='identity'}))
