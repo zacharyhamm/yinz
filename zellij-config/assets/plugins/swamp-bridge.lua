@@ -158,12 +158,6 @@ local function finish_agent(owner, event, raw)
   present(owner.work)
 end
 local function command(argv, cwd)
-  if argv[1]=='swamp' and argv[2]=='workflow' and argv[3]=='history' and argv[4]~='logs' then
-    -- History has no --select. Omit the redundant continuation log before stdout is capped;
-    -- the saved test resource below supplies its preview and exact-version retrieval.
-    argv={'bash','-o','pipefail','-c',[["$@" | jq -c 'del(.inputs.state.test.output, .results[]?.inputs.state.test.output)']],
-      'workflow-history',table.unpack(argv)}
-  end
   local r = z.await(z.async.run_command {command=argv, cwd=cwd or '/', context={swamp_owner=encode(identity)}, max_bytes_returned=1048576})
   if r.exit_code ~= 0 then
     error('Host command failed: ' .. encode(argv) .. '\nDirectory: ' .. (cwd or '/') ..
@@ -171,6 +165,126 @@ local function command(argv, cwd)
   end
   return r.stdout
 end
+local tracked,notifications,watching,watch_ids={},{},{},{}
+local function changed(work)
+  if notifications[work] then return end
+  notifications[work]=true
+  z.after(0.1,function()
+    notifications[work]=nil
+    local view=read(scope(work,'view'))
+    if view and view.incarnation==identity.incarnation then
+      z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-changed'}
+    end
+    local placement=placements[work]
+    if placement and placement.manual and not placement.detached then
+      z.message_to_plugin{destination_plugin_id=placement.view,message_name='workflow-changed'}
+    end
+  end)
+end
+local function swamp(request,root)
+  local reply=z.await(z.async.swamp_request{directory=root,operation=request.operation,payload=request.payload,
+    id=request.id,started=request.started})
+  if reply.error then error(encode(reply.error)) end
+  if request.operation=='data.query' and reply.limited then error('Swamp data query reached its result limit; narrow the saved-data query') end
+  if request.operation=='data.query' and reply.projected then
+    reply.results=reply.projected.rows or reply.projected.values or {}
+    reply.projected=nil
+  elseif request.operation=='workflow.history.logs' and reply.log then
+    return table.concat(reply.log.lines or {},'\n')
+  end
+  return encode(reply)
+end
+local function watch_run(run,work,root)
+  if watching[run] then return end
+  local id=z.instance_id..'-watch-'..run
+  watching[run]=true;watch_ids[id]={run=run,work=work}
+  z.task(function()
+    pcall(swamp,{operation='run.attach',payload={runId=run,afterSeq=0},id=id},root)
+    watching[run]=nil;watch_ids[id]=nil
+  end)
+end
+local function dispatch(uid,root,operation,payload)
+  local value,row=read(uid)
+  value.transport,value.requestId,value.checkout='serve',z.instance_id..uid,root
+  value.correlation=uid
+  value.outcome='unknown'
+  put(uid,value,row) -- durable identity before the socket can receive a mutation
+  tracked[value.requestId]=uid
+  if operation=='workflow.run' then
+    payload.noSupersede=true
+    payload.runtimeTags=payload.runtimeTags or {}
+    payload.runtimeTags.zellijOperation=uid
+  end
+  local reply=decode(swamp({operation=operation,payload=payload,id=value.requestId,started=true},root))
+  value,row=read(uid)
+  if reply.runId then value.run=reply.runId end
+  if value.outcome=='unknown' then value.outcome='pending' end
+  put(uid,value,row)
+  return value
+end
+local function serve_observe(uid,operation,row)
+  for attempt=1,8 do
+  if operation.outcome=='failed' then return operation end
+  local request=decode(operation.request)
+  if request.operation=='workflow.resume' then operation.run=operation.run or request.payload.runId end
+  if not operation.run and request.operation~='workflow.resume' then
+    local history=decode(swamp({operation='workflow.history.search',payload={filter='has(tags.zellijOperation) && tags.zellijOperation == '..encode(operation.correlation)}},operation.checkout))
+    assert(#(history.results or {})<=1,'Multiple runs have the same operation identity; reconcile explicitly')
+    if history.results and history.results[1] then operation.run=history.results[1].runId end
+  end
+  if operation.run and request.operation~='model.method.run' then
+    local history=decode(swamp({operation='workflow.history.get',payload={workflowIdOrName=operation.run}},operation.checkout))
+    local matches=request.operation~='workflow.resume' or (history.inputs and history.inputs.submission==request.payload.inputs.submission)
+    if matches then
+      if history.status=='running' then
+        if operation.outcome=='unknown' or operation.dispatcher~=z.instance_id then
+          local attached=pcall(swamp,{operation='run.attach',payload={runId=operation.run,afterSeq=0},started=true},operation.checkout)
+          operation.outcome=attached and 'pending' or 'unknown'
+          if attached then operation.dispatcher=z.instance_id else operation.error='Execution is unavailable; reconcile persisted history before proceeding' end
+        else operation.outcome='pending' end
+      elseif history.status=='succeeded' or history.status=='suspended' then operation.outcome='completed';operation.exitCode=0
+      elseif history.status=='failed' or history.status=='cancelled' or history.status=='interrupted' then operation.outcome='failed';operation.exitCode=1 end
+    end
+  end
+  local ok,err=pcall(put,uid,operation,row)
+  if ok then return operation end
+  if not D.is_conflict(err) or attempt==8 then error(err) end
+  -- An event can advance the claim while history is in flight. Re-read and
+  -- reconcile again; never attach a fresh revision to the stale observation.
+  operation,row=read(uid)
+  end
+end
+z.on('custom_message',function(event)
+  if event.message~='swamp-response' then return end
+  local frame=decode(event.payload)
+  local watch=watch_ids[frame.id]
+  if watch then changed(watch.work);return end
+  local uid=tracked[frame.id]
+  if not uid then return end
+  local operation,row=read(uid)
+  if not operation then return end
+  local write=false
+  if frame.event and frame.event.runId then
+    operation.run=frame.event.runId
+    if operation.outcome~='failed' then operation.outcome='pending' end
+    write=true
+  end
+  if frame.event and frame.event.kind=='error' then
+    operation.error=encode(frame.event.error)
+    operation.outcome='failed';operation.exitCode=1;write=true
+  end
+  if frame.type=='done' then
+    if operation.outcome~='failed' then operation.outcome='completed';operation.exitCode=0 end
+    tracked[frame.id]=nil;write=true
+  elseif frame.type=='error' then
+    operation.error=encode(frame.error)
+    operation.outcome=(frame.error.code=='transport_unknown' or frame.error.code=='host_error' or frame.error.code=='not_found') and 'unknown' or 'failed'
+    tracked[frame.id]=nil;write=true
+  end
+  if write then put(uid,operation,row) end
+  local attached=read(scope(operation.work,'attachment'))
+  changed(attached and attached.work or operation.work)
+end)
 local function commands(requests,root)
   local results={}
   for first=1,#requests,4 do
@@ -178,7 +292,7 @@ local function commands(requests,root)
     for i=first,math.min(first+3,#requests) do
       local future,resolve=z.async.future()
       pending[i]=future
-      z.task(function() resolve(table.pack(pcall(command,requests[i],root))) end)
+      z.task(function() resolve(table.pack(pcall(swamp,requests[i],root))) end)
     end
     for i,result in pairs(z.await(z.async.all(pending))) do results[i]=result end
   end
@@ -254,7 +368,7 @@ local handle
 local function discover(work, root)
   local launch=result(scope(work,'launch'))
   assert(launch.checkout==root,'Launch belongs to a different control checkout')
-  local history=decode(command({'swamp','workflow','history','search','--input','launch='..work,'--json'},root))
+  local history=decode(swamp({operation='workflow.history.search',payload={inputs={launch=work}}},root))
   for _,run in ipairs(history.results or {}) do
     if run.inputs.session==identity.session then
       handle{method='workflow_attach',work=work,key='attachment',run=run.runId,workflow=run.workflowName,directory=root}
@@ -265,15 +379,23 @@ end
 handle = function(args, manual_view)
   assert(type(args) == 'table', 'Expected a typed request')
   if args.method == 'identity' then return identity end
+  if args.method=='swamp_read' then
+    assert(args.operation=='workflow.history.get' or args.operation=='workflow.history.search' or args.operation=='data.query' or args.operation=='workflow.approve','Unsupported bridge request')
+    return decode(swamp({operation=args.operation,payload=args.payload},args.directory))
+  end
+  if args.method=='workflow_answer' then
+    local reply=decode(swamp({operation='model.method.run',payload={modelIdOrName=args.model,methodName='submit',inputs=args.inputs}},args.directory))
+    if reply.run and (reply.run.status=='failed' or reply.run.status=='cancelled') then error(encode(reply.run)) end
+    return reply.run or reply
+  end
   if args.method == 'workflow_cancel' then
     local snapshot=handle{method='workflow_show',directory=args.directory,run=args.run}
     local histories={snapshot.history}
     for _,child in ipairs(snapshot.children) do histories[#histories+1]=child end
     local operations={}
     for _,history in ipairs(histories) do
-      if history.status=='running' or history.status=='suspended' then
-        operations[#operations+1]=handle{method='command',work=history.inputs.launch,key='cancel-'..history.id,cwd=snapshot.root,
-          argv={'swamp','workflow','cancel',history.workflowName,'--run',history.id,'--json'}}
+      if history.status=='running' then
+        operations[#operations+1]=decode(swamp({operation='workflow.cancel',payload={runId=history.id}},snapshot.root))
       end
     end
     return {operations=operations}
@@ -290,7 +412,7 @@ handle = function(args, manual_view)
       attachment=read(scope(args.run,'attachment'))
       if attachment then work=attachment.work
       else
-        local history=decode(command({'swamp','workflow','history','get',args.run,'--json'},config.root))
+        local history=decode(swamp({operation='workflow.history.get',payload={workflowIdOrName=args.run}},config.root))
         assert(history.inputs.session==identity.session,'Run belongs to a different session')
         work=history.inputs.launch
       end
@@ -319,7 +441,7 @@ handle = function(args, manual_view)
     local ids={}
     for id in pairs(runs.entries) do ids[#ids+1]=id end
     local predicate='specName == "question" && attributes.run in '..encode(ids)
-    -- Bound every saved log copy before RunCommand serializes stdout; its byte cap would cut JSON.
+    -- Bound every saved log copy before the host serializes the response; its byte cap would cut JSON.
     -- CEL substring uses UTF-16 offsets: back off if the cut would split a surrogate pair.
     local function preview(path)
       return ([["output":has(VALUE.output) ? (VALUE.output.size() > 16384 ? VALUE.output.substring(0,
@@ -328,12 +450,12 @@ handle = function(args, manual_view)
     end
     local function test_preview(path)
       return ('{"evidence":'..path..'.evidence,"outcome":'..path..'.outcome,"exitCode":'..path..'.exitCode,'..
-        '"log":'..path..'.log,"passed":'..path..'.passed,'..preview(path)..'}')
+        '"log":'..path..'.log,"passed":'..path..'.passed,"outputRef":has('..path..'.outputRef) ? '..path..'.outputRef : null,'..preview(path)..'}')
     end
     local output_projection=[[{"model":modelName,"name":name,"version":version,"attributes":
       specName == "diff" ? {"evidence":attributes.evidence,]]..preview('attributes')..[[} :
       specName == "test" ? ]]..test_preview('attributes')..[[ :
-      specName == "operation" && has(attributes.output) ? {
+      specName == "operation" ? {
         "outcome":attributes.outcome,"pane":has(attributes.pane) ? attributes.pane : false,
         "log":has(attributes.log) ? attributes.log : "",
         "exitCode":has(attributes.exitCode) ? attributes.exitCode : null,
@@ -348,17 +470,22 @@ handle = function(args, manual_view)
         "ready":has(attributes.ready) && attributes.ready}
       : attributes}]]
     local requests={
-      {'swamp','workflow','history','get',run,'--json'},
-      {'swamp','data','query',predicate,'--select','{"model": modelName, "version": version, "attributes": attributes}','--json'},
-      {'swamp','data','query','has(tags.workflowRunId) && tags.workflowRunId in '..encode(ids),'--select',output_projection,'--json'},
-      {'swamp','workflow','history','logs',run,'--tail','100','--json'},
+      {operation='workflow.history.get',payload={workflowIdOrName=run}},
+      {operation='data.query',payload={predicate=predicate,select='{"model": modelName, "version": version, "attributes": attributes}'}},
+      {operation='data.query',payload={predicate='has(tags.workflowRunId) && tags.workflowRunId in '..encode(ids),select=output_projection}},
+      {operation='workflow.history.logs',payload={runIdOrWorkflow=run,tail=100}},
     }
     for _,id in ipairs(ids) do
-      if id~=run then requests[#requests+1]={'swamp','workflow','history','get',id,'--json'} end
+      if id~=run then requests[#requests+1]={operation='workflow.history.get',payload={workflowIdOrName=id}} end
     end
     local values=commands(requests,config.root)
+    local main_history=decode(values[1])
+    if main_history.status=='running' then watch_run(run,work,config.root) end
     local children={}
-    for i=5,#values do children[#children+1]=decode(values[i]) end
+    for i=5,#values do
+      local child=decode(values[i]);children[#children+1]=child
+      if child.status=='running' then watch_run(child.id,work,config.root) end
+    end
     return {run=run,launch=work,root=config.root,history=decode(values[1]),children=children,active=active(work),
       outputs=decode(values[3]),logs=values[4],questions=decode(values[2])}
 
@@ -369,6 +496,7 @@ handle = function(args, manual_view)
     local uid = scope(args.work,args.key)
     local operation, row = read(uid)
     assert(operation, 'No operation with that identity')
+    if operation.transport=='serve' then return serve_observe(uid,operation,row) end
     if operation.outcome=='pending' and operation.dispatcher~=z.instance_id then
       operation.outcome='unknown'
       put(uid,operation,row)
@@ -422,6 +550,7 @@ handle = function(args, manual_view)
     if decode(operation.request).method=='workflow_run' and operation.checkout then
       discover(args.work,operation.checkout)
     end
+    if operation.transport=='serve' then return serve_observe(operation_uid,operation,operation_row) end
     -- A saved supervisor, unlike a pane number, survives a server restart.
     if operation.pane and operation.supervisor then
       local host = supervisor(operation.pane, operation.supervisor)
@@ -457,7 +586,7 @@ handle = function(args, manual_view)
     assert(not config.error, config.error)
     local name = args.workflow or config.config.workflow
     assert(name and name ~= '', 'No exit workflow configured. Use Hocus /project-setup.')
-    command({'swamp','workflow','validate',name,'--json'},config.root)
+    swamp({operation='workflow.validate',payload={workflowIdOrName=name}},config.root)
     local inputs = args.inputs or {}
     inputs.launch, inputs.session = args.work, identity.session
     inputs.binary=z.server_binary or 'zellij'
@@ -485,13 +614,9 @@ handle = function(args, manual_view)
     inputs.targetBranch = inputs.targetBranch or config.config.default_branch or 'main'
     value.workflow,value.checkout,value.launch=name,config.root,args.work
     put(uid,value,row)
-    local launch = handle({method='command',work=args.work,key='swamp-process',cwd=config.root,
-      argv={'swamp','workflow','run',name,'--no-supersede','--input',encode(inputs),'--json'}})
-    value, row = read(uid)
-    value.outcome, value.pane, value.supervisor = launch.outcome, launch.pane, launch.supervisor
-    value.process = launch.process
-    value.checkout, value.log, value.workflow, value.launch = config.root, launch.log, name, args.work
-    put(uid,value,row)
+    return dispatch(uid,config.root,'workflow.run',{workflowIdOrName=name,inputs=inputs})
+  elseif args.method=='swamp_dispatch' then
+    return dispatch(uid,args.directory,args.operation,args.payload)
   elseif args.method == 'pane_action' then
     if args.action=='leave' then
       value.outcome='completed'
@@ -628,7 +753,7 @@ local function invoke(args, manual_view)
     -- A validation/configuration failure before a runner claim is safe to restart.
     -- Once dispatch was claimed, its outcome stays uncertain until reconciled.
     pcall(function()
-      if not read(scope(args.work,'swamp-process')) then
+      if not read(scope(args.work,'swamp-process')) and not (read(scope(args.work,args.key)) or {}).transport then
         save_event(scope(args.work,args.key),'failed',{error=tostring(response)})
       end
     end)
@@ -692,7 +817,14 @@ function M.pipe(message)
   if not pipe then return end
   z.block_cli_pipe_input(pipe)
   z.task(function()
-    local ok, response = pcall(function() return invoke(decode(message.payload)) end)
+    local ok, response = pcall(function()
+      local args=decode(message.payload)
+      -- Typed Swamp inputs distinguish null from an absent key. Preserve only the
+      -- forwarded document; ordinary Lua control fields keep nil semantics.
+      if args.method=='swamp_dispatch' then args.payload=z.json.decode(message.payload,true).payload end
+      if args.method=='workflow_run' then args.inputs=z.json.decode(message.payload,true).inputs end
+      return invoke(args)
+    end)
     z.cli_pipe_output(pipe, encode(ok and {result=response} or {error=tostring(response)}))
     z.unblock_cli_pipe_input(pipe)
   end)

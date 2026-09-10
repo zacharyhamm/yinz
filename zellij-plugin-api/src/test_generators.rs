@@ -1614,6 +1614,12 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::ProjectConfigRead => PluginCommand::ProjectConfigRead {
             directory: strings(tc).into(),
         },
+        CommandType::SwampRequest => PluginCommand::SwampRequest {
+            directory: strings(tc).into(),
+            id: strings(tc),
+            operation: strings(tc),
+            payload: strings(tc),
+        },
         CommandType::ProjectConfigWrite => PluginCommand::ProjectConfigWrite {
             directory: strings(tc).into(),
             source: strings(tc),

@@ -9,6 +9,7 @@ import {
     PromptText,
     Request,
 } from "./bridge.ts";
+import { OutputRef, readEvidence, resolveEvidence } from "./evidence.ts";
 import { Context, digest, Key, Literal } from "./workflow.ts";
 import { Evidence, Finding, Sync } from "../git_workflow.ts";
 const Agent = Request.extend({ agent: Key });
@@ -40,6 +41,7 @@ const Test = z.object({
     exitCode: z.number().int().nullable(),
     log: z.string(),
     output: z.string().default(""),
+    outputRef: OutputRef.optional(),
     passed: z.boolean(),
 });
 const ReviewArgs = z.object({
@@ -73,6 +75,10 @@ const resource = <T extends z.ZodType>(schema: T, description: string) => ({
     garbageCollection: 50,
 });
 export const resources = {
+    continuation: resource(
+        z.object({ fingerprint: z.string(), outputRef: OutputRef }),
+        "Exact test evidence chosen for a continuation retry",
+    ),
     prompt: resource(
         z.object({ prompt: PromptText }),
         "Validated helper prompt with beginning and end excerpts when oversized",
@@ -207,11 +213,84 @@ export const methods = {
         arguments: ContinueFlow,
         execute: async (input: z.infer<typeof ContinueFlow>, c: Context) => {
             const a = ContinueFlow.parse(input);
-            const directory = await Deno.realPath(c.repoDir) +
-                "/.swamp/continuation-inputs";
-            await Deno.mkdir(directory, { recursive: true });
-            const inputFile = `${directory}/${await digest(a)}.json`;
-            await Deno.writeTextFile(inputFile, JSON.stringify(a.inputs));
+            const test = a.inputs.state.test;
+            const continuationName = "continuation-" +
+                await digest({ work: a.work, key: a.key });
+            const fingerprint = await digest(a);
+            const previous = await c.readResource(continuationName);
+            if (previous && previous.fingerprint !== fingerprint) {
+                throw new Error("Conflicting continuation request");
+            }
+            if (test && previous) {
+                test.outputRef = OutputRef.parse(previous.outputRef);
+            }
+            if (
+                test &&
+                (test.outputRef ||
+                    new TextEncoder().encode(test.output).length > 65536)
+            ) {
+                if (!c.dataRepository) {
+                    throw new Error("Saved evidence repository unavailable");
+                }
+                if (test.outputRef) {
+                    const saved = await readEvidence(
+                        c.dataRepository,
+                        test.outputRef,
+                    );
+                    if (!saved || typeof saved.output !== "string") {
+                        throw new Error("Missing saved test output");
+                    }
+                    test.output = saved.output;
+                } else {
+                    const fingerprint = await digest(Test.parse(test));
+                    for (const item of await c.dataRepository.findAllGlobal()) {
+                        if (item.data.tags.specName !== "test") continue;
+                        const ref = {
+                            modelType: item.modelType.normalized,
+                            modelId: item.modelId,
+                            name: item.data.name,
+                            version: item.data.version,
+                        };
+                        const saved = Test.safeParse(
+                            await readEvidence(c.dataRepository, ref),
+                        );
+                        if (
+                            saved.success &&
+                            await digest(saved.data) === fingerprint
+                        ) {
+                            test.outputRef = ref;
+                            break;
+                        }
+                    }
+                    if (!test.outputRef) {
+                        if (!c.modelType || !c.modelId) {
+                            throw new Error(
+                                "Saved evidence model identity unavailable",
+                            );
+                        }
+                        const handle = await c.writeResource(
+                            "test",
+                            "test-" + fingerprint,
+                            test,
+                        );
+                        test.outputRef = OutputRef.parse({
+                            modelType: c.modelType.normalized,
+                            modelId: c.modelId,
+                            ...handle,
+                        });
+                    }
+                }
+                if (!previous) {
+                    await c.writeResource("continuation", continuationName, {
+                        fingerprint,
+                        outputRef: test.outputRef,
+                    });
+                }
+                test.output =
+                    test.output.slice(0, 8192).replace(/[\uD800-\uDBFF]$/, "") +
+                    "\n[Full output saved in Swamp; see outputRef]\n" +
+                    test.output.slice(-8192).replace(/^[\uDC00-\uDFFF]/, "");
+            }
             const host = {
                 ...c,
                 globalArgs: {
@@ -220,20 +299,16 @@ export const methods = {
                 },
             };
             const dispatched = await operation(host, {
-                method: "command",
+                method: "swamp_dispatch",
+                operation: "workflow.run",
                 work: a.work,
                 key: a.key,
-                cwd: c.repoDir,
-                argv: [
-                    "swamp",
-                    "workflow",
-                    "run",
-                    a.workflow,
-                    "--no-supersede",
-                    "--input-file",
-                    inputFile,
-                    "--json",
-                ],
+                directory: c.repoDir,
+                payload: {
+                    workflowIdOrName: a.workflow,
+                    inputs: a.inputs,
+                    noSupersede: true,
+                },
             });
             await save(c, "operation", dispatched);
             const result = await observe(
@@ -241,20 +316,13 @@ export const methods = {
                 { work: a.work, key: a.key },
                 3600,
             );
-            // Successful runner stdout contains complete child reports. Those already
+            // Successful child output contains complete child reports. Those already
             // live in Swamp; nesting them in every parent report grows without bound.
             if (result.outcome === "completed" && result.exitCode === 0) {
                 delete result.output;
                 delete result.outputTruncated;
             }
             const saved = await save(c, "operation", result);
-            // A lost dispatch/observation reply must leave the child's inputs intact.
-            if (
-                result.outcome === "completed" ||
-                (result.outcome === "failed" && result.exitCode != null)
-            ) {
-                await Deno.remove(inputFile);
-            }
             if (result.outcome !== "completed" || result.exitCode !== 0) {
                 throw new Error(
                     "Continuation failed; inspect operation-current (" +
@@ -356,6 +424,18 @@ export const methods = {
             c: Context,
         ) => {
             const a = Agent.extend({ assessment: Assessment }).parse(input);
+            if (a.assessment.test?.outputRef) {
+                if (!c.dataRepository) {
+                    throw new Error("Saved evidence repository unavailable");
+                }
+                a.assessment = await resolveEvidence(
+                    c.dataRepository,
+                    a.assessment,
+                );
+                if (a.assessment.test?.output === null) {
+                    throw new Error("Missing saved test output");
+                }
+            }
             return save(
                 c,
                 "operation",

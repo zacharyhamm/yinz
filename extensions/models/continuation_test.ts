@@ -1,68 +1,107 @@
 import { methods } from "./_lib/zellij_methods.ts";
-import { Context, digest } from "./_lib/workflow.ts";
+import { Context } from "./_lib/workflow.ts";
 
 function assert(value: unknown): asserts value {
     if (!value) throw new Error("assertion failed");
 }
-Deno.test("continuations preserve large inputs, retry argv, reports and uncertain file lifetime", async () => {
+Deno.test("continuations preserve typed inputs, operation identity, reports and uncertain outcomes", async () => {
     const dir = await Deno.makeTempDir();
     const binary = dir + "/bridge";
     await Deno.writeTextFile(
         binary,
         `#!/usr/bin/env python3
-import json, pathlib, subprocess, sys
+import json, pathlib, sys
 root = pathlib.Path.cwd()
 request = json.load(sys.stdin)
 mode = (root / 'mode').read_text()
 path = root / 'request.json'
-if request['method'] == 'command':
+if request['method'] == 'agent_prompt':
+    assert len(request['prompt'].encode()) <= 262144
+    assert 'Prompt truncated' in request['prompt']
+    assert 'newer' not in request['prompt']
+    print(json.dumps(dict(result=dict(key=request['key'], work=request['work'], incarnation='test', request='{}', outcome='pending'))))
+    sys.exit(0)
+if request['method'] == 'swamp_dispatch':
     previous = json.loads(path.read_text()) if path.exists() else request
     assert previous == request, 'retry changed request identity'
     path.write_text(json.dumps(request))
-    argv = request['argv']
-    assert argv[:3] == ['swamp', 'workflow', 'run']
-    assert '--input' not in argv and '--no-supersede' in argv
-    assert sum(len(a.encode()) + 1 for a in argv) < 4096
-    inputs = pathlib.Path(argv[argv.index('--input-file') + 1])
-    assert inputs.is_absolute() and inputs.exists()
+    assert request['operation'] == 'workflow.run'
+    assert request['payload']['noSupersede'] is True
+    assert len(json.dumps(request).encode()) < 262144
+    assert request['payload']['inputs']['state']['test']['outputRef']['version'] == 1
+    assert 'argv' not in request
     if mode == 'dispatch-lost':
         sys.exit(7)
-    child = subprocess.run([sys.executable, 'child.py', *argv[1:]], capture_output=True, text=True)
-    (root / 'child-result.json').write_text(json.dumps(dict(exitCode=child.returncode, output=child.stdout + child.stderr)))
     outcome = 'pending'
 else:
-    argv = json.loads(path.read_text())['argv']
-    assert pathlib.Path(argv[argv.index('--input-file') + 1]).exists()
+    assert request['method'] == 'observe'
     if mode == 'observe-lost':
         sys.exit(8)
     outcome = 'unknown' if mode == 'unknown' else 'failed' if mode == 'failure' else 'completed'
-result = dict(key=request['key'], work=request['work'], incarnation='test', request='{}', outcome=outcome)
+result = dict(key=request['key'], work=request['work'], incarnation='test', request='{}', outcome=outcome, transport='serve')
 if request['method'] == 'observe':
-    result.update(json.loads((root / 'child-result.json').read_text()))
+    result.update(exitCode=23 if mode == 'failure' else 0, output='child diagnostic\\n')
 print(json.dumps(dict(result=result)))
 `,
     );
     await Deno.chmod(binary, 0o700);
-    await Deno.writeTextFile(
-        dir + "/child.py",
-        `import json, pathlib, sys
-root = pathlib.Path.cwd()
-path = pathlib.Path(sys.argv[sys.argv.index('--input-file') + 1])
-assert json.loads(path.read_text()) == json.loads((root / 'expected.json').read_text())
-print('child diagnostic')
-sys.exit(23 if (root / 'mode').read_text() == 'failure' else 0)
-`,
-    );
     const saved: Record<string, unknown>[] = [];
+    const pointers = new Map<string, Record<string, unknown>>();
+    const records: Array<
+        {
+            modelType: { normalized: string };
+            modelId: string;
+            data: {
+                name: string;
+                version: number;
+                tags: Record<string, string>;
+            };
+            value: Record<string, unknown>;
+        }
+    > = [];
     const c: Context = {
+        modelType: { normalized: "@hammz/zellij" },
+        modelId: "original",
+        dataRepository: {
+            findAllGlobal: () =>
+                Promise.resolve(
+                    records.filter((r) =>
+                        !records.some((other) =>
+                            other.data.name === r.data.name &&
+                            other.data.version > r.data.version
+                        )
+                    ),
+                ),
+            getContent: (type, id, name, version) =>
+                Promise.resolve((() => {
+                    const record = records.find((r) =>
+                        r.modelType.normalized === type && r.modelId === id &&
+                        r.data.name === name && r.data.version === version
+                    );
+                    return record
+                        ? new TextEncoder().encode(JSON.stringify(record.value))
+                        : null;
+                })()),
+        },
         repoDir: dir,
         globalArgs: {},
         signal: new AbortController().signal,
         logger: { info() {} },
-        readResource: () => Promise.resolve(null),
-        writeResource: (_spec, name, value) => {
-            saved.push(structuredClone(value));
-            return Promise.resolve({ name });
+        readResource: (name) => Promise.resolve(pointers.get(name) ?? null),
+        writeResource: (spec, name, value) => {
+            if (spec === "test") {
+                records.push({
+                    modelType: c.modelType!,
+                    modelId: c.modelId!,
+                    data: { name, version: 1, tags: { specName: spec } },
+                    value: structuredClone(value),
+                });
+            }
+            if (spec === "continuation") {
+                pointers.set(name, structuredClone(value));
+            }
+            if (spec === "operation") saved.push(structuredClone(value));
+            return Promise.resolve({ name, version: 1 });
         },
     };
     const revision = {
@@ -109,14 +148,19 @@ sys.exit(23 if (root / 'mode').read_text() == 'failure' else 0)
                     outcome: "completed",
                     exitCode: 1,
                     log: "terminal_1",
-                    output: '🙂\n"\\'.repeat(65536),
+                    output: '🙂\n"\\'.repeat(600000),
                     passed: false,
                 },
             },
         },
     });
-    const inputFile = dir + "/.swamp/continuation-inputs/" +
-        await digest(input) + ".json";
+    // Reuse the original test result instead of copying its multi-megabyte output.
+    records.push({
+        modelType: c.modelType!,
+        modelId: c.modelId!,
+        data: { name: "test-current", version: 1, tags: { specName: "test" } },
+        value: structuredClone(input.inputs.state.test!),
+    });
     try {
         await Deno.writeTextFile(
             dir + "/expected.json",
@@ -140,19 +184,14 @@ sys.exit(23 if (root / 'mode').read_text() == 'failure' else 0)
                 error = String(e);
             }
             assert(mode === "success" ? !error : !!error);
-            if (["dispatch-lost", "observe-lost", "unknown"].includes(mode)) {
-                assert(
-                    JSON.parse(await Deno.readTextFile(inputFile)).state.test
-                        .output === input.inputs.state.test!.output,
-                );
-            } else {
-                let removed = false;
-                try {
-                    await Deno.stat(inputFile);
-                } catch (e) {
-                    removed = e instanceof Deno.errors.NotFound;
-                }
-                assert(removed);
+            let noInputFiles = false;
+            try {
+                await Deno.stat(dir + "/.swamp/continuation-inputs");
+            } catch (e) {
+                noInputFiles = e instanceof Deno.errors.NotFound;
+            }
+            assert(noInputFiles);
+            if (mode === "failure" || mode === "success") {
                 assert(saved.length === 2);
                 assert(saved[0].outcome === "pending");
                 assert(saved[1].exitCode === (mode === "failure" ? 23 : 0));
@@ -162,6 +201,69 @@ sys.exit(23 if (root / 'mode').read_text() == 'failure' else 0)
                 } else assert(saved[1].output === undefined);
             }
         }
+        assert(records.length === 1);
+        const request = JSON.parse(
+            await Deno.readTextFile(dir + "/request.json"),
+        );
+        assert(
+            request.payload.inputs.state.test.outputRef.name === "test-current",
+        );
+        assert(records[0].value.output === input.inputs.state.test!.output);
+        // A later version must not change the referenced repair evidence.
+        records.push({
+            ...records[0],
+            data: { ...records[0].data, version: 2 },
+            value: { ...records[0].value, output: "newer" },
+        });
+        const { resolveEvidence } = await import("./_lib/evidence.ts");
+        const resolved = await resolveEvidence(
+            c.dataRepository!,
+            request.payload.inputs.state.test,
+        );
+        assert(resolved.output === input.inputs.state.test!.output);
+        assert(request.payload.inputs.state.test.output.isWellFormed());
+        const missing = structuredClone(request.payload.inputs.state.test);
+        missing.outputRef.version = 99;
+        assert(
+            (await resolveEvidence(c.dataRepository!, missing)).output === null,
+        );
+        c.globalArgs = { session: "test", binary };
+        await methods.repair_prompt.execute({
+            work: "work",
+            key: "repair",
+            agent: "worker",
+            assessment: {
+                ready: false,
+                review: {
+                    evidence,
+                    outcome: "completed",
+                    findings: [],
+                    reviewer: "reviewer",
+                    valid: true,
+                    resolved: true,
+                    problem: null,
+                },
+                test: request.payload.inputs.state.test,
+            },
+        }, c);
+        await methods.continue_flow.execute(input, c);
+        // Changing the original payload must still be rejected by dispatch identity.
+        const changed = structuredClone(input);
+        changed.inputs.state.test!.output += "changed";
+        let rejected = false;
+        try {
+            await methods.continue_flow.execute(changed, c);
+        } catch {
+            rejected = true;
+        }
+        assert(rejected);
+        // Legacy input without matching saved content is persisted once on retries.
+        changed.key = "legacy";
+        await Deno.remove(dir + "/request.json");
+        await methods.continue_flow.execute(changed, c);
+        const count = records.length;
+        await methods.continue_flow.execute(changed, c);
+        assert(records.length === count);
     } finally {
         await Deno.remove(dir, { recursive: true });
     }

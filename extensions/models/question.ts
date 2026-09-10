@@ -1,6 +1,6 @@
 /** Questions are versioned Swamp resources, never guessed by an unattended runner. @module */
 import { z } from "npm:zod@4.3.6";
-import { checked, Context, Key, Literal } from "./_lib/workflow.ts";
+import { Context, Key, Literal } from "./_lib/workflow.ts";
 import { bridge, Operation, operation, Session } from "./_lib/bridge.ts";
 const Open = z.object({
     run: z.string().uuid(),
@@ -61,16 +61,12 @@ async function pending(
     recovering = false,
 ) {
     const run = History.parse(
-        JSON.parse(
-            await checked(c, c.repoDir, [
-                "swamp",
-                "workflow",
-                "history",
-                "get",
-                q.run,
-                "--json",
-            ]),
-        ),
+        await bridge(c, {
+            method: "swamp_read",
+            directory: c.repoDir,
+            operation: "workflow.history.get",
+            payload: { workflowIdOrName: q.run },
+        }),
     );
     if (
         run.id !== q.run || run.workflowName !== q.workflow ||
@@ -95,15 +91,16 @@ async function deliver(c: Context, q: z.infer<typeof Question>) {
     if (existing === null) {
         const status = await pending(c, q, true);
         if (status === "waiting_approval") {
-            await checked(c, c.repoDir, [
-                "swamp",
-                "workflow",
-                "approve",
-                q.workflow,
-                q.step,
-                "--run",
-                q.run,
-            ]);
+            await bridge(c, {
+                method: "swamp_read",
+                directory: c.repoDir,
+                operation: "workflow.approve",
+                payload: {
+                    workflowIdOrName: q.workflow,
+                    stepName: q.step,
+                    runId: q.run,
+                },
+            });
         }
     } else {
         const prior = Operation.parse(existing);
@@ -112,35 +109,32 @@ async function deliver(c: Context, q: z.infer<typeof Question>) {
             prior.outcome === "interrupted" || prior.outcome === "process-exit"
         ) {
             throw new Error(
-                "Recorded resume requires reconciliation; no second command was dispatched",
+                "Recorded resume requires reconciliation; no second request was dispatched",
             );
         }
+        if (prior.transport !== "serve") {
+            // A CLI-era resume may still own a live pane. Observe its existing
+            // claim; changing the transport must never dispatch it again.
+            q.state = "submitted";
+            return save(c, q);
+        }
     }
-    // The supervised process waits for this model's lock to release before consuming the answer.
-    // Dispatch has its own durable key; recovery asks for the same operation rather than relaunching.
+    // Return at dispatch acknowledgement: resumed execution needs this model's lock.
     const result = await operation(c, {
-        method: "command",
+        method: "swamp_dispatch",
+        operation: "workflow.resume",
         work: q.run,
         key: `answer-${q.submission}`,
-        cwd: c.repoDir,
-        argv: [
-            "swamp",
-            "workflow",
-            "resume",
-            q.workflow,
-            "--run",
-            q.run,
-            "--input",
-            JSON.stringify({
-                [q.resumeInput]: q.answer,
-                submission: q.submission,
-            }),
-            "--json",
-        ],
+        directory: c.repoDir,
+        payload: {
+            workflowIdOrName: q.workflow,
+            runId: q.run,
+            inputs: { [q.resumeInput]: q.answer, submission: q.submission },
+        },
     });
     if (result.outcome === "unknown") {
         throw new Error(
-            "Answer recorded; resume dispatch unknown. Reconcile the command before recovery",
+            "Answer recorded; resume dispatch unknown. Reconcile the request before recovery",
         );
     }
     q.state = "submitted";
