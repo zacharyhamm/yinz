@@ -41,7 +41,7 @@ pub const WORKTREE_PREFIX: &str = ".worktrees/";
 /// knows about, which is deliberately wider than what we will start on request. This
 /// one is shared so the modal's select and the tool's schema enum cannot come to
 /// disagree about which agents you may ask for.
-pub const OFFERED: &[&str] = &["codex", "claude", "cursor"];
+pub const OFFERED: &[&str] = &["codex", "claude", "cursor", "opencode"];
 
 /// The permission modes `claude --permission-mode` accepts, plus `skip` for
 /// `--dangerously-skip-permissions`.
@@ -68,6 +68,10 @@ pub const CODEX_PERMISSION_MODES: &[&str] = &[
 
 /// `cursor-agent` has one switch: `--force`, which `skip` and `force` both name.
 pub const CURSOR_PERMISSION_MODES: &[&str] = &["skip", "force"];
+
+/// opencode has no bypass; `--auto` auto-approves what is not explicitly denied. Both
+/// `auto`, its own word, and `skip`, the spelling every other kind shares, name it.
+pub const OPENCODE_PERMISSION_MODES: &[&str] = &["auto", "skip"];
 
 /// The program a kind runs.
 ///
@@ -220,6 +224,23 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                 },
             }
         },
+        Some("opencode") => {
+            match mode {
+                None => {},
+                Some("auto" | "skip") => flags.push("--auto".to_owned()),
+                Some(mode) => return unknown_mode(OPENCODE_PERMISSION_MODES, mode),
+            }
+            // Both are flags, unlike Codex's `resume` subcommand. Its `--prompt` is a flag
+            // too, added by `plan`; its positional is a project path, never a prompt.
+            match resume {
+                None => {},
+                Some("last") => flags.push("--continue".to_owned()),
+                Some(id) => {
+                    flags.push("--session".to_owned());
+                    flags.push(id.to_owned());
+                },
+            }
+        },
         _ => {
             // A kind nothing here knows, or a bare command: `--model` is the one flag every
             // agent spells the same, and nothing else can be guessed at.
@@ -299,8 +320,12 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     // how it was asked to run.
     let env = guest_environment(spec, kind.as_deref(), &args);
     // Last, and after every flag: a positional argument that came before a flag would
-    // be read by some of these programs as the flag's value.
+    // be read by some of these programs as the flag's value. opencode is the exception -
+    // its one positional is a project *path*, so its prompt is handed over as `--prompt`.
     if let Some(prompt) = trimmed(&spec.prompt) {
+        if kind.as_deref() == Some("opencode") {
+            args.push("--prompt".to_owned());
+        }
         args.push(prompt.to_owned());
     }
 
@@ -495,7 +520,7 @@ mod tests {
             .unwrap();
             assert_eq!(command.args, expected);
         }
-        for kind in ["cursor", "unknown"] {
+        for kind in ["cursor", "opencode", "unknown"] {
             assert!(plan(&Spec {
                 effort: Some("high".into()),
                 ..spec(kind)
@@ -679,7 +704,7 @@ mod tests {
     #[test]
     fn cursor_is_the_one_kind_that_is_not_its_own_program() {
         assert_eq!(binary_for("cursor"), "cursor-agent");
-        for kind in ["claude", "codex", "gemini", "aider"] {
+        for kind in ["claude", "codex", "gemini", "aider", "opencode"] {
             assert_eq!(binary_for(kind), kind);
         }
     }
@@ -970,6 +995,48 @@ mod tests {
         })
         .unwrap_err();
         assert!(refused.contains("skip, force"), "{refused}");
+    }
+
+    #[test]
+    fn opencode_takes_its_prompt_as_a_flag_and_resumes_by_session() {
+        // The whole TUI surface at once: a provider/model, `--auto`, a session to
+        // continue, and the prompt. The prompt is a flag because opencode's only
+        // positional is a project path.
+        let (command, _) = plan(&Spec {
+            model: Some("anthropic/claude-sonnet-4".to_owned()),
+            permission_mode: Some("auto".to_owned()),
+            resume: Some("ses_123".to_owned()),
+            prompt: Some("fix the parser".to_owned()),
+            ..without_hooks("opencode")
+        })
+        .unwrap();
+        assert_eq!(command.path, PathBuf::from("opencode"));
+        assert_eq!(
+            command.args,
+            vec![
+                "--model",
+                "anthropic/claude-sonnet-4",
+                "--auto",
+                "--session",
+                "ses_123",
+                "--prompt",
+                "fix the parser",
+            ]
+        );
+        // `skip` is the spelling every other kind shares; `last` is `--continue`.
+        let (command, _) = plan(&Spec {
+            permission_mode: Some("skip".to_owned()),
+            resume: Some("last".to_owned()),
+            ..without_hooks("opencode")
+        })
+        .unwrap();
+        assert_eq!(command.args, vec!["--auto", "--continue"]);
+        let refused = plan(&Spec {
+            permission_mode: Some("plan".to_owned()),
+            ..spec("opencode")
+        })
+        .unwrap_err();
+        assert!(refused.contains("auto, skip"), "{refused}");
     }
 
     #[test]

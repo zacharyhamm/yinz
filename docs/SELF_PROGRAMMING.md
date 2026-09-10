@@ -184,7 +184,8 @@ half is `hocus-proto/src/run_history.rs`, and `docs/AGENT_HOOKS.md` "Reading it 
 write-up. A restored job follows its chat, waiting in
 `State::held_jobs` until `/history` reopens it. Scheduled runs decline confirmation-gated tools
 instead of parking on a y/n. `launch::Spec` gained `env`, `permission_mode`, `resume` and
-`hooks`, with a per-kind argument table (`launch::shape_args`) for claude, codex and cursor. `r`
+`hooks`, with a per-kind argument table (`launch::shape_args`) for claude, codex, cursor and
+opencode. `r`
 on an archive row in the agents panel spends that: it asks `resume this run? y/n` on the
 divider and, on `y`, opens the same agent resuming the session the run recorded
 (`launch::resume_command`, `wire::AGENT_RESUME`). The session id is unchanged, so the daemon

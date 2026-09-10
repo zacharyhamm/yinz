@@ -8,7 +8,7 @@
 -- Configuration, from the layout or `-- key=value`, merged over `M.defaults`:
 --   prompt    what to ask the agent for
 --   check     the shell command whose exit status says whether it did it
---   agent     claude, codex or cursor
+--   agent     claude, codex, cursor or opencode
 --   branch    a branch to work on, in a worktree of its own (absent: the checkout as it is,
 --             which the host only allows because of `allow_outside_worktree` below)
 --   retries   how many times a failure is handed back before giving up

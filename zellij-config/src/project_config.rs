@@ -67,7 +67,10 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
                 };
                 if let Some(kind) = spec.kind.as_deref() {
                     if !zellij_runtime::agent::launch::OFFERED.contains(&kind) {
-                        return Err(format!("agent kind {kind:?}: use codex, claude, or cursor"));
+                        return Err(format!(
+                            "agent kind {kind:?}: use {}",
+                            zellij_runtime::agent::launch::OFFERED.join(", ")
+                        ));
                     }
                     zellij_runtime::agent::launch::plan(&spec)?;
                 } else if spec.effort.is_some() {
@@ -313,6 +316,7 @@ mod tests {
             "agent_exit { agent kind=\"codex\" effort=\"none\"; }",
             "agent_exit { agent kind=\"claude\" effort=\"high\"; }",
             "agent_exit { agent kind=\"cursor\" model=\"example\" effort=\"high\"; }",
+            "agent_exit { agent kind=\"opencode\" model=\"anthropic/claude-sonnet-4\"; }",
         ] {
             parse(source).unwrap();
         }

@@ -3853,6 +3853,35 @@ mod tests {
         assert_eq!(detect_kind("claude", Some("mise exec")), Some("claude"));
     }
 
+    /// opencode is detected like every other kind, which is what puts a pane a person
+    /// started by hand into the hocus-agents strip. From its command first - a path or a
+    /// bare binary, flags and all - then from its title when nothing has said what it runs,
+    /// and the latch survives a shell-out the way any other agent's does.
+    #[test]
+    fn an_opencode_pane_is_detected_from_its_command_and_its_title() {
+        assert_eq!(
+            detect_kind("shell", Some("/home/u/.opencode/bin/opencode --prompt fix")),
+            Some("opencode"),
+        );
+        assert_eq!(
+            classify(
+                &pane(3, "shell", Some("opencode --auto --prompt go")),
+                &manual(&[]),
+            ),
+            Some(("opencode", "auto")),
+        );
+        assert_eq!(
+            classify(&pane(4, "opencode — src/main.rs", None), &manual(&[])),
+            Some(("opencode", "auto")),
+        );
+        assert_eq!(
+            classify(&latched(5, "opencode", "git status"), &manual(&[])),
+            Some(("opencode", "auto")),
+        );
+        // Back at a prompt, the title it left behind is outlived like any other agent's.
+        assert_eq!(detect_kind("opencode", Some("zsh")), None);
+    }
+
     #[test]
     fn is_shell_reads_whole_program_names_only() {
         assert!(is_shell("zsh"));
