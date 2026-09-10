@@ -290,8 +290,9 @@ z.on('custom_message',function(event)
     if pending then operation.outcome='pending' end
     write=true
   end
-  if pending and method and frame.event and (frame.event.kind=='completed' or frame.event.kind=='cancelled') then
-    local succeeded=frame.event.kind=='completed' and frame.event.run and frame.event.run.status=='succeeded'
+  if pending and frame.event and (frame.event.kind=='completed' or frame.event.kind=='cancelled' or (not method and frame.event.kind=='suspended')) then
+    local status=frame.event.run and frame.event.run.status
+    local succeeded=frame.event.kind~='cancelled' and (status=='succeeded' or (not method and status=='suspended'))
     operation.outcome=succeeded and 'completed' or 'failed'
     operation.exitCode=succeeded and 0 or 1
     if not succeeded then operation.error=encode(frame.event) end
@@ -303,8 +304,7 @@ z.on('custom_message',function(event)
   end
   if frame.type=='done' then
     if operation.outcome=='pending' or operation.outcome=='unknown' then
-      operation.outcome=method and 'unknown' or 'completed'
-      if not method then operation.exitCode=0 end
+      operation.outcome='unknown'
     end
     tracked[frame.id]=nil;write=true
   elseif frame.type=='error' then
