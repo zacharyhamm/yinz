@@ -28,6 +28,7 @@ zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-storage = { workspace = true }
 zellij-process = { path = "zellij-process", version = "0.45.0" }
+tokio = { workspace = true }
 zellij-client = { path = "zellij-client/", version = "0.45.0" }
 zellij-server = { path = "zellij-server/", version = "0.45.0" }
 anyhow = { workspace = true }

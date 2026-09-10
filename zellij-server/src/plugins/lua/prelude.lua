@@ -1009,6 +1009,35 @@ function zellij.async.run_command(args)
   return aw
 end
 
+--- Builtin-only local Swamp API. Credentials and endpoint selection remain in the host.
+function zellij.async.swamp_request(args)
+  local _,token=with_token({})
+  local id=args.id or token
+  local last
+  local aw=awaitable{events={'custom_message'},match=function(_,event)
+    if event.message~='swamp-response' then return false end
+    local frame=zellij.json.decode(event.payload)
+    if frame.id~=id then return false end
+    if frame.type=='error' then return true,{error=frame.error} end
+    if frame.type=='event' then
+      last=frame.event
+      if args.started and last.runId then return true,{runId=last.runId} end
+      return false
+    end
+    if frame.type=='run.attached' then
+      if args.started then return true,{runId=frame.payload.runId} end
+      return false
+    end
+    if frame.type=='done' then return true,last or {} end
+    if frame.type=='run.interrupted' or frame.type=='run.elsewhere' then
+      return true,{error={message='Run stream is unavailable; reconcile persisted history'}}
+    end
+    return true,frame.payload and (frame.payload.data or frame.payload) or frame
+  end}
+  zellij.swamp_request{directory=args.directory,id=id,operation=args.operation,payload=zellij.json.encode(args.payload or {})}
+  return aw
+end
+
 --- An HTTP request: `{ url, verb = "Get", headers, body, context, stream_id, proxy }`, the
 --- reply arriving as a `web_request_result` event (or, with a `stream_id`, as
 --- `web_request_stream_chunk` events). `body` is a string. `WebRequest` is a seven-element

@@ -7,6 +7,9 @@ export const Literal = z.string().refine(
     "NUL is not allowed",
 );
 export type Context = {
+    modelType?: { normalized: string };
+    modelId?: string;
+    dataRepository?: import("./evidence.ts").DataRepository;
     signal: AbortSignal;
     repoDir: string;
     globalArgs: Record<string, unknown>;
@@ -16,7 +19,7 @@ export type Context = {
         spec: string,
         name: string,
         value: Record<string, unknown>,
-    ): Promise<{ name: string }>;
+    ): Promise<{ name: string; version?: number }>;
 };
 export async function exec(
     c: Pick<Context, "signal">,

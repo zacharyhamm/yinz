@@ -1,7 +1,7 @@
 # Project-owned Swamp workflows
 
-Install Swamp and build Zellij with `cargo x build`. The server also needs `bash` and
-`jq` on its `PATH` to filter workflow history responses.
+Install a compatible Swamp build (see Validation below) and build Zellij with
+`cargo x build`. Workflow requests use a managed local `swamp serve`.
 Show diff also requires `less` version 582 or later.
 The local extensions require the official Git model:
 
@@ -51,6 +51,44 @@ For a manual launch, pass `sourcePane` to enable Restart, Duplicate, and Fork.
 VM-backed runs require the original pane identity. Preparation synchronizes that VM
 without starting a worker. Local checkout evidence does not require a VM-sync record.
 
+## Managed server lifecycle
+
+Zellij starts one Swamp server per canonical control checkout and OS user. Sessions
+share it through a private runtime directory and startup lock. A configured agent
+prewarms the service after launch; other workflow requests start it on demand.
+Reading project configuration starts no process.
+
+```sh
+zellij workflow server status
+zellij workflow server restart
+zellij workflow server stop
+```
+
+These commands use the current checkout's control binding. Stop and restart refuse
+while Swamp reports active executions. Suspended runs survive both operations. A
+server crash remains visible until an explicit restart; inspect history and reports
+before deciding what to do with interrupted or uncertain operations.
+
+The supervisor runs independently of the Zellij server. Closing a view, disconnecting
+a client, or restarting Zellij does not stop Swamp. Each Zellij server multiplexes its
+requests over one authenticated WebSocket per checkout. Read requests reconnect;
+acknowledged executions reattach with their sequence cursor. An unacknowledged
+mutation remains unknown until persisted state identifies its outcome. It is never
+sent again automatically. Each continuation has its own correlation tag as well as
+the shared launch token.
+
+The endpoint binds an ephemeral loopback port, requires token authentication, and has
+scheduling disabled. Bootstrap uses Swamp's local-encryption vault and service-token
+commands. The machine-local vault definition is excluded through Git's local exclude
+file. Endpoint credentials are stored with owner-only permissions under
+`/tmp/zellij-swamp-UID/`; they never enter plugin messages, process arguments, or logs.
+The supervisor rotates the seven-day credential daily through Swamp. A renewal
+failure is reported without terminating active work.
+
+Workflow YAML loads on each invocation. After changing local extensions, wait for
+active executions to finish and restart the managed service. There is no workflow
+cache or automatic extension reload. Keep the local extensions unpublished.
+
 ## Exit and review choices
 
 1. Choose **Restart**, **Duplicate**, **Fork**, **Begin review**, or **Leave**.
@@ -89,8 +127,8 @@ without starting a worker. Local checkout evidence does not require a VM-sync re
    existing guarded, non-force cleanup method. Changed state prevents removal.
 
 On agent exit, the workflow uses the exit pane for status, questions and interactive
-agents. The original terminal and its scrollback remain behind that view. Runners and
-noninteractive commands use supervised background panes. Active agents share the exit
+agents. The original terminal and its scrollback remain behind that view.
+Shell commands use supervised panes; workflow execution needs no runner pane. Active agents share the exit
 location in dispatch order. Other agents stay suppressed and continue their work.
 For review and repair helpers, process exit restores workflow status. A completed
 turn alone does not advance these decisions. Standalone agent-work remains available
@@ -104,7 +142,7 @@ pane. Ordinary CLI launches keep their separate view.
 
 The view shows authoritative run and child-run state, findings, revision identities,
 test results, pending questions and retained command output. Close the view to detach;
-reopen it with `show`. The supervised Swamp command continues independently. Cancel is
+reopen it with `show`. The managed Swamp server continues independently. Cancel is
 separate:
 
 ```sh
@@ -112,7 +150,8 @@ zellij workflow cancel RUN_ID
 ```
 
 Cancellation stops active runs in the attached workflow family and preserves panes,
-checkouts and VMs. It does not approve cleanup.
+checkouts and VMs. Suspended runs remain persisted and resumable; cancellation does
+not apply to them. It does not approve cleanup.
 
 Diffs and test logs in the view use previews of up to 16,384 UTF-16 units.
 Each shortened preview includes a command to retrieve the complete saved version.
@@ -145,8 +184,10 @@ swamp data query 'modelName == "MODEL_NAME"' --json
 swamp model method run MODEL_NAME recover --input '{"run":"RUN_ID","question":"QUESTION_ID"}' --json
 ```
 
-Recovery reuses the command claim. It does not accept another answer or launch a second
-resume command. A resume command whose dispatch is unknown requires reconciliation.
+Recovery reuses the recorded submission and dispatch claim. It does not accept another
+answer or start another resume. An uncertain dispatch requires reconciliation against
+the persisted run and submission. Resume acknowledges dispatch before execution finishes
+so the question method can release the model lock needed by the resumed workflow.
 
 ## Evidence and recovery
 
@@ -173,7 +214,9 @@ still apply to completion. Prompt observation is registered before bytes are sen
 closed panes and process exit are not agent success.
 
 Rebuild and restart with matching binary and plugin assets. Mixed versions and
-pre-change workflow attachments are not supported. Validate with fresh runs. A bridge
+unrelated older workflow definitions are not supported. Existing CLI-backed operation
+records remain observable until their executions finish. New dispatches always use the
+managed service; connection failure never selects a CLI fallback. A bridge
 or server reload does not restore pane placement. Use a separate `show` view to inspect
 the saved run.
 
@@ -270,7 +313,46 @@ latest output reference.
 
 ## Verification
 
-After reviewing and acknowledging local extension changes, run:
+### Managed server compatibility gate
+
+Managed-server cancellation targets active executions only. Suspended runs remain
+persisted and resumable. Cancellation of suspended runs is outside this migration.
+
+Run the installed-binary compatibility probe before adoption:
+
+```sh
+deno run --allow-all extensions/tests/serve_compatibility.ts
+# To test another build, append its absolute binary path.
+```
+
+The probe creates a private disposable repository, a local-encryption vault, and a
+ten-minute service token. It starts an authenticated loopback server on an ephemeral
+port with scheduling disabled. Credentials stay out of command arguments and output.
+The probe stops its server and retains the fixture directory for inspection.
+It uses Deno's native WebSocket client and does not load the project's extensions.
+
+The installed `20260909.131252.0-sha.375d7eca` survives disconnects but fails the
+inline-type resume check: its resume handler omits the direct-type resolver. It is
+**not compatible** with these workflows. The probe passes against Swamp source commit
+`7b11196336e5f67c5f3a81f7938dedede26b406c` with
+[`swamp-serve-resume.patch`](../extensions/tests/swamp-serve-resume.patch), which reuses
+Swamp's existing execution-service factory. Apply that patch to a separate Swamp
+checkout, run `deno task compile --output /absolute/path/swamp`, and put the tested
+binary on Zellij's `PATH`. The local acceptance build is
+`/tmp/zellij-compatible-swamp-bin/swamp`; it does not replace the installed binary.
+
+The installed-binary probe covers token authentication, readiness, detached execution,
+stream reattachment, suspension, and inline-type resume. The managed lifecycle check
+adds simultaneous startup, checkout isolation, private credentials, active stop/restart
+refusal, persisted suspension, and explicit crash recovery:
+
+```sh
+deno run -A extensions/tests/managed_server.ts "$PWD/target/debug/zellij"
+```
+
+### Existing workflow suites
+
+Run:
 
 ```sh
 deno test --allow-all extensions
@@ -289,3 +371,39 @@ fixture directory containing its command transcript and terminal capture. The
 and unattended views, including dismissal, scrolling, search, checkout isolation, nested repositories, and temporary-file cleanup. The
 Firecracker suite also runs the typed bridge against a real guest, including a sync
 conflict. Run socket and KVM tests outside a sandbox that blocks those facilities.
+
+### Measured results (2026-09-10)
+
+Run `python3 extensions/tests/smoke.py --question-latency-only` with the compatible
+Swamp build on `PATH`. The check records eight samples: one cold, then seven warm.
+Exit latency ends when the first question renders. Answer latency starts at the public
+`workflow answer` command and ends when the next question renders. Question lookup
+is outside that interval. Both debug builds ran on the same Linux host with concurrent
+build/test load. The small-sample p95 is descriptive, not a capacity benchmark.
+[Raw samples and build identities](SWAMP_SERVER_MEASUREMENTS.json) are retained.
+
+| Seconds | CLI baseline | Managed server |
+|---|---:|---:|
+| Cold exit → question | 3.051 | 6.128 |
+| Warm exit → question, median | 3.341 | 1.135 |
+| Warm exit → question, p95 | 3.864 | 1.435 |
+| Cold answer → next question | 5.435 | 2.460 |
+| Warm answer → next question, median | 5.998 | 2.607 |
+| Warm answer → next question, p95 | 6.834 | 2.758 |
+
+Warm median exit latency fell 66%; warm median answer latency fell 57%. Cold startup
+includes vault, credential, and server bootstrap. The real workflow, source-diff,
+recovery, and VM checks passed. The process audit recorded zero per-operation Swamp
+CLI launches from Zellij or Swamp after bootstrap. Bootstrap and credential renewal
+still use Swamp commands.
+
+The crash checks kept a held Swamp execution alive across a Zellij server restart,
+reattached it, and observed one completed run. Killing Swamp itself left an unavailable
+execution that required explicit reconciliation; restarting did not create a duplicate.
+Active cancellation targeted the run ID and kept the shared server alive. Suspended
+runs remained persisted across stop/restart.
+
+The final `cargo x ci check` passed formatting, lint, 7,884 unit tests, and 383
+integration tests. All 11 extension tests and all four Firecracker checks passed.
+The compatibility probe and managed lifecycle check also passed with the patched
+Swamp build described above.
