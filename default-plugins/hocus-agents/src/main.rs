@@ -2092,15 +2092,29 @@ impl State {
         agents::summary_history(pane_id, kind, summary, width, now_ms())
     }
 
-    /// Whether anything the history half draws is an age - the one thing on this pane that
-    /// goes stale on its own.
+    /// Whether anything this pane draws is an age - the one thing on it that goes stale on
+    /// its own.
     ///
-    /// Asked of the same two sources `history_lines` draws from, in the same order, so the
-    /// answer cannot claim an age the half is not showing.
+    /// Asked of every source that draws one, in the order the pane draws them, so the answer
+    /// cannot claim an age nothing on screen is showing.
     fn shows_an_age(&self) -> bool {
         // The reader is the whole pane, so what it says is the only thing that can go stale.
         if let Some(reading) = self.reading.as_ref() {
             return reading.created_at_ms.is_some();
+        }
+        // The archive table's age column is in the *list* half, so it ticks whatever the
+        // history half beside it happens to be showing - and it is usually the only age on a
+        // pane whose selected run has no stamped entry to draw one from.
+        if self.rows.iter().any(|row| {
+            matches!(
+                row,
+                StripRow::Run {
+                    started_at_ms: Some(_),
+                    ..
+                }
+            )
+        }) {
+            return true;
         }
         if let Some(run) = self
             .run
@@ -3141,6 +3155,24 @@ mod tests {
             .first_mut()
             .expect("a timeline")
             .created_at_ms = Some(1);
+        assert!(state.shows_an_age());
+
+        // And the archive's own age column, which is drawn in the *list* half: it has to tick
+        // with nothing stamped in the history half beside it, which is the usual case for an
+        // archived run that was never summarized.
+        let mut state = State::default();
+        state.set_rows(unfocused(vec![
+            StripRow::Project("archive".to_owned()),
+            run_row("claude:session-1".to_owned(), "hook history"),
+        ]));
+        assert!(
+            !state.shows_an_age(),
+            "a row that cannot say when it started draws a blank gutter, not an age"
+        );
+        let StripRow::Run { started_at_ms, .. } = &mut state.rows[1] else {
+            panic!("not a run row");
+        };
+        *started_at_ms = Some(1);
         assert!(state.shows_an_age());
     }
 
