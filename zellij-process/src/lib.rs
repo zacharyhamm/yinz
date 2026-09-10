@@ -4,6 +4,7 @@ pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};
 pub mod command;
 pub mod firecracker;
 pub mod pty_host;
+pub mod swamp;
 
 use async_trait::async_trait;
 use std::io;

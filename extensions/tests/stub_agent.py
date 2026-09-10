@@ -7,6 +7,7 @@ import subprocess
 import sys
 import termios
 import tty
+import time
 
 remote = 'ZELLIJ_REMOTE_PANE_TOKEN' in os.environ
 binary = 'zellij' if remote else os.environ['SWAMP_SMOKE_ZELLIJ']
@@ -60,7 +61,8 @@ try:
             continue
         message = 'unstructured findings' if '--malformed' in sys.argv and prompt.startswith('Review ') else '{"findings":[]}'
         if prompt == 'guest edit':
-            message = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip()
+            # The mirror preserves host ownership; trust only this disposable guest checkout.
+            message = subprocess.check_output(['git', '-c', 'safe.directory=' + os.getcwd(), 'rev-parse', 'HEAD']).decode().strip()
         if '--inspect-review' in sys.argv and prompt.startswith('Review '):
             assert not remote
             assert not subprocess.check_output(['git', 'status', '--porcelain'])
@@ -72,6 +74,9 @@ try:
             message = '{"findings":[{"severity":"warning","file":"file","message":"Unresolved fixture finding"}]}'
         report('Stop', last_assistant_message=message)
         if '--exit' in sys.argv:
+            if not remote:
+                with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'exit-' + os.environ['ZELLIJ_PANE_ID']), 'w') as stamp:
+                    stamp.write(str(time.monotonic()))
             break
 finally:
     termios.tcsetattr(sys.stdin, termios.TCSANOW, settings)

@@ -2928,6 +2928,15 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetPaneAgentRun"),
             },
+            Some(CommandName::SwampRequest) => match protobuf_plugin_command.payload {
+                Some(Payload::SwampRequestPayload(p)) => Ok(PluginCommand::SwampRequest {
+                    directory: p.directory.into(),
+                    id: p.id,
+                    operation: p.operation,
+                    payload: p.payload,
+                }),
+                _ => Err("Mismatched payload for SwampRequest"),
+            },
             Some(CommandName::ProjectConfigRead) => match protobuf_plugin_command.payload {
                 Some(Payload::ProjectConfigReadPayload(directory)) => {
                     Ok(PluginCommand::ProjectConfigRead {
@@ -5268,6 +5277,22 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     pane_id: pane_id.try_into().ok(),
                     run_id,
                 })),
+            }),
+            PluginCommand::SwampRequest {
+                directory,
+                id,
+                operation,
+                payload,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::SwampRequest as i32,
+                payload: Some(Payload::SwampRequestPayload(
+                    generated::SwampRequestPayload {
+                        directory: directory.to_string_lossy().into_owned(),
+                        id,
+                        operation,
+                        payload,
+                    },
+                )),
             }),
             PluginCommand::ProjectConfigRead { directory } => Ok(ProtobufPluginCommand {
                 name: CommandName::ProjectConfigRead as i32,
@@ -7768,6 +7793,7 @@ mod tests {
                 | PluginCommand::SetPaneAgent { .. }
                 | PluginCommand::SetPaneAgentRun { .. }
                 | PluginCommand::SpawnAgent { .. }
+                | PluginCommand::SwampRequest { .. }
                 | PluginCommand::ProjectConfigRead { .. }
                 | PluginCommand::ProjectConfigWrite { .. }
                 | PluginCommand::SetQuitNotice { .. }

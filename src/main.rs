@@ -18,6 +18,17 @@ use {
 };
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some(zellij_process::swamp::SUPERVISOR_FLAG) {
+        let result = std::env::args_os()
+            .nth(2)
+            .ok_or_else(|| anyhow::anyhow!("missing Swamp control checkout"))
+            .and_then(|root| zellij_process::swamp::supervise(root.into()));
+        if let Err(error) = result {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let process_started = std::time::Instant::now();
     // A pty-host supervisor is spawned once per pane, so it branches before the
     // logger, the cache-folder setup and the clap builder — none of which it

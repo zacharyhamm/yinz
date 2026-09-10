@@ -1,4 +1,4 @@
-//! CLI attachment to project-owned Swamp runs. Execution belongs to a supervised pane.
+//! CLI attachment to project-owned Swamp runs. Execution belongs to managed Swamp.
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use zellij_cli::args::{CliArgs, Workflow};
@@ -16,7 +16,23 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
             .ok()
             .map(|name| name.into_string())
     });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("cannot start workflow client runtime")?;
     match command {
+        Workflow::Server { command } => {
+            use zellij_cli::args::WorkflowServer;
+            let action = match command {
+                WorkflowServer::Status => "status",
+                WorkflowServer::Restart => "restart",
+                WorkflowServer::Stop => "stop",
+            };
+            println!(
+                "{}",
+                runtime.block_on(zellij_process::swamp::lifecycle(snapshot.root, action))?
+            );
+        },
         Workflow::Run {
             name,
             launch,
@@ -52,14 +68,14 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
         },
         Workflow::Show { run, json } => {
             if json {
-                let result = Command::new("swamp")
-                    .current_dir(&snapshot.root)
-                    .args(["workflow", "history", "get", &run, "--json"])
-                    .status()
-                    .context("cannot read Swamp run")?;
-                if !result.success() {
-                    return Err(anyhow!("Swamp could not read this run"));
-                }
+                println!(
+                    "{}",
+                    runtime.block_on(zellij_process::swamp::call(
+                        snapshot.root.clone(),
+                        "workflow.history.get",
+                        serde_json::json!({"workflowIdOrName":run})
+                    ))?
+                );
             } else {
                 open_view(
                     &binary,
@@ -79,25 +95,17 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
         } => {
             let input = serde_json::json!({"run":run,"question":question,"answer":answer,
                 "submission":submission.unwrap_or_else(||uuid::Uuid::new_v4().to_string())});
-            let status = Command::new("swamp")
-                .current_dir(&snapshot.root)
-                .args([
-                    "model",
-                    "method",
-                    "run",
-                    &model,
-                    "submit",
-                    "--input",
-                    &input.to_string(),
-                    "--json",
-                ])
-                .status()
-                .context("cannot submit workflow answer")?;
-            if !status.success() {
-                return Err(anyhow!(
-                    "Answer was not delivered; inspect the method report before recovery"
-                ));
-            }
+            let request = serde_json::json!({"method":"workflow_answer","directory":snapshot.root,"model":model,"inputs":input});
+            println!(
+                "{}",
+                pipe(
+                    &binary,
+                    session.as_deref(),
+                    "zellij:swamp-bridge",
+                    "swamp",
+                    &request
+                )?["result"]
+            );
         },
         Workflow::Cancel { run } => {
             let request = serde_json::json!({"method":"workflow_cancel", "directory":snapshot.root, "run":run});

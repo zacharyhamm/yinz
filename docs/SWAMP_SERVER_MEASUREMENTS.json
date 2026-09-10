@@ -1,0 +1,100 @@
+{
+  "date": "2026-09-10",
+  "unit": "seconds",
+  "baseline_revision": "c39cea19dd59ef46e6a547b33f5a23e07353b588",
+  "baseline_swamp": "20260909.131252.0-sha.375d7eca",
+  "managed_swamp_source": "7b11196336e5f67c5f3a81f7938dedede26b406c + extensions/tests/swamp-serve-resume.patch",
+  "procedure": "Debug builds on the same Linux host. Eight sequential agent exits per path, first cold and seven warm. Exit timestamp is recorded immediately before the stub exits; endpoint is the rendered Begin review question. Answer starts before public workflow answer and ends at rendered Show diff. Queries for question identity are outside the measured interval. Both paths ran concurrently with local build/test load; p95 is interpolated over seven warm samples.",
+  "baseline": {
+    "samples": [
+      {
+        "exit_to_question": 3.0508670599665493,
+        "answer_to_question": 5.4351588799618185
+      },
+      {
+        "exit_to_question": 3.025995286181569,
+        "answer_to_question": 5.652763258898631
+      },
+      {
+        "exit_to_question": 2.464158325921744,
+        "answer_to_question": 6.065641588065773
+      },
+      {
+        "exit_to_question": 3.552426255075261,
+        "answer_to_question": 5.902418649988249
+      },
+      {
+        "exit_to_question": 3.3409095250535756,
+        "answer_to_question": 5.97967268503271
+      },
+      {
+        "exit_to_question": 2.397481630090624,
+        "answer_to_question": 6.891973928781226
+      },
+      {
+        "exit_to_question": 3.7546246119309217,
+        "answer_to_question": 6.698367077857256
+      },
+      {
+        "exit_to_question": 3.9101637969724834,
+        "answer_to_question": 5.99816035781987
+      }
+    ],
+    "exit_to_question": {
+      "cold": 3.0508670599665493,
+      "warm_median": 3.3409095250535756,
+      "warm_p95": 3.863502041460015
+    },
+    "answer_to_question": {
+      "cold": 5.4351588799618185,
+      "warm_median": 5.99816035781987,
+      "warm_p95": 6.833891873504035
+    }
+  },
+  "managed": {
+    "samples": [
+      {
+        "exit_to_question": 6.1277832579799,
+        "answer_to_question": 2.4598303318489343
+      },
+      {
+        "exit_to_question": 0.5942206240724772,
+        "answer_to_question": 2.6727056270465255
+      },
+      {
+        "exit_to_question": 0.5228029221761972,
+        "answer_to_question": 2.4865731031168252
+      },
+      {
+        "exit_to_question": 0.5185680740978569,
+        "answer_to_question": 2.522345981094986
+      },
+      {
+        "exit_to_question": 1.3297326548490673,
+        "answer_to_question": 2.607096323976293
+      },
+      {
+        "exit_to_question": 1.4614895398262888,
+        "answer_to_question": 2.6058578370139003
+      },
+      {
+        "exit_to_question": 1.3745443758089095,
+        "answer_to_question": 2.7947929929941893
+      },
+      {
+        "exit_to_question": 1.1345970360562205,
+        "answer_to_question": 2.6667528529651463
+      }
+    ],
+    "exit_to_question": {
+      "cold": 6.1277832579799,
+      "warm_median": 1.1345970360562205,
+      "warm_p95": 1.435405990621075
+    },
+    "answer_to_question": {
+      "cold": 2.4598303318489343,
+      "warm_median": 2.607096323976293,
+      "warm_p95": 2.75816678320989
+    }
+  }
+}

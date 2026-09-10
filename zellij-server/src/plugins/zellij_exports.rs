@@ -389,6 +389,17 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
     let err_context = || format!("failed to run plugin command {}", plugin_command);
     match check_command_permission(env, &command) {
         (PermissionStatus::Granted, _) => match command {
+            PluginCommand::SwampRequest {
+                directory,
+                id,
+                operation,
+                payload,
+            } => {
+                if !env.plugin.is_builtin() {
+                    return Err(anyhow!("managed Swamp requests require a builtin plugin"));
+                }
+                swamp_request(env, directory, id, operation, payload);
+            },
             PluginCommand::SubscribePaneOutput(context) => {
                 if context.as_ref().is_some_and(|c| c.is_empty()) {
                     return Err(anyhow!(
@@ -2811,6 +2822,7 @@ fn spawn_agent(
         });
         let folder = prepared.path;
         let reported_cwd = Some(folder.clone());
+        let warm_folder = folder.clone();
         place_agent(
             &mut command,
             folder,
@@ -2819,10 +2831,19 @@ fn spawn_agent(
         )?;
         context.insert(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind);
         spawn_command_pane_near_plugin(env, command, context, name, true, start_suppressed)
-            .map(|pane_id| SpawnedAgent {
-                pane_id,
-                branch,
-                cwd: reported_cwd,
+            .map(|pane_id| {
+                get_tokio_runtime().spawn_blocking(move || {
+                    if let Ok(config) = zellij_config::project_config::access(&warm_folder, None) {
+                        if config.error.is_none() && config.config.workflow.is_some() {
+                            zellij_process::swamp::prewarm(&config.root).non_fatal();
+                        }
+                    }
+                });
+                SpawnedAgent {
+                    pane_id,
+                    branch,
+                    cwd: reported_cwd,
+                }
             })
             .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
     })();
@@ -3611,6 +3632,46 @@ fn exec_cmd(env: &PluginEnv, mut command_line: Vec<String>) {
         .spawn()
         .with_context(err_context)
         .non_fatal();
+}
+
+fn swamp_request(
+    env: &PluginEnv,
+    directory: PathBuf,
+    id: String,
+    operation: String,
+    payload: String,
+) {
+    let sender = env.senders.to_plugin.clone();
+    let target = env.plugin_id;
+    let client = env.client_id;
+    get_tokio_runtime().spawn(async move {
+        let emit = |frame: serde_json::Value| {
+            if let Some(sender) = &sender {
+                sender.send(PluginInstruction::Update(vec![(Some(target), Some(client),
+                    Event::CustomMessage("swamp-response".into(), frame.to_string()))])).to_anyhow().context("cannot deliver Swamp response").non_fatal();
+            }
+        };
+        let result: Result<()> = async {
+            let config = zellij_config::project_config::access(&directory, None).map_err(|e| anyhow!(e))?;
+            if let Some(error) = config.error { return Err(anyhow!(error)); }
+            let root = config.root;
+            let payload: serde_json::Value = serde_json::from_str(&payload).context("invalid Swamp request payload")?;
+            let warm = root.clone();
+            tokio::task::spawn_blocking(move || zellij_process::swamp::prewarm(&warm)).await.context("Swamp startup failed")??;
+            if operation == "workflow.cancel" {
+                let run = payload["runId"].as_str().context("cancellation requires a run ID")?.to_owned();
+                let value = zellij_process::swamp::cancel(root, run).await?;
+                emit(serde_json::json!({"type":"workflow.cancel", "id":id, "payload":{"data":value}}));
+            } else {
+                let mut events = zellij_process::swamp::request(root, id.clone(), operation, payload).await?;
+                while let Some(frame) = events.recv().await { emit(frame); }
+            }
+            Ok(())
+        }.await;
+        if let Err(error) = result {
+            emit(serde_json::json!({"type":"error", "id":id, "error":{"code":"host_error", "message":error.to_string()}}));
+        }
+    });
 }
 
 fn run_command(
@@ -7799,6 +7860,9 @@ pub(crate) fn check_command_permission(
     plugin_env: &PluginEnv,
     command: &PluginCommand,
 ) -> (PermissionStatus, Option<PermissionType>) {
+    if matches!(command, PluginCommand::SwampRequest { .. }) && !plugin_env.plugin.is_builtin() {
+        return (PermissionStatus::Denied, Some(PermissionType::RunCommands));
+    }
     if plugin_env.plugin.is_builtin() {
         // built-in plugins can do all the things because they're part of the application and
         // there's no use to deny them anything
@@ -7875,6 +7939,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenCommandPaneBackground
         | CommandType::OpenCommandPaneInPlaceOfPaneId
         | CommandType::RunCommand
+        | CommandType::SwampRequest
         | CommandType::RunCommandInPane
         | CommandType::SpawnAgent
         | CommandType::ExecCmd => PermissionType::RunCommands,

@@ -28,6 +28,7 @@ parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
 parser.add_argument('--test-output-only', action='store_true')
 parser.add_argument('--latency-only', action='store_true')
+parser.add_argument('--question-latency-only', action='store_true')
 parser.add_argument('--latency-baseline', action='store_true', help='Measure the previous view without requiring live output')
 args = parser.parse_args()
 source = Path(__file__).resolve().parents[2]
@@ -39,6 +40,9 @@ binary = root / 'zellij'
 os.link(Path(args.binary).resolve(), binary)
 session = 'workflow-' + root.name.rsplit('-', 1)[-1]
 env = os.environ.copy()
+swamp_config = Path(env.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'swamp'
+if args.firecracker_only and not swamp_config.exists():
+    swamp_config = Path.home() / '.config/swamp'
 for name in ('ZELLIJ', 'ZELLIJ_SESSION_NAME', 'ZELLIJ_PANE_ID', 'ZELLIJ_PANE_REF', 'ZELLIJ_CONFIG_FILE', 'ZELLIJ_CONFIG_DIR', 'SWAMP_REPO_DIR', 'SWAMP_SERVER_URL', 'GIT_PAGER', 'PAGER', 'LESS'):
     env.pop(name, None)
 for name, directory in [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'),
@@ -46,6 +50,10 @@ for name, directory in [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data')
                         ('ZELLIJ_SOCKET_DIR', 'sock'), ('TMPDIR', 'tmp')]:
     env[name] = str(root / directory)
     (root / directory).mkdir()
+# Serve checks the existing Swamp login; keep that host credential store available
+# while isolating Zellij's configuration. Never copy credentials into transcripts.
+if swamp_config.exists():
+    (root / 'config/swamp').symlink_to(swamp_config, target_is_directory=True)
 env['SWAMP_SMOKE_ZELLIJ'] = str(binary)
 if args.source_diff_only:
     env.update(GIT_PAGER='false', PAGER='false', LESS='-F -E')
@@ -57,11 +65,8 @@ wrapper = fixture_bin / 'swamp'
 wrapper.write_text('''#!/usr/bin/env python3
 import os, subprocess, sys
 from pathlib import Path
-marker = Path(os.environ['SWAMP_SMOKE_ROOT']) / 'interrupt-after-approval'
-if sys.argv[1:3] == ['workflow', 'approve'] and marker.exists():
-    subprocess.run([os.environ['SWAMP_SMOKE_REAL']] + sys.argv[1:], check=True)
-    marker.unlink()
-    sys.exit(91)  # the approval landed, but answer delivery was interrupted
+with (Path(os.environ['SWAMP_SMOKE_ROOT']) / 'swamp-processes.jsonl').open('a') as log:
+    log.write(__import__('json').dumps(dict(pid=os.getpid(), ppid=os.getppid(), parent=os.path.basename(os.readlink('/proc/' + str(os.getppid()) + '/exe')), command=sys.argv[1:4])) + '\\n')
 os.execv(os.environ['SWAMP_SMOKE_REAL'], [os.environ['SWAMP_SMOKE_REAL']] + sys.argv[1:])
 ''')
 wrapper.chmod(0o755)
@@ -194,6 +199,20 @@ swamp('repo', 'init', str(main), '--tool', 'none')
 run('swamp', 'extension', 'pull', '@swamp/git', '--json')
 for directory in ('extensions', 'workflows'):
     run('cp', '-R', source / directory, main)
+# Inject the lost acknowledgement at the typed approval boundary, before bundling.
+# Only this disposable copy has the fault; production extensions stay unchanged.
+question_source = main / 'extensions/models/question.ts'
+question_code = question_source.read_text()
+anchor = '    // Return at dispatch acknowledgement:'
+assert question_code.count(anchor) == 1
+question_code = question_code.replace(anchor, f"""    try {{
+        await Deno.remove({json.dumps(str(root / 'interrupt-after-approval'))});
+        throw new Error('Injected lost approval acknowledgement');
+    }} catch (error) {{
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }}
+""" + anchor)
+question_source.write_text(question_code)
 (main / '.zellij').mkdir()
 shutil.copy(source / '.zellij/.swamp-workflows.kdl', main / '.zellij/.swamp-workflows.kdl')
 (main / '.git/info/exclude').write_text('.swamp*\n.gitignore\nextensions/\nworkflows/\nmodels/\n.zellij/\nAGENTS.md\nCLAUDE.md\n')
@@ -304,13 +323,52 @@ if args.firecracker_only:
     # Config names the existing immutable image; VM state stays in this fixture.
 run(binary, 'attach', '--create-background', session)
 try:
+    if args.question_latency_only:
+        attach_ui()
+        until('terminal client has rendered', lambda: len(ui_output) > 1000)
+        for startup in json.loads(zellij('action', 'list-panes', '--json')):
+            if startup.get('plugin_url')=='zellij:about':
+                zellij('action', 'close-pane', '--pane-id', 'plugin_' + str(startup['id']))
+        samples=[]
+        for index in range(8):
+            pane=int(zellij('run', '--cwd', str(topic), '--', 'claude').strip().split('_')[-1])
+            until('stub ready', lambda: 'STUB READY' in zellij('action', 'dump-screen'))
+            offset=len(ui_output)
+            zellij('action', 'write-chars', '--pane-id', str(pane), 'exit\n')
+            until('actionable exit question', lambda: b'Begin review' in bytes(ui_output[offset:]), interval=0.005)
+            elapsed=time.monotonic()-float((root / ('exit-' + str(pane))).read_text())
+            token=swamp('workflow', 'history', 'search', '--filter', 'inputs.sourcePane == ' + str(pane))['results'][0]['inputs']['launch']
+            q=until('exit question data', lambda: pending(token, 'exit'))
+            offset=len(ui_output)
+            submitted=time.monotonic()
+            answer(q, 'begin-review', 'timing-begin-' + str(index))
+            until('next actionable question', lambda: b'Show diff' in bytes(ui_output[offset:]), interval=0.005)
+            next_question=time.monotonic()-submitted
+            samples.append(dict(exit_to_question=elapsed, answer_to_question=next_question))
+            print('TIMING SAMPLE:', index, samples[-1], flush=True)
+            q=until('preparation question data', lambda: pending(token, 'prepare'))
+            answer(q, 'leave', 'timing-leave-' + str(index))
+            until('workflow completed', lambda: (lambda rows: rows and all(r['status']=='succeeded' for r in rows))(swamp('workflow', 'history', 'search', '--filter', 'inputs.sourcePane == ' + str(pane))['results']))
+        import statistics
+        def summary(key):
+            warm=sorted(sample[key] for sample in samples[1:])
+            position=(len(warm)-1)*.95
+            lower=int(position)
+            p95=warm[lower]+(warm[min(lower+1,len(warm)-1)]-warm[lower])*(position-lower)
+            return dict(cold=samples[0][key], warm_median=statistics.median(warm), warm_p95=p95)
+        measured=dict(samples=samples, exit_to_question=summary('exit_to_question'), answer_to_question=summary('answer_to_question'))
+        (root / 'question-latency.json').write_text(json.dumps(measured, indent=2))
+        print('QUESTION LATENCY:', measured, flush=True)
+        raise SystemExit(0)
     if args.firecracker_only:
         shutil.copy(source / 'extensions/tests/stub_agent.py', topic / 'stub_agent.py')
         vm = bridge(method='agent_spawn', work='vm', key='worker', spec=dict(command='/usr/bin/python3', args=['stub_agent.py', '--exit'], cwd=str(topic), source_directory=str(topic), firecracker='workflow-vm', firecracker_image='zellij-dev', automatic_firecracker_vm=True))
         assert vm['supervisor'].startswith('remote:')
         bridge(method='agent_prompt', work='vm', key='edit', agent='worker', prompt='guest edit')
         until('original guest exits', lambda: bridge(method='observe', work='vm', key='worker').get('processExited'))
-        guest_commit = bridge(method='observe', work='vm', key='edit')['message']
+        edited = bridge(method='observe', work='vm', key='edit')
+        assert edited.get('message'), zellij('action', 'dump-screen', '--pane-id', 'terminal_' + str(vm['pane']))
+        guest_commit = edited['message']
         assert not (topic / 'guest.txt').exists()
         vm_name = vm['target']['Firecracker']['vm']
         (main / 'host-only').write_text('host revision\n')
@@ -332,7 +390,7 @@ try:
         assert host_commit != guest_commit
         answer(review_menu, 'start-code-review', 'vm-review')
         confirmation = until('host reviewer confirmation', lambda: pending('original-vm', 'merge'))
-        records = swamp('data', 'query', 'modelType == "@hammz/zellij" && name == "review-current"')['results']
+        records = swamp('data', 'query', 'modelType == "@hammz/zellij" && name == "review-current"', '--select', '{"attributes":attributes}')['results']
         reviewed = next(r['attributes'] for r in records if r['attributes']['evidence']['source']['commit'] == host_commit)
         inspected = json.loads(reviewed['findings'][0]['message'])
         assert reviewed['resolved']
@@ -567,7 +625,7 @@ try:
                      "print('LIVE STDERR', file=sys.stderr, flush=True); "
                      "release=Path(" + repr(str(release)) + "); "
                      "exec('while not release.exists(): time.sleep(0.05)'); "
-                     "sys.stdout.write(('x' * 63 + '\\n') * 9600); sys.exit(1)")
+                     "sys.stdout.write(('𝄞' * 63 + '\\n') * 9600); sys.exit(1)")
         launch('failed-checks', gate=['/usr/bin/python3', '-c', live_gate])
         def check_output_previews(question, nested=False):
             snapshot = bridge(method='workflow_show', directory=str(topic), run=question['attributes']['run'])
@@ -579,12 +637,19 @@ try:
                 attrs = entry['attributes']
                 path = 'attributes.test.output' if attrs.get('test') else 'attributes.output'
                 value = attrs.get('test') or attrs
-                if not value.get('previewTruncated'):
+                if 'output' not in value or (not value.get('previewTruncated') and not value.get('outputRef')):
                     continue
                 exact = 'modelName == ' + json.dumps(entry['model']) + ' && name == ' + json.dumps(entry['name']) + ' && version == ' + str(entry['version'])
                 saved = swamp('data', 'query', exact, '--select', path)['results'][0]
-                assert len(saved) >= 600_000
-                assert saved.startswith(value['output']) and len(value['output']) <= 16384
+                if value.get('outputRef'):
+                    ref = value['outputRef']
+                    model_name = swamp('model', 'get', ref['modelId'])['name']
+                    exact = 'modelType == ' + json.dumps(ref['modelType']) + ' && modelName == ' + json.dumps(model_name) + ' && name == ' + json.dumps(ref['name']) + ' && version == ' + str(ref['version'])
+                    saved = swamp('data', 'query', exact, '--select', 'attributes.output')['results'][0]
+                    assert saved.startswith(value['output'][:1024])
+                else:
+                    assert saved.startswith(value['output'])
+                assert len(saved.encode()) > 2 * 1024 * 1024 and len(value['output']) <= 16384
                 assert not any(0xD800 <= ord(c) <= 0xDFFF for c in value['output'])
                 assert value['exitCode'] == 1
                 seen.add(entry['name'].split('-')[0])
@@ -646,6 +711,8 @@ try:
         check_output_previews(informed, nested=True)
         choose('failed-checks', 'merge', 'merge')
         choose('failed-checks', 'cleanup', 'keep')
+        report = swamp('report', 'get', '@hammz/workflow', '--workflow', '@hammz/zellij-review-integration')['json']
+        assert not report.get('error'), report
         print('PASS: verbose failed-test previews and merge confirmation; full logs retained; no automatic repair', flush=True)
         if args.test_output_only:
             raise SystemExit(0)
@@ -733,7 +800,7 @@ try:
         failed = run(binary, '--session', session, 'workflow', 'answer', question['attributes']['run'], question['model'], 'question', 'Recorded instructions', '--submission', 'recorded-once', check=False)
         assert failed.returncode
         swamp('report', 'get', '@swamp/method-summary', '--model', question['model'])
-        swamp('model', 'method', 'run', question['model'], 'recover', '--input', json.dumps(dict(run=question['attributes']['run'], question='question')))
+        bridge(method='swamp_dispatch', operation='model.method.run', work='recovery', key='recover', directory=str(main), payload=dict(modelIdOrName=question['model'], methodName='recover', inputs=dict(run=question['attributes']['run'], question='question')))
         until('recorded answer recovery', lambda: all(r['status'] == 'succeeded' for r in histories('recovery')))
         duplicate = run(binary, '--session', session, 'workflow', 'answer', question['attributes']['run'], question['model'], 'question', 'Recorded instructions', '--submission', 'recorded-once', check=False)
         assert duplicate.returncode
@@ -762,10 +829,27 @@ try:
         except OSError:
             pass
     assert len(server_pids) == 1, 'Identify exactly the fixture server before interruption'
+    held_workflow=swamp('workflow', 'create', 'server-survival')
+    held_release=root / 'release-server-survival'
+    held_started=root / 'started-server-survival'
+    Path(held_workflow['path']).write_text(json.dumps(dict(id=held_workflow['id'], name=held_workflow['name'], version=1,
+        jobs=[dict(name='main', steps=[dict(name='held', task=dict(type='model_method', modelType='command/shell', modelName='server-survival', methodName='execute',
+            inputs=dict(run='touch ' + str(held_started) + '; while [ ! -f ' + str(held_release) + ' ]; do sleep 0.05; done', workingDir=str(main), timeout=120000)))])])))
+    held=bridge(method='swamp_dispatch', operation='workflow.run', work='server-survival', key='held', directory=str(main), payload=dict(workflowIdOrName=held_workflow['name'], noSupersede=True))
+    until('Swamp execution held before server crash', held_started.exists)
+    swamp_pid=json.loads(run(binary, 'workflow', 'server', 'status').stdout)['pid']
     os.kill(server_pids[0], signal.SIGKILL)
     until('supervisor survives server crash', lambda: any(h['host_id'] == survivor['supervisor'] and not h['attached'] for h in json.loads(zellij('pty-host', 'list', '--json'))))
     run(binary, 'attach', '--create-background', session)
     until('restored session accepts commands', lambda: json.loads(zellij('action', 'list-tabs', '--json')))
+    assert json.loads(run(binary, 'workflow', 'server', 'status').stdout)['pid']==swamp_pid
+    assert not held_release.exists()
+    assert swamp('workflow', 'history', 'get', held['run'])['status']=='running'
+    assert bridge(method='observe', work='server-survival', key='held')['outcome']=='pending'
+    held_release.touch()
+    until('surviving Swamp execution completes', lambda: bridge(method='observe', work='server-survival', key='held')['outcome']=='completed')
+    assert len(swamp('workflow', 'history', 'search', '--workflow', held_workflow['name'])['results'])==1
+    print('PASS: Zellij server crash leaves active Swamp execution alive; reattachment completes without duplication', flush=True)
     for resource in (survivor, owned):
         adopted = zellij('pty-host', 'adopt', resource['supervisor'], '--session', session)
         assert 'Adopted pane' in adopted, 'Adoption must receive the server acknowledgement'
@@ -781,8 +865,15 @@ try:
     assert not [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('plugin_url') == 'zellij:agent-exit']
     print('PASS: server crash/adoption retains ownership, resumes verified work, and delivers managed process exit', flush=True)
 finally:
+    (root / 'release-server-survival').touch()
+    # Runs outlive the session; stop the fixture service separately once idle.
+    run(binary, 'workflow', 'server', 'stop', check=False)
     run(binary, 'kill-session', session, check=False)
     if ui_pid: os.waitpid(ui_pid, 0)
     if ui_fd is not None: os.close(ui_fd)
     transcript.close()
+    launches=[json.loads(line) for line in (root / 'swamp-processes.jsonl').read_text().splitlines()]
+    operations=[entry for entry in launches if entry['parent'] in ('zellij', 'swamp') and entry['command'][0] in ('workflow', 'model', 'data')]
+    assert not operations, operations
+    print('PASS: zero per-operation Swamp CLI launches from Zellij or Swamp', flush=True)
     print('Retained evidence:', root, flush=True)

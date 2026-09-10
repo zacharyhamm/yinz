@@ -402,7 +402,12 @@ pub enum Command {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Workflow {
-    /// Launch a validated workflow in a supervised command pane.
+    /// Inspect or manage the persistent Swamp server for this control checkout.
+    Server {
+        #[clap(subcommand)]
+        command: WorkflowServer,
+    },
+    /// Launch a validated workflow on the managed Swamp server.
     Run {
         name: String,
         /// Reuse this token to reconcile an interrupted launch.
@@ -432,6 +437,13 @@ pub enum Workflow {
     },
     /// Cancel execution separately from closing its view. Resources are preserved.
     Cancel { run: String },
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum WorkflowServer {
+    Status,
+    Restart,
+    Stop,
 }
 
 fn parse_vm_identity(
