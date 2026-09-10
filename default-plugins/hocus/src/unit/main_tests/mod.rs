@@ -221,7 +221,14 @@ fn agent_entry_texts(state: &State) -> Vec<String> {
         .map(|row| match row {
             agents::StripRow::Project(text) | agents::StripRow::Branch(text) => text,
             agents::StripRow::Agent { text, .. } => text,
-            agents::StripRow::Run { text, .. } => text,
+            // The archive is a table in the pane, so a run has no one line here. Composed the
+            // way the pane composes it, minus the widths, which is what these tests read.
+            agents::StripRow::Run {
+                kind,
+                title,
+                continuation,
+                ..
+            } => format!("{}{kind} · {title}", if continuation { "↳ " } else { "" }),
             agents::StripRow::MoreRuns => "load older runs…".to_owned(),
         })
         .collect()

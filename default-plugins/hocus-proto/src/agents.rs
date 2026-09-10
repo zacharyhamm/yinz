@@ -138,6 +138,34 @@ pub fn checkout_location(
     }
 }
 
+/// The checkout an archived run worked in, as the archive table draws it: the folder's leaf
+/// name, prefixed `host:` where the folder is on another machine.
+///
+/// A leaf rather than a path because it is a column in a list that is often half a pane wide,
+/// and the leaf is the half that distinguishes two worktrees of one project. The whole path is
+/// still a keystroke away - the history half's header spells it in full.
+///
+/// The host is kept because two machines can each have a `hocus`, and a row that says which is
+/// the difference between "I have seen this before" and "somebody else has".
+pub fn worktree_cell(run: &AgentRunHeader) -> String {
+    let Some(location) = checkout_location(
+        run.worktree.as_deref(),
+        run.host.as_deref(),
+        run.cwd.as_deref(),
+    ) else {
+        return String::new();
+    };
+    // A path with no final component is a root, which is its own best name.
+    let leaf = std::path::Path::new(&location.path)
+        .file_name()
+        .and_then(|leaf| leaf.to_str())
+        .unwrap_or(location.path.as_str());
+    match &location.host {
+        Some(host) => format!("{host}:{leaf}"),
+        None => leaf.to_owned(),
+    }
+}
+
 // The command-line classifier - `KINDS`, `kind_of`, `kind_from_command` - lives in
 // `zellij_types::agent` now, because the server reads it too: where a spawned agent pane
 // goes is decided before the process has said anything, from the same list `hocus-agentd`
@@ -2163,17 +2191,26 @@ fn wrap_width(width: usize) -> Option<usize> {
 /// `width` is what is left of the row for the label and its rule: the caller has already
 /// taken off anything else sharing it, which for the agents pane is the scroll readout at the
 /// right-hand end.
-pub fn fit_label(mut label: String, width: usize) -> String {
+pub fn fit_label(label: String, width: usize) -> String {
     // Two dashes and a space either side of the label is the least a divider is worth
     // drawing; below that there is no label at all.
-    let room = width.saturating_sub(4);
-    if room == 0 {
+    cut_to_width(label, width.saturating_sub(4))
+}
+
+/// `text` cut from the tail until it fits `width` terminal columns.
+///
+/// By column rather than by byte or by `char`: a title can hold anything the agent was asked,
+/// and both a multi-byte character and a double-width one are drawn wrong by a count of the
+/// other. Nothing is appended in place of what was dropped - the columns a table row divides up
+/// are all it has, and an ellipsis would cost one of them on every cut cell.
+pub fn cut_to_width(mut text: String, width: usize) -> String {
+    if width == 0 {
         return String::new();
     }
-    while label.width() > room {
-        label.pop();
+    while text.width() > width {
+        text.pop();
     }
-    label
+    text
 }
 
 /// The selected run as the history half draws it: one timeline, summaries among the events
@@ -2532,7 +2569,7 @@ const LABEL_STYLE: MdStyle = MdStyle {
 /// How wide the age column is: three columns for the age itself and a space after it, so
 /// `now`, `5m`, `3h` and `2d` all line up and every label in the half starts at the same
 /// place whether its entry knows when it was made or not.
-const AGE_WIDTH: usize = 4;
+pub const AGE_WIDTH: usize = 4;
 
 /// How an age is painted: undimmed and in the accent colour, because it is the one piece of
 /// furniture on the row that is meant to be read down the column rather than through the
@@ -2548,7 +2585,7 @@ const AGE_STYLE: MdStyle = MdStyle {
 /// The left-hand column of a history row: how long ago the entry was made, right-aligned in
 /// [`AGE_WIDTH`], or that much blank for an entry recorded before there was a time to record
 /// - the space is kept either way so the labels stay in one column.
-fn age_gutter(now_ms: i64, then_ms: Option<i64>) -> String {
+pub fn age_gutter(now_ms: i64, then_ms: Option<i64>) -> String {
     match then_ms {
         Some(then_ms) => format!(
             "{:>width$} ",
@@ -2829,11 +2866,33 @@ pub enum StripRow {
         kind: String,
     },
     /// A completed hook session with no live pane to focus.
+    ///
+    /// Unlike an `Agent`, whose line is composed here, an archived run arrives as *cells*: the
+    /// archive is drawn as a table, and only the pane knows how many columns it has to divide
+    /// between them. Hocus still decides what each cell says - it holds the run headers, the
+    /// checkout of each and the paging - and the pane decides what fits.
     Run {
         run_id: String,
-        text: String,
         #[serde(default)]
         kind: String,
+        /// The prompt cell: the run's title, or `"{title} - {snippet}"` in search mode.
+        #[serde(default)]
+        title: String,
+        /// The checkout the run worked in, as a leaf name, empty where there is none to name.
+        #[serde(default)]
+        worktree: String,
+        /// When the run started, for the age column. Absent for a row that cannot say.
+        #[serde(default)]
+        started_at_ms: Option<i64>,
+        /// This run continues an earlier one across a context clear, which the prompt cell
+        /// marks with an arrow.
+        ///
+        /// A flag rather than a marker baked into the title: the kind has a column of its own
+        /// now, so the old rule that elided a same-kind continuation's kind - the arrow already
+        /// said it descended from the chain, and the daemon only links runs of a matching kind -
+        /// has nothing left to elide.
+        #[serde(default)]
+        continuation: bool,
     },
     /// The archive is unlimited, so only an explicit sentinel asks hocus for another page.
     MoreRuns,
@@ -3376,6 +3435,57 @@ mod tests {
         };
         let json = serde_json::to_string(&pane).unwrap();
         assert_eq!(serde_json::from_str::<AgentPane>(&json).unwrap(), pane);
+    }
+
+    /// The archive table's worktree column: the leaf of whatever folder identifies the run,
+    /// and the machine it is on where that is not this one.
+    #[test]
+    fn the_worktree_cell_names_the_checkout_a_run_worked_in() {
+        let run = |cwd: Option<&str>, host: Option<&str>, worktree: Option<&str>| AgentRunHeader {
+            id: "claude:session-1".to_owned(),
+            pane_id: 7,
+            session_id: "session-1".to_owned(),
+            origin_run_id: None,
+            previous_run_id: None,
+            kind: "claude".to_owned(),
+            cwd: cwd.map(str::to_owned),
+            host: host.map(str::to_owned),
+            worktree: worktree.map(str::to_owned),
+            started_at_ms: 10,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: 1,
+            summary: None,
+            title: "hook history".to_owned(),
+        };
+        assert_eq!(
+            worktree_cell(&run(Some("/work/hocus"), None, None)),
+            "hocus"
+        );
+        assert_eq!(
+            worktree_cell(&run(
+                Some("/work/hocus/.claude/worktrees/topic"),
+                None,
+                None
+            )),
+            "topic",
+            "two worktrees of one project are told apart by the leaf, which is why it is the leaf",
+        );
+        assert_eq!(
+            worktree_cell(&run(Some("/work/hocus"), Some("build-box"), None)),
+            "build-box:hocus",
+            "another machine's hocus is not this one",
+        );
+        assert_eq!(
+            worktree_cell(&run(
+                Some("/workspace"),
+                Some("firecracker:review"),
+                Some("/work/hocus"),
+            )),
+            "hocus",
+            "a VM run is named by the host worktree it mirrors, not by its guest copy",
+        );
+        assert_eq!(worktree_cell(&run(None, None, None)), "");
     }
 
     /// The whole point: a pane in a VM is identified by the folder on *this* machine

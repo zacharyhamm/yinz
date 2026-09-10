@@ -370,6 +370,11 @@ pub struct SearchRun {
     pub revision: u64,
     pub snippet: String,
     pub started_at_ms: i64,
+    /// The checkout the run worked in, as the archive table's column draws it. See
+    /// [`crate::agents::StripRow::Run`]: a search hit is drawn in the same columns as the
+    /// archive rows it replaces, so it has to carry the same cells.
+    #[serde(default)]
+    pub worktree: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

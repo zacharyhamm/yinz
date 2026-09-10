@@ -177,8 +177,12 @@ fn completed_runs_are_nested_under_the_archive_and_page_on_demand() {
     ));
     assert!(matches!(
         &rows[rows.len() - 2],
-        agents::StripRow::Run { run_id, text, .. }
-            if run_id == "claude:session-1" && text == "claude · hook history"
+        agents::StripRow::Run { run_id, kind, title, worktree, continuation, .. }
+            if run_id == "claude:session-1"
+                && kind == "claude"
+                && title == "hook history"
+                && worktree == "hocus"
+                && !continuation
     ));
     assert!(matches!(rows.last(), Some(agents::StripRow::MoreRuns)));
 }
@@ -550,8 +554,8 @@ fn continuations_are_marked_without_changing_history_order_or_keys() {
     archived.previous_run_id = Some("claude:A".into());
     archived.started_at_ms = 20;
     // A link across kinds, which the daemon cannot currently make - it only links a run to a
-    // predecessor of its own kind. Here so the row still spells a kind that says something,
-    // rather than the rule reading as "a continuation never names its agent".
+    // predecessor of its own kind. Here because the kind has a column of its own now: whatever
+    // the chain above it was, the row says which agent ran it.
     let mut crossed = header("D", None);
     crossed.origin_run_id = Some("codex:A".into());
     crossed.previous_run_id = Some("codex:A".into());
@@ -563,17 +567,29 @@ fn continuations_are_marked_without_changing_history_order_or_keys() {
     let archive: Vec<_> = rows
         .iter()
         .filter_map(|row| match row {
-            agents::StripRow::Run { run_id, text, .. } => Some((run_id.as_str(), text.as_str())),
+            agents::StripRow::Run {
+                run_id,
+                kind,
+                title,
+                continuation,
+                ..
+            } => Some((
+                run_id.as_str(),
+                kind.as_str(),
+                title.as_str(),
+                *continuation,
+            )),
             _ => None,
         })
         .collect();
     assert_eq!(
         archive,
         vec![
-            // The ↳ carries the continuation; the kind it would repeat is dropped.
-            ("claude:B", "↳ hook history"),
-            ("claude:D", "↳ claude · hook history"),
-            ("claude:A", "claude · hook history")
+            // The flag carries the continuation and the kind is its own cell, so the title is
+            // the title on every row - and the order is still newest first.
+            ("claude:B", "claude", "hook history", true),
+            ("claude:D", "claude", "hook history", true),
+            ("claude:A", "claude", "hook history", false)
         ]
     );
 }

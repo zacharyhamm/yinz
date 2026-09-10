@@ -674,6 +674,12 @@ impl ZellijPlugin for State {
         self.last_window_start = start;
         self.last_list_rows = list_rows;
         let live = self.live();
+        // Measured over every archived row rather than the visible ones, so a column does not
+        // change width under the cursor as the window scrolls past a longer cell. One clock
+        // reading for the whole frame, for the same reason: two rows recorded a second apart
+        // must not disagree about which of them is `now`.
+        let columns = archive_columns(&self.rows, cols);
+        let now = now_ms();
         for (index, row) in self.rows.iter().skip(start).take(list_rows).enumerate() {
             let selected = start + index == self.selected;
             let text = match row {
@@ -693,8 +699,27 @@ impl ZellijPlugin for State {
                         (false, _) => line.dim_range(..),
                     }
                 },
-                StripRow::Run { text, .. } => {
-                    let line = Text::new(format!("{}   {text}", if selected { ">" } else { " " }));
+                StripRow::Run {
+                    kind,
+                    title,
+                    worktree,
+                    started_at_ms,
+                    continuation,
+                    ..
+                } => {
+                    let line = Text::new(format!(
+                        "{}   {}",
+                        if selected { ">" } else { " " },
+                        archive_row(
+                            &columns,
+                            now,
+                            kind,
+                            worktree,
+                            title,
+                            *continuation,
+                            *started_at_ms,
+                        )
+                    ));
                     if selected {
                         line.selected().color_range(4, ..)
                     } else {
@@ -726,6 +751,117 @@ impl ZellijPlugin for State {
         }
         self.render_history(list_rows, history_rows, cols);
     }
+}
+
+/// How much of a run row the marker and the indent take before any column starts: the `>` the
+/// selection is drawn with, and the three spaces that nest the row under the `archive` header.
+const RUN_GUTTER: usize = 4;
+/// The gap between two of the table's columns. The age column carries its own trailing space
+/// (`agents::AGE_WIDTH` counts it), so this is only paid after the kind and the worktree.
+const COLUMN_GAP: usize = 2;
+/// The widest a kind cell and a worktree cell are allowed to get, however long the longest one
+/// in the archive is. A column exists to be read down, and one wide enough for the worst name
+/// in the history would spend the pane on a folder nobody is looking for.
+const MAX_KIND: usize = 8;
+const MAX_WORKTREE: usize = 16;
+/// The least room the prompt is worth drawing in. A column narrower than this says nothing
+/// about what the run was for, and every other column is furniture around that one.
+const MIN_TITLE: usize = 12;
+/// What marks a run that continues an earlier one across a context clear.
+const CONTINUATION: &str = "↳ ";
+
+/// The widths the archive table's columns get on a pane this wide. A zero-width kind or
+/// worktree is a column that is not drawn at all.
+///
+/// The prompt is the point of the row, so the columns around it are shed to keep it readable:
+/// the kind first, because an agent that is nearly always the same one is the most guessable
+/// cell on the row, then the worktree, then the age. Nothing wraps - a list is scanned down,
+/// and a row that took two of them would break the column it is being scanned in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Columns {
+    age: bool,
+    kind: usize,
+    worktree: usize,
+    title: usize,
+}
+
+impl Columns {
+    /// What everything but the prompt costs at these widths.
+    fn furniture(&self) -> usize {
+        let cell = |width: usize| match width {
+            0 => 0,
+            width => width + COLUMN_GAP,
+        };
+        (if self.age { agents::AGE_WIDTH } else { 0 }) + cell(self.kind) + cell(self.worktree)
+    }
+
+    fn shed_kind(&mut self) {
+        self.kind = 0;
+    }
+
+    fn shed_worktree(&mut self) {
+        self.worktree = 0;
+    }
+
+    fn shed_age(&mut self) {
+        self.age = false;
+    }
+}
+
+fn archive_columns(rows: &[StripRow], cols: usize) -> Columns {
+    let mut columns = Columns::default();
+    for row in rows {
+        if let StripRow::Run { kind, worktree, .. } = row {
+            columns.kind = columns.kind.max(kind.width().min(MAX_KIND));
+            columns.worktree = columns.worktree.max(worktree.width().min(MAX_WORKTREE));
+        }
+    }
+    columns.age = true;
+    let body = cols.saturating_sub(RUN_GUTTER);
+    for shed in [
+        Columns::shed_kind,
+        Columns::shed_worktree,
+        Columns::shed_age,
+    ] {
+        if body.saturating_sub(columns.furniture()) >= MIN_TITLE {
+            break;
+        }
+        shed(&mut columns);
+    }
+    columns.title = body.saturating_sub(columns.furniture());
+    columns
+}
+
+/// One archive row, from the marker column onwards.
+fn archive_row(
+    columns: &Columns,
+    now: i64,
+    kind: &str,
+    worktree: &str,
+    title: &str,
+    continuation: bool,
+    started_at_ms: Option<i64>,
+) -> String {
+    let mut row = String::new();
+    if columns.age {
+        // Blank rather than absent for a row that cannot say when it started: the columns
+        // after it are read down, and a missing gutter would step every one of them left.
+        row.push_str(&agents::age_gutter(now, started_at_ms));
+    }
+    for (cell, width) in [(kind, columns.kind), (worktree, columns.worktree)] {
+        if width == 0 {
+            continue;
+        }
+        let cell = agents::cut_to_width(cell.to_owned(), width);
+        row.push_str(&cell);
+        row.push_str(&" ".repeat(width - cell.width() + COLUMN_GAP));
+    }
+    let title = match continuation {
+        true => format!("{CONTINUATION}{title}"),
+        false => title.to_owned(),
+    };
+    row.push_str(&agents::cut_to_width(title, columns.title));
+    row
 }
 
 // Every content coordinate is relative to the row below the permanent tab bar.
@@ -1094,7 +1230,14 @@ impl State {
             .map(|run| StripRow::Run {
                 run_id: run.run_id,
                 kind: run.kind,
-                text: format!("{} — {}", run.title, run.snippet),
+                // The snippet is what the hit was: the title alone would leave a row saying
+                // nothing about why the search matched it.
+                title: format!("{} — {}", run.title, run.snippet),
+                worktree: run.worktree,
+                started_at_ms: Some(run.started_at_ms),
+                // A search result is a flat list of hits, not a chain: the run above it is
+                // whatever else matched, not the run it continues.
+                continuation: false,
             })
             .collect();
         self.selected = self.rows.iter().position(selectable).unwrap_or(0);
@@ -2987,11 +3130,7 @@ mod tests {
         state.run = Some(a_run());
         state.set_rows(unfocused(vec![
             StripRow::Project("hocus".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
         ]));
         assert!(!state.shows_an_age(), "nothing in `a_run` is stamped");
         state
@@ -3293,11 +3432,7 @@ mod tests {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
         ]));
         let mut run = a_run();
         // No summary, so the thirty questions are the whole timeline.
@@ -3564,11 +3699,7 @@ mod tests {
 
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
             StripRow::MoreRuns,
         ]));
         state.selected = 1;
@@ -3591,11 +3722,7 @@ mod tests {
     fn archive() -> Vec<StripRow> {
         vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
             StripRow::MoreRuns,
         ]
     }
@@ -3734,14 +3861,7 @@ mod tests {
 
         // Same shape, different run: the archive gained a newer row above this one.
         let mut rows = archive();
-        rows.insert(
-            1,
-            StripRow::Run {
-                run_id: "claude:session-2".to_owned(),
-                text: "claude · newer".to_owned(),
-                kind: "claude".to_owned(),
-            },
-        );
+        rows.insert(1, run_row("claude:session-2".to_owned(), "newer"));
         state.rows = rows;
 
         state.on_key(KeyWithModifier::new(BareKey::Char('y')));
@@ -3922,11 +4042,7 @@ mod tests {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
         ]));
         state.run = Some(a_run());
 
@@ -4158,11 +4274,7 @@ mod tests {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
         ]));
         let mut run = a_run();
         run.entries.push(agents::RunEntry {
@@ -4215,11 +4327,7 @@ mod tests {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
         ]));
         let mut run = a_run();
         run.summary = Some(agents::Summary {
@@ -4273,16 +4381,8 @@ mod tests {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
-            StripRow::Run {
-                run_id: "claude:session-2".to_owned(),
-                text: "claude · another".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
+            run_row("claude:session-2".to_owned(), "another"),
         ]));
         let mut run = a_run();
         run.entries.push(agents::RunEntry {
@@ -4352,11 +4452,7 @@ mod tests {
     fn one_run_selected() -> Strip {
         unfocused(vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
         ])
     }
 
@@ -4564,11 +4660,7 @@ mod tests {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
         ]));
         let mut run = a_run();
         run.entries = (0..40)
@@ -4810,11 +4902,7 @@ mod tests {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
-            StripRow::Run {
-                run_id: "claude:session-1".to_owned(),
-                text: "claude · hook history".to_owned(),
-                kind: "claude".to_owned(),
-            },
+            run_row("claude:session-1".to_owned(), "hook history"),
         ]));
         state.run = Some(a_run());
         state.render(21, 50);
@@ -4874,11 +4962,7 @@ mod tests {
             run.origin_run_id = Some("claude:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into());
             run.previous_run_id = Some("claude:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".into());
             let row = if archived {
-                StripRow::Run {
-                    run_id: run.id.clone(),
-                    text: "↳ claude · history".into(),
-                    kind: "claude".into(),
-                }
+                run_row(run.id.clone(), "history")
             } else {
                 run.ended_at_ms = None;
                 run.outcome = agents::RunOutcome::Active;
@@ -4905,6 +4989,212 @@ mod tests {
                 "long session IDs wrap"
             );
             assert!(!state.history().entries.is_empty());
+        }
+    }
+
+    /// An archived run with every cell filled, for the table tests.
+    fn cells(kind: &str, worktree: &str, title: &str, started_at_ms: Option<i64>) -> StripRow {
+        StripRow::Run {
+            run_id: format!("{kind}:{title}"),
+            kind: kind.to_owned(),
+            title: title.to_owned(),
+            worktree: worktree.to_owned(),
+            started_at_ms,
+            continuation: false,
+        }
+    }
+
+    /// What the table draws for one row, which is what a test can compare down a column.
+    fn drawn(columns: &Columns, now: i64, row: &StripRow) -> String {
+        let StripRow::Run {
+            kind,
+            title,
+            worktree,
+            started_at_ms,
+            continuation,
+            ..
+        } = row
+        else {
+            panic!("not a run row");
+        };
+        archive_row(
+            columns,
+            now,
+            kind,
+            worktree,
+            title,
+            *continuation,
+            *started_at_ms,
+        )
+    }
+
+    /// The point of the table: a column is read down, so a cell's start cannot depend on how
+    /// long the cell above it was.
+    #[test]
+    fn the_archive_table_lines_its_columns_up() {
+        let now = 60_000;
+        let rows = vec![
+            cells("claude", "hocus", "fix the pane exit teardown", Some(now)),
+            cells(
+                "codex",
+                "zellij",
+                "add the archive table",
+                Some(now - 7_200_000),
+            ),
+        ];
+        let columns = archive_columns(&rows, 60);
+        assert_eq!(
+            (columns.age, columns.kind, columns.worktree),
+            (true, 6, 6),
+            "the widest cell in each column, and the age gutter",
+        );
+        let drawn: Vec<String> = rows.iter().map(|row| drawn(&columns, now, row)).collect();
+        assert_eq!(
+            drawn,
+            [
+                "now claude  hocus   fix the pane exit teardown",
+                " 2h codex   zellij  add the archive table",
+            ],
+        );
+        for row in &drawn {
+            assert_eq!(
+                row.find("fix").or_else(|| row.find("add")),
+                Some(agents::AGE_WIDTH + 6 + COLUMN_GAP + 6 + COLUMN_GAP),
+                "every prompt starts in the same column",
+            );
+        }
+    }
+
+    /// A pane too narrow for the lot sheds the agent first and the worktree next, because the
+    /// prompt is what the row is for and the kind is the most guessable thing on it.
+    #[test]
+    fn a_narrow_pane_sheds_the_agent_then_the_worktree_then_the_age() {
+        let now = 0;
+        let rows = vec![cells(
+            "claude",
+            "hocus",
+            "fix the pane exit teardown",
+            Some(now),
+        )];
+        let widths = |cols: usize| {
+            let columns = archive_columns(&rows, cols);
+            (
+                columns.age,
+                columns.kind,
+                columns.worktree,
+                drawn(&columns, now, &rows[0]),
+            )
+        };
+        assert_eq!(
+            widths(48),
+            (
+                true,
+                6,
+                5,
+                "now claude  hocus  fix the pane exit teardow".to_owned()
+            ),
+            "one column short of the whole prompt, so the cut is the tail and nothing else",
+        );
+        assert_eq!(
+            widths(30),
+            (true, 0, 5, "now hocus  fix the pane ex".to_owned()),
+            "the agent goes first",
+        );
+        assert_eq!(
+            widths(22),
+            (true, 0, 0, "now fix the pane e".to_owned()),
+            "then the worktree",
+        );
+        assert_eq!(
+            widths(14),
+            (false, 0, 0, "fix the pa".to_owned()),
+            "then the age, and the prompt is cut to whatever is left",
+        );
+    }
+
+    /// A row from before the archive recorded a start still has to hold its place in the
+    /// columns, or every cell to the right of it steps left on that one line.
+    #[test]
+    fn a_run_that_cannot_say_when_it_started_keeps_the_columns_in_line() {
+        let rows = vec![
+            cells("claude", "hocus", "newer", Some(0)),
+            cells("claude", "hocus", "older", None),
+        ];
+        let columns = archive_columns(&rows, 60);
+        let drawn: Vec<String> = rows.iter().map(|row| drawn(&columns, 0, row)).collect();
+        assert_eq!(
+            drawn,
+            ["now claude  hocus  newer", "    claude  hocus  older"]
+        );
+    }
+
+    /// The chain marker lives in the prompt cell now - the kind has a column of its own, so
+    /// there is nothing for it to elide.
+    #[test]
+    fn a_continuation_is_marked_inside_the_prompt_cell() {
+        let mut row = cells(
+            "claude",
+            "hocus",
+            "continued after a context clear",
+            Some(0),
+        );
+        let StripRow::Run { continuation, .. } = &mut row else {
+            panic!("not a run row");
+        };
+        *continuation = true;
+        let columns = archive_columns(&[row.clone()], 60);
+        assert_eq!(
+            drawn(&columns, 0, &row),
+            "now claude  hocus  ↳ continued after a context clear",
+        );
+    }
+
+    /// A search hit is drawn in the archive's columns, so the hits can be read down them too.
+    #[test]
+    fn a_search_hit_fills_the_same_cells() {
+        let mut state = State {
+            search_base: Some((Vec::new(), BTreeMap::new())),
+            search_pending: true,
+            search_request: 0,
+            ..State::default()
+        };
+        assert!(state.apply_search_result(wire::SearchResult {
+            request_id: "0".to_owned(),
+            runs: vec![wire::SearchRun {
+                run_id: "claude:session-1".to_owned(),
+                kind: "claude".to_owned(),
+                title: "hook history".to_owned(),
+                revision: 4,
+                snippet: "the matching line".to_owned(),
+                started_at_ms: 10,
+                worktree: "hocus".to_owned(),
+            }],
+            truncated: false,
+            error: String::new(),
+        }));
+        assert_eq!(
+            state.rows,
+            [StripRow::Run {
+                run_id: "claude:session-1".to_owned(),
+                kind: "claude".to_owned(),
+                title: "hook history — the matching line".to_owned(),
+                worktree: "hocus".to_owned(),
+                started_at_ms: Some(10),
+                continuation: false,
+            }],
+        );
+    }
+
+    /// An archived run row as hocus sends one: the cells a test does not name are the ones it
+    /// is not about.
+    fn run_row(run_id: impl Into<String>, title: &str) -> StripRow {
+        StripRow::Run {
+            run_id: run_id.into(),
+            kind: "claude".to_owned(),
+            title: title.to_owned(),
+            worktree: String::new(),
+            started_at_ms: None,
+            continuation: false,
         }
     }
 
