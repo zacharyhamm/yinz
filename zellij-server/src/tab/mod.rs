@@ -2935,6 +2935,11 @@ impl Tab {
                 .focus_pane_for_joining_client(overlay_to_focus, client_id);
         }
         let other_clients_exist_in_tab = { !self.connected_clients.borrow().is_empty() };
+        // Focus first, registration second, and in that order on purpose: the pane a joining
+        // client is put on is read from the clients already here
+        // (`TiledPanes::first_active_pane_id` asks `connected_clients` who is first), so a
+        // client registered before that question is asked can be the one answering it - and it
+        // has no focused pane yet.
         if other_clients_exist_in_tab {
             if let Some(first_active_floating_pane_id) =
                 self.floating_panes.first_active_floating_pane_id()
@@ -2946,36 +2951,35 @@ impl Tab {
                 self.tiled_panes
                     .focus_pane_if_client_not_focused(first_active_tiled_pane_id, client_id);
             }
-            self.connected_clients.borrow_mut().insert(client_id);
-            self.mode_info.borrow_mut().insert(
-                client_id,
-                mode_info.unwrap_or_else(|| self.default_mode_info.clone()),
-            );
         } else {
             let mut pane_ids: Vec<PaneId> = self.tiled_panes.pane_ids().copied().collect();
-            if pane_ids.is_empty() {
-                // no panes here, bye bye
-                return Ok(());
-            }
-            let focus_pane_id = if let Some(id) = self.focus_pane_id {
-                id
-            } else {
+            let focus_pane_id = self.focus_pane_id.or_else(|| {
                 pane_ids.sort(); // TODO: make this predictable
                 pane_ids.retain(|p| !self.tiled_panes.panes_to_hide_contains(*p));
-                *(pane_ids.first().with_context(|| {
-                    format!("failed to acquire id of focused pane while adding client {client_id}",)
-                })?)
-            };
-            self.tiled_panes
-                .focus_pane_if_client_not_focused(focus_pane_id, client_id);
+                pane_ids.first().copied()
+            });
+            if let Some(focus_pane_id) = focus_pane_id {
+                self.tiled_panes
+                    .focus_pane_if_client_not_focused(focus_pane_id, client_id);
+            }
             self.floating_panes
                 .focus_first_pane_if_client_not_focused(client_id);
-            self.connected_clients.borrow_mut().insert(client_id);
-            self.mode_info.borrow_mut().insert(
-                client_id,
-                mode_info.unwrap_or_else(|| self.default_mode_info.clone()),
-            );
         }
+        // Unconditional. A tab with no tiled panes is an ordinary state here - floating panes, an
+        // overlay, a pane suppressed behind a hook plugin, a tab still applying its layout - and
+        // this used to return `Ok(())` for one without registering the client at all. Callers
+        // cannot tell that from success and have already written `Screen::active_tab_ids`, so the
+        // client ended up naming a tab that did not count it: `render_tiled_panes_and_chrome`
+        // draws for `connected_clients` and returns early on an empty set, so it received no
+        // frames, and `close_tab_by_id` re-homes only the clients `drain_connected_clients` hands
+        // back, so the next sweep left it naming a tab that no longer existed. Nothing repairs
+        // either state short of a reattach. A client with no pane to be focused on simply has
+        // none; `TiledPanes::insert_pane` focuses it when a pane arrives.
+        self.connected_clients.borrow_mut().insert(client_id);
+        self.mode_info.borrow_mut().insert(
+            client_id,
+            mode_info.unwrap_or_else(|| self.default_mode_info.clone()),
+        );
         self.set_force_render();
         Ok(())
     }
@@ -3035,6 +3039,12 @@ impl Tab {
     }
     pub fn has_no_connected_clients(&self) -> bool {
         self.connected_clients.borrow().is_empty()
+    }
+    /// Whether this tab counts `client_id` among the clients it renders for and routes input
+    /// to. The other half of `Screen::active_tab_ids`: a client that names this tab and is not
+    /// in here gets no output and no input handling.
+    pub fn has_connected_client(&self, client_id: &ClientId) -> bool {
+        self.connected_clients.borrow().contains(client_id)
     }
     pub fn pane_id_is_floating(&self, pane_id: &PaneId) -> bool {
         self.floating_panes.panes_contain(pane_id)
@@ -7275,14 +7285,18 @@ impl Tab {
         // this is because in that case, while we do use this logic, we're not actually closing the
         // pane, we're moving it
         if !ignore_suppressed_panes && id_stands_in_for_a_pane {
-            return match self.replace_pane_with_suppressed_pane(id) {
-                Ok(_pane) => {},
+            match self.replace_pane_with_suppressed_pane(id) {
+                // The stand-in has left the layout even though the tab did not shrink, so it is
+                // as closed as any other pane and the same things have to hear about it.
+                // `close_pane_and_replace_with_other_pane` has always said so for its own swap.
+                Ok(_pane) => self.announce_pane_closed(id),
                 Err(e) => {
                     Err::<(), _>(e)
                         .with_context(|| format!("failed to close pane {:?}", id))
                         .non_fatal();
                 },
-            };
+            }
+            return;
         }
         // The pane is itself suppressed: it holds no place in any layout, so there
         // is nothing to swap in behind it and nothing to relayout - it just goes.
@@ -7571,22 +7585,79 @@ impl Tab {
                 )
             })
     }
+    /// Tell the plugins and the render subscribers that `id` is gone.
+    ///
+    /// Every path that takes a pane out of the tab owes them this; the ones that swap a pane out
+    /// rather than shrinking the layout are the ones that used to forget.
+    fn announce_pane_closed(&self, id: PaneId) {
+        let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
+            None,
+            None,
+            Event::PaneClosed(id),
+        )]));
+        let _ = self
+            .senders
+            .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id: id });
+    }
+    /// Take the pane suppressed behind `stand_in` with it, when there is nothing left to go back
+    /// to.
+    ///
+    /// Closing a stand-in ordinarily restores its subject - that is what the `agent_exit`
+    /// screen's `Esc` means by "return to scrollback", and what a scrollback editor closing must
+    /// always do. But a subject whose command has already exited has nothing to return to:
+    /// putting a dead terminal back on screen only to be closed again is two gestures for one
+    /// intention, and while it was the tab's last pane the tab lingers through both. So the
+    /// user's own close-pane gesture takes it along; every other caller of `close_pane` - the
+    /// pty's exit, a plugin's `close_self` - still gets the swap.
+    ///
+    /// Returns the pane it took, which the caller owes the same teardown it gives the stand-in:
+    /// this destroys the terminal from inside the tab, so nothing above sees it go otherwise.
+    fn close_dead_subject_of(&mut self, stand_in: PaneId) -> Option<PaneId> {
+        let subject = self.stands_in_for_a_pane(stand_in)?;
+        let suppressed = self.suppressed_panes.get(&subject)?;
+        // A scrollback editor stands in for the pane it is editing, which is live by definition
+        // and must come back however the editor is dismissed.
+        let is_scrollback_editor = suppressed
+            .restored_by
+            .map(|restored_by| restored_by.is_scrollback_editor)
+            .unwrap_or(false);
+        if is_scrollback_editor
+            || !matches!(subject, PaneId::Terminal(_))
+            || !suppressed.pane.exited()
+        {
+            return None;
+        }
+        self.suppressed_panes.remove(&subject);
+        self.pending_command_respawns.remove(&subject);
+        let _ = self
+            .senders
+            .send_to_pty(PtyInstruction::ClosePane(subject, None));
+        self.announce_pane_closed(subject);
+        Some(subject)
+    }
+    /// Close the client's focused pane.
+    ///
+    /// Returns the *extra* pane this took along - the dead subject of a stand-in, see
+    /// `close_dead_subject_of` - not the focused pane itself, which the caller already named. The
+    /// caller owes that pane the same teardown as the one it asked to close.
     pub fn close_focused_pane(
         &mut self,
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
-    ) -> Result<()> {
+    ) -> Result<Option<PaneId>> {
         let err_context = |pane_id| {
             format!("failed to close focused pane (ID {pane_id:?}) for client {client_id}")
         };
 
+        let mut taken_along = None;
         if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
+            taken_along = self.close_dead_subject_of(active_pane_id);
             self.close_pane(active_pane_id, false, None);
             self.senders
                 .send_to_pty(PtyInstruction::ClosePane(active_pane_id, completion_tx))
                 .with_context(|| err_context(active_pane_id))?;
         }
-        Ok(())
+        Ok(taken_along)
     }
     pub fn clear_active_terminal_screen(&mut self, client_id: ClientId) -> Result<()> {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
@@ -8278,6 +8349,13 @@ impl Tab {
             .non_fatal();
 
         Ok(())
+    }
+    /// Whether this tab has been told it is on screen. The other half of [`Tab::visible`]: a tab
+    /// a client was moved into without this being set renders for nobody. Only the tests ask -
+    /// production code sets it and reads it off `Screen::active_tab_ids` instead.
+    #[cfg(test)]
+    pub fn is_visible(&self) -> bool {
+        self.tab_visible
     }
     pub fn visible(&mut self, visible: bool) -> Result<()> {
         // Floating panes as well as tiled: a floating plugin goes off screen

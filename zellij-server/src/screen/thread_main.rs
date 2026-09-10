@@ -1771,12 +1771,7 @@ pub(crate) fn screen_thread_main(
                 }
             },
             ScreenInstruction::CloseFocusedPane(client_id, completion_tx) => {
-                let old_pane_id = screen.get_active_pane_id(&client_id);
-                active_tab_and_connected_client_id!(
-                    screen,
-                    client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab.close_focused_pane(client_id, completion_tx), ?
-                );
+                let old_pane_id = screen.close_focused_pane(client_id, completion_tx)?;
                 let new_pane_id = screen.get_active_pane_id(&client_id);
                 if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
                     screen.report_key_passthrough_state(client_id, old, new);
