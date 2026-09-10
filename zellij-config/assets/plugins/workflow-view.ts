@@ -17,7 +17,7 @@ export const view = {
   submitting: false, refreshing: false, selecting: false, dirty: false, formY: 0,
   attachment: undefined as Attachment | undefined, snapshot: undefined as Snapshot | undefined,
   notice: undefined as string | undefined, noticeError: false, refreshError: undefined as string | undefined,
-  load, attach, refresh, pipe, update, render, focusedControl: () => {controls(); return form!.focusedId();},
+  load, watch, attach, refresh, pipe, update, render, focusedControl: () => {controls(); return form!.focusedId();},
 };
 let form: FormWidget | undefined, onRestart: (() => void) | undefined;
 let formKey: string | undefined, questionKey: string | undefined, formHeight = 1, formHasInput = false, contentHeight = 0;
@@ -114,7 +114,7 @@ async function refresh() {
   }
 }
 function attach(attachment: Attachment) {
-  generation++; view.submitting = false; streams = []; latestStream = undefined; followLive = true;
+  generation++; view.submitting = false;
   view.selecting = false; view.dirty = false; formKey = undefined; questionKey = undefined;
   watch(attachment.launch); view.attachment = {...attachment}; view.snapshot = undefined; view.pending = []; view.selected = 0; view.scroll = 0;
   view.notice = undefined; view.noticeError = false; view.refreshError = undefined; view.active = true; view.status = 'Loading workflow...';

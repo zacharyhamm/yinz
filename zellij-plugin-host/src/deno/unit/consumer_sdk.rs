@@ -234,6 +234,55 @@ fn deno_workflow_view_keeps_restart_explicit_and_all_details_reachable() {
 }
 
 #[test]
+fn deno_agent_exit_preserves_output_before_successful_and_rejected_launch_replies() {
+    for rejected in [false, true] {
+        let mut runtime = sdk();
+        run(&mut runtime, r#"
+          globalThis.filters=[];globalThis.polls=[];
+          globalThis.mock={...zellij,subscribe(){},every(){},requestRender(){},
+            getPluginIds:()=>({plugin_id:1}),
+            projectConfig:{read:()=>({config:{workflow:'exit'}})},
+            waitForEvent(){return Object.assign(new Promise(()=>{}),{cancel(){}});},
+            command(name,args){
+              if(name==='GetPaneInfo')return {is_suppressed:false};
+              if(name==='SubscribePaneOutput')filters.push(args);
+            },
+            rpc:{call({payload}){
+              if(payload.method==='workflow_run'){
+                check(filters.length===1 && filters[0].swamp_work===payload.work);
+                return new Promise((resolve,reject)=>{globalThis.launchReply={resolve,reject};});
+              }
+              check(payload.method==='workflow_show' && payload.launch==='launch' && payload.directory==='/work');
+              return new Promise(resolve=>polls.push(resolve));
+            }}};
+        "#);
+        consumer(&mut runtime, "workflow-view");
+        run(&mut runtime, "globalThis.view=M;");
+        consumer(&mut runtime, "agent-exit");
+        run(&mut runtime, r#"
+          M.load({agent_pane_id:'7',agent_cwd:'/work',agent_exit_token:'launch'});
+          check(!!launchReply && polls.length===0 && !view.attachment);
+          M.update({PaneOutput:{pane_id:8,context:{swamp_work:'launch',swamp_operation:'startup'},data:Array.from(zellij.encodeUtf8('STARTUP-OUTPUT'))}});
+          check(plain(M.render(30,200)).includes('STARTUP-OUTPUT'));
+        "#);
+        run(&mut runtime, if rejected {
+            "launchReply.reject(Error('Launch reply lost'));"
+        } else {
+            "launchReply.resolve({});"
+        });
+        run(&mut runtime, r#"
+          check(view.attachment.launch==='launch' && polls.length===1);
+          check(plain(M.render(30,200)).includes('STARTUP-OUTPUT'));
+          polls.shift()({run:'run',launch:'launch',root:'/work',history:{status:'running'}});
+        "#);
+        run(&mut runtime, r#"
+          check(view.snapshot.run==='run' && view.active);
+          check(plain(M.render(30,200)).includes('STARTUP-OUTPUT'));
+        "#);
+    }
+}
+
+#[test]
 fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
@@ -277,11 +326,15 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
       check(plain(M.render(12,100)).includes('ANSWER-LIVE'));
       commands[0].options.onOutput({data:zellij.encodeUtf8('ANSWER-ERR'),stderr:true});
       check(plain(M.render(12,100)).includes('ANSWER-ERR'));
+      M.watch('launch-b');
+      emit('launch-a','STALE-BEFORE-ATTACH');emit('launch-b','EARLY-B');
+      const early=plain(M.render(30,200));
+      check(early.includes('EARLY-B') && !early.includes('STALE-BEFORE-ATTACH') && !early.includes('ANSWER-LIVE') && !early.includes('BUFFER-END'));
       M.attach({directory:'/b',launch:'launch-b'});check(!M.submitting);show('b','launch-b');
     "#);
     run(&mut runtime, r#"
       emit('launch-a','OLD-PANE');emit('launch-b','NEW-PANE');
-      let switched=plain(M.render(30,200));check(switched.includes('NEW-PANE') && !switched.includes('OLD-PANE') && !switched.includes('BUFFER-END'));
+      let switched=plain(M.render(30,200));check(switched.includes('EARLY-BNEW-PANE') && !switched.includes('OLD-PANE') && !switched.includes('BUFFER-END'));
       emit('launch-b','é'.repeat(32769)+'Z','utf8');key('PageUp');
       check(!plain(M.render(12,100)).includes('�'));key('End');
       emit('launch-b','SECOND-SOURCE','build',8);check(plain(M.render(12,100)).includes('Live build / pane 8'));
@@ -309,7 +362,7 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
       check(M.submitting && M.notice==='Submitting answer...' && M.pending.length===1 && polls.length===0);
       key('Esc');check(filters.at(-1)===null && !M.submitting);commands[4].resolve(ok);
     "#);
-    run(&mut runtime, "check(polls.length===0 && M.attachment===undefined);");
+    run(&mut runtime, "check(polls.length===0 && M.attachment===undefined);emit('launch-e','DETACHED');check(!plain(M.render(30,200)).includes('DETACHED'));");
 }
 
 #[test]

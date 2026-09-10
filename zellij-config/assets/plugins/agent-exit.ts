@@ -15,6 +15,7 @@ async function launch(config: Record<string, string>) {
   else { placed.catch(() => {}); placed.cancel(); }
   const token = config.agent_exit_token;
   if (!token) throw new Error('Missing host exit correlation token');
+  view.watch(token);
   try {
     await z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp', timeoutMs: 30000,
       payload: {method: 'workflow_run', work: token, key: 'launch', directory: directory!,
