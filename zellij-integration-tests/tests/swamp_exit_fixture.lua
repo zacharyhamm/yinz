@@ -44,7 +44,8 @@ end
 z.async.swamp_request=function(opts)
   local op,p=opts.operation,opts.payload
   local result={}
-  if op=='workflow.run' then result={runId='run'}
+  if op=='workflow.validate' then result={passed=true}
+  elseif op=='workflow.run' then result={runId='run'}
   elseif op=='model.method.run' then
     assert(p.inputs.run=='run' and p.modelIdOrName=='questions' and p.inputs.question=='exit' and p.inputs.answer=='leave')
     status='completed'
