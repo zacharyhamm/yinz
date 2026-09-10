@@ -38,40 +38,36 @@ z.agent.spawn_details=function(opts)
   return agent
 end
 z.async.run_command=function(opts)
-  local argv=opts.command
-  if argv[1]=='bash' then
-    assert(argv[6]=='workflow-history')
-    argv={table.unpack(argv,7)}
-  end
-  local stdout=''
-  if argv[1]=='git' then stdout='/host\n'
-  elseif argv[2]=='pty-host' then stdout=z.json.encode(hosts)
-  elseif argv[2]=='workflow' and argv[3]=='answer' then
-    assert(argv[4]=='run' and argv[5]=='questions' and argv[6]=='exit' and argv[7]=='leave')
+  local stdout=opts.command[1]=='git' and '/host\n' or z.json.encode(hosts)
+  local future,resolve=z.async.future();resolve{exit_code=0,stdout=stdout,stderr=''};return future
+end
+z.async.swamp_request=function(opts)
+  local op,p=opts.operation,opts.payload
+  local result={}
+  if op=='workflow.validate' then result={passed=true}
+  elseif op=='workflow.run' then result={runId='run'}
+  elseif op=='model.method.run' then
+    assert(p.inputs.run=='run' and p.modelIdOrName=='questions' and p.inputs.question=='exit' and p.inputs.answer=='leave')
     status='completed'
-  elseif argv[2]=='workflow' and argv[3]=='cancel' then status='cancelled'
-  elseif argv[2]=='workflow' and argv[3]=='history' then
-    if argv[4]=='search' then
-      stdout=z.json.encode{results={{runId='run',workflowName='fixture',inputs={session=z.server_session,launch=token}}}}
-    elseif argv[4]=='logs' then
-      local lines={}
-      for i=1,100 do lines[#lines+1]=string.format('LOG %03d selectable output',i) end
-      stdout=table.concat(lines,'\n')
-    elseif argv[4]=='get' then
-      stdout=z.json.encode{id='run',workflowName='fixture',status=status,jobs={},inputs={session=z.server_session,launch=token}}
-    end
-  elseif argv[2]=='data' then
+  elseif op=='workflow.cancel' then status='cancelled'
+  elseif op=='workflow.history.search' then
+    result={results={{runId='run',workflowName='fixture',inputs={session=z.server_session,launch=token}}}}
+  elseif op=='workflow.history.logs' then
+    local lines={}
+    for i=1,100 do lines[#lines+1]=string.format('LOG %03d selectable output',i) end
+    result={type='log',log={lines=lines}}
+  elseif op=='workflow.history.get' then
+    result={id='run',workflowName='fixture',status=status,jobs={},inputs={session=z.server_session,launch=token}}
+  elseif op=='data.query' then
     local results={}
-    if argv[4]:find('question') and status=='suspended' then
-      assert(argv[4]=='specName == "question" && attributes.run in ["run"]',argv[4])
+    if p.predicate:find('question') and status=='suspended' then
+      assert(p.predicate=='specName == "question" && attributes.run in ["run"]',p.predicate)
       results={{model='questions',version=2,attributes={question='exit',run='run',kind='choice',prompt='Agent exited. Choose Restart, Duplicate, Fork, Begin review, or Leave.',answers={'restart','duplicate','fork','begin-review','leave'},state='pending'}},
         {model='questions',version=1,attributes={question='exit',run='run',kind='choice',prompt='Stale question',answers={'old'},state='pending'}}}
     end
-    stdout=z.json.encode{results=results}
+    result={results={},projected={shape='map',rows=results}}
   end
-  local future,resolve=z.async.future()
-  resolve{exit_code=0,stdout=stdout,stderr=''}
-  return future
+  local future,resolve=z.async.future();resolve(result);return future
 end
 local function emit(hook,prompt)
   z.__update({}, {AgentEvent={pane_id=worker,hook=hook,prompt=prompt,session_id='agent-session',raw=z.json.encode{_zellij_workflow_owner=owners[worker],turn_id='turn'}}})

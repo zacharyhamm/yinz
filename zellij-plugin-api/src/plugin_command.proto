@@ -263,6 +263,7 @@ enum CommandName {
   SetRelatedPanes = 284;
   ArrangeProjectPanes = 285;
   SubscribePaneOutput = 286;
+  SwampRequest = 287;
 }
 
 message PluginCommand {
@@ -473,6 +474,7 @@ message PluginCommand {
     SetRelatedPanesPayload set_related_panes_payload = 225;
     ArrangeProjectPanesPayload arrange_project_panes_payload = 226;
     PaneOutputSubscription pane_output_subscription = 227;
+    SwampRequestPayload swamp_request_payload = 228;
   }
 }
 
@@ -2040,3 +2042,9 @@ message PaneOutputSubscription {
   repeated ContextItem context = 2;
 }
 message ArrangeProjectPanesPayload { repeated ProjectPaneGroup groups = 1; }
+message SwampRequestPayload {
+  string directory = 1;
+  string id = 2;
+  string operation = 3;
+  string payload = 4;
+}

@@ -29,6 +29,10 @@ close_fds = "0.3.2"
 libc = { workspace = true }
 nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
 signal-hook = { workspace = true }
+sha2 = { workspace = true }
+isahc = { workspace = true }
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = "0.30"
 
 [dev-dependencies]
 hegeltest = "0.29.3"

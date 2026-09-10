@@ -131,8 +131,6 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     zellij.wait_until("workflow status in exit pane", |s| {
         s.contains("Run run: running") && s.contains(panel_title)
     });
-    let runner = zellij.expect_pty_spawn();
-    runner.output(b"BACKGROUND RUNNER\r\n");
     advance(&zellij, "agent");
     let worker = zellij.expect_pty_spawn();
     worker.output(b"INTERACTIVE AGENT\r\n");
@@ -168,7 +166,6 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
                 "Fork",
                 "Begin review",
                 "Leave",
-                "Cancel run",
                 "Detach",
             ]
             .iter()
@@ -183,7 +180,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     let button_row = question
         .lines()
         .iter()
-        .position(|line| line.contains("Cancel run") && line.contains("Restart"))
+        .position(|line| line.contains("Detach") && line.contains("Restart"))
         .unwrap();
     assert!(!question.contains("Submit") && !question.contains("Next question"));
     zellij.send_stdin(b"\x1b[6~");
@@ -233,7 +230,6 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     });
     // A managed helper's process exit must not replace status with another hook.
     worker.exit(Some(0));
-    runner.exit(Some(0));
     zellij.wait_until("managed exits preserve the result", |s| {
         s.contains("Run run: completed")
     });

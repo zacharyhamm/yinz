@@ -1,4 +1,4 @@
--- A detachable view of authoritative Swamp history. The runner lives in another pane.
+-- A detachable view of authoritative Swamp history. Execution belongs to the managed Swamp server.
 local z = require('zellij')
 local M = {status='No run attached', scroll=0, pending={}, selected=1}
 local form
@@ -20,7 +20,7 @@ local function controls()
   local entry=M.pending[M.selected]
   local q=entry and entry.attributes
   local key=identity(entry)
-  local signature=z.json.encode{key or '',q and q.kind or '',q and q.answers or {},#M.pending>1,M.active or false}
+  local signature=z.json.encode{key or '',q and q.kind or '',q and q.answers or {},#M.pending>1,M.active or false,M.cancellable or false}
   if signature==form_key then return end
   local focus=form and key==question_key and form:focused_id()
   local has_input=q and #(q.answers or {})==0
@@ -38,7 +38,7 @@ local function controls()
     end
   end
   if #M.pending>1 then fields[#fields+1]={kind='button',id='next',label='Next question'} end
-  if M.active then fields[#fields+1]={kind='button',id='cancel_run',label='Cancel run'} end
+  if M.cancellable then fields[#fields+1]={kind='button',id='cancel_run',label='Cancel run'} end
   if on_restart and not M.active and #M.pending==0 then
     fields[#fields+1]={kind='button',id='restart',label='Restart agent'}
   end
@@ -70,6 +70,8 @@ function M.refresh()
       M.refresh_error=nil
       M.snapshot = reply.result
       if M.snapshot.launch and M.snapshot.launch~=M.launch then M.watch(M.snapshot.launch) end
+      M.cancellable=M.snapshot.history.status=='running'
+      for _,child in ipairs(M.snapshot.children or {}) do M.cancellable=M.cancellable or child.status=='running' end
       M.active = M.snapshot.active or M.snapshot.history.status == 'running' or M.snapshot.history.status == 'suspended'
       for _,child in ipairs(M.snapshot.children or {}) do
         M.active = M.active or child.status == 'running' or child.status == 'suspended'
@@ -177,15 +179,15 @@ function M.update(event)
   end
   local entry=M.pending[M.selected]
   local choice=action.id and tonumber(action.id:match('^choice_(%d+)$'))
-  local command,success
+  local request,success
   if entry and (action.id=='submit' or choice) then
     local q=entry.attributes
     if answered[identity(entry)] and entry.version<=answered[identity(entry)] then return false end
     local answer=choice and q.answers[choice] or form:value('answer')
-    command={z.server_binary or 'zellij','workflow','answer',q.run,entry.model,q.question,answer}
+    request={method='workflow_answer',directory=M.snapshot.root,model=entry.model,inputs={run=q.run,question=q.question,answer=answer,submission=z.instance_id..'-'..tostring(generation+1)}}
     success='Answer recorded'
   elseif action.id=='cancel_run' and M.snapshot and M.attachment.run then
-    command={z.server_binary or 'zellij','workflow','cancel',M.attachment.run}
+    request={method='workflow_cancel',directory=M.snapshot.root,run=M.attachment.run}
     success='Cancellation requested; resources preserved'
   else return true end
   generation=generation+1
@@ -195,17 +197,16 @@ function M.update(event)
   M.action=choice and entry.attributes.answers[choice] or action.id
   M.notice=success=='Answer recorded' and 'Submitting answer...' or 'Requesting cancellation...'
   local attachment=M.attachment
-  local operation=(entry and identity(entry) or command[4])..': '..M.action
+  local operation=(entry and identity(entry) or request.run)..': '..M.action
   repaint()
   z.task(function()
-    local ok,result=pcall(function() return z.await(z.async.run_command {cwd=M.snapshot.root,context={swamp_owner='view'},command=command,max_bytes_returned=8192,
-      on_output=function(event) M.output(operation,event.stderr and 'stderr' or 'stdout',event.data) end}) end)
-    local accepted=ok and result.exit_code==0
+    local ok,result=pcall(function() return z.await(z.rpc.call{plugin_url='zellij:swamp-bridge',name='swamp',payload=request,timeout=90}) end)
+    local accepted=ok and not result.error
     if M.attachment~=attachment then return end
     M.notice_error=not accepted
-    M.notice=accepted and success or (ok and ((result.stderr and result.stderr~='' and result.stderr) or (result.stdout and result.stdout~='' and result.stdout) or 'Command failed') or tostring(result))
+    M.notice=accepted and success or (ok and tostring(result.error) or tostring(result))
     if not accepted then M.output(operation,'submission error',M.notice) end
-    if accepted and command[3]=='answer' then
+    if accepted and request.method=='workflow_answer' then
       answered[identity(entry)]=entry.version
       for i,pending in ipairs(M.pending) do if identity(pending)==identity(entry) then table.remove(M.pending,i);break end end
       M.selected=math.min(M.selected,math.max(1,#M.pending))

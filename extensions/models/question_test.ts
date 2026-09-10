@@ -44,7 +44,11 @@ Deno.test("all question kinds stay pending unattended and accept one run-bound a
     };
     class Command {
         args: string[];
-        constructor(_path: string, opts: Deno.CommandOptions) {
+        constructor(path: string, opts: Deno.CommandOptions) {
+            assert(
+                path !== "swamp",
+                "question methods must not launch Swamp CLI processes",
+            );
             this.args = opts.args ?? [];
         }
         spawn() {
@@ -69,43 +73,59 @@ Deno.test("all question kinds stay pending unattended and accept one run-bound a
         }
         output() {
             let out: unknown = {};
-            if (this.args[0] === "workflow") {
-                if (this.args[1] === "history") {
+            const req = JSON.parse(this.args.at(-1)!);
+            if (req.method === "swamp_read") {
+                if (req.operation === "workflow.history.get") {
+                    assert(req.payload.workflowIdOrName === run);
                     out = {
-                        id: run,
-                        workflowName: "example",
-                        status: history,
-                        jobs: [{
-                            name: "main",
-                            steps: [{ name: "answer", status: step }],
-                        }],
+                        result: {
+                            id: run,
+                            workflowName: "example",
+                            status: history,
+                            jobs: [{
+                                name: "main",
+                                steps: [{ name: "answer", status: step }],
+                            }],
+                        },
                     };
-                } else if (this.args[1] === "approve") {
+                } else if (req.operation === "workflow.approve") {
+                    assert(
+                        req.payload.runId === run &&
+                            req.payload.stepName === "answer",
+                    );
                     approvals++;
                     step = "succeeded";
                     if (crash === "after-approve") {
                         crash = "";
                         throw new Error("interrupted after approval");
                     }
-                } else throw new Error("unexpected CLI");
-            } else {
-                const req = JSON.parse(this.args.at(-1)!);
-                if (req.method === "lookup") {
-                    out = { result: claims.get(req.key) ?? null };
-                } else if (req.method === "command") {
-                    if (!claims.has(req.key)) {
-                        dispatches++;
-                        claims.set(req.key, {
-                            work: req.work,
-                            key: req.key,
-                            request: JSON.stringify(req),
-                            incarnation: "test",
-                            outcome: "pending",
-                        });
-                    }
-                    out = { result: claims.get(req.key) };
-                } else throw new Error("unexpected bridge method");
-            }
+                    out = { result: {} };
+                } else throw new Error("unexpected service operation");
+            } else if (req.method === "lookup") {
+                out = { result: claims.get(req.key) ?? null };
+            } else if (req.method === "swamp_dispatch") {
+                assert(
+                    req.operation === "workflow.resume" &&
+                        req.payload.runId === run,
+                );
+                assert(
+                    saved.get("merge")?.state === "recorded",
+                    "answer must precede resume dispatch",
+                );
+                if (!claims.has(req.key)) {
+                    dispatches++;
+                    claims.set(req.key, {
+                        work: req.work,
+                        key: req.key,
+                        request: JSON.stringify(req),
+                        incarnation: "test",
+                        outcome: "pending",
+                        transport: "serve",
+                    });
+                }
+                // Execution is still pending: submit must return and release its model lock.
+                out = { result: claims.get(req.key) };
+            } else throw new Error("unexpected bridge method");
             return Promise.resolve({
                 code: 0,
                 success: true,

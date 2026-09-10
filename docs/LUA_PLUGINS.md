@@ -1219,6 +1219,8 @@ session id is a uuid.
 
 `payload` is the larger of the two columns, so `select = { "header" }` a listing and fetch
 `payload` only for the row you are showing. Decode either with `zellij.json.decode`.
+For lossless JSON forwarding, `zellij.json.decode(text, true)` preserves JSON nulls
+as `zellij.null`, including null object fields and array entries.
 
 **`agent_run_entry`** - one retained event on a run's timeline: a prompt, a plan, a question, a
 result, or a summary somebody asked for. `uid` is `<run uid>#<revision>`.

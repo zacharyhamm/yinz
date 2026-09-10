@@ -452,12 +452,19 @@ fn install_json(lua: &Lua, zellij: &Table) -> Result<()> {
         .map_err(|e| anyhow!("failed to define zellij.json: {}", e))?;
 
     let decode = lua
-        .create_function(|lua, text: mlua::LuaString| {
-            let text = text.to_str()?;
-            let value: serde_json::Value = serde_json::from_str(&text)
-                .map_err(|e| mlua::Error::runtime(format!("could not decode JSON: {}", e)))?;
-            super::to_lua_value(lua, &value).map_err(|e| mlua::Error::runtime(format!("{:#}", e)))
-        })
+        .create_function(
+            |lua, (text, preserve_nulls): (mlua::LuaString, Option<bool>)| {
+                let text = text.to_str()?;
+                let value: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| mlua::Error::runtime(format!("could not decode JSON: {}", e)))?;
+                if preserve_nulls.unwrap_or(false) {
+                    lua.to_value(&value)
+                } else {
+                    super::to_lua_value(lua, &value)
+                        .map_err(|e| mlua::Error::runtime(format!("{:#}", e)))
+                }
+            },
+        )
         .map_err(|e| anyhow!("failed to define zellij.json.decode: {}", e))?;
 
     let encode = lua

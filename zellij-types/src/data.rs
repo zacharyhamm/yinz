@@ -2766,6 +2766,13 @@ pub enum PluginCommand {
     OpenFileInPlace(FileToOpen, Context),
     OpenCommandPaneInPlace(CommandToRun, Context),
     SubscribePaneOutput(Option<BTreeMap<String, String>>),
+    /// Builtin-only managed Swamp request. Replies use correlated CustomMessage events.
+    SwampRequest {
+        directory: PathBuf,
+        id: String,
+        operation: String,
+        payload: String,
+    },
     RunCommand(
         Vec<String>,              // command
         BTreeMap<String, String>, // env_variables

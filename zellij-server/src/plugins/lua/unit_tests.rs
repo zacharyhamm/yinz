@@ -2487,6 +2487,7 @@ fn json_round_trips_and_decodes_null_to_nil() {
         r#"
         local M = {}
         function M.render()
+          assert(zellij.json.encode(zellij.json.decode('{"state":{"review":null},"items":[]}', true)) == '{"items":[],"state":{"review":null}}')
           local decoded = zellij.json.decode('{"a":1,"b":"two","c":null,"d":[1,2]}')
           return table.concat({
             tostring(decoded.a),
@@ -6851,6 +6852,22 @@ assert(f:value('branch') == 'main' and f:focused_id() == 'name')
 }
 
 #[test]
+fn swamp_requests_are_builtin_only_even_with_all_permissions() {
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    let command = zellij_types::data::PluginCommand::SwampRequest {
+        directory: PathBuf::from("/unused"),
+        id: "denied".into(),
+        operation: "workflow.run".into(),
+        payload: "{}".into(),
+    };
+    assert_eq!(
+        crate::plugins::zellij_exports::check_command_permission(&env, &command).0,
+        zellij_types::data::PermissionStatus::Denied
+    );
+}
+
+#[test]
 fn swamp_workflow_answer_requires_the_submit_button() {
     let source = zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap();
     let plugin = load(source).unwrap();
@@ -6874,10 +6891,10 @@ fn swamp_workflow_answer_requires_the_submit_button() {
         M.snapshot = {root='/work'}
         M.pending = {{model='model', version=1, attributes={run='run',question='question',kind='text',answers={}}}}
         local calls = 0
-        z.async.run_command = function(request)
+        z.rpc.call = function(request)
             calls = calls + 1
-            assert(request.command[3] == 'answer' and request.command[7] == 'my answer')
-            return {exit_code=0}
+            assert(request.payload.method == 'workflow_answer' and request.payload.inputs.answer == 'my answer')
+            return {result={}}
         end
         local function key(k)
             return M.update{name='key',key=k,bare_key=k,key_modifiers={}}
@@ -6931,11 +6948,11 @@ z.ui.markdown=function(source) return {render=function(_,rect)
   return table.concat(visible,'\n'),#lines
 end} end
 local polls,commands={},{}
-z.rpc.call=function()
-  local future,resolve=z.async.future();polls[#polls+1]=resolve;return future
-end
-z.async.run_command=function(opts)
-  local future,resolve=z.async.future();commands[#commands+1]={opts=opts,resolve=resolve};return future
+z.rpc.call=function(opts)
+  local future,resolve=z.async.future()
+  if opts.payload.method=='workflow_show' then polls[#polls+1]=resolve
+  else commands[#commands+1]={opts=opts.payload,resolve=resolve} end
+  return future
 end
 local function pump() z.__update(M,{Timer=0}) end
 local function key(k) return M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
@@ -6965,24 +6982,24 @@ M.refresh()
 key('Tab');assert(M.focused_control()=='choice_2')
 key('Enter');key('Enter')
 assert(#commands==1 and M.submitting and M.refreshing)
-assert(commands[1].opts.command[7]=='duplicate')
+assert(commands[1].opts.inputs.answer=='duplicate')
 assert(M.render(20,120):find('Submitting answer',1,true))
 resolve{q,written} -- this poll started before the submission
-commands[1].resolve{exit_code=1,stderr='Rejected answer'};pump()
+commands[1].resolve{error='Rejected answer'};pump()
 resolve{q,written}
 assert(M.render(20,120):find('Rejected answer',1,true))
 assert(M.focused_control()=='choice_2')
 key('Enter');assert(#commands==2)
-commands[2].resolve{exit_code=0};pump()
+commands[2].resolve{result={}};pump()
 resolve{q,written} -- stale history must not allow another submission
 assert(#M.pending==1 and M.focused_control()=='answer')
 M.update{name='pasted_text',value='kept draft'}
 M.refresh();resolve{written,q}
 key('Tab');assert(M.focused_control()=='submit')
-key('Enter');assert(commands[3].opts.command[7]=='kept draft')
-commands[3].resolve{exit_code=0};pump()
+key('Enter');assert(commands[3].opts.inputs.answer=='kept draft')
+commands[3].resolve{result={}};pump()
 resolve{q,written}
-assert(#M.pending==0 and M.focused_control()=='cancel_run')
+assert(#M.pending==0 and M.focused_control()=='detach' and not M.cancellable)
 assert(M.render(20,120):find('No question pending',1,true))
 -- Different runs can reuse the same model/question, and latest answered wins.
 M.refresh();resolve{question('first',3,'choice',choices,'answered'),question('first',1,'choice',choices,nil,'child')}
@@ -7002,15 +7019,16 @@ local function click()
   M.update{name='mouse',kind='release',line=row,col=2,value={Release={row,2}}}
 end
 click();click()
-assert(#commands==4 and commands[4].opts.command[7]=='restart')
-commands[4].resolve{exit_code=1,stderr=''};pump()
+assert(#commands==4 and commands[4].opts.inputs.answer=='restart')
+commands[4].resolve{error='Request failed'};pump()
 resolve{question('first',2,'choice',choices,nil,'child')}
-assert(M.render(20,120):find('Command failed',1,true))
+assert(M.render(20,120):find('Request failed',1,true))
+M.snapshot.history.status='running';M.cancellable=true
 for i=1,5 do key('Tab') end
 assert(M.focused_control()=='cancel_run')
 key('Enter');key('Enter')
-assert(#commands==5 and commands[5].opts.command[3]=='cancel')
-commands[5].resolve{exit_code=0};pump()
+assert(#commands==5 and commands[5].opts.method=='workflow_cancel')
+commands[5].resolve{result={}};pump()
 resolve{}
 assert(M.render(20,120):find('Cancellation requested; resources preserved',1,true))
 local detached=false
@@ -7046,9 +7064,9 @@ M.snapshot={root='/work',history={status='suspended'},logs='SELECTABLE LOG'}
 M.pending={{model='model',version=1,attributes={run='run',question='question',kind='choice',
   prompt='Choose',answers={'restart','duplicate','fork','begin-review','leave'}}}}
 local commands={}
-z.async.run_command=function(request)
-  commands[#commands+1]=request.command
-  return {exit_code=0}
+z.rpc.call=function(request)
+  commands[#commands+1]=request.payload
+  return {result={}}
 end
 local function key(k) M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
 local function mouse(kind,variant,row)
@@ -7074,7 +7092,7 @@ mouse('left_click','LeftClick',row)
 M.render(8,16)
 mouse('release','Release',row)
 assert(#commands==1)
-assert(table.concat(commands[1],'|',2)=='workflow|answer|run|model|question|begin-review')
+assert(commands[1].method=='workflow_answer' and commands[1].inputs.answer=='begin-review')
 "#,
         )
         .exec()
@@ -7108,9 +7126,9 @@ local function key(k) M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
 local q={run='run',question='question',kind='text',answers={}}
 local entry={model='model',version=1,attributes=q}
 local expected
-z.async.run_command=function(request)
-  assert(request.command[7]==expected, request.command[7])
-  return {exit_code=0}
+z.rpc.call=function(request)
+  assert(request.payload.inputs.answer==expected, request.payload.inputs.answer)
+  return {result={}}
 end
 for _,kind in ipairs{'conflict','merge','cleanup','text'} do
   entry.version=entry.version+1
@@ -7317,7 +7335,7 @@ M.refresh=function() end
 z.task=function(f) f() end
 z.await=function(value) return value end
 local submitted=false
-z.async.run_command=function() submitted=true;return {exit_code=0} end
+z.rpc.call=function() submitted=true;return {result={}} end
 M.update{name='mouse',kind='left_click',line=0,col=2,value={LeftClick={0,2}}}
 M.update{name='mouse',kind='release',line=0,col=2,value={Release={0,2}}}
 assert(submitted)
@@ -7419,11 +7437,11 @@ assert(rendered:find('nested failure',1,true))
 assert(rendered:find('Gate failed / exit 1 / log terminal_7',1,true))
 
 local submitted=false
-z.async.run_command=function(opts)
-  assert(opts.cwd==snapshot.root)
-  assert(z.json.encode(opts.command)==z.json.encode{'zellij','workflow','answer','run','question-model','diff','return'})
+z.rpc.call=function(opts)
+  assert(opts.payload.directory==snapshot.root)
+  assert(opts.payload.method=='workflow_answer' and opts.payload.model=='question-model' and opts.payload.inputs.answer=='return')
   submitted=true
-  local a,r=z.async.future();r{exit_code=0,stdout='',stderr=''};return a
+  local a,r=z.async.future();r{result={}};return a
 end
 M.update{name='key',key='PageDown',modifiers={}}
 z.__update(M,{PastedText='return'})
@@ -7472,10 +7490,11 @@ view.refresh=function() end
 local detached,rerun,cancelled=0,0,0
 z.close_self=function() detached=detached+1 end
 z.rerun_command_pane=function(pane) assert(pane==7);rerun=rerun+1 end
-z.async.run_command=function(request)
-  assert(request.command[3]=='cancel' and request.command[4]=='run')
+z.rpc.call=function(request)
+  if request.payload.method=='workflow_run' then return {} end
+  assert(request.payload.method=='workflow_cancel' and request.payload.run=='run')
   cancelled=cancelled+1
-  return {exit_code=0}
+  return {result={}}
 end
 local launch
 z.task=function(f) launch=f end
@@ -7484,7 +7503,8 @@ assert(M.busy and view.active)
 no_restart()
 z.task=function(f) f() end
 launch()
-view.snapshot={root='/work/topic'}
+view.snapshot={root='/work/topic',history={status='running'}}
+view.cancellable=true
 view.attachment.run='run'
 focus('cancel_run')
 key('Enter')
@@ -7572,6 +7592,7 @@ key('Enter')
 key('Delete')
 assert(rerun==1 and closed==0,'active workflow disables restart and destructive close')
 view.active=false
+key('Tab')
 key('Enter')
 assert(rerun==2,'completed workflow permits restarting the original agent')
 expected_vm=''
@@ -7594,6 +7615,7 @@ end
 unresolved=false
 view.refresh()
 assert(not view.active and not view.attachment.run)
+key('Tab')
 key('Enter')
 key('Delete')
 assert(rerun==3 and closed==1)
@@ -7651,7 +7673,7 @@ end
 z.data.put=function(_,v,uid,rev) return {uid=uid,value=v.value,rev=rev} end
 z.data.apply=function(changes)
   if changes.uid then changes={changes} end
-  for _,c in ipairs(changes) do assert(c.rev==(rows[c.uid] and rows[c.uid].rev or 0),'CAS conflict') end
+  for _,c in ipairs(changes) do assert(c.rev==(rows[c.uid] and rows[c.uid].rev or 0),'data conflict: revision changed') end
   for _,c in ipairs(changes) do
     next_row=next_row+1
     rows[c.uid]={value=c.value,rev=c.rev+1,id=rows[c.uid] and rows[c.uid].id or next_row}
@@ -7814,14 +7836,95 @@ z.instance_id='reloaded'
 assert(call{method='observe',work='lost',key='agent'}.outcome=='unknown')
 -- Launch from a source worktree subdirectory, with a separate control checkout.
 local command_panes, resolved, child_pid=0,0,321
-local function unwrap_history(opts)
-  if opts.command[1]~='bash' then return end
-  assert(opts.max_bytes_returned==1048576)
-  assert(opts.command[2]=='-o' and opts.command[3]=='pipefail' and opts.command[4]=='-c')
-  assert(opts.command[5]==[=["$@" | jq -c 'del(.inputs.state.test.output, .results[]?.inputs.state.test.output)']=])
-  assert(opts.command[6]=='workflow-history')
-  for i=1,6 do table.remove(opts.command,1) end
+local function unwrap_history() end -- legacy fixture replies below also cover serve reads
+local service_runs=0
+z.async.swamp_request=function(opts)
+  assert(opts.directory=='/control')
+  if opts.operation=='workflow.run' then
+    service_runs=service_runs+1
+    assert(opts.payload.noSupersede and opts.payload.runtimeTags.zellijOperation)
+    assert(opts.payload.inputs.target=='/control')
+    local a,r=z.async.future();r{runId='service-'..service_runs};return a
+  elseif opts.operation=='run.attach' then
+    local a,r=z.async.future();r{};return a
+  end
+  local commands={
+    ['workflow.validate']={'swamp','workflow','validate',opts.payload.workflowIdOrName,'--json'},
+    ['workflow.history.search']={'swamp','workflow','history','search'},
+    ['workflow.history.get']={'swamp','workflow','history','get',opts.payload.workflowIdOrName},
+    ['workflow.history.logs']={'swamp','workflow','history','logs',opts.payload.workflowIdOrName},
+    ['data.query']={'swamp','data','query',opts.payload.predicate},
+  }
+  local future,resolve=z.async.future()
+  z.task(function()
+    local response=z.await(z.async.run_command{command=assert(commands[opts.operation],opts.operation),cwd=opts.directory})
+    if response.exit_code~=0 then resolve{error={code='validation_failed',message=response.stdout..response.stderr}}
+    else local ok,data=pcall(z.json.decode,response.stdout);resolve(ok and data or {}) end
+  end)
+  return future
 end
+-- Terminal events establish outcomes for methods and workflows; done only closes the stream.
+z.set_timeout=function() end
+local normal_service=z.async.swamp_request
+for _,operation in ipairs{'model.method.run','workflow.run','workflow.resume'} do
+for _,case in ipairs{
+  {key='success',event={kind='completed',run={status='succeeded'}},outcome='completed',code=0},
+  {key='failure',event={kind='completed',run={status='failed',error='concrete diagnostic'}},outcome='failed',code=1},
+  {key='cancelled',event={kind='cancelled',run={status='failed'},reason='concrete diagnostic'},outcome='failed',code=1},
+  {key='error',event={kind='error',error={message='concrete diagnostic'}},outcome='failed',code=1},
+  {key='done',outcome='unknown'},
+  {key='interrupted',event={kind='completed',run={status='interrupted',error='concrete diagnostic'}},outcome='failed',code=1},
+  {key='cancelled-status',event={kind='completed',run={status='cancelled',error='concrete diagnostic'}},outcome='failed',code=1},
+  {key='suspended',event={kind='suspended',run={status='suspended'}},outcome='completed',code=0},
+} do
+  if operation~='model.method.run' or case.key~='suspended' then
+  local dispatched=0
+  local history_reads=0
+  local history_status
+  z.async.swamp_request=function(opts)
+    if opts.operation=='workflow.history.get' then
+      assert(operation~='model.method.run' and case.key=='done','Terminal outcomes need no history lookup')
+      history_reads=history_reads+1
+      local a,r=z.async.future();r{status=history_status,inputs={submission='answer'}};return a
+    end
+    assert(opts.operation==operation,'Observation must not redispatch or attach a closed stream')
+    dispatched=dispatched+1
+    local function frame(value)
+      value.id=opts.id
+      z.__update(M,{CustomMessage={'swamp-response',z.json.encode(value)}})
+    end
+    if case.event then
+      frame{type='event',event=case.event}
+      frame{type='event',event={kind='output',runId='late-run'}}
+    end
+    frame{type='done'}
+    frame{type='event',event={kind='completed',run={status='succeeded'}}}
+    frame{type='done'} -- cleared tracking ignores late and repeated frames
+    local a,r=z.async.future();r(operation=='model.method.run' and {} or {runId='workflow-run'});return a
+  end
+  local work='stream-'..operation
+  local request={method='swamp_dispatch',work=work,key=case.key,directory='/control',operation=operation,payload={runId='workflow-run',inputs={submission='answer'}}}
+  local function dispatch_request() return call(z.json.decode(z.json.encode(request))) end -- each RPC decodes a fresh payload
+  for _,value in ipairs{assert(dispatch_request()),assert(call{method='observe',work=work,key=case.key}),
+    assert(call{method='reconcile',work=work,key='reconcile',operation=case.key}),assert(dispatch_request())} do
+    assert(value.outcome==case.outcome)
+    assert(value.exitCode==case.code)
+    if case.outcome=='failed' then assert(value.error:find('concrete diagnostic',1,true)) end
+  end
+  if operation~='model.method.run' and case.key=='done' then
+    assert(history_reads==2,'Unresolved workflows still consult persisted history')
+    history_status='failed'
+    for _,value in ipairs{assert(call{method='reconcile',work=work,key='reconcile',operation=case.key}),
+      assert(call{method='observe',work=work,key=case.key}),assert(dispatch_request())} do
+      assert(value.outcome=='failed' and value.exitCode==1,'History resolves closure without repeating execution')
+    end
+    assert(history_reads==3)
+  else assert(history_reads==0) end
+  assert(dispatched==1)
+end
+end
+end
+z.async.swamp_request=normal_service
 local source_root='/work/topic \n' -- preserve path whitespace, including a trailing newline
 z.project_config.read=function(directory)
   assert(directory==source_root..'/src')
@@ -7843,7 +7946,7 @@ z.async.run_command=function(opts)
     if opts.command[3]=='history' then
       assert(opts.command[4]=='search')
       stdout=z.json.encode{results={}}
-    else assert(opts.command[3]=='validate' and opts.command[4]=='configured') end
+    else assert(opts.command[3]=='validate' and opts.command[4]=='configured');stdout=z.json.encode{passed=true} end
   end
   local a,r=z.async.future();r{exit_code=exit_code,stdout=stdout,stderr=stderr};return a
 end
@@ -7861,17 +7964,38 @@ local function launch(work,checkout)
   return {method='workflow_run',work=work,key='launch',directory=source_root..'/src',inputs={checkout=checkout}}
 end
 local launched=assert(call(launch('workflow')))
-assert(launched.process==child_pid and launched.supervisor=='launch-supervisor' and launched.pane==30)
+assert(launched.transport=='serve' and launched.run=='service-1' and not launched.pane and not launched.process)
 assert(launched.checkout=='/control')
-assert(call(launch('workflow')).process==child_pid and command_panes==1 and resolved==1)
-assert(call{method='reconcile',work='workflow',key='reconcile',operation='launch'}.process==child_pid)
-child_pid=322
-local _,changed=call{method='reconcile',work='workflow',key='reconcile',operation='launch'}
-assert(tostring(changed):find('Supervisor process changed',1,true))
+assert(call(launch('workflow')).run=='service-1' and command_panes==0 and resolved==1 and service_runs==1)
 local _,failed=call(launch('bad-root'))
-assert(tostring(failed):find('not a git repository',1,true) and command_panes==1)
+assert(tostring(failed):find('not a git repository',1,true) and command_panes==0)
 expected_checkout='/explicit/checkout/unchanged/ '
-assert(call(launch('explicit',expected_checkout)).pane==30 and resolved==2 and command_panes==2)
+assert(call(launch('explicit',expected_checkout)).run=='service-2' and resolved==2 and service_runs==2)
+-- Stream events may update the row while a history read yields.
+local service=z.async.swamp_request
+local raced=false
+z.async.swamp_request=function(opts)
+  if opts.operation~='workflow.history.get' then return service(opts) end
+  assert(opts.payload.workflowIdOrName=='service-1')
+  if not raced then
+    local uid=z.json.encode({'host','session','workflow','launch'})
+    rows[uid].rev=rows[uid].rev+1;raced=true
+  end
+  local a,r=z.async.future();r{status='suspended'};return a
+end
+assert(call{method='observe',work='workflow',key='launch'}.outcome=='completed' and raced)
+z.async.swamp_request=service
+-- A normal validation response must explicitly pass before dispatch.
+local validation_service=z.async.swamp_request
+z.async.swamp_request=function(opts)
+  assert(opts.operation=='workflow.validate')
+  local a,r=z.async.future();r{passed=false,diagnostics={'invalid workflow'}};return a
+end
+local rejected=launch('validation-rejected')
+assert(tostring(select(2,call(rejected))):find('invalid workflow',1,true))
+assert(call(rejected).outcome=='failed' and service_runs==2 and resolved==2)
+assert(call{method='workflow_show',launch=rejected.work,directory='/invalid'}.logs:find('invalid workflow',1,true))
+z.async.swamp_request=validation_service
 -- Validation diagnostics may be JSON on stdout, stderr, or absent altogether.
 for i,output in ipairs{{'{"error":"extension unavailable"}',''}, {'','validation failed'}, {'',''}, {'details','warning'}} do
   local commands=0
@@ -7885,13 +8009,11 @@ for i,output in ipairs{{'{"error":"extension unavailable"}',''}, {'','validation
   local request=launch('validation-failure-'..i)
   local _,err=call(request)
   local message=tostring(err)
-  assert(message:find('Host command failed: '..z.json.encode{'swamp','workflow','validate','configured','--json'},1,true))
-  assert(message:find('Directory: /control\nExit status: 1',1,true))
-  assert(message:find('stdout:\n'..output[1]..'\nstderr:\n'..output[2],1,true))
-  assert(command_panes==2 and resolved==2 and commands==1)
-  assert(call(request).outcome=='failed' and commands==1) -- keep the claim; never retry dispatch
+  assert(message:find('validation_failed',1,true))
+  assert(command_panes==0 and resolved==2 and commands==1)
+  assert(call(request).outcome=='failed' and commands==1) -- never retry a failed claim
   local failure=assert(call{method='workflow_show',launch=request.work,directory='/invalid'})
-  assert(failure.history.status=='failed' and failure.logs:find('Host command failed',1,true))
+  assert(failure.history.status=='failed' and failure.logs:find('validation_failed',1,true))
 end
 -- Recover a Swamp run launched before its attachment step was delivered.
 local launch_uid=z.json.encode({'host','session','recovery','launch'})
@@ -7925,7 +8047,7 @@ end
 z.project_config.read=function() return {root='/control',config={workflow='configured'}} end
 z.async.run_command=function(opts)
   unwrap_history(opts)
-  local stdout=''
+  local stdout=z.json.encode{passed=true}
   if opts.command[2]=='pty-host' then
     local hosts={}
     for pane in pairs(panes) do hosts[#hosts+1]={terminal_id=pane,attached=true,session_name='session',host_id='supervisor-'..pane,child_pid=100+pane} end
@@ -8002,6 +8124,11 @@ assert(visible.Terminal==first and replacements==4,'reuse the retained pane')
 z.__update(M,{CommandPaneExited={first,1,{swamp_owner=owners[first],swamp_operation='first'}}})
 assert(visible.Plugin==1 and replacements==5,'process failure restores status')
 -- The history can finish before an uncertain prompt. Presentation is not activity.
+-- Existing CLI-backed records remain observable after the transport migration.
+local legacy_uid=z.json.encode({'host','session','attached','swamp-process'})
+local legacy_owner={host_id='host',session='session',work='attached',agent='swamp-process'}
+owners[30]=z.json.encode(legacy_owner);panes[30]=true
+rows[legacy_uid]={rev=1,value=z.json.encode{work='attached',key='swamp-process',request=z.json.encode{method='command'},outcome='pending',pane=30,supervisor='supervisor-30',process=130,log='terminal_30',owner=legacy_owner}}
 local host_command=z.async.run_command
 local reported=false
 z.async.run_command=function(opts)
@@ -8236,6 +8363,46 @@ for _,outcome in ipairs{'pending','unknown'} do
   end
 end
 assert(replacements==before_reload,'reload never recovers placement')
+-- Method recovery shares observation/reconciliation and registers before replay.
+for _,via in ipairs{'observe','reconcile'} do
+  for _,initial in ipairs{'pending','unknown'} do
+    for _,mode in ipairs{'live','replay','failure','missing'} do
+      local key=via..'-'..initial..'-'..mode
+      local request={method='swamp_dispatch',work='recover-method',key=key,directory='/control',operation='model.method.run',payload={}}
+      local uid=z.json.encode{'host','session',request.work,key}
+      rows[uid]={rev=1,value=z.json.encode{work=request.work,key=key,request=z.json.encode(request),transport='serve',checkout='/control',outcome=initial,run=mode~='missing' and key or nil}}
+      z.instance_id=z.instance_id..'-reload'
+      M=reload_bridge();M.load{}
+      local attachments=0
+      z.async.swamp_request=function(opts)
+        assert(opts.operation=='run.attach','recovery must never redispatch or search workflow history')
+        attachments=attachments+1
+        assert(opts.id and opts.started==true and opts.payload.runId==key and opts.payload.afterSeq==0)
+        local function frame(value)
+          value.id=opts.id
+          handlers.custom_message{message='swamp-response',payload=z.json.encode(value)}
+        end
+        if mode=='replay' then
+          frame{type='event',event={kind='completed',run={status='succeeded'}}}
+          frame{type='done'}
+        end
+        if mode=='failure' then frame{type='error',error={code='permission_denied',message='attachment diagnostic'}} end
+        local a,r=z.async.future()
+        r(mode=='failure' and {error={code='permission_denied',message='attachment diagnostic'}} or {})
+        return a
+      end
+      local observed=assert(call{method=via,work=request.work,key=key,operation=key})
+      assert(observed.outcome==(mode=='replay' and 'completed' or mode=='live' and 'pending' or 'unknown'))
+      if mode=='failure' then assert(observed.error:find('attachment diagnostic',1,true)) end
+      if mode=='replay' then assert(observed.exitCode==0) end
+      if mode~='failure' then
+        assert(call{method='observe',work=request.work,key=key}.outcome==observed.outcome)
+        assert(attachments==(mode=='missing' and 0 or 1),'live tracking prevents duplicate attachment')
+      end
+      assert(call(request).outcome==observed.outcome,'saved claims never redispatch')
+    end
+  end
+end
 -- A caller cannot proxy an unprivileged plugin through the builtin bridge.
 z.get_pane_info=function() return {plugin_url='file:untrusted.lua'} end
 assert(select(2,call{method='identity'}))
