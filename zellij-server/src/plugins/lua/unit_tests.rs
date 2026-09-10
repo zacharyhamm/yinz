@@ -7863,19 +7863,31 @@ z.async.swamp_request=function(opts)
   end)
   return future
 end
--- A method's error event is its outcome; done only closes the stream.
+-- Terminal events establish outcomes for methods and workflows; done only closes the stream.
 z.set_timeout=function() end
 local normal_service=z.async.swamp_request
+for _,operation in ipairs{'model.method.run','workflow.run','workflow.resume'} do
 for _,case in ipairs{
   {key='success',event={kind='completed',run={status='succeeded'}},outcome='completed',code=0},
   {key='failure',event={kind='completed',run={status='failed',error='concrete diagnostic'}},outcome='failed',code=1},
   {key='cancelled',event={kind='cancelled',run={status='failed'},reason='concrete diagnostic'},outcome='failed',code=1},
   {key='error',event={kind='error',error={message='concrete diagnostic'}},outcome='failed',code=1},
   {key='done',outcome='unknown'},
+  {key='interrupted',event={kind='completed',run={status='interrupted',error='concrete diagnostic'}},outcome='failed',code=1},
+  {key='cancelled-status',event={kind='completed',run={status='cancelled',error='concrete diagnostic'}},outcome='failed',code=1},
+  {key='suspended',event={kind='suspended',run={status='suspended'}},outcome='completed',code=0},
 } do
+  if operation~='model.method.run' or case.key~='suspended' then
   local dispatched=0
+  local history_reads=0
+  local history_status
   z.async.swamp_request=function(opts)
-    assert(opts.operation=='model.method.run','methods never search workflow history')
+    if opts.operation=='workflow.history.get' then
+      assert(operation~='model.method.run' and case.key=='done','Terminal outcomes need no history lookup')
+      history_reads=history_reads+1
+      local a,r=z.async.future();r{status=history_status,inputs={submission='answer'}};return a
+    end
+    assert(opts.operation==operation,'Observation must not redispatch or attach a closed stream')
     dispatched=dispatched+1
     local function frame(value)
       value.id=opts.id
@@ -7886,15 +7898,31 @@ for _,case in ipairs{
       frame{type='event',event={kind='output',runId='late-run'}}
     end
     frame{type='done'}
-    local a,r=z.async.future();r{};return a
+    frame{type='event',event={kind='completed',run={status='succeeded'}}}
+    frame{type='done'} -- cleared tracking ignores late and repeated frames
+    local a,r=z.async.future();r(operation=='model.method.run' and {} or {runId='workflow-run'});return a
   end
-  local request={method='swamp_dispatch',work='stream',key=case.key,directory='/control',operation='model.method.run',payload={}}
-  for _,value in ipairs{assert(call(request)),assert(call{method='observe',work='stream',key=case.key}),assert(call(request))} do
+  local work='stream-'..operation
+  local request={method='swamp_dispatch',work=work,key=case.key,directory='/control',operation=operation,payload={runId='workflow-run',inputs={submission='answer'}}}
+  local function dispatch_request() return call(z.json.decode(z.json.encode(request))) end -- each RPC decodes a fresh payload
+  for _,value in ipairs{assert(dispatch_request()),assert(call{method='observe',work=work,key=case.key}),
+    assert(call{method='reconcile',work=work,key='reconcile',operation=case.key}),assert(dispatch_request())} do
     assert(value.outcome==case.outcome)
     assert(value.exitCode==case.code)
     if case.outcome=='failed' then assert(value.error:find('concrete diagnostic',1,true)) end
   end
+  if operation~='model.method.run' and case.key=='done' then
+    assert(history_reads==2,'Unresolved workflows still consult persisted history')
+    history_status='failed'
+    for _,value in ipairs{assert(call{method='reconcile',work=work,key='reconcile',operation=case.key}),
+      assert(call{method='observe',work=work,key=case.key}),assert(dispatch_request())} do
+      assert(value.outcome=='failed' and value.exitCode==1,'History resolves closure without repeating execution')
+    end
+    assert(history_reads==3)
+  else assert(history_reads==0) end
   assert(dispatched==1)
+end
+end
 end
 z.async.swamp_request=normal_service
 local source_root='/work/topic \n' -- preserve path whitespace, including a trailing newline
