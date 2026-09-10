@@ -1591,6 +1591,17 @@ impl Screen {
         self.active_tab_ids.keys().next().copied()
     }
 
+    /// The client a "focused tab/pane" action is really for: `client_id` when it is attached,
+    /// otherwise the first client there is - the same fallback
+    /// `active_tab_and_connected_client_id!` makes silently, spelled out for the callers that
+    /// have to know *which* client was picked.
+    pub fn client_to_act_for(&self, client_id: ClientId) -> Option<ClientId> {
+        match self.get_active_tab(client_id).is_ok() {
+            true => Some(client_id),
+            false => self.get_first_client_id(),
+        }
+    }
+
     /// True when a "focused tab/pane" action has nobody to act for: `client_id` is not attached
     /// and there is no other client either, so the fallback that
     /// `active_tab_and_connected_client_id!` makes silently would find nothing.
@@ -2135,8 +2146,13 @@ impl Screen {
             tab_history = first_tab_history.clone();
         }
 
-        let tab_index = if let Some((_first_client, first_active_tab_index)) =
-            self.active_tab_ids.iter().next()
+        // Checked against the tabs there are, like the three fallbacks below it: an entry naming
+        // a tab that has gone is exactly what a client cannot recover from, and inheriting one
+        // would hand the arriving client the same dead end.
+        let tab_index = if let Some((_first_client, first_active_tab_index)) = self
+            .active_tab_ids
+            .iter()
+            .find(|(_, tab_id)| self.tabs.contains_key(tab_id))
         {
             *first_active_tab_index
         } else if self.tabs.contains_key(&self.global_last_active_tab_id) {
@@ -2937,12 +2953,7 @@ impl Screen {
     }
 
     pub(super) fn cycle_focus(&mut self, client_id: ClientId, forward: bool) {
-        let client_id = if self.get_active_tab(client_id).is_ok() {
-            Some(client_id)
-        } else {
-            self.get_first_client_id()
-        };
-        let Some(client_id) = client_id else {
+        let Some(client_id) = self.client_to_act_for(client_id) else {
             log::error!("No client ids in screen found");
             return;
         };
@@ -3054,6 +3065,58 @@ impl Screen {
         self.render(None)?;
         self.log_and_report_session_state()?;
         Ok(())
+    }
+    /// The close-pane gesture: tear down what the closing pane leaves behind, then close it.
+    ///
+    /// Screen-side rather than in the instruction arm because the teardown is the half that is
+    /// easy to forget - this path reaches `Tab::close_focused_pane` directly rather than through
+    /// `ScreenInstruction::ClosePane`, and without it a menu opened over the pane outlives it
+    /// and, worse, a plugin that guarded the quit keeps that guard forever, since nothing else
+    /// ever drops it. Returns the pane that was closed, if there was one.
+    ///
+    /// The "client, or the first one there is" fallback that
+    /// `active_tab_and_connected_client_id!` would make is resolved up front instead, because the
+    /// teardown and the close have to be talking about the same pane. Left to the macro they are
+    /// not: `get_active_pane_id` gives `None` for a client with no active tab while the macro goes
+    /// on to close *another* client's focused pane, which then keeps its menus and its quit guard
+    /// for a pane that no longer exists.
+    pub(crate) fn close_focused_pane(
+        &mut self,
+        client_id: ClientId,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Result<Option<PaneId>> {
+        let Some(client_id) = self.client_to_act_for(client_id) else {
+            log::error!("No client ids in screen found");
+            return Ok(None);
+        };
+        let closing = self.get_active_pane_id(&client_id);
+        if let Some(closing) = closing {
+            self.close_context_menus_for_pane(closing);
+            if let PaneId::Plugin(plugin_id) = closing {
+                self.drop_quit_notice(plugin_id);
+            }
+        }
+        let taken_along = match self.get_active_tab_mut(client_id) {
+            Ok(tab) => tab.close_focused_pane(client_id, completion_tx)?,
+            Err(err) => {
+                Err::<(), _>(err).non_fatal();
+                None
+            },
+        };
+        if let Some(closing) = closing {
+            self.clear_nested_guest(closing);
+            self.pane_output_activity.remove(&closing);
+        }
+        // The dead subject a stand-in takes with it is destroyed inside the tab, so its teardown
+        // can only run here - and it must: terminal ids are recycled, and guest state left keyed
+        // on this one becomes some later pane's passthrough and ascend keys.
+        if let Some(taken_along) = taken_along {
+            self.close_context_menus_for_pane(taken_along);
+            self.clear_nested_guest(taken_along);
+            self.pane_output_activity.remove(&taken_along);
+        }
+        self.retain_only_existing_panes_in_pane_groups();
+        Ok(closing)
     }
     /// Record what a plugin wants said, and decided, about a quit. `None`/`false` withdraws.
     pub(crate) fn set_quit_notice(

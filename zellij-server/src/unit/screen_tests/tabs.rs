@@ -1121,3 +1121,54 @@ fn a_tab_number_queued_while_a_tab_loads_keeps_its_position() {
     assert_eq!(focused.tab_id, TabId::new(0));
     assert_eq!(focused.position, TabPosition::new(0));
 }
+
+/// A client `reconcile_client_tabs` re-homes must land in a tab that has been told it is on
+/// screen and sized for it - the destination can be a tab nobody was looking at, whose plugins
+/// are still holding the `visible(false)` they were given when its last client left, and nothing
+/// short of a tab switch would correct that afterwards.
+///
+/// It must also keep the mode it was in: it was stranded mid-session, not re-attached.
+#[test]
+fn a_reconciled_client_lands_in_a_tab_that_knows_it_is_visible() {
+    let mut screen = create_fixed_size_screen();
+    let client_2 = crate::ClientId::new(2);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
+    screen.add_client(client_2).expect("TEST");
+    screen
+        .change_mode(InputMode::Locked, None, client_2)
+        .expect("TEST");
+    // The tab client 2 last saw. Nobody is on it, so it is off screen.
+    screen.tab_history.insert(client_2, vec![TabId::new(0)]);
+    let closing = *screen.active_tab_ids.get(&client_2).expect("TEST");
+    // Stranded: the tab no longer counts client 2 among its connected clients, while
+    // `active_tab_ids` still names it - so `drain_connected_clients` will not hand it over and
+    // only `reconcile_client_tabs` can see it.
+    screen
+        .tabs
+        .get_mut(&closing)
+        .expect("TEST")
+        .remove_client(client_2);
+    assert!(
+        !screen.tabs.get(&TabId::new(0)).expect("TEST").is_visible(),
+        "precondition: nobody is looking at tab 0",
+    );
+
+    screen.close_tab_by_id(closing).expect("TEST");
+
+    assert_eq!(
+        screen.active_tab_ids.get(&client_2),
+        Some(&TabId::new(0)),
+        "client 2 was re-homed onto the tab it last saw",
+    );
+    assert!(
+        screen.tabs.get(&TabId::new(0)).expect("TEST").is_visible(),
+        "the tab it landed in was told it is on screen",
+    );
+    assert_eq!(
+        screen.get_client_input_mode(client_2),
+        Some(InputMode::Locked),
+        "re-homing is not a re-attach: the client keeps the mode it was in",
+    );
+}

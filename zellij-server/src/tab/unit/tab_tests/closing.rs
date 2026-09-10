@@ -1962,3 +1962,56 @@ pub fn close_pane_with_multiple_panes_to_the_right_away_from_screen_edges() {
         "seventh remaining pane row count"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A client joining a tab that has no tiled panes
+//
+// `Screen::active_tab_ids` says which tab a client sees and types into; `Tab::connected_clients`
+// is what the tab renders for and routes input to. A tab that accepts the first half and
+// refuses the second leaves the client with no frames and no working keys, and nothing short of
+// a reattach repairs it - so `add_client` must never come back `Ok` having registered nothing.
+// A tab with no *tiled* panes is an ordinary state here: floating panes, overlays, a pane
+// suppressed behind a hook plugin, a tab still applying its layout.
+// ---------------------------------------------------------------------------
+
+#[test]
+pub fn a_client_joining_a_tab_with_only_floating_panes_is_connected() {
+    let mut tab = create_tab_with_two_floating_panes();
+    let joining = crate::ClientId::new(7);
+    // Floating panes only: the helper's tab is built around a tiled pane, and it is the tiled
+    // count that `add_client` reads.
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(1)), false, None);
+    // The helper's tab already has the default client in it; this is about the case where the
+    // joining client is the first one, which is the branch that used to refuse it.
+    tab.remove_client(crate::ClientId::new(1));
+    assert!(tab.has_no_connected_clients(), "precondition");
+    assert!(!tab.tiled_panes.has_panes(), "precondition: no tiled panes");
+
+    tab.add_client(joining, None).expect("the tab takes it");
+
+    assert!(
+        tab.has_connected_client(&joining),
+        "a tab with no tiled panes still renders for the client and routes its input",
+    );
+}
+
+#[test]
+pub fn a_client_joining_a_tab_with_no_panes_at_all_is_connected() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        false,
+    );
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(1)), false, None);
+    tab.remove_client(crate::ClientId::new(1));
+    let joining = crate::ClientId::new(7);
+
+    tab.add_client(joining, None).expect("the tab takes it");
+
+    assert!(
+        tab.has_connected_client(&joining),
+        "an emptied tab still counts the client, so the sweep can re-home it",
+    );
+}
