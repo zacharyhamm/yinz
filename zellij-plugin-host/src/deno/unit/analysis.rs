@@ -28,6 +28,10 @@ function shadow(zellij, api, alias, sdk, globalThis) {
 zellij.waitForPermissions(computed);
 zellij.requestPermission(['ReadFiles', ...computed]);
 globalThis.zellij.requestPermission(['ReadApplicationState']);
+zellij.host.requestPluginPermissions(['Reconfigure']);
+sdk.zellij.host.requestPluginPermissions(['WriteToStdin']);
+function shadowHost(host, zellij) { host.requestPluginPermissions(['WebAccess']); zellij.host.requestPluginPermissions(['OpenFiles']); }
+zellij.registerDefaultKeybindings([{mode: 'normal', key: 'Ctrl g', actions: ['NewPane']}]);
 export default {load() {}, render() {return ''}};
 "#,
         PluginCheckMode::Syntax,
@@ -40,11 +44,17 @@ export default {load() {}, render() {return ''}};
             PermissionType::WriteFiles,
             PermissionType::PluginData,
             PermissionType::SharedPluginData,
-            PermissionType::ReadApplicationState
+            PermissionType::ReadApplicationState,
+            PermissionType::Reconfigure,
+            PermissionType::WriteToStdin,
         ]
     );
     assert_eq!(report.warnings.len(), 2, "{report:?}");
     assert!(report.outline.iter().any(|entry| entry.text == "load(...)"));
+    assert!(report
+        .outline
+        .iter()
+        .any(|entry| entry.kind == OutlineKind::Handler && entry.text == "default keybindings"));
     assert!(report.outline.iter().all(|entry| entry.line > 1));
 }
 

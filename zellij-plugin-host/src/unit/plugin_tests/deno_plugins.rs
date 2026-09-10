@@ -2594,3 +2594,169 @@ fn deno_native_compilation_crashes_allow_healthy_entrypoints_and_imports_afterwa
         }
     }
 }
+
+const KEYBINDINGS_PLUGIN: &str = r#"
+let count = 0, state = 'loading';
+export default {
+  async load() {
+    try {
+      await zellij.waitForPermissions(['Reconfigure']);
+      zellij.registerDefaultKeybindings([
+        {mode: 'normal', key: 'Ctrl g', handler(message) { if (message.source !== 'Keybind') throw Error('source'); count++; return true; }},
+        {mode: 'normal', key: 'Ctrl n', actions: [zellij.action('NewPane')]},
+      ]);
+      state = 'registered';
+    } catch (error) { state = 'refused: ' + error; }
+    return true;
+  },
+  pipe() { state = 'leaked'; return true; },
+  render() { return `${state} count=${count}`; },
+};
+"#;
+
+fn keybind_pipe(name: &str) -> PluginInstruction {
+    PluginInstruction::KeybindPipe {
+        name: name.to_owned(),
+        payload: None,
+        plugin: None,
+        args: None,
+        configuration: None,
+        floating: None,
+        pane_id_to_replace: None,
+        pane_title: None,
+        cwd: None,
+        skip_cache: false,
+        cli_client_id: CLIENT,
+        plugin_and_client_id: Some((PLUGIN, CLIENT)),
+        notification_end: None,
+    }
+}
+
+#[test]
+fn deno_default_keybindings_register_after_the_reconfigure_grant_and_dispatch_their_reserved_pipe()
+{
+    use zellij_types::input::actions::Action;
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("keybindings.ts");
+    std::fs::write(&path, KEYBINDINGS_PLUGIN).unwrap();
+    let (sender, server_receiver, screen_receiver, teardown) =
+        create_plugin_thread_with_server_receiver(Some(directory.path().to_owned()), None);
+    let log = Watched::new(vec![]);
+    let logger = permissions_and_log_until_disconnect(
+        &log,
+        screen_receiver,
+        directory.path().join("permissions.kdl"),
+        sender.clone(),
+        CLIENT,
+        PermissionStatus::Granted,
+    );
+    let rebinds = Watched::new(vec![]);
+    let server_logger =
+        log_actions_in_thread_struct!(rebinds, ServerInstruction::KillSession, server_receiver, 1);
+    sender.send(PluginInstruction::AddClient(CLIENT)).unwrap();
+    load(&sender, run_plugin(&path));
+    wait_for_render_containing(&log, "registered count=0");
+    let registered = rebinds.wait_until(
+        "the Deno plugin's default keybindings reached the server",
+        default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    ServerInstruction::RebindKeys {
+                        keys_to_rebind,
+                        keys_to_unbind,
+                        write_config_to_disk,
+                        plugin_id,
+                        ..
+                    } => Some((
+                        keys_to_rebind.clone(),
+                        keys_to_unbind.clone(),
+                        *write_config_to_disk,
+                        *plugin_id,
+                    )),
+                    _ => None,
+                })
+        },
+    );
+    let (keys_to_rebind, keys_to_unbind, write_config_to_disk, plugin_id) = registered;
+    assert!(keys_to_unbind.is_empty() && !write_config_to_disk);
+    assert_eq!(plugin_id, Some(PLUGIN));
+    assert_eq!(keys_to_rebind.len(), 2);
+    // The host rewrote the reserved MessagePlugin name to address this plugin.
+    assert!(keys_to_rebind.iter().any(|(_, _, actions)| matches!(
+        actions.as_slice(),
+        [Action::KeybindPipe { name: Some(name), plugin_id: Some(id), .. }]
+            if name == "__zellij_default_keybinding:1" && *id == PLUGIN
+    )));
+    assert!(keys_to_rebind
+        .iter()
+        .any(|(_, _, actions)| matches!(actions.as_slice(), [Action::NewPane { .. }])));
+    sender
+        .send(keybind_pipe("__zellij_default_keybinding:1"))
+        .unwrap();
+    wait_for_render_containing(&log, "registered count=1");
+    sender
+        .send(keybind_pipe("__zellij_default_keybinding:1"))
+        .unwrap();
+    wait_for_render_containing(&log, "registered count=2");
+    // A stale index is consumed without reaching the plugin's own pipe entry point.
+    sender
+        .send(keybind_pipe("__zellij_default_keybinding:9"))
+        .unwrap();
+    sender
+        .send(keybind_pipe("__zellij_default_keybinding:1"))
+        .unwrap();
+    let frame = wait_for_render_containing(&log, "count=3");
+    assert!(frame.contains("registered count=3"), "{frame}");
+    teardown();
+    logger.join().unwrap();
+    server_logger.join().unwrap();
+}
+
+#[test]
+fn deno_default_keybindings_are_refused_without_the_reconfigure_grant() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'loading';
+export default {
+  load() {
+    try { zellij.registerDefaultKeybindings([{mode: 'normal', key: 'Ctrl g', actions: ['NewPane']}]); state = 'registered'; }
+    catch (error) { state = String(error); }
+    return true;
+  },
+  render() { return state; },
+};
+"#,
+        PermissionStatus::Denied,
+    );
+    harness.load();
+    let frame = harness.rendered("Reconfigure");
+    assert!(
+        frame.contains("requires the 'Reconfigure' permission"),
+        "{frame}"
+    );
+}
+
+#[test]
+fn deno_post_message_to_never_reaches_the_host() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'loading';
+export default {
+  load() {
+    try { zellij.command('PostMessageTo', {name: 'w', payload: 'p', worker_name: 'w'}); state = 'accepted'; }
+    catch (error) { state = String(error); }
+    return true;
+  },
+  render() { return state; },
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    let frame = harness.rendered("workers");
+    assert!(frame.contains("Deno plugins have no workers"), "{frame}");
+}

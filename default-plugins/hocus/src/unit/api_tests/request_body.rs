@@ -212,7 +212,8 @@ fn the_tool_payload_floor_stays_under_21_kb() {
 /// The other end: what a conversation pays once it has asked for every family. Loose
 /// enough that a new domain tool lands here rather than on the floor, and tight enough
 /// that the whole set cannot quietly double. The last move was `expect_rev` on the two
-/// edit tools, which the floor cap above explains.
+/// edit tools, which the floor cap above explains. The `plugin_docs` section enum grew by one
+/// name (`deno_commands`) after that, which is what moved the cap from 37,000 to 37,500.
 #[test]
 fn the_fully_loaded_tool_payload_stays_under_37_kb() {
     let mut cfg = test_config();
@@ -239,7 +240,7 @@ fn the_fully_loaded_tool_payload_stays_under_37_kb() {
     // and a real conversation's transcript is not this one.
     let tools_bytes = serde_json::to_vec(&value["tools"]).unwrap().len();
     assert!(
-        tools_bytes < 37_000,
+        tools_bytes < 37_500,
         "the fully loaded tool payload grew to {tools_bytes} bytes",
     );
 }

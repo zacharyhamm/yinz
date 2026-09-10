@@ -29,9 +29,19 @@ fn sdk_inventories_match_rust_commands_events_permissions_and_decoded_replies() 
             .collect::<Vec<_>>()
             .join(" | ")
     };
+    // The host namespace lowercases the first character; TS Uncapitalize must agree with the SDK.
+    let host = CommandType::iter()
+        .map(|name| {
+            let name = format!("{name:?}");
+            let mut chars = name.chars();
+            let first = chars.next().unwrap().to_lowercase().collect::<String>();
+            format!("{first}{}", chars.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
     let source = format!(
         r#"
-      import type {{CommandArgs, CommandReplies, CommandResults, EventType, Permission}} from 'zellij:plugin';
+      import type {{CommandArgs, CommandReplies, CommandResults, EventType, Permission, HostCommands}} from 'zellij:plugin';
       type Equal<A, B> = [A, B] extends [B, A] ? true : false;
       type Assert<T extends true> = T;
       type Commands = Assert<Equal<keyof CommandArgs, {}>>;
@@ -39,11 +49,13 @@ fn sdk_inventories_match_rust_commands_events_permissions_and_decoded_replies() 
       type Events = Assert<Equal<EventType, {}>>;
       type Permissions = Assert<Equal<Permission, {}>>;
       type Replies = Assert<Equal<keyof CommandReplies, {}>>;
+      type Host = Assert<Equal<keyof HostCommands, {}>>;
     "#,
         quoted(commands),
         quoted(events),
         quoted(permissions),
-        quoted(replies)
+        quoted(replies),
+        quoted(host)
     );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("inventory.ts");
@@ -54,6 +66,113 @@ fn sdk_inventories_match_rust_commands_events_permissions_and_decoded_replies() 
         "keyof CommandArgs | 'UndeclaredHostCommand',",
     );
     assert!(check_semantic_source(&path, &changed).is_err());
+    let changed = source.replace(
+        "keyof HostCommands,",
+        "keyof HostCommands | 'undeclaredHelper',",
+    );
+    assert!(check_semantic_source(&path, &changed).is_err());
+}
+
+#[test]
+fn sdk_host_sugar_types_derive_from_command_args() {
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("host.ts"), r#"
+      import zellij, {type PaneId, type PluginIds} from 'zellij:plugin';
+      const ids: PluginIds = zellij.host.getPluginIds();
+      const tab: number | null = zellij.host.newTab({name: 'x', cwd: null});
+      const nothing: null = zellij.host.renameTab(0, 'logs');
+      zellij.host.renameTab([0, 'logs']);
+      zellij.host.renameTab({tabIndex: 0, name: 'logs'});
+      zellij.host.focusTerminalPane(7, true, false);
+      zellij.host.focusTerminalPane({paneId: 7, shouldFloatIfHidden: true, shouldBeInPlaceIfHidden: false});
+      zellij.host.notify({message: 'hi'});
+      zellij.host.notify('hi', null, null);
+      zellij.host.runCommand([['true'], {}, '/host', {}, null]);
+      zellij.host.runCommand(['true'], {}, '/host', {}, null, true);
+      zellij.host.runCommand({command: ['true'], envVariables: {}, cwd: '/host', context: {}});
+      const pane: PaneId | null = zellij.host.openTerminal({path: '.'});
+      zellij.host.switchTabTo(2);
+      zellij.host.write([1, 2]);
+      zellij.host.write(new Uint8Array([1]));
+      zellij.host.openCommandPaneInGitCheckoutNearPlugin({command: {path: 'sh'}, sourceDirectory: '/src', checkout: 'Current'});
+      const log: string = zellij.host.readPluginLog({name: 'x', lines: 1});
+      // @ts-expect-error wrong tuple order
+      zellij.host.renameTab('logs', 0);
+      // @ts-expect-error unit commands take no payload
+      zellij.host.getPluginIds({});
+      // @ts-expect-error unknown member
+      zellij.host.madeUp();
+      // @ts-expect-error named arguments are camelCase
+      zellij.host.renameTab({tab_index: 0, name: 'logs'});
+      // @ts-expect-error required named field
+      zellij.host.renameTab({tabIndex: 0});
+      // @ts-expect-error byte arrays are one payload, not spread
+      zellij.host.write(1, 2);
+      // @ts-expect-error Deno plugins have no workers
+      zellij.host.postMessageTo({name: 'x', payload: 'y'});
+      // @ts-expect-error Deno plugins have no workers in raw form either
+      zellij.command('PostMessageTo', {name: 'x', payload: 'y'});
+      // @ts-expect-error nor in object form
+      zellij.command({PostMessageTo: {name: 'x', payload: 'y'}});
+      // @ts-expect-error the namespace is frozen
+      zellij.host.renameTab = () => null;
+    "#).unwrap();
+}
+
+#[test]
+fn sdk_keybinding_and_helper_types_check_modes_actions_and_pane_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("helpers.ts"), r#"
+      import zellij, {type KeybindAction, type DefaultKeybinding, type PaneId, type MouseSummary} from 'zellij:plugin';
+      const run: KeybindAction = zellij.action('Run', 'sh', 'ls');
+      const props: KeybindAction = zellij.action('MoveFocus', {direction: 'Left'});
+      const full: KeybindAction = zellij.action('Run', {args: ['sh'], props: {cwd: '/tmp'}, children: {floating: true}});
+      const bindings: DefaultKeybinding[] = [
+        {mode: 'normal', key: 'Ctrl g', handler(message) { const name: string = message.name; return true; }},
+        {mode: 'locked', key: 'Ctrl n', actions: ['ToggleTab', run, props, full]},
+        {mode: 'shared', key: 'x', async handler() {}},
+      ];
+      zellij.registerDefaultKeybindings(bindings);
+      zellij.on('PaneRenderReport', (report) => {
+        const contents = report[zellij.paneKey({Terminal: 3})];
+        const rows: string[] = contents.viewport;
+      });
+      zellij.on('Mouse', (payload, event) => {
+        const summary: MouseSummary = zellij.mouse(payload);
+        if (summary.kind === 'LeftClick') { const line: bigint | number = summary.line; }
+        else if (summary.kind === 'ScrollUp') { const lines: bigint | number = summary.lines; }
+        zellij.mouse(event as {Mouse: typeof payload});
+      });
+      zellij.on('Key', (key) => { const name: string = zellij.keyName(key.bare_key); });
+      const terminal: {Terminal: number} = zellij.terminalPane(3);
+      const pane: PaneId = zellij.pluginPane(4);
+      zellij.write('hi'); zellij.write(new Uint8Array([1]));
+      zellij.writeToPaneId('hi', terminal);
+      const log: string = zellij.readPluginLog('x.ts');
+      const opened: PaneId | null = zellij.openTerminal('.');
+      zellij.openTerminal(); zellij.openTerminal({cwd: '/tmp'});
+      zellij.closeSelf(); zellij.setSelectable(false);
+      const bytes: Uint8Array = zellij.bytes([1, 2]);
+      const text: string = zellij.text.sanitizeBytes([27, 91]);
+      // @ts-expect-error modes are lowercase
+      zellij.registerDefaultKeybindings([{mode: 'Normal', key: 'x', actions: []}]);
+      // @ts-expect-error exactly one of actions or handler
+      zellij.registerDefaultKeybindings([{mode: 'normal', key: 'x', actions: [], handler() {}}]);
+      // @ts-expect-error one of actions or handler is required
+      zellij.registerDefaultKeybindings([{mode: 'normal', key: 'x'}]);
+      // @ts-expect-error action names are strings
+      zellij.action(1);
+      // @ts-expect-error KDL scalars only
+      zellij.action('X', {a: null});
+      // @ts-expect-error keys are BareKeys
+      zellij.keyName(1);
+      // @ts-expect-error pane keys need a PaneId
+      zellij.paneKey('terminal_3');
+      // @ts-expect-error selectable is a boolean
+      zellij.setSelectable('no');
+      // @ts-expect-error mouse takes the event payload
+      zellij.mouse('LeftClick');
+    "#).unwrap();
 }
 
 #[test]
