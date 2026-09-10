@@ -418,6 +418,45 @@ fn agent_spawn_arguments_become_the_spec_the_new_agent_modal_builds() {
     );
 }
 
+/// opencode is launched like every other offered agent: `agent` becomes the spec's
+/// `kind`, and `launch::plan` spells the model, the approval mode, the session and the
+/// prompt in opencode's own terms. The prompt is a *flag* here, not a trailing
+/// positional, because opencode's one positional is a project path.
+#[test]
+fn an_opencode_spawn_plans_the_argv_opencode_actually_takes() {
+    let args = Args::parse(
+        r#"{"agent":"opencode","model":"anthropic/claude-sonnet-4",
+            "permission_mode":"auto","resume":"ses_1","prompt":"fix it"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        args.launch_spec(),
+        launch::Spec {
+            kind: Some("opencode".to_owned()),
+            model: Some("anthropic/claude-sonnet-4".to_owned()),
+            permission_mode: Some("auto".to_owned()),
+            resume: Some("ses_1".to_owned()),
+            prompt: Some("fix it".to_owned()),
+            ..Default::default()
+        }
+    );
+    let (command, checkout) = launch::plan(&args.launch_spec()).unwrap();
+    assert_eq!(command.path, std::path::PathBuf::from("opencode"));
+    assert_eq!(
+        command.args,
+        vec![
+            "--model",
+            "anthropic/claude-sonnet-4",
+            "--auto",
+            "--session",
+            "ses_1",
+            "--prompt",
+            "fix it",
+        ]
+    );
+    assert_eq!(checkout, GitCheckout::Current);
+}
+
 /// `command_words` folds `args` in behind the program, which is what `new_pane`
 /// wants and not what `launch` does. Getting this backwards would run the program
 /// with its own name as the first argument.

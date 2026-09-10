@@ -98,7 +98,7 @@ export const Request = z.object({
     binary: Literal.min(1).optional(),
 });
 export const AgentSpec = z.object({
-    kind: z.enum(["", "codex", "claude", "cursor"]).transform((s) =>
+    kind: z.enum(["", "codex", "claude", "cursor", "opencode"]).transform((s) =>
         s || undefined
     ).optional(),
     command: Literal.transform((s) => s || undefined).optional(),

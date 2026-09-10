@@ -127,8 +127,8 @@ impl AgentSource {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSpawnSpec {
-    /// The agent to run, by kind: `claude`, `codex`, `cursor`, or any other name the agent
-    /// detection would recognise. Resolved to a program by `agent::launch::binary_for`.
+    /// The agent to run, by kind: `claude`, `codex`, `cursor`, `opencode`, or any other name
+    /// the agent detection would recognise. Resolved to a program by `agent::launch::binary_for`.
     pub kind: Option<String>,
     /// A program to run instead, for whatever no kind names. Ignored when `kind` is set; one
     /// of the two is required.
@@ -139,8 +139,8 @@ pub struct AgentSpawnSpec {
     pub model: Option<String>,
     /// Optional reasoning effort, translated by the shared launch planner.
     pub effort: Option<String>,
-    /// An opening prompt, passed as the last positional argument - which is how `claude`,
-    /// `codex` and `cursor-agent` all take one.
+    /// An opening prompt: the last positional argument for `claude`, `codex` and
+    /// `cursor-agent`, and `--prompt <prompt>` for `opencode`.
     pub prompt: Option<String>,
     /// The branch to create. Absent means no Git work at all: run where we are.
     pub branch: Option<String>,
@@ -162,7 +162,9 @@ pub struct AgentSpawnSpec {
     pub env: BTreeMap<String, String>,
     /// How much the agent may do without asking, in the agent's own terms - see
     /// `agent::launch::shape_args` for what each kind accepts. `skip` is understood by every
-    /// kind that has a way to turn permissions off.
+    /// kind that has a way to turn permissions off. `opencode` has no full bypass, so its
+    /// `skip` and `auto` both become `--auto`, which approves only what is not explicitly
+    /// denied.
     pub permission_mode: Option<String>,
     /// A session to resume: an id, or `last` for the most recent.
     pub resume: Option<String>,

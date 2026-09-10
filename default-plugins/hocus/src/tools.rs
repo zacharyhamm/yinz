@@ -1539,7 +1539,10 @@ pub fn specs() -> Value {
                     "args": { "type": "array", "items": { "type": "string" } },
                     "prompt": { "type": "string", "description": "What to start the agent on." },
                     "model": { "type": "string" },
-                    "effort": { "type": "string", "description": "Reasoning effort. Cursor requires model." },
+                    "effort": {
+                        "type": "string",
+                        "description": "Reasoning effort. Cursor requires model; opencode takes none.",
+                    },
                     "cwd": {
                         "type": "string",
                         "description": "Defaults to the focused pane's. A host path, so not \
@@ -1588,9 +1591,10 @@ pub fn specs() -> Value {
                     "permission_mode": {
                         "type": "string",
                         "description": format!(
-                            "skip = no permission checks; or the agent's own: claude {}; codex {}.",
+                            "skip = no permission checks; or the agent's own: claude {}; codex {}; opencode {}.",
                             launch::CLAUDE_PERMISSION_MODES[..6].join("/"),
                             launch::CODEX_PERMISSION_MODES[..5].join("/"),
+                            launch::OPENCODE_PERMISSION_MODES.join("/"),
                         ),
                     },
                     "resume": {

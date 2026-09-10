@@ -515,7 +515,7 @@ is all of this in ninety lines.
 
 ```lua
 local pane = zellij.agent.spawn {
-  kind = "claude",                       -- or codex, cursor; `command = "sh"` for anything else
+  kind = "claude",                       -- or codex, cursor, opencode; `command = "sh"` for anything else
   prompt = "make the tests pass",        -- the opening prompt, last on the command line
   branch = "fix-42", base = "main",      -- a worktree of its own at .worktrees/fix-42 (default)
   worktree_dir = ".worktrees",           -- where that worktree is placed; it is named for the branch

@@ -458,8 +458,8 @@ fn fork_dialog() -> Dialog {
 /// The agent a fork opens on: the first offered kind that is not the one already running,
 /// or nothing when there is no other to offer.
 ///
-/// `OFFERED` is `codex, claude, cursor`, so the two agents a person is likeliest to be
-/// swapping between default to each other, and anything else - the third offered agent, or
+/// `OFFERED` is `codex, claude, cursor, opencode`, so the two agents a person is likeliest to be
+/// swapping between default to each other, and anything else - the other offered agents, or
 /// a kind `classify` knows and the picker does not - opens on the first.
 fn default_fork_kind(current: &str) -> Option<&'static str> {
     launch::OFFERED

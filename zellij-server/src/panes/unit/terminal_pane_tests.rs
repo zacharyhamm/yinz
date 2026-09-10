@@ -1551,6 +1551,46 @@ pub fn focusing_a_pane_takes_down_its_waiting_agents_bell() {
     assert!(pane.agent_attention_since().is_none());
 }
 
+/// A pane the host opened for `agent_spawn` starts with the kind the planner resolved,
+/// before the process has said anything. opencode is one of those kinds, so the pane it
+/// opens is an agent pane in the manifest from the first frame - which is what hocus and
+/// hocus-agents read.
+#[test]
+pub fn a_spawned_opencode_pane_records_its_kind_before_it_has_said_anything() {
+    use zellij_types::data::{OriginatingPlugin, HOCUS_AGENT_PANE_CONTEXT};
+    let run = |marker: &str, program: &str| {
+        super::Run::Command(RunCommand {
+            command: PathBuf::from(program),
+            args: vec!["--auto".to_owned(), "--prompt".to_owned(), "go".to_owned()],
+            originating_plugin: Some(OriginatingPlugin::new(
+                zellij_types::internal_ids::PluginId::new(2),
+                crate::ClientId::new(1),
+                std::collections::BTreeMap::from([(
+                    HOCUS_AGENT_PANE_CONTEXT.to_owned(),
+                    marker.to_owned(),
+                )]),
+            )),
+            ..Default::default()
+        })
+    };
+    // What the host writes: the program the planner chose, as the marker's value.
+    let agent = super::agent_from_run(Some(&run("opencode", "opencode")))
+        .expect("a marked command pane starts with an agent record");
+    assert_eq!(agent.kind, "opencode");
+    assert_eq!(agent.source, AgentSource::Spawned);
+    assert_eq!(agent.state, AgentState::Busy);
+    // The legacy `"true"` marker falls back to the program's name, which is the same kind.
+    let legacy = super::agent_from_run(Some(&run("true", "opencode")))
+        .expect("the legacy marker still names the agent");
+    assert_eq!(legacy.kind, "opencode");
+    // An ordinary command pane is not an agent, however its program is called.
+    assert!(super::agent_from_run(Some(&super::Run::Command(RunCommand {
+        command: PathBuf::from("opencode"),
+        ..Default::default()
+    })))
+    .is_none());
+}
+
 fn agent_pane() -> TerminalPane {
     let mut geom = PaneGeom::default();
     geom.cols.set_inner(80);

@@ -714,7 +714,8 @@ jobs:
   - name: helper-kind
     task:
       type: assert
-      expr: inputs.agentCommand != "" || inputs.kind in ["codex", "claude", "cursor"]
+      # Keep in sync with zellij-runtime agent::launch::OFFERED.
+      expr: inputs.agentCommand != "" || inputs.kind in ["codex", "claude", "cursor", "opencode"]
       message: Original agent kind is unknown; configure an explicit agent command.
       severity: high
     dependsOn:
