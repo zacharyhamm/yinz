@@ -255,24 +255,42 @@ impl Screen {
             .with_context(err_context)?;
         let mut destination_tab_ids = HashSet::new();
         for (client_id, client_mode_info) in client_ids_and_mode_infos {
+            // The tab it was on before, then the first one there is. `active_tab_ids` is written
+            // only once a tab has actually taken the client: the two have to agree, and a client
+            // pointed at a tab that did not take it receives no frames and reaches nothing.
             let client_tab_history = self.tab_history.entry(client_id).or_default();
-            if let Some(client_previous_tab) = client_tab_history.pop() {
-                if let Some(client_active_tab) = self.tabs.get_mut(&client_previous_tab) {
-                    self.active_tab_ids.insert(client_id, client_previous_tab);
-                    client_active_tab
-                        .add_client(client_id, Some(client_mode_info))
-                        .with_context(err_context)?;
-                    destination_tab_ids.insert(client_previous_tab);
+            let previous_tab = client_tab_history.pop();
+            let candidates = previous_tab
+                .into_iter()
+                .chain(std::iter::once(first_tab_index));
+            let mode_info = Some(client_mode_info);
+            let mut landed = false;
+            for candidate in candidates {
+                let Some(tab) = self.tabs.get_mut(&candidate) else {
                     continue;
+                };
+                match tab.add_client(client_id, mode_info.clone()) {
+                    Ok(()) => {
+                        self.active_tab_ids.insert(client_id, candidate);
+                        destination_tab_ids.insert(candidate);
+                        landed = true;
+                        break;
+                    },
+                    // Kept, rather than consumed, so the next candidate is offered the mode the
+                    // client left with rather than the tab's default.
+                    Err(e) => Err::<(), _>(e)
+                        .with_context(|| {
+                            format!("tab {candidate} would not take client {client_id}")
+                        })
+                        .non_fatal(),
                 }
             }
-            self.active_tab_ids.insert(client_id, first_tab_index);
-            self.tabs
-                .get_mut(&first_tab_index)
-                .with_context(err_context)?
-                .add_client(client_id, Some(client_mode_info))
-                .with_context(err_context)?;
-            destination_tab_ids.insert(first_tab_index);
+            if !landed {
+                // Nothing took it, so leaving a stale entry behind would strand it. Dropped
+                // instead: `Screen::add_client` rebuilds the mapping from scratch on a reattach.
+                log::error!("no tab would take client {client_id} from the closed tab");
+                self.active_tab_ids.remove(&client_id);
+            }
         }
         // The plugins in a tab a client just landed in last heard about that client's
         // mode when it left, if ever - `update_input_modes` only covers the connected
@@ -801,6 +819,19 @@ impl Screen {
                 overlay_respawns,
                 overlay_client,
             );
+            // Belt and braces, and it has to come before the visibility pass below.
+            // `move_clients_from_closed_tab` only ever hears about the clients
+            // `drain_connected_clients` handed it, so a client the closing tab did not count as
+            // connected would keep an `active_tab_ids` entry naming a tab that no longer exists -
+            // and every later instruction for it would be dropped by `active_tab!`, with no frame
+            // ever rendered for it either. `Tab::add_client` is total now, so this should find
+            // nothing; it says so loudly if it does.
+            //
+            // Before `visible_tab_indices`, because that set is what tells a tab it is on screen
+            // and what sizes it: a client re-homed after it was computed would land in a tab whose
+            // plugins are still holding the `visible(false)` `Screen::remove_client` gave them when
+            // its last client left, and nothing would correct that until the next tab switch.
+            self.reconcile_client_tabs().with_context(err_context)?;
             let visible_tab_indices: HashSet<TabId> =
                 self.active_tab_ids.values().copied().collect();
             for t in self.tabs.values_mut() {
@@ -821,15 +852,55 @@ impl Screen {
         }
     }
 
+    /// Put right any client whose tab and whose tab's client list disagree.
+    ///
+    /// The two halves have to hold together: `Screen::active_tab_ids` says which tab a client
+    /// sees and types into, and `Tab::connected_clients` is what that tab renders for and routes
+    /// input to. A client that names a tab which has been removed, or one that does not count
+    /// it, receives no frames and reaches nothing - and nothing repairs either state short of a
+    /// reattach, which is what made it look like the whole session had hung.
+    ///
+    /// `move_clients_from_closed_tab` only ever hears about the clients
+    /// `drain_connected_clients` handed it, so this is the backstop for the ones it cannot see.
+    /// With `Tab::add_client` total it should find nothing; it says so loudly if it does.
+    fn reconcile_client_tabs(&mut self) -> Result<()> {
+        let stranded: Vec<ClientId> = self
+            .active_tab_ids
+            .iter()
+            .filter(|(client_id, tab_id)| {
+                self.tabs
+                    .get(tab_id)
+                    .map(|tab| !tab.has_connected_client(client_id))
+                    .unwrap_or(true)
+            })
+            .map(|(client_id, _)| *client_id)
+            .collect();
+        if stranded.is_empty() {
+            return Ok(());
+        }
+        log::error!("clients {stranded:?} were left with no tab to render into; re-homing them");
+        // The mode the client is actually in, not the default: it was stranded mid-session and
+        // may well have been in Scroll or Locked, and `Screen::mode_info` is the map
+        // `change_mode` writes on every change. The default is only for a client with no entry.
+        let mode_infos: Vec<(ClientId, ModeInfo)> = stranded
+            .into_iter()
+            .map(|client_id| {
+                let mode_info = self
+                    .mode_info
+                    .get(&client_id)
+                    .cloned()
+                    .unwrap_or_else(|| self.default_mode_info.clone());
+                (client_id, mode_info)
+            })
+            .collect();
+        self.move_clients_from_closed_tab(mode_infos)
+    }
+
     // Closes the client_id's focused tab
     pub fn close_tab(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to close tab for client {client_id:?}");
 
-        let client_id = if self.get_active_tab(client_id).is_ok() {
-            Some(client_id)
-        } else {
-            self.get_first_client_id()
-        };
+        let client_id = self.client_to_act_for(client_id);
 
         match client_id {
             Some(client_id) => {
