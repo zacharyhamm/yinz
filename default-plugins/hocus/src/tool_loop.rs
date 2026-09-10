@@ -3123,6 +3123,7 @@ impl State {
                 revision: hit.revision,
                 snippet: hit.snippet,
                 started_at_ms: header.started_at_ms,
+                worktree: agents::worktree_cell(header),
             });
         }
         Ok(())

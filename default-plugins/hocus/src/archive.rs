@@ -283,8 +283,11 @@ impl State {
             rows.push(agents::StripRow::Project("archive".to_owned()));
             rows.extend(self.archived_runs.iter().map(|run| agents::StripRow::Run {
                 run_id: run.id.clone(),
-                text: run_row_text(run),
                 kind: run.kind.clone(),
+                title: run.title.clone(),
+                worktree: agents::worktree_cell(run),
+                started_at_ms: Some(run.started_at_ms),
+                continuation: run.previous_run_id.is_some(),
             }));
             if self.archive_more {
                 rows.push(agents::StripRow::MoreRuns);
@@ -649,35 +652,6 @@ impl State {
         }
         self.flush_save();
         self.reply_at = None;
-    }
-}
-
-/// One archive row's line: the agent kind, then the title, marked with `↳` where the run
-/// continues an earlier one across a context clear.
-///
-/// A continuation whose origin is the same kind does not repeat it. The `↳` already says the run
-/// descends from the chain above it, and the daemon only links runs of a *matching* kind
-/// (`hocus-agentd`'s `previous.kind == kind` guard), so on every link it can currently make the
-/// word is redundant — and the pane it costs a column in is the narrow half. The kind is still
-/// spelled where it differs from the origin's, so a link made some other way later says so rather
-/// than quietly reading as a same-agent one.
-///
-/// The origin's kind comes off its id rather than out of a lookup: the archive is paged, so the
-/// origin is often not among the rows loaded.
-fn run_row_text(run: &agents::AgentRunHeader) -> String {
-    if run.previous_run_id.is_none() {
-        return format!("{} · {}", run.kind, run.title);
-    }
-    // `origin_run_id` first — the far end of the chain is what "the same agent all along" means.
-    // `previous_run_id` stands in for a row written before the daemon set both together.
-    let origin_kind = run
-        .origin_run_id
-        .as_deref()
-        .or(run.previous_run_id.as_deref())
-        .and_then(agents::run_id_kind);
-    match origin_kind == Some(run.kind.as_str()) {
-        true => format!("↳ {}", run.title),
-        false => format!("↳ {} · {}", run.kind, run.title),
     }
 }
 
