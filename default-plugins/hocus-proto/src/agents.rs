@@ -148,10 +148,16 @@ pub fn checkout_location(
 /// The host is kept because two machines can each have a `hocus`, and a row that says which is
 /// the difference between "I have seen this before" and "somebody else has".
 pub fn worktree_cell(run: &AgentRunHeader) -> String {
+    // Empty is absent, the same reading `AgentPane::checkout_location` gives a blank cwd: a
+    // hook that reported no folder must not become a cell that names one, and a blank host
+    // would prefix the leaf with a bare `:`.
+    fn some(value: Option<&str>) -> Option<&str> {
+        value.filter(|value| !value.is_empty())
+    }
     let Some(location) = checkout_location(
-        run.worktree.as_deref(),
-        run.host.as_deref(),
-        run.cwd.as_deref(),
+        some(run.worktree.as_deref()),
+        some(run.host.as_deref()),
+        some(run.cwd.as_deref()),
     ) else {
         return String::new();
     };
@@ -3486,6 +3492,11 @@ mod tests {
             "a VM run is named by the host worktree it mirrors, not by its guest copy",
         );
         assert_eq!(worktree_cell(&run(None, None, None)), "");
+        assert_eq!(
+            worktree_cell(&run(Some(""), Some("build-box"), None)),
+            "",
+            "a run that reported no folder names none, rather than a bare `build-box:`",
+        );
     }
 
     /// The whole point: a pane in a VM is identified by the folder on *this* machine
