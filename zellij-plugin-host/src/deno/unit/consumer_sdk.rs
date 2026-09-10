@@ -234,6 +234,114 @@ fn deno_workflow_view_keeps_restart_explicit_and_all_details_reachable() {
 }
 
 #[test]
+fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.polls=[];globalThis.commands=[];globalThis.filters=[];globalThis.renders=0;
+      globalThis.mock={...zellij,subscribe(events){check(events.includes('PaneOutput') && events.includes('CommandPaneExited'));},every(){},
+        command(name,args){if(name==='SubscribePaneOutput')filters.push(args);},requestRender(){renders++;},
+        rpc:{call(){return new Promise(resolve=>polls.push(resolve));}},
+        runCommand(options){return new Promise((resolve,reject)=>commands.push({options,resolve,reject}));}};
+      globalThis.key=bare_key=>M.update({Key:{bare_key,key_modifiers:[]}});
+      globalThis.focus=id=>{for(let i=0;i<20;i++){if(M.focusedControl()===id)return;key('Tab');}throw Error(id);};
+      globalThis.show=(run,launch)=>polls.shift()({run,launch,root:'/root/'+run,active:true,history:{status:'running'},
+        questions:{results:[{model:'m',version:1,attributes:{run,question:'q',kind:'choice',state:'pending',answers:['yes'],prompt:'Question'}}]}});
+      globalThis.emit=(work,data,operation='build',pane=7)=>M.update({PaneOutput:{pane_id:pane,context:{swamp_work:work,swamp_operation:operation},data:Array.from(typeof data==='string'?zellij.encodeUtf8(data):data)}});
+      globalThis.ok={exitCode:0,stdout:new Uint8Array(),stderr:new Uint8Array()};
+    "#);
+    consumer(&mut runtime, "workflow-view");
+    run(&mut runtime, "M.load(); M.attach({directory:'/a',run:'a'});check(filters.at(-1)===null);show('a','launch-a');");
+    run(&mut runtime, r#"
+      check(filters.at(-1).swamp_work==='launch-a');
+      emit('other','UNRELATED');check(!plain(M.render(30,200)).includes('UNRELATED'));
+      emit('launch-a','LIVE');check(plain(M.render(30,200)).includes('LIVE'));
+      emit('launch-a',[0xf0,0x9f]);check(!plain(M.render(30,200)).includes('�'));
+      emit('launch-a',[0x98,0x80]);emit('launch-a','\x1b[31');
+      check(!plain(M.render(30,200)).includes('[31'));
+      emit('launch-a','mRED\x1b[0m\x1b]0;secret');
+      check(!plain(M.render(30,200)).includes('secret'));
+      emit('launch-a','\x07TAIL');let frame=plain(M.render(30,200));check(frame.includes('LIVE😀REDTAIL'));
+      M.update({CommandPaneExited:[7,0,{swamp_work:'other'}]});check(polls.length===0);
+      M.update({CommandPaneExited:[7,0,{swamp_work:'launch-a'}]});check(polls.length===1);show('a','launch-a');
+    "#);
+    run(&mut runtime, r#"
+      M.render(10,80);M.update({Mouse:{LeftClick:[0,0]}});const before=renders;
+      emit('launch-a','selected');check(M.dirty && renders===before);
+      M.update({Mouse:{Release:[0,0]}});check(renders>before);
+      emit('launch-a','x'.repeat(66000)+'BUFFER-END');
+      frame=plain(M.render(12,100));check(M.scroll<660);check(frame.includes('older output omitted') && frame.includes('BUFFER-END'));
+      key('PageUp');M.render(12,100);const scroll=M.scroll;emit('launch-a','new');M.render(12,100);check(M.scroll===scroll);
+      key('End');check(plain(M.render(12,100)).includes('BUFFER-ENDnew'));
+      focus('choice_1');key('Enter');check(M.submitting && commands[0].options.cwd==='/root/a');
+      commands[0].options.onOutput({data:zellij.encodeUtf8('ANSWER-LIVE'),stderr:false});
+      check(plain(M.render(12,100)).includes('ANSWER-LIVE'));
+      commands[0].options.onOutput({data:zellij.encodeUtf8('ANSWER-ERR'),stderr:true});
+      check(plain(M.render(12,100)).includes('ANSWER-ERR'));
+      M.attach({directory:'/b',launch:'launch-b'});check(!M.submitting);show('b','launch-b');
+    "#);
+    run(&mut runtime, r#"
+      emit('launch-a','OLD-PANE');emit('launch-b','NEW-PANE');
+      let switched=plain(M.render(30,200));check(switched.includes('NEW-PANE') && !switched.includes('OLD-PANE') && !switched.includes('BUFFER-END'));
+      emit('launch-b','é'.repeat(32769)+'Z','utf8');key('PageUp');
+      check(!plain(M.render(12,100)).includes('�'));key('End');
+      emit('launch-b','SECOND-SOURCE','build',8);check(plain(M.render(12,100)).includes('Live build / pane 8'));
+      emit('launch-b','FIRST-SOURCE','build',7);check(plain(M.render(12,100)).includes('NEW-PANEFIRST-SOURCE'));
+      focus('cancel_run');key('Enter');check(M.submitting && commands.length===2);
+      commands[0].options.onOutput({data:zellij.encodeUtf8('STALE'),stderr:false});commands[0].resolve(ok);
+    "#);
+    run(&mut runtime, r#"
+      check(M.submitting && M.notice==='Requesting cancellation...' && M.pending.length===1 && polls.length===0);
+      check(!plain(M.render(30,200)).includes('STALE'));
+      M.attach({directory:'/c',launch:'launch-c'});show('c','launch-c');
+    "#);
+    run(&mut runtime, "focus('choice_1');key('Enter');commands[1].reject(Error('OLD-CANCEL'));");
+    run(&mut runtime, r#"
+      check(M.submitting && M.notice==='Submitting answer...' && polls.length===0);
+      M.attach({directory:'/d',launch:'launch-d'});show('d','launch-d');
+    "#);
+    run(&mut runtime, "focus('cancel_run');key('Enter');commands[2].reject(Error('OLD-ANSWER'));");
+    run(&mut runtime, r#"
+      check(M.submitting && M.notice==='Requesting cancellation...' && polls.length===0);
+      M.attach({directory:'/e',launch:'launch-e'});show('e','launch-e');
+    "#);
+    run(&mut runtime, "focus('choice_1');key('Enter');commands[3].resolve(ok);");
+    run(&mut runtime, r#"
+      check(M.submitting && M.notice==='Submitting answer...' && M.pending.length===1 && polls.length===0);
+      key('Esc');check(filters.at(-1)===null && !M.submitting);commands[4].resolve(ok);
+    "#);
+    run(&mut runtime, "check(polls.length===0 && M.attachment===undefined);");
+}
+
+#[test]
+fn deno_bridge_background_commands_correlate_parent_work() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    run(&mut runtime, r#"
+      globalThis.contexts=[];const original=mock.command;
+      mock.command=(name,args)=>{if(name==='OpenCommandPaneBackground')contexts.push(args[1]);return original(name,args);};
+      rows.set(JSON.stringify(['host','session','child','attachment']),{rev:1,value:JSON.stringify({work:'parent'})});
+    "#);
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load();globalThis.done=false;
+      (async()=>{
+        for(const work of ['child','standalone'])await handler({method:'command',work,key:'build',argv:['true']},{source:{Plugin:1}});
+        check(contexts[0].swamp_work==='parent' && contexts[1].swamp_work==='standalone');
+        rows.set(JSON.stringify(['host','session','parent','launch']),{rev:1,value:JSON.stringify({checkout:'/work'})});
+        rows.set(JSON.stringify(['host','session','child','attachment']),{rev:2,value:JSON.stringify({work:'parent',run:'child'})});
+        rows.set(JSON.stringify(['host','session','parent','runs']),{rev:1,value:JSON.stringify({entries:{}})});
+        mock.projectConfig={read:()=>({root:'/work'})};
+        mock.runCommand=async()=>({exitCode:0,stdout:zellij.encodeUtf8(JSON.stringify({results:[],status:'running'})),stderr:new Uint8Array()});
+        const snapshot=await handler({method:'workflow_show',directory:'/work',run:'child'},{source:{Plugin:1}});
+        check(snapshot.run==='child' && snapshot.launch==='parent');
+        for(const [i,work] of ['child','standalone'].entries())check(JSON.parse(contexts[i].swamp_owner).work===work && contexts[i].swamp_operation==='build');
+        done=true;
+      })().catch(e=>failure=String(e.stack));
+    "#);
+    run(&mut runtime, "if(failure)throw Error(failure);check(done);");
+}
+
+#[test]
 fn typescript_pane_sequence_reuses_scrollback_and_escalates_cancellation() {
     let mut runtime = sdk();
     run(&mut runtime, r#"

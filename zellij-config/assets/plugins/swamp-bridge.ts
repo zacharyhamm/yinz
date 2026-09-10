@@ -236,7 +236,7 @@ async function handle(input: Partial<Request>): Promise<unknown> {
       '--select', outputProjection, '--json'], config.root));
     const children = [];
     for (const id of ids) if (id !== run) children.push(JSON.parse(await command(['swamp', 'workflow', 'history', 'get', id, '--json'], config.root)));
-    return {run, root: config.root, history, children, active: active(attachment.work), outputs,
+    return {run, launch: attachment.work, root: config.root, history, children, active: active(attachment.work), outputs,
       logs: await command(['swamp', 'workflow', 'history', 'logs', run, '--tail', '100', '--json'], config.root), questions};
   }
   key(args.work);
@@ -395,7 +395,7 @@ async function handle(input: Partial<Request>): Promise<unknown> {
     const owner = {...identity, work: args.work, agent: args.key};
     value.owner = owner; value.outcome = 'pending'; put(uid!, value, row);
     const pane = z.command('OpenCommandPaneBackground', [{path: args.argv[0], args: args.argv.slice(1), cwd: args.cwd},
-      {swamp_owner: encode(owner), swamp_operation: args.key}]);
+      {swamp_owner: encode(owner), swamp_operation: args.key, swamp_work: read<Attachment>(scope(args.work, 'attachment'))[0]?.work ?? args.work}]);
     value = result(uid!); [, row] = read(uid!);
     assert(pane && 'Terminal' in pane, 'Command dispatch was not acknowledged; reconcile the saved operation before any further action');
     value.pane = pane.Terminal; value.checkout = args.cwd; value.log = `terminal_${value.pane}`; put(uid!, value, row);
