@@ -11,7 +11,7 @@ type Output = {output?: string; previewTruncated?: boolean; outputTruncated?: bo
 type Snapshot = {run?: string; launch?: string; root: string; history: History; children?: History[]; active?: boolean;
   questions?: {results?: Question[]}; outputs?: {results?: {model: string; name: string; version: number; attributes: Output}[]}; logs?: string};
 type Attachment = {directory: string; run?: string; launch?: string};
-type Block = {widget?: MarkdownComponent; lines?: string[]; count: number; scroll: number; important?: boolean};
+type Block = {widget?: MarkdownComponent; lines?: string[]; count: number; scroll: number; important?: boolean; live?: boolean};
 export const view = {
   status: 'No run attached', scroll: 0, pending: [] as Question[], selected: 0, active: false,
   submitting: false, refreshing: false, selecting: false, dirty: false, formY: 0,
@@ -23,6 +23,40 @@ let form: FormWidget | undefined, onRestart: (() => void) | undefined;
 let formKey: string | undefined, questionKey: string | undefined, formHeight = 1, formHasInput = false, contentHeight = 0;
 const answered = new Map<string, number>();
 let generation = 0;
+type Stream = {operation: string; source: string; raw: Uint8Array; value: string; omitted: boolean};
+let streams: Stream[] = [], latestStream: Stream | undefined, launch: string | undefined;
+let followLive = true;
+function watch(value?: string) {
+  if (value !== launch) { streams = []; latestStream = undefined; followLive = true; }
+  launch = value;
+  z.command('SubscribePaneOutput', value ? {swamp_work: value} : null);
+}
+function output(operation: string, source: string, data: Uint8Array) {
+  let stream = streams.find(entry => entry.operation === operation && entry.source === source);
+  if (!stream) { stream = {operation, source, raw: new Uint8Array(), value: '', omitted: false}; streams.push(stream); }
+  latestStream = stream;
+  const size = stream.raw.length + data.length, raw = new Uint8Array(Math.min(size, 65536));
+  const retained = Math.max(0, raw.length - data.length);
+  raw.set(stream.raw.subarray(stream.raw.length - retained));
+  raw.set(data.subarray(Math.max(0, data.length - raw.length)), retained);
+  let start = 0, end = raw.length;
+  if (size > 65536) {
+    stream.omitted = true;
+    while (start < end && raw[start] >= 128 && raw[start] < 192) start++;
+  }
+  stream.raw = raw.slice(start);
+  // Keep incomplete UTF-8 and escapes in raw until the next chunk completes them.
+  let last = end - 1;
+  while (last >= start && raw[last] >= 128 && raw[last] < 192) last--;
+  const first = raw[last], need = first >= 240 ? 4 : first >= 224 ? 3 : first >= 194 ? 2 : 1;
+  if (last >= start && end - last < need) end = last;
+  stream.value = text(z.decodeUtf8(raw.subarray(start, end))
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b(?:\][^\x07\x1b]*(?:\x1b)?|\[[0-?]*[ -/]*)?$/g, '')
+    .replace(/\x1b[@-_]/g, ''));
+  repaint();
+}
 const text = (value: unknown) => z.text.sanitize(String(value ?? ''));
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 const identity = (entry?: Question) => entry ? JSON.stringify([entry.attributes.run, entry.model, entry.attributes.question]) : undefined;
@@ -59,6 +93,7 @@ async function refresh() {
     view.refreshError = undefined; view.snapshot = snapshot;
     view.active = !!snapshot.active || [snapshot.history, ...(snapshot.children ?? [])].some(h => ['running', 'suspended'].includes(h.status));
     view.attachment.run = snapshot.run;
+    if (snapshot.launch && snapshot.launch !== launch) watch(snapshot.launch);
     view.status = `Run ${snapshot.run ?? snapshot.launch}: ${snapshot.history.status}`;
     const selected = identity(view.pending[view.selected]), latest = new Map<string, Question>();
     for (const entry of snapshot.questions?.results ?? []) {
@@ -79,13 +114,15 @@ async function refresh() {
   }
 }
 function attach(attachment: Attachment) {
-  generation++; view.attachment = attachment; view.snapshot = undefined; view.pending = []; view.selected = 0; view.scroll = 0;
+  generation++; view.submitting = false; streams = []; latestStream = undefined; followLive = true;
+  view.selecting = false; view.dirty = false; formKey = undefined; questionKey = undefined;
+  watch(attachment.launch); view.attachment = {...attachment}; view.snapshot = undefined; view.pending = []; view.selected = 0; view.scroll = 0;
   view.notice = undefined; view.noticeError = false; view.refreshError = undefined; view.active = true; view.status = 'Loading workflow...';
   void refresh();
 }
 function load(options?: {onRestart?: () => void}) {
   onRestart = options?.onRestart; formKey = undefined;
-  z.subscribe(['Key', 'Mouse', 'PastedText']); z.command('SetSelfMouseSelectionSupport', true);
+  z.subscribe(['Key', 'Mouse', 'PastedText', 'PaneOutput', 'CommandPaneExited']); z.command('SetSelfMouseSelectionSupport', true);
   controls(); z.every(2000, refresh);
 }
 function pipe(message: PipeMessage) {
@@ -98,11 +135,21 @@ function pipe(message: PipeMessage) {
 function update(event: Event): boolean {
   controls();
   if (typeof event !== 'object') return false;
-  if ('Key' in event && event.Key.bare_key === 'PageUp') { view.scroll = Math.max(0, view.scroll - contentHeight); return true; }
+  if ('PaneOutput' in event) {
+    const {context, pane_id, data} = event.PaneOutput;
+    if (launch && context.swamp_work === launch) output(context.swamp_operation || 'command', `pane ${pane_id}`, new Uint8Array(data));
+    return false;
+  }
+  if ('CommandPaneExited' in event) {
+    if (launch && event.CommandPaneExited[2].swamp_work === launch) void refresh();
+    return false;
+  }
+  if ('Key' in event && event.Key.bare_key === 'End' && form!.focusedId() !== 'answer') { followLive = true; view.scroll = Infinity; return true; }
+  if ('Key' in event && event.Key.bare_key === 'PageUp') { followLive = false; view.scroll = Math.max(0, view.scroll - contentHeight); return true; }
   if ('Key' in event && event.Key.bare_key === 'PageDown') { view.scroll += contentHeight; return true; }
   if ('Mouse' in event) {
     const mouse = event.Mouse;
-    if ('ScrollUp' in mouse) { view.scroll = Math.max(0, view.scroll - Math.min(Number(mouse.ScrollUp), contentHeight)); return true; }
+    if ('ScrollUp' in mouse) { followLive = false; view.scroll = Math.max(0, view.scroll - Math.min(Number(mouse.ScrollUp), contentHeight)); return true; }
     if ('ScrollDown' in mouse) { view.scroll += Math.min(Number(mouse.ScrollDown), contentHeight); return true; }
     if ('LeftClick' in mouse) view.selecting = Number(mouse.LeftClick[0]) < view.formY;
     if (view.selecting) {
@@ -117,7 +164,7 @@ function update(event: Event): boolean {
   else if ('Mouse' in event) action = form!.handleMouse(event.Mouse);
   else if ('PastedText' in event) action = form!.insertPastedText(event.PastedText);
   else return false;
-  if (action.kind === 'cancel' || ('id' in action && action.id === 'detach')) { z.command('CloseSelf'); return true; }
+  if (action.kind === 'cancel' || ('id' in action && action.id === 'detach')) { generation++; view.attachment = undefined; view.submitting = false; watch(); z.command('CloseSelf'); return true; }
   if ('id' in action && action.id === 'next') { view.selected = (view.selected + 1) % view.pending.length; controls(); return true; }
   if (action.kind !== 'buttonPressed' || view.submitting) return action.kind !== 'ignored';
   if (action.id === 'restart' && onRestart && !view.active && !view.pending.length) { onRestart(); return true; }
@@ -132,12 +179,15 @@ function update(event: Event): boolean {
   } else return true;
   generation++; view.submitting = true; view.noticeError = false;
   view.notice = success === 'Answer recorded' ? 'Submitting answer...' : 'Requesting cancellation...';
-  void submit(command, success, entry);
+  void submit(command, success, view.attachment!, view.snapshot!.root, entry);
   return true;
 }
-async function submit(command: string[], success: string, entry?: Question) {
+async function submit(command: string[], success: string, attachment: Attachment, cwd: string, entry?: Question) {
+  const operation = `${command[2] === 'answer' ? identity(entry) : command[3]}: ${command[2] === 'answer' ? command[6] : 'cancel_run'}`;
   try {
-    const result = await z.runCommand({cwd: view.snapshot!.root, context: {swamp_owner: 'view'}, command, maxBytesReturned: 8192});
+    const result = await z.runCommand({cwd, context: {swamp_owner: 'view'}, command, maxBytesReturned: 8192,
+      onOutput: event => { if (view.attachment === attachment) output(operation, event.stderr ? 'stderr' : 'stdout', event.data); }});
+    if (view.attachment !== attachment) return;
     const accepted = result.exitCode === 0;
     view.noticeError = !accepted;
     view.notice = accepted ? success : z.decodeUtf8(result.stderr) || z.decodeUtf8(result.stdout) || 'Command failed';
@@ -146,8 +196,13 @@ async function submit(command: string[], success: string, entry?: Question) {
       view.pending = view.pending.filter(pending => identity(pending) !== identity(entry));
       view.selected = Math.min(view.selected, Math.max(0, view.pending.length - 1)); controls();
     }
-  } catch (error) { view.noticeError = true; view.notice = String(error); }
-  finally { view.submitting = false; repaint(); void refresh(); }
+  } catch (error) { if (view.attachment === attachment) { view.noticeError = true; view.notice = String(error); } }
+  finally {
+    if (view.attachment === attachment) {
+      if (view.noticeError) output(operation, 'submission error', z.encodeUtf8(view.notice!));
+      view.submitting = false; repaint(); void refresh();
+    }
+  }
 }
 let markdownCache: {source: string; dim: boolean; widget: MarkdownComponent}[] = [];
 const failed = (status?: string) => status === 'failed' || status === 'error';
@@ -202,6 +257,11 @@ function render(rows: number, cols: number): string {
     }
     add('Workflow log (last 100 lines):'); add(snapshot.logs ?? '', false, true);
   }
+  for (const stream of streams) {
+    add(stream.value);
+    add(`Live ${stream.operation} / ${stream.source}${stream.omitted ? ' [older output omitted]' : ''} (End: live)`);
+    blocks[blocks.length - 1].live = stream === latestStream;
+  }
   markdownCache = cache;
   const height = Math.min(formHeight, Math.max(0, rows - (rows >= 2 ? 1 : 0)));
   const footerHeight = question ? Math.min(question.count, Math.floor((rows - height) / 2)) : 0;
@@ -209,6 +269,11 @@ function render(rows: number, cols: number): string {
   const separator = footerHeight > 0 && rows - height - footerHeight >= 2 ? 1 : 0;
   const page = Math.max(0, rows - height - footerHeight - separator); contentHeight = page; view.formY = rows - height;
   const total = blocks.reduce((sum, block) => sum + block.count, 0);
+  if (streams.length && followLive) {
+    let liveEnd = 0;
+    for (const block of blocks) { liveEnd += block.count; if (block.live) break; }
+    view.scroll = Math.max(0, liveEnd - page);
+  }
   view.scroll = Math.max(0, Math.min(view.scroll, Math.max(0, total - page)));
   const frame: string[] = [];
   function draw(block: Block, y: number, skip: number, count: number) {
