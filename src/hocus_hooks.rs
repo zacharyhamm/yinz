@@ -44,7 +44,7 @@ const SCRIPT_VERSION: u32 = 7;
 
 /// The same discipline for the generated opencode plugin, which is one file rather than a
 /// script plus a settings block. Bumped whenever [`opencode_plugin`] changes.
-const OPENCODE_PLUGIN_VERSION: u32 = 2;
+const OPENCODE_PLUGIN_VERSION: u32 = 3;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///
@@ -324,7 +324,7 @@ const PANE_ID = process.env.ZELLIJ_PANE_ID
 
 let reports = Promise.resolve()
 
-function report(payload) {
+function report(payload, isParent) {
   // The remote token is tested first, and that order is the whole point: a remote pane
   // carries a token *and* a pane id, and the pane id it carries is the asking session's,
   // on a machine that has no such session. Neither set: not a zellij pane at all, and
@@ -339,42 +339,59 @@ function report(payload) {
   } catch {
     return
   }
-  reports = reports.then(() => new Promise((resolve) => {
-    let child
-    try {
-      child = spawn(ZELLIJ_BIN, args, { stdio: ["pipe", "ignore", "ignore"] })
-    } catch {
-      resolve()
-      return
-    }
-    // Node emits close after error, including when spawning fails.
-    child.on("error", () => {})
-    child.on("close", resolve)
-    child.stdin.on("error", () => {})
-    try {
-      child.stdin.end(serialized)
-    } catch {
-      child.kill()
-    }
-  })).catch(() => {})
+  reports = reports.then(async () => {
+    if (!await isParent()) return
+    return new Promise((resolve) => {
+      let child
+      try {
+        child = spawn(ZELLIJ_BIN, args, { stdio: ["pipe", "ignore", "ignore"] })
+      } catch {
+        resolve()
+        return
+      }
+      // Node emits close after error, including when spawning fails.
+      child.on("error", () => {})
+      child.on("close", resolve)
+      child.stdin.on("error", () => {})
+      try {
+        child.stdin.end(serialized)
+      } catch {
+        child.kill()
+      }
+    })
+  }).catch(() => {})
 }
 
-export const Hocus = async ({ directory }) => {
+export const Hocus = async ({ directory, client }) => {
   // The folder the server is working in. Stamped on every event because an opencode
   // record is complete every time it is set, and an event that omitted the folder
   // would clear one an earlier event had set.
   const cwd = directory
-  // Sessions opencode started under another (a `task` subagent). Their work is the
-  // parent's, so their idle and deletion must not end the pane's turn.
-  const childSessions = new Set()
+  // Cache whether each session is a parent, including sessions resumed after restart.
+  // Classify in report order so metadata lookups cannot reorder pane state changes.
+  const sessions = new Map()
   const textParts = new Map()
   const lastAssistant = new Map()
 
-  const send = (type, properties) =>
-    report({ type, properties: { cwd, ...properties } })
+  const send = (type, properties, info) => {
+    const sessionID = properties.sessionID
+    const parent = info ? !info.parentID : undefined
+    report({ type, properties: { cwd, ...properties } }, async () => {
+      if (!sessionID) return false
+      if (parent !== undefined && !sessions.has(sessionID)) sessions.set(sessionID, parent)
+      if (!sessions.has(sessionID)) {
+        const { data, error } = await client.session.get({ path: { id: sessionID } })
+        // Failed lookups suppress this report, but the next event can retry.
+        if (error || data?.id !== sessionID) return false
+        sessions.set(sessionID, !data.parentID)
+      }
+      const isParent = sessions.get(sessionID)
+      if (type === "session.deleted") sessions.delete(sessionID)
+      return isParent
+    })
+  }
 
   const forget = (sessionID) => {
-    childSessions.delete(sessionID)
     textParts.delete(sessionID)
     lastAssistant.delete(sessionID)
   }
@@ -384,21 +401,11 @@ export const Hocus = async ({ directory }) => {
       const p = event.properties ?? {}
       switch (event.type) {
         case "session.created":
-          if (p.info?.parentID) {
-            childSessions.add(p.info.id)
-            return
-          }
-          send("session.created", { sessionID: p.info?.id })
-          return
         case "session.deleted":
-          if (p.info?.id && childSessions.has(p.info.id)) {
-            forget(p.info.id)
-            return
-          }
-          send("session.deleted", { sessionID: p.info?.id })
+          send(event.type, { sessionID: p.info?.id }, p.info)
+          if (event.type === "session.deleted") forget(p.info?.id)
           return
         case "session.idle": {
-          if (childSessions.has(p.sessionID)) return
           const last = lastAssistant.get(p.sessionID)
           send("session.idle", {
             sessionID: p.sessionID,
@@ -408,7 +415,6 @@ export const Hocus = async ({ directory }) => {
           return
         }
         case "session.error": {
-          if (childSessions.has(p.sessionID)) return
           const last = lastAssistant.get(p.sessionID)
           send("session.error", {
             sessionID: p.sessionID,
@@ -418,7 +424,6 @@ export const Hocus = async ({ directory }) => {
           return
         }
         case "session.compacted":
-          if (childSessions.has(p.sessionID)) return
           send("session.compacted", { sessionID: p.sessionID })
           return
         case "message.part.updated": {
@@ -434,7 +439,6 @@ export const Hocus = async ({ directory }) => {
         case "message.updated": {
           const info = p.info
           if (info?.role !== "assistant" || !info.time?.completed) return
-          if (childSessions.has(info.sessionID)) return
           const parts = textParts.get(info.sessionID)?.get(info.id)
           const text = parts ? [...parts.values()].join("") : ""
           // Once consumed, the parts are dropped: the message's text lives on in
@@ -451,11 +455,9 @@ export const Hocus = async ({ directory }) => {
         }
         case "permission.asked":
         case "permission.updated":
-          if (childSessions.has(p.sessionID)) return
           send(event.type, { ...p })
           return
         case "permission.replied":
-          if (childSessions.has(p.sessionID)) return
           send("permission.replied", { sessionID: p.sessionID })
           return
         default:
@@ -463,7 +465,6 @@ export const Hocus = async ({ directory }) => {
       }
     },
     "chat.message": async (input, output) => {
-      if (childSessions.has(input.sessionID)) return
       lastAssistant.delete(input.sessionID)
       textParts.delete(input.sessionID)
       const text = (output.parts ?? [])
@@ -471,15 +472,13 @@ export const Hocus = async ({ directory }) => {
         .map((part) => part.text ?? "")
         .join(" ")
         .trim()
-      if (!text) return
       send("chat.message", {
         sessionID: input.sessionID,
         messageID: output.message?.id,
-        prompt: text,
+        prompt: text || undefined,
       })
     },
     "tool.execute.before": async (input, output) => {
-      if (childSessions.has(input.sessionID)) return
       send("tool.execute.before", {
         sessionID: input.sessionID,
         callID: input.callID,
@@ -488,7 +487,6 @@ export const Hocus = async ({ directory }) => {
       })
     },
     "tool.execute.after": async (input) => {
-      if (childSessions.has(input.sessionID)) return
       send("tool.execute.after", {
         sessionID: input.sessionID,
         callID: input.callID,
@@ -1464,14 +1462,12 @@ mod tests {
         install(&files, &fake_zellij(&temp), false).unwrap();
 
         let plugin = read_generated(&files.script).unwrap().unwrap();
-        assert!(plugin.contains("hocus-opencode-plugin v2"), "{plugin}");
+        assert!(
+            plugin.contains(&format!("hocus-opencode-plugin v{OPENCODE_PLUGIN_VERSION}")),
+            "{plugin}"
+        );
         assert!(plugin.contains("\"agent-report\""), "{plugin}");
         assert!(plugin.contains("\"--pty-broker\""), "{plugin}");
-        assert!(
-            plugin.contains("childSessions.has(input.sessionID)")
-                && plugin.contains("childSessions.has(p.sessionID)"),
-            "subagent tool and permission events must not reach the parent run: {plugin}"
-        );
         assert!(
             !plugin.contains("__ZELLIJ_BIN__")
                 && !plugin.contains("__TOKEN_ENV__")
