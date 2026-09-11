@@ -3048,3 +3048,499 @@ export default {
     let frame = harness.rendered("workers");
     assert!(frame.contains("Deno plugins have no workers"), "{frame}");
 }
+
+// Filesystem roots ---------------------------------------------------------------------------
+//
+// The `Fs*` handlers are shared with Lua and Wasm, and `lua/unit_tests.rs` covers them in
+// depth; what these establish is that a Deno plugin reaches the same four roots through the
+// same environment, with the same refusals, and that `/host` follows `ChangeHostFolder`.
+
+struct FsDirs {
+    host: tempfile::TempDir,
+    data: tempfile::TempDir,
+    cache: tempfile::TempDir,
+    plugins: tempfile::TempDir,
+}
+
+impl FsDirs {
+    fn new() -> Self {
+        FsDirs {
+            host: tempfile::tempdir().unwrap(),
+            data: tempfile::tempdir().unwrap(),
+            cache: tempfile::tempdir().unwrap(),
+            plugins: tempfile::tempdir().unwrap(),
+        }
+    }
+}
+
+/// Run `body` as a Deno plugin's `render`, on an environment rooted in `dirs`, and hand back
+/// what it returned - or `error: <message>` when it threw. No plugin thread: `zellij.fs.*` is
+/// synchronous, so `render` alone exercises the whole path.
+fn deno_render_with_dirs(
+    body: &str,
+    dirs: &FsDirs,
+    permissions: Option<std::collections::HashSet<PermissionType>>,
+) -> String {
+    let source = format!(
+        "export default {{ render() {{ try {{ {body} }} catch (error) {{ return 'error: ' + error.message; }} }} }};"
+    );
+    let mut env = crate::lua::unit_tests::test_env();
+    env.plugin_cwd = dirs.host.path().to_path_buf();
+    env.plugin_own_data_dir = dirs.data.path().to_path_buf();
+    env.plugin_own_cache_dir = dirs.cache.path().to_path_buf();
+    env.user_plugin_dir = Some(dirs.plugins.path().to_path_buf());
+    env.permissions = Arc::new(std::sync::Mutex::new(permissions));
+    let mut plugin = crate::deno::DenoPlugin::new(
+        &source,
+        &dirs.host.path().join("fs.ts"),
+        env,
+        Arc::default(),
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    String::from_utf8(plugin.render(1, 400).unwrap()).unwrap()
+}
+
+fn file_permissions() -> Option<std::collections::HashSet<PermissionType>> {
+    Some(
+        [PermissionType::ReadFiles, PermissionType::WriteFiles]
+            .into_iter()
+            .collect(),
+    )
+}
+
+struct RemoveOnDrop(PathBuf);
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[test]
+fn deno_each_root_is_a_different_folder() {
+    let dirs = FsDirs::new();
+    let unique = format!("deno-where-{}.txt", std::process::id());
+    let rendered = deno_render_with_dirs(
+        &format!(
+            "zellij.fs.write('/host/where.txt', 'host'); zellij.fs.write('/data/where.txt', 'data'); \
+             zellij.fs.write('/cache/where.txt', 'cache'); zellij.fs.write('/tmp/{unique}', 'tmp'); \
+             return zellij.decodeUtf8(zellij.fs.read('relative.txt'));"
+        ),
+        &dirs,
+        file_permissions(),
+    );
+    let _cleanup = RemoveOnDrop(zellij_runtime::consts::ZELLIJ_TMP_DIR.join(&unique));
+    for (dir, expected) in [
+        (dirs.host.path(), "host"),
+        (dirs.data.path(), "data"),
+        (dirs.cache.path(), "cache"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(dir.join("where.txt")).unwrap(),
+            expected
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(zellij_runtime::consts::ZELLIJ_TMP_DIR.join(&unique)).unwrap(),
+        "tmp",
+        "/tmp is zellij's own temp folder"
+    );
+    // A relative path is read against `/host`; a missing file is an error, not an empty answer.
+    assert!(rendered.starts_with("error:"), "{rendered}");
+    std::fs::write(dirs.host.path().join("relative.txt"), "found").unwrap();
+    assert_eq!(
+        deno_render_with_dirs(
+            "return zellij.decodeUtf8(zellij.fs.read('relative.txt'));",
+            &dirs,
+            file_permissions()
+        ),
+        "found"
+    );
+}
+
+#[test]
+fn deno_a_path_cannot_climb_out_of_its_root() {
+    let dirs = FsDirs::new();
+    for body in [
+        "return zellij.fs.read('/host/../../../../etc/passwd');",
+        "return zellij.fs.read('/data/../../../../etc/passwd');",
+        "zellij.fs.write('/host/../escaped.txt', 'x'); return 'written';",
+    ] {
+        let rendered = deno_render_with_dirs(body, &dirs, file_permissions());
+        assert!(
+            rendered.contains("outside the plugin's own folders"),
+            "expected {body} to be refused, got: {rendered}"
+        );
+    }
+    assert!(!dirs
+        .host
+        .path()
+        .parent()
+        .unwrap()
+        .join("escaped.txt")
+        .exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn deno_a_symlink_out_of_a_root_is_followed_and_then_refused() {
+    let dirs = FsDirs::new();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+    std::os::unix::fs::symlink(outside.path(), dirs.host.path().join("escape")).unwrap();
+    let rendered = deno_render_with_dirs(
+        "return zellij.fs.read('/host/escape/secret.txt');",
+        &dirs,
+        file_permissions(),
+    );
+    assert!(
+        rendered.contains("outside the plugin's own folders") && rendered.contains("is a symlink"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn deno_the_plugin_folder_is_a_root_that_needs_author_plugins_to_write() {
+    let dirs = FsDirs::new();
+    let body = "try { zellij.fs.write('/plugins/keys.ts', 'export default {};'); } catch (error) { return 'refused: ' + error.message; } return zellij.decodeUtf8(zellij.fs.read('/plugins/keys.ts'));";
+    let without = deno_render_with_dirs(body, &dirs, file_permissions());
+    assert!(
+        without.contains("AuthorPlugins"),
+        "a write into the plugin folder names the permission it needs: {without}"
+    );
+    assert!(!dirs.plugins.path().join("keys.ts").exists());
+    let mut with = file_permissions().unwrap();
+    with.insert(PermissionType::AuthorPlugins);
+    assert_eq!(
+        deno_render_with_dirs(body, &dirs, Some(with)),
+        "export default {};"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dirs.plugins.path().join("keys.ts")).unwrap(),
+        "export default {};",
+        "the write landed in the real plugin folder"
+    );
+}
+
+#[test]
+fn deno_renaming_out_of_the_plugins_folder_is_refused() {
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("a.txt"), "x").unwrap();
+    let stolen = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deno-stolen.txt");
+    let _cleanup = RemoveOnDrop(stolen.clone());
+    let rendered = deno_render_with_dirs(
+        &format!(
+            "zellij.fs.rename('/host/a.txt', '{}'); return 'renamed';",
+            stolen.display()
+        ),
+        &dirs,
+        file_permissions(),
+    );
+    assert!(rendered.contains("FullHdAccess"), "{rendered}");
+    assert!(dirs.host.path().join("a.txt").exists() && !stolen.exists());
+}
+
+#[test]
+fn deno_full_hd_access_reaches_absolute_paths_and_nothing_less_does() {
+    let dirs = FsDirs::new();
+    // Not a tempdir: `/tmp` is one of the roots. This crate's own tree is outside every root.
+    let outside = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deno-outside-the-roots.txt");
+    std::fs::write(&outside, "elsewhere").unwrap();
+    let _cleanup = RemoveOnDrop(outside.clone());
+    let body = format!(
+        "return zellij.decodeUtf8(zellij.fs.read('{}'));",
+        outside.display()
+    );
+    let refused = deno_render_with_dirs(&body, &dirs, file_permissions());
+    assert!(refused.contains("FullHdAccess"), "{refused}");
+    let mut with = file_permissions().unwrap();
+    with.insert(PermissionType::FullHdAccess);
+    assert_eq!(deno_render_with_dirs(&body, &dirs, Some(with)), "elsewhere");
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_change_host_folder_moves_the_host_root() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'starting';
+export default {
+  async load() {
+    zellij.subscribe(['CustomMessage', 'HostFolderChanged', 'FailedToChangeHostFolder']);
+    zellij.on('HostFolderChanged', (folder) => { state = `moved to ${folder.split('/').at(-1)}: ${zellij.decodeUtf8(zellij.fs.read('/host/marker'))}`; return true; });
+    zellij.on('FailedToChangeHostFolder', (error) => { state = `failed: ${error}`; return true; });
+    await zellij.waitForPermissions(['ReadFiles', 'FullHdAccess']);
+    state = `before: ${zellij.fs.metadata('/host/marker') === null ? 'no marker' : 'marker'}`;
+    zellij.requestRender();
+  },
+  update(event) { if (event.CustomMessage) { zellij.host.changeHostFolder(event.CustomMessage[1]); } return false; },
+  render() { return state; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    let elsewhere = tempdir().unwrap();
+    std::fs::write(elsewhere.path().join("marker"), "found in the new host").unwrap();
+    harness.load();
+    harness.rendered("before: no marker");
+    harness.event(Event::CustomMessage(
+        "move".into(),
+        elsewhere.path().display().to_string(),
+    ));
+    let frame = harness.rendered("moved to");
+    assert_eq!(
+        frame.trim_end(),
+        format!(
+            "moved to {}: found in the new host",
+            elsewhere.path().file_name().unwrap().to_string_lossy()
+        )
+    );
+    let log = harness.finish();
+    assert!(!rendered_assets(&log)
+        .iter()
+        .any(|(_, frame)| frame.contains("failed:")));
+}
+
+// Filesystem watching and scanning ------------------------------------------------------------
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_filesystem_watch_events_reach_the_plugin_and_its_reloaded_replacement() {
+    let source = r#"
+const label = 'first';
+const seen: string[] = [];
+export default {
+  load() {
+    zellij.subscribe(['FileSystemCreate', 'FileSystemUpdate', 'FileSystemDelete']);
+    zellij.host.watchFilesystem();
+  },
+  update(event) {
+    const type = typeof event === 'string' ? event : Object.keys(event)[0];
+    if (!type.startsWith('FileSystem')) return false;
+    // The watcher attaches no metadata (see `watch_filesystem.rs`); the pair shape is the point.
+    for (const [path, metadata] of event[type]) {
+      seen.push(`${type.slice('FileSystem'.length).toLowerCase()}:${path.split('/').at(-1)}${metadata === null ? '' : '?'}`);
+    }
+    return true;
+  },
+  render() { return `${label} ${seen.join(' ')}`; }
+};
+"#;
+    let harness = Harness::new("ts", source, PermissionStatus::Granted);
+    harness.load();
+    harness.rendered("first");
+    let watched = harness.directory.path().join("watched.txt");
+    std::fs::write(&watched, "one").unwrap();
+    harness.rendered("create:watched.txt");
+    std::fs::write(&watched, "two").unwrap();
+    harness.rendered("update:watched.txt");
+    std::fs::remove_file(&watched).unwrap();
+    harness.rendered("delete:watched.txt");
+    // The replacement watches afresh; the watcher's events name no generation, so they reach
+    // whichever instance is live.
+    std::fs::write(&harness.path, source.replace("'first'", "'second'")).unwrap();
+    harness.reload();
+    harness.rendered("second ");
+    std::fs::write(harness.directory.path().join("later.txt"), "three").unwrap();
+    let frame = harness.rendered("create:later.txt");
+    assert!(frame.starts_with("second "), "{frame}");
+    assert!(
+        !frame.contains("watched.txt"),
+        "fresh state after reload: {frame}"
+    );
+    harness.finish();
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_scan_host_folder_answers_the_requesting_generation() {
+    let source = r#"
+const label = 'first';
+let listing = 'unscanned';
+export default {
+  load() {
+    zellij.subscribe(['FileSystemUpdate']);
+    zellij.host.scanHostFolder('/host');
+  },
+  update(event) {
+    if (typeof event !== 'object' || !event.FileSystemUpdate) return false;
+    listing = event.FileSystemUpdate.map(([path]) => path).filter(p => p.endsWith('.txt')).sort().join(',');
+    return true;
+  },
+  render() { return `${label} ${listing}`; }
+};
+"#;
+    let harness = Harness::new("ts", source, PermissionStatus::Granted);
+    std::fs::write(harness.directory.path().join("b.txt"), "").unwrap();
+    std::fs::write(harness.directory.path().join("a.txt"), "").unwrap();
+    harness.load();
+    let frame = harness.rendered("first /host");
+    assert_eq!(frame.trim_end(), "first /host/a.txt,/host/b.txt");
+    std::fs::write(harness.directory.path().join("c.txt"), "").unwrap();
+    std::fs::write(&harness.path, source.replace("'first'", "'second'")).unwrap();
+    harness.reload();
+    let frame = harness.rendered("second /host");
+    assert_eq!(
+        frame.trim_end(),
+        "second /host/a.txt,/host/b.txt,/host/c.txt"
+    );
+    harness.finish();
+}
+
+// Name resolution -------------------------------------------------------------------------------
+
+fn deno_run_plugin_at(path: &str) -> RunPluginOrAlias {
+    RunPluginOrAlias::RunPlugin(RunPlugin {
+        location: RunPluginLocation::File(PathBuf::from(path)),
+        ..Default::default()
+    })
+}
+
+/// A plugin named rather than pathed is found in the user's plugin folder - `file:probe.ts` in
+/// a layout means the obvious thing. See `a_lua_plugin_is_found_in_the_user_plugin_dir_by_name`.
+#[test]
+#[serial(plugin_tests)]
+fn deno_plugin_is_found_in_the_user_plugin_dir_by_name() {
+    let temp_folder = tempdir().unwrap();
+    let user_plugin_dir = tempdir().unwrap();
+    std::fs::write(
+        user_plugin_dir.path().join("probe.ts"),
+        "export default { render() { return 'found by name'; } };",
+    )
+    .unwrap();
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread_with_user_plugin_dir(
+            Some(temp_folder.path().to_path_buf()),
+            None,
+            Some(user_plugin_dir.path().to_path_buf()),
+        );
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::PluginBytes,
+        screen_receiver,
+        1
+    );
+    plugin_thread_sender
+        .send(PluginInstruction::AddClient(CLIENT))
+        .unwrap();
+    load(&plugin_thread_sender, deno_run_plugin_at("probe.ts"));
+    screen_thread.join().unwrap();
+    teardown();
+    let rendered = super::lua_plugins::rendered_output(&received_screen_instructions.lock());
+    assert!(
+        rendered.iter().any(|r| r.contains("found by name")),
+        "expected the plugin from the user plugin dir to render, got: {rendered:?}"
+    );
+}
+
+/// A reload naming the file in full finds the plugin that was started by bare name, through
+/// `resolved_source_path`; without it the reload starts a second instance in a new pane. See
+/// `a_reload_by_absolute_path_reloads_a_plugin_started_by_name`.
+#[test]
+#[serial(plugin_tests)]
+fn deno_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
+    let temp_folder = tempdir().unwrap();
+    let user_plugin_dir = tempdir().unwrap();
+    let plugin_file = user_plugin_dir.path().join("probe.ts");
+    let source =
+        |version: &str| format!("export default {{ render() {{ return '{version}'; }} }};");
+    std::fs::write(&plugin_file, source("first version")).unwrap();
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread_with_user_plugin_dir(
+            Some(temp_folder.path().to_path_buf()),
+            None,
+            Some(user_plugin_dir.path().to_path_buf()),
+        );
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::PluginBytes,
+        screen_receiver,
+        2
+    );
+    plugin_thread_sender
+        .send(PluginInstruction::AddClient(CLIENT))
+        .unwrap();
+    load(&plugin_thread_sender, deno_run_plugin_at("probe.ts"));
+    received_screen_instructions.wait_until(
+        "the plugin to render its first version",
+        default_timeout(),
+        |instructions| {
+            super::lua_plugins::rendered_output(instructions)
+                .iter()
+                .any(|rendered| rendered.contains("first version"))
+                .then_some(())
+        },
+    );
+    std::fs::write(&plugin_file, source("second version")).unwrap();
+    plugin_thread_sender
+        .send(PluginInstruction::Reload(
+            Some(false),
+            Some("deno acceptance".into()),
+            deno_run_plugin_at(&plugin_file.display().to_string()),
+            TabId::new(1),
+            SIZE,
+            None,
+        ))
+        .unwrap();
+    screen_thread.join().unwrap();
+    teardown();
+    let logged = received_screen_instructions.lock();
+    let rendered = super::lua_plugins::rendered_output(&logged);
+    assert!(
+        rendered.iter().any(|r| r.contains("second version")),
+        "the reload should have re-read the file, got: {rendered:?}"
+    );
+    assert_eq!(
+        logged
+            .iter()
+            .filter(|i| matches!(i, ScreenInstruction::AddPlugin(..)))
+            .count(),
+        1,
+        "the running plugin should have been reloaded, not started a second time in a new pane"
+    );
+}
+
+// Configuration ---------------------------------------------------------------------------------
+
+/// A configuration that already exists is handed to `load` as-is: `PluginUserConfiguration::new`
+/// strips reserved keys such as `payload`, which is right for a layout and wrong afterwards. See
+/// `plugin_configuration_reaches_load_without_being_re_normalized`.
+#[test]
+#[serial(plugin_tests)]
+fn deno_plugin_receives_its_configuration_unnormalized() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'loading';
+export default {
+  defaults: {greeting: 'hello', name: 'world'},
+  load(config) { state = Object.entries(config).map(([k, v]) => `${k}=${v}`).sort().join(' '); return true; },
+  render() { return state; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    let mut configuration =
+        PluginUserConfiguration::new(BTreeMap::from([("greeting".into(), "configured".into())]));
+    // Inserted after construction, exactly as the reserved-word filter intends to allow.
+    configuration.insert("payload", "carried");
+    configuration.insert("name", "zellij");
+    configuration.insert("Mixed_Case-key", "kept as written");
+    load(
+        &harness.sender,
+        RunPluginOrAlias::RunPlugin(RunPlugin {
+            location: RunPluginLocation::File(harness.path.clone()),
+            configuration,
+            ..Default::default()
+        }),
+    );
+    let frame = harness.rendered("greeting=");
+    assert_eq!(
+        frame.trim_end(),
+        "Mixed_Case-key=kept as written greeting=configured name=zellij payload=carried"
+    );
+    harness.finish();
+}
