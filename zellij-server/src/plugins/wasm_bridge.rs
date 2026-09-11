@@ -6,10 +6,11 @@
 use super::{PinnedExecutor, PluginId, PluginInstruction};
 use crate::global_async_runtime::get_tokio_runtime;
 use crate::plugins::pipes::{
-    apply_pipe_message_to_plugin, pipes_to_block_or_unblock, PendingPipes, PipeStateChange,
+    apply_pipe_message_to_plugin, pipes_to_block_or_unblock, PendingPipes,
 };
 use crate::plugins::plugin_loader::PluginLoader;
 use crate::plugins::plugin_map::{AtomicEvent, PluginEnv, PluginMap, RunningPlugin, Subscriptions};
+use crate::plugins::{PipeStateChange, PluginRenderAsset};
 use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 
@@ -73,41 +74,6 @@ fn make_plugin_url_path_safe(url: String) -> String {
 pub enum EventOrPipeMessage {
     Event(Event),
     PipeMessage(Option<ClientId>, PipeMessage),
-}
-
-#[derive(Debug, Clone)]
-pub struct PluginRenderAsset {
-    // TODO: naming
-    pub client_id: ClientId,
-    pub plugin_id: PluginId,
-    pub bytes: Vec<u8>,
-    pub cli_pipes: HashMap<String, PipeStateChange>,
-}
-
-impl Default for PluginRenderAsset {
-    fn default() -> Self {
-        Self {
-            client_id: ClientId::new(0),
-            plugin_id: PluginId::new(0),
-            bytes: Vec::new(),
-            cli_pipes: HashMap::new(),
-        }
-    }
-}
-
-impl PluginRenderAsset {
-    pub fn new(plugin_id: PluginId, client_id: ClientId, bytes: Vec<u8>) -> Self {
-        PluginRenderAsset {
-            client_id,
-            plugin_id,
-            bytes,
-            ..Default::default()
-        }
-    }
-    pub fn with_pipes(mut self, cli_pipes: HashMap<String, PipeStateChange>) -> Self {
-        self.cli_pipes = cli_pipes;
-        self
-    }
 }
 
 #[derive(Debug, Clone)]

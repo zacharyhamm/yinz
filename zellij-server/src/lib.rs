@@ -10,7 +10,6 @@ compile_error!("Zellij does not support Windows");
 
 pub use zellij_process::firecracker;
 pub use zellij_terminal::host_query;
-use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::style::default_palette;
 pub mod os_input_output;
@@ -29,11 +28,15 @@ pub use plugins::check_lua_plugin;
 mod locked_escape;
 pub mod plugin_authoring;
 mod pty;
+mod pty_instruction;
 #[cfg(unix)]
 pub use zellij_process::pty_host;
+mod client_router;
 mod pty_writer;
 mod route;
 mod screen;
+mod server_instruction;
+pub use server_instruction::ServerInstruction;
 mod session_layout_metadata;
 mod session_recorder;
 mod terminal_bytes;
@@ -45,7 +48,6 @@ use background_jobs::{background_jobs_main, BackgroundJob};
 use log::info;
 use pty_writer::{pty_writer_main, PtyWriteInstruction};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::str::FromStr;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -153,14 +155,11 @@ use zellij_runtime::channels;
 use zellij_runtime::channels::ChannelWithContext;
 use zellij_runtime::channels::SenderWithContext;
 use zellij_runtime::errors::prelude::*;
-use zellij_runtime::errors::ErrorInstruction;
 use zellij_runtime::errors::FatalError;
 use zellij_runtime::home::default_layout_dir;
 use zellij_runtime::home::get_default_data_dir;
 use zellij_runtime::home::user_plugin_dir_or_default;
 use zellij_types::diagnostics::ContextType;
-use zellij_types::diagnostics::ServerContext;
-use zellij_types::geometry::Direction;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::style::Style;
 use {
@@ -171,114 +170,15 @@ use {
     zellij_runtime::consts::SCROLL_BUFFER_SIZE,
     zellij_runtime::consts::ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE, zellij_types::data::InputMode,
     zellij_types::data::LayoutInfo, zellij_types::data::LayoutWithError,
-    zellij_types::data::SessionConnection, zellij_types::input::actions::Action,
-    zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction,
-    zellij_types::input::keybinds::Keybinds, zellij_types::input::layout::FloatingPaneLayout,
-    zellij_types::input::layout::Layout, zellij_types::input::layout::PluginAlias,
-    zellij_types::input::layout::Run, zellij_types::input::layout::RunPluginOrAlias,
-    zellij_types::input::options::Options, zellij_types::input::plugins::PluginAliases,
+    zellij_types::input::actions::Action, zellij_types::input::command::RunCommand,
+    zellij_types::input::command::TerminalAction, zellij_types::input::keybinds::Keybinds,
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::PluginAlias, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::options::Options,
+    zellij_types::input::plugins::PluginAliases,
 };
 
 pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};
-
-/// Instructions related to server-side application
-#[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
-pub enum ServerInstruction {
-    FirstClientConnected(CliAssets, ClientId),
-    Render(Option<HashMap<ClientId, String>>),
-    UnblockInputThread,
-    ClientExit(ClientId, Option<NotificationEnd>),
-    RemoveClient(ClientId),
-    Error(String),
-    KillSession,
-    DetachSession(Vec<ClientId>, Option<NotificationEnd>),
-    AttachClient(
-        CliAssets,
-        Option<TabNumber>, // tab number to focus
-        Option<PaneId>,    // pane to focus
-        ClientId,
-    ),
-    AttachWatcherClient(ClientId, Size),
-    ConnStatus(ClientId),
-    Log(Vec<String>, ClientId, Option<NotificationEnd>),
-    LogError(Vec<String>, ClientId, Option<NotificationEnd>),
-    SwitchSession(SessionConnection, ClientId, Option<NotificationEnd>),
-    UnblockCliPipeInput(String),   // String -> Pipe name
-    CliPipeOutput(String, String), // String -> Pipe name, String -> Output
-    /// One event for a `zellij events` client: its type by name, and the event as JSON.
-    EventUpdateToClient(ClientId, String, String),
-    AssociatePipeWithClient {
-        pipe_id: String,
-        client_id: ClientId,
-    },
-    DisconnectAllClientsExcept(ClientId),
-    ChangeMode(ClientId, InputMode, Option<NotificationEnd>),
-    ResolveLockedEscape(ClientId, uuid::Uuid),
-    ChangeModeForAllClients(InputMode),
-    Reconfigure {
-        client_id: ClientId,
-        config: String,
-        write_config_to_disk: bool,
-    },
-    /// `zellij action reconfigure`: the same fragment, for every attached client rather than
-    /// the one that sent it, which is a CLI client about to exit.
-    ReconfigureAllClients {
-        config: String,
-        write_config_to_disk: bool,
-        completion: Option<NotificationEnd>,
-    },
-    ConfigWrittenToDisk(Config),
-    FailedToWriteConfigToDisk(ClientId, Option<PathBuf>), // Pathbuf - file we failed to write
-    RebindKeys {
-        client_id: ClientId,
-        keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,
-        keys_to_unbind: Vec<(InputMode, KeyWithModifier)>,
-        write_config_to_disk: bool,
-        plugin_id: Option<PluginId>,
-    },
-    ClearMouseHelpText(ClientId),
-    ClearCommandOutputFlash(PaneId),
-    /// Relay a forwarded-query dispatch from Screen to the server main
-    /// loop. The main loop writes `ServerToClientMsg::ForwardQueryToHost`
-    ForwardQueryToHost(u32, Vec<u8>, bool),
-    KeyPassthroughChanged(ClientId, PaneId, PaneId, bool, Option<Direction>, bool),
-    EmitNestedSessionFrameToClient(ClientId, Vec<u8>),
-    /// Whether this client's host terminal presents each frame atomically (DECSET 2026).
-    ///
-    /// It comes the long way round, through this loop rather than straight from the router to
-    /// Screen, so that it cannot overtake the client's own `AttachClient` nor be overtaken by its
-    /// `RemoveClient` - client ids are recycled, and an answer landing on the wrong side of
-    /// either would be attributed to the wrong terminal. Nothing re-sends it.
-    SynchronizedOutputSupport {
-        client_id: ClientId,
-        supported: bool,
-    },
-}
-
-impl From<&ServerInstruction> for ServerContext {
-    fn from(server_instruction: &ServerInstruction) -> Self {
-        // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
-        // a variant is added without either a matching `ServerContext` or an arm here.
-        match server_instruction {
-            ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,
-            ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
-            ServerInstruction::ResolveLockedEscape(..) => ServerContext::ChangeMode,
-            other => {
-                let name: &'static str = other.into();
-                ServerContext::from_str(name).unwrap_or_else(|_| {
-                    debug_assert!(false, "no ServerContext variant named {name}");
-                    ServerContext::Error
-                })
-            },
-        }
-    }
-}
-
-impl ErrorInstruction for ServerInstruction {
-    fn error(err: String) -> Self {
-        ServerInstruction::Error(err)
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionConfiguration {
@@ -3080,6 +2980,7 @@ fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<Layo
 #[cfg(test)]
 mod session_state_tests {
     use super::*;
+    use std::str::FromStr;
 
     fn with_client(id: ClientId) -> SessionState {
         let mut s = SessionState::new();

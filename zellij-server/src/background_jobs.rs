@@ -407,7 +407,7 @@ pub fn session_scan_state() -> Option<&'static SessionScanState> {
     SESSION_SCAN_STATE.get()
 }
 
-pub(crate) fn background_jobs_main(
+pub fn background_jobs_main(
     bus: Bus<BackgroundJob>,
     serialization_interval: Option<ElapsedSeconds>,
     disable_session_metadata: bool,
@@ -1098,7 +1098,7 @@ pub(crate) fn background_jobs_main(
 /// checks below are exercised against the shipped configuration: `RedirectPolicy::None` is what
 /// hands each hop to `send_web_request` for vetting, and a client that follows redirects itself
 /// would carry curl straight past `web_url`.
-pub(crate) fn web_http_client() -> Option<HttpClient> {
+pub fn web_http_client() -> Option<HttpClient> {
     HttpClient::builder()
         .connect_timeout(WEB_REQUEST_CONNECT_TIMEOUT)
         // the idle timeout is per-request, in send_web_request

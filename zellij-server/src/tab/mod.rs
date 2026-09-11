@@ -54,7 +54,7 @@ use {
 use crate::background_jobs::BackgroundJob;
 use crate::pane_groups::PaneGroups;
 use crate::pty_writer::PtyWriteInstruction;
-use crate::screen::{CopyOptions, GuestModalOutcome, ScreenInstruction};
+use crate::screen::{GuestModalOutcome, ScreenInstruction};
 use crate::ui::hint_text::{
     held_hint_variants, hover_hint_variants, resize_hint_variants, suspended_hint_variants,
     HintExitStatus,
@@ -10651,3 +10651,33 @@ mod tab_integration_tests;
 #[cfg(test)]
 #[path = "./unit/layout_applier_tests/mod.rs"]
 mod layout_applier_tests;
+
+#[derive(Debug, Clone)]
+pub(crate) struct CopyOptions {
+    pub command: Option<String>,
+    pub clipboard: zellij_types::input::options::Clipboard,
+    pub copy_on_select: bool,
+}
+
+impl CopyOptions {
+    pub(crate) fn new(
+        copy_command: Option<String>,
+        copy_clipboard: zellij_types::input::options::Clipboard,
+        copy_on_select: bool,
+    ) -> Self {
+        Self {
+            command: copy_command,
+            clipboard: copy_clipboard,
+            copy_on_select,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn default() -> Self {
+        Self {
+            command: None,
+            clipboard: zellij_types::input::options::Clipboard::default(),
+            copy_on_select: true,
+        }
+    }
+}
