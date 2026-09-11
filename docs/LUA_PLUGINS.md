@@ -266,7 +266,10 @@ property, and child arguments use the same `zellij.action` forms documented for 
 `zellij.after(seconds, fn)` calls `fn` once; `zellij.every(seconds, fn)` calls it until the
 handle it returns is `:cancel()`ed. A truthy return asks for a render. Any number of either may
 be outstanding: the prelude keeps one host timer in flight for the nearest deadline. Seconds
-are whole - the sandbox has no finer clock - so `every(0.5, …)` ticks once a second.
+are whole, so `every(0.5, …)` ticks once a second.
+`zellij.monotonic_ms()` returns fractional milliseconds since interpreter creation.
+Use differences between readings to measure elapsed time, including awaited host calls.
+This clock does not change timer scheduling.
 `zellij.async.sleep(seconds)` is the same clock inside a task (see *Tasks*).
 
 A few things zellij spells as Rust types have a helper, so you do not have to know that:

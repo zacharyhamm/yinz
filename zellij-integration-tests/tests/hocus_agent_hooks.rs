@@ -314,7 +314,9 @@ fn assistant_messages_reach_the_timeline_and_history_search() {
             |grid| {
                 grid.contains("Final parser handoff recorded")
                     && grid.contains("Checking the lexer")
-                    && grid.contains("5 of 5 entries")
+                    // An asynchronous summary can add a sixth entry. Only the
+                    // three assistant messages are controlled by these hook events.
+                    && grid.to_string().matches("message ·").count() == 3
             },
         );
         clear(&zellij, "Final parser handoff recorded");

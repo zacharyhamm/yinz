@@ -780,7 +780,8 @@ handle = function(args, manual_view)
   else error('Unknown bridge method') end
   return result(uid)
 end
-local function invoke(args, manual_view)
+local timing_attempt=0
+local function invoke_inner(args, manual_view)
   local new_launch=type(args)=='table' and args.method=='workflow_run' and not read(scope(args.work,args.key))
   local ok,response=pcall(handle,args,manual_view)
   if ok then return response end
@@ -801,6 +802,25 @@ local function invoke(args, manual_view)
     end
   end)
   error(response)
+end
+local function invoke(args, manual_view)
+  if not z.swamp_timing then return invoke_inner(args,manual_view) end
+  timing_attempt=timing_attempt+1
+  local attempt,start=timing_attempt,z.monotonic_ms()
+  local ok,response=pcall(invoke_inner,args,manual_view)
+  pcall(function()
+    local record={layer='lua',phase='invoke',attempt=z.instance_id..':'..attempt,
+      elapsedMs=z.monotonic_ms()-start,outcome=ok and 'ok' or 'error'}
+    for _,field in ipairs({'method','work','key'}) do
+      if type(args)=='table' and type(args[field])=='string' then record[field]=args[field] end
+    end
+    if ok and type(response)=='table' then
+      record.requestId,record.run=response.requestId,response.run
+    end
+    z.log('swamp_timing '..encode(record))
+  end)
+  if not ok then error(response) end
+  return response
 end
 function M.load()
   local ids = z.get_plugin_ids()

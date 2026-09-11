@@ -52,8 +52,9 @@ Timers are one host `SetTimeout` in flight for the nearest deadline in a sorted 
 every `timer` event; the sweep arms the next deadline *before* settling the due ones, so a
 raising callback cannot stop the clock, and `deliver` runs its stages - waiters, sweep, drain,
 followers, drain - through `each_guarded` too, so a raising callback cannot leave a task that the
-same tick made ready sitting undrained. `os.time` is the only clock, so deadlines are whole
-seconds, and no extra second is added when arming. `coroutine.resume` is the prelude's
+same tick made ready sitting undrained. `os.time` remains the scheduler clock, so deadlines are whole
+seconds, and no extra second is added when arming. `zellij.monotonic_ms()` measures elapsed
+time at finer resolution without changing scheduler deadlines. `coroutine.resume` is the prelude's
 rethrowing wrapper, which is what makes a host cancel unwind a task. `zellij.null` (mlua's
 null, installed in `loader.rs`) is how a tuple command's optional middle element is left absent
 from a Lua table.
