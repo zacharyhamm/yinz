@@ -46,7 +46,8 @@ same token fail. `--no-view` starts an unattended run. It still suspends for que
 are optional. No step pushes commits or creates a pull request.
 
 The exit hook supplies the original terminal ID, agent kind, checkout, and VM context.
-For a manual launch, pass `sourcePane` to enable Restart, Duplicate, and Fork.
+For a manual launch, pass `sourcePane` to enable the pane exit choices described below.
+Without a source pane, the menu offers only Begin review and Leave.
 `agentCommand` and `agentArgs` can select an explicit helper command.
 VM-backed runs require the original pane identity. Preparation synchronizes that VM
 without starting a worker. Local checkout evidence does not require a VM-sync record.
@@ -91,10 +92,16 @@ cache or automatic extension reload. Keep the local extensions unpublished.
 
 ## Exit and review choices
 
-1. Choose **Restart**, **Duplicate**, **Fork**, **Begin review**, or **Leave**.
-   Restart reruns the original command in the held pane. Duplicate starts a fresh
-   conversation of the same kind. Fork opens the existing agent-kind picker in the
-   same checkout and VM context. Cancel the picker to return to a fresh exit menu.
+1. When the local checkout is unchanged, choose **Restart**, **Fork**, or **Leave**, in that order.
+   Unchanged means no staged, unstaged, untracked, or submodule changes, no paused rebase,
+   and zero commits in `targetBranch..HEAD`. Ignored files do not count.
+   The check uses the configured local target branch (`main` by default) without fetching.
+   Clean branches equal to or behind that target receive this menu.
+   Otherwise, choose **Restart**, **Fork**, **Begin review**, or **Leave**.
+   Inspection errors and VM context retain these existing choices. The exit check does not synchronize VMs.
+   Restart reruns the original command in the held pane. Fork opens the existing agent-kind picker in the
+   same checkout and VM context. Cancel the picker to return to a fresh exit menu and checkout check.
+   Each new exit run checks again. Its saved result determines the answers and both question and approval prompts.
    Leave restores the original scrollback and preserves all resources.
 2. After Begin review, choose **Show diff**, **Commit and rebase**, or **Leave**.
    Show diff displays unstaged changes to tracked files and untracked, non-ignored files after VM synchronization.
@@ -357,6 +364,7 @@ Run:
 ```sh
 deno test --allow-all extensions
 python3 extensions/tests/smoke.py
+python3 extensions/tests/smoke.py --exit-menu-only
 python3 extensions/tests/smoke.py --source-diff-only
 cargo x ci check
 cargo x firecracker-test --build
@@ -367,6 +375,8 @@ The smoke runner creates disposable repositories and stub agents. It tests unatt
 questions, an interactive detachable view, stale evidence, optional checks, informed merges, explicit conflict resolution,
 recorded-answer recovery, cancellation, and server crash/adoption. It prints the
 fixture directory containing its command transcript and terminal capture. The
+`--exit-menu-only` path checks exact menus and approval prompts, rejected hidden choices,
+fresh checks after Fork cancellation, and fallback choices for inspection errors and VM context. The
 `--source-diff-only` path checks short, long, untracked, staged-only, and empty diffs in manual, agent-exit,
 and unattended views, including dismissal, scrolling, search, checkout isolation, nested repositories, and temporary-file cleanup. The
 Firecracker suite also runs the typed bridge against a real guest, including a sync
