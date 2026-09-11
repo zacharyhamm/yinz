@@ -304,13 +304,14 @@ pub fn plugin_thread_main(
                 wasm_bridge.deno_tick(plugin_id, generation, shutdown_send.clone());
             },
             PluginInstruction::DenoEvent(plugin_id, client_id, generation, event) => {
-                wasm_bridge.deno_event(
+                let events = drain_deno_events(
+                    &bus,
                     plugin_id,
-                    client_id,
                     generation,
-                    event,
-                    shutdown_send.clone(),
-                )?;
+                    vec![(client_id, event)],
+                    &mut queued,
+                );
+                wasm_bridge.deno_event(plugin_id, generation, events, shutdown_send.clone())?;
             },
             PluginInstruction::DenoDispose(plugin_id, generation) => {
                 wasm_bridge.deno_dispose(plugin_id, generation);
@@ -1987,6 +1988,31 @@ const EXIT_GRACE: Duration = Duration::from_secs(1);
 const MAX_UPDATE_DRAIN: usize = 256;
 
 type PluginUpdate = (Option<PluginId>, Option<ClientId>, Event);
+
+/// Keep tagged callbacks adjacent and ordered, including their acting client identities.
+fn drain_deno_events(
+    bus: &Bus<PluginInstruction>,
+    plugin_id: PluginId,
+    generation: u64,
+    mut events: Vec<(ClientId, Event)>,
+    queued: &mut Option<(PluginInstruction, ErrorContext)>,
+) -> Vec<(ClientId, Event)> {
+    for _ in 0..MAX_UPDATE_DRAIN {
+        match bus.try_recv() {
+            Some((PluginInstruction::DenoEvent(id, client, expected, event), _))
+                if id == plugin_id && expected == generation =>
+            {
+                events.push((client, event));
+            },
+            Some(other) => {
+                *queued = Some(other);
+                break;
+            },
+            None => break,
+        }
+    }
+    events
+}
 
 /// Merge the `Update`s already waiting on the bus into the one just taken, so a flood of wheel
 /// notches costs one `update_plugins` call (and one render per plugin) instead of one each.
