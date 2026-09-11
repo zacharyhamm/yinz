@@ -29,11 +29,267 @@ fn a_project_names_a_tab_that_still_has_its_default_name() {
 fn a_tab_the_user_named_keeps_that_name() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.get_tab_by_id_mut(TabId::new(0)).unwrap().name = "notes".to_owned();
+    screen
+        .get_tab_by_id_mut(TabId::new(0))
+        .unwrap()
+        .rename_by_user("notes".to_owned());
 
     set_projects(&mut screen, &[(0, "hocus")]);
 
     assert_eq!(name_of(&screen, TabId::new(0)), "notes");
+}
+
+/// Like `new_tab`, for a tab born with a name. Whose name it is is set apart from this - see
+/// `Screen::tab_name_is_users` - so as it stands the name is a layout's.
+fn new_named_tab(screen: &mut Screen, pid: u32, tab_id: TabId, name: &str) {
+    let client_id = crate::ClientId::new(1);
+    screen
+        .new_tab(
+            tab_id,
+            (vec![], vec![]),
+            Some(name.to_owned()),
+            Some(client_id),
+        )
+        .expect("TEST");
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(crate::TerminalId::new(pid), None)],
+            vec![],
+            HashMap::new(),
+            tab_id,
+            true,
+            client_id,
+            None,
+        )
+        .expect("TEST");
+}
+
+/// A name a layout gave the tab is only a fallback: nobody chose it for the work now in the
+/// tab. Laid-out tabs used to keep whatever they came with however the work in them changed.
+#[test]
+fn a_name_the_tab_was_born_with_gives_way_to_the_project() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_named_tab(&mut screen, 1, TabId::new(0), "editor");
+
+    set_projects(&mut screen, &[(0, "hocus")]);
+    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+
+    set_projects(&mut screen, &[]);
+    assert_eq!(
+        name_of(&screen, TabId::new(0)),
+        "editor",
+        "the born name is what shows once nothing better is known",
+    );
+}
+
+/// `new-tab --name logs`: the name was typed, so it is the user's as much as a rename is.
+#[test]
+fn a_name_typed_with_new_tab_holds_off_the_project() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_named_tab(&mut screen, 1, TabId::new(0), "logs");
+    screen
+        .get_tab_by_id_mut(TabId::new(0))
+        .unwrap()
+        .set_user_named(Screen::tab_name_is_users(Some("logs"), None));
+
+    set_projects(&mut screen, &[(0, "hocus")]);
+
+    assert_eq!(name_of(&screen, TabId::new(0)), "logs");
+}
+
+#[test]
+fn whose_a_new_tabs_name_is() {
+    let laid_out = TiledPaneLayout::default();
+    let restored = TiledPaneLayout {
+        user_named: true,
+        ..Default::default()
+    };
+    assert!(Screen::tab_name_is_users(Some("logs"), None), "typed");
+    assert!(
+        !Screen::tab_name_is_users(Some("editor"), Some(&laid_out)),
+        "a layout's own"
+    );
+    assert!(
+        Screen::tab_name_is_users(Some("notes"), Some(&restored)),
+        "a rename a resurrected session recorded, or a name a command filled in"
+    );
+    assert!(!Screen::tab_name_is_users(None, None), "no name at all");
+    assert!(
+        !Screen::tab_name_is_users(Some(""), None),
+        "an empty name is none: the tab is \"Tab #N\""
+    );
+}
+
+#[test]
+fn a_lone_pane_lends_its_title_to_a_tab_born_named() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_named_tab(&mut screen, 1, TabId::new(0), "Tab #3");
+    let tab = screen.get_tab_by_id_mut(TabId::new(0)).unwrap();
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+    tab.rename_pane_by_pane_id(
+        PaneId::Terminal(crate::TerminalId::new(1)),
+        "vim README".as_bytes().to_vec(),
+    )
+    .expect("TEST");
+
+    assert_eq!(name_of(&screen, TabId::new(0)), "[1] vim README");
+}
+
+/// Keystrokes as rename mode delivers them, `\0` being the clear `TabNameInput 0` sends on entry.
+fn type_in_rename_mode(screen: &mut Screen, keys: &[&str]) {
+    let client_id = crate::ClientId::new(1);
+    for key in keys {
+        screen
+            .update_active_tab_name(key.as_bytes().to_vec(), client_id)
+            .expect("TEST");
+    }
+}
+
+fn enter_mode(screen: &mut Screen, mode: InputMode) {
+    screen
+        .change_mode(mode, None, crate::ClientId::new(1))
+        .expect("TEST");
+}
+
+#[test]
+fn a_name_typed_in_rename_mode_holds_off_the_project() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    set_projects(&mut screen, &[(0, "hocus")]);
+
+    enter_mode(&mut screen, InputMode::RenameTab);
+    type_in_rename_mode(&mut screen, &["\0", "n", "o"]);
+    assert_eq!(
+        name_of(&screen, TabId::new(0)),
+        "no",
+        "the bar shows what is being typed, not the project",
+    );
+    enter_mode(&mut screen, InputMode::Normal);
+
+    assert_eq!(name_of(&screen, TabId::new(0)), "no");
+}
+
+#[test]
+fn clearing_the_name_hands_the_tab_back_to_its_project() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen
+        .get_tab_by_id_mut(TabId::new(0))
+        .unwrap()
+        .rename_by_user("notes".to_owned());
+    set_projects(&mut screen, &[(0, "hocus")]);
+
+    enter_mode(&mut screen, InputMode::RenameTab);
+    type_in_rename_mode(&mut screen, &["\0"]);
+    assert_eq!(
+        name_of(&screen, TabId::new(0)),
+        "",
+        "an emptied name is still being typed",
+    );
+    enter_mode(&mut screen, InputMode::Normal);
+    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+
+    set_projects(&mut screen, &[]);
+    assert_eq!(name_of(&screen, TabId::new(0)), "Tab #1");
+}
+
+#[test]
+fn undoing_a_rename_hands_the_tab_back_to_its_project() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    set_projects(&mut screen, &[(0, "hocus")]);
+
+    enter_mode(&mut screen, InputMode::RenameTab);
+    type_in_rename_mode(&mut screen, &["\0", "x"]);
+    screen
+        .undo_active_rename_tab(crate::ClientId::new(1))
+        .expect("TEST");
+    enter_mode(&mut screen, InputMode::Normal);
+
+    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+}
+
+/// A warped pane's default caption ("Pane #3") arrives as a caption, not a name, so a lone
+/// warped pane lends its tab nothing and the project still names it.
+#[test]
+fn a_carried_default_caption_is_not_lent_to_the_tab() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen
+        .get_tab_by_id_mut(TabId::new(0))
+        .unwrap()
+        .set_pane_frames(PaneFrameStyle::Titles);
+    screen
+        .with_pane(PaneId::Terminal(crate::TerminalId::new(1)), |pane| {
+            pane.set_title("Pane #3".to_owned())
+        })
+        .expect("TEST");
+
+    set_projects(&mut screen, &[(0, "hocus")]);
+
+    assert_eq!(name_of(&screen, TabId::new(0)), "[1] hocus");
+}
+
+fn adopt_tab(screen: &mut Screen, name: &str, user_named: bool) -> TabId {
+    let tab_id = screen.get_new_tab_id();
+    screen
+        .place_adopted_tab(
+            zellij_types::data::WarpedTab {
+                name: Some(name.to_owned()),
+                user_named,
+                ..Default::default()
+            },
+            crate::pty::AdoptedTabPanes {
+                tiled: vec![],
+                floating: vec![],
+            },
+            crate::ClientId::new(1),
+            None,
+            None,
+        )
+        .expect("TEST");
+    tab_id
+}
+
+#[test]
+fn a_warped_in_tab_takes_the_project_unless_the_user_named_it() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let arrived = adopt_tab(&mut screen, "Tab #3", false);
+    let renamed = adopt_tab(&mut screen, "notes", true);
+
+    set_projects(
+        &mut screen,
+        &[(arrived.get(), "hocus"), (renamed.get(), "hocus")],
+    );
+
+    assert_eq!(name_of(&screen, arrived), "hocus");
+    assert_eq!(
+        name_of(&screen, renamed),
+        "notes",
+        "a rename the user made in the session it left still holds",
+    );
+}
+
+/// The rename a warp carried is where the tab starts here, so there is nothing for an undo to
+/// revert. It used to hand the tab to the project while leaving the name alone.
+#[test]
+fn undo_on_a_warped_in_tab_keeps_the_rename_it_carried() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let renamed = adopt_tab(&mut screen, "notes", true);
+    set_projects(&mut screen, &[(renamed.get(), "hocus")]);
+
+    let tab = screen.get_tab_by_id_mut(renamed).unwrap();
+    tab.start_rename();
+    assert!(
+        !tab.undo_rename(),
+        "an undo with nothing typed changes nothing"
+    );
+
+    assert_eq!(name_of(&screen, renamed), "notes");
 }
 
 #[test]
@@ -235,7 +491,10 @@ fn a_lone_pane_lends_its_id_to_a_tab_however_the_tab_is_named() {
         "a project's name"
     );
 
-    screen.get_tab_by_id_mut(TabId::new(0)).unwrap().name = "notes".to_owned();
+    screen
+        .get_tab_by_id_mut(TabId::new(0))
+        .unwrap()
+        .rename_by_user("notes".to_owned());
     assert_eq!(
         name_of(&screen, TabId::new(0)),
         "[1] notes",
@@ -302,7 +561,7 @@ fn a_long_name_the_user_typed_is_cut_to_the_same_budget() {
     new_tab(&mut screen, 1, TabId::new(0));
     let tab = screen.get_tab_by_id_mut(TabId::new(0)).unwrap();
     tab.set_pane_frames(PaneFrameStyle::Titles);
-    tab.name = "n".repeat(60);
+    tab.rename_by_user("n".repeat(60));
 
     let name = name_of(&screen, TabId::new(0));
     assert!(name.starts_with("[1] n"), "{:?}", name);

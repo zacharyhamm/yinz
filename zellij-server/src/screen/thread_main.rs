@@ -1987,6 +1987,22 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                 }
             },
+            ScreenInstruction::SetPaneCaption(pane_id, caption) => {
+                // `set_title`, not a rename: the caption is a default, and a default is not
+                // lent to the tab. Buffered like a hold, for a pane still being built.
+                if screen
+                    .with_pane(pane_id, |pane| pane.set_title(caption.clone()))
+                    .is_some()
+                {
+                    screen.render(None)?;
+                    screen.log_and_report_session_state()?;
+                } else {
+                    pending_events_waiting_for_pane
+                        .entry(pane_id)
+                        .or_default()
+                        .push(ScreenInstruction::SetPaneCaption(pane_id, caption));
+                }
+            },
             ScreenInstruction::UndoRenamePane(
                 client_id,
                 _completion_tx, // the action ends here, dropping this will release anything
@@ -2104,6 +2120,10 @@ pub(crate) fn screen_thread_main(
                     tab_name.clone(),
                     client_id_for_new_tab,
                 )?;
+                let user_named = Screen::tab_name_is_users(tab_name.as_deref(), layout.as_ref());
+                if let Some(tab) = screen.tabs.get_mut(&tab_index) {
+                    tab.set_user_named(user_named);
+                }
                 screen
                     .bus
                     .senders
@@ -2305,12 +2325,17 @@ pub(crate) fn screen_thread_main(
                         if create && !tab_exists {
                             let tab_index = screen.get_new_tab_id();
                             let should_change_focus_to_new_tab = true;
+                            // The name was typed in the command that asked for the tab.
+                            let user_named = !tab_name.is_empty();
                             screen.new_tab(
                                 tab_index,
                                 swap_layouts,
                                 Some(tab_name),
                                 Some(client_id),
                             )?;
+                            if let Some(tab) = screen.tabs.get_mut(&tab_index) {
+                                tab.set_user_named(user_named);
+                            }
                             screen
                                 .bus
                                 .senders
@@ -3692,7 +3717,7 @@ pub(crate) fn screen_thread_main(
 
                 match screen.get_tab_by_position_mut(tab_position) {
                     Some(tab) => {
-                        tab.name = String::from_utf8_lossy(&new_name).to_string();
+                        tab.rename_by_user(String::from_utf8_lossy(&new_name).to_string());
                     },
                     None => {
                         log::error!("Failed to find tab at position: {}", tab_position);
@@ -3731,7 +3756,7 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::RenameTabWithId(tab_id, new_name, _completion_tx) => {
                 // Use get_tab_by_id_mut() helper method
                 if let Some(tab) = screen.get_tab_by_id_mut(tab_id) {
-                    tab.name = String::from_utf8_lossy(&new_name).to_string();
+                    tab.rename_by_user(String::from_utf8_lossy(&new_name).to_string());
                     screen.log_and_report_session_state()?;
                 } else {
                     log::error!("Failed to find tab with ID: {}", tab_id);
@@ -5340,8 +5365,7 @@ pub(crate) fn screen_thread_main(
             // Tab-targeting CLI handlers
             ScreenInstruction::UndoRenameTabWithTabId(tab_id, mut _completion_tx) => {
                 if let Some(tab) = screen.tabs.get_mut(&tab_id) {
-                    if tab.name != tab.prev_name {
-                        tab.name = tab.prev_name.clone();
+                    if tab.undo_rename() {
                         screen.log_and_report_session_state()?;
                     }
                 } else {

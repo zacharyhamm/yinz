@@ -63,6 +63,7 @@ fn serialize_tab(
     tab_name: String,
     is_focused: bool,
     hide_floating_panes: bool,
+    user_named: bool,
     tiled_panes: &Vec<PaneLayoutManifest>,
     floating_panes: &Vec<PaneLayoutManifest>,
     pane_contents: &mut BTreeMap<String, String>,
@@ -88,6 +89,11 @@ fn serialize_tab(
             "hide_floating_panes",
             KdlValue::Bool(true),
         ));
+    }
+    if user_named {
+        serialized_tab
+            .entries_mut()
+            .push(KdlEntry::new_prop("user_named", KdlValue::Bool(true)));
     }
 
     serialize_tiled_and_floating_panes(
@@ -658,6 +664,7 @@ fn serialize_multiple_tabs(
             tab_name.clone(),
             tab_layout_manifest.is_focused,
             hide_floating_panes,
+            tab_layout_manifest.user_named,
             &tiled_panes,
             &floating_panes,
             pane_contents,
@@ -1725,6 +1732,19 @@ mod tests {
         };
         let global_layout_manifest = GlobalLayoutManifest {
             tabs: vec![("Tab #1".to_owned(), tab_layout_manifest)],
+            ..Default::default()
+        };
+        let kdl = serialize_session_layout(global_layout_manifest).unwrap();
+        assert_snapshot!(kdl.0);
+    }
+    #[test]
+    fn can_serialize_tab_user_named() {
+        let tab_layout_manifest = TabLayoutManifest {
+            user_named: true,
+            ..Default::default()
+        };
+        let global_layout_manifest = GlobalLayoutManifest {
+            tabs: vec![("notes".to_owned(), tab_layout_manifest)],
             ..Default::default()
         };
         let kdl = serialize_session_layout(global_layout_manifest).unwrap();

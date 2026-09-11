@@ -326,7 +326,15 @@ pub(crate) struct Tab {
     pub position: TabPosition,
     pub name: String,
     pub prev_name: String,
+    /// The "Tab #N" a user gets back by clearing the name they gave.
     default_name: String,
+    /// Whether the user chose this tab's name. Only this keeps a project or a lent pane title
+    /// off the tab: a name a layout gave it is just a fallback. A rename in this session sets
+    /// it, and so does a name typed in a command, a resurrected session's record of a rename,
+    /// and a warp carrying one from the session it left.
+    user_named: bool,
+    /// `user_named` as it was when rename mode began, for the undo that ends it.
+    prev_user_named: bool,
     pub size: Size,
     tiled_panes: TiledPanes,
     floating_panes: FloatingPanes,
@@ -1209,11 +1217,7 @@ impl Tab {
         mouse_click_through: bool,
         context_menu_on_right_click: bool,
     ) -> Self {
-        let default_name = if name.is_empty() {
-            format!("Tab #{}", id.get() + 1)
-        } else {
-            String::new()
-        };
+        let default_name = format!("Tab #{}", id.get() + 1);
         let name = if name.is_empty() {
             default_name.clone()
         } else {
@@ -1305,6 +1309,8 @@ impl Tab {
             name: name.clone(),
             prev_name: name,
             default_name,
+            user_named: false,
+            prev_user_named: false,
             size: initial_size,
             max_panes,
             viewport,
@@ -2807,8 +2813,55 @@ impl Tab {
         self.pane_frame_style.draws_titles()
             && self.get_selectable_tiled_content_panes().count() == 1
     }
-    pub(crate) fn tab_name_is_default(&self) -> bool {
-        !self.name.is_empty() && self.name == self.default_name
+    /// Whether something other than the tab's own name may name it: true until the user
+    /// renames it in this session, whatever name it was born with.
+    pub(crate) fn tab_name_is_automatic(&self) -> bool {
+        !self.user_named
+    }
+    pub(crate) fn is_user_named(&self) -> bool {
+        self.user_named
+    }
+    /// For a tab born with a name the user chose - carried by a warp from the session it left,
+    /// typed in a command, restored by resurrection. It is where the tab starts, so an undo
+    /// has nothing of it to revert.
+    pub(crate) fn set_user_named(&mut self, user_named: bool) {
+        self.user_named = user_named;
+        self.prev_user_named = user_named;
+    }
+    /// A name the user asked for. An empty one hands the tab back to automatic naming,
+    /// under the "Tab #N" it started with, rather than leaving it blank.
+    pub(crate) fn rename_by_user(&mut self, name: String) {
+        if name.is_empty() {
+            self.name = self.default_name.clone();
+            self.user_named = false;
+        } else {
+            self.name = name;
+            self.user_named = true;
+        }
+    }
+    /// Rename mode is beginning: remember what an undo goes back to.
+    pub(crate) fn start_rename(&mut self) {
+        self.prev_name = self.name.clone();
+        self.prev_user_named = self.user_named;
+    }
+    /// A keystroke in rename mode. The tab is the user's from the first one, so the bar
+    /// shows what is being typed rather than the project it would otherwise wear.
+    pub(crate) fn edit_name_by_user(&mut self, edit: impl FnOnce(&mut String)) {
+        edit(&mut self.name);
+        self.user_named = true;
+    }
+    /// Rename mode ended without an undo. A name typed away to nothing gives naming back.
+    pub(crate) fn finish_rename(&mut self) {
+        if self.name.is_empty() {
+            self.rename_by_user(String::new());
+        }
+    }
+    /// Returns whether anything changed.
+    pub(crate) fn undo_rename(&mut self) -> bool {
+        let changed = self.name != self.prev_name || self.user_named != self.prev_user_named;
+        self.name = self.prev_name.clone();
+        self.user_named = self.prev_user_named;
+        changed
     }
     /// What a lone pane is lending its tab, or `None` when it is lending nothing.
     ///
@@ -2823,7 +2876,7 @@ impl Tab {
     /// rather than its identity, so it belongs to whichever name ends up on the
     /// tab — see [`Tab::exit_marker`].
     pub fn lent_pane_title(&self) -> Option<String> {
-        if !self.single_pane_titles() || !self.tab_name_is_default() {
+        if !self.single_pane_titles() || !self.tab_name_is_automatic() {
             return None;
         }
         let (_, pane) = self.get_selectable_tiled_content_panes().next()?;

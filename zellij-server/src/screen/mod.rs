@@ -625,6 +625,7 @@ pub(crate) struct PreparedTabWarp {
     slots: Vec<PaneId>,
     pane_group: bool,
     name: Option<String>,
+    user_named: bool,
     tiled_layout: TiledPaneLayout,
     floating_layout: Vec<FloatingPaneLayout>,
     tiled_panes: Vec<PaneId>,
@@ -1896,6 +1897,18 @@ impl Screen {
         self.tabs.insert(tab_id, tab);
         Ok(())
     }
+    /// Whether the name a new tab was asked for is the user's, so it holds off the project.
+    ///
+    /// With no layout, a name was typed in a command (`new-tab --name`, a keybinding, a
+    /// plugin), so it is. A layout says whose its name is: its own - a fallback - unless a
+    /// command filled it in or it records a rename, as a resurrected session's does.
+    pub(crate) fn tab_name_is_users(
+        tab_name: Option<&str>,
+        layout: Option<&TiledPaneLayout>,
+    ) -> bool {
+        tab_name.is_some_and(|name| !name.is_empty())
+            && layout.is_none_or(|layout| layout.user_named)
+    }
     pub fn apply_layout(
         &mut self,
         layout: TiledPaneLayout,
@@ -2402,20 +2415,18 @@ impl Screen {
                     .with_context(err_context)?;
                 match self.get_active_tab_mut(client_id) {
                     Ok(active_tab) => {
-                        match s {
+                        active_tab.edit_name_by_user(|name| match s {
                             "\0" => {
-                                active_tab.name = String::new();
+                                name.clear();
                             },
                             "\u{007F}" | "\u{0008}" => {
                                 // delete and backspace keys
-                                active_tab.name.pop();
+                                name.pop();
                             },
                             c => {
-                                active_tab
-                                    .name
-                                    .push_str(&clean_string_from_control_and_linebreak(c));
+                                name.push_str(&clean_string_from_control_and_linebreak(c));
                             },
-                        }
+                        });
                         self.log_and_report_session_state()
                             .with_context(err_context)
                     },
@@ -2440,8 +2451,7 @@ impl Screen {
             Some(client_id) => {
                 match self.get_active_tab_mut(client_id) {
                     Ok(active_tab) => {
-                        if active_tab.name != active_tab.prev_name {
-                            active_tab.name = active_tab.prev_name.clone();
+                        if active_tab.undo_rename() {
                             self.log_and_report_session_state()
                                 .context("failed to undo renaming of active tab")?;
                         }
@@ -4348,6 +4358,7 @@ impl Screen {
                 tab.name.clone(),
                 tab_is_focused,
                 hide_floating_panes,
+                tab.is_user_named(),
                 tiled_panes.into_iter().map(|(_, pane)| pane).collect(),
                 floating_panes.into_iter().map(|(_, pane)| pane).collect(),
             );

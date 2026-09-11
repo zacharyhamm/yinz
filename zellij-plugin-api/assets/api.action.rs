@@ -162,6 +162,8 @@ pub struct TiledPaneLayout {
     pub hide_floating_panes: bool,
     #[prost(string, optional, tag="13")]
     pub pane_initial_contents: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="14")]
+    pub user_named: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

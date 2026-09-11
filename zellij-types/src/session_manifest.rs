@@ -17,6 +17,8 @@ pub struct TabLayoutManifest {
     pub floating_panes: Vec<PaneLayoutManifest>,
     pub is_focused: bool,
     pub hide_floating_panes: bool,
+    /// Whether the user chose the tab's name, so that it comes back holding off the project.
+    pub user_named: bool,
 }
 
 #[derive(Default, Debug, Clone)]

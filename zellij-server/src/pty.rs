@@ -366,6 +366,9 @@ pub struct AdoptedTabTerminal {
     /// them behind that `ApplyLayout` on the same channel, which is exactly
     /// where a normal pane's first output sits.
     pub replay: Vec<u8>,
+    /// The default caption the pane was wearing (`WarpedPane::caption`), applied once the pane
+    /// exists, for the same reason as `replay`.
+    pub caption: Option<String>,
 }
 
 impl AdoptedTabTerminal {
@@ -2624,6 +2627,15 @@ impl Pty {
                         .send_to_screen(ScreenInstruction::PtyBytes(
                             terminal.terminal_id,
                             terminal.replay,
+                        ))
+                        .with_context(err_context)?;
+                }
+                if let Some(caption) = terminal.caption {
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::SetPaneCaption(
+                            PaneId::Terminal(terminal.terminal_id),
+                            caption,
                         ))
                         .with_context(err_context)?;
                 }

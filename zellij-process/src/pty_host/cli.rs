@@ -285,9 +285,11 @@ pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
         host_id: entry.status.host_id.clone(),
         control_socket: entry.path,
         // A survivor has no screen to bring with it — the server that held its
-        // scrollback is what died. Name it after the command instead, and let
-        // the ring buffer supply whatever it wrote while orphaned.
-        title: Some(entry.status.command.clone()),
+        // scrollback is what died. Caption it with the command instead, and let
+        // the ring buffer supply whatever it wrote while orphaned. A caption and
+        // not a name: nobody chose it, so it must not be lent to the tab.
+        title: None,
+        caption: Some(entry.status.command.clone()),
         contents: None,
         borderless: false,
         // A local supervisor, by construction: this walks sockets in this
@@ -433,9 +435,10 @@ fn warped_pane_from_entry(
         host_id: SupervisorId::default(),
         control_socket: PathBuf::new(),
         // A survivor brings no screen with it — the server that held its
-        // scrollback is what died, or never took delivery. Name it after the
+        // scrollback is what died, or never took delivery. Caption it with the
         // command, and let the broker's buffer supply what it wrote meanwhile.
-        title: Some(entry.command.clone()),
+        title: None,
+        caption: Some(entry.command.clone()),
         contents: None,
         borderless: false,
         remote: Some(RemotePaneHandoff {

@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/mode_and_tab_commands.rs
-assertion_line: 268
+assertion_line: 269
 expression: "format!(\"{:#?}\", second_new_tab_event)"
 ---
 Some(
@@ -26,6 +26,7 @@ Some(
                         exclude_from_sync: None,
                         run_instructions_to_ignore: [],
                         hide_floating_panes: false,
+                        user_named: false,
                         pane_initial_contents: None,
                         default_fg: None,
                         default_bg: None,
@@ -44,6 +45,7 @@ Some(
                         exclude_from_sync: None,
                         run_instructions_to_ignore: [],
                         hide_floating_panes: false,
+                        user_named: false,
                         pane_initial_contents: None,
                         default_fg: None,
                         default_bg: None,
@@ -59,6 +61,7 @@ Some(
                 exclude_from_sync: None,
                 run_instructions_to_ignore: [],
                 hide_floating_panes: false,
+                user_named: false,
                 pane_initial_contents: None,
                 default_fg: None,
                 default_bg: None,

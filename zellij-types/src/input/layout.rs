@@ -773,6 +773,11 @@ pub struct TiledPaneLayout {
     pub exclude_from_sync: Option<bool>,
     pub run_instructions_to_ignore: Vec<Option<Run>>,
     pub hide_floating_panes: bool, // only relevant if this is the base layout
+    /// Whether the user chose the name of the tab this is the base layout of, rather than the
+    /// layout giving it one. Only a chosen name holds off the project the tab would otherwise
+    /// show. Set by a name typed in a command, and by a resurrected session for a rename.
+    #[serde(default)]
+    pub user_named: bool,
     pub pane_initial_contents: Option<String>,
     pub default_fg: Option<String>,
     pub default_bg: Option<String>,

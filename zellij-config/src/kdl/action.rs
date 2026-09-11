@@ -1345,7 +1345,10 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                     kdl_action.span().len(),
                 ));
             } else if !tabs.is_empty() {
-                let (tab_name, layout, floating_panes_layout) = tabs.drain(..).next().unwrap();
+                let (tab_name, mut layout, floating_panes_layout) = tabs.drain(..).next().unwrap();
+                // A name given with the action, filling in for a layout that gave none, is the
+                // user's.
+                layout.user_named |= tab_name.is_none() && name.is_some();
                 let name = tab_name.or(name);
                 let should_change_focus_to_new_tab =
                     focus_override.or(layout.focus).unwrap_or(true);
@@ -1363,7 +1366,8 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                     first_pane_unblock_condition: None,
                 })
             } else {
-                let (layout, floating_panes_layout) = layout.new_tab();
+                let (mut layout, floating_panes_layout) = layout.new_tab();
+                layout.user_named |= name.is_some();
                 let should_change_focus_to_new_tab =
                     focus_override.or(layout.focus).unwrap_or(true);
 

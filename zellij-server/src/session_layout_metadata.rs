@@ -217,6 +217,7 @@ impl SessionLayoutMetadata {
         name: String,
         is_focused: bool,
         hide_floating_panes: bool,
+        user_named: bool,
         tiled_panes: Vec<PaneLayoutMetadata>,
         floating_panes: Vec<PaneLayoutMetadata>,
     ) {
@@ -224,6 +225,7 @@ impl SessionLayoutMetadata {
             name: Some(name),
             is_focused,
             hide_floating_panes,
+            user_named,
             tiled_panes,
             floating_panes,
         })
@@ -510,6 +512,7 @@ impl Into<TabLayoutManifest> for TabLayoutMetadata {
             floating_panes: self.floating_panes.into_iter().map(|t| t.into()).collect(),
             is_focused: self.is_focused,
             hide_floating_panes: self.hide_floating_panes,
+            user_named: self.user_named,
         }
     }
 }
@@ -558,6 +561,7 @@ pub struct TabLayoutMetadata {
     floating_panes: Vec<PaneLayoutMetadata>,
     is_focused: bool,
     hide_floating_panes: bool,
+    user_named: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -745,7 +749,7 @@ mod tests {
             default_editor: Some(PathBuf::from(editor)),
             ..Default::default()
         };
-        meta.add_tab("tab1".to_string(), true, false, panes, vec![]);
+        meta.add_tab("tab1".to_string(), true, false, false, panes, vec![]);
         meta
     }
 

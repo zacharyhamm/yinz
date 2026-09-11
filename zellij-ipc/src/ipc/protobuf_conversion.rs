@@ -1151,6 +1151,7 @@ fn warped_tab_to_protobuf(
 ) -> crate::client_server_contract::client_server_contract::AdoptTabAction {
     crate::client_server_contract::client_server_contract::AdoptTabAction {
         name: payload.name.clone(),
+        user_named: payload.user_named,
         tiled_layout: Some(payload.tiled_layout.clone().into()),
         floating_layout: payload
             .floating_layout
@@ -1182,6 +1183,7 @@ fn warped_tab_from_protobuf(
             .relationships
             .map(warp_relationships_from_protobuf),
         name: adopt_tab_action.name,
+        user_named: adopt_tab_action.user_named,
         tiled_layout: adopt_tab_action
             .tiled_layout
             .ok_or_else(|| anyhow!("AdoptTab missing tiled_layout"))?
@@ -1273,6 +1275,7 @@ fn warped_pane_to_protobuf(
         host_id: pane.host_id.clone().into_string(),
         control_socket: pane.control_socket.to_string_lossy().to_string(),
         title: pane.title.clone(),
+        caption: pane.caption.clone(),
         contents: pane.contents.clone(),
         borderless: pane.borderless,
         remote: pane.remote.as_ref().map(remote_handoff_to_protobuf),
@@ -1292,6 +1295,7 @@ fn warped_pane_from_protobuf(
         host_id: SupervisorId::new(pane.host_id),
         control_socket: std::path::PathBuf::from(pane.control_socket),
         title: pane.title,
+        caption: pane.caption,
         contents: pane.contents,
         borderless: pane.borderless,
         remote: pane.remote.and_then(remote_handoff_from_protobuf),
@@ -2050,6 +2054,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                     host_id: payload.host_id.clone().into_string(),
                     control_socket: payload.control_socket.to_string_lossy().to_string(),
                     title: payload.title.clone(),
+                    caption: payload.caption.clone(),
                     contents: payload.contents.clone(),
                     borderless: payload.borderless,
                     placement: ProtobufWarpPlacement::from(placement) as i32,
@@ -3107,6 +3112,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         host_id: SupervisorId::new(adopt_pane_action.host_id.clone()),
                         control_socket: PathBuf::from(&adopt_pane_action.control_socket),
                         title: adopt_pane_action.title.clone(),
+                        caption: adopt_pane_action.caption.clone(),
                         contents: adopt_pane_action.contents.clone(),
                         borderless: adopt_pane_action.borderless,
                         remote: adopt_pane_action
@@ -5029,6 +5035,7 @@ impl From<zellij_types::input::layout::TiledPaneLayout>
             external_children_index: layout.external_children_index.map(|l| l as u32),
             is_expanded_in_stack: layout.is_expanded_in_stack,
             hide_floating_panes: layout.hide_floating_panes,
+            user_named: layout.user_named,
             pane_initial_contents: layout.pane_initial_contents,
             default_fg: layout.default_fg,
             default_bg: layout.default_bg,
@@ -5473,6 +5480,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::TiledPaneLay
             exclude_from_sync: layout.exclude_from_sync,
             run_instructions_to_ignore: vec![], // not represented in protobuf
             hide_floating_panes: layout.hide_floating_panes,
+            user_named: layout.user_named,
             pane_initial_contents: layout.pane_initial_contents,
             default_fg: layout.default_fg,
             default_bg: layout.default_bg,

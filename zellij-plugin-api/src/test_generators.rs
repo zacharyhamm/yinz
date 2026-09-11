@@ -641,6 +641,7 @@ fn tiled_pane_layouts_of_depth(tc: &hegel::TestCase, depth: usize) -> TiledPaneL
         exclude_from_sync: optional_booleans(tc),
         run_instructions_to_ignore: vec![],
         hide_floating_panes: booleans(tc),
+        user_named: booleans(tc),
         pane_initial_contents: optional_strings(tc),
         default_fg: optional_strings(tc),
         default_bg: optional_strings(tc),
@@ -736,6 +737,7 @@ pub(crate) fn warped_panes(tc: &hegel::TestCase) -> WarpedPane {
         host_id: SupervisorId::new(strings(tc)),
         control_socket: paths(tc),
         title: optional_strings(tc),
+        caption: optional_strings(tc),
         contents: optional_strings(tc),
         borderless: booleans(tc),
         remote: booleans(tc).then(|| RemotePaneHandoff {
@@ -752,6 +754,7 @@ pub(crate) fn warped_tabs(tc: &hegel::TestCase) -> WarpedTab {
     WarpedTab {
         relationships: None,
         name: optional_strings(tc),
+        user_named: booleans(tc),
         tiled_layout: tiled_pane_layouts(tc),
         floating_layout: up_to(tc, 2, floating_pane_layouts),
         tiled_panes: up_to(tc, 2, warped_panes),
