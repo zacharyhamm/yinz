@@ -1,4 +1,4 @@
--- A detachable view of authoritative Swamp history. Execution belongs to the managed Swamp server.
+-- A view of authoritative Swamp history. Execution belongs to the managed Swamp server.
 local z = require('zellij')
 local M = {status='No run attached', scroll=0, pending={}, selected=1}
 local form
@@ -42,14 +42,13 @@ local function controls()
   if on_restart and not M.active and #M.pending==0 then
     fields[#fields+1]={kind='button',id='restart',label='Restart agent'}
   end
-  fields[#fields+1]={kind='button',id='detach',label='Detach'}
   form=z.ui.form(fields)
   if focus then
     for _,field in ipairs(fields) do if field.id==focus then form:focus(focus) end end
   end
   form_key,question_key=signature,key
   form_has_input=has_input
-  form_height=has_input and 2 or 1
+  form_height=has_input and 2 or (#fields>0 and 1 or 0)
 end
 local function repaint()
   if M.selecting then M.dirty=true else z.request_render() end
@@ -170,7 +169,6 @@ function M.update(event)
   elseif event.name=='pasted_text' then action=form:insert_pasted_text(event.value)
   else return false end
   if not action then return false end
-  if action.kind=='cancel' or action.id=='detach' then z.subscribe_pane_output(z.null);z.close_self();return true end
   if action.id=='next' then M.selected=M.selected % #M.pending+1;controls();return true end
   if action.kind~='button_pressed' or M.submitting then return action.kind~='ignored' end
   if action.id=='restart' and on_restart and not M.active and #M.pending==0 then

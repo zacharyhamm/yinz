@@ -38,11 +38,16 @@ end
 -- Placement belongs to an authenticated builtin view, never to a caller-supplied pane.
 -- It is intentionally not recovered across server/bridge reloads.
 local placements={}
-local function close_view(work)
+local function close_view(work, restore_source)
   local placement=read(scope(work,'view'))
   if not placement or placement.incarnation~=identity.incarnation then return end
   local ok,pane=pcall(z.get_pane_info,z.plugin_pane(placement.view))
-  if ok and pane and pane.plugin_url=='zellij:agent-exit' then z.close_plugin_pane(placement.view) end
+  if ok and pane and pane.plugin_url=='zellij:agent-exit' then
+    if restore_source and not pane.is_suppressed then
+      z.replace_pane_with_existing_pane{z.plugin_pane(placement.view),z.terminal_pane(restore_source),true}
+    end
+    z.close_plugin_pane(placement.view)
+  end
 end
 local function active(work)
   local works={[work]=true}
@@ -100,6 +105,11 @@ local function present(work)
   if not ok or not target_info or not target_info.is_suppressed then
     placement.detached=true
     return
+  end
+  if not placement.current and next_pane then
+    local source=read(scope(work,'source'))
+    -- Keep the source for pane/VM actions, without restoring it when the view closes.
+    if source then z.hide_pane_with_id(z.terminal_pane(source.pane)) end
   end
   z.replace_pane_with_existing_pane{current,target,true}
   placement.current=next_pane
@@ -356,7 +366,10 @@ end
 local function owned(args, running)
   local agent = result(scope(args.work, args.agent))
   assert(agent.owner and agent.owner.host_id == identity.host_id and agent.owner.session == identity.session, 'Wrong host or session')
+  assert(agent.owner.work == args.work and agent.owner.agent == args.agent, 'Wrong work or agent')
   assert(agent.pane and agent.supervisor, 'Agent dispatch is unknown; reconcile it first')
+  if args.allow_closed and agent.owner.incarnation==identity.incarnation
+    and not z.get_pane_info(z.terminal_pane(agent.pane)) then return end
   local current = supervisor(agent.pane, agent.supervisor)
   assert(current.host_id == agent.supervisor, 'Pane belongs to a different supervisor')
   assert(current.child_pid == agent.process, 'Agent process changed')
@@ -653,19 +666,23 @@ handle = function(args, manual_view)
   elseif args.method=='swamp_dispatch' then
     return dispatch(uid,args.directory,args.operation,args.payload)
   elseif args.method == 'pane_action' then
+    local source
+    if args.action~='leave' or fetch(scope(args.work,'source')) then
+      source=owned{work=args.work,agent='source',allow_closed=args.action=='leave'}
+    end
+    if source then assert(z.get_pane_info(z.terminal_pane(source.pane)).exited,'Source pane is no longer exited') end
     if args.action=='leave' then
+      if source then z.close_terminal_pane(source.pane) end
       value.outcome='completed'
       put(uid,value,row)
       close_view(args.work)
       return value
     end
-    local source=owned{work=args.work,agent='source'}
-    assert(z.get_pane_info(z.terminal_pane(source.pane)).exited,'Source pane is no longer exited')
     if args.action=='restart' then
+      close_view(args.work,source.pane)
       z.rerun_command_pane(source.pane)
       value.outcome='completed'
       put(uid,value,row)
-      close_view(args.work)
     else
       assert(args.action=='fork' or args.action=='duplicate','Unknown pane choice')
       value.outcome='pending'

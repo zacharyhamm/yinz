@@ -120,7 +120,6 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     // plugin pane, which does not - so the hook writes an id into its name, and that id is the
     // panel's own. Its value is not known here, so the screen is matched on the rest of the
     // title and the id itself is pinned off the pane events below.
-    let original_title = format!("[{}] Review topic", original.terminal_id());
     let panel_title = "] Review topic";
     original.output(b"ORIGINAL SCROLLBACK\r\n");
     zellij.wait_until("original output", |s| s.contains("ORIGINAL SCROLLBACK"));
@@ -174,7 +173,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     }
     let question = zellij.wait_until("all four permitted choices are buttons", |s| {
         s.lines().iter().any(|line| {
-            ["Restart", "Fork", "Begin review", "Leave", "Detach"]
+            ["Restart", "Fork", "Begin review", "Leave"]
                 .iter()
                 .all(|label| line.contains(label))
         })
@@ -187,10 +186,15 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     let button_row = question
         .lines()
         .iter()
-        .position(|line| line.contains("Detach") && line.contains("Restart"))
+        .position(|line| line.contains("Leave") && line.contains("Restart"))
         .unwrap();
     assert!(!question.contains("Duplicate"));
-    assert!(!question.contains("Submit") && !question.contains("Next question"));
+    assert!(
+        !question.contains("Submit")
+            && !question.contains("Next question")
+            && !question.contains("Detach")
+    );
+    zellij.send_stdin(&keys::ESC);
     zellij.send_stdin(b"\x1b[6~");
     let scrolled = zellij.wait_until("page down scrolls logs with pinned question", |s| {
         s.contains("LOG 020") && s.lines()[prompt_row].contains("Agent exited. Choose")
@@ -216,6 +220,11 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     zellij.wait_until_raw_output("log selection is copied", |bytes| {
         String::from_utf8_lossy(bytes).contains(&format!(";{copied}"))
     });
+    // A managed helper's process exit must not replace the workflow with another hook.
+    worker.exit(Some(0));
+    zellij.wait_until("managed exits preserve the workflow question", |s| {
+        s.contains("Agent exited. Choose") && s.contains(panel_title)
+    });
     if status_bar {
         let line = zellij.snapshot().lines()[button_row].clone();
         let col = line.find("Leave").unwrap();
@@ -233,29 +242,31 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
         zellij.send_stdin(&keys::ENTER);
         zellij.resize(TERMINAL_SIZE);
     }
-    zellij.wait_until("final result stays visible", |s| {
-        s.contains("Run run: completed") && s.contains(panel_title)
-    });
-    // A managed helper's process exit must not replace status with another hook.
-    worker.exit(Some(0));
-    zellij.wait_until("managed exits preserve the result", |s| {
-        s.contains("Run run: completed")
-    });
-    zellij.send_stdin(&keys::ESC);
-    zellij.wait_until("detach restores original scrollback", |s| {
-        s.contains("ORIGINAL SCROLLBACK") && s.contains(&original_title)
-    });
+    zellij.wait_for_exit();
 
     let (mut pane_events, mut tab_events, mut panel_titles) = (0, 0, 0);
+    let mut original_hidden = false;
     for (kind, json) in events.streamed_events() {
         let event: serde_json::Value = serde_json::from_str(&json).unwrap();
         if kind == "PaneUpdate" {
             pane_events += 1;
-            let panes: Vec<_> = event["PaneUpdate"]["panes"]
+            let all_panes: Vec<_> = event["PaneUpdate"]["panes"]
                 .as_object()
                 .unwrap()
                 .values()
                 .flat_map(|p| p.as_array().unwrap())
+                .collect();
+            if let Some(original_pane) = all_panes
+                .iter()
+                .find(|p| p["is_plugin"] == false && p["id"] == original.terminal_id().get())
+            {
+                if original_hidden {
+                    assert_eq!(original_pane["is_suppressed"], true, "{json}");
+                }
+                original_hidden |= original_pane["is_suppressed"] == true;
+            }
+            let panes: Vec<_> = all_panes
+                .into_iter()
                 .filter(|p| p["is_suppressed"] == false)
                 .collect();
             assert!(
@@ -278,21 +289,14 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
             }
         } else if kind == "TabUpdate" {
             tab_events += 1;
-            assert_eq!(event["TabUpdate"].as_array().unwrap().len(), 1, "{json}");
+            assert!(event["TabUpdate"].as_array().unwrap().len() <= 1, "{json}");
         }
     }
-    assert!(pane_events > 0 && tab_events > 0);
+    assert!(pane_events > 0 && tab_events > 0 && original_hidden);
     assert!(
         panel_titles > 0,
         "no pane event carried the exit panel's title"
     );
-    assert_eq!(
-        zellij.run_cli_action(CliAction::ClosePane {
-            pane_id: Some(format!("terminal_{}", original.terminal_id())),
-        }),
-        0
-    );
-    zellij.wait_for_exit();
 }
 
 fn panes(zellij: &TestSession) -> Vec<zellij_types::data::PaneListEntry> {

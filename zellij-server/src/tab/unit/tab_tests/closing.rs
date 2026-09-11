@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+fn workflow_takeover_keeps_the_original_suppressed_until_explicit_restart() {
+    for restart in [false, true] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            true,
+        );
+        let (plugin_sender, _plugin_receiver) = unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(plugin_sender));
+        let source = PaneId::Terminal(TerminalId::new(1));
+        let view = PaneId::Plugin(crate::PluginId::new(2));
+        let worker = PaneId::Terminal(TerminalId::new(3));
+        tab.hold_pane(source, Some(0), false, RunCommand::default());
+        tab.suppress_pane_and_replace_with_pid(source, view, false, None, None, None)
+            .unwrap();
+        assert_eq!(
+            tab.suppressed_panes[&source].restored_by.unwrap().pane_id,
+            view
+        );
+
+        // The bridge parks the held source before presenting its first workflow pane.
+        tab.suppress_pane(source, None);
+        tab.vertical_split(worker, None, ClientId::new(1), None, None)
+            .unwrap();
+        tab.suppress_pane(worker, None);
+        let worker_pane = tab.extract_pane(worker, true).unwrap();
+        tab.suppress_pane_and_replace_with_other_pane(view, worker_pane, None);
+        assert!(tab.suppressed_panes[&source].restored_by.is_none());
+        let view_pane = tab.extract_pane(view, true).unwrap();
+        tab.suppress_pane_and_replace_with_other_pane(worker, view_pane, None);
+        assert!(tab.tiled_panes.get_pane(view).is_some());
+        assert!(tab.suppressed_panes[&source].restored_by.is_none());
+
+        if restart {
+            let source_pane = tab.extract_pane(source, true).unwrap();
+            tab.suppress_pane_and_replace_with_other_pane(view, source_pane, None);
+        }
+        tab.close_pane(view, false, None);
+        assert_eq!(tab.tiled_panes.get_pane(source).is_some(), restart);
+        assert_eq!(tab.suppressed_panes.contains_key(&source), !restart);
+        if !restart {
+            assert!(tab.suppressed_panes[&source].restored_by.is_none());
+            tab.close_pane(worker, false, None);
+            assert!(tab.suppressed_panes.contains_key(&source));
+        }
+    }
+}
+
+#[test]
 pub fn close_pane_with_another_pane_above_it() {
     // ┌───────────┐            ┌───────────┐
     // │xxxxxxxxxxx│            │xxxxxxxxxxx│
