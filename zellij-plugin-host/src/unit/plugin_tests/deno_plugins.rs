@@ -71,7 +71,9 @@ export default {
     const assert = (ok) => { if (!ok) throw Error('filesystem host assertion'); };
     const refused = (call) => { try { call(); return false; } catch (_) { return true; } };
     assert(refused(() => zellij.fs.read('/host/input')));
-    assert(refused(() => zellij.command('CheckPlugin', {name:'check.ts',source:'export default {};',mode:'Syntax'})));
+    assert(refused(() => zellij.command('CheckPlugin', {name:'check.ts',source:'export default {};',mode:'Semantic'})));
+    assert(zellij.command('CheckPlugin', {name:'check.ts',source:'export default {};',mode:'Syntax'}).diagnostics.length === 0);
+    assert(zellij.command('CheckPlugin', {name:'check.ts',source:'export const = ;',mode:'Syntax'}).diagnostics.length > 0);
     await zellij.waitForPermissions(['ReadFiles', 'WriteFiles']);
     zellij.fs.mkdir('/host/files/nested', {all: true});
     const bytes = new Uint8Array([0, 128, 255, 10]);
@@ -2926,6 +2928,102 @@ export default {
     assert!(
         frame.contains("requires the 'Reconfigure' permission"),
         "{frame}"
+    );
+}
+
+/// A plugin that asked in `load` is refused everything until the answer arrives as an event,
+/// and telling it to ask names what it already did; a plugin that never asked needs to ask.
+#[test]
+fn deno_a_denial_before_any_answer_says_to_wait_for_the_answer() {
+    let harness = Harness::with_permission_reply(
+        "ts",
+        r#"
+let state = 'loading';
+export default {
+  load() {
+    zellij.requestPermission(['PluginData']);
+    try { zellij.data.fetch({entity: 'note'}); state = 'fetched'; } catch (error) { state = String(error); }
+    return true;
+  },
+  render() { return state; },
+};
+"#,
+        None,
+    );
+    harness.load();
+    let frame = harness.rendered("PluginData");
+    assert!(
+        frame.contains("requires the 'PluginData' permission"),
+        "{frame}"
+    );
+    assert!(
+        frame.contains("PermissionRequestResult") && frame.contains("waitForPermissions"),
+        "the denial has to name what the plugin is waiting for, got: {frame}"
+    );
+}
+
+#[test]
+fn deno_a_denial_with_no_request_behind_it_says_to_ask() {
+    let harness = Harness::with_permission_reply(
+        "ts",
+        r#"
+let state = 'loading';
+export default {
+  load() {
+    try { zellij.data.fetch({entity: 'note'}); state = 'fetched'; } catch (error) { state = String(error); }
+    return true;
+  },
+  render() { return state; },
+};
+"#,
+        None,
+    );
+    harness.load();
+    let frame = harness.rendered("PluginData");
+    assert!(
+        frame.contains("requires the 'PluginData' permission"),
+        "{frame}"
+    );
+    assert!(
+        frame.contains("requestPermission(['PluginData'])"),
+        "{frame}"
+    );
+    assert!(
+        !frame.contains("PermissionRequestResult"),
+        "nothing is pending for a plugin that never asked, got: {frame}"
+    );
+}
+
+#[test]
+fn deno_a_denial_after_an_answer_that_left_this_permission_out_says_to_ask() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'loading';
+export default {
+  async load() {
+    await zellij.waitForPermissions(['ReadFiles']);
+    try { zellij.data.fetch({entity: 'note'}); state = 'fetched'; } catch (error) { state = String(error); }
+    zellij.requestRender();
+  },
+  render() { return state; },
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    let frame = harness.rendered("PluginData");
+    assert!(
+        frame.contains("requires the 'PluginData' permission"),
+        "{frame}"
+    );
+    assert!(
+        frame.contains("requestPermission(['PluginData'])"),
+        "{frame}"
+    );
+    assert!(
+        !frame.contains("PermissionRequestResult"),
+        "an answered plugin is not waiting for anything, got: {frame}"
     );
 }
 
