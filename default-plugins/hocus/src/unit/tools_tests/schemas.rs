@@ -543,7 +543,7 @@ fn the_orienting_tools_and_the_batch_edit_have_the_schemas_the_prompt_promises()
     let docs = spec("plugin_docs");
     assert_eq!(
         docs["properties"]["section"]["enum"],
-        json!(lua_docs::SECTIONS.as_slice())
+        json!(plugin_docs::SECTIONS.as_slice())
     );
     for key in [
         "query",

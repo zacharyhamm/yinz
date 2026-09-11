@@ -128,7 +128,7 @@ The root object also carries the Lua prelude's conveniences:
 - `write(text)` and `writeToPaneId(text, paneId)` encode text as UTF-8 (`WriteToStdin`).
 - `readPluginLog(name, lines = 50)` (`AuthorPlugins`), `openTerminal(cwd?)` (`OpenTerminalsOrPlugins`), `closeSelf()`, `setSelectable(boolean)`.
 
-## Default keybindings
+### Default keybindings
 
 A plugin can register fallback keybindings. User configuration always wins; a default is active only while its
 mode and key are otherwise unbound. Registrations are owned by the plugin, replaced by its next call, and removed
@@ -724,7 +724,7 @@ An extensionless authoring name still means a Lua plugin.
 The SDK does not include npm, JSR, general Deno I/O, or workers.
 Hocus supports the same names through `plugin_write`, `plugin_edit`, `plugin_list`, `plugin_read`,
 `plugin_search`, `plugin_outline`, `plugin_check`, `plugin_reload`, and `plugin_log`.
-`plugin_docs section=deno` serves the runtime and authoring guide; `section=deno_commands` serves the command helpers and default keybindings; `section=deno_data` serves the filesystem and persistence helpers. Writes and edits check syntax before approval;
+`plugin_docs` serves this guide a `##` section at a time (`section=lifecycle`, `commands`, `helpers`, `async`, `files`, `data`, and the rest the index lists), the SDK declarations in parts (`section=sdk_core` onward), and the worked examples. Writes and edits check syntax before approval;
 explicit JS/TS `plugin_check` checks types and local imports. `CheckPlugin` exposes the report as
 `{diagnostics, outline, permissions, warnings}` with `Syntax` or `Semantic` mode and requires `ReadFiles`.
 `CheckLuaPlugin` remains compatible.

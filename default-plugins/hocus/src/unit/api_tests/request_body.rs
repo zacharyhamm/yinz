@@ -240,7 +240,7 @@ fn the_fully_loaded_tool_payload_stays_under_37_kb() {
     // and a real conversation's transcript is not this one.
     let tools_bytes = serde_json::to_vec(&value["tools"]).unwrap().len();
     assert!(
-        tools_bytes < 37_500,
+        tools_bytes < 38_200,
         "the fully loaded tool payload grew to {tools_bytes} bytes",
     );
 }

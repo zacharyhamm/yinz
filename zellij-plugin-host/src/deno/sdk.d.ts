@@ -1,3 +1,4 @@
+// ---- section: sdk_core
 /** JSON values use the Rust PluginCommand/Event externally tagged representation. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Permission =
@@ -176,6 +177,7 @@ export const definePlugin: Zellij["definePlugin"];
 export default zellij;
 declare global { const zellij: Zellij; }
 
+// ---- section: sdk_commands
 /** Integers outside the JS safe range use BigInt. Rust validates destination ranges. */
 export type Integer = number | bigint;
 export type Bytes = number[] | Uint8Array;
@@ -286,6 +288,7 @@ export interface CommandArgs {
   SetQuitNotice: {notice: string | null; guard: boolean}; ReloadPluginByUrl: string;
   ReadPluginLog: {name: string; lines: Integer}; GetLocalUtcOffset: {epoch_ms: Integer};
 }
+// ---- section: sdk_replies
 export type CommandName = keyof CommandArgs;
 export type CommandObject = {[K in CommandName]: {[P in K]: CommandArgs[K] extends undefined ? null : CommandArgs[K]} & Partial<Record<Exclude<CommandName, K>, never>>}[CommandName];
 /** No declared command intentionally returns undecoded protobuf bytes.
@@ -358,6 +361,7 @@ export type DefaultKeybinding = {mode: KeybindMode; key: string} & (
 export type MouseSummary = {kind: 'LeftClick' | 'RightClick' | 'Hold' | 'Release' | 'Hover'; line: Integer; col: Integer}
   | {kind: 'ScrollUp' | 'ScrollDown' | 'ScrollLeft' | 'ScrollRight'; lines: Integer};
 
+// ---- section: sdk_types
 export type Direction = 'Left' | 'Right' | 'Up' | 'Down';
 export type Resize = 'Increase' | 'Decrease';
 export type PaneFrameStyle = 'Full' | 'Titles' | 'None';
@@ -430,6 +434,7 @@ export interface NotificationInfo {id: Integer; message: string; received_at_uni
 export interface PaneInNewTab {tab_id: number | null; pane_id: PaneId | null;}
 export interface RecordingSummary {id: Integer; session_name: string; tab_name: string; terminal_id: number; pane_title: string; started_at_us: Integer; duration_us: Integer; is_running: boolean; capture_input: boolean; error: string | null;}
 export interface SearchHit {recording_id: Integer; session_name: string; tab_name: string; pane_title: string; elapsed_us: Integer; started_at_us: Integer; text: string;}
+// ---- section: sdk_types_data
 export type PaletteColor = {Rgb: [number, number, number]} | {EightBit: number};
 export interface StyleDeclaration {base: PaletteColor; background: PaletteColor; emphasis_0: PaletteColor; emphasis_1: PaletteColor; emphasis_2: PaletteColor; emphasis_3: PaletteColor;}
 export interface Style {colors: Styling; rounded_corners: boolean; hide_session_name: boolean;}
@@ -515,6 +520,7 @@ export interface OpenFilePayload {path: string; line_number: Integer | null; cwd
 export interface MouseEvent {event_type: 'Press' | 'Release' | 'Motion'; left: boolean; right: boolean; middle: boolean; wheel_up: boolean; wheel_down: boolean; wheel_left?: boolean; wheel_right?: boolean; shift: boolean; alt: boolean; ctrl: boolean; position: Position;}
 export interface WarpedPane {host_id: string; control_socket: string; title: string | null; contents: string | null; borderless: boolean; remote: {host: string; pane_token: string; received: Integer; cmd: RunCommand} | null; agent?: AgentInfo | null;}
 export interface WarpedTab {name: string | null; tiled_layout: TiledPaneLayout; floating_layout: FloatingPaneLayout[]; tiled_panes: WarpedPane[]; floating_panes: WarpedPane[]; hide_floating_panes: boolean;}
+// ---- section: sdk_actions
 interface ActionPane {pane_id: PaneId;}
 interface ActionTab {id: number;}
 interface PaneLaunch {pane_name: string | null; near_current_pane: boolean; no_focus: boolean; tab_id: number | null;}
@@ -577,6 +583,7 @@ export type UnitAction = 'Quit' | 'FocusNextPane' | 'FocusPreviousPane' | 'Focus
   | 'ListClients' | 'TogglePanePinned' | 'TogglePaneInGroup' | 'ToggleGroupMarking';
 export type Action = UnitAction | Tagged<ActionPayloads>;
 
+// ---- section: sdk_helpers
 export interface Filesystem {
   read(path: string, options?: {maxBytes?: Integer}): Uint8Array;
   list(path: string): FsEntry[]; metadata(path: string): FileMetadata | null;

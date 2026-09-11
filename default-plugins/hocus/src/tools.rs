@@ -28,7 +28,7 @@ use zellij_tile::prelude::{
 };
 
 use crate::log::truncate_str;
-use crate::lua_docs;
+use crate::plugin_docs;
 use crate::plugin_source::{self, EditPair, Edited};
 
 /// One complete call requested by the model, reassembled from stream fragments.
@@ -1819,11 +1819,11 @@ pub fn specs() -> Value {
         // Shared authoring names select Lua by default or JS/TS by extension.
         tool(
             "plugin_docs",
-            "Zellij plugin authoring; section=deno covers JS/TS. Read before writing. Default section=index lists sections and sizes. query searches all sections or the named section with a regex, returning section:LINE:text. Use start_line/line_count to read a section range.",
+            "Zellij plugin authoring, TypeScript first (lua_* sections for Lua). Read before writing. Default section=index lists sections and sizes. query searches all sections or the named section with a regex, returning section:LINE:text. Use start_line/line_count to read a section range.",
             json!({
                 "type": "object",
                 "properties": {
-                    "section": { "type": "string", "enum": lua_docs::SECTIONS.as_slice() },
+                    "section": { "type": "string", "enum": plugin_docs::SECTIONS.as_slice() },
                     "query": { "type": "string" },
                     "case_insensitive": { "type": "boolean" },
                     "context": { "type": "integer" },
