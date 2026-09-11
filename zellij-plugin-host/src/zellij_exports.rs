@@ -7914,8 +7914,8 @@ pub fn wasi_read_bytes(plugin_env: &PluginEnv) -> Result<Vec<u8>> {
 /// permission was granted. A denial made in that window has a different fix from one made after
 /// (wait for the answer, rather than ask), and a different fix again from the one a plugin that
 /// never asked at all needs, which is why the request is tracked separately from its answer.
-/// Only the Lua runtime can pass the difference on: a wasm guest is mid-call and cannot be
-/// handed a refusal at all.
+/// Only the script runtimes, Lua and Deno, can pass the difference on: a wasm guest is mid-call
+/// and cannot be handed a refusal at all.
 pub(crate) fn permission_answer_pending(plugin_env: &PluginEnv) -> bool {
     !plugin_env.plugin.is_builtin()
         && plugin_env
@@ -7941,6 +7941,15 @@ pub(crate) fn check_command_permission(
     if plugin_env.plugin.is_builtin() {
         // built-in plugins can do all the things because they're part of the application and
         // there's no use to deny them anything
+        return (PermissionStatus::Granted, None);
+    }
+    // A syntax check of an inline source reads no file - the handler follows imports only in
+    // `Semantic` mode - so it needs nothing, as `CheckLuaPlugin` needs nothing.
+    if let PluginCommand::CheckPlugin {
+        mode: zellij_types::authoring::PluginCheckMode::Syntax,
+        ..
+    } = command
+    {
         return (PermissionStatus::Granted, None);
     }
     // `None` is an explicit verdict from an exhaustive match — the command needs no permission —
@@ -8345,6 +8354,27 @@ mod permission_tests {
             Some(PermissionType::MessageAndLaunchOtherPlugins)
         );
         assert_eq!(command_permission(CommandType::PostMessageToPlugin), None);
+    }
+
+    #[test]
+    fn a_syntax_check_needs_no_permission_but_a_semantic_check_reads_files() {
+        use std::sync::{Arc, Mutex};
+        use zellij_types::authoring::PluginCheckMode;
+        let mut env = crate::plugins::lua::unit_tests::test_env();
+        env.permissions = Arc::new(Mutex::new(Some(HashSet::new())));
+        let check = |mode| PluginCommand::CheckPlugin {
+            name: "check.ts".into(),
+            source: "export default {};".into(),
+            mode,
+        };
+        assert_eq!(
+            check_command_permission(&env, &check(PluginCheckMode::Syntax)),
+            (PermissionStatus::Granted, None)
+        );
+        assert_eq!(
+            check_command_permission(&env, &check(PluginCheckMode::Semantic)),
+            (PermissionStatus::Denied, Some(PermissionType::ReadFiles))
+        );
     }
 
     #[test]
