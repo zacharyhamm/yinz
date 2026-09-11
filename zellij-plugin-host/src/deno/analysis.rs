@@ -10,6 +10,7 @@ use std::{collections::HashSet, path::Path};
 use zellij_types::{
     authoring::{OutlineEntry, OutlineKind, PluginCheckMode, PluginCheckReport},
     data::PermissionType,
+    plugin_data::{validate_namespace, RESERVED_ATTR_NAMES, SHARED_NAMESPACE_PREFIX},
 };
 
 pub(crate) fn check(path: &Path, source: &str, mode: PluginCheckMode) -> PluginCheckReport {
@@ -43,6 +44,10 @@ pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
         unresolved: parsed.unresolved_context(),
         sdk: HashSet::new(),
         namespaces: HashSet::new(),
+        data_aliases: HashSet::new(),
+        contexts: Vec::new(),
+        entering_load: false,
+        data_calls: Vec::new(),
         report: &mut report,
     };
     let program = parsed.program();
@@ -79,6 +84,8 @@ pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
         }
     }
     program.visit_with(&mut analysis);
+    let data_calls = std::mem::take(&mut analysis.data_calls);
+    drop(analysis);
     if report
         .outline
         .iter()
@@ -89,6 +96,7 @@ pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
     {
         report.warnings.push("Hocus tool registration requires MessageAndLaunchOtherPlugins; request it and wait for approval before calling zellij.hocus.tools".into());
     }
+    data_store_findings(&mut report, &data_calls);
     report.outline.sort_by_key(|entry| entry.line);
     let result = loader::transpile_native(path, source, true);
     if let Err(error) = result {
@@ -97,13 +105,144 @@ pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
     report
 }
 
+/// The traps the Lua lint reads lexically (`zellij_plugin_api::authoring::lint`), read here
+/// from the AST with bindings resolved: a `shared:` namespace without the permission it needs,
+/// a reserved column declared, the store used without `PluginData`, and a data call made in
+/// `load` before the permission answer can have arrived. Each names the fix; none refuses.
+fn data_store_findings(report: &mut PluginCheckReport, data_calls: &[DataCall]) {
+    let asked = |permission: PermissionType| report.permissions.contains(&permission);
+    if let Some(call) = data_calls.iter().find(|call| call.during_load) {
+        report.warnings.push(format!(
+            "line {}: an uncached first load must await zellij.waitForPermissions([...]) before \
+             a data call; cached grants take effect synchronously, but cannot make this first \
+             load safe",
+            call.line
+        ));
+    }
+    let mut said_shared = false;
+    for call in data_calls {
+        for namespace in &call.namespaces {
+            if let Err(error) = validate_namespace(Some(namespace)) {
+                report.warnings.push(format!("line {}: {error}", call.line));
+            }
+            // The only `shared:` in a file that is one: the same word in a comment, a tool
+            // description or a string elsewhere is not a namespace.
+            if namespace.starts_with(SHARED_NAMESPACE_PREFIX)
+                && !asked(PermissionType::SharedPluginData)
+                && !said_shared
+            {
+                said_shared = true;
+                report.warnings.push(format!(
+                    "line {}: a shared: namespace needs SharedPluginData as well as PluginData, \
+                     in every plugin that touches it - the reader too",
+                    call.line
+                ));
+            }
+        }
+        for attribute in &call.attributes {
+            if RESERVED_ATTR_NAMES.contains(&attribute.as_str()) {
+                report.warnings.push(format!(
+                    "line {}: {attribute:?} is on every row already and cannot be declared - a \
+                     define that names it fails whole. Drop the attribute; the column is there",
+                    call.line
+                ));
+            }
+        }
+    }
+    if !data_calls.is_empty() && !asked(PermissionType::PluginData) {
+        report.warnings.push(
+            "the data store needs zellij.requestPermission(['PluginData']), which this source \
+             does not ask for"
+                .into(),
+        );
+    }
+}
+
+/// One use of the data store, with what the rules above need from its arguments.
+struct DataCall {
+    line: usize,
+    /// Every `namespace` named in its arguments, and `catalog`'s positional one.
+    namespaces: Vec<String>,
+    /// The attribute names a `define` declares.
+    attributes: Vec<String>,
+    /// Made in `load` before any `await` of the permission answer, or at module top level.
+    during_load: bool,
+}
+
+/// Which function the walk is inside, innermost last.
+enum Ctx {
+    Load { awaited_permissions: bool },
+    Other,
+}
+
 struct Analysis<'a> {
     text: &'a SourceTextInfo,
     unresolved: SyntaxContext,
     sdk: HashSet<Id>,
     namespaces: HashSet<Id>,
+    /// `const D = zellij.data` - the examples' spelling.
+    data_aliases: HashSet<Id>,
+    contexts: Vec<Ctx>,
+    /// Set by the property whose key is `load`, consumed by the function it holds.
+    entering_load: bool,
+    data_calls: Vec<DataCall>,
     report: &'a mut PluginCheckReport,
 }
+
+/// Every string literal under a `namespace` key in an object literal, at any depth.
+fn namespaces_in(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Object(object) => {
+            for prop in &object.props {
+                if let PropOrSpread::Prop(prop) = prop {
+                    if let Prop::KeyValue(prop) = &**prop {
+                        if key(&prop.key).as_deref() == Some("namespace") {
+                            if let Some(namespace) = literal(&prop.value) {
+                                out.push(namespace);
+                            }
+                        }
+                        namespaces_in(&prop.value, out);
+                    }
+                }
+            }
+        },
+        Expr::Array(array) => {
+            for item in array.elems.iter().flatten() {
+                namespaces_in(&item.expr, out);
+            }
+        },
+        Expr::Paren(paren) => namespaces_in(&paren.expr, out),
+        Expr::TsAs(cast) => namespaces_in(&cast.expr, out),
+        Expr::TsSatisfies(cast) => namespaces_in(&cast.expr, out),
+        Expr::TsConstAssertion(cast) => namespaces_in(&cast.expr, out),
+        Expr::TsNonNull(cast) => namespaces_in(&cast.expr, out),
+        _ => {},
+    }
+}
+
+/// The non-computed keys of an object literal.
+fn object_keys(expr: &Expr) -> Vec<String> {
+    let Expr::Object(object) = expr else {
+        return Vec::new();
+    };
+    object
+        .props
+        .iter()
+        .filter_map(|prop| match prop {
+            PropOrSpread::Prop(prop) => match &**prop {
+                Prop::KeyValue(prop) => key(&prop.key),
+                Prop::Shorthand(id) => Some(id.sym.to_string()),
+                Prop::Method(prop) => key(&prop.key),
+                _ => None,
+            },
+            PropOrSpread::Spread(_) => None,
+        })
+        .collect()
+}
+
+const DATA_METHODS: &[&str] = &[
+    "define", "catalog", "fetch", "count", "apply", "watch", "put", "update", "delete",
+];
 
 fn literal(expr: &Expr) -> Option<String> {
     match expr {
@@ -135,6 +274,63 @@ impl Analysis<'_> {
             line: self.line(span),
             kind,
             text,
+        });
+    }
+    /// Whether `expr` is the SDK's `data` object, by member access or through an alias.
+    fn data_object(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Ident(id) => self.data_aliases.contains(&id.to_id()),
+            Expr::Member(member) => {
+                self.sdk_object(&member.obj) && property(&member.prop).as_deref() == Some("data")
+            },
+            _ => false,
+        }
+    }
+    fn enter(&mut self) {
+        let context = if std::mem::take(&mut self.entering_load) {
+            Ctx::Load {
+                awaited_permissions: false,
+            }
+        } else {
+            Ctx::Other
+        };
+        self.contexts.push(context);
+    }
+    fn leave(&mut self) {
+        self.contexts.pop();
+    }
+    fn record_data_call(&mut self, call: &CallExpr, method: &str) {
+        let mut namespaces = Vec::new();
+        for arg in call.args.iter().filter(|arg| arg.spread.is_none()) {
+            namespaces_in(&arg.expr, &mut namespaces);
+        }
+        if method == "catalog" {
+            if let Some(namespace) = call.args.first().and_then(|arg| literal(&arg.expr)) {
+                namespaces.push(namespace);
+            }
+        }
+        let attributes = match method {
+            "define" => call
+                .args
+                .get(1)
+                .filter(|arg| arg.spread.is_none())
+                .map(|arg| object_keys(&arg.expr))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        // Module top level runs before `load` and before any answer can arrive either.
+        let during_load = match self.contexts.last() {
+            None => true,
+            Some(Ctx::Load {
+                awaited_permissions,
+            }) => !awaited_permissions,
+            Some(Ctx::Other) => false,
+        };
+        self.data_calls.push(DataCall {
+            line: self.line(call.span),
+            namespaces,
+            attributes,
+            during_load,
         });
     }
     fn sdk_object(&self, expr: &Expr) -> bool {
@@ -190,10 +386,16 @@ impl Analysis<'_> {
                     self.report.permissions.push(permission)
                 },
                 Ok(_) => {},
-                Err(_) => self.report.warnings.push(format!(
-                    "line {}: unknown permission {name:?}",
-                    self.line(span)
-                )),
+                Err(_) => {
+                    let suggestion = zellij_plugin_api::authoring::nearest_permission_type(&name)
+                        .map(|nearest| format!(" - did you mean \"{nearest}\"?"))
+                        .unwrap_or_else(|| ".".to_owned());
+                    self.report.warnings.push(format!(
+                        "line {}: unknown permission {name:?} grants nothing{suggestion} The \
+                         names are the Permission type in zellij:plugin",
+                        self.line(span)
+                    ))
+                },
             }
         }
     }
@@ -215,14 +417,64 @@ impl Visit for Analysis<'_> {
         function.visit_children_with(self);
     }
     fn visit_method_prop(&mut self, method: &MethodProp) {
-        if let Some(name) = key(&method.key) {
+        let name = key(&method.key);
+        if let Some(name) = &name {
             self.entry(
                 method.function.span,
                 OutlineKind::Function,
                 format!("{name}(...)"),
             );
         }
+        self.entering_load = name.as_deref() == Some("load");
         method.visit_children_with(self);
+        self.entering_load = false;
+    }
+    fn visit_key_value_prop(&mut self, prop: &KeyValueProp) {
+        self.entering_load = key(&prop.key).as_deref() == Some("load")
+            && matches!(&*prop.value, Expr::Arrow(_) | Expr::Fn(_));
+        prop.visit_children_with(self);
+        self.entering_load = false;
+    }
+    fn visit_function(&mut self, function: &Function) {
+        self.enter();
+        function.visit_children_with(self);
+        self.leave();
+    }
+    fn visit_arrow_expr(&mut self, arrow: &ArrowExpr) {
+        self.enter();
+        arrow.visit_children_with(self);
+        self.leave();
+    }
+    fn visit_await_expr(&mut self, expr: &AwaitExpr) {
+        // `await zellij.waitForPermissions([...])`, or the raw event wait, is the moment the
+        // answer is in; a data call after it in the same `load` is safe.
+        if let Expr::Call(call) = &*expr.arg {
+            if let Callee::Expr(callee) = &call.callee {
+                if let Expr::Member(member) = &**callee {
+                    let answered = self.sdk_object(&member.obj)
+                        && match property(&member.prop).as_deref() {
+                            Some("waitForPermissions") => true,
+                            Some("waitForEvent") => {
+                                call.args
+                                    .first()
+                                    .and_then(|arg| literal(&arg.expr))
+                                    .as_deref()
+                                    == Some("PermissionRequestResult")
+                            },
+                            _ => false,
+                        };
+                    if answered {
+                        if let Some(Ctx::Load {
+                            awaited_permissions,
+                        }) = self.contexts.last_mut()
+                        {
+                            *awaited_permissions = true;
+                        }
+                    }
+                }
+            }
+        }
+        expr.visit_children_with(self);
     }
     fn visit_var_declarator(&mut self, declaration: &VarDeclarator) {
         if matches!(
@@ -235,6 +487,11 @@ impl Visit for Analysis<'_> {
                     OutlineKind::Function,
                     format!("{}(...) ", id.sym),
                 );
+            }
+        }
+        if let (Pat::Ident(id), Some(init)) = (&declaration.name, declaration.init.as_deref()) {
+            if self.data_object(init) {
+                self.data_aliases.insert(id.to_id());
             }
         }
         declaration.visit_children_with(self);
@@ -282,6 +539,22 @@ impl Visit for Analysis<'_> {
                         }
                     }
                 }
+                // zellij.data.<method>(...), or through `const D = zellij.data`.
+                if let Some(method) = property(&member.prop)
+                    .filter(|method| DATA_METHODS.contains(&method.as_str()))
+                    .filter(|_| self.data_object(&member.obj))
+                {
+                    self.record_data_call(call, &method);
+                }
+                // zellij.host.data<Command>(...) is the raw command's sugar.
+                if let Expr::Member(host) = &*member.obj {
+                    if self.sdk_object(&host.obj)
+                        && property(&host.prop).as_deref() == Some("host")
+                        && property(&member.prop).is_some_and(|name| name.starts_with("data"))
+                    {
+                        self.record_data_call(call, "raw");
+                    }
+                }
                 if self.sdk_object(&member.obj) {
                     let argument = |index: usize| {
                         call.args
@@ -299,14 +572,23 @@ impl Visit for Analysis<'_> {
                             {
                                 self.permissions(call.span, argument(1))
                             },
+                            Some(expr)
+                                if literal(expr).is_some_and(|name| name.starts_with("Data")) =>
+                            {
+                                self.record_data_call(call, "raw")
+                            },
                             Some(Expr::Object(object)) => {
                                 // A command object is exactly one own data field.
                                 if let [PropOrSpread::Prop(prop)] = object.props.as_slice() {
                                     if let Prop::KeyValue(prop) = &**prop {
-                                        if key(&prop.key).as_deref()
-                                            == Some("RequestPluginPermissions")
-                                        {
-                                            self.permissions(call.span, Some(&prop.value));
+                                        match key(&prop.key) {
+                                            Some(name) if name == "RequestPluginPermissions" => {
+                                                self.permissions(call.span, Some(&prop.value));
+                                            },
+                                            Some(name) if name.starts_with("Data") => {
+                                                self.record_data_call(call, "raw");
+                                            },
+                                            _ => {},
                                         }
                                     }
                                 }

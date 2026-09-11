@@ -463,6 +463,19 @@ pub fn all_permission_names() -> Vec<String> {
     PermissionType::iter().map(permission_name).collect()
 }
 
+/// [`nearest_permission`] for a name in either spelling, answering the permission itself so
+/// the caller can spell the suggestion its own way (`ReadFiles` for TypeScript).
+pub fn nearest_permission_type(typo: &str) -> Option<PermissionType> {
+    let mut snake = String::new();
+    for (i, c) in typo.trim().chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            snake.push('_');
+        }
+        snake.push(c.to_ascii_lowercase());
+    }
+    nearest_permission(&snake).and_then(|name| parse_permission(&name))
+}
+
 /// The known permission closest to `typo`, when one is close enough to name in a suggestion.
 ///
 /// Ranked by shared words before edit distance, because these names are compounds and the word
