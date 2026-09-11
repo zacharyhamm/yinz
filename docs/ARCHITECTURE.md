@@ -2,7 +2,7 @@ This document details the different components of the code base in plain English
 
 ## Shared libraries
 
-Consumers import shared code from its owning crate. The workspace has eleven shared libraries:
+Consumers import shared code from its owning crate. The workspace has twelve shared libraries:
 
 | Crate | Ownership | Allowed Zellij dependencies |
 |---|---|---|
@@ -17,6 +17,7 @@ Consumers import shared code from its owning crate. The workspace has eleven sha
 | `zellij-terminal` | Grid and rows, terminal characters, selection, hyperlinks, Sixel and Kitty graphics, output serialization, host queries, damage geometry | Types, Runtime, IPC |
 | `zellij-process` | Pane supervisors, local and remote protocols, SSH transport, the broker, the Firecracker provider | Types, Runtime, Config, IPC, Session |
 | `zellij-bus` | The server's thread bus: `ThreadSenders`/`Bus`, the six instruction enums and their payload types, `ServerOsApi`, action routing, warps, background jobs, the session recorder and layout metadata | Types, Runtime, Storage, Config, IPC, Session, Terminal, Process |
+| `zellij-plugin-host` | The plugin host: wasm and Lua plugin loading, the plugin thread, host functions, pipes, workers, the plugin log pipe, plugin authoring helpers | Types, Runtime, Storage, Config, Plugin API, IPC, Session, Process, Bus, Tile, Tile Markdown |
 
 These lists permit dependencies. They do not require every listed dependency.
 `cargo x ci check` enforces them for normal, optional, target-specific, build, and development dependencies.
@@ -218,8 +219,9 @@ IPC, supervisor messages, and persistence records still keep primitive numbers;
 internal code wraps incoming IDs and unwraps them when constructing boundary payloads.
 Neither `zellij-terminal` nor `zellij-process` depends on the server or on the other extracted crate.
 
-`TerminalPane`, `PluginPane`, pane managers, frames, tabs, screen coordination, and plugin hosting remain in `zellij-server`.
-The terminal crate parses and renders terminal state. The server coordinates panes, clients, plugins, and threads.
+`TerminalPane`, `PluginPane`, pane managers, frames, tabs, and screen coordination remain in `zellij-server`;
+plugin hosting is `zellij-plugin-host`. The terminal crate parses and renders terminal state. The server
+coordinates panes, clients, plugins, and threads.
 
 ## The thread bus (zellij-bus/)
 
@@ -236,6 +238,18 @@ the bus. The server keeps every old path as a re-export (`zellij_server::os_inpu
 
 `route_thread_main`, the per-client router that reads a client's socket and calls `route_action`,
 stays in the server (`zellij-server/src/client_router.rs`) because it holds `SessionMetaData`.
+
+## The plugin host (zellij-plugin-host/)
+
+`zellij-plugin-host` runs the plugin thread: it loads wasm modules and Lua scripts, keeps the
+plugin map, runs plugins on the pinned executor, answers their host functions
+(`zellij_exports.rs`), and turns every `PluginCommand` into an instruction for another thread.
+It depends on `zellij-bus` and nothing above it: it never names a tab, a pane, or the screen,
+and everything it asks of them goes out as a `ScreenInstruction`, `PtyInstruction` or
+`Action` through `route_action`. The server keeps the old `crate::plugins::…` paths as an alias
+of the crate, plus `check_lua_plugin`, `get_engine` and `plugin_authoring` at its root.
+`PluginPane`, the pane that displays a plugin, stays with the other panes; its only tie to the
+host is the `PluginInstruction::Update` it sends.
 
 ## Terminal Pane (zellij-server/src/panes/terminal_pane.rs)
 The TerminalPane represents a pane on screen that connects to a single pty (pseudo terminal) and (presumably) has one shell or other program running inside it.

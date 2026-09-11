@@ -1,0 +1,10 @@
+---
+source: zellij-plugin-host/src/./unit/plugin_tests/run_and_pipe_commands.rs
+expression: "format!(\"{:#?}\", plugin_bytes_events)"
+---
+Some(
+    CliPipeOutput(
+        "pipe_output",
+        "this_is_my_output",
+    ),
+)

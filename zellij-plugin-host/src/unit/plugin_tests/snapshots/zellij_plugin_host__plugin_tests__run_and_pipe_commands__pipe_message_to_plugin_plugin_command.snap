@@ -1,0 +1,15 @@
+---
+source: zellij-plugin-host/src/./unit/plugin_tests/run_and_pipe_commands.rs
+expression: "format!(\"{:#?}\", plugin_bytes_event)"
+---
+Some(
+    (
+        PluginId(
+            0,
+        ),
+        ClientId(
+            1,
+        ),
+        "Payload from self: \"my_cool_payload\"\n\r",
+    ),
+)

@@ -154,7 +154,7 @@ Entry points: `Action::Reconfigure` → `ServerInstruction::ReconfigureAllClient
 
 `HookPoint::shape()` is `ReplacePane` for `agent_exit` and `Headless` for the rest. A headless
 hook is one long-lived plugin receiving `Event::Hook { point, payload }` per firing
-(`deliver_to_headless_hook` in `plugins/mod.rs` is the find-or-load path). New points:
+(`deliver_to_headless_hook` in `zellij-plugin-host/src/lib.rs` is the find-or-load path). New points:
 `agent_start` (a record appearing, coming back from `exited`, or a new `session_id`),
 `agent_waiting` (the edge into `waiting`), `pane_exit` (any command pane), `session_start`. Enter
 in a held pane re-runs through the screen, so a hand-restarted agent fires `agent_start` too.

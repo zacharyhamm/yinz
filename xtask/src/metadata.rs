@@ -79,6 +79,24 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-test-support",
         ],
     ),
+    (
+        "zellij-plugin-host",
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-storage",
+            "zellij-config",
+            "zellij-plugin-api",
+            "zellij-ipc",
+            "zellij-session",
+            "zellij-process",
+            "zellij-bus",
+            "zellij-tile",
+            "zellij-tile-markdown",
+            "zellij-test-support",
+            "hocus-proto",
+        ],
+    ),
 ];
 
 fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {

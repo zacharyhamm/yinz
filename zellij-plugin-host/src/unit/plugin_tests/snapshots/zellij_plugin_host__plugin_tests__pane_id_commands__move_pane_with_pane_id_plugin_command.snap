@@ -1,0 +1,13 @@
+---
+source: zellij-plugin-host/src/./unit/plugin_tests/pane_id_commands.rs
+expression: "format!(\"{:#?}\", screen_instruction)"
+---
+Some(
+    MovePaneWithPaneId(
+        Terminal(
+            TerminalId(
+                2,
+            ),
+        ),
+    ),
+)

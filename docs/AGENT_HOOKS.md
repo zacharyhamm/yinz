@@ -810,7 +810,7 @@ installed script is old, and `zellij hocus hooks install` rewrites it.
 | What a wait says, and the summary | same (`waiting_toast`, `run_summary_request_body`, `local_summary`) |
 | Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutations`, `rows::hydrate_entries`) |
 | The header pinned above a run's timeline | same (`run_header`, `wrapped_field`, `wall_clock`, `civil_from_days`, `HistoryLines::header`), drawn by `default-plugins/hocus-agents/src/main.rs` (`header_rows`, `render_history`) |
-| The local UTC offset a wall clock needs | `zellij-tile/src/shim.rs` (`get_local_utc_offset`), `zellij-server/src/plugins/zellij_exports.rs` (`get_local_utc_offset`), `zellij-types/src/data.rs` (`PluginCommand::GetLocalUtcOffset`) |
+| The local UTC offset a wall clock needs | `zellij-tile/src/shim.rs` (`get_local_utc_offset`), `zellij-plugin-host/src/zellij_exports.rs` (`get_local_utc_offset`), `zellij-types/src/data.rs` (`PluginCommand::GetLocalUtcOffset`) |
 | Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `summarize_run_now_with`, `finish_local_summary_with`) |
 | Summaries somebody asked for | `default-plugins/hocus-agentd/src/main.rs` (`summarize_pane_now_with`, `send_run_summary`, `summarize_run_now_with`, `finish_run_summary`, `run_delta`), `default-plugins/hocus-proto/src/agents.rs` (`push_summary_entry`, `RunEntryKind::Summary`), `default-plugins/hocus-agents/src/main.rs` (`request_summary`) |
 | Archive paging and selection | `default-plugins/hocus/src/transitions.rs`, `default-plugins/hocus-agents/src/main.rs` |
