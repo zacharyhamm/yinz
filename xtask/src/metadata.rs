@@ -80,6 +80,20 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "zellij-panes",
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-config",
+            "zellij-ipc",
+            "zellij-terminal",
+            "zellij-bus",
+            "zellij-tile-utils",
+            "zellij-tile",
+            "zellij-test-support",
+        ],
+    ),
+    (
         "zellij-plugin-host",
         &[
             "zellij-types",

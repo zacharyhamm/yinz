@@ -154,8 +154,9 @@ past one crate:
   run against SQLite and Postgres, and only the Postgres half needs a server
 - `zellij-tile/`, `zellij-tile-utils/`, or assets under `zellij-config/`, `zellij-plugin-api/`,
   or `zellij-ipc/` (regenerate changed protobufs with `cargo x proto`)
-- the render path in `zellij-server/` (grid, panes, output), which the `insta` snapshots and
-  integration tests cover broadly
+- the render path in `zellij-panes/` and `zellij-terminal/` (grid, panes, output), which the
+  `insta` snapshots and integration tests cover broadly; `-p zellij-panes` runs the tab and pane
+  snapshots alone
 - screen/tab/pty plumbing that both plugins and the client sit on
 - `zellij-plugin-host/` — `-p zellij-plugin-host` covers the host's own tests; the screen tests
   in `zellij-server` and the integration tests cover what it sends
@@ -271,7 +272,8 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 
 | Path | What |
 |---|---|
-| `zellij-server/` | screen, tabs, pane orchestration, pty scheduling |
+| `zellij-server/` | screen, client routing, pty scheduling, the server thread |
+| `zellij-panes/` | the `Pane` trait and its implementations, pane managers, frames, `Tab` and its layout applier |
 | `zellij-bus/` | the server's thread bus: instruction enums and senders, `ServerOsApi`, action routing, warps, background jobs, session recorder |
 | `zellij-plugin-host/` | plugin host: wasm and Lua plugin loading, the plugin thread, host functions, pipes |
 | `zellij-process/` | pane supervisors, local/remote protocols, SSH broker, Firecracker provider |
@@ -300,7 +302,7 @@ and which have not. Read it before touching plugin event delivery or the plugin 
 - **Errors**: return `Result`, don't `unwrap`. `use zellij_runtime::errors::prelude::*;`,
   `.context(...)` every `Result`, `anyhow!()` for ad-hoc. Log with `.non_fatal()`
   rather than `log::error!`. Full rules: `docs/ERROR_HANDLING.md`.
-- **Tests** live next to the code in `unit/` dirs (e.g. `zellij-server/src/unit/`), not
+- **Tests** live next to the code in `unit/` dirs (e.g. `zellij-panes/src/tab/unit/`), not
   in top-level `tests/`. Many are `insta` snapshot tests — review `.snap` diffs, and
   commit the updated snapshots when behavior intentionally changes.
 - **Logs** while debugging: `$TMPDIR/zellij-<UID>/zellij-log/zellij.log` (truncated at

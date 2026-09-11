@@ -1,6 +1,0 @@
----
-source: zellij-server/src/tab/./unit/tab_integration_tests/layout.rs
-assertion_line: 532
-expression: "format!(\"{:?}\", *tty_stdin_bytes.lock().unwrap())"
----
-{TerminalId(1): [27, 91, 73], TerminalId(3): [27, 91, 79]}
