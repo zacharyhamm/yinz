@@ -95,9 +95,12 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     // The tail of the section rather than its head: the transcript is pinned to the bottom, so
     // the last lines of a long result are the ones on screen.
     zellij.wait_until("the guide reaches the model", |grid_snapshot| {
-        grid_snapshot.contains("Read `deno` for the SDK and module rules.")
+        grid_snapshot.contains("Read `overview` and `lifecycle` for the SDK and module rules.")
     });
-    clear(&zellij, "Read `deno` for the SDK and module rules.");
+    clear(
+        &zellij,
+        "Read `overview` and `lifecycle` for the SDK and module rules.",
+    );
 
     // Nothing there yet, and the folder does not even exist.
     submit(&zellij, "/plugin_list");
