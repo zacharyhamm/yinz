@@ -1596,11 +1596,13 @@ pub enum SseItem {
         name: Option<String>,
         arguments: Option<String>,
     },
-    /// The provider's count of what the request cost, in tokens. Normally sent
-    /// once on the final chunk.
+    /// The provider's count of what the request cost, in tokens, and in
+    /// nano-USD when the provider prices it too (OpenRouter's `usage.cost`).
+    /// Normally sent once on the final chunk.
     Usage {
         prompt: u64,
         completion: u64,
+        cost_nanos: Option<u64>,
     },
     /// The `[DONE]` sentinel. Informational only: the authoritative end of
     /// stream is the host's `WebRequestStreamChunk { done: true }`.
@@ -1784,12 +1786,15 @@ fn parse_chat_chunk(chunk: StreamChunk) -> Vec<SseItem> {
     if let Some(Usage {
         prompt_tokens: prompt,
         completion_tokens: completion,
+        cost,
     }) = chunk.usage
     {
-        if prompt.is_some() || completion.is_some() {
+        let cost_nanos = cost_nanos(cost);
+        if prompt.is_some() || completion.is_some() || cost_nanos.is_some() {
             items.push(SseItem::Usage {
                 prompt: prompt.unwrap_or(0),
                 completion: completion.unwrap_or(0),
+                cost_nanos,
             });
         }
     }
@@ -1856,6 +1861,24 @@ struct StreamChunk {
 struct Usage {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
+    /// What the request was charged, in USD. OpenRouter sends it on every
+    /// response unasked; the providers that bill by token alone never do.
+    #[serde(default, deserialize_with = "lenient_cost")]
+    cost: Option<f64>,
+}
+
+/// A provider-reported USD cost as the integer nano-USD hocus accumulates, so
+/// sums across a long chat stay exact. A negative cost says nothing believable.
+fn cost_nanos(cost: Option<f64>) -> Option<u64> {
+    cost.filter(|cost| cost.is_finite() && *cost >= 0.0)
+        .map(|cost| (cost * 1e9).round() as u64)
+}
+
+/// A `cost` the provider spells as anything but a number - an object of
+/// per-direction prices, a string - is no price hocus can add up, and must
+/// not cost the chunk it rides on.
+fn lenient_cost<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_f64())
 }
 
 #[derive(Deserialize)]
@@ -2019,14 +2042,20 @@ struct IncompleteDetails {
 struct ResponseUsage {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    /// As on chat/completions: only a provider that prices the request sends it.
+    #[serde(default, deserialize_with = "lenient_cost")]
+    cost: Option<f64>,
 }
 
 fn response_usage(response: Option<&ResponseBody>) -> Option<SseItem> {
     let usage = response?.usage.as_ref()?;
-    (usage.input_tokens.is_some() || usage.output_tokens.is_some()).then_some(SseItem::Usage {
-        prompt: usage.input_tokens.unwrap_or(0),
-        completion: usage.output_tokens.unwrap_or(0),
-    })
+    let cost_nanos = cost_nanos(usage.cost);
+    (usage.input_tokens.is_some() || usage.output_tokens.is_some() || cost_nanos.is_some())
+        .then_some(SseItem::Usage {
+            prompt: usage.input_tokens.unwrap_or(0),
+            completion: usage.output_tokens.unwrap_or(0),
+            cost_nanos,
+        })
 }
 
 fn parse_response_event(event: ResponseEvent) -> Vec<SseItem> {

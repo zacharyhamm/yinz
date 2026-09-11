@@ -192,10 +192,8 @@ pub fn save(
             let mut chat = Mutation::put("chat")
                 .set("title", title.clone())
                 .set("host_id", host_id);
-            if let Some(usage) = usage {
-                chat = chat
-                    .set("input_tokens", usage.input_tokens)
-                    .set("output_tokens", usage.output_tokens);
+            for (column, value) in usage.into_iter().flat_map(usage_columns) {
+                chat = chat.set(column, value);
             }
             let report = backend.apply(vec![chat.build()])?;
             let new = report
@@ -214,10 +212,8 @@ pub fn save(
     // the columns, and `set(None)` would write NULL over totals archived by
     // an earlier run.
     let mut chat = Mutation::update("chat", Pred::eq("id", chat_id as i64)).set("title", title);
-    if let Some(usage) = usage {
-        chat = chat
-            .set("input_tokens", usage.input_tokens)
-            .set("output_tokens", usage.output_tokens);
+    for (column, value) in usage.into_iter().flat_map(usage_columns) {
+        chat = chat.set(column, value);
     }
 
     let mut mutations = vec![
@@ -261,6 +257,19 @@ pub fn save(
     Ok(messages.len())
 }
 
+/// The usage columns of a chat write. A cost the provider never reported is
+/// left out for the same reason `None` usage is: it would write NULL over a
+/// total archived while the chat was on an endpoint that did report one.
+fn usage_columns(usage: TokenUsage) -> impl Iterator<Item = (&'static str, u64)> {
+    [
+        ("input_tokens", Some(usage.input_tokens)),
+        ("output_tokens", Some(usage.output_tokens)),
+        ("cost_nanos", usage.cost_nanos),
+    ]
+    .into_iter()
+    .filter_map(|(column, value)| Some((column, value?)))
+}
+
 /// Provider-reported totals saved beside a transcript. `Ok(None)` on chats
 /// archived before usage accounting existed; `Err` when the store could not be
 /// read, which is not the same thing - a caller that opened the chat with
@@ -270,18 +279,22 @@ pub fn load_usage(backend: &impl Backend, id: u64) -> Result<Option<TokenUsage>,
         &FetchRequest::entity("chat")
             .filter(Pred::eq("id", id))
             .limit(1)
-            .select(["input_tokens", "output_tokens"]),
+            .select(["input_tokens", "output_tokens", "cost_nanos"]),
     )?;
     let Some(row) = rows.rows.first() else {
         return Ok(None);
     };
     let input_tokens = int_at(&rows, row, "input_tokens");
     let output_tokens = int_at(&rows, row, "output_tokens");
+    let cost_nanos = int_at(&rows, row, "cost_nanos");
     Ok(
-        (input_tokens.is_some() || output_tokens.is_some()).then_some(TokenUsage {
-            input_tokens: input_tokens.unwrap_or(0),
-            output_tokens: output_tokens.unwrap_or(0),
-        }),
+        (input_tokens.is_some() || output_tokens.is_some() || cost_nanos.is_some()).then_some(
+            TokenUsage {
+                input_tokens: input_tokens.unwrap_or(0),
+                output_tokens: output_tokens.unwrap_or(0),
+                cost_nanos,
+            },
+        ),
     )
 }
 
@@ -830,6 +843,7 @@ mod tests {
         let usage = TokenUsage {
             input_tokens: 1_200,
             output_tokens: 34,
+            cost_nanos: Some(1_500_000),
         };
         let mut id = None;
         save(
@@ -854,6 +868,7 @@ mod tests {
         let usage = TokenUsage {
             input_tokens: 1_200,
             output_tokens: 34,
+            cost_nanos: Some(1_500_000),
         };
         let mut id = None;
         let mut messages = vec![Message::user("one")];
@@ -882,6 +897,31 @@ mod tests {
         .expect("saved again");
 
         assert_eq!(load_usage(&backend, id), Ok(Some(usage)));
+
+        // Nor does a later save from an endpoint that prices nothing: its total
+        // carries no cost, and the one already archived stays.
+        let tokens_only = TokenUsage {
+            input_tokens: 2_000,
+            output_tokens: 50,
+            cost_nanos: None,
+        };
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut Some(id),
+            &messages,
+            messages.len(),
+            None,
+            Some(tokens_only),
+        )
+        .expect("saved without a cost");
+        assert_eq!(
+            load_usage(&backend, id),
+            Ok(Some(TokenUsage {
+                cost_nanos: usage.cost_nanos,
+                ..tokens_only
+            }))
+        );
     }
 
     /// A backend that cannot be read from. Everything else goes through to
@@ -919,6 +959,7 @@ mod tests {
         let usage = TokenUsage {
             input_tokens: 1_200,
             output_tokens: 34,
+            cost_nanos: None,
         };
         let mut id = None;
         save(

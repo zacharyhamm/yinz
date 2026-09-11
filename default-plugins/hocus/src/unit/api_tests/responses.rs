@@ -203,7 +203,8 @@ fn parses_a_whole_responses_turn() {
     );
     assert!(items.contains(&SseItem::Usage {
         prompt: 1200,
-        completion: 34
+        completion: 34,
+        cost_nanos: None,
     }));
     assert!(items.contains(&SseItem::Done));
 
@@ -289,8 +290,53 @@ fn surfaces_an_incomplete_response() {
             SseItem::Usage {
                 prompt: 1200,
                 completion: 34,
+                cost_nanos: None,
             },
             SseItem::ApiError("max_output_tokens".into()),
+        ]
+    );
+}
+
+/// A provider that prices requests on the Responses API reports it on the
+/// terminal event, beside the counts.
+#[test]
+fn a_completed_response_carries_its_reported_cost() {
+    let mut parser = SseParser::default();
+    let items = parser.feed(
+        br#"data: {"type":"response.completed","response":{"usage":{"input_tokens":1200,"output_tokens":34,"cost":0.0123}}}
+"#,
+    );
+    assert_eq!(
+        items,
+        vec![
+            SseItem::Usage {
+                prompt: 1200,
+                completion: 34,
+                cost_nanos: Some(12_300_000),
+            },
+            SseItem::Done,
+        ]
+    );
+}
+
+/// A `cost` that is not a number loses the price, not the terminal event: the
+/// counts and `Done` still arrive.
+#[test]
+fn a_completed_response_with_an_unreadable_cost_still_finishes() {
+    let mut parser = SseParser::default();
+    let items = parser.feed(
+        br#"data: {"type":"response.completed","response":{"usage":{"input_tokens":1200,"output_tokens":34,"cost":{"total_cost":0.0123}}}}
+"#,
+    );
+    assert_eq!(
+        items,
+        vec![
+            SseItem::Usage {
+                prompt: 1200,
+                completion: 34,
+                cost_nanos: None,
+            },
+            SseItem::Done,
         ]
     );
 }

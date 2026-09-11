@@ -1107,15 +1107,36 @@ fn title_note(state: &State) -> Option<String> {
     }
 }
 
-/// Provider-reported usage accumulated across every request in this chat.
+/// Provider-reported usage accumulated across every request in this chat, and
+/// what it cost when the provider says - never an estimate.
 fn usage_note(state: &State) -> Option<String> {
     state.usage.map(|usage| {
-        format!(
+        let tokens = format!(
             "{} in · {} out",
             format_tokens(usage.input_tokens),
             format_tokens(usage.output_tokens)
-        )
+        );
+        match usage.cost_nanos {
+            Some(nanos) => format!("{tokens} · {}", format_cost(nanos)),
+            None => tokens,
+        }
     })
+}
+
+/// A nano-USD amount at title width: `$0`, `<$0.0001`, `$0.0123`, `$1.23`.
+pub(crate) fn format_cost(nanos: u64) -> String {
+    let dollars = nanos as f64 / 1e9;
+    if nanos == 0 {
+        "$0".to_owned()
+    // Below half a ten-thousandth, four decimals read as a free request.
+    } else if nanos < 50_000 {
+        "<$0.0001".to_owned()
+    // As with `format_tokens`, the precision is chosen on the rounded value.
+    } else if nanos < 999_950_000 {
+        format!("${dollars:.4}")
+    } else {
+        format!("${dollars:.2}")
+    }
 }
 
 /// A token count at the width a title slot can spare: `842`, `12.3k`, `1.2M`.
@@ -3405,6 +3426,18 @@ mod tests {
         state.usage = Some(crate::TokenUsage {
             input_tokens: 1_200,
             output_tokens: 34,
+            cost_nanos: Some(12_300_000),
+        });
+        assert_eq!(
+            title_note(&state).as_deref(),
+            Some("1.2k in · 34 out · $0.0123"),
+            "a provider that prices the request has its cost shown"
+        );
+
+        state.usage = Some(crate::TokenUsage {
+            input_tokens: 1_200,
+            output_tokens: 34,
+            cost_nanos: None,
         });
         assert_eq!(title_note(&state).as_deref(), Some("1.2k in · 34 out"));
 
