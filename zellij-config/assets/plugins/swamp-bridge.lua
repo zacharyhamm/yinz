@@ -861,10 +861,10 @@ function M.pipe(message)
       assert(current.choice==reply.choice,'Picker result already differs')
     else assert(current.outcome=='pending' or current.outcome=='unknown','Picker dispatch cannot accept a result') end
     save_event(uid,'completed',{choice=reply.choice})
-    z.message_to_plugin{destination_plugin_id=from,message_name='swamp-pane-ack'}
     if reply.choice=='started' then
       close_view(reply.work)
     end
+    z.message_to_plugin{destination_plugin_id=from,message_name='swamp-pane-ack'}
     return
   end
   if message.name ~= 'swamp' or not message.payload then return end

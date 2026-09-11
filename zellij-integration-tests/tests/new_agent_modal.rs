@@ -282,3 +282,70 @@ fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
 
     zellij.quit();
 }
+
+#[test]
+fn normal_fork_shortcut_starts_a_new_pane_and_focuses_it() {
+    normal_agent_shortcut("fork_focused", "codex");
+}
+
+#[test]
+fn normal_duplicate_shortcut_starts_a_new_pane_and_focuses_it() {
+    normal_agent_shortcut("duplicate_focused", "claude");
+}
+
+fn normal_agent_shortcut(action: &str, kind: &str) {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!(
+            r#"
+agent_pane_min_columns 0
+agent_pane_min_rows 0
+keybinds {{
+  normal {{
+    bind "Ctrl b" {{
+      LaunchOrFocusPlugin "hocus-new-agent" {{ floating true; {action} true; }}
+    }}
+  }}
+}}
+plugins {{ hocus-new-agent location="zellij:hocus-new-agent"; }}
+load_plugins clear-defaults=true {{ "zellij:hocus-agentd"; }}
+"#
+        ))
+        .with_layout(LayoutInfo::Stringified(
+            "layout { pane command=\"claude\" cwd=\"/host/topic\"; }".into(),
+        ))
+        .start();
+    let original = zellij.expect_pty_spawn();
+    original.output(b"ORIGINAL AGENT\r\n");
+    zellij.wait_until("the original agent is running", |s| {
+        s.contains("ORIGINAL AGENT")
+    });
+    zellij.send_stdin(&keys::ctrl('b'));
+    if action == "fork_focused" {
+        zellij.wait_until("the normal fork picker", |s| {
+            s.contains("forking claude in topic") && s.contains("Codex")
+        });
+        zellij.send_stdin(&keys::TAB);
+        zellij.send_stdin(&keys::ENTER);
+    }
+    let new = zellij.expect_pty_spawn();
+    assert_ne!(new.terminal_id(), original.terminal_id());
+    let Some(zellij_types::input::command::TerminalAction::RunCommand(command)) =
+        new.terminal_action()
+    else {
+        panic!("the shortcut must start a command");
+    };
+    assert_eq!(command.command, std::path::PathBuf::from(kind));
+    assert_eq!(
+        command.cwd.as_deref(),
+        Some(std::path::Path::new("/host/topic"))
+    );
+    assert!(!original.is_exited());
+    new.output(b"NEW AGENT\r\n");
+    zellij.wait_until("the picker closes onto the new pane", |s| {
+        s.contains("NEW AGENT") && !s.contains("Fork agent")
+    });
+    zellij.send_stdin(b"NEW INPUT");
+    new.wait_for_stdin("the new pane receives focus", |s| s.ends_with(b"NEW INPUT"));
+    assert!(!original.stdin_bytes().ends_with(b"NEW INPUT"));
+    zellij.quit();
+}

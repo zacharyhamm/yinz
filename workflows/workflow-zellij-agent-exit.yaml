@@ -136,8 +136,8 @@ jobs:
         question: exit
         step: exit-approval
         kind: choice
-        prompt: '${{ inputs.sourcePane >= 0 ? "Agent exited. Choose Restart, Duplicate, Fork, Begin review, or Leave." : "Choose Begin review or Leave." }}'
-        answers: '${{ inputs.sourcePane >= 0 ? ["restart", "duplicate", "fork", "begin-review", "leave"] : ["begin-review", "leave"] }}'
+        prompt: '${{ inputs.sourcePane >= 0 ? "Agent exited. Choose Restart, Fork, Begin review, or Leave." : "Choose Begin review or Leave." }}'
+        answers: '${{ inputs.sourcePane >= 0 ? ["restart", "fork", "begin-review", "leave"] : ["begin-review", "leave"] }}'
         resumeInput: answer
     dependsOn:
     - step: attach
@@ -149,7 +149,7 @@ jobs:
   - name: exit-approval
     task:
       type: manual_approval
-      prompt: '${{ inputs.sourcePane >= 0 ? "Agent exited. Choose Restart, Duplicate, Fork, Begin review, or Leave." : "Choose Begin review or Leave." }}'
+      prompt: '${{ inputs.sourcePane >= 0 ? "Agent exited. Choose Restart, Fork, Begin review, or Leave." : "Choose Begin review or Leave." }}'
     dependsOn:
     - step: exit-question
       condition:

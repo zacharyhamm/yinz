@@ -359,7 +359,7 @@ impl ZellijPlugin for State {
                     pane_of(pane_id).and_then(|pane| duplicate_command(&pane, &reply.manual_kinds));
                 // A pane that is not an agent leaves the New agent form up, which is what
                 // this modal is underneath.
-                if let Some(new_pane_id) = command.and_then(start) {
+                if let Some(new_pane_id) = command.and_then(|command| start(command, None).ok()) {
                     self.finish_launch(new_pane_id);
                 }
                 false
@@ -825,18 +825,23 @@ fn command_in_context(pane: &AgentPane, kind: &str) -> CommandToRun {
     }
 }
 
-/// Open the pane the modal was asked for, marked as an agent's.
-///
-/// The duplicate and the fork both end here: the command differs, the marker and the
-/// placement do not.
-fn start(command: CommandToRun) -> Option<PaneId> {
-    open_command_pane_near_plugin(
-        command,
-        BTreeMap::from([
-            (HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned()),
-            ("hocus_agent_host_cwd".to_owned(), "true".to_owned()),
-        ]),
-    )
+/// Start an agent, reusing the held source pane for a workflow fork.
+fn start(command: CommandToRun, source: Option<PaneId>) -> Result<PaneId, &'static str> {
+    let context = BTreeMap::from([
+        (HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned()),
+        ("hocus_agent_host_cwd".to_owned(), "true".to_owned()),
+    ]);
+    if let Some(pane_id) = source {
+        // The picker may have been open while the source was closed or restarted.
+        let pane = get_pane_info(pane_id).ok_or("source pane is no longer available")?;
+        if !pane.exited {
+            return Err("source pane is no longer exited");
+        }
+        run_command_in_pane(pane_id, command, context, true);
+        Ok(pane_id)
+    } else {
+        open_command_pane_near_plugin(command, context).ok_or("could not open a pane")
+    }
 }
 
 impl State {
@@ -987,7 +992,7 @@ impl State {
         // Read before the job is borrowed. The select's labels are the shared kinds,
         // capitalised; `binary_for` wants them as they are written in `OFFERED`.
         let kind = self.dialog.form().text(AGENT).to_lowercase();
-        let Job::Fork { source, .. } = &self.job else {
+        let Job::Fork { pane_id, source } = &self.job else {
             return false;
         };
         let context = match source {
@@ -1003,13 +1008,17 @@ impl State {
             },
             ForkSource::Ready(context) => context,
         };
-        match start(command_in_context(&context.pane, &kind)) {
-            Some(pane_id) => {
+        let reuse = self
+            .workflow_reply
+            .as_ref()
+            .map(|_| PaneId::Terminal(TerminalId::new(*pane_id)));
+        match start(command_in_context(&context.pane, &kind), reuse) {
+            Ok(pane_id) => {
                 self.finish_launch(pane_id);
                 false
             },
-            None => {
-                self.error = Some("could not open a pane".to_owned());
+            Err(error) => {
+                self.error = Some(error.to_owned());
                 true
             },
         }

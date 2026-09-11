@@ -26,6 +26,7 @@ parser.add_argument('--binary', default='target/debug/zellij')
 parser.add_argument('--firecracker-only', action='store_true')
 parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
+parser.add_argument('--exit-only', action='store_true')
 parser.add_argument('--timing-only', action='store_true', help='Three diagnostic diff-and-return runs on one warm disposable server')
 parser.add_argument('--test-output-only', action='store_true')
 parser.add_argument('--latency-only', action='store_true')
@@ -37,8 +38,12 @@ root = Path(tempfile.mkdtemp(prefix='zellij-workflow-acceptance-'))
 main, topic = root / 'main', root / 'topic'
 main.mkdir()
 binary = root / 'zellij'
-# Keep the tested executable stable if another checkout rebuilds during the run.
+# Keep the tested executable and plugins stable if another checkout rebuilds during the run.
 os.link(Path(args.binary).resolve(), binary)
+builtins = root / 'builtins'
+builtins.mkdir()
+for plugin in (source / 'target/wasm32-wasip1/debug').glob('*.wasm'):
+    shutil.copyfile(plugin, builtins / plugin.name)
 session = 'workflow-' + root.name.rsplit('-', 1)[-1]
 env = os.environ.copy()
 if args.timing_only:
@@ -54,6 +59,8 @@ for name, directory in [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data')
                         ('ZELLIJ_SOCKET_DIR', 'sock'), ('TMPDIR', 'tmp')]:
     env[name] = str(root / directory)
     (root / directory).mkdir()
+env.update(ZELLIJ_CONFIG_DIR=str(root / 'config/zellij'),
+           ZELLIJ_CONFIG_FILE=str(root / 'config/zellij/config.kdl'))
 # Serve checks the existing Swamp login; keep that host credential store available
 # while isolating Zellij's configuration. Never copy credentials into transcripts.
 if swamp_config.exists():
@@ -74,11 +81,14 @@ with (Path(os.environ['SWAMP_SMOKE_ROOT']) / 'swamp-processes.jsonl').open('a') 
 os.execv(os.environ['SWAMP_SMOKE_REAL'], [os.environ['SWAMP_SMOKE_REAL']] + sys.argv[1:])
 ''')
 wrapper.chmod(0o755)
-# The duplicate action intentionally drops old arguments. Keep its real agent-kind
+# Fork intentionally drops old arguments. Keep each real agent-kind
 # command inside this fixture so it cannot contact a model provider.
 fixture_claude = fixture_bin / 'claude'
 fixture_claude.write_text('#!/usr/bin/python3\nimport os\nos.execv("/usr/bin/python3", ["/usr/bin/python3", ' + repr(str(main / 'extensions/tests/stub_agent.py')) + ', "--exit"])\n')
 fixture_claude.chmod(0o755)
+fixture_codex = fixture_bin / 'codex'
+fixture_codex.write_text(fixture_claude.read_text().replace('import os\n', 'import os\nos.environ["SWAMP_SMOKE_KIND"] = "codex"\n'))
+fixture_codex.chmod(0o755)
 
 env.update(PATH=str(fixture_bin) + os.pathsep + env['PATH'],
            SWAMP_SMOKE_REAL=real_swamp, SWAMP_SMOKE_ROOT=str(root))
@@ -301,7 +311,7 @@ if args.source_diff_only:
     (topic / 'file').write_text('topic\n')
     print('PASS: exact viewer argv isolates checkout and index, quotes nested repositories, excludes its own TMPDIR, and fails for a missing checkout', flush=True)
 (root / 'config/zellij').mkdir(exist_ok=True)
-(root / 'config/zellij/config.kdl').write_text('show_release_notes false\nshow_startup_tips false\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/zellij-firecracker')) + '\n')
+(root / 'config/zellij/config.kdl').write_text('show_release_notes false\nshow_startup_tips false\nbuiltin_plugins_dir ' + json.dumps(str(builtins)) + '\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/zellij-firecracker')) + '\n')
 observer = root / 'snapshot.lua'
 observer.write_text('''local z=require('zellij')
 return {
@@ -581,20 +591,21 @@ try:
             print('PASS: three warm diff-and-return repetitions; cold startup recorded separately', flush=True)
             raise SystemExit(0)
 
-        if args.source_diff_only:
-            launch('unattended-diff')
-            choose('unattended-diff', 'exit', 'begin-review')
-            exercise_diff('unattended-diff')
-            choose('unattended-diff', 'prepare', 'leave')
-            launch('previews')
-            choose('previews', 'exit', 'begin-review')
-            preparation = until('manual preparation', lambda: pending('previews', 'prepare'))
-            zellij('workflow', 'show', preparation['attributes']['run'])
-            until('manual preparation menu renders', lambda: 'Show diff' in zellij('action', 'dump-screen'))
-            view = next(p for p in json.loads(zellij('action', 'list-panes', '--json'))
-                        if p.get('plugin_url') == 'zellij:swamp-workflow' and not p['is_suppressed'])
-            exercise_diff('previews', view)
-            choose('previews', 'prepare', 'leave')
+        if args.source_diff_only or args.exit_only:
+            if not args.exit_only:
+                launch('unattended-diff')
+                choose('unattended-diff', 'exit', 'begin-review')
+                exercise_diff('unattended-diff')
+                choose('unattended-diff', 'prepare', 'leave')
+                launch('previews')
+                choose('previews', 'exit', 'begin-review')
+                preparation = until('manual preparation', lambda: pending('previews', 'prepare'))
+                zellij('workflow', 'show', preparation['attributes']['run'])
+                until('manual preparation menu renders', lambda: 'Show diff' in zellij('action', 'dump-screen'))
+                view = next(p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                            if p.get('plugin_url') == 'zellij:swamp-workflow' and not p['is_suppressed'])
+                exercise_diff('previews', view)
+                choose('previews', 'prepare', 'leave')
             original_id = int(zellij('run', '--cwd', str(topic), '--', 'claude').strip().split('_')[-1])
             original = until('tiled source is ready for input', lambda: next((p for p in json.loads(zellij('action', 'list-panes', '--json')) if not p['is_plugin'] and p['id'] == original_id and p.get('pane_cwd') == str(topic)), None))
             assert not original['is_floating'] and not original['is_suppressed']
@@ -605,21 +616,31 @@ try:
             token = automatic[0]['inputs']['launch']
             snapshot = json.loads(zellij('pipe', '--name', 'snapshot', '--plugin', 'file:' + str(observer), '--', '{}'))
             assert original_id not in [p['pane_id'] for p in snapshot['panes']]
-            choose(token, 'exit', 'fork')
+            menu = choose(token, 'exit', 'fork')
+            assert menu['attributes']['answers'] == ['restart', 'fork', 'begin-review', 'leave']
             until('hidden source resolved by Fork', lambda: 'forking claude' in zellij('action', 'dump-screen'))
             os.write(ui_fd, b'\x1b')
             until('Fork cancellation returns to exit question', lambda: pending(token, 'exit'))
             before_ids = {p['id'] for p in agents()}
-            choose(token, 'exit', 'duplicate')
-            duplicated = until('Duplicate launches hidden source kind', lambda: next((p for p in agents() if p['id'] not in before_ids), None))
-            assert duplicated['agent']['kind'] == 'claude'
-            assert duplicated['agent']['cwd'] == str(topic)
-            print('PASS: automatic tiled exit suppresses source; snapshot excludes it; Fork resolves it; cancelled Fork returns; Duplicate preserves kind/cwd', flush=True)
-            until('duplicate has enabled raw input', lambda: 'STUB READY' in zellij('action', 'dump-screen'))
-            zellij('action', 'write-chars', '--pane-id', str(duplicated['id']), 'exit\n')
-            until('duplicate exit hook suppresses source', lambda: next((p for p in agents() if p['id'] == duplicated['id'] and p['exited'] and p['is_suppressed']), None))
-            automatic = until('duplicate exit run', lambda: swamp('workflow', 'history', 'search', '--filter', 'inputs.sourcePane == ' + str(duplicated['id']))['results'])
+            choose(token, 'exit', 'fork')
+            until('Fork picker reopened', lambda: 'forking claude' in zellij('action', 'dump-screen'))
+            os.write(ui_fd, b'\t\r')
+            forked = until('Fork reuses the source and takes focus', lambda: next((p for p in agents() if p['id'] == original_id and not p['exited'] and not p['is_suppressed'] and p['is_focused']), None))
+            assert forked['agent']['kind'] == 'codex'
+            assert forked['agent']['cwd'] == str(topic)
+            assert {p['id'] for p in agents()} == before_ids
+            for field in ('tab_id', 'pane_x', 'pane_y', 'pane_rows', 'pane_columns', 'is_floating'):
+                assert forked[field] == original[field], field
+            print('PASS: automatic tiled exit suppresses source; cancelled Fork returns; confirmed Fork reuses source kind/cwd/layout and takes focus', flush=True)
+            until('fork has enabled raw input', lambda: 'STUB READY' in zellij('action', 'dump-screen'))
+            zellij('action', 'write-chars', '--pane-id', str(original_id), 'exit\n')
+            until('fork exit hook suppresses source', lambda: next((p for p in agents() if p['id'] == original_id and p['exited'] and p['is_suppressed']), None))
+            automatic = until('fork exit run', lambda: [r for r in swamp('workflow', 'history', 'search', '--filter', 'inputs.sourcePane == ' + str(original_id))['results'] if r['inputs']['launch'] != token])
             token = automatic[0]['inputs']['launch']
+            if args.exit_only:
+                choose(token, 'exit', 'leave')
+                print('PASS: the fork exits to a fresh menu in the original pane', flush=True)
+                raise SystemExit(0)
             choose(token, 'exit', 'begin-review')
             until('automatic preparation menu', lambda: pending(token, 'prepare'))
             view = next(p for p in json.loads(zellij('action', 'list-panes', '--json'))
@@ -789,8 +810,8 @@ try:
         original = next(p for p in agents() if p.get('exited') and p['agent']['kind'] == 'claude')
         launch('fork-cancel', sourcePane=original['id'], kind='claude')
         first_menu = choose('fork-cancel', 'exit', 'fork')
-        assert first_menu['attributes']['answers'] == ['restart', 'duplicate', 'fork', 'begin-review', 'leave']
-        assert first_menu['attributes']['prompt'] == 'Agent exited. Choose Restart, Duplicate, Fork, Begin review, or Leave.'
+        assert first_menu['attributes']['answers'] == ['restart', 'fork', 'begin-review', 'leave']
+        assert first_menu['attributes']['prompt'] == 'Agent exited. Choose Restart, Fork, Begin review, or Leave.'
         until('existing fork picker', lambda: any(p.get('plugin_url') == 'zellij:hocus-new-agent' and not p['is_suppressed'] for p in json.loads(zellij('action', 'list-panes', '--json'))))
         zellij('action', 'start-or-reload-plugin', 'zellij:swamp-bridge')
         until('picker dispatch becomes uncertain after reload', lambda: bridge(method='observe', work='fork-cancel', key=first_menu['attributes']['run'] + '-pane-choice')['outcome'] == 'unknown')
@@ -798,16 +819,10 @@ try:
         cancelled = until('cancelled fork returns to fresh exit menu', lambda: pending('fork-cancel', 'exit'))
         assert cancelled['attributes']['run'] != first_menu['attributes']['run']
         choose('fork-cancel', 'exit', 'leave')
-        launch('duplicate-choice', sourcePane=original['id'], kind='claude')
-        before_ids = {p['id'] for p in agents()}
-        choose('duplicate-choice', 'exit', 'duplicate')
-        duplicated = until('duplicate launches original kind', lambda: next((p for p in agents() if p['id'] not in before_ids), None))
-        assert duplicated['agent']['kind'] == 'claude'
-        assert duplicated.get('pane_cwd', duplicated['agent'].get('cwd')) == str(topic)
         launch('restart-choice', sourcePane=original['id'], kind='claude')
         choose('restart-choice', 'exit', 'restart')
         until('restart uses original pane', lambda: any(p['id'] == original['id'] and not p['exited'] for p in agents()))
-        print('PASS: fork cancellation returns to a fresh menu; duplicate preserves kind/cwd; restart reuses original pane', flush=True)
+        print('PASS: fork cancellation returns to a fresh menu; restart reuses original pane', flush=True)
 
 
         launch('unresolved-review', agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit', '--findings'])

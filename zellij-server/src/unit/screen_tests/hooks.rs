@@ -1424,3 +1424,37 @@ fn agent_double_escape_screen_resets_and_menu_dismissal() {
         );
     }
 }
+
+#[test]
+fn a_replacement_agent_starts_a_fresh_record_in_the_same_pane() {
+    for kind in ["claude", "codex"] {
+        let original = RunCommand {
+            command: "claude".into(),
+            hold_on_close: true,
+            ..Default::default()
+        };
+        let replacement = RunCommand {
+            command: kind.into(),
+            ..agent_command("/tmp/topic")
+        };
+        let fired = hooks_fired_by(vec![
+            new_pane(3, None),
+            set_agent(3, Some(report(AgentState::Busy, Some("old-session")))),
+            hold(3, original),
+            run_command_in_pane(3, replacement.clone()),
+            hold(3, replacement),
+        ]);
+        let starts: Vec<_> = fired
+            .iter()
+            .filter(|(point, _, _)| *point == HookPoint::AgentStart)
+            .collect();
+        assert_eq!(starts.len(), 2, "{fired:?}");
+        let (pane, agent, _, _) = agent(&starts[1].2);
+        assert_eq!(pane, crate::TerminalId::new(3));
+        assert_eq!(agent.kind, kind);
+        assert_eq!(agent.cwd.as_deref(), Some("/tmp/topic"));
+        assert_eq!(agent.source, AgentSource::Spawned);
+        assert!(agent.session_id.is_none() && agent.run_id.is_none());
+        assert_eq!(fired.last().unwrap().0, HookPoint::AgentExit);
+    }
+}

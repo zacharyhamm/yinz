@@ -296,7 +296,12 @@ fn run_command_action(
     default_to_plugin_cwd: bool,
     context: BTreeMap<String, String>,
 ) -> RunCommandAction {
-    let cwd = if env.plugin.is_builtin() && context.contains_key("swamp_owner") {
+    let cwd = if env.plugin.is_builtin()
+        && (context.contains_key("swamp_owner")
+            || context
+                .get("hocus_agent_host_cwd")
+                .is_some_and(|value| value == "true"))
+    {
         command_to_run.cwd.clone()
     } else {
         command_cwd(env, &command_to_run, default_to_plugin_cwd)
@@ -2651,14 +2656,7 @@ fn open_command_pane_near_plugin(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
-    // The builtin picker reads the source pane's real cwd from the manifest. In
-    // particular, a real /tmp checkout must not become the plugin's virtual /tmp.
-    let host_cwd = env.plugin.is_builtin()
-        && context
-            .get("hocus_agent_host_cwd")
-            .is_some_and(|value| value == "true");
-    let pane_id =
-        spawn_command_pane_near_plugin(env, command_to_run, context, None, host_cwd, false);
+    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context, None, false, false);
     let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
