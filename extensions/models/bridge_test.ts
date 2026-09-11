@@ -305,3 +305,126 @@ Deno.test("commands default to background and accept foreground explicitly", () 
             .success,
     );
 });
+
+Deno.test("bridge timings correlate attempts without logging payloads or failures", async () => {
+    const { bridge } = await import("./_lib/bridge.ts");
+    const dir = await Deno.makeTempDir();
+    const previous = Deno.env.get("ZELLIJ_SWAMP_TIMING");
+    const logs: string[] = [];
+    const binary = dir + "/bridge";
+    const c = {
+        repoDir: dir,
+        globalArgs: { binary, session: "test" },
+        signal: new AbortController().signal,
+        modelId: "model-id",
+        logger: {
+            info: (line: string | TemplateStringsArray) => {
+                assert(
+                    typeof line !== "string" && line.length === 1 &&
+                        line.raw[0] === line[0],
+                );
+                logs.push(line[0]);
+            },
+        },
+    };
+    try {
+        await Deno.writeTextFile(
+            binary,
+            `#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{"result":"secret-output"}'\n`,
+            { mode: 0o700 },
+        );
+        const request = {
+            method: "identity",
+            work: "work",
+            key: "key",
+            prompt: "secret-prompt",
+            token: "secret-token",
+        };
+        Deno.env.delete("ZELLIJ_SWAMP_TIMING");
+        assert(await bridge(c, request) === "secret-output");
+        assert(logs.length === 0);
+        Deno.env.set("ZELLIJ_SWAMP_TIMING", "1");
+        assert(await bridge(c, request) === "secret-output");
+        await Deno.writeTextFile(
+            binary,
+            `#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{"error":"secret-error"}'\n`,
+        );
+        try {
+            await bridge(c, request);
+            throw new Error("expected failure");
+        } catch (error) {
+            assert(String(error).includes("secret-error"));
+        }
+        await Deno.writeTextFile(
+            binary,
+            `#!/bin/sh\ncat >/dev/null\necho secret-stderr >&2\nexit 1\n`,
+        );
+        try {
+            await bridge(c, request);
+            throw new Error("expected failure");
+        } catch (error) {
+            assert(String(error).includes("secret-stderr"));
+        }
+        const records = logs.map((s) =>
+            JSON.parse(s.slice("swamp_timing ".length))
+        );
+        assert(records.length === 5);
+        assert(records[0].attempt === records[1].attempt);
+        assert(records[0].attempt !== records[2].attempt);
+        assert(records[3].phase === "parse" && records[3].outcome === "error");
+        assert(
+            records[4].phase === "process" && records[4].outcome === "error",
+        );
+        assert(
+            records.every((r) =>
+                r.modelId === "model-id" && r.work === "work" &&
+                r.key === "key" && r.elapsedMs >= 0
+            ),
+        );
+        assert(!logs.join("\n").includes("secret-"));
+        logs.length = 0;
+        await Deno.writeTextFile(
+            binary,
+            `#!/usr/bin/env python3
+import json, pathlib, sys
+request = json.load(sys.stdin)
+p = pathlib.Path('poll-count')
+n = int(p.read_text()) + 1 if p.exists() else 1
+p.write_text(str(n))
+print(json.dumps({'result': {'work':'work','key':'key','request':'{}','incarnation':'test','outcome':'pending' if n == 1 else 'completed'}}))
+`,
+        );
+        const observed = await observe(
+            {
+                ...c,
+                readResource: () => Promise.resolve(null),
+                writeResource: () => Promise.resolve({ name: "unused" }),
+            },
+            { work: "work", key: "key" },
+            5,
+        );
+        assert(observed.outcome === "completed");
+        const summary = JSON.parse(logs.at(-1)!.slice("swamp_timing ".length));
+        assert(summary.phase === "observation" && summary.polls === 3);
+        assert(summary.waitMs >= 490 && summary.requestMs > 0);
+        assert(summary.elapsedMs >= summary.waitMs + summary.requestMs);
+        const abort = new AbortController();
+        abort.abort();
+        try {
+            await bridge({ ...c, signal: abort.signal }, request);
+            throw new Error("not cancelled");
+        } catch (error) {
+            assert(
+                error instanceof DOMException && error.name === "AbortError",
+            );
+        }
+        assert(
+            JSON.parse(logs.at(-1)!.slice("swamp_timing ".length)).outcome ===
+                "error",
+        );
+    } finally {
+        if (previous === undefined) Deno.env.delete("ZELLIJ_SWAMP_TIMING");
+        else Deno.env.set("ZELLIJ_SWAMP_TIMING", previous);
+        await Deno.remove(dir, { recursive: true });
+    }
+});

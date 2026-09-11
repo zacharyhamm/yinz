@@ -131,6 +131,20 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
         .map_err(|e| anyhow!("failed to load zellij's Lua prelude: {}", e))?;
 
     install_json(&lua, &zellij)?;
+    let epoch = std::time::Instant::now();
+    zellij
+        .set(
+            "monotonic_ms",
+            lua.create_function(move |_, ()| Ok(epoch.elapsed().as_secs_f64() * 1000.0))
+                .map_err(|e| anyhow!("cannot create monotonic clock: {e}"))?,
+        )
+        .map_err(|e| anyhow!("cannot expose monotonic clock: {e}"))?;
+    zellij
+        .set(
+            "swamp_timing",
+            std::env::var("ZELLIJ_SWAMP_TIMING").as_deref() == Ok("1"),
+        )
+        .map_err(|e| anyhow!("cannot expose Swamp timing switch: {e}"))?;
     // Only the builtin delivery adapter can inspect transport ownership. This is
     // an internal host query, not a new public plugin protocol capability.
     if env.plugin.location

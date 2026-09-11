@@ -23,6 +23,136 @@ const SERVICE: &str = "zellij-service";
 const MAX_OUTPUT: usize = 1_048_576;
 const STARTUP: Duration = Duration::from_secs(90);
 
+fn timing_enabled() -> bool {
+    std::env::var("ZELLIJ_SWAMP_TIMING").as_deref() == Ok("1")
+}
+
+// No payload or error text: either can include credentials or command output.
+struct Timing {
+    start: Instant,
+    record: Option<Value>,
+}
+impl Timing {
+    fn new(phase: &str, id: &str, operation: &str, enabled: bool) -> Self {
+        Self { start: Instant::now(), record: enabled.then(|| json!({
+            "layer":"transport", "phase":phase, "requestId":id,
+            "method":operation, "attempt":uuid::Uuid::new_v4().to_string(), "outcome":"error"
+        })) }
+    }
+    fn phase(&self, phase: &str) -> Self {
+        let mut record = self.record.clone();
+        if let Some(record) = &mut record {
+            record["phase"] = json!(phase);
+            record["outcome"] = json!("error");
+        }
+        Self {
+            start: Instant::now(),
+            record,
+        }
+    }
+    fn emit(&self, phase: &str, outcome: &str, run: Option<&str>) {
+        if let Some(mut record) = self.record.clone() {
+            record["phase"] = json!(phase);
+            record["outcome"] = json!(outcome);
+            record["elapsedMs"] = json!(self.start.elapsed().as_secs_f64() * 1000.0);
+            record["run"] = json!(run);
+            log::info!("swamp_timing {}", record);
+        }
+    }
+    fn ok(&mut self) {
+        if let Some(record) = &mut self.record {
+            record["outcome"] = json!("ok");
+        }
+    }
+}
+impl Drop for Timing {
+    fn drop(&mut self) {
+        if let Some(record) = &self.record {
+            self.emit(
+                record["phase"].as_str().unwrap_or("total"),
+                record["outcome"].as_str().unwrap_or("error"),
+                None,
+            );
+        }
+    }
+}
+
+const CAPTURE_LIMIT: usize = 10 * 1024 * 1024;
+struct Capture {
+    path: PathBuf,
+    file: File,
+    size: usize,
+}
+impl Capture {
+    fn open(path: PathBuf) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&path)
+            .context("cannot open Swamp diagnostic capture")?;
+        let meta = file.metadata().context("cannot inspect Swamp capture")?;
+        if !meta.is_file()
+            || meta.uid() != nix::unistd::geteuid().as_raw()
+            || meta.mode() & 0o077 != 0
+        {
+            return Err(anyhow!("Swamp capture must be a private regular file"));
+        }
+        Ok(Self {
+            path,
+            file,
+            size: meta.len() as usize,
+        })
+    }
+    fn write(&mut self, mut bytes: &[u8]) -> Result<()> {
+        while !bytes.is_empty() {
+            if self.size >= CAPTURE_LIMIT {
+                std::fs::rename(&self.path, self.path.with_extension("log.1"))
+                    .context("cannot rotate Swamp capture")?;
+                *self = Self::open(self.path.clone())?;
+            }
+            let count = bytes.len().min(CAPTURE_LIMIT - self.size);
+            self.file
+                .write_all(&bytes[..count])
+                .context("cannot write Swamp capture")?;
+            self.size += count;
+            bytes = &bytes[count..];
+        }
+        Ok(())
+    }
+}
+async fn drain_capture(mut reader: impl tokio::io::AsyncRead + Unpin, path: Option<PathBuf>) {
+    use tokio::io::AsyncReadExt;
+    let mut capture = path.and_then(|path| match Capture::open(path) {
+        Ok(capture) => Some(capture),
+        Err(error) => {
+            Err::<(), _>(error).non_fatal();
+            None
+        },
+    });
+    let mut buffer = [0; 8192];
+    loop {
+        match reader.read(&mut buffer).await {
+            Ok(0) => return,
+            Ok(count) => {
+                if let Some(writer) = &mut capture {
+                    if let Err(error) = writer.write(&buffer[..count]) {
+                        Err::<(), _>(error).non_fatal();
+                        capture = None;
+                    }
+                }
+            },
+            Err(error) => {
+                Err::<(), _>(error)
+                    .context("cannot drain Swamp capture")
+                    .non_fatal();
+                return;
+            },
+        }
+    }
+}
+
 // Deliberately not Debug: credentials must not enter diagnostic output.
 #[derive(Clone, Serialize, Deserialize)]
 struct Endpoint {
@@ -347,10 +477,18 @@ pub fn supervise(root: PathBuf) -> Result<()> {
         for (key, _) in std::env::vars_os() {
             if matches!(key.to_str(), Some("SWAMP_REPO_DIR" | "SWAMP_SERVER_URL" | "SWAMP_SERVE_URL" | "SWAMP_SERVER_TOKEN" | "SWAMP_SERVE_EXTRA_HEADERS")) { command.env_remove(key); }
         }
+        let capture_dir = if timing_enabled() {
+            command.env("OTEL_TRACES_EXPORTER", "console");
+            Some(directory(&root)?)
+        } else { None };
         let mut child = command.current_dir(&root).args(["serve", "--host", "127.0.0.1", "--port", "0",
             "--auth-mode", "token", "--admins", "user:zellij-service", "--no-schedule", "--json", "--no-telemetry"])
-            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true)
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(if capture_dir.is_some() { Stdio::piped() } else { Stdio::null() }).kill_on_drop(true)
             .spawn().context("cannot start Swamp serve")?;
+        let mut captures = Vec::new();
+        if let Some(stderr) = child.stderr.take() {
+            captures.push(tokio::spawn(drain_capture(stderr, capture_dir.as_ref().map(|dir| dir.join("stderr.log")))));
+        }
         let mut lines = BufReader::new(child.stdout.take().context("missing Swamp startup pipe")?).lines();
         let announcement = tokio::time::timeout(STARTUP, async {
             while let Some(line) = lines.next_line().await.context("cannot read Swamp startup")? {
@@ -360,6 +498,10 @@ pub fn supervise(root: PathBuf) -> Result<()> {
             }
             Err(anyhow!("Swamp exited before announcing an endpoint"))
         }).await.context("Swamp startup timed out")??;
+        // Keep the buffered reader: bytes after the announcement may already be buffered.
+        let capturing = capture_dir.is_some();
+        let stdout = tokio::spawn(drain_capture(lines.into_inner(), capture_dir.map(|dir| dir.join("stdout.log"))));
+        if capturing { captures.push(stdout); }
         let url = announcement["url"].as_str().context("Swamp announced no endpoint")?.to_owned();
         if !valid_url(&url) || announcement["detachRuns"] != true || announcement["schedulingEnabled"] != false {
             return Err(anyhow!("Swamp is incompatible: authenticated detached local execution is required"));
@@ -381,17 +523,16 @@ pub fn supervise(root: PathBuf) -> Result<()> {
         let mut renewal = tokio::time::interval(Duration::from_secs(24 * 3600));
         renewal.tick().await;
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).context("cannot watch supervisor termination")?;
-        loop {
+        let result = loop {
             tokio::select! {
-                status = child.wait() => { status.context("cannot reap Swamp")?; return Ok(()); },
+                status = child.wait() => { break status.context("cannot reap Swamp").map(|_| ()); },
                 _ = term.recv() => {
                     if let Some(pid) = child.id() {
                         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGTERM).context("cannot stop Swamp")?;
                     }
                     if tokio::time::timeout(Duration::from_secs(10), child.wait()).await.is_err() { child.kill().await.context("cannot reap stopped Swamp")?; }
-                    return Ok(());
+                    break Ok(());
                 },
-                line = lines.next_line() => { line.context("cannot drain Swamp output")?; },
                 _ = renewal.tick() => {
                     let root = state.root.clone();
                     match tokio::task::spawn_blocking(move || credential(&root)).await.context("credential renewal task failed").and_then(|result| result) {
@@ -400,7 +541,14 @@ pub fn supervise(root: PathBuf) -> Result<()> {
                     }
                 }
             }
+        };
+        // Drain final spans after exit. A descendant holding a pipe must not stall shutdown.
+        for capture in captures {
+            tokio::time::timeout(Duration::from_secs(1), capture).await
+                .context("Swamp capture drain timed out")
+                .and_then(|result| result.context("Swamp capture task failed")).non_fatal();
         }
+        result
     })
 }
 
@@ -472,10 +620,16 @@ fn ensure_locked(root: &Path) -> Result<Endpoint> {
 }
 
 pub fn prewarm(root: &Path) -> Result<()> {
+    prewarm_request(root, "")
+}
+
+pub fn prewarm_request(root: &Path, id: &str) -> Result<()> {
+    let mut timing = Timing::new("prewarm", id, "prewarm", timing_enabled());
     let root = root
         .canonicalize()
         .context("cannot resolve Swamp checkout")?;
     ensure_locked(&root)?;
+    timing.ok();
     Ok(())
 }
 
@@ -516,6 +670,8 @@ struct Request {
     cursor: u64,
     guard: Option<File>,
     sent_at: Instant,
+    timing: Timing,
+    first_response: bool,
 }
 type Registry = Mutex<HashMap<PathBuf, mpsc::Sender<Request>>>;
 static CONNECTIONS: OnceLock<Registry> = OnceLock::new();
@@ -553,6 +709,7 @@ pub async fn request(
             })
             .clone()
     };
+    let mut lock_timing = Timing::new("dispatch_lock", &id, &operation, timing_enabled());
     let guard = if read_request(&operation) || operation == "run.attach" {
         None
     } else {
@@ -563,6 +720,9 @@ pub async fn request(
                 .context("Swamp dispatch lock task failed")??,
         )
     };
+    lock_timing.ok();
+    drop(lock_timing);
+    let timing = Timing::new("total", &id, &operation, timing_enabled());
     let run = (operation == "run.attach")
         .then(|| payload["runId"].as_str().map(str::to_owned))
         .flatten();
@@ -577,6 +737,8 @@ pub async fn request(
             cursor,
             guard,
             sent_at: Instant::now(),
+            timing,
+            first_response: false,
         })
         .await
         .context("managed Swamp connection is unavailable")?;
@@ -658,9 +820,26 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
             let Some(request) = incoming.recv().await else {
                 return;
             };
+            request
+                .timing
+                .emit("queue_wait", "ok", request.run.as_deref());
             pending.insert(request.id.clone(), request);
         }
-        let mut ws = match socket(&root).await {
+        let connected = Instant::now();
+        let result = socket(&root).await;
+        for request in pending.values() {
+            let mut record = Timing {
+                start: connected,
+                record: request.timing.record.clone(),
+            };
+            record.emit(
+                "connect",
+                if result.is_ok() { "ok" } else { "error" },
+                request.run.as_deref(),
+            );
+            record.record = None;
+        }
+        let mut ws = match result {
             Ok(socket) => socket,
             Err(error) => {
                 for (_, request) in pending.drain() {
@@ -672,12 +851,14 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
             },
         };
         let mut broken = false;
-        for request in pending.values() {
+        for request in pending.values_mut() {
+            request.first_response = false;
             let frame = if let Some(run) = &request.run {
                 json!({"type":"run.attach", "id":request.id, "payload":{"runId":run,"afterSeq":request.cursor}})
             } else {
                 json!({"type":request.operation,"id":request.id,"payload":request.payload})
             };
+            let mut send = request.timing.phase("send");
             if ws
                 .send(Message::Text(frame.to_string().into()))
                 .await
@@ -686,6 +867,7 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
                 broken = true;
                 break;
             }
+            send.ok();
         }
         while !broken {
             tokio::select! {
@@ -703,9 +885,12 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
                         let _ = request.events.send(failure(&request.id, "request identity already in flight; reconcile the existing operation"));
                         continue;
                     }
+                    request.timing.emit("queue_wait", "ok", request.run.as_deref());
+                    let mut send = request.timing.phase("send");
                     let frame = json!({"type":request.operation,"id":request.id,"payload":request.payload});
                     pending.insert(request.id.clone(), request);
                     broken = ws.send(Message::Text(frame.to_string().into())).await.is_err();
+                    if !broken { send.ok(); }
                 },
                 message = ws.next() => {
                     match message {
@@ -714,7 +899,19 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
                             let Some(id) = frame["id"].as_str().map(str::to_owned) else { continue; };
                             let terminal = frame["type"] != "event" && frame["type"] != "run.attached";
                             if let Some(request) = pending.get_mut(&id) {
-                                if let Some(run) = frame["event"]["runId"].as_str() { request.run = Some(run.to_owned()); request.guard.take(); }
+                                if !request.first_response {
+                                    request.timing.emit("first_response", "ok", request.run.as_deref());
+                                    request.first_response = true;
+                                }
+                                if let Some(run) = frame["event"]["runId"].as_str() {
+                                    if request.run.is_none() { request.timing.emit("acknowledgement", "ok", Some(run)); }
+                                    request.run = Some(run.to_owned()); request.guard.take();
+                                }
+                                if terminal {
+                                    let outcome = if frame["type"] == "error" || frame["type"] == "run.interrupted" { "error" } else { "ok" };
+                                    request.timing.emit("terminal", outcome, request.run.as_deref());
+                                    if outcome == "ok" { request.timing.ok(); }
+                                }
                                 if let Some(seq) = frame["event"]["seq"].as_u64() { request.cursor = seq; }
                                 let _ = request.events.send(bound_frame(frame));
                             }
@@ -728,6 +925,8 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
             }
         }
         pending.retain(|id, request| {
+            request.timing.emit("disconnect", "error", request.run.as_deref());
+            if let Some(record) = request.timing.record.as_mut() { record["attempt"] = json!(uuid::Uuid::new_v4().to_string()); }
             request.guard.take();
             if request.run.is_some() || read_request(&request.operation) { true } else {
                 let _ = request.events.send(failure(id, "delivery is uncertain; reconcile persisted run/submission state before dispatch"));
@@ -740,16 +939,12 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
 
 pub async fn call(root: PathBuf, operation: &str, payload: Value) -> Result<Value> {
     let warm = root.clone();
-    tokio::task::spawn_blocking(move || prewarm(&warm))
+    let id = uuid::Uuid::new_v4().to_string();
+    let warm_id = id.clone();
+    tokio::task::spawn_blocking(move || prewarm_request(&warm, &warm_id))
         .await
         .context("Swamp startup task failed")??;
-    let mut events = request(
-        root,
-        uuid::Uuid::new_v4().to_string(),
-        operation.to_owned(),
-        payload,
-    )
-    .await?;
+    let mut events = request(root, id, operation.to_owned(), payload).await?;
     while let Some(frame) = events.recv().await {
         if frame["type"] == "error" {
             return Err(anyhow!("{}", frame["error"]));
@@ -848,6 +1043,83 @@ mod tests {
     // tungstenite requires a full HTTP response as the handshake error.
     #![allow(clippy::result_large_err)]
     use super::*;
+
+    #[test]
+    fn timing_records_are_opt_in_and_correlated_on_success_and_failure() {
+        struct Logger(Mutex<Vec<String>>);
+        impl log::Log for Logger {
+            fn enabled(&self, _: &log::Metadata) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record) {
+                self.0.lock().unwrap().push(record.args().to_string());
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: Logger = Logger(Mutex::new(Vec::new()));
+        log::set_logger(&LOGGER).unwrap();
+        log::set_max_level(log::LevelFilter::Info);
+        drop(Timing::new("total", "id", "data.query", false));
+        assert!(LOGGER.0.lock().unwrap().is_empty());
+        let mut timing = Timing::new("total", "id", "data.query", true);
+        let mut send = timing.phase("send");
+        send.ok();
+        drop(send);
+        timing.emit("terminal", "error", Some("run"));
+        timing.ok();
+        drop(timing);
+        let records: Vec<Value> = LOGGER
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|line| serde_json::from_str(line.strip_prefix("swamp_timing ").unwrap()).unwrap())
+            .collect();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0]["outcome"], "ok");
+        assert_eq!(records[1]["outcome"], "error");
+        assert_eq!(records[1]["run"], "run");
+        for record in &records {
+            assert_eq!(record["requestId"], "id");
+            assert_eq!(record["attempt"], records[0]["attempt"]);
+            assert!(record["elapsedMs"].as_f64().unwrap() >= 0.0);
+            assert!(record.as_object().unwrap().keys().all(|key| [
+                "layer",
+                "phase",
+                "requestId",
+                "method",
+                "attempt",
+                "outcome",
+                "elapsedMs",
+                "run"
+            ]
+            .contains(&key.as_str())));
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_is_private_bounded_and_disabled_without_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stdout.log");
+        drain_capture(&b"discarded"[..], None).await;
+        assert!(!path.exists());
+        let mut capture = Capture::open(path.clone()).unwrap();
+        capture.write(&vec![b'a'; CAPTURE_LIMIT + 7]).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"aaaaaaa");
+        assert_eq!(
+            std::fs::metadata(path.with_extension("log.1"))
+                .unwrap()
+                .len(),
+            CAPTURE_LIMIT as u64
+        );
+        capture.write(&vec![b'b'; CAPTURE_LIMIT]).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"bbbbbbb");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        let link = dir.path().join("stderr.log");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(Capture::open(link).is_err());
+    }
 
     async fn fixture() -> (tempfile::TempDir, PathBuf, tokio::net::TcpListener) {
         let dir = tempfile::tempdir().unwrap();

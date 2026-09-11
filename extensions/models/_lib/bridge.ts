@@ -119,34 +119,94 @@ export const AgentSpec = z.object({
     allow_outside_worktree: z.boolean().optional(),
     hooks: z.boolean().optional(),
 });
+// Select correlation fields explicitly: errors and payloads can contain secrets.
+function timing(c: Pick<Context, "logger" | "modelId">, request: unknown) {
+    let enabled = false;
+    try {
+        enabled = Deno.env.get("ZELLIJ_SWAMP_TIMING") === "1";
+    } catch { /* Restricted callers remain usable. */ }
+    const start = performance.now();
+    const attempt = enabled ? crypto.randomUUID() : undefined;
+    const fields: Record<string, unknown> = {};
+    if (request && typeof request === "object") {
+        for (const key of ["method", "work", "key"]) {
+            const value = (request as Record<string, unknown>)[key];
+            if (typeof value === "string") fields[key] = value;
+        }
+    }
+    return (phase: string, outcome: string, extra = {}) => {
+        if (!enabled) return;
+        try {
+            const line = "swamp_timing " + JSON.stringify({
+                layer: "typescript",
+                modelId: c.modelId,
+                ...fields,
+                attempt,
+                phase,
+                outcome,
+                elapsedMs: performance.now() - start,
+                ...extra,
+            });
+            // A literal template segment avoids LogTape parsing JSON as placeholders
+            // or quoting/escaping it as an interpolated property.
+            c.logger.info(Object.assign([line], { raw: [line] }));
+        } catch { /* Diagnostics must not alter delivery. */ }
+    };
+}
 export async function bridge(
-    c: Pick<Context, "signal" | "globalArgs" | "repoDir">,
+    c: Pick<
+        Context,
+        "signal" | "globalArgs" | "repoDir" | "logger" | "modelId"
+    >,
     request: unknown,
 ) {
-    const global = Session.parse(c.globalArgs);
-    const timeoutMs = (request as { method?: string }).method === "agent_spawn"
-        ? Math.max(global.timeoutMs, 180000)
-        : global.timeoutMs;
-    const signal = AbortSignal.any([
-        c.signal,
-        AbortSignal.timeout(timeoutMs),
-    ]);
-    const stdout = await checked({ signal }, c.repoDir, [
-        global.binary,
-        "--session",
-        global.session,
-        "pipe",
-        "--name",
-        "swamp",
-        "--plugin",
-        "zellij:swamp-bridge",
-    ], JSON.stringify(request) + "\n");
-    const response = z.object({
-        result: z.unknown().optional(),
-        error: z.string().optional(),
-    }).parse(JSON.parse(stdout));
-    if (response.error) throw new Error(response.error);
-    return response.result;
+    const record = timing(c, request);
+    let phase = "process";
+    try {
+        const global = Session.parse(c.globalArgs);
+        const timeoutMs =
+            (request as { method?: string }).method === "agent_spawn"
+                ? Math.max(global.timeoutMs, 180000)
+                : global.timeoutMs;
+        const signal = AbortSignal.any([
+            c.signal,
+            AbortSignal.timeout(timeoutMs),
+        ]);
+        const stdout = await checked({ signal }, c.repoDir, [
+            global.binary,
+            "--session",
+            global.session,
+            "pipe",
+            "--name",
+            "swamp",
+            "--plugin",
+            "zellij:swamp-bridge",
+        ], JSON.stringify(request) + "\n");
+        record("process", "ok");
+        phase = "parse";
+        const parseStart = performance.now();
+        const response = z.object({
+            result: z.unknown().optional(),
+            error: z.string().optional(),
+        }).parse(JSON.parse(stdout));
+        if (response.error) throw new Error(response.error);
+        const correlation: Record<string, string> = {};
+        if (response.result && typeof response.result === "object") {
+            for (const field of ["requestId", "run"]) {
+                const value =
+                    (response.result as Record<string, unknown>)[field];
+                if (typeof value === "string") correlation[field] = value;
+            }
+        }
+        record("parse", "ok", {
+            parseMs: performance.now() - parseStart,
+            ...correlation,
+        });
+        return response.result;
+    } catch (error) {
+        record(phase, "error");
+        throw error;
+    }
 }
 export async function operation(c: Context, request: Record<string, unknown>) {
     // Fresh ad-hoc models reached after resume can lack global arguments.
@@ -182,37 +242,60 @@ export async function observe(
     args: z.infer<typeof Request>,
     timeoutSeconds: number,
 ) {
-    const deadline = Date.now() + timeoutSeconds * 1000;
-    while (true) {
-        const result = await operation(c, {
-            method: "observe",
-            ...args,
-            includeOutput: false,
-        });
-        const request = result.outcome === "unknown"
-            ? JSON.parse(result.request)
-            : null;
-        const awaitingPicker = request?.method === "pane_action" &&
-            ["fork", "duplicate"].includes(request.action);
-        if (result.outcome !== "pending" && !awaitingPicker) {
-            return operation(c, { method: "observe", ...args });
+    const record = timing(c, { method: "observe", ...args });
+    let polls = 0, requestMs = 0, waitMs = 0;
+    let outcome = "error";
+    const poll = async (includeOutput: boolean) => {
+        const start = performance.now();
+        polls++;
+        try {
+            return await operation(c, {
+                method: "observe",
+                ...args,
+                ...(includeOutput ? {} : { includeOutput: false }),
+            });
+        } finally {
+            requestMs += performance.now() - start;
         }
-        if (Date.now() >= deadline) {
-            throw new Error(
-                "Observation deadline reached; the operation remains attached and must not be dispatched again",
-            );
+    };
+    try {
+        const deadline = Date.now() + timeoutSeconds * 1000;
+        while (true) {
+            const result = await poll(false);
+            const request = result.outcome === "unknown"
+                ? JSON.parse(result.request)
+                : null;
+            const awaitingPicker = request?.method === "pane_action" &&
+                ["fork", "duplicate"].includes(request.action);
+            if (result.outcome !== "pending" && !awaitingPicker) {
+                const final = await poll(true);
+                outcome = final.outcome;
+                return final;
+            }
+            if (Date.now() >= deadline) {
+                throw new Error(
+                    "Observation deadline reached; the operation remains attached and must not be dispatched again",
+                );
+            }
+            const waitStart = performance.now();
+            try {
+                await new Promise<void>((resolve, reject) => {
+                    const stop = () => {
+                        clearTimeout(timer);
+                        reject(c.signal.reason);
+                    };
+                    const timer = setTimeout(() => {
+                        c.signal.removeEventListener("abort", stop);
+                        resolve();
+                    }, 500);
+                    c.signal.addEventListener("abort", stop, { once: true });
+                    if (c.signal.aborted) stop();
+                });
+            } finally {
+                waitMs += performance.now() - waitStart;
+            }
         }
-        await new Promise<void>((resolve, reject) => {
-            const stop = () => {
-                clearTimeout(timer);
-                reject(c.signal.reason);
-            };
-            const timer = setTimeout(() => {
-                c.signal.removeEventListener("abort", stop);
-                resolve();
-            }, 500);
-            c.signal.addEventListener("abort", stop, { once: true });
-            if (c.signal.aborted) stop();
-        });
+    } finally {
+        record("observation", outcome, { polls, requestMs, waitMs });
     }
 }

@@ -26,6 +26,7 @@ parser.add_argument('--binary', default='target/debug/zellij')
 parser.add_argument('--firecracker-only', action='store_true')
 parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
+parser.add_argument('--timing-only', action='store_true', help='Three diagnostic diff-and-return runs on one warm disposable server')
 parser.add_argument('--test-output-only', action='store_true')
 parser.add_argument('--latency-only', action='store_true')
 parser.add_argument('--question-latency-only', action='store_true')
@@ -40,6 +41,9 @@ binary = root / 'zellij'
 os.link(Path(args.binary).resolve(), binary)
 session = 'workflow-' + root.name.rsplit('-', 1)[-1]
 env = os.environ.copy()
+if args.timing_only:
+    env['ZELLIJ_SWAMP_TIMING'] = '1'
+    root.chmod(0o700)
 swamp_config = Path(env.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'swamp'
 if args.firecracker_only and not swamp_config.exists():
     swamp_config = Path.home() / '.config/swamp'
@@ -321,6 +325,11 @@ if args.firecracker_only:
     provider_config = source / 'target/firecracker-test/config/zellij/firecracker.json'
     shutil.copy(provider_config, root / 'config/zellij/firecracker.json')
     # Config names the existing immutable image; VM state stays in this fixture.
+cold_start_ms = None
+if args.timing_only:
+    started = time.monotonic()
+    run(binary, 'workflow', 'server', 'restart')
+    cold_start_ms = (time.monotonic() - started) * 1000
 run(binary, 'attach', '--create-background', session)
 try:
     if args.question_latency_only:
@@ -530,6 +539,47 @@ try:
                     untracked.unlink()
                 run('git', 'config', '--unset', 'core.pager')
             assert run('git', 'status', '--porcelain=v1', cwd=topic).stdout == before_diff
+
+        if args.timing_only:
+            launch('timing')
+            choose('timing', 'exit', 'begin-review')
+            until('warm preparation', lambda: pending('timing', 'prepare'))
+            measurements = []
+            for repetition in range(3):
+                started = time.monotonic()
+                previous = choose('timing', 'prepare', 'show-diff')
+                def viewer():
+                    return next((p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                                 if not p['is_plugin'] and not p['exited']
+                                 and '--lesskey-src=' in (p.get('terminal_command') or '')), None)
+                diff = until('diagnostic viewer', viewer)
+                pane = 'terminal_' + str(diff['id'])
+                until('diagnostic viewer ready', lambda: 'q to return' in zellij('action', 'dump-screen', '--pane-id', pane))
+                dismissed = time.monotonic()
+                zellij('action', 'write-chars', '--pane-id', pane, 'q')
+                fresh = until('diff returns to preparation', lambda: pending('timing', 'prepare'))
+                assert fresh['attributes']['run'] != previous['attributes']['run']
+                elapsed = (time.monotonic() - started) * 1000
+                runs = histories('timing')
+                for item in runs:
+                    run_id = item['runId']
+                    (root / (run_id + '.history.json')).write_text(json.dumps(swamp('workflow', 'history', 'get', run_id), indent=2))
+                    logs = swamp('workflow', 'history', 'logs', run_id)
+                    (root / (run_id + '.logs.json')).write_text(json.dumps(logs, indent=2))
+                    timing_lines = [line for line in logs['lines'] if 'swamp_timing ' in line]
+                    assert timing_lines, 'Missing TypeScript timings for ' + run_id
+                    for line in timing_lines:
+                        record = json.loads(line.split('swamp_timing ', 1)[1])
+                        assert record['layer'] == 'typescript' and record['elapsedMs'] >= 0
+                measurements.append(dict(repetition=repetition + 1, elapsedMs=elapsed,
+                    untilDismissMs=(dismissed - started) * 1000, previousRun=previous['attributes']['run'], nextRun=fresh['attributes']['run']))
+                for path in Path(env['TMPDIR']).rglob('zellij.log*'):
+                    shutil.copy(path, root / ('repetition-' + str(repetition + 1) + '-' + path.name))
+                print('TIMING:', measurements[-1], flush=True)
+            (root / 'timing.json').write_text(json.dumps(dict(coldStartMs=cold_start_ms, repetitions=measurements), indent=2))
+            choose('timing', 'prepare', 'leave')
+            print('PASS: three warm diff-and-return repetitions; cold startup recorded separately', flush=True)
+            raise SystemExit(0)
 
         if args.source_diff_only:
             launch('unattended-diff')

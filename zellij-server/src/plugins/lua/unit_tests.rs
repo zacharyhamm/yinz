@@ -7626,6 +7626,57 @@ assert(rerun==3 and closed==1)
 }
 
 #[test]
+fn swamp_bridge_timing_is_opt_in_and_excludes_payloads() {
+    let plugin = load(zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+local z=require('zellij')
+local start=z.monotonic_ms()
+assert(type(start)=='number' and z.monotonic_ms()>=start)
+local records, replies={},{}
+z.log=function(line) records[#records+1]=line end
+z.task=function(f) f() end
+z.block_cli_pipe_input=function() end
+z.unblock_cli_pipe_input=function() end
+z.cli_pipe_output=function(_,reply) replies[#replies+1]=reply end
+local function call(method)
+  M.pipe{name='swamp',source={Cli='pipe'},payload=z.json.encode{
+    method=method,work='work',key='key',operation='data.query',payload={},directory='/tmp',prompt='secret-prompt',token='secret-token'}}
+end
+z.swamp_timing=false
+call('identity')
+assert(#records==0)
+z.swamp_timing=true
+call('identity')
+call('invalid')
+assert(#records==2)
+local a=z.json.decode(records[1]:sub(14))
+local b=z.json.decode(records[2]:sub(14))
+assert(a.outcome=='ok' and b.outcome=='error' and a.attempt~=b.attempt)
+assert(a.work=='work' and a.key=='key' and a.elapsedMs>=0)
+assert(not table.concat(records):find('secret',1,true))
+assert(replies[1]==replies[2] and z.json.decode(replies[3]).error)
+local now=0
+z.monotonic_ms=function() return now end
+z.async.swamp_request=function() return {} end
+z.await=function() now=25; return {} end
+call('swamp_read')
+local awaited=z.json.decode(records[3]:sub(14))
+assert(awaited.elapsedMs==25 and awaited.outcome=='ok')
+"#,
+        )
+        .exec()
+        .unwrap();
+}
+
+#[test]
 fn swamp_bridge_claims_ownership_before_dispatch_and_never_infers_completion_from_idle() {
     let source = zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap();
     let plugin = load(source).unwrap();

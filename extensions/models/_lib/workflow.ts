@@ -13,7 +13,9 @@ export type Context = {
     signal: AbortSignal;
     repoDir: string;
     globalArgs: Record<string, unknown>;
-    logger: { info(message: string): void };
+    logger: {
+        info(message: string | TemplateStringsArray): void;
+    };
     readResource(name: string): Promise<Record<string, unknown> | null>;
     writeResource(
         spec: string,
