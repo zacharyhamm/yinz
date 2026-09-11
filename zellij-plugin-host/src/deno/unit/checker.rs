@@ -690,6 +690,66 @@ fn guide_code_blocks_typecheck_offline() {
     }
 }
 
+/// The bundled TypeScript compiler is what `provenance.json` says it is: every vendored file
+/// hashes to the recorded digest, and every `<reference lib>` a bundled declaration makes
+/// resolves to a bundled declaration. A re-vendor that forgets a file, or an edit to one, fails
+/// the gate here rather than being found when a plugin's types check against the wrong library.
+#[test]
+fn bundled_compiler_matches_its_provenance_hashes() {
+    use sha2::{Digest, Sha256};
+    let compiler =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/deno/compiler");
+    let provenance: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(compiler.join("provenance.json")).unwrap())
+            .unwrap();
+    assert_eq!(provenance["package"], "typescript");
+    assert_eq!(
+        provenance["version"], "5.9.3",
+        "bump this with the vendored compiler"
+    );
+    let libs: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(compiler.join("libs.json")).unwrap())
+            .unwrap();
+    let files = provenance["files"].as_object().unwrap();
+    assert!(files.len() >= 40, "{} files recorded", files.len());
+    // Names are the npm package's: `lib/lib.<name>.d.ts` is a declaration bundled into
+    // libs.json, and any other `lib/<file>` is vendored beside it.
+    for (name, expected) in files {
+        let source: Vec<u8> = match name.strip_prefix("lib/lib.") {
+            Some(lib) => libs
+                .get(&format!("lib.{lib}"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_else(|| panic!("{name} is not in libs.json"))
+                .as_bytes()
+                .to_vec(),
+            None => std::fs::read(compiler.join(name.strip_prefix("lib/").unwrap_or(name)))
+                .unwrap_or_else(|error| panic!("{name}: {error}")),
+        };
+        let digest: String = Sha256::digest(&source)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            &digest,
+            expected.as_str().unwrap(),
+            "{name} differs from its provenance"
+        );
+    }
+    for (name, source) in &libs {
+        assert!(
+            files.contains_key(&format!("lib/{name}")),
+            "{name} is bundled but not recorded"
+        );
+        for reference in source.as_str().unwrap().split("<reference lib=\"").skip(1) {
+            let lib = reference.split('"').next().unwrap();
+            assert!(
+                libs.contains_key(&format!("lib.{lib}.d.ts")),
+                "{name} references lib {lib}, which is not bundled"
+            );
+        }
+    }
+}
+
 #[test]
 fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
     use zellij_types::internal_ids::*;
