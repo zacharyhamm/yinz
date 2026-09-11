@@ -6,7 +6,7 @@ fn consumer(runtime: &mut JsRuntime, name: &str) {
         Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../example-plugins/{name}.ts"))
     };
     let source = std::fs::read_to_string(&path).unwrap();
-    let emitted = loader::transpile(&path, &source, false).unwrap().text;
+    let emitted = loader::transpile(&path, &source, false).unwrap().text.clone();
     let source = emitted.lines().filter(|line| !line.starts_with("import "))
         .collect::<Vec<_>>().join("\n")
         .replace("export default definePlugin", "globalThis.M = definePlugin")

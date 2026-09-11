@@ -6,11 +6,13 @@ use deno_core::{
     ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType, RequestedModuleType,
     ResolutionKind,
 };
+use sha2::{Digest, Sha256};
 use std::{
     borrow::Cow,
     cell::RefCell,
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex},
 };
 use zellij_runtime::errors::prelude::*;
 
@@ -215,8 +217,12 @@ impl PluginModuleLoader {
                 self.local_path(url, false)?
             };
             let source = self.read_source(url, false)?;
-            let emitted = transpile(&path, &source, false)?;
-            if let Some(mut map) = emitted.source_map {
+            // Builtin sources are compiled in, so their emitted text is worth keeping for the
+            // life of the process.
+            let pinned =
+                url.as_str() == WORKFLOW_SPECIFIER || (self.embedded && url == self.entrypoint());
+            let emitted = transpile_cached(&path, &source, false, pinned)?;
+            if let Some(mut map) = emitted.source_map.clone() {
                 if self.embedded {
                     let mut mapped: serde_json::Value =
                         serde_json::from_str(&map).context("decode embedded plugin source map")?;
@@ -228,7 +234,7 @@ impl PluginModuleLoader {
                     .borrow_mut()
                     .insert(url.to_string(), map.into_bytes());
             }
-            emitted.text
+            emitted.text.clone()
         };
         Ok(ModuleSource::new(
             ModuleType::JavaScript,
@@ -350,12 +356,141 @@ pub(super) fn parse(path: &Path, source: &str, declarations: bool) -> Result<Par
     Ok(parsed)
 }
 
+/// Emitted text and source map, keyed by the source that produced it.
+///
+/// Every transpile is a compilation-worker subprocess (see `worker.rs` for why the parse must
+/// happen out of process), and nothing above this layer remembers a result: each connected
+/// client gets its own instance, a reload re-reads every module, and the checker's syntax pass
+/// re-transpiles the buffer it is given. So the same bytes were being handed to a fresh process
+/// once per module per client per reload. The key is the content, so an edited file always
+/// misses and an identical reload always hits; the path is part of it so a source map is never
+/// attributed to another file with the same text, and `declarations` because `.d.ts` is
+/// accepted by the checker's pass only.
+///
+/// Errors are not cached: a broken file is expected to be edited next.
+const MAX_CACHE_ENTRIES: usize = 256;
+const MAX_CACHE_BYTES: usize = limits::MAX_GRAPH_BYTES;
+
+type CacheKey = (PathBuf, [u8; 32], bool);
+
+struct CacheEntry {
+    emitted: Arc<deno_ast::EmittedSourceText>,
+    bytes: usize,
+    /// Compiled-in builtins are never evicted: their text cannot change for the life of the
+    /// process, and they are loaded by every session.
+    pinned: bool,
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct TranspileCache {
+    entries: HashMap<CacheKey, CacheEntry>,
+    total_bytes: usize,
+    clock: u64,
+}
+
+impl TranspileCache {
+    fn get(&mut self, key: &CacheKey) -> Option<Arc<deno_ast::EmittedSourceText>> {
+        self.clock += 1;
+        let entry = self.entries.get_mut(key)?;
+        entry.last_used = self.clock;
+        Some(entry.emitted.clone())
+    }
+
+    fn insert(&mut self, key: CacheKey, emitted: Arc<deno_ast::EmittedSourceText>, pinned: bool) {
+        let bytes = emitted.text.len() + emitted.source_map.as_ref().map_or(0, String::len);
+        if bytes > MAX_CACHE_BYTES {
+            return;
+        }
+        if let Some(previous) = self.entries.remove(&key) {
+            self.total_bytes -= previous.bytes;
+        }
+        self.clock += 1;
+        self.total_bytes += bytes;
+        self.entries.insert(
+            key,
+            CacheEntry {
+                emitted,
+                bytes,
+                pinned,
+                last_used: self.clock,
+            },
+        );
+        while self.entries.len() > MAX_CACHE_ENTRIES || self.total_bytes > MAX_CACHE_BYTES {
+            let Some(victim) = self
+                .entries
+                .iter()
+                .filter(|(_, entry)| !entry.pinned)
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&victim) {
+                self.total_bytes -= removed.bytes;
+            }
+        }
+    }
+}
+
+static TRANSPILE_CACHE: LazyLock<Mutex<TranspileCache>> =
+    LazyLock::new(|| Mutex::new(TranspileCache::default()));
+
+fn cache_key(path: &Path, source: &str, declarations: bool) -> CacheKey {
+    (
+        path.to_owned(),
+        Sha256::digest(source.as_bytes()).into(),
+        declarations,
+    )
+}
+
+/// The number of cached emissions and the bytes they hold.
+#[cfg(test)]
+pub(crate) fn cache_stats() -> (usize, usize) {
+    let cache = TRANSPILE_CACHE.lock().unwrap();
+    (cache.entries.len(), cache.total_bytes)
+}
+
+/// Fill the cache with `count` distinct unpinned entries without spawning a worker for each.
+#[cfg(test)]
+pub(crate) fn cache_fill_for_test(count: usize) {
+    let mut cache = TRANSPILE_CACHE.lock().unwrap();
+    for index in 0..count {
+        let path = PathBuf::from(format!("/__test_fill__/{index}.ts"));
+        let emitted = Arc::new(deno_ast::EmittedSourceText {
+            text: format!("export const fill = {index};"),
+            source_map: None,
+        });
+        cache.insert(cache_key(&path, &emitted.text, false), emitted, false);
+    }
+}
+
 pub(super) fn transpile(
     path: &Path,
     source: &str,
     declarations: bool,
-) -> Result<deno_ast::EmittedSourceText> {
-    super::worker::transpile(path, source, declarations)
+) -> Result<Arc<deno_ast::EmittedSourceText>> {
+    transpile_cached(path, source, declarations, false)
+}
+
+pub(super) fn transpile_cached(
+    path: &Path,
+    source: &str,
+    declarations: bool,
+    pinned: bool,
+) -> Result<Arc<deno_ast::EmittedSourceText>> {
+    let key = cache_key(path, source, declarations);
+    if let Some(emitted) = TRANSPILE_CACHE.lock().unwrap().get(&key) {
+        return Ok(emitted);
+    }
+    // The worker runs unlocked: a spawn is milliseconds, and two executor threads compiling
+    // the same content at once merely both insert it.
+    let emitted = Arc::new(super::worker::transpile(path, source, declarations)?);
+    TRANSPILE_CACHE
+        .lock()
+        .unwrap()
+        .insert(key, emitted.clone(), pinned);
+    Ok(emitted)
 }
 
 pub(super) fn transpile_native(
