@@ -32,8 +32,13 @@
   // No process, filesystem, networking, or raw ops are exposed to the guest.
   delete globalThis.Deno;
   delete globalThis.__bootstrap;
-  // Core's console writes directly to the host's stdout. Use zellij.log instead.
-  delete globalThis.console;
+  // Core's console writes directly to the host's stdout. Route the familiar names to the
+  // plugin's log instead, the way the Lua runtime rebinds `print`.
+  const logLine = (...values) => log(values.map(String).join("\t"));
+  Object.defineProperty(globalThis, "console", {
+    value: Object.freeze({ log: logLine, info: logLine, warn: logLine, error: logLine, debug: logLine, trace: logLine }),
+    writable: false, configurable: false, enumerable: false,
+  });
 
   let plugin = {};
   let version = 0;
@@ -1260,10 +1265,7 @@
     registerDefaultKeybindings,
     waitForPipe,
     getPluginIds: () => command("GetPluginIds"),
-    log: (...values) => {
-      if (client === null) throw new Error("logging is unavailable during module initialization");
-      log(values.map(String).join("\t"));
-    },
+    log: logLine,
     waitForEvent,
     waitForPermissions: (permissions) => new Promise((resolve, reject) => enqueuePermissions(permissions, resolve, reject)),
   };

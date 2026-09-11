@@ -32,7 +32,9 @@ use zellij_types::data::{CommandType, Event, PermissionStatus, PipeMessage, Plug
 
 use super::plugin_map::{PluginEnv, ResponseSink, CANCELLED_BY_HOST};
 use super::response::{decode_response, DecodedResponse};
-use super::zellij_exports::{check_command_permission, run_plugin_command};
+use super::zellij_exports::{
+    check_command_permission, permission_answer_pending, run_plugin_command,
+};
 use super::{PluginId, PluginInstruction};
 use zellij_bus::global_async_runtime::get_tokio_runtime;
 use zellij_bus::{ClientId, ThreadSenders};
@@ -49,6 +51,9 @@ thread_local! {
 
 struct HostState {
     env: Option<PluginEnv>,
+    /// The `[deno:<name>]` prefix of this plugin's log lines, known before `env` is: a
+    /// `console.log` at module top level is the first thing many authors write.
+    log_tag: String,
 }
 
 // CheckPlugin's semantic check enters a separate compiler isolate. Its ops cannot
@@ -153,10 +158,27 @@ fn dispatch(state: &mut OpState, value: Value, client: u32) -> Result<Reply> {
     }
     let command: PluginCommand =
         serde_json::from_value(value).context("invalid zellij command or arguments")?;
-    if let (PermissionStatus::Denied, Some(permission)) = check_command_permission(env, &command) {
-        bail!("command requires the '{permission}' permission; wait for PermissionRequestResult before calling it");
-    }
     let command_type = CommandType::from(&command);
+    if let (PermissionStatus::Denied, Some(permission)) = check_command_permission(env, &command) {
+        // Two failures wear the same denial and have opposite fixes: a plugin that asked and
+        // has not been *answered* - every plugin that asks in `load`, for the whole of `load`,
+        // because the grant arrives as an event - needs to wait, and a plugin that never asked
+        // needs to ask. See `permission_answer_pending`.
+        if permission_answer_pending(env) {
+            bail!(
+                "'{command_type}' requires the '{permission}' permission, and no permission has \
+                 been answered for this plugin yet - a grant arrives as the \
+                 PermissionRequestResult event, so nothing gated works synchronously during \
+                 load. Ask in load with zellij.requestPermission(['{permission}']) and await \
+                 zellij.waitForPermissions(['{permission}']) before calling it"
+            );
+        }
+        bail!(
+            "'{command_type}' requires the '{permission}' permission, which this plugin has not \
+             been granted - ask for it in load with zellij.requestPermission(['{permission}']) \
+             and await zellij.waitForPermissions(['{permission}'])"
+        );
+    }
     let client = ClientId::try_from(client).context("invalid callback client")?;
     let previous_client = std::mem::replace(&mut env.client_id, client);
     let previous_sink = std::mem::replace(&mut env.response_sink, ResponseSink::Capture(None));
@@ -179,18 +201,16 @@ fn dispatch(state: &mut OpState, value: Value, client: u32) -> Result<Reply> {
 }
 
 #[op2(fast)]
-fn op_zellij_log(state: &OpState, #[string] line: &str) -> std::result::Result<(), JsErrorBox> {
-    let env = state.borrow::<HostState>().env.as_ref().ok_or_else(|| {
-        JsErrorBox::generic("logging is unavailable during module initialization")
-    })?;
-    let name = env
-        .resolved_source_path
+fn op_zellij_log(state: &OpState, #[string] line: &str) {
+    log::info!("[deno:{}] {}", state.borrow::<HostState>().log_tag, line);
+}
+
+fn log_tag(env: &PluginEnv) -> String {
+    env.resolved_source_path
         .as_ref()
         .and_then(|path| path.file_name())
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_else(|| env.plugin.path.to_string_lossy());
-    log::info!("[deno:{}] {}", name, line);
-    Ok(())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| env.plugin.path.to_string_lossy().into_owned())
 }
 
 deno_core::extension!(
@@ -609,7 +629,10 @@ impl RuntimeInstance {
                 ..Default::default()
             })
             .context("creating Deno runtime")?;
-        runtime.op_state().borrow_mut().put(HostState { env: None });
+        runtime.op_state().borrow_mut().put(HostState {
+            env: None,
+            log_tag: log_tag(&env),
+        });
         let bridge = runtime
             .execute_script("zellij:sdk-bootstrap", SDK)
             .map_err(|e| anyhow!("{e}"))?;
@@ -1912,7 +1935,7 @@ mod sdk_tests {
     }
 
     #[test]
-    fn module_initialization_has_no_commands_and_lifecycle_rejection_is_observed() {
+    fn module_initialization_has_no_commands_console_logs_and_lifecycle_rejection_is_observed() {
         let mut runtime = sdk();
         run(
             &mut runtime,
@@ -1921,7 +1944,16 @@ mod sdk_tests {
             try { zellij.command('GetPluginIds'); } catch (_) { refused = true; }
             check(refused && typeof Deno === 'undefined');
             check(typeof globalThis.__bootstrap === 'undefined');
-            check(typeof console === 'undefined');
+            // Core's console would write to the host's stdout; the familiar names go to the
+            // plugin's log instead, and are available before `load`, like the Lua `print`.
+            console.log('from console', 1);
+            console.error('from error', {toString() { return 'stringified'; }});
+            zellij.log('from zellij', 2);
+            check(Object.isFrozen(console));
+            const before = console;
+            try { globalThis.console = null; } catch (_) {}
+            check(globalThis.console === before);
+            for (const name of ['log', 'info', 'warn', 'error', 'debug', 'trace']) check(typeof console[name] === 'function');
             bind({ async load() { throw new Error('rejected lifecycle'); } });
             bridge('load', {}, 1);
         "#,
@@ -1930,6 +1962,20 @@ mod sdk_tests {
             .execute_script("assert-rejection.js", "bridge('status')")
             .unwrap_err();
         assert!(error.to_string().contains("rejected lifecycle"));
+        let logs = runtime
+            .op_state()
+            .borrow()
+            .borrow::<TestHost>()
+            .logs
+            .clone();
+        assert_eq!(
+            logs,
+            [
+                "from console\t1",
+                "from error\tstringified",
+                "from zellij\t2"
+            ]
+        );
     }
 
     #[test]
