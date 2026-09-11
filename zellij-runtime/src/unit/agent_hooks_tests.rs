@@ -361,3 +361,46 @@ fn display_message_bursts_only_broadcast_events_and_preserve_pruned_batch_metada
         assert_eq!(received.message_incomplete, index != BATCHES - 1);
     }
 }
+
+/// opencode's plugins forward opencode's own event shape, so the parse that every road uses
+/// reads it into the same `HookEvent` the other agents write - and keeps the translated event,
+/// not the native one, as `raw`, because the broker validates `raw` and the daemon re-parses it.
+#[test]
+fn opencode_events_are_read_at_the_seam_and_the_translated_event_is_what_travels_as_raw() {
+    let (event, raw) = parse_hook_event(
+        "opencode",
+        json!({
+            "type": "tool.execute.before",
+            "properties": {
+                "sessionID": "ses_1", "cwd": "/work", "callID": "call_1",
+                "tool": "bash", "args": {"command": "cargo build --release"},
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(event.hook_event_name, "PreToolUse");
+    assert_eq!(event.tool_name.as_deref(), Some("Bash"));
+    assert_eq!(event.session_id, "ses_1");
+    assert_eq!(event.cwd.as_deref(), Some("/work"));
+    // `raw` is a `HookEvent`, which is what the broker and hocus-agentd require of it.
+    let raw_event: HookEvent = serde_json::from_str(&raw).unwrap();
+    assert_eq!(raw_event, event);
+    assert_eq!(raw_event.tool_name.as_deref(), Some("Bash"));
+
+    let actions = hook_report_actions(
+        "opencode",
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
+        &event,
+        raw,
+    );
+    let [Action::SetPaneAgent { agent, .. }, Action::AgentEvent(broadcast)] = &actions[..] else {
+        panic!("a tool call sets the record and broadcasts: {actions:?}")
+    };
+    assert_eq!(
+        agent.as_ref().map(|agent| agent.kind.as_str()),
+        Some("opencode")
+    );
+    assert_eq!(broadcast.kind, "opencode");
+    assert_eq!(broadcast.state, Some(AgentState::Busy));
+}
