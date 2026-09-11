@@ -212,6 +212,11 @@ impl Message {
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// What the provider charged, in nano-USD, when it says. `None` for every
+    /// provider that reports tokens only; in a chat's total, the sum of the
+    /// requests that did report one.
+    #[serde(default)]
+    pub cost_nanos: Option<u64>,
 }
 
 /// The reply arriving from the endpoint. Independent of `Status`: a tool the

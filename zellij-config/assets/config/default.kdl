@@ -409,6 +409,9 @@ plugins {
     //                   otherwise. Only for an endpoint or proxy that rejects
     //                   the `stream_options` field outright; without it the
     //                   title shows no totals unless usage arrives anyway.
+    //                   A provider that reports what it charged (OpenRouter's
+    //                   `usage.cost`) also has the chat's cost shown beside
+    //                   the totals; hocus never estimates one.
     //
     // Typing `/plan` in the chat turns on planning mode: only the tools that read
     // anything are advertised to the model, so it researches and writes a plan

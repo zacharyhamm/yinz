@@ -1546,8 +1546,13 @@ impl State {
         }
         if !self.is_receiving() {
             for item in self.sse.feed(chunk) {
-                if let SseItem::Usage { prompt, completion } = item {
-                    self.note_usage(stream_id, prompt, completion);
+                if let SseItem::Usage {
+                    prompt,
+                    completion,
+                    cost_nanos,
+                } = item
+                {
+                    self.note_usage(stream_id, prompt, completion, cost_nanos);
                 }
             }
             if done {
@@ -1612,9 +1617,11 @@ impl State {
                 SseItem::ToolCallFragment { .. }
                 | SseItem::ReasoningItem { .. }
                 | SseItem::AssistantMessage => self.tool_calls.feed(&item),
-                SseItem::Usage { prompt, completion } => {
-                    self.note_usage(stream_id, prompt, completion)
-                },
+                SseItem::Usage {
+                    prompt,
+                    completion,
+                    cost_nanos,
+                } => self.note_usage(stream_id, prompt, completion, cost_nanos),
                 // Informational: `done: true` below is the authoritative end.
                 SseItem::Done => {},
             }
@@ -1826,11 +1833,18 @@ impl State {
     /// than one chunk still contributes only once — and logged where it arrives
     /// rather than where it is banked, so a request that was cancelled, refused
     /// mid-stream or superseded by a resend still accounts for what it cost.
-    fn note_usage(&mut self, stream_id: &str, prompt: u64, completion: u64) {
+    fn note_usage(
+        &mut self,
+        stream_id: &str,
+        prompt: u64,
+        completion: u64,
+        cost_nanos: Option<u64>,
+    ) {
         if let Some(stream) = self.stream.as_mut() {
             stream.usage = Some(TokenUsage {
                 input_tokens: prompt,
                 output_tokens: completion,
+                cost_nanos,
             });
         }
         self.log(
@@ -1839,15 +1853,23 @@ impl State {
                 "stream_id": stream_id,
                 "prompt_tokens": prompt,
                 "completion_tokens": completion,
+                "cost_nanos": cost_nanos,
             }),
         );
     }
 
+    /// Bank one request's usage into the chat's totals. The cost is the sum of
+    /// the requests that reported one: a chat that moved to an endpoint that
+    /// prices nothing keeps what it had, rather than pretending it is exact.
     fn record_usage(&mut self, usage: Option<TokenUsage>) {
         if let Some(usage) = usage {
             let total = self.usage.get_or_insert_default();
             total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
             total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+            total.cost_nanos = match (total.cost_nanos, usage.cost_nanos) {
+                (Some(total), Some(cost)) => Some(total.saturating_add(cost)),
+                (total, cost) => total.or(cost),
+            };
         }
     }
 

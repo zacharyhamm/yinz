@@ -259,6 +259,8 @@ pub fn chat_def() -> EntityDef {
         .attr(AttrDef::int("legacy_id"))
         .attr(AttrDef::int("input_tokens"))
         .attr(AttrDef::int("output_tokens"))
+        // Nano-USD, and only for a provider that reports what it charged.
+        .attr(AttrDef::int("cost_nanos"))
 }
 
 /// One message in a conversation, addressed by `(chat_id, seq)`.

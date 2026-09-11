@@ -205,9 +205,42 @@ fn a_usage_only_chunk_yields_the_count_and_nothing_else() {
         items[0],
         SseItem::Usage {
             prompt: 120,
-            completion: 7
+            completion: 7,
+            cost_nanos: None,
         }
     ));
+}
+
+/// OpenRouter prices every request, in USD, on the same chunk as the counts.
+#[test]
+fn a_reported_cost_rides_along_in_nano_usd() {
+    let mut parser = SseParser::default();
+    let frame = b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":7,\"cost\":0.00042}}\n";
+    assert_eq!(
+        parser.feed(frame),
+        vec![SseItem::Usage {
+            prompt: 120,
+            completion: 7,
+            cost_nanos: Some(420_000),
+        }]
+    );
+}
+
+/// A cost alone is still worth keeping; a negative one is not believed.
+#[test]
+fn a_cost_without_counts_is_kept_and_a_negative_one_is_not() {
+    let mut parser = SseParser::default();
+    let frame = b"data: {\"choices\":[],\"usage\":{\"cost\":0.001}}\n";
+    assert_eq!(
+        parser.feed(frame),
+        vec![SseItem::Usage {
+            prompt: 0,
+            completion: 0,
+            cost_nanos: Some(1_000_000),
+        }]
+    );
+    let frame = b"data: {\"choices\":[],\"usage\":{\"cost\":-1}}\n";
+    assert!(parser.feed(frame).is_empty());
 }
 
 /// A `usage` with no counts in it — `total_tokens` alone, or the `{}` some
@@ -227,7 +260,8 @@ fn a_usage_without_prompt_or_completion_counts_is_ignored() {
         items[..],
         [SseItem::Usage {
             prompt: 9,
-            completion: 0
+            completion: 0,
+            cost_nanos: None,
         }]
     ));
 }
@@ -244,8 +278,32 @@ fn a_usage_on_a_content_chunk_keeps_both() {
         items[0],
         SseItem::Usage {
             prompt: 3,
-            completion: 1
+            completion: 1,
+            cost_nanos: None,
         }
     ));
     assert_eq!(deltas(items), vec!["end"]);
+}
+
+/// A `cost` that is not a number - an object of per-direction prices, a
+/// string - loses the price, never the content and counts beside it.
+#[test]
+fn a_cost_that_is_not_a_number_costs_only_the_price() {
+    for cost in [r#"{"total_cost":0.01}"#, r#""0.01""#] {
+        let mut parser = SseParser::default();
+        let frame = format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"end\"}}}}],\"usage\":{{\"prompt_tokens\":3,\"completion_tokens\":1,\"cost\":{cost}}}}}\n"
+        );
+        let items = parser.feed(frame.as_bytes());
+        assert_eq!(
+            items[0],
+            SseItem::Usage {
+                prompt: 3,
+                completion: 1,
+                cost_nanos: None,
+            },
+            "cost {cost}"
+        );
+        assert_eq!(deltas(items), vec!["end"], "cost {cost}");
+    }
 }
