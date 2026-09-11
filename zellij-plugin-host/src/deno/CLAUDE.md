@@ -1,0 +1,78 @@
+# Deno plugins
+
+Plugins come in three kinds: wasm modules, Lua scripts and Deno (JavaScript/TypeScript) scripts.
+The Deno runtime lives here; `docs/DENO_PLUGINS.md` is the user-facing guide,
+`docs/DENO_PARITY.md` the record of what it has been verified to do, and `../lua/CLAUDE.md` the
+rules the two script runtimes share - read that first. What follows is what is specific to this
+one.
+
+The runtime shares everything above `RunningPlugin` with Lua and wasm: event routing,
+subscriptions, rendering, and the whole command surface through the one dispatcher
+`zellij_exports::run_plugin_command`. `mod.rs` holds the isolate and its lifecycle, `sdk.js` is
+the guest-side SDK (every convenience lives there, never in Rust), `sdk.d.ts` is the contract the
+checker holds plugins to, `ui.rs` binds isolate-local widget state and never dispatches, and
+`event.rs`/`transport.rs` are the JSON boundary in each direction.
+
+## Things to know before changing it
+
+- **Every isolate is budgeted** (`limits.rs`): a 1 GiB V8 heap and a separate 1 GiB
+  backing-store budget, counted by an allocator V8 is given at creation. Exceeding either
+  permanently fails the isolate, even when JavaScript catches the allocation exception, and the
+  host disposes it without running guest cleanup. Anything the host hands the guest as bytes - an
+  encoded string, a live output chunk, a byte reply - goes through `CountedAllocation`, because
+  `serde_v8`'s buffer types allocate outside the counted allocator. Resizable buffers and guest
+  Wasm are unavailable for the same reason.
+- **An isolate belongs to one executor thread.** `DenoPlugin::with_runtime` bails off its thread;
+  host ops run synchronously on the executor, and nothing here may enter Tokio (the Postgres
+  store is the standing caveat in that comment). `RUNTIMES` is thread-local, keyed by generation.
+- **A generation is an instance's identity.** `NEXT_GENERATION` names each isolate; `TickWake`,
+  command replies, data watches and pane-output subscriptions carry it, so a reply, tick or chunk
+  addressed to an instance that has since been reloaded is dropped rather than delivered to its
+  replacement. Reload order: `BeforeClose` to the old instance, its registrations cleared, then
+  the replacement loads. Unload clears them after guest cleanup.
+- **Modules are confined** (`loader.rs`): an import is an explicit relative `.js/.mjs/.ts/.mts`
+  inside the entrypoint's folder after symlink resolution, plus `zellij:plugin`; a builtin may also
+  import `zellij:workflow-view`, the one registered embedded module, with no filesystem fallback.
+  Remote, npm, JSR and `node:` specifiers are refused, and so is a remote `https://…/plugin.ts`
+  URL, before download (`zellij_runtime::plugin_location`). Sources are bounded before parsing
+  (8 MiB a file, 64 MiB a graph). Each instance keeps its source maps, so diagnostics name the
+  TypeScript line. Module initialization must complete without a pending top-level `await`.
+- **Parsing happens in a subprocess** (`worker.rs`): SWC's recursively allocated native ASTs may
+  only be parsed, inspected, transpiled or dropped in a disposable `--deno-compilation-worker`
+  process with a 30 s deadline, so a pathological source cannot take the server down. The
+  content-keyed transpile cache in `loader.rs` (path, source digest, declarations mode) is what
+  keeps that from being one spawn per module per client per reload; compiled-in builtins are
+  pinned in it, the rest is LRU-bounded. Errors are not cached.
+- **The checker is its own isolate** (`checker.rs`): the bundled TypeScript compiler (provenance
+  in `compiler/provenance.json`, hash-checked by a test) runs offline with ES2022 declarations
+  and `sdk.d.ts`; plugin source is data to it, never a module it evaluates. `analysis.rs` runs in
+  the worker and is where Hocus's inferred grants and the lint findings come from.
+- **Events keep their serde shape.** `update(event)` and `on(type, payload, raw)` receive the
+  externally tagged Rust enum as JSON - positional tuples, `null` in absent slots - with two
+  deliberate exceptions built in Rust: `PaneRenderReport` is re-keyed `terminal_3` (`event.rs`),
+  and the live-output chunks of `RunCommandOutput` and `PaneOutput` are real `Uint8Array`s
+  (`RuntimeInstance::call_event`). Normalization is additive: `zellij.event()` and `onEvent()`
+  decode in the SDK, so builtins that destructure tuples keep working. Delivery order is `update`,
+  then pipe waiters, then the timer sweep, then the `on` handlers; the reserved pipes the SDK
+  consumes (RPC, completions, Hocus extensions, default keybindings) never reach `pipe`.
+- **Permissions are pre-flighted in `dispatch`** so a refused command throws in the guest with
+  the fix named - and, as in Lua, a plugin whose request is unanswered is told to wait for
+  `PermissionRequestResult` while one that never asked is told to ask. The SDK serializes
+  requests through one FIFO queue; only its head listens for the answer, and later requests carry
+  earlier grants because the host replaces the set. Hocus pre-grants the literal requests
+  `analysis.rs` finds, so an authored plugin never prompts in a pane the loop cannot see.
+- **`console` goes to the log.** Core's console would write to the server's stdout, so the SDK
+  installs a frozen one whose methods reach `[deno:<file>]`, available from module top level.
+
+## Where the tests are
+
+`unit/host_sdk.rs`, `unit/*_sdk.rs` and the `sdk_tests` module in `mod.rs` run the SDK against a
+JSON fake host in-process; `unit/checker.rs` compiles TypeScript fixtures - serialized Rust
+values included, and every ```` ```ts ```` block of the guide - against `sdk.d.ts`;
+`unit/analysis.rs` covers inferred grants and the lint rules; `unit/limits.rs` exhausts budgets
+in supervised subprocesses; `unit/loader.rs` and `unit/worker.rs` cover confinement, the cache
+and the compilation subprocess; `unit/builtins.rs` loads every shipped builtin and reference
+example; `../unit/plugin_tests/deno_plugins.rs` drives a real plugin thread; and
+`zellij-integration-tests/tests/deno_plugins.rs` runs whole sessions. Hocus serves the guide and
+`sdk.d.ts` through `hocus/src/plugin_docs.rs`, whose tests hold every `##` heading of the guide
+to a section name and every section under 16 KB.

@@ -333,8 +333,11 @@ keybinds clear-defaults=true {
 // changing these requires a restart to take effect
 plugins {
     about location="zellij:about"
+    agent-exit location="zellij:agent-exit"
+    agent-policy location="zellij:agent-policy"
     compact-bar location="zellij:compact-bar"
     configuration location="zellij:configuration"
+    context-menu location="zellij:context-menu"
     file-finder location="zellij:file-finder"
     filepicker location="zellij:strider" {
         cwd "/"
@@ -369,8 +372,8 @@ plugins {
 }
 
 // Plugins to load in the background when a new session starts
-// eg. "file:/path/to/my-plugin.wasm"
-// eg. "https://example.com/my-plugin.wasm"
+// eg. "file:/path/to/my-plugin.wasm" or "file:/path/to/my-plugin.ts"
+// eg. "https://example.com/my-plugin.wasm" (remote urls load wasm plugins only)
 load_plugins {
     zellij:link
     hocus-agentd

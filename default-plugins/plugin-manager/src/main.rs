@@ -470,7 +470,7 @@ impl NewPluginScreen {
                         .with_plugin_url("filepicker")
                         .with_plugin_config(config)
                         .new_plugin_instance_should_have_pane_title(
-                            "Select a .wasm file to load as a plugin...",
+                            "Select a plugin file (.wasm, .ts, .js or .lua) to load...",
                         )
                         .new_plugin_instance_should_be_focused()
                         .with_args(args),

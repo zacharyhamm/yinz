@@ -16,7 +16,7 @@
 //!
 //! ```kdl
 //! hooks {
-//!     agent_exit "file:my-agent-exit.lua"
+//!     agent_exit "file:my-agent-exit.ts"
 //!     agent_start "file:my-policies.lua"
 //! }
 //! ```

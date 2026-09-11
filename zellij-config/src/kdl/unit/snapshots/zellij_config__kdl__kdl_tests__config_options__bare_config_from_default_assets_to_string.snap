@@ -330,8 +330,11 @@ keybinds clear-defaults=true {
 }
 plugins {
     about location="zellij:about"
+    agent-exit location="zellij:agent-exit"
+    agent-policy location="zellij:agent-policy"
     compact-bar location="zellij:compact-bar"
     configuration location="zellij:configuration"
+    context-menu location="zellij:context-menu"
     file-finder location="zellij:file-finder"
     filepicker location="zellij:strider" {
         cwd "/"

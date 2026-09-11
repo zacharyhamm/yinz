@@ -1,6 +1,5 @@
 ---
 source: zellij-cli/src/setup.rs
-assertion_line: 677
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -9277,6 +9276,32 @@ Config {
                 initial_cwd: None,
                 relative_path: None,
             },
+            "agent-exit": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "agent-exit",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
+            "agent-policy": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "agent-policy",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
             "compact-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Zellij(
@@ -9295,6 +9320,19 @@ Config {
                 location: Zellij(
                     PluginTag(
                         "configuration",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
+            "context-menu": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "context-menu",
                     ),
                 ),
                 configuration: PluginUserConfiguration(
