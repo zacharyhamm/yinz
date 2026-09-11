@@ -1215,9 +1215,21 @@ impl WasmBridge {
                 }
                 // The instance about to be replaced gets the same last word an unloaded one
                 // does, so a plugin that persists in `BeforeClose` survives its own reload.
-                if let Some((running_plugin, subscriptions)) =
-                    plugin_map.get_running_plugin_and_subscriptions(plugin_id, first_client_id)
+                for (id, client_id, running_plugin, subscriptions) in
+                    plugin_map.running_plugins_and_subscriptions()
                 {
+                    if id != plugin_id {
+                        continue;
+                    }
+                    let is_deno = running_plugin
+                        .lock()
+                        .unwrap()
+                        .env()
+                        .deno_generation
+                        .is_some();
+                    if !is_deno && client_id != first_client_id {
+                        continue;
+                    }
                     let wants_before_close = subscriptions
                         .lock()
                         .unwrap()
@@ -1230,7 +1242,7 @@ impl WasmBridge {
                         loading_context.plugin_own_data_dir = directory.path().to_path_buf();
                         loading_context.temporary_data_dir = directory.clone();
                     }
-                    if wants_before_close {
+                    if wants_before_close && !running_plugin.is_disposed() {
                         // As in the unload job: holding the lock means the guest is not
                         // running, and the new instance shares this token, so a set one
                         // would trap `BeforeClose` here and the new `load()` after it.
@@ -1256,13 +1268,18 @@ impl WasmBridge {
                             }
                             if let Err(e) = apply_before_close_event_to_plugin(
                                 plugin_id,
-                                first_client_id,
+                                client_id,
                                 &mut running_plugin,
                                 senders.clone(),
                             ) {
                                 log::error!("{:?}", e);
                             }
                         }
+                    }
+                    // Keep the handle and metadata for a retry, but release every old
+                    // isolate here, before source resolution or compilation can fail.
+                    if is_deno {
+                        running_plugin.dispose();
                     }
                 }
                 // A replacement must opt in again, including when BeforeClose resubscribed.
@@ -1698,21 +1715,24 @@ impl WasmBridge {
     pub fn deno_event(
         &mut self,
         plugin_id: PluginId,
-        client_id: ClientId,
         generation: u64,
-        event: Event,
+        events: Vec<(ClientId, Event)>,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
         // Loading can hold the map while guest code runs. The plugin thread must
         // remain free to process the cancellation that interrupts that code.
-        let message = EventOrPipeMessage::DenoEvent(client_id, generation, event);
+        let (batch_label, batch_has_input) = summarize_batch_for_stats(&events);
+        let messages: Vec<_> = events
+            .into_iter()
+            .map(|(client, event)| EventOrPipeMessage::DenoEvent(client, generation, event))
+            .collect();
         if let Some(cached) = self.cached_events_for_pending_plugins.get_mut(&plugin_id) {
-            cached.push(message);
+            cached.extend(messages);
         } else {
             self.plugin_executor.execute_for_plugin_tagged(
                 plugin_id,
-                "deno_event",
-                false,
+                batch_label,
+                batch_has_input,
                 move |senders, plugin_map, connected_clients, _, _| {
                     let _shutdown = shutdown_sender;
                     let instances = {
@@ -1730,19 +1750,25 @@ impl WasmBridge {
                         let subs = subscriptions.lock().unwrap().clone();
                         let mut plugin = instance.lock().unwrap();
                         let shared = plugin.env().plugin.is_shared();
-                        let Some(client_id) =
-                            message.client_for_replay(owner, plugin.deno_generation(), shared)
-                        else {
+                        let events: Vec<_> = messages
+                            .iter()
+                            .filter_map(|message| {
+                                let client = message.client_for_replay(
+                                    owner,
+                                    plugin.deno_generation(),
+                                    shared,
+                                )?;
+                                let EventOrPipeMessage::DenoEvent(_, _, event) = message else {
+                                    unreachable!();
+                                };
+                                let event_type = EventType::from(event);
+                                (subs.contains(&event_type)
+                                    || event_type == EventType::PermissionRequestResult)
+                                    .then(|| (client, event.clone()))
+                            })
+                            .collect();
+                        if events.is_empty() {
                             continue;
-                        };
-                        let EventOrPipeMessage::DenoEvent(_, _, event) = &message else {
-                            unreachable!();
-                        };
-                        let event_type = EventType::from(event);
-                        if !subs.contains(&event_type)
-                            && event_type != EventType::PermissionRequestResult
-                        {
-                            return;
                         }
                         let clients = if shared {
                             connected_clients.clone()
@@ -1750,12 +1776,11 @@ impl WasmBridge {
                             vec![owner]
                         };
                         let mut assets = vec![];
-                        let result = apply_event_to_plugin(
+                        let result = apply_events_to_plugin(
                             plugin_id,
-                            client_id,
                             &clients,
                             &mut plugin,
-                            event,
+                            &events,
                             &mut assets,
                             senders.clone(),
                             &subs,
@@ -1775,7 +1800,6 @@ impl WasmBridge {
                                 senders.clone(),
                             ),
                         }
-                        break;
                     }
                 },
             );

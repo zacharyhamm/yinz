@@ -17,6 +17,24 @@ struct TestBridge {
 }
 
 impl TestBridge {
+    fn receiver<T: 'static>(
+        &self,
+    ) -> channels::Receiver<(T, zellij_types::diagnostics::ErrorContext)> {
+        self._receivers.iter().find_map(|receiver| receiver.downcast_ref::<channels::Receiver<(T, zellij_types::diagnostics::ErrorContext)>>()).unwrap().clone()
+    }
+
+    fn settle(&self, plugin_id: PluginId) {
+        let (send, receive) = std::sync::mpsc::channel();
+        self.bridge
+            .plugin_executor
+            .execute_for_plugin(plugin_id, move |_, _, _, _, _| {
+                send.send(()).unwrap();
+            });
+        receive
+            .recv_timeout(zellij_test_support::default_timeout())
+            .unwrap();
+    }
+
     fn new() -> Self {
         let (to_pty, receive_pty) = channels::unbounded();
         let (to_screen, receive_screen) = channels::unbounded();
@@ -68,6 +86,138 @@ impl TestBridge {
             _dirs: vec![data_dir],
         }
     }
+}
+
+#[test]
+fn deno_tagged_output_batch_renders_once_per_client_and_replays_cached_identities() {
+    let mut test = TestBridge::new();
+    let first = ClientId::new(1);
+    let second = ClientId::new(2);
+    test.bridge.add_client(first).unwrap();
+    test.bridge.add_client(second).unwrap();
+    let path = test._dirs[0].path().join("batch.js");
+    std::fs::write(
+        &path,
+        r#"
+let chunks = [];
+export default {
+  load() { zellij.subscribe(['RunCommandOutput']); },
+  update(event) {
+    if (!event.RunCommandOutput) return false;
+    const payload = event.RunCommandOutput;
+    if (!(payload.data instanceof Uint8Array)) throw Error('expected bytes');
+    chunks.push(`${zellij.getPluginIds().client_id}:${payload.data[0]}`);
+    return true;
+  },
+  render() { return chunks.join(','); }
+};
+"#,
+    )
+    .unwrap();
+    let mut run =
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", path.display()))
+            .unwrap();
+    run.configuration.insert("shared", "true");
+    let (id, _) = test
+        .bridge
+        .load_plugin(
+            &Some(run),
+            None,
+            Size { rows: 10, cols: 80 },
+            None,
+            false,
+            Some(first),
+        )
+        .unwrap();
+    let instructions = test.receiver::<PluginInstruction>();
+    loop {
+        let (instruction, _) = instructions
+            .recv_timeout(zellij_test_support::default_timeout())
+            .unwrap();
+        if matches!(instruction, PluginInstruction::ApplyCachedEvents { .. }) {
+            break;
+        }
+    }
+    let generation = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin_and_subscriptions(id, first)
+        .unwrap()
+        .0
+        .lock()
+        .unwrap()
+        .deno_generation()
+        .unwrap();
+    let output = |byte| Event::RunCommandOutput {
+        data: vec![byte],
+        stderr: false,
+        context: BTreeMap::new(),
+    };
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    // Still pending: callbacks must retain the shared instance's acting client.
+    test.bridge
+        .deno_event(
+            id,
+            generation,
+            vec![(second, output(1)), (first, output(2))],
+            shutdown.clone(),
+        )
+        .unwrap();
+    test.bridge
+        .deno_event(
+            id,
+            generation + 1,
+            vec![(first, output(99))],
+            shutdown.clone(),
+        )
+        .unwrap();
+    test.bridge
+        .apply_cached_events(vec![id], false, shutdown.clone())
+        .unwrap();
+    test.settle(id);
+    let screen = test.receiver::<ScreenInstruction>();
+    screen.try_iter().for_each(drop);
+    // This is one controlled bridge batch, so its render count does not depend on
+    // how the plugin thread happens to drain concurrently arriving instructions.
+    test.bridge
+        .deno_event(
+            id,
+            generation,
+            vec![(first, output(3)), (second, output(4)), (first, output(5))],
+            shutdown.clone(),
+        )
+        .unwrap();
+    test.bridge
+        .deno_event(id, generation + 1, vec![(first, output(99))], shutdown)
+        .unwrap();
+    test.settle(id);
+    let mut frames: Vec<_> = screen
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            ScreenInstruction::PluginBytes(assets) => assets,
+            _ => vec![],
+        })
+        .collect();
+    frames.sort_by_key(|asset| asset.client_id);
+    assert_eq!(frames.len(), 2, "one render per connected client");
+    assert_eq!(
+        frames
+            .iter()
+            .map(|asset| asset.client_id)
+            .collect::<Vec<_>>(),
+        [first, second]
+    );
+    for frame in frames {
+        assert!(
+            String::from_utf8_lossy(&frame.bytes).contains("2:1,1:2,1:3,2:4,1:5"),
+            "{:?}",
+            frame.bytes
+        );
+    }
+    test.bridge.unload_plugin(id).unwrap();
+    test.settle(id);
 }
 
 fn run_plugin() -> RunPlugin {

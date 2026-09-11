@@ -12,7 +12,7 @@ const CLIENT_7: zellij_types::internal_ids::ClientId = zellij_types::internal_id
 
 use super::*;
 use crate::ClientId;
-use crate::{coalesce_hovers, drain_reloads, drain_updates};
+use crate::{coalesce_hovers, drain_deno_events, drain_reloads, drain_updates};
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
@@ -556,6 +556,53 @@ fn bus_with(instructions: Vec<PluginInstruction>) -> Bus<PluginInstruction> {
         sender.send(instruction).unwrap();
     }
     Bus::new(vec![receiver], None, None, None, None, None, None, None)
+}
+
+#[test]
+fn deno_drain_preserves_clients_order_and_each_instruction_boundary() {
+    let id = crate::PluginId::new(1);
+    let first = ClientId::new(1);
+    let second = ClientId::new(2);
+    for boundary in [
+        PluginInstruction::DenoEvent(id, first, 42, scroll_up(3)),
+        PluginInstruction::DenoEvent(crate::PluginId::new(2), first, 41, scroll_up(3)),
+        PluginInstruction::AddClient(second),
+        update_of(&[scroll_up(3)]),
+    ] {
+        let expected = format!("{boundary:?}");
+        let bus = bus_with(vec![
+            PluginInstruction::DenoEvent(id, second, 41, scroll_up(2)),
+            boundary,
+            PluginInstruction::DenoEvent(id, first, 41, scroll_up(4)),
+        ]);
+        let mut queued = None;
+        assert_eq!(
+            drain_deno_events(&bus, id, 41, vec![(first, scroll_up(1))], &mut queued),
+            vec![(first, scroll_up(1)), (second, scroll_up(2))],
+        );
+        assert_eq!(format!("{:?}", queued.unwrap().0), expected);
+        assert!(matches!(
+            bus.try_recv(),
+            Some((PluginInstruction::DenoEvent(_, _, 41, _), _))
+        ));
+        assert!(bus.try_recv().is_none());
+    }
+}
+
+#[test]
+fn deno_drain_stops_at_its_cap() {
+    let id = crate::PluginId::new(1);
+    let client = ClientId::new(1);
+    let bus = bus_with(
+        (0..300)
+            .map(|_| PluginInstruction::DenoEvent(id, client, 41, scroll_up(1)))
+            .collect(),
+    );
+    let mut queued = None;
+    let events = drain_deno_events(&bus, id, 41, vec![(client, scroll_up(1))], &mut queued);
+    assert_eq!(events.len(), 1 + crate::MAX_UPDATE_DRAIN);
+    assert!(queued.is_none());
+    assert!(bus.try_recv().is_some());
 }
 
 #[test]

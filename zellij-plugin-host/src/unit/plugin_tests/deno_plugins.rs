@@ -2220,6 +2220,88 @@ export default {
 
 #[test]
 #[serial(plugin_tests)]
+fn deno_failed_reload_disposes_every_client_and_recovers_in_the_same_pane() {
+    let harness = Harness::new(
+        "js",
+        r#"
+export default {
+  load() { zellij.subscribe(['BeforeClose', 'CustomMessage']); },
+  update(event) {
+    if (event === 'BeforeClose') zellij.command('SetSelectable', false);
+    if (event.CustomMessage) zellij.command('SetSelectable', true);
+    return true;
+  },
+  render() { return 'old guest ready'; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    let other = ClientId::new(2);
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(other))
+        .unwrap();
+    harness.load();
+    let wait_for_both = |needle: &str| {
+        harness
+            .log
+            .wait_until("both client instances rendered", default_timeout(), |log| {
+                let assets = rendered_assets(log);
+                [CLIENT, other]
+                    .iter()
+                    .all(|client| {
+                        assets
+                            .iter()
+                            .any(|(id, frame)| id == client && frame.contains(needle))
+                    })
+                    .then_some(())
+            });
+    };
+    wait_for_both("old guest ready");
+    std::fs::write(&harness.path, "export default { syntax error").unwrap();
+    harness.reload();
+    harness.log.wait_until("replacement compilation failed", default_timeout(), |log| {
+        log.iter().any(|i| matches!(i, ScreenInstruction::UpdatePluginLoadingStage(id, stage) if *id == PLUGIN && stage.is_error())).then_some(())
+    });
+    harness
+        .sender
+        .send(PluginInstruction::Update(vec![(
+            Some(PLUGIN),
+            None,
+            release_event(),
+        )]))
+        .unwrap();
+    std::fs::write(
+        &harness.path,
+        "export default { render() { return 'recovered guest'; } };",
+    )
+    .unwrap();
+    harness.reload();
+    wait_for_both("recovered guest");
+    let log = harness.finish();
+    let selectable: Vec<_> = log
+        .iter()
+        .filter_map(|i| match i {
+            ScreenInstruction::SetSelectable(_, value) => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        selectable,
+        [false, false],
+        "each old guest cleans up once and cannot handle input after a failed reload"
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|i| matches!(i, ScreenInstruction::AddPlugin(..)))
+            .count(),
+        1,
+        "recovery retains the pane"
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
 fn deno_reload_by_url_delivers_idle_before_close_before_loading_the_replacement() {
     let harness = Harness::new(
         "js",
