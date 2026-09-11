@@ -1367,6 +1367,118 @@ export default {
     harness.finish();
 }
 
+/// FNV-1a over `bytes`, as the fixtures below compute it in JavaScript with `Math.imul`.
+fn fnv1a(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(2166136261u32, |hash, byte| {
+        (hash ^ *byte as u32).wrapping_mul(16777619)
+    })
+}
+
+const FNV_JS: &str = "const fnv = (bytes) => { let h = 2166136261; for (const b of bytes) { h ^= b; h = Math.imul(h, 16777619) >>> 0; } return h >>> 0; };";
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_streaming_output_arrives_as_uint8array_and_a_64_kib_chunk_round_trips_byte_exact() {
+    let harness = Harness::new(
+        "ts",
+        &format!(
+            r#"
+{FNV_JS}
+let state = 'waiting';
+export default {{
+  async load() {{
+    zellij.subscribe(['PaneOutput', 'RunCommandOutput']);
+    await zellij.waitForPermissions(['ReadPaneContents', 'RunCommands']);
+    state = 'ready';
+    zellij.requestRender();
+  }},
+  update(event) {{
+    const payload = event.PaneOutput ?? event.RunCommandOutput;
+    if (!payload) return false;
+    const data = payload.data;
+    const kind = event.PaneOutput ? `pane ${{payload.pane_id}}` : `command stderr=${{payload.stderr}}`;
+    state = `${{kind}} ${{payload.context.work}} typed=${{data instanceof Uint8Array}} len=${{data.length}} hash=${{fnv(data)}} first=${{data[0]}} last=${{data[data.length - 1]}}`;
+    return true;
+  }},
+  render() {{ return state; }}
+}};
+"#
+        ),
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    harness.rendered("ready");
+    let chunk: Vec<u8> = (0..65536u32)
+        .map(|i| (i.wrapping_mul(7) ^ (i >> 8)) as u8)
+        .collect();
+    let expected = format!(
+        "typed=true len={} hash={} first={} last={}",
+        chunk.len(),
+        fnv1a(&chunk),
+        chunk[0],
+        chunk[chunk.len() - 1]
+    );
+    harness.event(Event::PaneOutput {
+        pane_id: 7,
+        data: chunk.clone(),
+        context: BTreeMap::from([("work".into(), "one".into())]),
+    });
+    harness.rendered(&format!("pane 7 one {expected}"));
+    harness.event(Event::RunCommandOutput {
+        data: chunk,
+        stderr: true,
+        context: BTreeMap::from([("work".into(), "two".into())]),
+    });
+    harness.rendered(&format!("command stderr=true two {expected}"));
+    harness.event(Event::PaneOutput {
+        pane_id: 8,
+        data: Vec::new(),
+        context: BTreeMap::from([("work".into(), "empty".into())]),
+    });
+    harness
+        .rendered("pane 8 empty typed=true len=0 hash=2166136261 first=undefined last=undefined");
+    harness.finish();
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_byte_replies_are_uint8array_without_copying_through_json() {
+    let harness = Harness::new(
+        "ts",
+        &format!(
+            r#"
+{FNV_JS}
+let state = 'waiting';
+export default {{
+  async load() {{
+    await zellij.waitForPermissions(['ReadFiles']);
+    const data = zellij.fs.read('/host/blob.bin');
+    const raw = zellij.command('FsRead', {{path: '/host/blob.bin', max_bytes: null}});
+    state = `typed=${{data instanceof Uint8Array}} raw=${{raw instanceof Uint8Array}} len=${{data.length}} hash=${{fnv(data)}} same=${{fnv(raw) === fnv(data)}}`;
+  }},
+  render() {{ return state; }}
+}};
+"#
+        ),
+        PermissionStatus::Granted,
+    );
+    let blob: Vec<u8> = (0..65536u32)
+        .map(|i| (i.wrapping_mul(13) ^ (i >> 7)) as u8)
+        .collect();
+    std::fs::write(harness.directory.path().join("blob.bin"), &blob).unwrap();
+    harness.load();
+    let frame = harness.rendered("typed=");
+    assert_eq!(
+        frame.trim_end(),
+        format!(
+            "typed=true raw=true len={} hash={} same=true",
+            blob.len(),
+            fnv1a(&blob)
+        )
+    );
+    harness.finish();
+}
+
 #[test]
 #[serial(plugin_tests)]
 fn deno_removed_client_reattaches_with_fresh_state_and_without_its_old_awaits() {

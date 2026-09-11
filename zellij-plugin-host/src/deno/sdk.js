@@ -119,7 +119,7 @@
       value = { Unsubscribe: value.Unsubscribe.filter((type) => !requiredEvents.has(type)) };
     }
     const response = dispatch(value, client);
-    return Object.hasOwn(response, "bytes") ? new Uint8Array(response.bytes) : response.json;
+    return Object.hasOwn(response, "bytes") ? bytes(response.bytes) : response.json;
   }
   function on(type, handler) {
     if (typeof handler !== "function") throw new TypeError("event handler must be a function");
@@ -233,7 +233,7 @@
         try {
           const context = { ...payload.context };
           delete context.__zellij_async;
-          onOutput({ data: new Uint8Array(payload.data), stderr: payload.stderr, context });
+          onOutput({ data: bytes(payload.data), stderr: payload.stderr, context });
         } catch (error) { operation.reject(error); }
         finally { client = previous; }
       });
