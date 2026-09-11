@@ -1,4 +1,4 @@
--- Agent exit attaches a project-owned Swamp workflow. The held pane and its scrollback survive.
+-- Agent exit attaches a project-owned Swamp workflow. The source is retained until Leave.
 local z = require('zellij')
 local M = {status='Agent exited.', busy=false}
 local view=require('zellij.workflow_view')
@@ -22,6 +22,7 @@ function M.load(config)
   view.active=true
   view.load{on_restart=function()
     if not M.busy and not view.active and not view.submitting and #view.pending==0 then
+      z.replace_pane_with_existing_pane{z.plugin_pane(z.get_plugin_ids().plugin_id),z.terminal_pane(M.pane),true}
       z.rerun_command_pane(M.pane)
       z.close_self()
     end
@@ -76,8 +77,8 @@ end
 function M.render(rows,cols)
   if M.workflow then
     return view.render(math.max(0,rows-1),cols) .. z.ui.text(z.text.truncate(
-      (M.busy or view.active) and 'Workflow active. Esc: scrollback (detach). Cancel run: explicit cancellation.'
-      or 'Enter: activate button  Esc: scrollback  Delete: close held pane',cols)):dim():render{x=0,y=math.max(0,rows-1),width=cols,height=1}
+      (M.busy or view.active or view.submitting) and 'Enter: activate button. Leave: close held pane. Cancel run: explicit cancellation.'
+      or 'Enter: activate button  Delete: leave and close held pane',cols)):dim():render{x=0,y=math.max(0,rows-1),width=cols,height=1}
   end
   local lines={}
   for line in M.status:gmatch('[^\n]+') do lines[#lines+1]=line end

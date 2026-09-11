@@ -6956,6 +6956,7 @@ z.rpc.call=function(opts)
 end
 local function pump() z.__update(M,{Timer=0}) end
 local function key(k) return M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
+z.close_self=function() error('Esc must not close the workflow view') end
 local function question(id,version,kind,answers,state,run)
   return {model='questions',version=version,attributes={run=run or 'run',question=id,kind=kind,answers=answers,prompt='Prompt '..id,state=state or 'pending'}}
 end
@@ -6967,12 +6968,15 @@ local function snapshot(questions)
 end
 local function resolve(questions) table.remove(polls,1){result=snapshot(questions)};pump() end
 M.load()
-assert(M.focused_control()=='detach')
+assert(not M.focused_control())
+for _,size in ipairs{{0,0},{1,1},{2,8},{8,24}} do M.render(size[1],size[2]) end
+key('Tab');key('Enter');key('Esc')
 M.attach{directory='/work',run='run'}
 assert(M.render(20,120):find('Loading workflow',1,true))
 resolve{q,question('first',1,'choice',{'old'}),written}
 assert(#M.pending==2 and M.focused_control()=='choice_1')
-M.render(20,120)
+assert(not M.render(20,120):find('Detach',1,true))
+key('Esc');assert(M.focused_control()=='choice_1')
 for i=1,5 do key('Tab') end
 assert(M.focused_control()=='next')
 key('Enter');assert(M.focused_control()=='answer')
@@ -6982,6 +6986,7 @@ M.refresh()
 key('Tab');assert(M.focused_control()=='choice_2')
 key('Enter');key('Enter')
 assert(#commands==1 and M.submitting and M.refreshing)
+key('Esc');assert(M.submitting and #commands==1)
 assert(commands[1].opts.inputs.answer=='duplicate')
 assert(M.render(20,120):find('Submitting answer',1,true))
 resolve{q,written} -- this poll started before the submission
@@ -6999,7 +7004,7 @@ key('Tab');assert(M.focused_control()=='submit')
 key('Enter');assert(commands[3].opts.inputs.answer=='kept draft')
 commands[3].resolve{result={}};pump()
 resolve{q,written}
-assert(#M.pending==0 and M.focused_control()=='detach' and not M.cancellable)
+assert(#M.pending==0 and not M.focused_control() and not M.cancellable)
 assert(M.render(20,120):find('No question pending',1,true))
 -- Different runs can reuse the same model/question, and latest answered wins.
 M.refresh();resolve{question('first',3,'choice',choices,'answered'),question('first',1,'choice',choices,nil,'child')}
@@ -7031,9 +7036,7 @@ assert(#commands==5 and commands[5].opts.method=='workflow_cancel')
 commands[5].resolve{result={}};pump()
 resolve{}
 assert(M.render(20,120):find('Cancellation requested; resources preserved',1,true))
-local detached=false
-z.close_self=function() detached=true end
-key('Esc');assert(detached)
+key('Esc')
 "#).exec().unwrap();
 }
 
@@ -7472,7 +7475,7 @@ local function focus(id)
 end
 local function no_restart()
   for i=1,8 do
-    assert(view.focused_control()~='restart')
+    assert(view.focused_control()~='restart' and view.focused_control()~='detach')
     key('Tab')
   end
 end
@@ -7487,9 +7490,14 @@ z.project_config.read=function() return {config={workflow='configured'}} end
 z.rpc.call=function() return {} end
 z.await=function(value) return value end
 view.refresh=function() end
-local detached,rerun,cancelled=0,0,0
-z.close_self=function() detached=detached+1 end
-z.rerun_command_pane=function(pane) assert(pane==7);rerun=rerun+1 end
+local closed,rerun,cancelled=0,0,0
+z.close_self=function() closed=closed+1 end
+local restored=0
+z.replace_pane_with_existing_pane=function(args)
+  assert(args[1].Plugin==1 and args[2].Terminal==7 and args[3]==true)
+  restored=restored+1
+end
+z.rerun_command_pane=function(pane) assert(pane==7 and restored==rerun+1);rerun=rerun+1 end
 z.rpc.call=function(request)
   if request.payload.method=='workflow_run' then return {} end
   assert(request.payload.method=='workflow_cancel' and request.payload.run=='run')
@@ -7508,14 +7516,13 @@ view.cancellable=true
 view.attachment.run='run'
 focus('cancel_run')
 key('Enter')
-assert(cancelled==1 and detached==0 and rerun==0)
-focus('detach')
-key('Enter')
-assert(detached==1 and rerun==0)
+assert(cancelled==1 and closed==0 and rerun==0)
+key('Esc')
+assert(closed==0 and rerun==0)
 view.active=false
-assert(view.focused_control()=='detach','completion preserves Detach focus')
-key('Enter')
-assert(detached==2 and rerun==0,'Enter on Detach must not restart')
+assert(view.focused_control()=='cancel_run','completion preserves button focus')
+key('Esc')
+assert(closed==0 and rerun==0)
 focus('restart')
 view.submitting=true
 key('Enter')
@@ -7526,7 +7533,7 @@ key('Enter')
 assert(rerun==0)
 M.busy=false
 key('Enter')
-assert(rerun==1 and detached==3)
+assert(rerun==1 and closed==1)
 view.pending={{model='model',version=1,attributes={run='run',question='q',kind='choice',answers={'yes'}}}}
 no_restart()
 assert(rerun==1)
@@ -7575,6 +7582,9 @@ z.every=function() end
 z.set_self_mouse_selection_support=function() end
 z.get_plugin_ids=function() return {plugin_id=1} end
 z.get_pane_info=function() return {is_suppressed=false} end
+z.replace_pane_with_existing_pane=function(args)
+  assert(args[1].Plugin==1 and args[2].Terminal==7 and args[3]==true)
+end
 local view=require('zellij.workflow_view')
 local refresh=view.refresh
 view.refresh=function() end
@@ -7857,10 +7867,72 @@ for _,action in ipairs{'fork','duplicate'} do
   end
 end
 assert(picked==8 and reruns==0)
+local view_open,source_open,source_exited=true,true,true
+local restored,terminal_closes=0,0
+rows[z.json.encode({'host','session','one','view'})]={rev=1,value=z.json.encode{view=2,incarnation='incarnation'}}
+z.get_pane_info=function(pane)
+  if pane.Plugin==2 then return view_open and {plugin_url='zellij:agent-exit'} or nil end
+  if pane.Terminal==7 then return source_open and {exited=source_exited} or nil end
+  return old_info(pane)
+end
+z.replace_pane_with_existing_pane=function(args)
+  assert(args[1].Plugin==2 and args[2].Terminal==7 and args[3]==true)
+  restored=restored+1
+end
+z.rerun_command_pane=function(pane)
+  assert(pane==7 and restored==1,'restore the source before rerunning it')
+  reruns=reruns+1;source_exited=false
+end
+z.close_terminal_pane=function(pane)
+  assert(pane==7 and source_open and source_exited and view_open)
+  source_open=false;terminal_closes=terminal_closes+1
+end
+z.close_plugin_pane=function(pane)
+  assert(pane==2 and (restored==1 or not source_open),'close the source before the view')
+  view_open=false;closed=closed+1
+end
 assert(call{method='pane_action',work='one',key='restart',action='restart'}.outcome=='completed')
-assert(reruns==1)
-assert(call{method='pane_action',work='one',key='leave',action='leave'}.outcome=='completed')
-assert(picked==8 and reruns==1 and closed==0,'Leave preserves all resources')
+assert(reruns==1 and closed==1 and terminal_closes==0)
+view_open=true;restored=0
+assert(tostring(select(2,call{method='pane_action',work='one',key='live-leave',action='leave'})):find('no longer exited'))
+assert(source_open and view_open and closed==1)
+source_exited=true
+for _,change in ipairs{'host','session','work','agent','process','supervisor','transport'} do
+  local changed=z.json.decode(z.json.encode(original))
+  if change=='host' then changed.owner.host_id='other-host'
+  elseif change=='session' then changed.owner.session='other-session'
+  elseif change=='work' then changed.owner.work='other-work'
+  elseif change=='agent' then changed.owner.agent='other-agent'
+  elseif change=='process' then changed.process=999
+  elseif change=='supervisor' then changed.supervisor='other-supervisor'
+  else
+    z.workflow_remote_panes=function() return {{terminal_id=7,host_id=original.supervisor,child_pid=original.process,owner='other-owner'}} end
+  end
+  rows[source_uid].value=z.json.encode(changed)
+  assert(select(2,call{method='pane_action',work='one',key='changed-'..change,action='leave'}))
+  assert(source_open and view_open and terminal_closes==0 and closed==1)
+end
+z.workflow_remote_panes=function() return {} end
+rows[source_uid].value=z.json.encode(original)
+local leave={method='pane_action',work='one',key='leave',action='leave'}
+assert(call(leave).outcome=='completed')
+assert(call(leave).outcome=='completed')
+assert(picked==8 and reruns==1 and terminal_closes==1 and closed==2)
+view_open=true
+assert(call{method='pane_action',work='one',key='already-closed',action='leave'}.outcome=='completed')
+assert(terminal_closes==1 and closed==3,'an absent source only dismisses the view')
+-- Manual launches have no source row. Only Leave can complete without one.
+for _,action in ipairs{'restart','duplicate','fork'} do
+  local _,err=call{method='pane_action',work='manual',key=action,action=action}
+  assert(tostring(err):find('No operation with that identity',1,true))
+end
+local manual_leave={method='pane_action',work='manual',key='leave',action='leave'}
+assert(call(manual_leave).outcome=='completed')
+local manual_uid=z.json.encode({'host','session','manual','leave'})
+local manual_rev=rows[manual_uid].rev
+assert(call(manual_leave).outcome=='completed')
+assert(rows[manual_uid].rev==manual_rev,'retry returns the saved completion')
+assert(picked==8 and reruns==1 and terminal_closes==1 and closed==3)
 z.get_pane_info=old_info
 
 -- Pane IDs may change at restart; the supervisor and child remain the authority.
@@ -8081,6 +8153,10 @@ assert(spawned==3) -- reconciliation never launches a replacement
 local visible={Plugin=1}
 local view_exists=true
 local replacements=0
+local parked=0
+local source_uid=z.json.encode({'host','session','attached','source'})
+rows[source_uid]={rev=1,value=z.json.encode{pane=7}}
+z.hide_pane_with_id=function(pane) assert(pane.Terminal==7);parked=parked+1 end
 z.get_pane_info=function(pane)
   if pane.Plugin==3 then return {plugin_url='zellij:swamp-workflow'} end
   if pane.Plugin then
@@ -8091,6 +8167,7 @@ z.get_pane_info=function(pane)
   return {target='Local',is_suppressed=visible.Terminal~=pane.Terminal}
 end
 z.replace_pane_with_existing_pane=function(args)
+  assert(parked>0,'park the original before the first workflow replacement')
   assert(z.json.encode(args[1])==z.json.encode(visible))
   assert(args[3]==true,'keep the replaced agent/view')
   visible=args[2];replacements=replacements+1
@@ -8501,6 +8578,7 @@ end
 local function label(index,value,y)
   assert(labels[index] and labels[index].value==value and labels[index].y==y,z.json.encode(labels))
 end
+M.cancellable=true
 M.load()
 local lines={}
 for i=1,20 do lines[i]='line '..i end
@@ -8614,7 +8692,7 @@ z.subscribe_pane_output=function(context) watched=context end
 z.close_self=function() closed=true end
 M.watch('launch');assert(watched.swamp_work=='launch')
 M.update{name='key',key='Esc',bare_key='Esc',key_modifiers={}}
-assert(closed and watched==z.null,'detach removes the subscription even during submission')
+assert(not closed and watched.swamp_work=='launch' and M.submitting,'Esc preserves the view and output subscription during submission')
 "#).exec().unwrap();
 }
 

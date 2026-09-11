@@ -49,6 +49,7 @@ z.async.swamp_request=function(opts)
   elseif op=='model.method.run' then
     assert(p.inputs.run=='run' and p.modelIdOrName=='questions' and p.inputs.question=='exit' and p.inputs.answer=='leave')
     status='completed'
+    assert(call{method='pane_action',work=token,key='leave',action='leave'}.outcome=='completed')
   elseif op=='workflow.cancel' then status='cancelled'
   elseif op=='workflow.history.search' then
     result={results={{runId='run',workflowName='fixture',inputs={session=z.server_session,launch=token}}}}

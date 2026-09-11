@@ -102,7 +102,9 @@ cache or automatic extension reload. Keep the local extensions unpublished.
    Restart reruns the original command in the held pane. Fork opens the existing agent-kind picker in the
    same checkout and VM context. Cancel the picker to return to a fresh exit menu and checkout check.
    Each new exit run checks again. Its saved result determines the answers and both question and approval prompts.
-   Leave restores the original scrollback and preserves all resources.
+   Leave closes the original exited terminal and its exit view. It preserves the
+   checkout and other workflow panes. Manual launches without a source terminal can
+   also complete with Leave.
 2. After Begin review, choose **Show diff**, **Commit and rebase**, or **Leave**.
    Show diff displays unstaged changes to tracked files and untracked, non-ignored files after VM synchronization.
    Only the agent’s checkout is included, even when inherited Git settings point to another worktree.
@@ -141,16 +143,18 @@ For review and repair helpers, process exit restores workflow status. A complete
 turn alone does not advance these decisions. Standalone agent-work remains available
 to explicit callers and retains its turn-based observation.
 
-Final results and errors stay visible. Enter restarts the original agent. Esc restores
-its scrollback and detaches the view. Delete closes the original terminal. Restart and
-destructive close are disabled while work is active. Closing the view does not cancel
-work. A detached or missing view never causes a replacement launch or a new visible
-pane. Ordinary CLI launches keep their separate view.
+Final results and errors stay visible unless the workflow closes the exit view through
+Leave. Enter activates the selected button. After completion, **Restart agent** reruns
+the original command. Delete performs the same cleanup as Leave: it closes the original
+terminal and its exit view. Restart and Delete are disabled while work is active.
+The workflow view has no Detach button, and Esc does not close it.
+Ordinary CLI launches keep their separate view.
 
 The view shows authoritative run and child-run state, findings, revision identities,
-test results, pending questions and retained command output. Close the view to detach;
-reopen it with `show`. The managed Swamp server continues independently. Cancel is
-separate:
+test results, pending questions and retained command output. If a pane is closed
+externally, the managed Swamp server continues independently. A missing view never
+causes a replacement launch or a new visible pane. Use `show` to reopen a view.
+Cancellation remains a separate action:
 
 ```sh
 zellij workflow cancel RUN_ID
@@ -372,7 +376,7 @@ cargo x firecracker-test --test
 ```
 
 The smoke runner creates disposable repositories and stub agents. It tests unattended
-questions, an interactive detachable view, stale evidence, optional checks, informed merges, explicit conflict resolution,
+questions, an interactive workflow view, stale evidence, optional checks, informed merges, explicit conflict resolution,
 recorded-answer recovery, cancellation, and server crash/adoption. It prints the
 fixture directory containing its command transcript and terminal capture. The
 `--exit-menu-only` path checks exact menus and approval prompts, rejected hidden choices,

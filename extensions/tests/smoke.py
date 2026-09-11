@@ -822,7 +822,7 @@ try:
 
 
         review_question = prepare('failed-checks')
-        # Earlier scenarios may leave completed views open. Start this detach check with one view.
+        # Earlier scenarios may leave completed views open. Start this external-close check with one view.
         for pane in json.loads(zellij('action', 'list-panes', '--json')):
             if pane.get('plugin_url') == 'zellij:swamp-workflow':
                 zellij('action', 'close-pane', '--pane-id', 'plugin_' + str(pane['id']))
@@ -843,13 +843,15 @@ try:
             # Output from another stream may replace this frame before a CLI snapshot arrives.
             until('live output before command exit', lambda: b'LIVE BEFORE RELEASE' in bytes(ui_output))
         assert not release.exists()
-        os.write(ui_fd, b'\x1b')
-        until('view detached', lambda: not any(p.get('plugin_url') == 'zellij:swamp-workflow'
+        for pane in json.loads(zellij('action', 'list-panes', '--json')):
+            if pane.get('plugin_url') == 'zellij:swamp-workflow':
+                zellij('action', 'close-pane', '--pane-id', 'plugin_' + str(pane['id']))
+        until('view externally closed', lambda: not any(p.get('plugin_url') == 'zellij:swamp-workflow'
               for p in json.loads(zellij('action', 'list-panes', '--json'))))
         frame_start = len(ui_output)
         zellij('workflow', 'show', review_question['attributes']['run'])
         until('view reattached', lambda: b'Cancel run' in bytes(ui_output[frame_start:]))
-        assert not release.exists(), 'Detach must not release or stop execution'
+        assert not release.exists(), 'Closing the pane externally must not release or stop execution'
         released = time.monotonic()
         release.touch()
         until('next question rendered', lambda: b'Start fix agent' in bytes(ui_output[frame_start:]), interval=0.005)
@@ -860,7 +862,9 @@ try:
         print('LATENCY:', timings, flush=True)
         if args.latency_only:
             raise SystemExit(0)
-        os.write(ui_fd, b'\x1b')
+        for pane in json.loads(zellij('action', 'list-panes', '--json')):
+            if pane.get('plugin_url') == 'zellij:swamp-workflow':
+                zellij('action', 'close-pane', '--pane-id', 'plugin_' + str(pane['id']))
         failed = until('failed-test choices', lambda: pending('failed-checks', 'failed-tests'))
         assert failed['attributes']['answers'] == ['start-fix-agent', 'return-to-menu', 'leave']
         check_output_previews(failed)
