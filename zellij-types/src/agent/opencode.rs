@@ -34,8 +34,9 @@ pub const OPENCODE_HOOK_EVENTS: &[&str] = &[
     "assistant.message",
 ];
 
-/// The one thing opencode has no hook timeout for: the plugin spawns `zellij` and does
-/// not wait on it. Kept beside the others so `status` needs no special case of its own.
+/// OpenCode callbacks queue reports without waiting; the queue waits for each child
+/// to close before spawning the next. Kept beside the others so `status` needs no
+/// special case of its own.
 pub const OPENCODE_HOOK_TIMEOUT_SECONDS: u64 = 5;
 
 /// Translate one forwarded opencode event into the hook shape the session reads.
@@ -138,7 +139,28 @@ pub fn to_hook_event(event: &Value) -> HookEvent {
         // prompt of its own, so anything that reaches here is a person being waited on;
         // the record's `waiting_needs_a_person` therefore comes out true, which is the
         // right reading for the only events that arrive.
-        "permission.asked" | "permission.updated" => {
+        "permission.asked" => {
+            hook.hook_event_name = "PermissionRequest".to_owned();
+            hook.tool_name = prop("permission")
+                .and_then(Value::as_str)
+                .map(normalize_tool);
+            hook.tool_use_id = string(prop("tool").and_then(|tool| tool.get("callID")));
+            let patterns = prop("patterns")
+                .and_then(Value::as_array)
+                .map(|patterns| {
+                    patterns
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .map(Value::String);
+            let metadata = prop("metadata").map(normalize_args);
+            hook.tool_input =
+                permission_input(prop("permission"), patterns.as_ref(), metadata.as_ref());
+        },
+        // Older OpenCode versions use a type/title and a top-level call ID.
+        "permission.updated" => {
             hook.hook_event_name = "PermissionRequest".to_owned();
             hook.tool_name = prop("type").and_then(Value::as_str).map(normalize_tool);
             hook.tool_use_id = string(prop("callID"));
@@ -218,8 +240,9 @@ fn normalize_args(args: &Value) -> Value {
 /// What a permission prompt is about, in the shape `waiting_detail` reads for the tool.
 ///
 /// A `Bash` prompt reads `tool_input.command` and a file tool reads `file_path`, so the
-/// prompt's own `title` is filed under whichever key names it. A tool with no obvious
-/// argument keeps its metadata, or nothing, and the toast falls back to the tool name.
+/// prompt's legacy title or current patterns are filed under whichever key names it.
+/// A tool with no obvious argument keeps its metadata, or nothing, and the toast
+/// falls back to the tool name.
 fn permission_input(
     tool: Option<&Value>,
     title: Option<&Value>,
@@ -372,10 +395,11 @@ mod tests {
     #[test]
     fn a_permission_prompt_waits_and_names_what_it_is_about() {
         let bash = event(
-            r#"{"type":"permission.asked","properties":{"sessionID":"ses_1","callID":"call_4",
+            r#"{"type":"permission.updated","properties":{"sessionID":"ses_1","callID":"call_4",
                 "type":"bash","title":"rm -rf target","metadata":{}}}"#,
         );
         assert_eq!(bash.hook_event_name, "PermissionRequest");
+        assert_eq!(bash.tool_use_id.as_deref(), Some("call_4"));
         assert_eq!(bash.tool_name.as_deref(), Some("Bash"));
         assert_eq!(hook_state(&bash), Some(AgentState::Waiting));
         assert_eq!(
@@ -402,6 +426,68 @@ mod tests {
         );
         assert_eq!(replied.hook_event_name, "PostToolUse");
         assert_eq!(hook_state(&replied), Some(AgentState::Busy));
+    }
+
+    #[test]
+    fn current_opencode_permissions_use_call_identity_metadata_and_pattern_fallback() {
+        for (permission, metadata, patterns, input, detail) in [
+            (
+                "bash",
+                serde_json::json!({"command": "cargo test", "extra": true}),
+                vec!["ignored *"],
+                serde_json::json!({"command": "cargo test", "extra": true}),
+                "Bash cargo",
+            ),
+            (
+                "edit",
+                serde_json::json!({"filePath": "/work/main.rs", "extra": true}),
+                vec!["ignored.rs"],
+                serde_json::json!({"file_path": "/work/main.rs", "extra": true}),
+                "Edit main.rs",
+            ),
+            (
+                "bash",
+                serde_json::json!({}),
+                vec!["git status", "git diff"],
+                serde_json::json!({"command": "git status git diff"}),
+                "Bash git",
+            ),
+            (
+                "read",
+                serde_json::json!({"unrelated": true}),
+                vec!["/work/main.rs"],
+                serde_json::json!({"file_path": "/work/main.rs"}),
+                "Read main.rs",
+            ),
+        ] {
+            let hook = to_hook_event(&serde_json::json!({
+                "type": "permission.asked",
+                "properties": {
+                    "sessionID": "ses_1", "permission": permission,
+                    "tool": {"messageID": "msg_1", "callID": "call_current"},
+                    "metadata": metadata, "patterns": patterns,
+                },
+            }));
+            assert_eq!(hook.hook_event_name, "PermissionRequest");
+            assert_eq!(hook.session_id, "ses_1");
+            assert_eq!(hook.tool_use_id.as_deref(), Some("call_current"));
+            assert_eq!(hook.tool_input, Some(input));
+            assert_eq!(hook_state(&hook), Some(AgentState::Waiting));
+            assert_eq!(crate::agent::waiting_detail(&hook).as_deref(), Some(detail));
+        }
+        let legacy = event(
+            r#"{"type":"permission.updated","properties":{"type":"bash","callID":"legacy",
+                "title":"ignored","metadata":{"command":"cargo test","extra":true}}}"#,
+        );
+        assert_eq!(legacy.tool_use_id.as_deref(), Some("legacy"));
+        assert_eq!(
+            legacy.tool_input,
+            Some(serde_json::json!({"command":"cargo test","extra":true}))
+        );
+        assert_eq!(
+            crate::agent::waiting_detail(&legacy).as_deref(),
+            Some("Bash cargo")
+        );
     }
 
     #[test]

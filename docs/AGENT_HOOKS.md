@@ -332,13 +332,13 @@ Rules the generated scripts keep, all of which matter:
 - **The Codex script writes `{}` and nothing else.** Codex wants JSON back from a `Stop`
   hook; a neutral object is the answer that decides nothing.
 - **Every one of them exits 0.** A hook that fails must not interfere with the agent it is
-  only reporting on. The opencode plugin is the same rule in JS: it never throws and never
-  waits on the child it spawns.
+  only reporting on. The opencode plugin follows the same rule in JS: reporting failures
+  do not throw from its callbacks.
 
 Each entry carries an explicit timeout — five seconds for Claude Code, three for Codex, which
 caps a `SessionEnd` hook at that anyway. Claude Code's default is ten minutes, and a hook
-blocks the turn. opencode's plugin hooks are not awaited on by the agent, so the report is
-fire-and-forget.
+blocks the turn. OpenCode plugin callbacks queue each report and return immediately.
+The queue starts each child after the previous child closes, so reports arrive in order.
 
 ## Remote panes: reporting through the broker
 
