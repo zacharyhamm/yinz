@@ -41,6 +41,32 @@ export type UnitEvent = "SystemClipboardFailure" | "InputReceived" | "ConfigWasW
 export type EventType = keyof EventPayloads | UnitEvent;
 export type Event = UnitEvent | { [K in keyof EventPayloads]: { [P in K]: EventPayloads[K] } }[keyof EventPayloads];
 export type EventPayload<K extends EventType> = K extends keyof EventPayloads ? EventPayloads[K] : undefined;
+/** Named, byte-decoded forms of the events whose raw shape is positional or bytes. Every other
+ * event keeps its payload in `value` alone; struct payloads are not spread. */
+export interface DecodedFields {
+  RunCommandResult: {exitCode: number | null; stdout: Uint8Array; stderr: Uint8Array; context: StringMap};
+  WebRequestResult: {status: number; headers: StringMap; body: Uint8Array; context: StringMap};
+  RunCommandOutput: {data: Uint8Array; stderr: boolean; context: StringMap};
+  PaneOutput: {paneId: number; data: Uint8Array; context: StringMap};
+  WebRequestStreamChunk: {streamId: string; chunk: Uint8Array; done: boolean; error: string | null};
+  SessionUpdate: {sessions: SessionInfo[]; resurrectableSessions: [string, Duration][]};
+  CustomMessage: {message: string; payload: string};
+  CommandPaneOpened: {paneId: number; context: StringMap}; CommandPaneExited: {paneId: number; exitCode: number | null; context: StringMap};
+  CommandPaneReRun: {paneId: number; context: StringMap};
+  EditPaneOpened: {paneId: number; context: StringMap}; EditPaneExited: {paneId: number; exitCode: number | null; context: StringMap};
+  UserAction: {action: Action; clientId: number; terminalId: number | null; cliClientId: number | null};
+  ActionComplete: {action: Action; paneId: PaneId | null; context: StringMap};
+  CwdChanged: {paneId: PaneId; cwd: string; focusedClientIds: number[]};
+  CommandChanged: {paneId: PaneId; command: string[]; isForeground: boolean; focusedClientIds: number[]};
+  AvailableLayoutInfo: {layouts: LayoutInfo[]; errors: LayoutWithError[]};
+  Key: {key: string}; InterceptedKeyPress: {key: string};
+  Mouse: MouseSummary;
+  FileSystemCreate: {files: FsEntry[]}; FileSystemRead: {files: FsEntry[]}; FileSystemUpdate: {files: FsEntry[]}; FileSystemDelete: {files: FsEntry[]};
+  PluginDataChanged: {records: DataRecord[]};
+}
+/** `type`, the untouched payload as `value`, the whole event as `raw`, and the named fields above. */
+export type DecodedEventOf<K extends EventType> = {type: K; value: EventPayload<K>; raw: Event} & (K extends keyof DecodedFields ? DecodedFields[K] : {});
+export type DecodedEvent = {[K in EventType]: DecodedEventOf<K>}[EventType];
 export interface PluginIds {
   plugin_id: number; zellij_pid: number; initial_cwd: string; client_id: number;
   hostname: string; host_id: string;
@@ -121,6 +147,12 @@ export interface Zellij {
   requestPermission(permissions: Permission[]): void;
   requestRender(): void;
   on<K extends EventType>(type: K, handler: (payload: EventPayload<K>, event: Event) => boolean | void | Promise<boolean | void>): () => void;
+  /** on(), handing the handler the decoded event. Same ordering and return contract; the raw payload stays as `event.value`. */
+  onEvent<K extends EventType>(type: K, handler: (event: DecodedEventOf<K>) => boolean | void | Promise<boolean | void>): () => void;
+  /** The event as a discriminated union: `type`, its untouched payload as `value`, and named camelCase
+   * fields (bytes as Uint8Array, `key` as keyName spells it, Mouse flattened) for the events whose raw
+   * shape is positional or bytes. Throws TypeError for a value that is not an Event. */
+  event(raw: Event): DecodedEvent;
   sleep(milliseconds: number): CancellablePromise<void>;
   after(milliseconds: number, callback: TimerCallback): TimerHandle;
   /** Waits one interval after the previous callback settles. Callbacks never overlap. */

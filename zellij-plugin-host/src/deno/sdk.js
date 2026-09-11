@@ -1038,6 +1038,61 @@
     if (typeof value === "number" || typeof value === "bigint") return { kind, lines: value };
     throw new TypeError("mouse requires a Mouse event");
   }
+  // The events whose raw shape is positional: the Rust tuple variants, named here as the Lua
+  // prelude names them, camelCased. Every other event keeps its payload as `value` alone.
+  const TUPLE_EVENT_FIELDS = Object.freeze({
+    RunCommandResult: ["exitCode", "stdout", "stderr", "context"],
+    WebRequestResult: ["status", "headers", "body", "context"],
+    SessionUpdate: ["sessions", "resurrectableSessions"],
+    CustomMessage: ["message", "payload"],
+    CommandPaneOpened: ["paneId", "context"],
+    CommandPaneExited: ["paneId", "exitCode", "context"],
+    CommandPaneReRun: ["paneId", "context"],
+    EditPaneOpened: ["paneId", "context"],
+    EditPaneExited: ["paneId", "exitCode", "context"],
+    UserAction: ["action", "clientId", "terminalId", "cliClientId"],
+    ActionComplete: ["action", "paneId", "context"],
+    CwdChanged: ["paneId", "cwd", "focusedClientIds"],
+    CommandChanged: ["paneId", "command", "isForeground", "focusedClientIds"],
+    AvailableLayoutInfo: ["layouts", "errors"],
+  });
+  const BYTE_EVENT_FIELDS = Object.freeze({ RunCommandResult: ["stdout", "stderr"], WebRequestResult: ["body"] });
+  // A raw event as a discriminated union. `value` is the payload itself, untouched, so nothing a
+  // plugin already does with the raw shape changes; the named fields are the convenience.
+  function decodeEvent(raw) {
+    validate(raw);
+    if (typeof raw === "string") return { type: raw, value: undefined, raw };
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length !== 1) {
+      throw new TypeError("event requires an Event: a unit event name or one {Type: payload} object");
+    }
+    const [type, value] = Object.entries(raw)[0];
+    const decoded = { type, value, raw };
+    const fields = TUPLE_EVENT_FIELDS[type];
+    if (fields) {
+      if (!Array.isArray(value)) throw new TypeError(`${type} carries a tuple payload`);
+      fields.forEach((name, index) => { decoded[name] = value[index] === undefined ? null : value[index]; });
+      for (const name of BYTE_EVENT_FIELDS[type] ?? []) decoded[name] = bytes(decoded[name]);
+    } else if (type === "RunCommandOutput") {
+      Object.assign(decoded, { data: bytes(value.data), stderr: value.stderr, context: value.context });
+    } else if (type === "PaneOutput") {
+      Object.assign(decoded, { paneId: value.pane_id, data: bytes(value.data), context: value.context });
+    } else if (type === "WebRequestStreamChunk") {
+      Object.assign(decoded, { streamId: value.stream_id, chunk: bytes(value.chunk), done: value.done, error: value.error });
+    } else if (type === "Key" || type === "InterceptedKeyPress") {
+      decoded.key = keyName(value.bare_key);
+    } else if (type === "Mouse") {
+      Object.assign(decoded, mouse(value));
+    } else if (type.startsWith("FileSystem") && Array.isArray(value)) {
+      decoded.files = value.map(([path, metadata]) => ({ path, metadata }));
+    } else if (type === "PluginDataChanged") {
+      decoded.records = toRecords(value.rows);
+    }
+    return decoded;
+  }
+  function onEvent(type, handler) {
+    if (typeof handler !== "function") throw new TypeError("event handler must be a function");
+    return on(type, (_payload, raw) => handler(decodeEvent(raw)));
+  }
   const KEYBINDING_PIPE = "__zellij_default_keybinding:";
   let keybindingHandlers = new Map();
   function kdlQuote(value) {
@@ -1214,6 +1269,8 @@
     requestPermission: (permissions) => command("RequestPluginPermissions", permissions),
     requestRender: invalidate,
     on,
+    onEvent,
+    event: decodeEvent,
     sleep,
     after: (milliseconds, callback) => callbackTimer(milliseconds, callback, false),
     every: (milliseconds, callback) => callbackTimer(milliseconds, callback, true),

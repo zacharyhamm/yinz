@@ -551,6 +551,76 @@ fn sdk_async_helpers_have_precise_options_results_and_cancellation_types() {
 }
 
 #[test]
+fn sdk_decoded_event_types_narrow_by_type_and_keep_raw_values() {
+    use zellij_types::data::*;
+    use zellij_types::keys::{BareKey, KeyWithModifier};
+    let context = std::collections::BTreeMap::from([("work".to_owned(), "one".to_owned())]);
+    let fixtures = [
+        (
+            "result",
+            serde_json::to_value(Event::RunCommandResult(
+                Some(0),
+                b"out".to_vec(),
+                vec![],
+                context.clone(),
+            ))
+            .unwrap(),
+        ),
+        (
+            "exited",
+            serde_json::to_value(Event::CommandPaneExited(
+                zellij_types::internal_ids::TerminalId::new(7),
+                None,
+                context,
+            ))
+            .unwrap(),
+        ),
+        (
+            "key",
+            serde_json::to_value(Event::Key(KeyWithModifier::new(BareKey::Char('t')))).unwrap(),
+        ),
+        (
+            "mouse",
+            serde_json::to_value(Event::Mouse(Mouse::LeftClick(3, 4))).unwrap(),
+        ),
+        ("input", serde_json::to_value(Event::InputReceived).unwrap()),
+    ];
+    let mut source = String::from("import zellij, {type DecodedEvent, type DecodedEventOf, type HookPoint, type BareKey, type Event} from 'zellij:plugin';\n");
+    for (name, value) in &fixtures {
+        source.push_str(&format!("const {name} = {value} satisfies Event;\n"));
+    }
+    source.push_str(r#"
+      const events: Event[] = [result, exited, key, mouse, input];
+      for (const raw of events) {
+        const e: DecodedEvent = zellij.event(raw);
+        const t: string = e.type; const r: Event = e.raw;
+        if (e.type === 'RunCommandResult') { const c: number | null = e.exitCode; const out: Uint8Array = e.stdout; const w: string = e.context.work; const v: [number | null, number[], number[], Record<string, string>] = e.value; }
+        if (e.type === 'CommandPaneExited') { const id: number = e.paneId; const c: number | null = e.exitCode; }
+        if (e.type === 'Key') { const k: string = e.key; const b: BareKey = e.value.bare_key; }
+        if (e.type === 'Mouse') { if (e.kind === 'LeftClick') { const line: number | bigint = e.line; } }
+        if (e.type === 'InputReceived') { const v: undefined = e.value; }
+        if (e.type === 'Hook') { const p: HookPoint = e.value.point; }
+        if (e.type === 'Timer') { const seconds: number = e.value; }
+      }
+      const one: DecodedEventOf<'CommandPaneExited'> = zellij.event(exited) as DecodedEventOf<'CommandPaneExited'>;
+      const off: () => void = zellij.onEvent('Hook', (e) => { const p: HookPoint = e.value.point; return true; });
+      zellij.onEvent('Key', async (e) => { const k: string = e.key; });
+      zellij.onEvent('PluginDataChanged', (e) => { const first: Record<string, unknown> | undefined = e.records[0]; });
+      zellij.onEvent('FileSystemUpdate', (e) => { const path: string = e.files[0].path; });
+      // @ts-expect-error struct payloads are not spread onto the event
+      zellij.onEvent('Hook', (e) => e.point);
+      // @ts-expect-error stdout is a Uint8Array, not a string
+      zellij.onEvent('RunCommandResult', (e) => { const s: string = e.stdout; });
+      // @ts-expect-error not an event type
+      zellij.onEvent('Nope', () => {});
+      // @ts-expect-error a decoded event is not a raw one
+      const raw: Event = zellij.event(exited);
+    "#);
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("decoded.ts"), &source).unwrap();
+}
+
+#[test]
 fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
     use zellij_types::internal_ids::*;
     use zellij_types::{authoring::*, data::*, input::layout::*};

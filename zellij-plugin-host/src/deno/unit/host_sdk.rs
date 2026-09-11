@@ -301,3 +301,98 @@ fn a_failed_registration_keeps_the_previous_keybinding_handlers() {
       check(runs === 1);
     "#);
 }
+
+/// The events whose raw shape is positional get named fields; everything keeps `value` as the
+/// payload the host delivered, so nothing a plugin already does with the raw shape changes.
+#[test]
+fn event_decoder_names_tuple_fields_decodes_bytes_and_leaves_raw_untouched() {
+    use zellij_types::data::{FileMetadata, Mouse, PermissionStatus};
+    use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
+    let context = BTreeMap::from([("work".to_owned(), "one".to_owned())]);
+    let events = json!({
+        "result": Event::RunCommandResult(Some(0), b"out".to_vec(), vec![255], context.clone()),
+        "exited": Event::CommandPaneExited(zellij_types::internal_ids::TerminalId::new(7), None, context.clone()),
+        "web": Event::WebRequestResult(404, BTreeMap::from([("a".to_owned(), "b".to_owned())]), vec![1, 2], BTreeMap::new()),
+        "message": Event::CustomMessage("name".into(), "payload".into()),
+        "key": Event::Key(KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier()),
+        "esc": Event::Key(KeyWithModifier::new(BareKey::Esc)),
+        "intercepted": Event::InterceptedKeyPress(KeyWithModifier::new(BareKey::F(2))),
+        "mouse": Event::Mouse(Mouse::ScrollUp(2)),
+        "click": Event::Mouse(Mouse::LeftClick(3, 4)),
+        "created": Event::FileSystemCreate(vec![
+            (std::path::PathBuf::from("/host/a.txt"), Some(FileMetadata { is_dir: false, is_file: true, is_symlink: false, len: 3 })),
+            (std::path::PathBuf::from("/host/b"), None),
+        ]),
+        "changed": Event::PluginDataChanged {
+            watch_id: zellij_types::internal_ids::DataWatchId::new(4),
+            rows: zellij_types::data::DataRows { columns: vec!["id".into(), "text".into()], rows: vec![vec![zellij_types::data::DataValue::Int(1), zellij_types::data::DataValue::Text("t".into())]], truncated: false, next_cursor: None },
+            truncated: false,
+        },
+        "timer": Event::Timer(zellij_types::units::FractionalSeconds::new(1.5)),
+        "granted": Event::PermissionRequestResult(PermissionStatus::Granted),
+        "input": Event::InputReceived,
+    });
+    let _ = KeyModifier::Ctrl;
+    let mut runtime = sdk();
+    run(&mut runtime, &format!(r#"
+      const events = {events};
+      const decode = (name) => zellij.event(events[name]);
+      const before = JSON.stringify(events);
+      const result = decode('result');
+      check(result.type === 'RunCommandResult' && result.exitCode === 0 && result.context.work === 'one');
+      check(result.stdout instanceof Uint8Array && zellij.decodeUtf8(result.stdout) === 'out' && result.stderr[0] === 255);
+      check(Object.is(result.value, events.result.RunCommandResult) && Object.is(result.raw, events.result));
+      const exited = decode('exited');
+      check(exited.paneId === 7 && exited.exitCode === null && exited.context.work === 'one');
+      const web = decode('web');
+      check(web.status === 404 && web.headers.a === 'b' && web.body instanceof Uint8Array && web.body.length === 2 && Object.keys(web.context).length === 0);
+      const message = decode('message');
+      check(message.message === 'name' && message.payload === 'payload');
+      check(decode('key').key === 't' && decode('key').value.key_modifiers.includes('Ctrl'));
+      check(decode('esc').key === 'Esc' && decode('intercepted').key === 'F2' && decode('intercepted').type === 'InterceptedKeyPress');
+      const mouse = decode('mouse');
+      check(mouse.kind === 'ScrollUp' && mouse.lines === 2 && mouse.value.ScrollUp === 2);
+      const click = decode('click');
+      check(click.kind === 'LeftClick' && click.line === 3 && click.col === 4);
+      const created = decode('created');
+      check(created.files.length === 2 && created.files[0].path === '/host/a.txt' && created.files[0].metadata.len === 3 && created.files[1].metadata === null);
+      check(Array.isArray(created.value) && Array.isArray(created.value[0]));
+      const changed = decode('changed');
+      check(changed.records.length === 1 && changed.records[0].id === 1 && changed.records[0].text === 't' && changed.value.watch_id === 4);
+      const timer = decode('timer');
+      check(timer.type === 'Timer' && timer.value === 1.5 && Object.keys(timer).sort().join() === 'raw,type,value');
+      check(decode('granted').value === 'Granted');
+      const input = decode('input');
+      check(input.type === 'InputReceived' && input.value === undefined && input.raw === 'InputReceived');
+      check(JSON.stringify(events) === before, 'decoding never rewrites the raw event');
+      for (const bad of [{{}}, {{A: 1, B: 2}}, 42, null, [], {{RunCommandResult: {{}}}}]) {{
+        let refused = false;
+        try {{ zellij.event(bad); }} catch (error) {{ refused = error instanceof TypeError; }}
+        check(refused, 'not an event: ' + JSON.stringify(bad));
+      }}
+    "#));
+}
+
+/// `onEvent` is `on` with the decoded event: it registers through `on`, so it runs where `on`
+/// handlers run - after `update` and the pipe waiters - and its `true` requests a render.
+#[test]
+fn on_event_handlers_receive_decoded_events_after_update_and_pipe_waiters() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.order = [];
+      bind({ update(event) { order.push('update:' + Object.keys(event)[0]); return false; } });
+      bridge('load', {}, 1);
+      const off = zellij.onEvent('CommandPaneExited', (event) => { order.push(`onEvent:${event.paneId}:${event.exitCode}:${event.context.work}`); return true; });
+      zellij.on('CommandPaneExited', (payload) => { order.push('on:' + payload[0]); });
+      check(typeof off === 'function');
+      bridge('update', {CommandPaneExited: [7, 3, {work: 'one'}]}, 1);
+      check(bridge('status') === true, 'a decoded handler returning true requests a render');
+      check(order.join(' ') === 'update:CommandPaneExited onEvent:7:3:one on:7', order.join(' '));
+      off();
+      bridge('update', {CommandPaneExited: [8, null, {}]}, 1);
+      check(order.join(' ') === 'update:CommandPaneExited onEvent:7:3:one on:7 update:CommandPaneExited on:8', order.join(' '));
+      let refused = false;
+      try { zellij.onEvent('Key', 'not a function'); } catch (error) { refused = error instanceof TypeError; }
+      check(refused);
+    "#);
+}
