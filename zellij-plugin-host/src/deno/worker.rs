@@ -91,6 +91,16 @@ fn request(path: &Path, source: &str, declarations: bool, operation: Operation) 
     .with_context(|| context)
 }
 
+/// How many workers this process has spawned. Tests assert deltas against it, never
+/// absolutes: under `cargo test` every test in the binary shares the counter.
+#[cfg(test)]
+static SPAWNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn spawn_count() -> usize {
+    SPAWNS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -147,6 +157,8 @@ fn exchange(command: &mut Command, input: &[u8], timeout: Duration) -> Result<Ou
             .spawn()
             .context("spawn worker")?,
     );
+    #[cfg(test)]
+    SPAWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stdin = child.0.stdin.take().context("worker stdin")?;
     let mut stdout = child.0.stdout.take().context("worker stdout")?;
     let mut stderr = child.0.stderr.take().context("worker stderr")?;

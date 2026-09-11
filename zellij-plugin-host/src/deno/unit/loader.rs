@@ -192,8 +192,144 @@ fn invalid_syntax_is_rejected_without_evaluation() {
         let url = loader
             .resolve_local(&format!("./{name}"), loader.entrypoint().as_str(), false)
             .unwrap();
+        // A `.js` file is parsed by the worker like any other: the cache remembers only
+        // successful emissions, so a syntax error costs a spawn each time and is still
+        // reported here, before V8 ever sees the module.
+        let spawns = spawn_count();
         assert!(loader.load_source(&url).is_err());
+        assert_eq!(spawn_count() - spawns, 1, "{name}");
+        assert!(loader.load_source(&url).is_err());
+        assert_eq!(spawn_count() - spawns, 2, "{name}");
     }
+}
+
+fn spawn_count() -> usize {
+    super::super::worker::spawn_count()
+}
+
+#[test]
+fn identical_source_is_transpiled_once_and_an_edit_misses() {
+    let (dir, mut loader) = fixture();
+    let spawns = spawn_count();
+    loader.load_source(loader.entrypoint()).unwrap();
+    assert_eq!(spawn_count() - spawns, 1);
+    loader.load_source(loader.entrypoint()).unwrap();
+    assert_eq!(
+        spawn_count() - spawns,
+        1,
+        "the same content at the same path is served from the cache"
+    );
+    loader.sources.borrow_mut().clear();
+    loader
+        .set_entry_source("export const n: number = 2;")
+        .unwrap();
+    let module = loader.load_source(loader.entrypoint()).unwrap();
+    let ModuleSourceCode::String(code) = module.code else {
+        panic!("expected text")
+    };
+    assert!(code.as_str().contains("= 2"), "{}", code.as_str());
+    assert_eq!(spawn_count() - spawns, 2, "an edit misses");
+    // The same text under another name is another module: its source map must name it.
+    let other = dir.path().join("other.ts");
+    std::fs::write(&other, "export const n: number = 2;").unwrap();
+    let url = loader
+        .resolve_local("./other.ts", loader.entrypoint().as_str(), false)
+        .unwrap();
+    loader.load_source(&url).unwrap();
+    assert_eq!(spawn_count() - spawns, 3, "the path is part of the key");
+    let map = loader.get_source_map(url.as_str()).unwrap();
+    let map: serde_json::Value = serde_json::from_slice(&map).unwrap();
+    assert!(
+        map["sources"][0].as_str().unwrap().ends_with("other.ts"),
+        "{map}"
+    );
+}
+
+#[test]
+fn embedded_builtins_stay_cached_under_eviction_pressure() {
+    let source = "export const value: number = 42;";
+    let loader = PluginModuleLoader::embedded("context-menu", source).unwrap();
+    let spawns = spawn_count();
+    loader.load_source(loader.entrypoint()).unwrap();
+    assert_eq!(spawn_count() - spawns, 1);
+    cache_fill_for_test(MAX_CACHE_ENTRIES + 1);
+    let (entries, bytes) = cache_stats();
+    assert!(entries <= MAX_CACHE_ENTRIES, "{entries} entries");
+    assert!(bytes <= MAX_CACHE_BYTES, "{bytes} bytes");
+    let again = PluginModuleLoader::embedded("context-menu", source).unwrap();
+    again.load_source(again.entrypoint()).unwrap();
+    assert_eq!(
+        spawn_count() - spawns,
+        1,
+        "a compiled-in builtin is pinned through eviction"
+    );
+    // The registered workflow module is pinned the same way.
+    let view = PluginModuleLoader::embedded(
+        "view-test",
+        "import {view} from 'zellij:workflow-view'; export default view;",
+    )
+    .unwrap();
+    let url = view
+        .resolve_local(WORKFLOW_SPECIFIER, view.entrypoint().as_str(), false)
+        .unwrap();
+    let before = spawn_count();
+    view.load_source(&url).unwrap();
+    let first = spawn_count() - before;
+    cache_fill_for_test(MAX_CACHE_ENTRIES + 1);
+    view.load_source(&url).unwrap();
+    assert_eq!(spawn_count() - before, first);
+}
+
+#[test]
+fn transpile_cache_evicts_least_recently_used_unpinned_entries_within_bounds() {
+    fn emitted(text: &str) -> Arc<deno_ast::EmittedSourceText> {
+        Arc::new(deno_ast::EmittedSourceText {
+            text: text.to_owned(),
+            source_map: None,
+        })
+    }
+    let key = |name: &str| cache_key(Path::new(name), name, false);
+    let mut cache = TranspileCache::default();
+    cache.insert(key("pinned"), emitted("pinned"), true);
+    for index in 0..MAX_CACHE_ENTRIES {
+        cache.insert(key(&format!("entry{index}")), emitted("x"), false);
+    }
+    assert_eq!(cache.entries.len(), MAX_CACHE_ENTRIES);
+    assert!(cache.get(&key("pinned")).is_some(), "pinned survives");
+    assert!(
+        cache.get(&key("entry0")).is_none(),
+        "the oldest unpinned entry went first"
+    );
+    // Touching an entry makes it recent; the next eviction takes the untouched one.
+    assert!(cache.get(&key("entry1")).is_some());
+    cache.insert(key("newest"), emitted("x"), false);
+    assert!(cache.get(&key("entry1")).is_some());
+    assert!(cache.get(&key("entry2")).is_none());
+    // Bytes bound: an entry larger than the whole budget is not stored at all, and a large
+    // entry evicts by bytes before the count is reached.
+    cache.insert(
+        key("huge"),
+        emitted(&"h".repeat(MAX_CACHE_BYTES + 1)),
+        false,
+    );
+    assert!(cache.get(&key("huge")).is_none());
+    cache.insert(
+        key("large"),
+        emitted(&"l".repeat(MAX_CACHE_BYTES - 8)),
+        false,
+    );
+    assert!(
+        cache.total_bytes <= MAX_CACHE_BYTES,
+        "{}",
+        cache.total_bytes
+    );
+    assert!(cache.get(&key("large")).is_some());
+    assert!(cache.get(&key("pinned")).is_some());
+    assert!(cache.entries.len() < MAX_CACHE_ENTRIES);
+    // Replacing a key does not double count.
+    let before = cache.total_bytes;
+    cache.insert(key("pinned"), emitted("pinned"), true);
+    assert_eq!(cache.total_bytes, before);
 }
 
 #[tokio::test]

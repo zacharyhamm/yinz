@@ -1082,6 +1082,84 @@ export default {
 
 #[test]
 #[serial(plugin_tests)]
+fn deno_two_clients_share_one_transpile_and_a_reload_of_identical_source_spawns_nothing() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+import { label } from "./dependency.ts";
+export default {
+  render() { return `label=${label}`; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    let dependency = harness.directory.path().join("dependency.ts");
+    std::fs::write(&dependency, "export const label: string = 'first';").unwrap();
+    let other = ClientId::new(2);
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(other))
+        .unwrap();
+    let spawns = || crate::deno::compilation_worker_spawn_count();
+    let frames = |log: &[ScreenInstruction], client: ClientId, needle: &str| {
+        rendered_assets(log)
+            .iter()
+            .filter(|(rendered_client, frame)| *rendered_client == client && frame.contains(needle))
+            .count()
+    };
+    let wait_for_both = |needle: &str, at_least: (usize, usize)| {
+        harness.log.wait_until_described(
+            &format!("both clients rendered {needle:?}"),
+            default_timeout(),
+            |log| {
+                (frames(log, CLIENT, needle) > at_least.0
+                    && frames(log, other, needle) > at_least.1)
+                    .then_some(())
+            },
+            |log| describe_renders(log),
+        );
+    };
+    let before = spawns();
+    harness.load();
+    wait_for_both("label=first", (0, 0));
+    assert_eq!(
+        spawns() - before,
+        2,
+        "the entrypoint and its dependency are compiled once each, not once per client"
+    );
+    let rendered = {
+        let log = harness.log.lock();
+        (
+            frames(&log, CLIENT, "label=first"),
+            frames(&log, other, "label=first"),
+        )
+    };
+    harness.reload();
+    wait_for_both("label=first", rendered);
+    assert_eq!(
+        spawns() - before,
+        2,
+        "a reload re-reads both files and finds their content unchanged"
+    );
+    std::fs::write(&dependency, "export const label: string = 'second';").unwrap();
+    harness.reload();
+    wait_for_both("label=second", (0, 0));
+    assert_eq!(
+        spawns() - before,
+        3,
+        "only the edited dependency is compiled again"
+    );
+    let log = harness.finish();
+    assert_eq!(
+        log.iter()
+            .filter(|i| matches!(i, ScreenInstruction::AddPlugin(..)))
+            .count(),
+        1
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
 fn deno_command_helper_completes_and_reload_rejects_the_old_host_reply() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("command.ts");
