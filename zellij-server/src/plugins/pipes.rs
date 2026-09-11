@@ -1,19 +1,13 @@
-use super::{PluginId, PluginInstruction};
+use super::{PipeStateChange, PluginId, PluginInstruction};
 use crate::plugins::plugin_map::RunningPlugin;
-use crate::plugins::wasm_bridge::{render_plugin_for_clients, PluginRenderAsset};
+use crate::plugins::wasm_bridge::render_plugin_for_clients;
+use crate::plugins::PluginRenderAsset;
 use std::collections::{HashMap, HashSet};
 use {zellij_types::data::PipeMessage, zellij_types::data::PipeSource};
 
 use zellij_runtime::errors::prelude::*;
 
 use crate::{thread_bus::ThreadSenders, ClientId};
-
-#[derive(Debug, Clone)]
-pub enum PipeStateChange {
-    NoChange,
-    Block,
-    Unblock,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct PendingPipes {

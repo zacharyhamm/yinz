@@ -119,7 +119,7 @@ use crate::background_jobs::BackgroundJob;
 use crate::notifications::NotificationProtocol;
 use crate::output::Output;
 use crate::pane_groups::PaneGroups;
-use crate::panes::grid::{namespace_notification_id, Osc99PayloadType, PendingNotification};
+use crate::panes::grid::{namespace_notification_id, PendingNotification};
 use crate::panes::link_handler::LinkHandler;
 use crate::panes::terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END};
 use crate::session_layout_metadata::{PaneLayoutMetadata, SessionLayoutMetadata};
@@ -164,106 +164,15 @@ mod tabs;
 mod thread_main;
 mod warp_ops;
 
+pub(crate) use crate::tab::CopyOptions;
 pub use instruction::ScreenInstruction;
+pub(crate) use instruction::{
+    denormalize_notification_response, GuestModalOutcome, HoldForCommand, InitialTitle,
+    NotificationClick, TabOverrideResult,
+};
 #[cfg(test)]
 pub(crate) use thread_main::apply_pane_agent_report;
 pub(crate) use thread_main::screen_thread_main;
-
-/// What the screen does with a host terminal's answer to a forwarded OSC 99 notification.
-pub(crate) struct NotificationResponse {
-    /// The terminal pane that sent the notification.
-    pub terminal_id: TerminalId,
-    /// Whether the answer is written to that pane's pty: control requests (`p=?`, `close`,
-    /// `alive`) are always answered, an activation report only if the app asked for one.
-    pub forward_to_pane: bool,
-    /// Whether the pane is focused: an activation (the user clicked the notification) focuses
-    /// it, an answer to a control request does not.
-    pub focus_pane: bool,
-    /// The complete OSC 99 sequence with the app's own identifier restored.
-    pub bytes: Vec<u8>,
-}
-
-/// Denormalizes a namespaced OSC 99 response.
-///
-/// Input bytes (the termwiz OperatingSystemCommand payload after stripping "99;"):
-/// e.g. b"i=p42.mynotif" or b"i=p42r.mynotif:p=close;some_data"
-///
-/// Parses the namespaced `i=p<N>[r].<original_id>` format (`r`: the app asked for
-/// `a=report`), restores the original identifier (`i=0`, the protocol's default, when the app
-/// never sent one) and, for a `p=alive` answer, keeps only the identifiers that belong to the
-/// asking pane, un-namespaced.
-pub(crate) fn denormalize_notification_response(payload: &[u8]) -> Option<NotificationResponse> {
-    let payload_str = str::from_utf8(payload).ok()?;
-
-    // Split into metadata and response payload on first ';'
-    let (metadata, response_payload) = match payload_str.find(';') {
-        Some(idx) => (
-            payload_str.get(..idx).unwrap_or_default(),
-            payload_str.get(idx..).unwrap_or_default(),
-        ),
-        None => (payload_str, ""),
-    };
-
-    // Find the i= key in colon-separated metadata
-    let mut terminal_id = None;
-    let mut app_wants_report = false;
-    let mut payload_type = Osc99PayloadType::Other;
-    let mut restored_parts = Vec::new();
-
-    for kv in metadata.split(':') {
-        if let Some(namespaced_value) = kv.strip_prefix("i=p") {
-            if let Some(dot_pos) = namespaced_value.find('.') {
-                let flags_part = namespaced_value.get(..dot_pos).unwrap_or_default();
-                let original_id = namespaced_value.get(dot_pos + 1..).unwrap_or_default();
-                let digits = flags_part
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(flags_part.len());
-                let pane_id_str = flags_part.get(..digits).unwrap_or_default();
-                let flag_chars = flags_part.get(digits..).unwrap_or_default();
-                if let Ok(pid) = pane_id_str.parse::<u32>() {
-                    terminal_id = Some(pid);
-                    app_wants_report = flag_chars.contains('r');
-                    if original_id.is_empty() {
-                        restored_parts.push("i=0".to_owned());
-                    } else {
-                        restored_parts.push(format!("i={}", original_id));
-                    }
-                    continue;
-                }
-            }
-        }
-        if let Some(payload_value) = kv.strip_prefix("p=") {
-            payload_type = Osc99PayloadType::from_metadata_value(payload_value);
-        }
-        restored_parts.push(kv.to_string());
-    }
-
-    let terminal_id = terminal_id?;
-    let response_payload = if payload_type == Osc99PayloadType::Alive {
-        let prefix_with_report = format!("p{}r.", terminal_id);
-        let prefix = format!("p{}.", terminal_id);
-        let alive_ids: Vec<&str> = response_payload
-            .trim_start_matches(';')
-            .split(',')
-            .filter_map(|id| {
-                id.strip_prefix(&prefix_with_report)
-                    .or_else(|| id.strip_prefix(&prefix))
-            })
-            .map(|id| if id.is_empty() { "0" } else { id })
-            .collect();
-        format!(";{}", alive_ids.join(","))
-    } else {
-        response_payload.to_owned()
-    };
-    let restored_metadata = restored_parts.join(":");
-    let full_response = format!("\x1b]99;{}{}\x1b\\", restored_metadata, response_payload);
-    Some(NotificationResponse {
-        terminal_id: TerminalId::new(terminal_id),
-        forward_to_pane: app_wants_report || payload_type.is_control_request(),
-        focus_pane: !payload_type.is_control_request(),
-        bytes: full_response.into_bytes(),
-    })
-}
 
 /// Get the active tab and call a closure on it
 ///
@@ -401,53 +310,6 @@ macro_rules! active_tab_and_connected_client_id_with_first_tab_fallback {
     };
 }
 pub(crate) use active_tab_and_connected_client_id_with_first_tab_fallback;
-
-type InitialTitle = String;
-type HoldForCommand = Option<RunCommand>;
-
-/// Result of overriding a single tab's layout
-#[derive(Debug, Clone)]
-pub struct TabOverrideResult {
-    pub tab_index: TabId,
-    pub tab_name: Option<String>,
-    pub tiled_layout: TiledPaneLayout,
-    pub floating_layouts: Vec<FloatingPaneLayout>,
-    pub swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
-    pub swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
-    pub new_terminal_pids: Vec<(TerminalId, HoldForCommand)>,
-    pub new_floating_pane_pids: Vec<(TerminalId, HoldForCommand)>,
-    pub plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CopyOptions {
-    pub command: Option<String>,
-    pub clipboard: Clipboard,
-    pub copy_on_select: bool,
-}
-
-impl CopyOptions {
-    pub(crate) fn new(
-        copy_command: Option<String>,
-        copy_clipboard: Clipboard,
-        copy_on_select: bool,
-    ) -> Self {
-        Self {
-            command: copy_command,
-            clipboard: copy_clipboard,
-            copy_on_select,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn default() -> Self {
-        Self {
-            command: None,
-            clipboard: Clipboard::default(),
-            copy_on_select: true,
-        }
-    }
-}
 
 // We use this to delay rendering when a new tab opens so that we make sure all plugins
 // (representing portions of the UI) have been fully loaded before the tab is first rendered (with
@@ -593,12 +455,6 @@ impl NestedGuestChoice {
     fn enters_passthrough(&self) -> bool {
         matches!(self, NestedGuestChoice::Zoom | NestedGuestChoice::Descend)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GuestModalOutcome {
-    Zoom,
-    Descend,
 }
 
 fn format_guest_modal_shortcut(keys: &[KeyWithModifier]) -> Vec<String> {
@@ -1168,23 +1024,6 @@ impl Screen {
             }
         }
     }
-}
-
-/// What to tell a toast's own plugin when somebody clicks it, and which plugin to tell.
-///
-/// Focusing the toast's `pane_id` says *where* the click meant; this says *what*. A plugin cannot
-/// otherwise tell a click on its toast from any other route into its pane, and the two mean
-/// different things - see `handle_pane_notification_click`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NotificationClick {
-    pub plugin_id: PluginId,
-    /// The client whose instance raised the toast - the key it is stored under in the plugin map,
-    /// not whoever is acting on it now. A per-client plugin has an instance per client and only
-    /// this one knows what the toast was about, so the click has to be able to name it however
-    /// long the toast stands and whoever ends up clicking it.
-    pub client_id: ClientId,
-    pub message: String,
-    pub payload: String,
 }
 
 #[derive(Debug, Clone)]

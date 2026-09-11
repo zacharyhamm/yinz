@@ -163,7 +163,7 @@ impl ThreadSenders {
 
 /// A container for a receiver, OS input and the senders to a given thread
 #[derive(Default)]
-pub(crate) struct Bus<T> {
+pub struct Bus<T> {
     receivers: Vec<channels::Receiver<(T, ErrorContext)>>,
     pub senders: ThreadSenders,
     pub os_input: Option<Box<dyn ServerOsApi>>,

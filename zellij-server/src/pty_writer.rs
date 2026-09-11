@@ -54,7 +54,7 @@ struct PendingWrite {
     _completion: Option<NotificationEnd>,
 }
 
-pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
+pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut pending: HashMap<TerminalId, VecDeque<PendingWrite>> = HashMap::new();
     let mut caching_resizes = false;
