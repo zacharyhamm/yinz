@@ -18,7 +18,8 @@ print('\x1b[?2004h', end='', flush=True)
 
 def report(hook, **fields):
     payload = dict(hook_event_name=hook, session_id='stub-' + os.environ.get('ZELLIJ_REMOTE_PANE_TOKEN', os.environ.get('ZELLIJ_PANE_ID', '')), cwd=os.getcwd(), **fields)
-    command = [binary, '--pty-broker', 'report', 'claude'] if remote else [binary, 'action', 'agent-report', '--kind', 'claude', '--hook-json']
+    kind = os.environ.get('SWAMP_SMOKE_KIND', 'claude')
+    command = [binary, '--pty-broker', 'report', kind] if remote else [binary, 'action', 'agent-report', '--kind', kind, '--hook-json']
     subprocess.run(command, input=json.dumps(payload).encode(), check=True)
 
 

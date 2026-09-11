@@ -62,7 +62,7 @@ z.async.swamp_request=function(opts)
     local results={}
     if p.predicate:find('question') and status=='suspended' then
       assert(p.predicate=='specName == "question" && attributes.run in ["run"]',p.predicate)
-      results={{model='questions',version=2,attributes={question='exit',run='run',kind='choice',prompt='Agent exited. Choose Restart, Duplicate, Fork, Begin review, or Leave.',answers={'restart','duplicate','fork','begin-review','leave'},state='pending'}},
+      results={{model='questions',version=2,attributes={question='exit',run='run',kind='choice',prompt='Agent exited. Choose Restart, Fork, Begin review, or Leave.',answers={'restart','fork','begin-review','leave'},state='pending'}},
         {model='questions',version=1,attributes={question='exit',run='run',kind='choice',prompt='Stale question',answers={'old'},state='pending'}}}
     end
     result={results={},projected={shape='map',rows=results}}

@@ -1502,6 +1502,10 @@ impl Pane for TerminalPane {
                         self.last_agent_cwd = None;
                     }
                     self.invoked_with = Some(Run::Command(replacement.clone()));
+                    // A replacement marked as an agent starts a fresh conversation.
+                    if let Some(agent) = agent_from_run(self.invoked_with.as_ref()) {
+                        self.set_agent_info(Some(agent));
+                    }
                     replacement
                 },
                 None => run_command.clone(),
