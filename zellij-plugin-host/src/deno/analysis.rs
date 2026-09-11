@@ -595,7 +595,7 @@ impl Visit for Analysis<'_> {
                             },
                             _ => {},
                         },
-                        Some("on" | "waitForEvent") => {
+                        Some("on" | "onEvent" | "waitForEvent") => {
                             if let Some(name) = argument(0).and_then(literal) {
                                 self.entry(call.span, OutlineKind::Handler, format!("on {name}"));
                             }
