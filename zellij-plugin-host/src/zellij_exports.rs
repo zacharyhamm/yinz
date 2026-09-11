@@ -8360,7 +8360,7 @@ mod permission_tests {
     fn a_syntax_check_needs_no_permission_but_a_semantic_check_reads_files() {
         use std::sync::{Arc, Mutex};
         use zellij_types::authoring::PluginCheckMode;
-        let mut env = crate::plugins::lua::unit_tests::test_env();
+        let mut env = crate::lua::unit_tests::test_env();
         env.permissions = Arc::new(Mutex::new(Some(HashSet::new())));
         let check = |mode| PluginCommand::CheckPlugin {
             name: "check.ts".into(),

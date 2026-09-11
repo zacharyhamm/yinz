@@ -21,7 +21,10 @@ pub fn check_syntax(path: &Path, source: &str) -> Result<()> {
     transpile(path, source, true).map(|_| ())
 }
 
-/// Check a local plugin and its imported modules against ES2022 and the SDK.
+/// Check a local plugin and its imported modules against ES2022 and the SDK. The CLI and Hocus
+/// go through `plugin_authoring::check_plugin_report`, which also carries the warnings; this is
+/// the tests' shorthand.
+#[cfg(test)]
 pub fn check_plugin(path: &Path) -> Result<()> {
     let loader = PluginModuleLoader::for_check(path, false)?;
     let entry = loader.local_path(loader.entrypoint(), true)?;

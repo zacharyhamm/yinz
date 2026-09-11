@@ -1568,9 +1568,16 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             }
             // On stderr, and after the path: the path is the answer a script reads, and a
             // warning is for the person watching. Never a refusal - see `plugin_authoring::lint`.
-            if !zellij_plugin_api::authoring::is_deno_plugin(&written.path) {
-                print_plugin_lint(&name, &source);
-            }
+            // The write already checked syntax, so only the warnings are wanted here.
+            print_plugin_findings(
+                &zellij_server::plugin_authoring::check_source_named(
+                    &written.path,
+                    &source,
+                    &name,
+                    zellij_types::authoring::PluginCheckMode::Syntax,
+                )
+                .warnings,
+            );
             Ok(())
         },
         PluginsCli::Check { name, file } => {
@@ -1587,14 +1594,14 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
             };
-            zellij_server::plugin_authoring::check_plugin(&path)?;
+            let report = zellij_server::plugin_authoring::check_plugin_report(&path, &lint_name)?;
             if zellij_plugin_api::authoring::is_deno_plugin(&path) {
                 println!("{} checks successfully", path.display());
             } else {
                 let chunk = path.file_name().unwrap_or_default().to_string_lossy();
                 println!("{chunk} compiles");
-                print_plugin_lint(&lint_name, &read_source(Some(&path))?);
             }
+            print_plugin_findings(&report.warnings);
             Ok(())
         },
         PluginsCli::Reload { name } => {
@@ -1658,8 +1665,8 @@ fn plugin_name_of(plugin_dir: &std::path::Path, file: &std::path::Path) -> Strin
 
 /// What the source is going to do wrong at run time, on stderr, under whatever the command
 /// printed. Compiling is the verdict; these are the traps a compile cannot see.
-fn print_plugin_lint(name: &str, source: &str) {
-    for finding in zellij_plugin_api::authoring::lint(name, source) {
+fn print_plugin_findings(findings: &[String]) {
+    for finding in findings {
         eprintln!("warning: {finding}");
     }
 }
