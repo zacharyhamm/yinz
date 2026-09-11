@@ -1,6 +1,8 @@
 # Deno capability and verification status
 
-Updated 2026-09-10. The seven requested changes are implemented in this checkout:
+Updated 2026-09-11. An independent three-layer audit (host, guest SDK, tooling and docs)
+found capability parity complete and closed the gaps below; see "Parity closure" first.
+The earlier sections record the state before it. The seven requested changes are implemented in this checkout:
 exact numeric inputs, runtime/checker quotas, host-path tests and queue ownership,
 complete raw SDK declarations, filesystem/configuration helpers, persistence helpers,
 and runtime-aware Hocus authoring. The existing asynchronous SDK remains in place.
@@ -9,6 +11,78 @@ This is a capability record, not a claim of full Wasm/Lua/Deno parity.
 **Verified** below means the stated outcome has passed a named Linux test. Raw access
 and compiler inventory coverage do not establish every command's host behavior.
 Native macOS verification requires a macOS host and remains outstanding.
+
+## Parity closure (2026-09-11)
+
+An audit of what Lua and Wasm plugins still got that Deno plugins did not, made against the
+host, the guest SDK and the tooling separately, found no missing command, event or permission
+and no runtime-specific arm in the dispatcher. What it found instead is closed in this chunk.
+
+Host: a **content-keyed transpile cache** (`loader.rs`; path, source digest and declarations
+mode; builtins pinned, the rest LRU-bounded to 256 entries and 64 MiB) so a module is compiled
+once rather than once per module per client per reload; **live output and byte replies as
+`Uint8Array`** built by the host through the counted allocator (`limits::CountedAllocation`,
+`RuntimeInstance::call_event`, `Reply`) instead of a JSON number per byte; the **permission
+denial** split, as in Lua, between a request awaiting its answer and no request at all;
+`console` routed to the plugin's log from module top level; `CheckPlugin` in `Syntax` mode
+permissionless like `CheckLuaPlugin`; the CLI printing lint warnings for TypeScript as well as
+Lua (`plugin_authoring::check_plugin_report`); the four data-store lint rules and the
+nearest-permission suggestion ported to `analysis.rs`; and `ChangeHostFolder` no longer building
+a WASI context for a script plugin.
+
+SDK: `zellij.event(raw)` and `zellij.onEvent(type, handler)` decode the tuple, byte, key, mouse,
+filesystem and data-change events into named fields, additively - `update`, `on`, `Event` and
+`EventPayloads` are unchanged; `data.REV_ABSENT`, `getFocusedTab`, `getFocusedPane`,
+`runCommandInPane`, `StyledText.toString()`, widgets accepting the raw `{Key}`/`{Mouse}` event,
+and a named `host.webRequest` form; `console` declared for the checker.
+
+Tooling and docs: Hocus's `plugin_docs` serves both guides through one heading table
+(`plugin_docs.rs`, formerly `lua_docs.rs`; TypeScript sections unprefixed, Lua ones `lua_*`)
+and `sdk.d.ts` in seven parts; `plugin_check`'s help, the transcript elision notes and a dead
+load-failure string no longer assume `.lua`; the TypeScript guide gained Events, Permissions,
+the filesystem roots, revision guards, shared namespaces, Hocus data, Work queues, Rendering,
+Hooks, Errors, restrictions and a Lua porting table, and every ```` ```ts ```` block in it is
+compiled by `guide_code_blocks_typecheck_offline`; `deno/CLAUDE.md` records the runtime's
+invariants; the default config names the TypeScript hooks by alias; the vendored compiler's
+provenance is a test; and a remote `https://…/plugin.ts` is refused before download.
+
+Tests added: the loader cache and spawn-count tests, byte-exact 64 KiB streaming and reply
+round trips, the budget charge of a host-built buffer, the three denial messages, the syntax
+check permission, CLI warnings for both runtimes, one analysis test per lint rule plus the
+quiet examples, the filesystem roots (each root, climbing, symlinks, `/plugins`,
+`FullHdAccess`, `ChangeHostFolder`), watch and scan events across reload, user-plugin-dir
+resolution and reload by absolute path, un-normalized configuration, key-driven runs of the
+playground, workflow, dashboard, forms and hocus-todos examples, the decoder and `onEvent`
+(SDK and types), the small helpers, both guides' coupling tests, the SDK part markers, the
+elision of TypeScript names, the provenance hashes and the remote-url refusal. Two Hocus caps
+moved for the larger index and tool schema: the `plugin_docs` index bound 4,300 to 5,400 bytes,
+the fully loaded tool payload bound 37,500 to 38,200, and the docs-query grain from a quarter to
+a third of the cap. The two default-config snapshots and the five `zellij setup` snapshots were
+accepted for the three new aliases; the `sdk_rust_fixtures` snapshot for the `Uint8Array`
+output fixtures.
+
+Still out of scope, by decision: `config.ts` (stated in `LUA_CONFIG.md`), guest workers, remote
+script plugins (refused), async iterators over streams, and native macOS verification.
+
+Verification: the focused suites ran after each step (`cargo x test -p zellij-server -E
+'test(/deno/) | test(/checker/) | test(/analysis/)'`, `cargo x test -p hocus`, the config, CLI
+and plugin-manager crates, `zellij-runtime` and `zellij-types` for the url refusal). The first
+complete `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` lost one integration test to
+this chunk - `hocus_writes_a_lua_plugin_and_loads_it` waited for the quickstart's old closing
+line, and was corrected - and three to load: the hegel health check in
+`zellij-session::warped_tab::test::a_tab_with_stacks_keeps_its_shape_at_a_size_it_was_never_arranged_for`,
+`hocus_agent_hooks::assistant_messages_reach_the_timeline_and_history_search`, and
+`stacked_pane_list::fullscreen_suspends_the_list_and_restores_it`, each of which passed alone.
+The second run was red on `format --check` (a long line in the corrected test) and
+`stacked_pane_list::splitting_a_new_pane_reforms_the_list_around_it`, the flake this file
+already names, which again passed alone. The third complete run **passed** format, lint, all
+8,123 enabled unit tests (47 skipped), doctests, and all 395 integration tests at the gate's
+16-worker setting, in 123 seconds on Linux. No further snapshots were accepted. The manual
+check in the plan (a second client against a multi-module plugin, a live `onOutput` chunk
+observed as a `Uint8Array`) was not run in a terminal here; the plugin-thread tests
+`deno_two_clients_share_one_transpile_and_a_reload_of_identical_source_spawns_nothing` and
+`deno_streaming_output_arrives_as_uint8array_and_a_64_kib_chunk_round_trips_byte_exact` cover
+the same two claims against a real plugin thread. Native macOS remains unverified.
 
 ## SDK ergonomics parity (2026-09-10)
 
