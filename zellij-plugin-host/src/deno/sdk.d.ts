@@ -213,7 +213,12 @@ export interface Zellij {
 export const zellij: Zellij;
 export const definePlugin: Zellij["definePlugin"];
 export default zellij;
-declare global { const zellij: Zellij; }
+/** The plugin's log, under the familiar names: every method joins its arguments with tabs, from module top level onward. */
+export interface PluginConsole {
+  log(...values: unknown[]): void; info(...values: unknown[]): void; warn(...values: unknown[]): void;
+  error(...values: unknown[]): void; debug(...values: unknown[]): void; trace(...values: unknown[]): void;
+}
+declare global { const zellij: Zellij; const console: PluginConsole; }
 
 // ---- section: sdk_commands
 /** Integers outside the JS safe range use BigInt. Rust validates destination ranges. */
