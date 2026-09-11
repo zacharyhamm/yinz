@@ -137,7 +137,7 @@ function update(event: Event): boolean {
   if (typeof event !== 'object') return false;
   if ('PaneOutput' in event) {
     const {context, pane_id, data} = event.PaneOutput;
-    if (launch && context.swamp_work === launch) output(context.swamp_operation || 'command', `pane ${pane_id}`, new Uint8Array(data));
+    if (launch && context.swamp_work === launch) output(context.swamp_operation || 'command', `pane ${pane_id}`, data);
     return false;
   }
   if ('CommandPaneExited' in event) {

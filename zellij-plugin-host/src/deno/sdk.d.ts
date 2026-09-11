@@ -18,8 +18,8 @@ export interface EventPayloads {
   FileSystemUpdate: [string, FileMetadata | null][]; FileSystemDelete: [string, FileMetadata | null][];
   PermissionRequestResult: PermissionStatus; SessionUpdate: [SessionInfo[], [string, Duration][]];
   RunCommandResult: [number | null, number[], number[], StringMap]; WebRequestResult: [number, StringMap, number[], StringMap];
-  RunCommandOutput: {data: number[]; stderr: boolean; context: StringMap};
-  PaneOutput: {pane_id: number; data: number[]; context: StringMap};
+  RunCommandOutput: {data: Uint8Array; stderr: boolean; context: StringMap};
+  PaneOutput: {pane_id: number; data: Uint8Array; context: StringMap};
   WebRequestStreamChunk: {stream_id: string; chunk: number[]; done: boolean; error: string | null};
   CommandPaneOpened: [number, StringMap]; CommandPaneExited: [number, number | null, StringMap]; PaneClosed: PaneId;
   EditPaneOpened: [number, StringMap]; EditPaneExited: [number, number | null, StringMap]; CommandPaneReRun: [number, StringMap];

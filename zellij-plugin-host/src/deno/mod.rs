@@ -54,19 +54,58 @@ struct HostState {
 // CheckPlugin's semantic check enters a separate compiler isolate. Its ops cannot
 // reach this plugin or its borrowed host state, but Deno's op guard is thread-local.
 #[op2(reentrant)]
-#[serde]
 fn op_zellij_command<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     state: &mut OpState,
     value: v8::Local<'s, v8::Value>,
     #[smi] client: u32,
-) -> std::result::Result<serde_json::Value, JsErrorBox> {
-    state
-        .borrow::<Arc<limits::Limits>>()
+) -> std::result::Result<v8::Local<'s, v8::Value>, JsErrorBox> {
+    let limits = state.borrow::<Arc<limits::Limits>>().clone();
+    limits
         .check()
         .and_then(|_| transport::from_v8(scope, value))
         .and_then(|value| dispatch(state, value, client))
+        .and_then(|reply| reply.into_v8(scope, &limits))
         .map_err(|error| JsErrorBox::generic(format!("{error:#}")))
+}
+
+/// What a host command hands back to the guest: `{json}` for a decoded reply and
+/// `{bytes}` for a byte reply, the latter a real `Uint8Array` rather than a JSON array of
+/// numbers walked element by element on both sides of the boundary.
+enum Reply {
+    Json(Value),
+    Bytes(Vec<u8>),
+}
+
+impl Reply {
+    fn into_v8<'s>(
+        self,
+        scope: &mut v8::PinScope<'s, '_>,
+        limits: &Arc<limits::Limits>,
+    ) -> Result<v8::Local<'s, v8::Value>> {
+        let (key, value): (&str, v8::Local<v8::Value>) = match self {
+            Reply::Json(value) => (
+                "json",
+                serde_v8::to_v8(scope, value).context("serializing Deno command reply")?,
+            ),
+            Reply::Bytes(bytes) => (
+                "bytes",
+                limits::counted_bytes(scope, limits, &bytes)?.into(),
+            ),
+        };
+        Ok(object_with(scope, key, value).into())
+    }
+}
+
+fn object_with<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    key: &str,
+    value: v8::Local<'s, v8::Value>,
+) -> v8::Local<'s, v8::Object> {
+    let object = v8::Object::new(scope);
+    let key = v8::String::new(scope, key).expect("short ASCII key");
+    object.set(scope, key.into(), value);
+    object
 }
 
 #[op2]
@@ -102,7 +141,7 @@ fn op_zellij_validate<'s>(
         .map_err(|error| JsErrorBox::generic(format!("{error:#}")))
 }
 
-fn dispatch(state: &mut OpState, value: Value, client: u32) -> Result<Value> {
+fn dispatch(state: &mut OpState, value: Value, client: u32) -> Result<Reply> {
     let env = state
         .borrow_mut::<HostState>()
         .env
@@ -127,14 +166,14 @@ fn dispatch(state: &mut OpState, value: Value, client: u32) -> Result<Value> {
     env.client_id = previous_client;
     result.context("zellij command failed")?;
     match captured {
-        None => Ok(json!({ "json": null })),
+        None => Ok(Reply::Json(Value::Null)),
         Some(reply) => match serde_json::from_str::<Vec<u8>>(&reply) {
             Ok(bytes) => match decode_response(command_type, &bytes).transpose()? {
-                Some(DecodedResponse::Json(value)) => Ok(json!({ "json": value })),
-                Some(DecodedResponse::Bytes(bytes)) => Ok(json!({ "bytes": bytes })),
-                None => Ok(json!({ "bytes": bytes })),
+                Some(DecodedResponse::Json(value)) => Ok(Reply::Json(value)),
+                Some(DecodedResponse::Bytes(bytes)) => Ok(Reply::Bytes(bytes)),
+                None => Ok(Reply::Bytes(bytes)),
             },
-            Err(_) => Ok(json!({ "json": reply })),
+            Err(_) => Ok(Reply::Json(Value::String(reply))),
         },
     }
 }
@@ -397,7 +436,11 @@ impl DenoPlugin {
         if self.is_disposed() {
             return Ok(false);
         }
-        self.lifecycle("update", event::event_to_json(event)?)
+        self.with_runtime(|runtime, client| {
+            runtime.call_event(event, Some(client))?;
+            runtime.poll()?;
+            runtime.needs_render()
+        })
     }
 
     pub fn pipe(&mut self, message: &PipeMessage) -> Result<bool> {
@@ -669,6 +712,54 @@ impl RuntimeInstance {
             v8::Global::new(scope, value)
         };
         self.call_value(name, arg, client)
+    }
+
+    /// Deliver an event, with live output as bytes.
+    ///
+    /// `RunCommandOutput` and `PaneOutput` carry a chunk of a stream that arrives at every
+    /// render. Serialized as JSON their `data` is a number per byte, walked once into a
+    /// `serde_json::Value`, once into a JS array and once more by the SDK into the
+    /// `Uint8Array` the guest wanted all along; here the chunk is copied once, into a buffer
+    /// charged to the isolate's budget. Every other event keeps its JSON shape.
+    fn call_event(&mut self, event: &Event, client: Option<ClientId>) -> Result<Value> {
+        let arg = (|| {
+            deno_core::scope!(scope, self.runtime);
+            let (tag, data, fields) = match event {
+                Event::RunCommandOutput {
+                    data,
+                    stderr,
+                    context,
+                } => (
+                    "RunCommandOutput",
+                    data,
+                    json!({ "stderr": stderr, "context": context }),
+                ),
+                Event::PaneOutput {
+                    data,
+                    pane_id,
+                    context,
+                } => (
+                    "PaneOutput",
+                    data,
+                    json!({ "pane_id": pane_id, "context": context }),
+                ),
+                _ => {
+                    let value = serde_v8::to_v8(scope, event::event_to_json(event)?)
+                        .context("serializing Deno event")?;
+                    return Ok(v8::Global::new(scope, value));
+                },
+            };
+            let payload: v8::Local<v8::Object> = serde_v8::to_v8(scope, fields)
+                .context("serializing Deno event")?
+                .try_into()
+                .context("event payload is an object")?;
+            let bytes = limits::counted_bytes(scope, &self.limits, data)?;
+            let key = v8::String::new(scope, "data").expect("short ASCII key");
+            payload.set(scope, key.into(), bytes.into());
+            let value: v8::Local<v8::Value> = object_with(scope, tag, payload.into()).into();
+            Ok::<_, anyhow::Error>(v8::Global::new(scope, value))
+        })()?;
+        self.call_value("update", arg, client)
     }
 
     fn call_value(

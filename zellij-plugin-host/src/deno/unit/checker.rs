@@ -186,16 +186,16 @@ fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
       zellij.command({RunCommand: [['true'], {}, '/host', {}, null]});
       zellij.command('SubscribePaneOutput', {work:'one'});
       zellij.command({SubscribePaneOutput: null});
-      zellij.on('PaneOutput', p=>{const id:number=p.pane_id; const data:number[]=p.data; const context:string=p.context.work;});
-      zellij.on('RunCommandOutput', p=>{const stderr:boolean=p.stderr; const data:number[]=p.data;});
+      zellij.on('PaneOutput', p=>{const id:number=p.pane_id; const data:Uint8Array=p.data; const context:string=p.context.work;});
+      zellij.on('RunCommandOutput', p=>{const stderr:boolean=p.stderr; const data:Uint8Array=p.data;});
       // @ts-expect-error streaming flag is boolean or null
       zellij.command('RunCommand', [['true'], {}, '/host', {}, null, 1]);
       // @ts-expect-error streaming flag is boolean or null in object form too
       zellij.command({RunCommand: [['true'], {}, '/host', {}, null, 'yes']});
       // @ts-expect-error context values are strings
       zellij.command('SubscribePaneOutput', {work:1});
-      // @ts-expect-error raw output has JSON bytes
-      zellij.on('PaneOutput', p=>{const bytes:Uint8Array=p.data;});
+      // @ts-expect-error live output arrives as a Uint8Array, not a JSON array
+      zellij.on('PaneOutput', p=>{const bytes:number[]=p.data;});
       // @ts-expect-error command output has no pane ID
       zellij.on('RunCommandOutput', p=>p.pane_id);
       const pid: number = zellij.command('GetPluginIds').plugin_id;
@@ -583,23 +583,14 @@ fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
             "one".into()
         )])))
     );
-    fixture!(
-        "pane_output",
-        "Event",
-        Event::PaneOutput {
-            pane_id: 7,
-            data: vec![0, 128, 255],
-            context: Default::default()
-        }
+    // Live output is the one event whose runtime shape is not its serde shape: the host
+    // delivers `data` as a Uint8Array (see `RuntimeInstance::call_event`), so the fixtures
+    // spell the wire form the guest actually sees.
+    source.push_str(
+        "const pane_output = {PaneOutput: {pane_id: 7, data: new Uint8Array([0, 128, 255]), context: {}}} satisfies SDK.Event;\n",
     );
-    fixture!(
-        "command_output",
-        "Event",
-        Event::RunCommandOutput {
-            data: vec![0, 128, 255],
-            stderr: true,
-            context: Default::default()
-        }
+    source.push_str(
+        "const command_output = {RunCommandOutput: {data: new Uint8Array([0, 128, 255]), stderr: true, context: {}}} satisfies SDK.Event;\n",
     );
     fixture!("mode", "Event", Event::ModeUpdate(ModeInfo::default()));
     fixture!("tabs", "Event", Event::TabUpdate(vec![TabInfo::default()]));

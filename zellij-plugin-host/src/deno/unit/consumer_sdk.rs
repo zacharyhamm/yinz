@@ -262,7 +262,7 @@ fn deno_agent_exit_preserves_output_before_successful_and_rejected_launch_replie
         run(&mut runtime, r#"
           M.load({agent_pane_id:'7',agent_cwd:'/work',agent_exit_token:'launch'});
           check(!!launchReply && polls.length===0 && !view.attachment);
-          M.update({PaneOutput:{pane_id:8,context:{swamp_work:'launch',swamp_operation:'startup'},data:Array.from(zellij.encodeUtf8('STARTUP-OUTPUT'))}});
+          M.update({PaneOutput:{pane_id:8,context:{swamp_work:'launch',swamp_operation:'startup'},data:zellij.encodeUtf8('STARTUP-OUTPUT')}});
           check(plain(M.render(30,200)).includes('STARTUP-OUTPUT'));
         "#);
         run(&mut runtime, if rejected {
@@ -295,7 +295,7 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
       globalThis.focus=id=>{for(let i=0;i<20;i++){if(M.focusedControl()===id)return;key('Tab');}throw Error(id);};
       globalThis.show=(run,launch)=>polls.shift()({run,launch,root:'/root/'+run,active:true,history:{status:'running'},
         questions:{results:[{model:'m',version:1,attributes:{run,question:'q',kind:'choice',state:'pending',answers:['yes'],prompt:'Question'}}]}});
-      globalThis.emit=(work,data,operation='build',pane=7)=>M.update({PaneOutput:{pane_id:pane,context:{swamp_work:work,swamp_operation:operation},data:Array.from(typeof data==='string'?zellij.encodeUtf8(data):data)}});
+      globalThis.emit=(work,data,operation='build',pane=7)=>M.update({PaneOutput:{pane_id:pane,context:{swamp_work:work,swamp_operation:operation},data:typeof data==='string'?zellij.encodeUtf8(data):Uint8Array.from(data)}});
       globalThis.ok={exitCode:0,stdout:new Uint8Array(),stderr:new Uint8Array()};
     "#);
     consumer(&mut runtime, "workflow-view");

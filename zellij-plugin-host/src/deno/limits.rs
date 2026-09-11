@@ -145,6 +145,81 @@ static ALLOCATOR: v8::RustAllocatorVtable<Limits> = v8::RustAllocatorVtable {
     drop: drop_allocator,
 };
 
+/// Bytes charged to an isolate's backing-store budget, on their way to becoming a
+/// `Uint8Array` it owns.
+///
+/// `serde_v8`'s buffer types build their stores from Rust allocations that the isolate's
+/// allocator never sees, so anything the host hands the guest as bytes - an encoded string,
+/// a streamed output chunk, a byte reply - goes through here instead, and is freed by the
+/// same counted deleter V8 uses for the guest's own buffers.
+pub(super) struct CountedAllocation {
+    limits: Arc<Limits>,
+    data: *mut c_void,
+    bytes: usize,
+}
+
+impl CountedAllocation {
+    pub(super) fn new(limits: &Arc<Limits>, bytes: usize) -> Result<Self> {
+        let data = allocate_bytes(limits, bytes, true);
+        if data.is_null() {
+            limits.check()?;
+            bail!("host byte buffer exceeded ArrayBuffer backing-store budget");
+        }
+        Ok(Self {
+            limits: limits.clone(),
+            data,
+            bytes,
+        })
+    }
+
+    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: this allocation belongs exclusively to us until V8 takes ownership.
+        unsafe { std::slice::from_raw_parts_mut(self.data.cast::<u8>(), self.bytes) }
+    }
+
+    /// Hand the allocation to V8. From here on its release runs the counted deleter.
+    pub(super) fn into_array<'s>(
+        mut self,
+        scope: &mut v8::PinScope<'s, '_>,
+    ) -> Result<v8::Local<'s, v8::Uint8Array>> {
+        unsafe extern "C" fn release(data: *mut c_void, bytes: usize, context: *mut c_void) {
+            let limits = unsafe { Arc::from_raw(context.cast::<Limits>()) };
+            unsafe { free(&limits, data, bytes) };
+        }
+        let data = std::mem::replace(&mut self.data, std::ptr::null_mut());
+        // SAFETY: the store owns this allocation and one Arc until release runs.
+        let backing = unsafe {
+            v8::ArrayBuffer::new_backing_store_from_ptr(
+                data,
+                self.bytes,
+                release,
+                Arc::into_raw(self.limits.clone()) as *mut c_void,
+            )
+        }
+        .make_shared();
+        let buffer = v8::ArrayBuffer::with_backing_store(scope, &backing);
+        v8::Uint8Array::new(scope, buffer, 0, self.bytes).context("cannot create byte array")
+    }
+}
+
+impl Drop for CountedAllocation {
+    fn drop(&mut self) {
+        // Only reached when the allocation was never handed to V8: `free` ignores null.
+        unsafe { free(&self.limits, self.data, self.bytes) };
+    }
+}
+
+/// A `Uint8Array` holding a copy of `data`, charged to the isolate's budget.
+pub(super) fn counted_bytes<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    limits: &Arc<Limits>,
+    data: &[u8],
+) -> Result<v8::Local<'s, v8::Uint8Array>> {
+    let mut allocation = CountedAllocation::new(limits, data.len())?;
+    allocation.as_mut_slice().copy_from_slice(data);
+    allocation.into_array(scope)
+}
+
 // Core's encoder creates a Rust-owned backing store outside the isolate's
 // allocator. Use V8's UTF-8 encoder with the same quota and a counted deleter.
 #[op2]
@@ -155,32 +230,18 @@ pub(super) fn op_zellij_encode<'s>(
 ) -> std::result::Result<v8::Local<'s, v8::Uint8Array>, JsErrorBox> {
     let limits = state.borrow::<Arc<Limits>>();
     let bytes = text.utf8_length(scope);
-    let data = allocate_bytes(limits, bytes, true);
-    if data.is_null() {
-        return Err(JsErrorBox::generic(
-            "UTF-8 encoding exceeded ArrayBuffer backing-store budget",
-        ));
-    }
-    // SAFETY: this allocation belongs exclusively to us until V8 takes ownership.
-    let slice = unsafe { std::slice::from_raw_parts_mut(data.cast::<u8>(), bytes) };
-    text.write_utf8_v2(scope, slice, v8::WriteFlags::kReplaceInvalidUtf8, None);
-    unsafe extern "C" fn release(data: *mut c_void, bytes: usize, context: *mut c_void) {
-        let limits = unsafe { Arc::from_raw(context.cast::<Limits>()) };
-        unsafe { free(&limits, data, bytes) };
-    }
-    // SAFETY: the store owns this allocation and one Arc until release runs.
-    let backing = unsafe {
-        v8::ArrayBuffer::new_backing_store_from_ptr(
-            data,
-            bytes,
-            release,
-            Arc::into_raw(limits.clone()) as *mut c_void,
-        )
-    }
-    .make_shared();
-    let buffer = v8::ArrayBuffer::with_backing_store(scope, &backing);
-    v8::Uint8Array::new(scope, buffer, 0, bytes)
-        .ok_or_else(|| JsErrorBox::generic("cannot create UTF-8 byte array"))
+    let mut allocation = CountedAllocation::new(limits, bytes).map_err(|_| {
+        JsErrorBox::generic("UTF-8 encoding exceeded ArrayBuffer backing-store budget")
+    })?;
+    text.write_utf8_v2(
+        scope,
+        allocation.as_mut_slice(),
+        v8::WriteFlags::kReplaceInvalidUtf8,
+        None,
+    );
+    allocation
+        .into_array(scope)
+        .map_err(|error| JsErrorBox::generic(format!("{error:#}")))
 }
 
 pub(super) fn check_source(path: &std::path::Path, source: &str) -> Result<()> {

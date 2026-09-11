@@ -109,6 +109,65 @@ fn deno_buffer_accounting_releases_frees_and_checks_overflow() {
 }
 
 #[test]
+fn a_host_built_byte_buffer_is_charged_to_the_backing_store_budget_and_released_by_v8() {
+    let limits = Limits::with_budgets("host-bytes.ts".into(), 32 << 20, 4 << 20);
+    let mut runtime = limits.runtime(RuntimeOptions::default()).unwrap();
+    // The runtime's own bootstrap holds a few buffers; only the remainder is ours.
+    let baseline = limits.live_buffers.load(Ordering::Acquire);
+    let chunk = vec![7u8; 1 << 20];
+    let fits = ((4 << 20) - baseline) / chunk.len();
+    let mut held = Vec::new();
+    let mut refused = None;
+    for _ in 0..=fits {
+        deno_core::scope!(scope, runtime);
+        match counted_bytes(scope, &limits, &chunk) {
+            Ok(array) => {
+                assert_eq!(array.byte_length(), chunk.len());
+                held.push(v8::Global::new(scope, array));
+            },
+            Err(error) => {
+                refused = Some(error.to_string());
+                break;
+            },
+        }
+    }
+    assert_eq!(
+        held.len(),
+        fits,
+        "every whole 1 MiB chunk under the budget fits"
+    );
+    assert_eq!(
+        limits.live_buffers.load(Ordering::Acquire),
+        baseline + fits * chunk.len()
+    );
+    let refused = refused.expect("the chunk past the budget is refused");
+    assert!(refused.contains("backing-store budget"), "{refused}");
+    assert!(
+        limits.check().is_err(),
+        "refusal is permanent, like the guest's own"
+    );
+    let bytes_seen: usize = {
+        deno_core::scope!(scope, runtime);
+        let array = v8::Local::new(scope, &held[0]);
+        let mut copy = vec![0u8; 8];
+        array.copy_contents(&mut copy);
+        copy.iter().map(|byte| *byte as usize).sum()
+    };
+    assert_eq!(bytes_seen, 7 * 8, "the guest sees the host's bytes");
+    drop(held);
+    drop(runtime);
+    assert_eq!(
+        limits.live_buffers.load(Ordering::Acquire),
+        0,
+        "V8 released every host-built store through the counted deleter"
+    );
+    // An allocation that never reached V8 is released by its own drop.
+    let limits = Limits::with_budgets("host-bytes-drop.ts".into(), 32 << 20, 4 << 20);
+    drop(CountedAllocation::new(&limits, 1024).unwrap());
+    assert_eq!(limits.live_buffers.load(Ordering::Acquire), 0);
+}
+
+#[test]
 fn native_widgets_release_their_budget_on_collection_and_disposal() {
     let limits = Limits::new("native-ui.ts".into());
     let mut runtime = limits
