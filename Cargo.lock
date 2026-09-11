@@ -5008,6 +5008,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "zellij-panes"
+version = "0.45.0"
+dependencies = [
+ "ansi_term",
+ "anyhow",
+ "base64",
+ "hegeltest",
+ "insta",
+ "interprocess",
+ "kasuari",
+ "kdl",
+ "log",
+ "nix",
+ "png",
+ "tempfile",
+ "unicode-width 0.2.2",
+ "uuid",
+ "vte 0.15.0",
+ "zellij-bus",
+ "zellij-config",
+ "zellij-ipc",
+ "zellij-runtime",
+ "zellij-terminal",
+ "zellij-test-support",
+ "zellij-tile",
+ "zellij-tile-utils",
+ "zellij-types",
+]
+
+[[package]]
 name = "zellij-plugin-api"
 version = "0.45.0"
 dependencies = [
@@ -5138,10 +5168,8 @@ dependencies = [
 name = "zellij-server"
 version = "0.45.0"
 dependencies = [
- "ansi_term",
  "anyhow",
  "async-trait",
- "base64",
  "bytes",
  "criterion",
  "crossbeam",
@@ -5149,13 +5177,11 @@ dependencies = [
  "hegeltest",
  "insta",
  "interprocess",
- "kasuari",
  "kdl",
  "lazy_static",
  "libc",
  "log",
  "nix",
- "png",
  "regex",
  "serde",
  "serde_json",
@@ -5171,6 +5197,7 @@ dependencies = [
  "zellij-cli",
  "zellij-config",
  "zellij-ipc",
+ "zellij-panes",
  "zellij-plugin-host",
  "zellij-process",
  "zellij-runtime",
@@ -5178,7 +5205,6 @@ dependencies = [
  "zellij-storage",
  "zellij-terminal",
  "zellij-test-support",
- "zellij-tile",
  "zellij-tile-utils",
  "zellij-types",
 ]

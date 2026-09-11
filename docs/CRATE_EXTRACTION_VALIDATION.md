@@ -108,3 +108,28 @@ a flake to watch rather than as a regression.
 The server drops `mlua`, `wasmi`, `wasmi_core`, `wasmi_wasi`, `prost`, `notify-debouncer-full`,
 `highway`, `num_cpus`, `chrono`, `zellij-plugin-api`, `zellij-tile-markdown`, `serial_test` and
 `hocus-proto`. The gate was run on Linux; the macOS gate remains outstanding.
+
+## Pane stack extraction (2026-09-11)
+
+`zellij-panes` takes `panes/`, `tab/`, `ui/` and `pane_groups.rs` whole, with their tests and
+299 snapshots. The moved files keep their `crate::` paths through aliases at the crate root
+(`crate::os_input_output`, `crate::plugins`, `crate::screen`, ... resolve to the bus modules), the
+same device `zellij-server` uses. The `pub(crate)` pane API becomes `pub`, and the test helpers
+the server's screen tests drive sit behind a `test-support` feature that the server's
+dev-dependency enables. The server re-exports `panes` and `tab` so external paths are unchanged.
+
+| Stage | Checks | Result |
+| --- | --- | --- |
+| Pane extraction | `cargo x test -p zellij-panes` | 919 tests passed |
+| Pane extraction | `cargo x test -p zellij-server` | 847 tests passed |
+| Pane extraction | `cargo x test -p zellij-bus`, `-p zellij-plugin-host` | 191 and 534 tests passed |
+| Pane extraction | `cargo x ci check` | Formatting, lint, dependency boundaries, 7,945 unit tests, doctests, and 390 integration tests passed at 16 workers |
+
+`cargo nextest list --workspace` discovers 8,381 tests, as before every extraction. All 299 moved
+snapshots match their original bodies by SHA-256 after the `zellij_server__` → `zellij_panes__`
+rename; only the `source:` headers changed. The server drops `kasuari`, `zellij-tile`,
+`ansi_term`, `base64` and `png`. The gate was run on Linux; the macOS gate remains outstanding.
+
+After the three extractions the workspace discovers the same 8,381 tests, distributed as
+`zellij-bus` 191, `zellij-panes` 919, `zellij-plugin-host` 534, `zellij-server` 847 (plus its
+two `#[ignore]`d integration targets), with the remainder unchanged.

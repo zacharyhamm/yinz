@@ -21,18 +21,15 @@ zellij-storage = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
 zellij-bus = { path = "../zellij-bus", version = "0.45.0" }
+zellij-panes = { path = "../zellij-panes", version = "0.45.0" }
 zellij-plugin-host = { path = "../zellij-plugin-host", version = "0.45.0" }
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 zellij-process = { path = "../zellij-process", version = "0.45.0" }
-zellij-tile = { path = "../zellij-tile" }
-ansi_term = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { version = "0.1.50", default-features = false }
-base64 = { version = "0.22", default-features = false, features = ["std"] }
 bytes = { version = "1.6.0", default-features = false, features = ["std"] }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
 interprocess = { workspace = true }
-kasuari = { version = "0.4.12", default-features = false }
 kdl = { workspace = true }
 log = { workspace = true }
 regex = { workspace = true }
@@ -56,8 +53,8 @@ libc = { workspace = true }
 nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
 
 [dev-dependencies]
+zellij-panes = { path = "../zellij-panes", version = "0.45.0", features = ["test-support"] }
 lazy_static = { workspace = true }
-png = { version = "0.17.16", default-features = false }
 criterion = { workspace = true }
 hegeltest = "0.29.3"
 tokio = { workspace = true, features = ["sync", "test-util"] }

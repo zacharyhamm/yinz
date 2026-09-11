@@ -2,7 +2,7 @@ This document details the different components of the code base in plain English
 
 ## Shared libraries
 
-Consumers import shared code from its owning crate. The workspace has twelve shared libraries:
+Consumers import shared code from its owning crate. The workspace has thirteen shared libraries:
 
 | Crate | Ownership | Allowed Zellij dependencies |
 |---|---|---|
@@ -17,6 +17,7 @@ Consumers import shared code from its owning crate. The workspace has twelve sha
 | `zellij-terminal` | Grid and rows, terminal characters, selection, hyperlinks, Sixel and Kitty graphics, output serialization, host queries, damage geometry | Types, Runtime, IPC |
 | `zellij-process` | Pane supervisors, local and remote protocols, SSH transport, the broker, the Firecracker provider | Types, Runtime, Config, IPC, Session |
 | `zellij-bus` | The server's thread bus: `ThreadSenders`/`Bus`, the six instruction enums and their payload types, `ServerOsApi`, action routing, warps, background jobs, the session recorder and layout metadata | Types, Runtime, Storage, Config, IPC, Session, Terminal, Process |
+| `zellij-panes` | The `Pane` trait, `TerminalPane` and `PluginPane`, the tiled, floating and overlay pane managers, frames and boundaries, `Tab` and its layout applier, pane groups | Types, Runtime, Config, IPC, Terminal, Bus, Tile Utils |
 | `zellij-plugin-host` | The plugin host: wasm and Lua plugin loading, the plugin thread, host functions, pipes, workers, the plugin log pipe, plugin authoring helpers | Types, Runtime, Storage, Config, Plugin API, IPC, Session, Process, Bus, Tile, Tile Markdown |
 
 These lists permit dependencies. They do not require every listed dependency.
@@ -219,9 +220,10 @@ IPC, supervisor messages, and persistence records still keep primitive numbers;
 internal code wraps incoming IDs and unwraps them when constructing boundary payloads.
 Neither `zellij-terminal` nor `zellij-process` depends on the server or on the other extracted crate.
 
-`TerminalPane`, `PluginPane`, pane managers, frames, tabs, and screen coordination remain in `zellij-server`;
-plugin hosting is `zellij-plugin-host`. The terminal crate parses and renders terminal state. The server
-coordinates panes, clients, plugins, and threads.
+`TerminalPane`, `PluginPane`, pane managers, frames and tabs are `zellij-panes`; plugin hosting is
+`zellij-plugin-host`; screen coordination, the pty thread and the server thread remain in
+`zellij-server`. The terminal crate parses and renders terminal state. The server coordinates
+panes, clients, plugins, and threads.
 
 ## The thread bus (zellij-bus/)
 
@@ -251,13 +253,37 @@ of the crate, plus `check_lua_plugin`, `get_engine` and `plugin_authoring` at it
 `PluginPane`, the pane that displays a plugin, stays with the other panes; its only tie to the
 host is the `PluginInstruction::Update` it sends.
 
-## Terminal Pane (zellij-server/src/panes/terminal_pane.rs)
+## The pane stack (zellij-panes/)
+
+`zellij-panes` is everything under a tab: the `Pane` trait, `TerminalPane` and `PluginPane`, the
+tiled, floating and overlay pane managers, frames, boundaries, notifications and context-menu
+layout under `ui/`, `Tab` itself with its layout applier, swap layouts and mouse handler, and pane
+groups. It sits on `zellij-bus` and never names the screen; a tab reaches the other threads
+through the `ThreadSenders` it is given. The screen, which owns the tabs, stays in
+`zellij-server`, and the server re-exports `panes` and `tab` at its root so external paths such
+as `zellij_server::panes::TerminalPane` and `zellij_server::tab::Pane` are unchanged. The
+`test-support` feature exposes the handful of test helpers on `Tab`, `CopyOptions` and
+`ContextMenuLayout` that the server's screen tests drive; the server's dev-dependency enables it.
+
+Layering after the three extractions:
+
+```
+zellij-terminal   zellij-process
+        \            /
+         zellij-bus
+            |    \
+   zellij-panes   zellij-plugin-host
+            \      /
+          zellij-server
+```
+
+## Terminal Pane (zellij-panes/src/panes/terminal_pane.rs)
 The TerminalPane represents a pane on screen that connects to a single pty (pseudo terminal) and (presumably) has one shell or other program running inside it.
 The TerminalPane has two main roles:
   * Keeping track of the Scroll, which represents the buffer of lines in this terminal
   * Interpreting the ANSI/VT instructions coming from the pty in order to adjust the styling of characters, change the cursor position, etc.
 
-### Scroll (zellij-server/src/panes/terminal_pane.rs and zellij-terminal/src/panes/grid.rs)
+### Scroll (zellij-panes/src/panes/terminal_pane.rs and zellij-terminal/src/panes/grid.rs)
 The Scroll holds the terminal buffer and is in charge of:
   * Keeping track of the viewport (which part of it we see) this can change when we scroll up/down
   * Keeping track of the cursor position
@@ -276,7 +302,7 @@ It's important to understand that these styles are ongoing relative to the curre
 
 This is important to note because the styles themselves are saved only on characters that have already been printed. If we receive an instruction to change the style to blue, then print a (blue) character, then receive another instruction to move to a new line, print another (plain) character and then come back, the style would be reset. We would have to receive a new instruction to change the style to blue in order for the next character to be blue.
 
-## Boundaries (zellij-server/src/ui/boundaries.rs)
+## Boundaries (zellij-panes/src/ui/boundaries.rs)
 The Boundaries refer to those lines that are drawn between terminal panes. A few things that happen here:
   * The Rect trait is here so that different panes can implement it, giving boundaries a generic way to calculate the size of the pane and draw boundaries around it.
   * Here we use the [unicode box drawing characters](https://en.wikipedia.org/wiki/Box-drawing_character) in order to draw the borders. There's some logic here about combining them together for all possible combinations of pane locations.

@@ -54,7 +54,7 @@ inline as `--settings`, so it reports with nothing installed. Codex requires its
 to be reviewed and trusted with `/hooks`.
 
 Entry points: `zellij-types/src/agent.rs` (`AgentInfo`), `zellij-types/src/agent/hooks.rs` (hook
-reading, the event list), `zellij-server/src/panes/terminal_pane.rs`, `screen/thread_main.rs`
+reading, the event list), `zellij-panes/src/panes/terminal_pane.rs`, `screen/thread_main.rs`
 (`SetPaneAgent`), `src/hocus_hooks.rs`, `default-plugins/hocus-agentd/src/main.rs`.
 
 Where an agent pane *goes* is the server's too. Every spawn route - hocus's tools and modal,
@@ -85,7 +85,7 @@ re-asserts by saying it again, and the empty set is what takes a highlight down.
 cache is an `Option`, precisely so a fresh instance's empty set still transmits. Server-side the
 mark is a `bool` on the pane (`Pane::has_related_highlight`), set a whole session at a time by
 `Tab::set_related_panes` and read by `frame_color`
-(`zellij-server/src/ui/pane_contents_and_ui.rs`), where it sits at the bottom of the precedence
+(`zellij-panes/src/ui/pane_contents_and_ui.rs`), where it sits at the bottom of the precedence
 ladder: focus, a pane group, a hover and a bell flash all win over it. Deliberately *not* a
 `FrameColorOverride` - that is one slot per pane shared with the bell and the red exit status,
 and an ambient hint must not take it.

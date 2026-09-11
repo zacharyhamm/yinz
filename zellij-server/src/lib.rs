@@ -4,19 +4,18 @@ pub(crate) use zellij_bus::os_input_output_unix;
 compile_error!("Zellij does not support Windows");
 
 pub use zellij_bus::os_input_output;
+pub use zellij_panes::{panes, tab};
 pub use zellij_process::firecracker;
 pub use zellij_terminal::host_query;
 pub use zellij_terminal::output;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::style::default_palette;
-pub mod panes;
-pub mod tab;
 
 pub use zellij_bus::background_jobs;
 pub(crate) use zellij_bus::global_async_runtime;
 pub use zellij_bus::nested_guest;
 pub mod notifications;
-mod pane_groups;
+pub(crate) use zellij_panes::pane_groups;
 pub(crate) use zellij_plugin_host as plugins;
 pub use zellij_plugin_host::{check_lua_plugin, get_engine};
 mod locked_escape;
@@ -33,8 +32,8 @@ pub(crate) use zellij_bus::session_layout_metadata;
 pub(crate) use zellij_bus::session_recorder;
 mod terminal_bytes;
 pub(crate) use zellij_bus::thread_bus;
-mod ui;
 pub(crate) use zellij_bus::warp;
+pub(crate) use zellij_panes::ui;
 
 use background_jobs::{background_jobs_main, BackgroundJob};
 use log::info;
