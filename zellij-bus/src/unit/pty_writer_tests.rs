@@ -1,7 +1,7 @@
 use super::*;
 use crate::os_input_output::{AsyncReader, ServerOsApi};
-use crate::panes::PaneId;
 use crate::thread_bus::Bus;
+use crate::PaneId;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -552,8 +552,7 @@ fn pty_writer_records_successful_resize() {
             &self,
             _a: zellij_types::input::command::TerminalAction,
             _b: Box<
-                dyn Fn(crate::panes::PaneId, Option<i32>, zellij_types::input::command::RunCommand)
-                    + Send,
+                dyn Fn(crate::PaneId, Option<i32>, zellij_types::input::command::RunCommand) + Send,
             >,
             _c: Option<std::path::PathBuf>,
         ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
@@ -613,8 +612,7 @@ fn pty_writer_records_successful_resize() {
             _id: TerminalId,
             _c: zellij_types::input::command::RunCommand,
             _q: Box<
-                dyn Fn(crate::panes::PaneId, Option<i32>, zellij_types::input::command::RunCommand)
-                    + Send,
+                dyn Fn(crate::PaneId, Option<i32>, zellij_types::input::command::RunCommand) + Send,
             >,
         ) -> anyhow::Result<(
             Box<dyn crate::os_input_output::AsyncReader>,

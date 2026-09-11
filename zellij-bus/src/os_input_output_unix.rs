@@ -1,5 +1,5 @@
 use crate::os_input_output::{command_exists, AsyncReader};
-use crate::panes::PaneId;
+use crate::PaneId;
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 

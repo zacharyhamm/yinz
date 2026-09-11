@@ -7,20 +7,20 @@ use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
 
-use crate::panes::grid::{Osc99PayloadType, PendingNotification};
-use crate::panes::PaneId;
+use crate::loading_indication::LoadingIndication;
 use crate::plugins::{DumpSessionLayoutResponse, PluginId, PluginRenderAsset};
 use crate::pty::{AdoptedTabPanes, ClientTabIndexOrPaneId, VteBytes};
 use crate::pty_host::client::ReleasedPane;
 use crate::route::NotificationEnd;
-use crate::ui::loading_indication::LoadingIndication;
 use crate::ClientId;
+use crate::PaneId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 use zellij_ipc::ipc::PixelDimensions;
 use zellij_ipc::nested_session::NestedSessionMessage;
+use zellij_terminal::panes::grid::{Osc99PayloadType, PendingNotification};
 use zellij_types::agent::AgentInfo;
 use zellij_types::diagnostics::ScreenContext;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
@@ -953,7 +953,7 @@ impl From<&ScreenInstruction> for ScreenContext {
 }
 
 /// What the screen does with a host terminal's answer to a forwarded OSC 99 notification.
-pub(crate) struct NotificationResponse {
+pub struct NotificationResponse {
     /// The terminal pane that sent the notification.
     pub terminal_id: TerminalId,
     /// Whether the answer is written to that pane's pty: control requests (`p=?`, `close`,
@@ -975,7 +975,7 @@ pub(crate) struct NotificationResponse {
 /// `a=report`), restores the original identifier (`i=0`, the protocol's default, when the app
 /// never sent one) and, for a `p=alive` answer, keeps only the identifiers that belong to the
 /// asking pane, un-namespaced.
-pub(crate) fn denormalize_notification_response(payload: &[u8]) -> Option<NotificationResponse> {
+pub fn denormalize_notification_response(payload: &[u8]) -> Option<NotificationResponse> {
     let payload_str = str::from_utf8(payload).ok()?;
 
     // Split into metadata and response payload on first ';'

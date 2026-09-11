@@ -33,11 +33,11 @@ use {
     zellij_types::data::WarpedTab, zellij_types::input::actions::Action,
 };
 
-use crate::panes::PaneId;
 use crate::pty::PtyInstruction;
 use crate::screen::ScreenInstruction;
 use crate::thread_bus::ThreadSenders;
 use crate::ClientId;
+use crate::PaneId;
 
 /// How long to wait on the far session before giving up on a warp.
 ///

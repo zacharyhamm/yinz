@@ -1,26 +1,21 @@
-#[cfg(test)]
-#[path = "./unit/instruction_context_tests.rs"]
-mod instruction_context_tests;
-
-#[path = "os_input_output_unix.rs"]
-mod os_input_output_unix;
+pub(crate) use zellij_bus::os_input_output_unix;
 
 #[cfg(target_os = "windows")]
 compile_error!("Zellij does not support Windows");
 
+pub use zellij_bus::os_input_output;
 pub use zellij_process::firecracker;
 pub use zellij_terminal::host_query;
+pub use zellij_terminal::output;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::style::default_palette;
-pub mod os_input_output;
-pub use zellij_terminal::output;
 pub mod panes;
 pub mod tab;
 
-pub mod background_jobs;
-mod global_async_runtime;
+pub use zellij_bus::background_jobs;
+pub(crate) use zellij_bus::global_async_runtime;
 mod logging_pipe;
-pub mod nested_guest;
+pub use zellij_bus::nested_guest;
 pub mod notifications;
 mod pane_groups;
 mod plugins;
@@ -28,21 +23,19 @@ pub use plugins::check_lua_plugin;
 mod locked_escape;
 pub mod plugin_authoring;
 mod pty;
-mod pty_instruction;
 #[cfg(unix)]
 pub use zellij_process::pty_host;
 mod client_router;
-mod pty_writer;
+pub(crate) use zellij_bus::pty_writer;
 mod route;
 mod screen;
-mod server_instruction;
-pub use server_instruction::ServerInstruction;
-mod session_layout_metadata;
-mod session_recorder;
+pub use zellij_bus::server_instruction::ServerInstruction;
+pub(crate) use zellij_bus::session_layout_metadata;
+pub(crate) use zellij_bus::session_recorder;
 mod terminal_bytes;
-mod thread_bus;
+pub(crate) use zellij_bus::thread_bus;
 mod ui;
-mod warp;
+pub(crate) use zellij_bus::warp;
 
 use background_jobs::{background_jobs_main, BackgroundJob};
 use log::info;

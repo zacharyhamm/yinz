@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use crate::route::NotificationEnd;
-use crate::{panes::PaneId, ClientId, PluginId};
+use crate::{ClientId, PaneId, PluginId};
 use zellij_config::config::Config;
 use zellij_runtime::errors::ErrorInstruction;
 use zellij_types::data::{InputMode, SessionConnection};

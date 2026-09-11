@@ -1,6 +1,6 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::type_complexity)]
-use crate::{panes::PaneId, ClientId};
+use crate::{ClientId, PaneId};
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::style::default_palette;
@@ -942,7 +942,7 @@ fn pane_start_failed(terminal_id: TerminalId, host: &str, err: anyhow::Error) ->
 }
 
 /// A null `AsyncReader` for held panes (produces EOF immediately).
-pub(crate) struct NullAsyncReader;
+pub struct NullAsyncReader;
 
 pub use zellij_process::AsyncReader;
 

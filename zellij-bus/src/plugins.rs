@@ -15,14 +15,16 @@ use std::{
     path::PathBuf,
 };
 
-use crate::panes::PaneId;
+pub mod queues;
+
 use crate::route::NotificationEnd;
 use crate::session_layout_metadata::SessionLayoutMetadata;
 use crate::ClientId;
+use crate::PaneId;
 use zellij_types::data::PaneRenderReport;
 use zellij_types::input::context_menu::ContextMenu;
 use zellij_types::input::layout::TabLayoutInfo;
-use zellij_types::internal_ids::PluginId;
+pub use zellij_types::internal_ids::PluginId;
 use {zellij_types::input::hooks::HookPoint, zellij_types::input::hooks::Hooks};
 
 use zellij_runtime::errors::prelude::*;

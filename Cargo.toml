@@ -88,6 +88,7 @@ members = [
     "default-plugins/hocus-store",
     "zellij-client",
     "zellij-integration-tests",
+    "zellij-bus",
     "zellij-process",
     "zellij-terminal",
     "zellij-server",

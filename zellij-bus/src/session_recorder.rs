@@ -36,6 +36,22 @@ pub struct SessionRecorderHandle {
 }
 
 impl SessionRecorderHandle {
+    /// A handle over a channel the caller owns, for tests that want to read what the recorder
+    /// would have been sent; `spawn_session_recorder` builds the real one.
+    #[doc(hidden)]
+    pub fn over_channel(
+        sender: crossbeam::channel::Sender<RecorderInstruction>,
+        capture_input: bool,
+    ) -> Self {
+        SessionRecorderHandle {
+            sender,
+            started_at: Instant::now(),
+            capture_input,
+            enabled: Arc::new(AtomicBool::new(true)),
+            dropped: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
     pub fn output(&self, terminal_id: TerminalId, data: Vec<u8>) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;

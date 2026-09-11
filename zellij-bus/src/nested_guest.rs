@@ -1,4 +1,4 @@
-use crate::panes::PaneId;
+use crate::PaneId;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 #[cfg(test)]

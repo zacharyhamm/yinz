@@ -7,22 +7,20 @@
 #![allow(clippy::redundant_pattern_matching)]
 mod lua;
 pub use lua::check_lua_plugin;
-mod instruction;
 mod pinned_executor;
 mod pipes;
 mod plugin_limits;
 mod plugin_loader;
 mod plugin_map;
 mod plugin_worker;
-pub mod queues;
 mod wasm_bridge;
 mod watch_filesystem;
 mod zellij_exports;
-pub use instruction::{
-    DumpSessionLayoutResponse, HookFiring, PipeStateChange, PluginInstruction, PluginRenderAsset,
-    CLI_EVENTS_ONLY_TARGET,
-};
 use log::info;
+pub use zellij_bus::plugins::{
+    queues, DumpSessionLayoutResponse, HookFiring, PipeStateChange, PluginInstruction,
+    PluginRenderAsset, CLI_EVENTS_ONLY_TARGET,
+};
 
 pub use pinned_executor::PinnedExecutor;
 use std::{

@@ -34,6 +34,9 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-ipc",
         "zellij-session",
         "zellij-cli",
+        "zellij-terminal",
+        "zellij-process",
+        "zellij-bus",
     ];
     let metadata = root.path().join("metadata.json");
     fs::write(&metadata, serde_json::json!({

@@ -10,7 +10,6 @@ use crate::background_jobs::write_session_state_to_disk;
 use crate::background_jobs::BackgroundJob;
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
 use crate::os_input_output::{AsyncReader, NullAsyncReader, ServerOsApi};
-pub use crate::pty_instruction::*;
 use crate::route::NotificationEnd;
 use crate::terminal_bytes::TerminalBytes;
 use crate::{
@@ -27,6 +26,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
 };
+pub use zellij_bus::pty::*;
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabId;

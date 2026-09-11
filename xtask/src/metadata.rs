@@ -50,6 +50,35 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-session",
         ],
     ),
+    (
+        "zellij-terminal",
+        &["zellij-types", "zellij-runtime", "zellij-ipc"],
+    ),
+    (
+        "zellij-process",
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-config",
+            "zellij-ipc",
+            "zellij-session",
+            "zellij-test-support",
+        ],
+    ),
+    (
+        "zellij-bus",
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-storage",
+            "zellij-config",
+            "zellij-ipc",
+            "zellij-session",
+            "zellij-terminal",
+            "zellij-process",
+            "zellij-test-support",
+        ],
+    ),
 ];
 
 fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {

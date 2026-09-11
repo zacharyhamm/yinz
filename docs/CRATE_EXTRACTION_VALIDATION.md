@@ -48,3 +48,31 @@ The lockfile adds only the two workspace packages. No external package versions 
 ## Outstanding validation
 
 The final gate has not been run on macOS. Run `cargo x ci check` on a macOS host before treating cross-platform validation as complete.
+
+## Bus extraction (2026-09-11)
+
+`zellij-bus` takes the thread bus out of `zellij-server`: `ThreadSenders`/`Bus`, the six
+instruction enums with their payload types, `ServerOsApi` and its Unix implementation,
+`route_action`, warps, background jobs, the session recorder, session layout metadata, the global
+tokio runtime, `LoadingIndication` and `FrameColorOverride`. A preparatory commit first carved the
+instruction types out of their thread modules and split `route_thread_main` (which holds
+`SessionMetaData` and stays in the server as `client_router.rs`) from `route_action`, so the
+extraction itself is `git mv` plus re-export shims.
+
+| Stage | Checks | Result |
+| --- | --- | --- |
+| Before extraction | `cargo nextest list --workspace` | 8,381 tests discovered |
+| Carve-out commit | `cargo x lint`, `cargo x test -p zellij-server` | Lint clean, 2,491 tests passed; 8,381 discovered, four `route::tests` now under `client_router::tests` |
+| Bus extraction | `cargo x test -p zellij-bus` | 191 tests passed |
+| Bus extraction | `cargo x test -p zellij-server` | 2,300 tests passed |
+| Bus extraction | `cargo x ci check` | Formatting, lint, dependency boundaries, unit tests, doctests, and 390 integration tests passed at 16 workers |
+
+`cargo nextest list --workspace` discovers 8,381 tests after the extraction, the same as before.
+Every test keeps its name apart from its crate and module prefix: `frame_color_override` and
+`loading_indication` tests no longer sit under `panes` and `ui`, and the route tests that moved
+with `route_thread_main` are under `client_router`. No snapshot moved in this step.
+
+The server drops `isahc`, `futures-lite`, `sysinfo`, `close_fds`, `signal-hook`, `once_cell` and
+`rusqlite`, which only the moved code used. `xtask`'s dependency table gains rows for
+`zellij-bus`, and for `zellij-terminal` and `zellij-process`, which the earlier round left
+unenforced. The gate was run on Linux; the macOS gate remains outstanding.
