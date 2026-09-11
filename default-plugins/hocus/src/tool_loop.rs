@@ -1156,19 +1156,19 @@ impl State {
             // a section, and a bare `section` with the whole of it.
             let answer = if args.query.is_some() {
                 match tools::search_options(&args) {
-                    Ok(options) => lua_docs::search(args.section.as_deref(), &options),
+                    Ok(options) => plugin_docs::search(args.section.as_deref(), &options),
                     Err(error) => error,
                 }
             } else if args.start_line.is_some() || args.line_count.is_some() {
                 let (start, end) = tools::read_range(&args);
-                lua_docs::page(args.section.as_deref(), start, end)
+                plugin_docs::page(args.section.as_deref(), start, end)
             } else {
-                lua_docs::docs(args.section.as_deref())
+                plugin_docs::docs(args.section.as_deref())
             };
             // The only tool result that used to go out uncapped. Sub-sectioning keeps every
             // answer far under this, so it is a floor under the floor: a guide section that
             // grows past what a tool call should cost cannot silently re-create the problem.
-            self.finish_head(log::truncate_str(&answer, lua_docs::MAX_DOCS_OUTPUT));
+            self.finish_head(log::truncate_str(&answer, plugin_docs::MAX_DOCS_OUTPUT));
             return true;
         }
         // Likewise: the host compiles the source it is handed and nothing else is involved.

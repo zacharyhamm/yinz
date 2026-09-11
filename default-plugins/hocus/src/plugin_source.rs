@@ -4,7 +4,7 @@
 //!
 //! Nothing here touches the host. Every function is handed the text it works on, which is what
 //! lets the tests never touch a filesystem - and what keeps `tools.rs` to formatting and dispatch.
-//! The point of all of it is the same one `lua_docs` makes: hocus re-sends the whole transcript
+//! The point of all of it is the same one `plugin_docs` makes: hocus re-sends the whole transcript
 //! every turn, so a page read to find one function is paid for on every round after it. A
 //! search hit, an outline line and an edit answer that says where it landed are the cheap
 //! substitutes.
