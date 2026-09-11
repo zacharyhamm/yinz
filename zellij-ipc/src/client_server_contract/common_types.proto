@@ -975,6 +975,8 @@ message AdoptPaneAction {
   // there is no local supervisor socket to name.
   optional RemotePaneHandoff remote = 7;
   optional AgentInfo agent = 8;
+  // See `WarpedPane.caption`.
+  optional string caption = 10;
 }
 
 // One pane of a tab moving between sessions: which supervisor to attach to,
@@ -994,6 +996,8 @@ message WarpedPane {
   // socket, and a remote pane has none.
   optional RemotePaneHandoff remote = 6;
   optional AgentInfo agent = 7;
+  // A default caption, applied as one rather than as the pane's name.
+  optional string caption = 9;
 }
 
 // How to pick a remote pane back up from the broker holding it.
@@ -1053,6 +1057,7 @@ message AdoptTabAction {
   repeated WarpedPane tiled_panes = 4;
   repeated WarpedPane floating_panes = 5;
   bool hide_floating_panes = 6;
+  bool user_named = 8;
 }
 
 message NewPanePlacement {
@@ -1189,6 +1194,7 @@ message TiledPaneLayout {
   optional string pane_initial_contents = 13;
   optional string default_fg = 14;
   optional string default_bg = 15;
+  bool user_named = 16;
   // NOTE: run_instructions_to_ignore is not represented here because it's a field used only inside the server itself and not part of the server/client contract
 }
 

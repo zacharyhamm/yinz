@@ -162,6 +162,7 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
             host_id: String::new(),
             control_socket: String::new(),
             title: None,
+            caption: None,
             contents: None,
             borderless: false,
             placement: ProtoWarpPlacement::NewTab as i32,
@@ -1078,6 +1079,7 @@ fn test_client_messages() {
                 host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
                 control_socket: PathBuf::from("/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"),
                 title: None,
+                caption: None,
                 contents: None,
                 borderless: false,
                 remote: None,
@@ -1112,6 +1114,7 @@ fn test_client_messages() {
                 host_id: SupervisorId::new(String::new()),
                 control_socket: PathBuf::new(),
                 title: Some("cargo watch".to_owned()),
+                caption: None,
                 contents: None,
                 borderless: false,
                 remote: Some(RemotePaneHandoff {
@@ -1146,6 +1149,7 @@ fn test_client_messages() {
                 host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
                 control_socket: PathBuf::from("/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"),
                 title: Some("vim src/main.rs".to_owned()),
+                caption: None,
                 contents: Some("\u{1b}[38;5;9mred\u{1b}[m ".repeat(200_000)),
                 borderless: true,
                 remote: None,
@@ -1201,6 +1205,7 @@ fn test_client_messages() {
             payload: Box::new(WarpedTab {
                 relationships: None,
                 name: Some("build".to_owned()),
+                user_named: true,
                 tiled_layout: TiledPaneLayout {
                     children_split_direction: SplitDirection::Vertical,
                     children: vec![
@@ -1240,6 +1245,7 @@ fn test_client_messages() {
                             "/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"
                         ),
                         title: Some("vim src/main.rs".to_owned()),
+                        caption: None,
                         contents: Some("\u{1b}[38;5;9mred\u{1b}[m ".repeat(100_000)),
                         borderless: false,
                         remote: None,
@@ -1254,6 +1260,7 @@ fn test_client_messages() {
                         host_id: SupervisorId::new(String::new()),
                         control_socket: PathBuf::new(),
                         title: Some("cargo watch".to_owned()),
+                        caption: None,
                         contents: None,
                         borderless: true,
                         remote: Some(RemotePaneHandoff {
@@ -1279,6 +1286,7 @@ fn test_client_messages() {
                     host_id: SupervisorId::new("c5f3e4d6a7b8".to_owned()),
                     control_socket: PathBuf::from("/run/user/1000/zellij/pty/c5f3e4d6a7b8.sock"),
                     title: Some("notes".to_owned()),
+                    caption: None,
                     contents: None,
                     borderless: false,
                     remote: None,

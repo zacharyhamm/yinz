@@ -206,6 +206,7 @@ fn adopting_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
             host_id: SupervisorId::new("abc123".to_owned()),
             control_socket: PathBuf::from("/nonexistent.sock"),
             title: Some("top".to_owned()),
+            caption: None,
             contents: None,
             borderless: false,
             remote: None,
@@ -251,6 +252,7 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
             host_id: SupervisorId::new("abc123".to_owned()),
             control_socket: PathBuf::from("/nonexistent.sock"),
             title: None,
+            caption: None,
             contents: None,
             borderless: false,
             remote: None,
@@ -437,6 +439,7 @@ fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
         host_id: SupervisorId::new(String::new()),
         control_socket: PathBuf::new(),
         title: None,
+        caption: None,
         contents: None,
         borderless: false,
         remote: Some(zellij_types::data::RemotePaneHandoff {

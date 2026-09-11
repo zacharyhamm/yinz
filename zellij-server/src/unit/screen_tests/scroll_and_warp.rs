@@ -1631,6 +1631,32 @@ fn a_tab_that_can_be_warped_has_already_had_its_arrangement_worked_out() {
     );
 }
 
+/// The receiving session lets a project name the tab unless the user renamed it here.
+#[test]
+fn a_tab_warp_carries_whether_the_user_named_the_tab() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen
+        .tabs
+        .get_mut(&TabId::new(1))
+        .unwrap()
+        .rename_by_user("notes".to_owned());
+
+    let (_, _, born) = screen
+        .check_tab_can_be_warped(Some(TabId::new(0)), crate::ClientId::new(1))
+        .expect("the tab should be movable");
+    let (_, _, renamed) = screen
+        .check_tab_can_be_warped(Some(TabId::new(1)), crate::ClientId::new(1))
+        .expect("the tab should be movable");
+
+    assert!(!born.user_named);
+    assert_eq!(
+        (renamed.name.as_deref(), renamed.user_named),
+        (Some("notes"), true)
+    );
+}
+
 #[test]
 fn a_tab_of_nothing_but_plugin_panes_has_nothing_to_warp() {
     // Not a refusal on principle — a plugin pane rides along in the layout and is

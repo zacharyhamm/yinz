@@ -49,9 +49,13 @@ impl Screen {
             active_tab!(self, client_id, |tab: &mut Tab| tab.clear_search(client_id));
         }
 
-        if mode_info.mode == InputMode::RenameTab {
+        if mode_info.mode == InputMode::RenameTab && previous_mode != InputMode::RenameTab {
             if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
-                active_tab.prev_name = active_tab.name.clone();
+                active_tab.start_rename();
+            }
+        } else if previous_mode == InputMode::RenameTab && mode_info.mode != InputMode::RenameTab {
+            if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
+                active_tab.finish_rename();
             }
         }
 

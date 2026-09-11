@@ -1,0 +1,8 @@
+---
+source: zellij-session/src/session_serialization.rs
+expression: kdl.0
+---
+layout {
+    tab name="notes" user_named=true {
+    }
+}

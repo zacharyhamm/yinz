@@ -227,6 +227,24 @@ fn layout_with_hidden_floating_panes() {
     assert_eq!(layout, expected_layout);
 }
 
+/// What session serialization writes for a tab the user renamed.
+#[test]
+fn layout_with_a_user_named_tab() {
+    let kdl_layout = r#"
+        layout {
+            tab name="notes" user_named=true {
+                pane
+            }
+        }
+    "#;
+    let layout =
+        crate::kdl::layout::from_kdl(kdl_layout, Some("layout_file_name".into()), None, None)
+            .unwrap();
+    let (name, tab_layout, _) = layout.tabs.first().unwrap();
+    assert_eq!(name.as_deref(), Some("notes"));
+    assert!(tab_layout.user_named);
+}
+
 #[test]
 fn layout_with_floating_panes_template() {
     let kdl_layout = r#"

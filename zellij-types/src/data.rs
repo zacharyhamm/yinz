@@ -2182,8 +2182,14 @@ pub struct WarpedPane {
     /// transferable — the source refuses the warp rather than sending this empty.
     /// Empty for a remote pane; `remote` is its address instead.
     pub control_socket: PathBuf,
-    /// The pane's title, so it does not arrive renamed.
+    /// The pane's title when the user or its program gave it one, so it does not arrive
+    /// renamed. It arrives as the pane's name, which is explicit.
     pub title: Option<String>,
+    /// The default caption ("Pane #3", or the command) a pane with no `title` was wearing. It
+    /// arrives as a caption rather than a name, so it stays a default there - and a default is
+    /// not lent to the tab, where it would outrank the project.
+    #[serde(default)]
+    pub caption: Option<String>,
     /// The screen and scrollback as an ANSI dump, replayed into the new pane the
     /// same way session resurrection restores one.
     pub contents: Option<String>,
@@ -2239,6 +2245,10 @@ pub struct WarpedTab {
     pub relationships: Option<WarpRelationships>,
     /// The tab's name, so it does not arrive renamed.
     pub name: Option<String>,
+    /// Whether the user named the tab in the session it left. Only then does the name hold
+    /// off the project and pane titles the receiving session would otherwise show.
+    #[serde(default)]
+    pub user_named: bool,
     pub tiled_layout: TiledPaneLayout,
     pub floating_layout: Vec<FloatingPaneLayout>,
     /// One per released supervisor, ordered to match the layout's terminal slots

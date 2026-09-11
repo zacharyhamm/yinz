@@ -11,6 +11,7 @@ use crate::pty::{
 };
 use crate::pty_host::client::ReleasedPane;
 use crate::session_layout_metadata::PaneLayoutMetadata;
+use crate::tab::Pane;
 use crate::ClientId;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -193,7 +194,7 @@ impl Screen {
             .ok_or_else(|| "warp root vanished".to_owned())?;
         let tiled_layout = zellij_types::input::layout::TiledPaneLayout {
             run: root.invoked_with().clone(),
-            name: Some(root.current_title()),
+            name: carried_caption(root),
             borderless: Some(root.borderless()),
             ..Default::default()
         };
@@ -206,7 +207,7 @@ impl Screen {
                     .ok_or_else(|| "warp companion vanished".to_owned())?;
                 Ok(zellij_types::input::layout::FloatingPaneLayout {
                     run: pane.invoked_with().clone(),
-                    name: Some(pane.current_title()),
+                    name: carried_caption(pane),
                     borderless: Some(pane.borderless()),
                     ..Default::default()
                 })
@@ -236,6 +237,7 @@ impl Screen {
             terminal_ids,
             PreparedTabWarp {
                 name: None,
+                user_named: false,
                 tiled_layout,
                 floating_layout,
                 tiled_panes: terminals(&slots[..1]),
@@ -434,7 +436,8 @@ impl Screen {
             host_id: address.host_id,
             control_socket: address.control_socket,
             remote: address.remote,
-            title: Some(pane.current_title()),
+            title: carried_caption(pane),
+            caption: default_caption(pane),
             contents: pane
                 .serialize(scrollback_lines)
                 .map(Self::fit_to_warp_budget),
@@ -495,6 +498,7 @@ impl Screen {
         }
 
         let name = Some(tab.name.clone()).filter(|name| !name.is_empty());
+        let user_named = tab.is_user_named();
         let viewport = tab.size;
         // Contents are left out: the reader tasks are still running, so anything
         // serialized now would be missing whatever arrives between here and the
@@ -508,15 +512,13 @@ impl Screen {
                     .iter()
                     .map(|(pane_id, pane)| {
                         let mut manifest: PaneLayoutManifest = pane.clone().into();
-                        // `current_title`, not the manifest's own, which carries
-                        // `custom_title` and is therefore usually empty — that is
-                        // all a *layout* should pin down. A warp is moving the
-                        // pane the user is looking at, so it should arrive
-                        // captioned the way it was, and the layout's `name` is
-                        // what the receiving session reads to caption it.
+                        // More than the manifest's own `custom_title`, which is
+                        // all a *layout* should pin down: a warp is moving the
+                        // pane the user is looking at, so a title its program set
+                        // arrives too. See `carried_caption` for what stays behind.
                         manifest.title = tab
                             .get_pane_with_id(*pane_id)
-                            .map(|pane| pane.current_title())
+                            .and_then(carried_caption)
                             .or(manifest.title);
                         (*pane_id, manifest)
                     })
@@ -565,7 +567,7 @@ impl Screen {
             arrangement
                 .floating_layout
                 .push(zellij_types::input::layout::FloatingPaneLayout {
-                    name: Some(pane.current_title()),
+                    name: carried_caption(pane),
                     run: pane.invoked_with().clone(),
                     borderless: Some(pane.borderless()),
                     ..Default::default()
@@ -605,6 +607,7 @@ impl Screen {
                 slots,
                 pane_group: false,
                 name,
+                user_named,
                 tiled_layout: arrangement.tiled_layout,
                 floating_layout: arrangement.floating_layout,
                 tiled_panes,
@@ -668,8 +671,10 @@ impl Screen {
                 remote: address.remote,
                 // A tab's titles and borders ride in its layout, which is what
                 // the receiving session reads when it builds the panes. Repeating
-                // them here would be a second answer to the same question.
+                // them here would be a second answer to the same question. A
+                // default caption cannot ride there: a layout's name is explicit.
                 title: None,
+                caption: tab.get_pane_with_id(*pane_id).and_then(default_caption),
                 borderless: false,
                 // Not gated on `serialize_pane_viewport`: that option governs
                 // automatic session serialization, and a warp is something the
@@ -710,6 +715,7 @@ impl Screen {
         Ok(Box::new(WarpedTab {
             relationships: prepared.relationships,
             name: prepared.name,
+            user_named: prepared.user_named,
             tiled_layout: prepared.tiled_layout,
             floating_layout: prepared.floating_layout,
             tiled_panes,
@@ -855,6 +861,12 @@ impl Screen {
                 .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
                 .with_context(err_context)?;
         }
+        if let Some(caption) = payload.caption {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::SetPaneCaption(pane_id, caption))
+                .with_context(err_context)?;
+        }
 
         // The transferred screen first, then whatever the supervisor caught during
         // the hand-off, then live output. `NewPane` is ahead of these on the same
@@ -967,6 +979,11 @@ impl Screen {
             payload.name.clone(),
             Some(client_id),
         )?;
+        // A name the tab was born with elsewhere is only a fallback here, as it was there;
+        // a rename the user made there still holds.
+        if let Some(tab) = self.tabs.get_mut(&tab_index) {
+            tab.set_user_named(payload.user_named);
+        }
 
         if let Some(relationships) = payload.relationships {
             self.pending_warp_relationships
@@ -1039,9 +1056,30 @@ impl Screen {
                     cmd: adopted.cmd,
                     agent: pane.agent,
                     child_exit_status: adopted.child_exit_status,
+                    caption: pane.caption,
                     replay,
                 }
             })
             .collect()
     }
+}
+
+/// The title a warped pane arrives *named*, when the user or its program gave it one.
+///
+/// A default - "Pane #3", or the command it runs - is not one: arriving as a name would make it
+/// explicit there, and an explicit title is lent to the tab a lone pane sits in, where it
+/// outranks the project. A warped tab would wear "Pane #3" instead of the work in it. The
+/// default travels as a caption instead ([`default_caption`]).
+fn carried_caption(pane: &dyn Pane) -> Option<String> {
+    (pane.has_explicit_title() || pane.custom_title().is_some()).then(|| pane.current_title())
+}
+
+/// The default caption a terminal pane was wearing, so it arrives captioned the way it was
+/// without that caption becoming its name. A stack's members keep their distinct "Pane #N";
+/// the receiving session would otherwise number them from where they land, and collide.
+///
+/// Plugin panes are restarted and caption themselves.
+fn default_caption(pane: &dyn Pane) -> Option<String> {
+    (matches!(pane.pid(), PaneId::Terminal(_)) && carried_caption(pane).is_none())
+        .then(|| pane.current_title())
 }

@@ -155,6 +155,7 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "min_panes"
             || property_name == "exact_panes"
             || property_name == "hide_floating_panes"
+            || property_name == "user_named"
     }
     #[allow(clippy::result_large_err)]
     pub fn is_a_reserved_plugin_property(property_name: &str) -> bool {
@@ -1254,6 +1255,10 @@ impl<'a> KdlLayoutParser<'a> {
         let is_focused = kdl_get_bool_property_or_child_value!(kdl_node, "focus").unwrap_or(false);
         let hide_floating_panes =
             kdl_get_bool_property_or_child_value!(kdl_node, "hide_floating_panes").unwrap_or(false);
+        // Written by session serialization for a tab the user renamed, so the name comes back
+        // holding off the project as it did before.
+        let user_named =
+            kdl_get_bool_property_or_child_value!(kdl_node, "user_named").unwrap_or(false);
         let children_split_direction = self.parse_split_direction(kdl_node)?;
         let mut child_floating_panes = vec![];
         let children = match kdl_children_nodes!(kdl_node) {
@@ -1271,6 +1276,7 @@ impl<'a> KdlLayoutParser<'a> {
             children_split_direction,
             children,
             hide_floating_panes,
+            user_named,
             ..Default::default()
         };
         if let Some(cwd_prefix) = &self.cwd_prefix(tab_cwd.as_ref())? {

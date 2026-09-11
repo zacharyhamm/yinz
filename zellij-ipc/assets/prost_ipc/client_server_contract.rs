@@ -1612,6 +1612,9 @@ pub struct AdoptPaneAction {
     pub remote: ::core::option::Option<RemotePaneHandoff>,
     #[prost(message, optional, tag="8")]
     pub agent: ::core::option::Option<AgentInfo>,
+    /// See `WarpedPane.caption`.
+    #[prost(string, optional, tag="10")]
+    pub caption: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// One pane of a tab moving between sessions: which supervisor to attach to,
 /// plus the terminal state that supervisor cannot report. The same shape as the
@@ -1640,6 +1643,9 @@ pub struct WarpedPane {
     pub remote: ::core::option::Option<RemotePaneHandoff>,
     #[prost(message, optional, tag="7")]
     pub agent: ::core::option::Option<AgentInfo>,
+    /// A default caption, applied as one rather than as the pane's name.
+    #[prost(string, optional, tag="9")]
+    pub caption: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// How to pick a remote pane back up from the broker holding it.
 ///
@@ -1731,6 +1737,8 @@ pub struct AdoptTabAction {
     pub floating_panes: ::prost::alloc::vec::Vec<WarpedPane>,
     #[prost(bool, tag="6")]
     pub hide_floating_panes: bool,
+    #[prost(bool, tag="8")]
+    pub user_named: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1951,9 +1959,11 @@ pub struct TiledPaneLayout {
     pub pane_initial_contents: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="14")]
     pub default_fg: ::core::option::Option<::prost::alloc::string::String>,
-    /// NOTE: run_instructions_to_ignore is not represented here because it's a field used only inside the server itself and not part of the server/client contract
     #[prost(string, optional, tag="15")]
     pub default_bg: ::core::option::Option<::prost::alloc::string::String>,
+    /// NOTE: run_instructions_to_ignore is not represented here because it's a field used only inside the server itself and not part of the server/client contract
+    #[prost(bool, tag="16")]
+    pub user_named: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

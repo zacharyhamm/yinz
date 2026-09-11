@@ -979,7 +979,9 @@ pub fn actions_from_cli(
                     let mut has_focused_tab = tabs
                         .iter()
                         .any(|(_, layout, _)| layout.focus.unwrap_or(false));
-                    for (tab_name, layout, floating_panes_layout) in tabs.drain(..) {
+                    for (tab_name, mut layout, floating_panes_layout) in tabs.drain(..) {
+                        // A `--name` filling in for a layout that gave none is the user's.
+                        layout.user_named |= tab_name.is_none() && name.is_some();
                         let name = tab_name.or_else(|| name.clone());
                         let should_change_focus_to_new_tab = !no_focus
                             && layout.focus.unwrap_or_else(|| {
@@ -1007,7 +1009,8 @@ pub fn actions_from_cli(
                 } else {
                     let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
                     let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
-                    let (layout, floating_panes_layout) = layout.new_tab();
+                    let (mut layout, floating_panes_layout) = layout.new_tab();
+                    layout.user_named |= name.is_some();
                     let should_change_focus_to_new_tab = !no_focus;
                     Ok(vec![Action::NewTab {
                         layout_source: None,
@@ -1097,7 +1100,9 @@ pub fn actions_from_cli(
                     let mut has_focused_tab = tabs
                         .iter()
                         .any(|(_, layout, _)| layout.focus.unwrap_or(false));
-                    for (tab_name, layout, floating_panes_layout) in tabs.drain(..) {
+                    for (tab_name, mut layout, floating_panes_layout) in tabs.drain(..) {
+                        // A `--name` filling in for a layout that gave none is the user's.
+                        layout.user_named |= tab_name.is_none() && name.is_some();
                         let name = tab_name.or_else(|| name.clone());
                         let should_change_focus_to_new_tab = !no_focus
                             && layout.focus.unwrap_or_else(|| {
@@ -1125,7 +1130,8 @@ pub fn actions_from_cli(
                 } else {
                     let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
                     let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
-                    let (layout, floating_panes_layout) = layout.new_tab();
+                    let (mut layout, floating_panes_layout) = layout.new_tab();
+                    layout.user_named |= name.is_some();
                     let should_change_focus_to_new_tab = !no_focus;
                     Ok(vec![Action::NewTab {
                         layout_source: None,
