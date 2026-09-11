@@ -1,7 +1,9 @@
 # Lua plugins
 
-Plugins come in two kinds: wasm modules (every builtin) and Lua scripts. The Lua runtime lives in
-`zellij-plugin-host/src/lua/`; `docs/LUA_PLUGINS.md` is the user-facing guide.
+Plugins come in three kinds: wasm modules, Lua scripts and Deno (JavaScript/TypeScript) scripts;
+the shipped script builtins are TypeScript. The Lua runtime lives in `zellij-plugin-host/src/lua/`;
+`docs/LUA_PLUGINS.md` is the user-facing guide. The Deno runtime has its own `../deno/CLAUDE.md`,
+which this file's rules about the shared dispatcher and the sandbox apply to as well.
 
 The two runtimes share everything above `RunningPlugin`: event routing, subscriptions, rendering,
 and — importantly — the whole command surface. `zellij_exports.rs` has one dispatcher,
@@ -61,8 +63,8 @@ from a Lua table.
 
 hocus is the main consumer of all this: its `plugin_*` tools write, edit, reload, read back the
 pane, and grep the log, and `docs/LUA_PLUGINS.md` plus `example-plugins/` plus `prelude.lua` are
-served to its model verbatim by `hocus/src/lua_docs.rs`, cut into sections that each stay under
-20 KB. Two of those tests guard the guide against the rules it only *describes*: every
+served to its model verbatim by `hocus/src/plugin_docs.rs` (as `lua_*` sections beside the
+TypeScript guide's), cut into sections that each stay under `MAX_DOCS_OUTPUT` (16 KB). Two of those tests guard the guide against the rules it only *describes*: every
 `PermissionType` must be nameable from its permission table, and the `Data` section must state
 the `shared:` prefix and every `RESERVED_ATTR_NAMES` entry.
 A new `##` heading in the guide needs a section name there, or a test fails.

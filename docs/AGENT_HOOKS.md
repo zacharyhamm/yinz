@@ -217,8 +217,9 @@ and needs the rest. The hook JSON in `raw` is bounded (`agent::HOOK_BROADCAST_MA
 Oversized JSON is pruned with the largest per-field budget that fits the serialized ceiling.
 `prompt` and `last_message` are cut the same way,
 so the typed fields and the JSON never disagree. It goes only to subscribers, gated on `read_application_state` like the
-manifest, and nothing waits on it, so a hook cannot stall the turn it fired in. A Lua plugin
-reads it with `zellij.agent.on`, or awaits it with `zellij.async.turn` (`docs/LUA_PLUGINS.md`,
+manifest, and nothing waits on it, so a hook cannot stall the turn it fired in. A plugin
+reads it with `zellij.agent.on`, or awaits it with `zellij.agent.waitForTurn` in TypeScript
+(`docs/DENO_PLUGINS.md`, "Agent helpers") or `zellij.async.turn` in Lua (`docs/LUA_PLUGINS.md`,
 "Agents").
 
 `raw` has one bound on it, `agent::HOOK_BROADCAST_MAX_BYTES` (256 KiB). Two of the fields
@@ -252,8 +253,8 @@ the memory back is a pane re-run with a *different* command — a plugin reusing
 `npm test` is not that agent's pane any more, and forgets both the record and the memory of it.
 The record's edges fire hooks of their own: `agent_start` when a record
 appears (or comes back after `exited`, or changes `session_id`), `agent_waiting` when it moves
-to `waiting`. Both go to a headless plugin as `Event::Hook` — see `docs/LUA_PLUGINS.md`,
-"Headless hooks". `zellij action agent-report --state waiting --detail "y/n"` is the same road
+to `waiting`. Both go to a headless plugin as `Event::Hook` — see `docs/DENO_PLUGINS.md` or
+`docs/LUA_PLUGINS.md`, "Headless hooks". `zellij action agent-report --state waiting --detail "y/n"` is the same road
 for a script of your own; `--clear` ends the record and fires nothing.
 
 A `claude` hocus spawns needs none of this: `agent_spawn` (and the `hocus-new-agent` modal)
@@ -742,7 +743,8 @@ them, not on whatever happened to be in front.
 Plugins ask for this with `notify_with_click(text, pane_id, message, payload)`; the reply arrives
 as an `Event::CustomMessage(message, payload)` on the plugin that raised the toast, after the
 focus has landed, and needs an `EventType::CustomMessage` subscription. `notify_with_pane_id` is
-the focus-only form and `notify` the plain one. From Lua it is
+the focus-only form and `notify` the plain one. From TypeScript it is
+`zellij.host.notify({message, paneId, click: {message, payload}})`, and from Lua
 `zellij.notify { message = ..., pane_id = ..., click = { message = ..., payload = ... } }`.
 
 ### And the pane itself says so

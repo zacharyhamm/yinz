@@ -364,11 +364,14 @@ being guessed at from its screen — `zellij hocus hooks install` wires both age
 reader of the manifest and broadcasts the event itself to the plugins. See `docs/AGENT_HOOKS.md`. Unrelated to the `hooks { … }` config block
 (`zellij-types/src/input/hooks.rs`), which binds a plugin to a moment in the session.
 
-## Lua plugins
+## Script plugins (Lua and Deno)
 
-Plugins support Wasm, Lua, and Deno. All script builtins use embedded TypeScript. Lua plugins and configuration remain supported. See
-`zellij-plugin-host/src/lua/CLAUDE.md` before changing the Lua runtime; `docs/LUA_PLUGINS.md`
-is the user-facing guide.
+Plugins support Wasm, Lua, and Deno (JavaScript/TypeScript). All script builtins use embedded
+TypeScript. Lua plugins and configuration remain supported. See
+`zellij-plugin-host/src/deno/CLAUDE.md` before changing the Deno runtime or its SDK, and
+`zellij-plugin-host/src/lua/CLAUDE.md` before changing the Lua runtime; `docs/DENO_PLUGINS.md`
+and `docs/LUA_PLUGINS.md` are the user-facing guides, and `docs/DENO_PARITY.md` records what the
+Deno path has been verified to do.
 
 ## Hocus skills
 

@@ -344,6 +344,11 @@ plugins {
     configuration location="zellij:configuration"
     plugin-manager location="zellij:plugin-manager"
     about location="zellij:about"
+    // The shipped TypeScript hooks, so `hooks { agent_exit "agent-exit" }` below and
+    // `zellij action set-hook agent_waiting agent-policy --write` can name them by alias.
+    context-menu location="zellij:context-menu"
+    agent-policy location="zellij:agent-policy"
+    agent-exit location="zellij:agent-exit"
     // Fuzzy file finder for the project of the focused pane, bound to Alt e above.
     // Requires `fzf` on PATH.
     //
@@ -532,8 +537,20 @@ load_plugins {
     "hocus-store"
     "zellij:link"
     // "file:/path/to/my-plugin.wasm"
-    // "https://example.com/my-plugin.wasm"
+    // "file:/path/to/my-plugin.ts"     // a TypeScript plugin; see docs/DENO_PLUGINS.md
+    // "file:/path/to/my-plugin.lua"    // a Lua plugin; see docs/LUA_PLUGINS.md
+    // "https://example.com/my-plugin.wasm"   // remote urls load wasm plugins only
 }
+
+// Hook points a plugin can own: a moment in the session's life. Each takes one plugin url,
+// or an empty string to leave the point unhooked. See docs/DENO_PLUGINS.md "Hooks".
+// (Requires restart)
+//
+// hooks {
+//     agent_exit "zellij:agent-exit"          // opened in place of an exited agent pane
+//     agent_waiting "file:my-policy.ts"       // headless: a plugin in the plugin folder
+//     context_menu "zellij:context-menu"      // answers right-clicks, with context_menu_on_right_click true
+// }
 
 // Choose what to do when zellij receives SIGTERM, SIGINT, SIGQUIT or SIGHUP
 // eg. when terminal window with an active zellij session is closed

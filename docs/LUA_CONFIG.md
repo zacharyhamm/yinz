@@ -3,6 +3,12 @@
 Zellij accepts `config.lua` as a peer of `config.kdl`. When both files are in the configuration
 directory, `config.lua` wins. An explicit `--config` path always wins and may name either format.
 
+Configuration-as-code is Lua only, by decision rather than omission: the configuration is read
+before any server exists, by the client and by `zellij setup`, and the Deno runtime is a
+per-plugin isolate that lives in the server. There is no `config.ts`; a TypeScript file is a
+plugin (see `docs/DENO_PLUGINS.md`), and a `hooks { }` or `plugins { }` block naming one is the
+way TypeScript reaches the configuration.
+
 Lua configuration is trusted user code. It has the normal Lua standard libraries, environment
 access through `os.getenv`, and `require` searches beside the configuration file before the normal
 Lua search path. Zellij evaluates the file from scratch at startup and whenever the file changes.

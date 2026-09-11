@@ -114,7 +114,7 @@ Entry points: `zellij-client/src/cli_client.rs` (`start_events_client`),
 
 ### The authoring loop, from a pane or from hocus
 
-`zellij plugins write|check|reload|log|dir <name>` is the loop: write a Lua plugin from stdin
+`zellij plugins write|check|reload|log|dir <name>` is the loop: write a plugin from stdin (`.ts` by extension, Lua otherwise)
 (refused if it does not compile), check one offline, reload every running instance without
 opening a pane (each reload sends `BeforeClose` to the instance it replaces), read its log
 lines. The same code answers hocus's `plugin_write`/`plugin_check`/`plugin_reload`/`plugin_log`
@@ -131,7 +131,7 @@ miss says which lines nearly matched instead of asking for a re-read. `plugin_do
 it. All of it exists because hocus re-sends the transcript every turn: a page read to find one
 function is paid for on every round after it, and a search hit is not.
 
-Server side: `PluginCommand::CheckLuaPlugin`, `ReloadPluginByUrl`, `ReadPluginLog`; the `/plugins`
+Server side: `PluginCommand::CheckPlugin` (and the older `CheckLuaPlugin`), `ReloadPluginByUrl`, `ReadPluginLog`; the `/plugins`
 root in `zellij_exports::fs_roots`; `zellij-tile` gained `fs_read`/`fs_list`/`fs_metadata`/
 `fs_write`/`fs_remove`/`fs_create_dir`/`fs_rename`. File work lives in
 `zellij_plugin_host::plugin_authoring` (`write`, `log_tail`; re-exported as `zellij_server::plugin_authoring`) and
@@ -158,8 +158,8 @@ hook is one long-lived plugin receiving `Event::Hook { point, payload }` per fir
 `agent_start` (a record appearing, coming back from `exited`, or a new `session_id`),
 `agent_waiting` (the edge into `waiting`), `pane_exit` (any command pane), `session_start`. Enter
 in a held pane re-runs through the screen, so a hand-restarted agent fires `agent_start` too.
-`zellij:agent-policy` is the shipped example, a Lua hook that logs every firing and notifies on
-`agent_waiting`; `docs/LUA_PLUGINS.md` "Headless hooks" opens with binding it.
+`zellij:agent-policy` is the shipped example, a TypeScript hook that logs every firing and notifies on
+`agent_waiting`; `docs/DENO_PLUGINS.md` "Headless hooks" opens with binding it.
 
 ### Safety: nothing is ungated by omission
 
