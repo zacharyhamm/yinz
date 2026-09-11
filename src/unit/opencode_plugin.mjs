@@ -33,7 +33,24 @@ childProcess.spawn = (binary, args, options) => {
 }
 syncBuiltinESMExports()
 const { Hocus } = await import(pathToFileURL(process.argv[2]))
-const hooks = await Hocus({ directory: "/work" })
+const lookups = []
+let lookupFailure
+let releaseLookup
+const hooks = await Hocus({ directory: "/work", client: { session: {
+  get: async ({ path: { id } }) => {
+    lookups.push(id)
+    if (id === "delayed") await new Promise(resolve => { releaseLookup = resolve })
+    if (lookupFailure === "throw") {
+      lookupFailure = undefined
+      throw new Error("lookup failed")
+    }
+    if (lookupFailure === "error") {
+      lookupFailure = undefined
+      return { error: "not found" }
+    }
+    return { data: { id, ...(id === "resumed-child" ? { parentID: "one" } : {}) } }
+  },
+} } })
 const event = (type, properties = {}) => hooks.event({ event: { type, properties } })
 // One event-loop barrier drains Promise continuations; no child completes implicitly.
 const flush = () => new Promise(setImmediate)
@@ -117,7 +134,14 @@ for (const ending of ["session.error", "session.idle"]) {
     await drain()
     assert.equal(children.at(-1).payload.properties.lastAssistantMessage, "Successful answer")
     await part("one", "pending", "a", "Stale pending text")
+    const beforePrompt = children.length
     await prompt("one", parts)
+    await drain()
+    assert.equal(children.length, beforePrompt + 1)
+    assert.equal(children.at(-1).payload.type, "chat.message")
+    assert.equal(children.at(-1).payload.properties.prompt,
+      parts[0].type === "text" ? "next turn" : undefined)
+    assert.equal(Object.hasOwn(children.at(-1).payload.properties, "prompt"), parts[0].type === "text")
     await completed("one", "pending")
     await event(ending, { sessionID: "one" })
     await drain()
@@ -136,4 +160,48 @@ await event("session.idle", { sessionID: "child" })
 await event("session.deleted", { info: { id: "child" } })
 await flush()
 assert.equal(children.length, beforeChild)
+await drain()
+const beforeResumed = children.length
+await prompt("resumed-child", [])
+await hooks["tool.execute.before"]({ sessionID: "resumed-child" }, { args: {} })
+await hooks["tool.execute.after"]({ sessionID: "resumed-child" })
+for (const type of ["permission.asked", "permission.updated", "permission.replied",
+  "session.idle", "session.error", "session.compacted"]) {
+  await event(type, { sessionID: "resumed-child" })
+}
+await part("resumed-child", "answer", "a", "hidden")
+await completed("resumed-child", "answer")
+await drain()
+assert.equal(children.length, beforeResumed)
+assert.equal(lookups.filter(id => id === "resumed-child").length, 1)
+await event("session.deleted", { info: { id: "resumed-child", parentID: "one" } })
+await event("session.deleted", { info: { id: "unseen-child", parentID: "one" } })
+await drain()
+assert.equal(children.length, beforeResumed)
+
+for (const mode of ["throw", "error"]) {
+  const id = `retry-${mode}`
+  const count = children.length
+  lookupFailure = mode
+  await prompt(id, [])
+  await drain()
+  assert.equal(children.length, count)
+  await prompt(id, [])
+  await event("session.idle", { sessionID: id })
+  await drain()
+  assert.deepEqual(children.slice(count).map(c => c.payload.type), ["chat.message", "session.idle"])
+  assert.equal(lookups.filter(value => value === id).length, 2)
+}
+
+const beforeDelayed = children.length
+const delayedArgs = { command: "original" }
+await hooks["tool.execute.before"]({ sessionID: "delayed" }, { args: delayedArgs })
+delayedArgs.command = "changed"
+await event("session.idle", { sessionID: "one" })
+await flush()
+assert.equal(children.length, beforeDelayed, "callbacks return without waiting for metadata")
+releaseLookup()
+await drain()
+assert.deepEqual(children.slice(beforeDelayed).map(c => c.payload.type), ["tool.execute.before", "session.idle"])
+assert.equal(children[beforeDelayed].payload.properties.args.command, "original")
 console.log("OpenCode plugin regressions passed")
