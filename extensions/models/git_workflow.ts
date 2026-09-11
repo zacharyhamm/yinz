@@ -64,6 +64,7 @@ const Args = z.object({
     vmSync: Sync,
 });
 const Mutation = Args.extend({ key: Key });
+const CheckoutStatusArgs = Args.pick({ source: true, targetBranch: true });
 const Integration = Mutation.extend({
     evidence: Evidence,
     review: Review.nullable(),
@@ -72,6 +73,33 @@ const Integration = Mutation.extend({
 });
 const git = (c: Context, path: string, args: string[]) =>
     checked(c, path, ["git", ...args]);
+
+async function checkoutStatus(c: Context, checkout: string) {
+    const status = await git(c, checkout, [
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    ]);
+    let rebasing = false;
+    for (const name of ["rebase-merge", "rebase-apply"]) {
+        const path = await git(c, checkout, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            name,
+        ]);
+        try {
+            await Deno.stat(path);
+            rebasing = true;
+        } catch (e) {
+            if (!(e instanceof Deno.errors.NotFound)) throw e;
+        }
+    }
+    return { status, rebasing };
+}
 
 async function revision(c: Context, directory: string) {
     const checkout = await Deno.realPath(directory);
@@ -108,13 +136,7 @@ async function revision(c: Context, directory: string) {
         if (!branch) throw new Error("Detached source has no rebase ownership");
     }
     const commit = await git(c, checkout, ["rev-parse", "HEAD"]);
-    const status = await git(c, checkout, [
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=all",
-        "--ignore-submodules=none",
-    ]);
+    const { status, rebasing } = await checkoutStatus(c, checkout);
     const diff = await git(c, checkout, [
         "diff",
         "HEAD",
@@ -146,21 +168,6 @@ async function revision(c: Context, directory: string) {
         "--diff-filter=U",
         "-z",
     ])).split("\0").filter(Boolean);
-    let rebasing = false;
-    for (const name of ["rebase-merge", "rebase-apply"]) {
-        const path = await git(c, checkout, [
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            name,
-        ]);
-        try {
-            await Deno.stat(path);
-            rebasing = true;
-        } catch (e) {
-            if (!(e instanceof Deno.errors.NotFound)) throw e;
-        }
-    }
     return Revision.parse({
         checkout,
         branch,
@@ -303,6 +310,10 @@ const RebaseResult = z.object({
 export const extension = {
     type: "@swamp/git",
     resources: {
+        checkoutStatus: resource(
+            z.object({ unchanged: z.boolean(), error: z.string().nullable() }),
+            "Whether the local checkout is clean, not rebasing, and has no commits beyond the target branch",
+        ),
         diff: resource(
             z.object({ evidence: Evidence, output: z.string() }),
             "Saved branch, staged, unstaged and untracked changes",
@@ -327,6 +338,58 @@ export const extension = {
         ),
     },
     methods: [{
+        checkout_status: {
+            description:
+                "Inspect local checkout changes without mutation; inspection errors preserve existing exit choices",
+            arguments: CheckoutStatusArgs,
+            execute: async (
+                input: z.infer<typeof CheckoutStatusArgs>,
+                c: Context,
+            ) => {
+                let unchanged = false;
+                let error: string | null = null;
+                try {
+                    const args = CheckoutStatusArgs.parse(input);
+                    const checkout = await Deno.realPath(args.source);
+                    const variables = await git(c, checkout, [
+                        "rev-parse",
+                        "--local-env-vars",
+                    ]);
+                    if (variables.split("\n").some((v) => Deno.env.has(v))) {
+                        throw new Error(
+                            "Inherited Git environment prevents checkout inspection",
+                        );
+                    }
+                    if (
+                        await Deno.realPath(
+                            await git(c, checkout, [
+                                "rev-parse",
+                                "--show-toplevel",
+                            ]),
+                        ) !== checkout
+                    ) throw new Error("Expected a checkout root");
+                    await git(c, checkout, [
+                        "check-ref-format",
+                        "refs/heads/" + args.targetBranch,
+                    ]);
+                    const ahead = await git(c, checkout, [
+                        "rev-list",
+                        "--count",
+                        "refs/heads/" + args.targetBranch + "..HEAD",
+                        "--",
+                    ]);
+                    const { status, rebasing } = await checkoutStatus(
+                        c,
+                        checkout,
+                    );
+                    unchanged = status === "" && !rebasing && ahead === "0";
+                } catch (e) {
+                    c.signal.throwIfAborted();
+                    error = String(e);
+                }
+                return save(c, "checkoutStatus", { unchanged, error });
+            },
+        },
         guarded_commit: {
             description:
                 "Run the official commit method under the cooperating checkout lock",

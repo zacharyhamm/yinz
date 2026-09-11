@@ -27,6 +27,7 @@ parser.add_argument('--firecracker-only', action='store_true')
 parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
 parser.add_argument('--exit-only', action='store_true')
+parser.add_argument('--exit-menu-only', action='store_true')
 parser.add_argument('--timing-only', action='store_true', help='Three diagnostic diff-and-return runs on one warm disposable server')
 parser.add_argument('--test-output-only', action='store_true')
 parser.add_argument('--latency-only', action='store_true')
@@ -171,6 +172,90 @@ def launch(token, **inputs):
 def answer(q, value, token):
     a = q['attributes']
     return zellij('workflow', 'answer', a['run'], q['model'], a['question'], value, '--submission', token)
+
+
+def exercise_exit_menus():
+    checkout = root / 'exit-topic'
+    run('git', 'worktree', 'add', '-b', 'exit-topic', checkout)
+    pane = int(zellij('run', '--cwd', str(checkout), '--', 'claude').strip().split('_')[-1])
+    until('exit-menu stub ready', lambda: 'STUB READY' in zellij('action', 'dump-screen'))
+    zellij('action', 'write-chars', '--pane-id', str(pane), 'exit\n')
+    automatic = until('exit-menu automatic run', lambda: swamp('workflow', 'history', 'search', '--filter', 'inputs.sourcePane == ' + str(pane))['results'])
+    token = automatic[0]['inputs']['launch']
+    reduced = ['restart', 'fork', 'leave']
+    full = ['restart', 'fork', 'begin-review', 'leave']
+    prompts = {
+        tuple(reduced): 'Agent exited. Choose Restart, Fork, or Leave.',
+        tuple(full): 'Agent exited. Choose Restart, Fork, Begin review, or Leave.',
+        ('begin-review', 'leave'): 'Choose Begin review or Leave.',
+    }
+
+    def menu(token, answers):
+        q = until(token + ': exit menu', lambda: pending(token, 'exit'))
+        assert q['attributes']['answers'] == answers, q
+        assert q['attributes']['prompt'] == prompts[tuple(answers)], q
+        approval = next(a for a in swamp('workflow', 'approvals')['approvals']
+                        if a['runId'] == q['attributes']['run'] and a['stepName'] == q['attributes']['step'])
+        assert approval['prompt'] == q['attributes']['prompt'], approval
+        return q
+
+    def leave(token, q):
+        answer(q, 'leave', 'leave-' + q['attributes']['run'])
+        until(token + ': completed', lambda: all(r['status'] == 'succeeded' for r in histories(token)))
+
+    first = menu(token, reduced)
+    for hidden in ('begin-review',):
+        refused = run(binary, '--session', session, 'workflow', 'answer', first['attributes']['run'],
+                      first['model'], 'exit', hidden, '--submission', 'hidden-' + hidden, check=False)
+        assert refused.returncode != 0 and 'Answer is not permitted' in refused.stdout + refused.stderr
+        swamp('report', 'get', '@swamp/method-summary', '--model', first['model'])
+        assert menu(token, reduced)['attributes']['state'] == 'pending'
+    for changed in (False, True):
+        prior = menu(token, reduced)
+        answer(prior, 'fork', 'fork-' + prior['attributes']['run'])
+        until('exit-menu Fork picker', lambda: any(p.get('plugin_url') == 'zellij:hocus-new-agent' and not p['is_suppressed']
+                                                  for p in json.loads(zellij('action', 'list-panes', '--json'))))
+        if changed:
+            (checkout / 'new-file').write_text('change while choosing Fork\n')
+        os.write(ui_fd, b'\x1b')
+        fresh = menu(token, full if changed else reduced)
+        assert fresh['attributes']['run'] != prior['attributes']['run'] and fresh['model'] != prior['model']
+    leave(token, fresh)
+    (checkout / 'new-file').unlink()
+    run('git', 'commit', '--allow-empty', '-m', 'exit menu target advances')
+    with (main / '.git/info/exclude').open('a') as exclude:
+        exclude.write('ignored-exit\n')
+    (checkout / 'ignored-exit').write_text('ignored\n')
+    for name, answers, overrides in (
+        ('behind', reduced, {}),
+        ('manual', ['begin-review', 'leave'], {'sourcePane': -1}),
+        ('missing-ref', full, {'targetBranch': 'missing-ref'}),
+        ('inspection-error', full, {'checkout': str(root)}),
+        ('vm-name', full, {'firecracker': 'uninspected-vm'}),
+        ('vm-image', full, {'firecrackerImage': 'uninspected-image'}),
+    ):
+        token = 'exit-menu-' + name
+        inputs = dict(checkout=str(checkout), sourcePane=pane, kind='claude')
+        inputs.update(overrides)
+        if name.startswith('vm-'):
+            # Test the workflow's VM fallback without a guest. The public launch
+            # command correctly refuses to assign a VM to this local fixture pane.
+            inputs.update(launch=token, session=session, binary=str(binary), target=str(main))
+            bridge(method='swamp_dispatch', work=token, key='launch', directory=str(main),
+                   operation='workflow.run', payload=dict(workflowIdOrName='@hammz/zellij-agent-exit', inputs=inputs))
+        else:
+            launch(token, **inputs)
+        q = menu(token, answers)
+        assert bridge(method='lookup', work=token, key='worker') is None
+        assert bridge(method='lookup', work=token, key=q['attributes']['run'] + '-sync') is None
+        leave(token, q)
+    run('git', 'commit', '--allow-empty', '-m', 'ahead without content changes', cwd=checkout)
+    launch('exit-menu-ahead', checkout=str(checkout), sourcePane=pane)
+    leave('exit-menu-ahead', menu('exit-menu-ahead', full))
+    run('git', 'branch', 'exit-target', cwd=checkout)
+    launch('exit-menu-target', checkout=str(checkout), sourcePane=pane, targetBranch='exit-target')
+    leave('exit-menu-target', menu('exit-menu-target', reduced))
+    print('PASS: exact exit answers and approval prompts; hidden choices refused; Fork cancellation rechecks; behind/ignored/target, manual, errors and VM context covered', flush=True)
 
 
 ui_pid = ui_fd = None
@@ -458,6 +543,10 @@ try:
 
         def agents():
             return [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('agent')]
+
+        if args.exit_menu_only:
+            exercise_exit_menus()
+            raise SystemExit(0)
 
         def exercise_diff(token, view=None):
             before_diff = run('git', 'status', '--porcelain=v1', cwd=topic).stdout
@@ -824,6 +913,7 @@ try:
         until('restart uses original pane', lambda: any(p['id'] == original['id'] and not p['exited'] for p in agents()))
         print('PASS: fork cancellation returns to a fresh menu; restart reuses original pane', flush=True)
 
+        exercise_exit_menus()
 
         launch('unresolved-review', agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit', '--findings'])
         prepare('unresolved-review')

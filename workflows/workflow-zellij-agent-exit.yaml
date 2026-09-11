@@ -121,6 +121,24 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
+  - name: checkout-status
+    task:
+      type: model_method
+      modelType: "@swamp/git"
+      modelName: ${{ run.id + "-checkout-status" }}
+      methodName: checkout_status
+      globalArgs:
+        repoPath: "${{ inputs.checkout }}"
+      inputs:
+        source: "${{ inputs.checkout }}"
+        targetBranch: "${{ inputs.targetBranch }}"
+    dependsOn:
+    - step: attach
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
   - name: exit-question
     task:
       type: model_method
@@ -134,22 +152,24 @@ jobs:
         run: "${{ run.id }}"
         workflow: "${{ run.workflowName }}"
         question: exit
-        step: exit-approval
+        step: '${{ inputs.sourcePane < 0 ? "manual-exit-approval" : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? "unchanged-exit-approval" : "exit-approval" }}'
         kind: choice
-        prompt: '${{ inputs.sourcePane >= 0 ? "Agent exited. Choose Restart, Fork, Begin review, or Leave." : "Choose Begin review or Leave." }}'
-        answers: '${{ inputs.sourcePane >= 0 ? ["restart", "fork", "begin-review", "leave"] : ["begin-review", "leave"] }}'
+        prompt: '${{ inputs.sourcePane < 0 ? "Choose Begin review or Leave." : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? "Agent exited. Choose Restart, Fork, or Leave." : "Agent exited. Choose Restart, Fork, Begin review, or Leave." }}'
+        answers: '${{ inputs.sourcePane < 0 ? ["begin-review", "leave"] : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? ["restart", "fork", "leave"] : ["restart", "fork", "begin-review", "leave"] }}'
         resumeInput: answer
     dependsOn:
-    - step: attach
+    - step: checkout-status
       condition:
         type: or
         conditions:
         - type: succeeded
         - type: skipped
+  # Swamp leaves approval prompt expressions literal. Select a fixed prompt
+  # using the step named by the saved question.
   - name: exit-approval
     task:
       type: manual_approval
-      prompt: '${{ inputs.sourcePane >= 0 ? "Agent exited. Choose Restart, Fork, Begin review, or Leave." : "Choose Begin review or Leave." }}'
+      prompt: Agent exited. Choose Restart, Fork, Begin review, or Leave.
     dependsOn:
     - step: exit-question
       condition:
@@ -157,6 +177,31 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
+    guard: ${{ data.latest(run.id + "-questions", "exit").attributes.step != "exit-approval" }}
+  - name: unchanged-exit-approval
+    task:
+      type: manual_approval
+      prompt: Agent exited. Choose Restart, Fork, or Leave.
+    dependsOn:
+    - step: exit-question
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ data.latest(run.id + "-questions", "exit").attributes.step != "unchanged-exit-approval" }}
+  - name: manual-exit-approval
+    task:
+      type: manual_approval
+      prompt: Choose Begin review or Leave.
+    dependsOn:
+    - step: exit-question
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ data.latest(run.id + "-questions", "exit").attributes.step != "manual-exit-approval" }}
   - name: exit-answer
     task:
       type: model_method
@@ -173,6 +218,18 @@ jobs:
         submission: "${{ inputs.submission }}"
     dependsOn:
     - step: exit-approval
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    - step: unchanged-exit-approval
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    - step: manual-exit-approval
       condition:
         type: or
         conditions:
