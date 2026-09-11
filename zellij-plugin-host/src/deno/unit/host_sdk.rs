@@ -396,3 +396,48 @@ fn on_event_handlers_receive_decoded_events_after_update_and_pipe_waiters() {
       check(refused);
     "#);
 }
+
+/// The small conveniences the Lua prelude and the Wasm shim have: the revision guard that
+/// means "must not exist", the focused tab and pane of an update payload, a fire-and-forget
+/// command in a pane, and a named form of the raw web request that fills the required slots.
+#[test]
+fn small_helpers_match_the_prelude_and_the_shim() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.refused = (fn, text) => { let message = null; try { fn(); } catch (error) { message = String(error); } check(message !== null && message.includes(text), message); };
+      const d = zellij.data;
+      check(d.REV_ABSENT === 0 && Object.isFrozen(d));
+      check(JSON.stringify(d.put('note', {text: 'new'}, {uid: 'a', expectRev: d.REV_ABSENT})) === JSON.stringify({Put: {entity: 'note', uid: 'a', values: [['text', {Text: 'new'}]], expect_rev: 0}}));
+      const tabs = [{position: 0, name: 'one', active: false}, {position: 1, name: 'two', active: true}];
+      check(zellij.getFocusedTab(tabs).name === 'two' && zellij.getFocusedTab([]) === null && zellij.getFocusedTab([tabs[0]]) === null);
+      refused(() => zellij.getFocusedTab({}), 'TabUpdate');
+      const manifest = {panes: {'0': [{id: 3, is_plugin: true, is_focused: true, title: 'plugin'}, {id: 4, is_plugin: false, is_focused: true, title: 'shell'}], '1': [{id: 5, is_plugin: false, is_focused: false, title: 'idle'}]}};
+      check(zellij.getFocusedPane(0, manifest).id === 4, 'a focused plugin pane is skipped');
+      check(zellij.getFocusedPane(1, manifest) === null && zellij.getFocusedPane(2, manifest) === null);
+      refused(() => zellij.getFocusedPane(-1, manifest), 'tab position');
+      refused(() => zellij.getFocusedPane(0, null), 'must be an object');
+      bind({load() {
+        zellij.runCommandInPane(3, {path: 'sh', args: ['-c', 'true']});
+        zellij.runCommandInPane({Terminal: 4}, {path: 'ls'}, {context: {work: 'one'}, keepScrollback: true});
+        refused(() => zellij.runCommandInPane({Plugin: 3}, {path: 'ls'}), 'terminal ID');
+        refused(() => zellij.runCommandInPane(3, {path: 'ls'}, {keepScrollback: 'yes'}), 'keepScrollback');
+        zellij.host.webRequest({url: 'http://localhost/x'});
+        zellij.host.webRequest({url: 'http://localhost/y', verb: 'Post', headers: {a: 'b'}, body: 'hé', context: {work: 'one'}, streamId: 's1'});
+        zellij.host.webRequest({url: 'http://localhost/z', body: new Uint8Array([1, 2])});
+        refused(() => zellij.host.webRequest({url: 'http://localhost/w', method: 'Get'}), 'unknown WebRequest argument: method');
+      }});
+      bridge('load', {}, 1);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const expected = [
+        {RunCommandInPane: {pane_id: {Terminal: 3}, command: {path: 'sh', args: ['-c', 'true']}, context: {}, keep_scrollback: false}},
+        {RunCommandInPane: {pane_id: {Terminal: 4}, command: {path: 'ls'}, context: {work: 'one'}, keep_scrollback: true}},
+        {WebRequest: ['http://localhost/x', 'Get', {}, [], {}, null, null]},
+        {WebRequest: ['http://localhost/y', 'Post', {a: 'b'}, [104, 195, 169], {work: 'one'}, 's1', null]},
+        {WebRequest: ['http://localhost/z', 'Get', {}, [1, 2], {}, null, null]},
+      ];
+      const commands = sent.map(([command]) => command).filter((command) => Object.hasOwn(command, 'RunCommandInPane') || Object.hasOwn(command, 'WebRequest'));
+      check(JSON.stringify(commands) === JSON.stringify(expected), JSON.stringify(commands));
+    "#);
+}

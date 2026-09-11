@@ -691,6 +691,8 @@
     return {entity, namespace, filter, search, sort, select, limit, offset, after_id: afterId};
   }
   const data = Object.freeze({
+    // The revision guard that says "this row must not exist yet", for a put that creates.
+    REV_ABSENT: 0,
     define(name, attributes, {namespace = null, version = 1, allowDestructive = false} = {}) {
       const attrs = Object.entries(record(attributes, 'entity attributes')).map(([name, options]) => {
         const {kind, indexed = false, fullText = false, unique = false, required = false, default: fallback} = typeof options === 'string' ? {kind: options} : record(options, 'attribute');
@@ -993,14 +995,20 @@
     CliPipeOutput: ["pipeName", "output"], Reconfigure: ["configuration", "writeToDisk"],
     RunCommand: ["command", "envVariables", "cwd", "context", "maxBytesReturned", "streamOutput"],
     OpenCommandPaneInGitCheckoutNearPlugin: ["command", "sourceDirectory", "checkout"],
+    WebRequest: ["url", "verb", "headers", "body", "context", "streamId", "proxy"],
   };
+  // The required slots an omitted named field fills, where null is not a value Rust accepts.
+  const tupleDefaults = { WebRequest: { verb: "Get", headers: {}, body: [], context: {} } };
   function positional(name, arg) {
     const fields = tupleFields[name];
     if (!fields || arg === null || typeof arg !== "object" || Array.isArray(arg) || arg instanceof Uint8Array) return arg;
     validate(arg);
     record(arg, `${name} arguments`);
     for (const field of Object.keys(arg)) if (!fields.includes(field)) throw new TypeError(`unknown ${name} argument: ${field}`);
-    return fields.map((field) => arg[field] === undefined ? null : arg[field]);
+    const defaults = tupleDefaults[name] ?? {};
+    const out = fields.map((field) => arg[field] === undefined ? (defaults[field] ?? null) : arg[field]);
+    if (name === "WebRequest" && typeof out[3] === "string") out[3] = bytes(out[3]);
+    return out;
   }
   const host = Object.freeze(Object.fromEntries(HOST_COMMANDS.map((name) => [
     name[0].toLowerCase() + name.slice(1),
@@ -1188,6 +1196,7 @@
       dim: (from,to) => w.emphasis(4,from,to), unbold: (from,to) => w.emphasis(5,from,to),
       error: (from,to) => w.emphasis(6,from,to), success: (from,to) => w.emphasis(7,from,to),
       render: (c) => pure(ribbon ? 'Ribbon' : 'Text', [d, c === undefined ? null : coordinates(c)]),
+      toString: () => w.render(),
     };
     styled.set(w,d);
     return w;
@@ -1203,6 +1212,15 @@
       options:d.options ?? [], placeholder:d.placeholder ?? '', max_visible_options:d.maxVisibleOptions ?? 6,
       disabled:d.disabled ?? false, style:d.style ?? 'ribbon'};
   }
+  // A raw event may be handed to a widget as it arrived: {Key: key} and {Mouse: mouse} unwrap,
+  // a bare payload passes through.
+  function unwrapEvent(value, tags) {
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const keys = Object.keys(value);
+      if (keys.length === 1 && tags.includes(keys[0])) return value[keys[0]];
+    }
+    return value;
+  }
   function construct(fields, single = false, dialog = null) {
     if (!Array.isArray(fields)) throw new TypeError('fields must be an array');
     const descriptors = fields.map(d => fieldDescriptor(d,single));
@@ -1215,7 +1233,8 @@
       setOptions(id, options) { call('SetOptions',single ? [singleId,id] : [id,options]); return w; },
       focus(id = singleId) { call('Focus',id); return w; }, focusedId: () => call('FocusedId'),
       moveFocus: (forward = true) => call('MoveFocus',forward),
-      handleKey: (key) => call('Key',key), handleMouse: (mouse) => call('Mouse',mouse),
+      handleKey: (key) => call('Key', unwrapEvent(key, ['Key', 'InterceptedKeyPress'])),
+      handleMouse: (mouse) => call('Mouse', unwrapEvent(mouse, ['Mouse'])),
       insertPastedText: (text) => call('Paste',text),
       render(c) {
         const result = call('Render',coordinates(c));
@@ -1294,6 +1313,24 @@
     keyName,
     paneKey,
     mouse,
+    /** The active tab, as the Wasm shim's get_focused_tab answers it. */
+    getFocusedTab: (tabs) => {
+      if (!Array.isArray(tabs)) throw new TypeError("getFocusedTab requires the TabUpdate payload");
+      return tabs.find((tab) => tab !== null && typeof tab === "object" && tab.active === true) ?? null;
+    },
+    /** The focused terminal pane of one tab, plugins ignored, as the Wasm shim's get_focused_pane answers it. */
+    getFocusedPane: (tabPosition, manifest) => {
+      if (!Number.isSafeInteger(tabPosition) || tabPosition < 0) throw new TypeError("getFocusedPane requires a tab position");
+      const panes = record(manifest, "pane manifest").panes;
+      if (panes === null || typeof panes !== "object") throw new TypeError("getFocusedPane requires a PaneManifest");
+      return (panes[String(tabPosition)] ?? []).find((pane) => pane.is_focused === true && pane.is_plugin !== true) ?? null;
+    },
+    /** Run a command in an existing terminal pane, fire and forget: a bare number is a terminal id. */
+    runCommandInPane: (pane, cmd, options = {}) => {
+      const { context, keepScrollback = false } = record(options, "runCommandInPane options");
+      if (typeof keepScrollback !== "boolean") throw new TypeError("keepScrollback must be a boolean");
+      command("RunCommandInPane", { pane_id: { Terminal: terminalId(pane) }, command: record(cmd, "command"), context: stringMap(context, "context"), keep_scrollback: keepScrollback });
+    },
     terminalPane: (id) => ({ Terminal: terminalId(id) }),
     pluginPane: (id) => {
       if (!Number.isSafeInteger(id) || id < 0 || id > 4294967295) throw new TypeError("plugin pane ID must fit u32");

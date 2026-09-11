@@ -177,6 +177,12 @@ export interface Zellij {
   /** The PaneRenderReport spelling of a pane id: {Terminal: 3} -> "terminal_3". */
   paneKey(pane: PaneId | number): PaneKey;
   mouse(event: Mouse | {Mouse: Mouse}): MouseSummary;
+  /** The active tab of a TabUpdate payload, or null. */
+  getFocusedTab(tabs: TabInfo[]): TabInfo | null;
+  /** The focused terminal pane of one tab of a PaneUpdate payload, plugins ignored, or null. */
+  getFocusedPane(tabPosition: number, manifest: PaneManifest): PaneInfo | null;
+  /** Requires RunCommands. Runs a command in an existing terminal pane and does not wait for it. */
+  runCommandInPane(pane: AgentPane, command: CommandToRun, options?: {context?: StringMap; keepScrollback?: boolean}): void;
   terminalPane(id: number): {Terminal: number};
   pluginPane(id: number): {Plugin: number};
   /** Requires WriteToStdin. Text is UTF-8 encoded. */
@@ -367,6 +373,8 @@ export type HostArgs<K extends CommandName> = CommandArgs[K] extends undefined ?
   : [payload: CommandArgs[K]];
 /** Named-argument forms of the tuple commands. Omitted optional fields become null. */
 export interface HostNamedArgs {
+  /** Omitted fields default to Get, no headers, an empty body and no context; a string body is UTF-8 encoded. */
+  webRequest: {url: string; verb?: HttpVerb; headers?: StringMap; body?: string | Bytes; context?: StringMap; streamId?: string | null; proxy?: string | null};
   renameTab: {tabIndex: number; name: string}; renameTabWithId: {tabId: number; name: string};
   renameTerminalPane: {paneId: number; name: string}; renamePluginPane: {paneId: number; name: string};
   focusTerminalPane: {paneId: number; shouldFloatIfHidden: boolean; shouldBeInPlaceIfHidden: boolean};
@@ -634,6 +642,8 @@ export interface DataQuery {entity: string; namespace?: string | null; filter?: 
 export interface DataAttribute {kind: AttrKind; indexed?: boolean; fullText?: boolean; unique?: boolean; required?: boolean; default?: DataInput;}
 export interface DataWatch {watchId: Integer; initial: DataSnapshot; dispose(): void;}
 export interface DataStore {
+  /** The expectRev of a put that must create: the row must not exist yet. */
+  readonly REV_ABSENT: 0;
   define(name: string, attributes: Record<string, AttrKind | DataAttribute>, options?: {namespace?: string | null; version?: number; allowDestructive?: boolean}): DataSchemaInfo;
   catalog(namespace?: string | null): DataEntityInfo[]; fetch(query: DataQuery): DataSnapshot; count(query: DataQuery): Integer;
   apply(mutations: Mutation[], options?: {namespace?: string | null}): ApplyReport;
@@ -690,8 +700,10 @@ export type WidgetValue = string | boolean | number | null;
 export interface WidgetInteractionMethods {
   focusedId(): string | null;
   moveFocus(forward?: boolean): WidgetInteraction;
-  handleKey(key: KeyWithModifier): WidgetInteraction;
-  handleMouse(mouse: Mouse): WidgetInteraction;
+  /** The key, or the raw Key/InterceptedKeyPress event as it arrived. */
+  handleKey(key: KeyWithModifier | {Key: KeyWithModifier} | {InterceptedKeyPress: KeyWithModifier}): WidgetInteraction;
+  /** The mouse payload, or the raw Mouse event as it arrived. */
+  handleMouse(mouse: Mouse | {Mouse: Mouse}): WidgetInteraction;
   insertPastedText(text: string): WidgetInteraction;
   /** Returns terminal text; cursor updates are attached to the current render invocation. */
   render(viewport: Viewport): string;
@@ -731,6 +743,8 @@ export interface StyledText {
   dim(from?: number, to?: number): this; unbold(from?: number, to?: number): this;
   error(from?: number, to?: number): this; success(from?: number, to?: number): this;
   render(viewport?: Viewport): string;
+  /** render() without a viewport, so a StyledText can be used where a string is. */
+  toString(): string;
 }
 export type ComponentText = string | StyledText;
 export interface TableComponent { row(...cells: ComponentText[]): this; render(viewport?: Viewport): string; }
