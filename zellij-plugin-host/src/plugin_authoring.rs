@@ -8,20 +8,45 @@ use zellij_plugin_api::authoring::is_deno_plugin;
 
 /// Check a file using its runtime: Lua compilation or Deno's semantic module check.
 pub fn check_plugin(path: &Path) -> anyhow::Result<()> {
-    if is_deno_plugin(path) {
-        crate::deno::check_plugin(path)
-    } else {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
-        let chunk = path.file_name().unwrap_or_default().to_string_lossy();
-        crate::check_lua_plugin(&source, &chunk).map_err(|e| anyhow::anyhow!(e))
+    check_plugin_report(path, &path.to_string_lossy()).map(|_| ())
+}
+
+/// [`check_plugin`], keeping the report: an error when the file does not compile, otherwise
+/// the warnings - what compiles but will go wrong at run time - for whichever runtime the file
+/// belongs to. `lint_name` is the plugin's name as `plugin_write` spells it, because one Lua
+/// rule (a `hocus/` extension's registration permission) depends on where the file lands.
+pub fn check_plugin_report(
+    path: &Path,
+    lint_name: &str,
+) -> anyhow::Result<zellij_types::authoring::PluginCheckReport> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
+    let report = check_source_named(
+        path,
+        &source,
+        lint_name,
+        zellij_types::authoring::PluginCheckMode::Semantic,
+    );
+    if !report.diagnostics.is_empty() {
+        anyhow::bail!("{}", report.diagnostics.join("\n"));
     }
+    Ok(report)
 }
 
 /// Analyze only the proposed entrypoint; dependency reads are confined by the semantic checker.
 pub fn check_source(
     path: &Path,
     source: &str,
+    mode: zellij_types::authoring::PluginCheckMode,
+) -> zellij_types::authoring::PluginCheckReport {
+    check_source_named(path, source, &path.to_string_lossy(), mode)
+}
+
+/// [`check_source`] with the Lua lint told the plugin's name rather than its path.
+pub fn check_source_named(
+    path: &Path,
+    source: &str,
+    lint_name: &str,
     mode: zellij_types::authoring::PluginCheckMode,
 ) -> zellij_types::authoring::PluginCheckReport {
     use zellij_types::authoring::PluginCheckReport;
@@ -36,7 +61,7 @@ pub fn check_source(
             .collect(),
         outline: zellij_plugin_api::authoring::outline(source),
         permissions: zellij_plugin_api::authoring::requested_permissions(source).known,
-        warnings: zellij_plugin_api::authoring::lint(&name, source),
+        warnings: zellij_plugin_api::authoring::lint(lint_name, source),
     }
 }
 
@@ -193,6 +218,53 @@ pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_plugin_report_carries_deno_warnings_and_lua_lint() {
+        let dir = tempfile::tempdir().unwrap();
+        // A computed permission request typechecks and cannot be inferred: a warning, not an error.
+        let deno = dir.path().join("computed.ts");
+        std::fs::write(
+            &deno,
+            "import zellij, {type Permission} from 'zellij:plugin';\nconst wanted: Permission[] = ['ReadFiles'];\nexport default { load() { zellij.requestPermission(wanted); }, render() { return ''; } };\n",
+        )
+        .unwrap();
+        let report = check_plugin_report(&deno, "computed").unwrap();
+        assert!(report.diagnostics.is_empty(), "{report:?}");
+        assert!(
+            report.warnings.iter().any(|w| w.contains("computed")),
+            "{report:?}"
+        );
+        // A hocus extension registering without the permission its registration needs: the rule
+        // keys on the name, which is why the name travels beside the path.
+        let lua = dir.path().join("hocus").join("tools.lua");
+        std::fs::create_dir_all(lua.parent().unwrap()).unwrap();
+        std::fs::write(
+            &lua,
+            "local zellij = require('zellij')\nlocal M = {}\nfunction M.load() zellij.hocus.tools {} end\nreturn M\n",
+        )
+        .unwrap();
+        let report = check_plugin_report(&lua, "hocus/tools").unwrap();
+        assert!(report.diagnostics.is_empty(), "{report:?}");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("message_and_launch_other_plugins")),
+            "{report:?}"
+        );
+        assert!(
+            check_plugin_report(&lua, "tools")
+                .unwrap()
+                .warnings
+                .is_empty(),
+            "outside hocus/ the registration rule does not apply"
+        );
+        std::fs::write(&lua, "return {").unwrap();
+        assert!(check_plugin_report(&lua, "hocus/tools").is_err());
+        std::fs::write(&deno, "export const = ;").unwrap();
+        assert!(check_plugin_report(&deno, "computed").is_err());
+    }
 
     #[test]
     fn deno_writes_check_syntax_and_preserve_previous_versions() {

@@ -11,7 +11,9 @@ pub use worker::run_compilation_worker;
 #[cfg(test)]
 pub(crate) use worker::spawn_count as compilation_worker_spawn_count;
 
-pub use checker::{check_plugin, check_syntax};
+pub use checker::check_syntax;
+#[cfg(test)]
+pub use checker::check_plugin;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
