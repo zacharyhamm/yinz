@@ -13,8 +13,10 @@ layout {
 }
 ```
 
-File URLs also work in aliases, background plugins, and hooks. Source lookup follows the same rules as Lua plugins.
-Set `shared true` in the plugin configuration to use one instance across clients.
+File URLs also work in aliases, background plugins, and hooks. Source lookup follows the same rules as Lua plugins:
+a bare `file:hello.ts` is looked for in the user's plugin folder. Set `shared true` in the plugin configuration
+to use one instance across clients. A plugin is a local file: `https://` URLs load Wasm plugins only, and a remote
+`.ts`, `.js` or `.lua` URL is refused with a message to download the file and load it with `file:`.
 
 ## Lifecycle
 
@@ -54,6 +56,63 @@ Render requests coalesce while a render is pending. A state change or resize inv
 Run host commands from lifecycle callbacks. Module initialization cannot use host commands or wait for host events.
 An initialization Promise that cannot settle fails with a diagnostic.
 
+## Events
+
+Subscribe by the Rust variant name:
+
+```ts
+zellij.subscribe(["Key", "TabUpdate", "PaneUpdate"]);
+```
+
+An event arrives as its JSON variant: a unit event is a string (`"InputReceived"`), and every other event is one
+`{Type: payload}` object. `update(event)` receives that object; `zellij.on(type, handler)` hands a handler the payload
+and the whole event. Tuple payloads are positional arrays with `null` in an absent slot, bytes in an event are `number[]`
+except live output (`RunCommandOutput` and `PaneOutput` carry a `Uint8Array`), and `PaneRenderReport` is keyed
+`terminal_7` / `plugin_7` as the CLI spells it.
+
+`zellij.event(raw)` decodes an event into a discriminated union - `type`, the untouched payload as `value`, the whole
+event as `raw` - with named camelCase fields for the events whose raw shape is positional or bytes, and
+`zellij.onEvent(type, handler)` is `on` with the decoded event:
+
+```ts
+zellij.onEvent("RunCommandResult", (e) => {
+  if (e.exitCode === 0) zellij.log(zellij.decodeUtf8(e.stdout)); // stdout is a Uint8Array
+  return true;
+});
+zellij.onEvent("Key", (e) => { if (e.key === "Esc") zellij.closeSelf(); }); // "t", "Esc", "F2"
+zellij.onEvent("Mouse", (e) => { if (e.kind === "LeftClick") zellij.log(e.line, e.col); });
+export default definePlugin({
+  update(event) {
+    const e = zellij.event(event);
+    if (e.type === "TabUpdate") return e.value.some((tab) => tab.active); // a list, as delivered
+    if (e.type === "Timer") zellij.log(e.value); // seconds
+    return false;
+  },
+});
+```
+
+The named fields: `RunCommandResult` has `exitCode`, `stdout`, `stderr`, `context`; `WebRequestResult` has `status`,
+`headers`, `body`, `context`; `RunCommandOutput` and `PaneOutput` have `data` (and `paneId`); `WebRequestStreamChunk`
+has `streamId`, `chunk`, `done`, `error`; `CommandPaneExited` and `EditPaneExited` have `paneId`, `exitCode`,
+`context`; `CommandPaneOpened`, `EditPaneOpened` and `CommandPaneReRun` have `paneId`, `context`; `SessionUpdate` has
+`sessions`, `resurrectableSessions`; `CustomMessage` has `message`, `payload`; `UserAction` has `action`, `clientId`,
+`terminalId`, `cliClientId`; `ActionComplete` has `action`, `paneId`, `context`; `CwdChanged` has `paneId`, `cwd`,
+`focusedClientIds`; `CommandChanged` has `paneId`, `command`, `isForeground`, `focusedClientIds`; `AvailableLayoutInfo`
+has `layouts`, `errors`; `Key` and `InterceptedKeyPress` have `key`; `Mouse` has `kind` and `line`/`col` or `lines`;
+the `FileSystem*` events have `files`, a list of `{path, metadata}`; and `PluginDataChanged` has `records`. Every byte
+field is a `Uint8Array`. Struct payloads such as `Hook` and `AgentEvent` are not spread: read them from `value`.
+`DecodedEvent` and `DecodedEventOf<K>` are the types.
+
+`AgentEvent` is one event per hook a coding agent fired in a pane: `pane_id`, `kind`, `hook` (`UserPromptSubmit`,
+`PreToolUse`, `Stop`, ...), `state`, `detail`, `prompt`, `last_message`, `tool_name`, `cwd`, `session_id`, and `raw`,
+the agent's own JSON. It needs `ReadApplicationState`. See [Agent helpers](#agent-helpers).
+
+**Order.** For one event, `update` runs first, then the pipe waiters (for a pipe), then the `on` and `onEvent`
+handlers in registration order; the Lua runtime runs its handlers before `update`. `waitForEvent` waiters settle
+before any of them and do not consume the event. Either `update` or a handler returning `true` requests a render.
+The reserved pipes the SDK consumes - RPC, completions, Hocus extension messages and default-keybinding handlers -
+never reach `pipe` or `waitForPipe`.
+
 ## Host commands and permissions
 
 `zellij.command` exposes the existing host command dispatcher. Command names retain their Rust spelling.
@@ -86,6 +145,79 @@ Events retain their JSON variant names. For example, a timer is `{ Timer: second
 Optional tuple fields remain `null`, so later fields keep their positions.
 `PaneRenderReport` uses string keys such as `terminal_7` and `plugin_7`, as the CLI event stream does; `zellij.paneKey(paneId)` spells them.
 See [sdk.d.ts](../zellij-server/src/plugins/deno/sdk.d.ts) for the SDK declarations.
+
+### Permissions
+
+Privileged commands need permission, which the user is prompted for once:
+
+```ts
+export default {
+  async load() {
+    await zellij.waitForPermissions(["ChangeApplicationState", "OpenTerminalsOrPlugins"]);
+  },
+};
+```
+
+A plugin written through Hocus is granted whatever its source asks for when you approve the write - the confirmation
+names them - so it never prompts in its own pane.
+
+Calling a command you have not been granted throws, naming the permission you need - the same rule Wasm plugins live
+under, except that a Wasm plugin cannot be told about it and you can:
+
+```ts
+try { zellij.command("CopyToClipboard", "hi"); }
+catch (error) { zellij.log(error); } // 'CopyToClipboard' requires the 'WriteToClipboard' permission, ...
+```
+
+**A permission is not in force while `load` runs.** Every plugin starts with its permissions unanswered - even one
+granted long ago, and even one Hocus pre-granted when you approved the write - because the grant arrives as a
+`PermissionRequestResult` event, and `load` runs before any event does. So `load` is where you ask, and
+`await zellij.waitForPermissions([...])` is what makes the rest of `load` run after the answer; a gated call made
+before it is refused, and the refusal says so. `requestPermission` asks without waiting, for a plugin that does the
+work in a handler:
+
+```ts
+export default {
+  load() { zellij.requestPermission(["PluginData"]); }, // ask here
+};
+zellij.on("PermissionRequestResult", () => {
+  zellij.data.define("note", {text: "Text"}); // act here, on every run
+});
+```
+
+The handler fires on every load, not only the first: an already-granted permission is answered immediately rather
+than prompting.
+
+These are the names, as a plugin spells them - the `Permission` type, so the checker refuses a misspelling:
+
+| Permission | What it covers |
+|---|---|
+| `ReadApplicationState` | the session's panes, tabs and modes - most `*Update` events |
+| `ChangeApplicationState` | moving, closing, renaming and focusing panes and tabs |
+| `OpenFiles` | opening a file in the user's editor |
+| `RunCommands` | `zellij.runCommand`, commands in panes, and `zellij.agent.spawn` |
+| `OpenTerminalsOrPlugins` | new terminal panes, and starting or reloading plugins |
+| `WriteToStdin` | typing into another pane |
+| `WebAccess` | `zellij.webRequest` |
+| `ReadCliPipes` | pipes from the command line |
+| `MessageAndLaunchOtherPlugins` | `MessageToPlugin` and `zellij.rpc` - what a Hocus extension registers over |
+| `Reconfigure` | changing the session's configuration and keybindings |
+| `FullHdAccess` | files outside `/host`, `/data`, `/cache`, `/tmp` and `/plugins` |
+| `InterceptInput` | taking keys and mouse before the rest of the session |
+| `ReadPaneContents` | another pane's viewport and selection, and live `PaneOutput` |
+| `RunActionsAsUser` | `RunAction`, which is anything a keybinding can do |
+| `WriteToClipboard` | the system clipboard |
+| `ReadSessionEnvironmentVariables` | the environment the session started in |
+| `PluginData` | the plugin data store, in the plugin's own namespace |
+| `SharedPluginData` | a `shared:` namespace, on top of `PluginData` |
+| `ReadFiles` | reading in the plugin's own folders |
+| `WriteFiles` | writing in them |
+| `AuthorPlugins` | writing into the plugin folder and reloading plugins by url |
+
+A name that is not on this list grants **nothing** and raises nothing: Hocus reads the list out of your source to
+pre-grant it, and a name it does not recognise is simply not there, so the plugin is denied at run time in a pane
+nobody is watching. `plugin_check` and `zellij plugins check` warn about that, suggest the nearest name, and warn
+about the other traps a compile cannot see.
 
 ## Host command helpers
 
@@ -374,8 +506,9 @@ Subscriptions stay active after helpers finish. Use `unsubscribe` when you no lo
 All durations must be finite numbers between 0 and 2147483647 milliseconds.
 
 ```ts
+async function refreshState() {} // Your plugin's function.
 const refresh = zellij.every(1000, async () => {
-  await refreshState(); // Your plugin's function.
+  await refreshState();
   return true;
 });
 // Stop future invocations when the plugin no longer needs updates.
@@ -407,6 +540,24 @@ zellij.projectConfig.write('.', 'agent_exit { default_branch "main"; }', previou
 Project configuration takes a host directory (relative to the plugin cwd, such as `.`).
 `projectConfig.write(directory, source, expectedSource)` requires the exact previous source, or `null` if absent.
 The host resolves the project control checkout and refuses a stale source. It does not run the configured jobs.
+
+
+A plugin can read and write inside the folders zellij gives it, which are the same ones a Wasm plugin has preopened:
+
+| path | what |
+|---|---|
+| `/host` | the plugin's own folder - normally where the session was started. A relative path is read against this one. |
+| `/data` | scratch for this instance, thrown away with the session |
+| `/cache` | this plugin's own folder, kept across sessions |
+| `/tmp` | zellij's temp folder, **shared with every other plugin and session** |
+| `/plugins` | the user's plugin folder - `~/.config/zellij/plugins/` - when the session has one |
+
+A path is confined *after* symlinks are followed, so a link inside `/host` pointing elsewhere is refused rather than
+followed out. `/tmp` is a real prefix here, so an absolute path that begins `/tmp` is read as the shared root.
+Reaching outside all five folders needs `FullHdAccess`. `zellij.host.changeHostFolder(path)` (`FullHdAccess`) moves
+`/host`, and `HostFolderChanged` confirms it. Zellij's own log is outside every root: `zellij.readPluginLog(name,
+lines)` answers with a plugin's last lines of it and needs `AuthorPlugins`. A missing file is an error, not an empty
+answer; `fs.metadata` answers `null` for something that is not there.
 
 ## Persistent data
 
@@ -449,6 +600,212 @@ Fetch and watch snapshots contain `{records, raw}`. The raw rows retain tagged v
 Registration retains the listener before dispatch. Successful disposal unregisters the host watch and removes its listener;
 repeated successful disposal is harmless. Reload and disconnect remove the old runtime's watches.
 The shared store still only wakes watches for writes from the same server process.
+
+
+### Writing without losing somebody else's write
+
+`rev` is the row's revision. It starts at 1 and the store advances it on every write that touches the row, which is
+what lets two writers tell a row they read from a row somebody has since changed. That matters more than it used to:
+the store is shared by every session on the machine, and with `plugin_data_url` pointing at Postgres it is shared by
+every machine pointed at that database.
+
+Pass the `rev` you read as `expectRev` to `put` or `update` and the write becomes a compare-and-set - it applies only
+if the row is still at that revision, and the whole `apply` fails otherwise, rolling back everything else in the
+batch. `zellij.data.REV_ABSENT` (0) is the other direction: the row must *not* exist yet, so a `put` guarded on it
+claims a uid or fails.
+
+```ts
+const d = zellij.data;
+const {records} = d.fetch({entity: "note", filter: d.eq("uid", "n1")});
+const note = records[0];
+try {
+  d.apply([d.put("note", {title: `${note.title}!`}, {uid: "n1", expectRev: note.rev})]);
+} catch (error) {
+  if (d.isConflict(error)) {
+    // Somebody wrote it first. Read it again and decide what to do with their version.
+  } else throw error; // not a race: this request fails the same way however often it is sent.
+}
+```
+
+**Ask `zellij.data.isConflict(error)` before you retry.** A failed `apply` throws for two different reasons, and they
+have opposite answers: a conflict is a race, and reading the row again is what resolves it, while an entity that was
+never declared, a malformed filter or a permission that was not granted will fail identically every time. A retry
+loop that cannot tell them apart spins forever on the second kind.
+
+A guarded `put` never inserts: if the row has been deleted since you read it, the write conflicts rather than
+bringing it back, because resurrecting it would lose the delete just as surely as an unguarded write loses an edit.
+
+**Pass the `rev` the *value* was composed from, not the one you just read.** Fetch the row, build the new value,
+guard on the row's `rev`, write: the two reads are microseconds apart, so the guard spans a window nothing happens
+in. The revision that matters is the one whoever composed the value was looking at, which for a plugin taking an
+edit from a person or a model is turns or minutes back. Carry it with the value: put it in what you hand out, take
+it back as an argument, and guard on *that*.
+
+**A guard belongs to the batch, not to one row in it.** A batch that replaces something without touching the row
+that names it - a note's tags, which are their own rows - is still a replacement composed from a reading, so give it
+a guarded `update` of the owning row in the same batch; since `apply` is all or nothing, a refused guard rolls the
+rest back. Guard the row *once*: two guarded writes of one row in a batch is the second finding the revision the
+first just advanced. `apply` answers with `per_mutation` as well as `rows_written` and `rows_deleted`, for guarding
+by hand with a `rev` filter instead of failing the batch.
+
+A watch is only re-run by writes made in the same zellij server. On a shared Postgres, another machine's write does
+not wake your watcher. Re-fetch if you need to see what somebody else did.
+
+### Sharing a namespace
+
+Everything in a plugin's own namespace is private to it, and a plugin cannot name another plugin's. Rows two plugins
+share live in a **shared namespace**, which is a namespace whose name begins with `shared:`:
+
+```ts
+export default {
+  async load() {
+    // Both permissions, in every plugin that touches the namespace - the reader too.
+    await zellij.waitForPermissions(["PluginData", "SharedPluginData"]);
+    const watch = zellij.data.watch({entity: "todo", namespace: "shared:todo", sort: [["id", "Desc"]]}, () => true);
+    zellij.log(watch.initial.records.length);
+  },
+};
+```
+
+Three rules, and every one of them is a load error or a denial rather than something that degrades quietly:
+
+- **The prefix is not optional.** `namespace: "todo"` is refused; `"shared:todo"` is the same store. The segment
+  after the colon is lower-case letters, digits, `-` and `_`.
+- **`SharedPluginData` as well as `PluginData`**, in every plugin that reads or writes it.
+- **One plugin defines; the rest only use.** `define` is a migration: two plugins racing to define the same entity
+  is a bug waiting for the day their two spellings differ. Imports are confined to the plugin file's own folder, so a
+  `hocus/` extension and a top-level pane cannot share a schema module - which makes "the owner defines, the reader
+  fetches" the pattern rather than a preference. If a reader must be defensive, define exactly what the owner defines
+  and let the error out; never swallow it into an empty list.
+
+`namespace` is an option of `define` (its third argument), of the query given to `fetch`, `count` and `watch`, and of
+`apply`'s second argument; `catalog(namespace)` takes it positionally.
+
+### Try it on twenty lines first
+
+The namespace, the permissions and the column names are all settled by one reload of a plugin that does nothing
+else. Write this before the real thing, not after:
+
+```ts
+import zellij, {definePlugin} from "zellij:plugin";
+export default definePlugin({
+  async load() {
+    await zellij.waitForPermissions(["PluginData", "SharedPluginData"]);
+    const d = zellij.data;
+    const defined = d.define("todo", {title: {kind: "Text", required: true}, done: {kind: "Bool", default: false}}, {namespace: "shared:todo"});
+    zellij.log(JSON.stringify(defined));
+    d.apply([d.put("todo", {title: "probe"})], {namespace: "shared:todo"});
+    zellij.log(`rows: ${d.fetch({entity: "todo", namespace: "shared:todo"}).records.length}`);
+  },
+});
+```
+
+`plugin_reload` it, `plugin_log` it. A cycle spent here is a cycle not spent rewriting a finished plugin around a
+constraint it was built against.
+
+### Finding what is already there
+
+**You do not declare an entity you only read** - `define` is for entities you own, and a fetch works against
+anything already in the store. `data.catalog()` says what that is:
+
+```ts
+for (const entity of zellij.data.catalog()) { // every namespace this plugin may see
+  zellij.log(`${entity.namespace} ${entity.def.name} v${entity.def.version}`);
+  for (const attr of entity.def.attrs) zellij.log(`  ${attr.name} ${attr.kind}${attr.indexed ? " indexed" : ""}`);
+}
+zellij.data.catalog("shared:hocus"); // or just one namespace
+```
+
+With no argument it lists the plugin's own namespace plus every `shared:` one, once `SharedPluginData` is granted.
+Another plugin's private namespace is never listed.
+
+### Hocus data
+
+Hocus keeps its projects, todos, notes, scheduled prompts and coding-agent records in the shared namespace
+`shared:hocus`, declared at session start whether or not a Hocus pane is open. Any plugin holding `PluginData` and
+`SharedPluginData` can read them. `plugin_docs section=hocus_data` (the Lua guide's "Hocus data", whose tables are
+language-neutral) lists every entity and attribute, and `hocus-todos.ts` and `hocus-notes.ts` in `example-plugins/`
+are working read-only plugins over them:
+
+```ts
+const d = zellij.data;
+await zellij.waitForPermissions(["PluginData", "SharedPluginData"]);
+const todos = d.fetch({
+  namespace: "shared:hocus", entity: "todo",
+  filter: d.and(d.eq("root", "/home/me/project"), d.eq("done", false)),
+  sort: [["id", "Asc"]],
+});
+zellij.log(todos.records.length);
+```
+
+**Read these; do not write them.** Nothing blocks a write, but Hocus maintains invariants the rows do not carry, so a
+row added by hand can produce a list Hocus will not accept. Mutate through Hocus's tools (`/todo_add`, `/todo_done`,
+`/note_add`) or `zellij pipe` to `hocus-store` instead. `id`, `uid`, `created_at`, `updated_at`, `rev` are on
+every row without being declared, here as anywhere else, and the storage engines' own column names (`rowid`, `oid`, `xmin`, `xmax`, `cmin`, `cmax`, `ctid`, `tableoid`) are
+reserved with them; a `define` that names any of these fails whole.
+
+## Work queues
+
+A plugin can put *other plugin code* on a named **work queue**, to run later as its own headless plugin instance
+when the queue has a free slot. Each queue runs at most `concurrency` jobs at once (one, until someone says
+otherwise), so a queue is how you build a merge queue, a deploy pipeline, or anything else that must not run
+everything at the same time.
+
+The enqueuer:
+
+```ts
+zellij.subscribe(["QueueJobStarted", "QueueJobFinished", "QueueChanged"]);
+zellij.host.configureQueue({queue: "merge", concurrency: 2});
+
+const jobId = zellij.host.enqueueQueueJob({
+  queue: "merge",
+  plugin_url: "file:merge_one.ts",
+  config: {branch: "feature/x"}, // the job's configuration
+  context: {pr: "42"}, // yours, echoed back; the job never sees it
+});
+
+zellij.on("QueueJobStarted", (e) => { zellij.log(e.queue, e.job_id, e.plugin_id, e.context.pr); });
+zellij.on("QueueJobFinished", (e) => {
+  // e.outcome is "Succeeded", "Failed", "Cancelled" or "Aborted"; e.payload is what the job
+  // reported (or the error, for a job that failed to load or crashed)
+  zellij.log(e.outcome, e.payload);
+});
+
+const queues = zellij.host.queueStatus({queue: "merge"}); // {queue: null} for every queue
+zellij.host.cancelQueueJob({job_id: jobId});
+```
+
+The job is an ordinary plugin with no `render`. It is loaded `shared`, so it is one instance for the whole session
+however many clients are attached (its configuration carries `shared: "true"`). It learns what it is from its
+configuration and ends itself by reporting:
+
+```ts
+import zellij, {definePlugin} from "zellij:plugin";
+export default definePlugin({
+  async load(config) {
+    // config.zellij_queue, config.zellij_queue_job_id, config.zellij_queue_enqueuer_plugin_id,
+    // plus whatever the enqueuer put in `config` (here, config.branch) and `caller_cwd`.
+    await zellij.waitForPermissions(["RunCommands"]);
+    const result = await zellij.runCommand({command: ["git", "merge", config.branch]});
+    zellij.host.finishQueueJob({success: result.exitCode === 0, payload: `merged ${config.branch}`});
+  },
+});
+```
+
+`finishQueueJob` records the outcome and unloads the job; the enqueuer's slot frees and the next pending job starts.
+A job that closes itself, or whose pane is closed, ends as `Aborted`; one that fails to load or throws ends as
+`Failed`, with the error as its payload. `QueueChanged` goes to every subscriber whenever a queue's contents or limit
+change, and carries the same `pending` and `running` lists `queueStatus` does.
+
+Permissions: `enqueueQueueJob` needs `MessageAndLaunchOtherPlugins`, `configureQueue` and `cancelQueueJob` need
+`ChangeApplicationState`, and `queueStatus` (and the `QueueChanged` event) need `ReadApplicationState`.
+`finishQueueJob` needs nothing: a job runs headless, and a permission prompt it raised would have no pane to be
+answered in - so a job requests what it needs in `load`, as a headless hook does, and the first grant is remembered.
+
+Queued jobs keep running after their enqueuer reloads. Addressed start/finish events belong to the original
+instance; the replacement can query `QueueStatus` and receives broadcast `QueueChanged` events. Two things a queue
+does not do: remember jobs across sessions, and tell an enqueuer that has since unloaded anything - its events are
+dropped, and the job runs to completion regardless.
 
 ## Plugin RPC
 
@@ -580,6 +937,7 @@ Each tool call contains `{id, name, arguments}`. `arguments` remains the model's
 Nested message fields retain the wire spelling so results can be supplied in subsequent requests:
 
 ```ts
+const result = await zellij.hocus.complete({messages: [{role: 'user', content: 'What time is it?'}], tools: []});
 const next = await zellij.hocus.complete({messages: [
   {role: 'assistant', content: result.content, tool_calls: result.toolCalls},
   {role: 'tool', tool_call_id: result.toolCalls[0].id, content: 'The tool result'},
@@ -618,9 +976,40 @@ Hocus verifies ownership independently and keeps its existing 30-second call tim
 The SDK consumes extension protocol messages. Ordinary pipes still reach listeners and the plugin's `pipe` callback.
 Replies use the host-provided source plugin ID. Async handlers retain the client that received the call.
 
-See [weather-extension.ts](../example-plugins/weather-extension.ts), or `plugin_docs section=example_deno_extension`.
+See [weather-extension.ts](../example-plugins/weather-extension.ts), or `plugin_docs section=example_weather_extension`.
 
-## Shared UI and terminal text
+## Rendering
+
+`render(rows, columns)` returns the frame as a string, and ANSI escapes work in it. A render is asked for when
+`update`, `pipe`, an `on` handler or a timer callback returns `true`, or when `zellij.requestRender()` is called;
+requests coalesce while one is pending, and a state change or resize invalidates an outdated async render result
+before it is drawn. `render` may be `async`. A plugin that wants to look like part of zellij uses the same components
+the builtin plugins do, drawn by zellij in the user's theme:
+
+```ts
+const ui = zellij.ui;
+let panes: {id: number; command: string}[] = [];
+export default {
+  render(rows: number, cols: number) {
+    const table = ui.table([["pane", "command"]]); // the first row is the title row
+    for (const pane of panes) table.row(String(pane.id), ui.text(pane.command).dim());
+    return [
+      ui.text("panes").selected().render(),
+      table.render(),
+      ui.nestedList(["one", {text: "two", indent: 1}]).render(),
+    ].join("\n");
+  },
+};
+```
+
+`render(coords)` gives the string to put in the frame. Without an argument the component is drawn where the cursor
+is, so components join with `"\n"` like any other lines; with `{x: 0, y: 2, width: 40, height: 5}` it is drawn there,
+and clipped to the width and height if they are given. A `StyledText` also renders as a string where one is expected
+(`` `${ui.text("x")}` ``). Text is measured in columns, which is neither bytes nor code points: `zellij.text.width(s)`
+is the answer, and `pad`, `padLeft`, `center` and `truncate` are built on it, so a box a plugin draws itself lines up
+whatever is in it.
+
+### Shared UI and terminal text
 
 `zellij.ui` uses the same Rust rendering toolkit as Lua and Wasm plugins.
 Use `zellij.ui.markdown(source, {dim: true})` for subdued history output.
@@ -662,7 +1051,274 @@ Input, coordinates, and output are bounded by transport limits. Excessive native
 Widths measure terminal columns. `truncate` defaults to `…` and accepts a replacement ellipsis as its third argument.
 Padding truncates oversized text without an ellipsis. `wrap` and `sanitize` use the shared Rust implementation.
 
-See [forms.ts](../example-plugins/forms.ts), or `plugin_docs section=example_deno_forms`.
+See [forms.ts](../example-plugins/forms.ts), or `plugin_docs section=example_forms`.
+
+## Hooks
+
+A **hook point** is a moment in the session's life that a plugin can own. Bind one in the config:
+
+```kdl
+hooks {
+    agent_exit "file:my-agent-exit.ts"
+}
+```
+
+A `file:` path that is not there is looked for in the plugin folder, so a bare name is a hook written with
+`plugin_write name=my-agent-exit.ts`. An absolute path works too, and means exactly what it says.
+
+The hook points:
+
+| Point | When | Shape |
+|---|---|---|
+| `agent_exit` | an agent pane's command exited | opened **in place of** that pane |
+| `agent_start` | a pane gained an agent record: spawned as an agent, or its agent reported for itself | headless, `Hook` event |
+| `agent_waiting` | an agent's record moved to `waiting` - a permission prompt, a question | headless, `Hook` event |
+| `agent_idle` | an agent's record moved to `idle` from `busy` or `waiting`: its turn ended | headless, `Hook` event |
+| `pane_exit` | any command pane's command exited, held or not | headless, `Hook` event |
+| `session_start` | the session's first client connected | headless, `Hook` event |
+| `context_menu` | a right-click asked for a menu | headless, `ContextMenuRequested` event |
+
+A point has one of two shapes, and the shape is a fact about the point. `agent_exit` opens its plugin **in place
+of** the pane, once per firing, with the payload as the plugin's configuration. Every other point runs its plugin
+**headless**: one long-lived instance, loaded without a pane the first time the point fires, receives every later
+firing as an event. A hook point takes **one** plugin; bind the empty string to turn a hook off. Zellij does not
+rewrite your own config file, so the `hooks { }` block is yours to add - or, from a shell,
+`zellij action set-hook agent_exit file:my-agent-exit.ts --write` binds the point at once and persists the binding
+in `config.d/zellij-managed.kdl` beside your config. Hocus can write the plugin but not bind it.
+
+### The `agent_exit` hook
+
+The exited pane is *suppressed* behind the hook, not closed: its scrollback survives, and closing the hook pane is
+what brings it back. So a hook that wants to leave the pane alone just closes itself.
+
+The payload arrives as the plugin's configuration, so `load(config)` receives it. Every key is prefixed, because an
+unprefixed `cwd` would collide with a reserved configuration key and arrive empty:
+
+| Key | |
+|---|---|
+| `agent_pane_id` | the pane the hook stands in for, as a string |
+| `agent_cwd` | where the agent was working |
+| `agent_exit_token` | host-generated correlation token, retained when the hook reloads |
+| `agent_exit_code` | absent if the command was killed by a signal |
+| `agent_command` | the command that exited, for display |
+| `agent_kind` | the last recognized agent kind |
+| `agent_target` | `local`, `ssh`, or `firecracker` |
+| `agent_workflow_owner`, `agent_workflow_run`, `agent_workflow_role` | helper handoff context, when present |
+| `agent_firecracker_vm`, `agent_firecracker_worktree`, `agent_session` | for a worktree-backed Firecracker pane only |
+| `agent_zellij_executable`, `agent_zellij_config_file`, `agent_zellij_config_dir` | the host binary and configuration, for Firecracker management commands |
+
+The shipped `agent_exit` hook is `zellij-config/assets/plugins/agent-exit.ts` in the source tree, and
+`example-plugins/agent-commit.ts` is a small commit-only example (`plugin_docs section=example_agent_commit`). Read
+them; do not copy them. Your own hook is a plugin you write: `plugin_write name=my-agent-exit.ts`, then bind it. A
+file-loaded copy needs permissions for commands, project config reads outside its directory, pane state and changes,
+and messages to its workflow owner; the builtin has them automatically. Wait for them before initializing, and
+nothing initializes after a denial:
+
+```ts
+import zellij, {definePlugin} from "zellij:plugin";
+export default definePlugin({
+  async load(config) {
+    await zellij.waitForPermissions([
+      "ChangeApplicationState", "ReadApplicationState", "RunCommands",
+      "ReadFiles", "FullHdAccess", "MessageAndLaunchOtherPlugins",
+    ]);
+    zellij.log(`standing in for pane ${config.agent_pane_id ?? "(none: opened by hand)"}`);
+  },
+});
+```
+
+Three notes on writing one:
+
+- **A reload gives it no payload.** `plugin_reload` - and any other way of opening the plugin by hand - starts it
+  outside the hook, so `load` gets no `agent_pane_id` at all. Write the hook so that it still renders, with whatever
+  it does to the pane simply skipped. It is also the only way to see the hook render without exiting an agent.
+- **Restarting does not need the command.** `zellij.host.rerunCommandPane(paneId)` makes the pane replay what it
+  already holds, which reaches it even while it is suppressed.
+- **Closing has an order.** Close the agent pane *first*, then yourself - closing yourself first restores it instead.
+
+Because a hook is an ordinary plugin, anything a plugin can do is reachable at agent exit - including starting the
+next agent: `zellij.host.openCommandPaneInGitCheckoutNearPlugin` opens one on a branch or in a worktree of its own,
+and the pane it opens is itself an agent pane, so this hook runs again when *that* command exits.
+
+### Project-owned Swamp workflows
+
+The builtin `agent-exit` hook launches the workflow bound in the control checkout. It preserves the exited pane and
+its scrollback. Escape closes the view and restores that pane. Enter restarts the agent; Delete closes its held pane.
+An unconfigured exit shows setup guidance and retains these controls.
+
+```kdl
+agent_exit {
+    workflow "@hammz/zellij-agent-exit"
+    ci "cargo" "x" "ci" "check"
+    default_branch "main"
+}
+```
+
+The supplied workflow spawns a work agent, observes explicit completion, syncs its VM, asks a separate agent for
+structured review findings, commits changes, rebases onto the local target, and runs the configured gate. Two
+automatic repair rounds are written in the definition. Unresolved work then suspends for instructions. Integration
+and cleanup each require an answer to a separate question. No remote Git operations are included. See
+[SWAMP_WORKFLOWS.md](SWAMP_WORKFLOWS.md) for setup, custom definitions, questions and recovery.
+
+`zellij.projectConfig.read(hostDirectory)` returns `{root, source, config, error}` and needs `ReadFiles`. An invalid
+source is returned with an error so setup can correct it. Operational callers must stop when `error` is present.
+`zellij.projectConfig.write(hostDirectory, source, expected)` validates before writing and needs `WriteFiles`. Pass
+the exact previous source as `expected`, or `null` for an absent file. Stale writes fail. Writes use an OS lock and
+atomic replacement; they refuse file and directory symlinks. Reads do not create `.zellij`.
+
+Linked worktrees resolve through the primary checkout. An optional `control_checkout "path"` inside `agent_exit`
+redirects to another control directory; relative paths resolve against the primary checkout. Both directories
+require `FullHdAccess` when outside the plugin directory. Configuration, definitions, models, and Swamp state all
+resolve through that control checkout.
+
+`zellij.agent.spawnDetails(options)` returns the actual `{pane_id, branch, cwd}`; `zellij.agent.spawn(options)`
+returns the pane ID. The builtin `swamp-bridge` routes typed `@hammz/zellij` operations through host
+implementations. Its durable records contain host, session, server incarnation, agent ownership, correlation keys,
+dispatch claims and attachments. Pane IDs alone never prove ownership. Managed helpers report their exits to their
+operation and do not start another exit workflow.
+
+A workflow runs in a separate supervised command pane. Closing its view detaches; `zellij workflow show <run-id>`
+reopens it. Cancellation is a separate action and preserves resources. The view reads Swamp history, questions,
+reports and recorded command scrollback. Terminal history has a retention limit, which the output marks. Idle
+transitions and pane closure never count as success.
+
+### Headless hooks
+
+`agent_start`, `agent_waiting`, `agent_idle`, `pane_exit` and `session_start` share one plugin shape. The plugin is
+loaded the first time its point fires and stays loaded; each firing is a `Hook` event carrying the point's name and a
+payload typed per point. A firing that arrives while that first load is still under way is held for the loading
+instance and delivered once it is up, in order - two points firing within a few milliseconds of each other reach
+one plugin, not two.
+
+**Quickstart.** A headless hook ships with zellij, `zellij:agent-policy`
+(`zellij-config/assets/plugins/agent-policy.ts` in the source tree). It logs every firing it receives and raises a
+notification when an agent stops for a question. Nothing binds it by default. To see the shape work, from a shell in
+the session:
+
+```sh
+zellij action set-hook agent_waiting zellij:agent-policy --write
+zellij action set-hook agent_start zellij:agent-policy --write
+zellij run -- claude          # or type `claude` in a pane whose hooks are installed
+zellij plugins log agent-policy
+```
+
+The first `agent_start` loads the plugin and is delivered to it; each line it logs reads
+`[deno:agent-policy] hook agent_start {"pane_id":7,"agent":{"kind":"claude",...},...}`, and the next permission
+prompt in that pane raises a toast that focuses the pane when clicked. To make it yours, copy the file into your
+plugin folder as a plugin of its own - `plugin_write name=my-policy.ts` through Hocus, or
+`zellij plugins write my-policy.ts < agent-policy.ts` - request `ChangeApplicationState` in its `load` (the shipped
+copy is a builtin and needs no grant; yours is not), and bind `file:my-policy.ts` instead. The whole plugin is:
+
+```ts
+import zellij, {definePlugin} from "zellij:plugin";
+
+zellij.on("Hook", ({point, payload}) => {
+  zellij.log(`hook ${point} ${JSON.stringify(payload)}`);
+  if (point === "agent_waiting" && "agent" in payload) {
+    zellij.host.notify({
+      message: `${payload.agent.kind || "agent"} in pane ${payload.pane_id}: ${payload.agent.detail || "is waiting for you"}`,
+      paneId: zellij.terminalPane(payload.pane_id),
+    });
+  }
+});
+
+export default definePlugin({
+  load() {
+    zellij.subscribe(["Hook"]);
+    zellij.requestPermission(["ChangeApplicationState"]); // for a file: copy
+  },
+});
+```
+
+`paneId` makes the toast clickable: a left-click on it dismisses the toast and focuses that pane. Add
+`click: {message, payload}` and the click also comes back to *this* plugin as a `CustomMessage` event carrying that
+pair - which is how a plugin does something more particular than "be looked at" when its toast is clicked. It needs
+a `CustomMessage` subscription, and rides on `paneId`, so a click without a pane is dropped.
+
+One plugin may be bound to several points; `point` tells them apart. The plugin has no pane, so `render` is never
+asked for and a permission prompt has nowhere to appear: request what you need in `load`, and the first grant is
+remembered.
+
+The payloads, typed (`HookPayload`) - a number is a number and the agent's record is the record:
+
+| Point | Fields |
+|---|---|
+| `agent_start`, `agent_waiting`, `agent_idle` | `pane_id`; `agent`, the record as it now stands (`kind`, `state`, `source`, `detail`, `cwd`, `session_id`, `run_id`); `previous_state` (`Busy`/`Waiting`/`Idle`/`Exited`, `null` for a record that just appeared); `command`, if the pane is a command pane |
+| `pane_exit` | `pane_id`, `exit_code` (`null` if killed by a signal), `cwd`, `command`, `held` (`true` if the pane holds and can be re-run, `false` if it is closing) |
+| `session_start` | `session_name`, `client_id` |
+
+What fires `agent_start`: a pane created with an agent record (a plugin's `zellij.agent.spawn`), an agent record
+appearing on a pane that had none (`claude` typed at a shell, reporting through its hooks), a record whose last state
+was `exited` coming back (`RerunCommandPane`, the shipped `agent_exit` hook's Enter), and a new `session_id` in the
+same pane. `agent_waiting` fires on the edge into `waiting` only - a second `waiting` report with a new detail is the
+same wait. `agent_idle` fires on the edge into `idle` from `busy` or `waiting` - the turn ended - and not for a record
+that appears idle, which is `agent_start`'s. Clearing a record and moving to `exited` fire nothing; the exit is
+`agent_exit`'s and `pane_exit`'s. A pane that has ever held a record is an agent pane for as long as it lives; only a
+pane re-run with a *different* command forgets it. For a pane that is both, `pane_exit` fires before `agent_exit`,
+so an observer hears of the exit before the pane is covered.
+
+`session_start` fires when the first client connects. The first tab may not exist yet - a hook that wants to open
+panes should subscribe to `TabUpdate` and act on the first one; the point is for registering state, timers and
+subscriptions.
+
+### The `context_menu` hook
+
+The odd one out: it is given no pane at all. A right-click menu is a thing zellij draws over the panes and
+hit-tests itself, so the plugin's whole job is to say what is on it. It gets no `render`, and it stays loaded between
+clicks rather than being opened per click.
+
+```kdl
+context_menu_on_right_click true   // in the options; the menu is opt-in
+
+hooks {
+    context_menu "file:menu.ts"
+}
+```
+
+```ts
+import zellij, {definePlugin, type ContextMenuItem} from "zellij:plugin";
+
+zellij.on("ContextMenuRequested", (event) => {
+  const items: ContextMenuItem[] = [];
+  if (event.link?.matched) {
+    items.push({label: `Open ${event.link.matched}`, context: {url: event.link.matched}});
+  }
+  for (const item of event.items) { // what the config declared
+    if (item.label !== "Copy" || event.selected_text !== null) items.push(item);
+  }
+  zellij.command("SetContextMenu", {request_id: event.request_id, items});
+});
+
+zellij.on("ContextMenuItemSelected", ({item_context}) => {
+  if (item_context.url) zellij.log(`open ${item_context.url}`);
+});
+
+export default definePlugin({
+  load() { zellij.subscribe(["ContextMenuRequested", "ContextMenuItemSelected"]); },
+});
+```
+
+The event (`ContextMenuContext`) carries the click: `pane_id`, `click` and `click_in_pane`, `on_frame`,
+`pane_title`, `pane_command`, `selected_text`, `word_under_cursor`, `line_under_cursor`, `link` (a `link`-plugin
+regex match under the cursor), and `items` - what the `context_menu { }` config block declared, in order.
+
+Two things it does *not* carry, both because getting them would mean blocking the thread every mouse movement goes
+through: the pane's **cwd** (ask for it with `zellij.host.getPaneCwd`) and its **scrollback**
+(`zellij.host.getPaneScrollback`). Both are ordinary calls; re-render when the answer arrives.
+
+**Items you were given have an `id` and no actions.** Hand one back with its `id` and its configured actions come
+back with it - so you can relabel, reorder and drop freely. An item you build yourself has no `id`, runs no actions,
+and reaches you as `ContextMenuItemSelected` carrying its `context` as `item_context`, from where `RunAction` can do
+anything an action could.
+
+Answering is not urgent and cannot be too late: `request_id` says which menu you are answering, and an answer for
+one that has been dismissed or replaced is discarded. If you do not answer within a tenth of a second the menu shows
+the configured items on its own, so a plugin that is slow, wedged or absent never makes right-click do nothing.
+Answer with an empty list to say "no menu here". **`ContextMenuItemSelected` goes to the plugin that offered the
+item, and to nobody else.**
+
+The shipped hook, `zellij:context-menu`, is `zellij-config/assets/plugins/context-menu.ts`. It probes `xdg-open`
+and `open` once at load to select the platform link opener.
 
 ## Modules and checking
 
@@ -705,6 +1361,85 @@ Arguments, payloads, results, and exception text are excluded. Invalid command v
 Names are limited to 200 characters, with control characters escaped.
 Disabling tracing suppresses subsequent lines. Reload starts fresh and does not manufacture completion lines for discarded callbacks.
 
+## Errors
+
+Host commands throw ordinary exceptions, and an exception a lifecycle callback lets out - or a rejection of a
+promise the SDK is tracking - is reported against your plugin rather than taken quietly: the error text replaces the
+pane's contents, with the TypeScript file and line it came from (each instance keeps its source maps). Catch what
+you want to handle yourself.
+
+To see what a plugin is doing short of an error, write to zellij's log:
+
+```ts
+const key = "t";
+zellij.log("pressed", key); // console.log(...) goes to the same place
+console.log("also", key);
+```
+
+Each line lands in `$TMPDIR/zellij-<uid>/zellij-log/zellij.log` tagged `[deno:<your file>]`, and
+`zellij plugins log hello.ts` or Hocus `plugin_log` reads one plugin's lines back. `console.log`, `info`, `warn`,
+`error`, `debug` and `trace` go there too, from module top level onward, because a plugin has no terminal of its
+own. Both join their arguments with tabs. `zellij.readPluginLog(name, lines)` reads another plugin's lines
+(`AuthorPlugins`). See [Tracing](#tracing) for a transcript of every command and event.
+
+## What TypeScript plugins may not do
+
+A Wasm plugin is sandboxed by its runtime. A TypeScript plugin runs in a V8 isolate with nothing in it but the SDK,
+so the same boundary is drawn by what the isolate is given, and the capabilities worth having come back as host
+commands, where the permission system can see them. Gone, and staying gone:
+
+- **`Deno.*` and Core's internals**: no process, filesystem, network or raw ops. Files go through `zellij.fs`,
+  commands through `zellij.runCommand`, HTTP through `zellij.webRequest` - each confined and permissioned.
+- **Remote, npm, JSR and `node:` imports**: only explicit relative imports of `.js`, `.mjs`, `.ts` and `.mts` files
+  inside the plugin's own folder, plus `zellij:plugin` (a builtin may also import `zellij:workflow-view`). Nor is
+  `https://…/plugin.ts` a plugin URL: download the file and load it with `file:`.
+- **Workers**: `PostMessageTo` is refused before dispatch. Timers, the async helpers and work queues are the answer.
+- **Top-level `await`**: module initialization must complete without a pending promise, and host commands and event
+  waits are unavailable until `load`.
+- **Resizable `ArrayBuffer`s and guest WebAssembly**: their allocations bypass the isolate's counted allocator. Fixed
+  `ArrayBuffer` and `SharedArrayBuffer` remain.
+
+What you do get: the whole of ECMAScript, `Date` and `JSON` included, and a `console` that writes to the plugin's
+log. Each isolate has the [allocation limits](#numbers-and-allocation-limits) above.
+
+## Porting a Lua plugin
+
+The two runtimes share the host, so every command, event and permission is the same thing under another spelling;
+these are the spellings and semantics that differ.
+
+| Lua | TypeScript |
+|---|---|
+| `local M = {}` … `return M` | `export default definePlugin({...})` from `zellij:plugin` |
+| `M.load(config)` / `M.update(event)` / `M.render(rows, cols)` / `M.pipe(message)` | the same methods, each optionally `async` |
+| `zellij.subscribe { "key" }` (either casing) | `zellij.subscribe(["Key"])` - the Rust spelling, checked by the type |
+| `event.name == "run_command_result"`, `event.exit_code` | `zellij.event(event)`: `e.type === "RunCommandResult"`, `e.exitCode`; `e.value` is the raw payload |
+| `zellij.on("key", function(event) … event.key)` | `zellij.onEvent("Key", (e) => e.key)`; `zellij.on` hands `(payload, event)` raw |
+| handlers run before `update` | `update` runs first, then handlers |
+| `zellij.rename_tab(0, "x")` (any command, snake_case) | `zellij.host.renameTab(0, "x")` or `zellij.command("RenameTab", [0, "x"])` |
+| `zellij.request_permission { "plugin_data" }` | `zellij.requestPermission(["PluginData"])`, or `await zellij.waitForPermissions([...])` in `load` |
+| `zellij.task(fn)` / `zellij.await(aw)` / `zellij.async.all`, `.race` | `async` functions, `await`, `Promise.all` / `Promise.race` (which do not cancel their inputs) |
+| `zellij.async.sleep(2)`, `after(2, fn)`, `every(2, fn)` - **seconds** | `zellij.sleep(2000)`, `after(2000, cb)`, `every(2000, cb)` - **milliseconds** |
+| `zellij.async.run_command { {"ls"} }` | `zellij.runCommand({command: ["ls"]})` |
+| `zellij.async.event / pipe / permissions` | `zellij.waitForEvent / waitForPipe / waitForPermissions` (rejects on denial) |
+| `zellij.async.agent_state / agent_event / turn` | `zellij.agent.waitForState / waitForEvent / waitForTurn` |
+| `zellij.pane_workflow { timeout = 30, kill_grace = 5 }` | `zellij.paneSequence({timeoutMs: 30_000, killGraceMs: 5000})`; every option camelCased |
+| `zellij.run_command_in_pane { pane_id, command }` | `zellij.runCommandInPane(pane, command, {context, keepScrollback})` |
+| `zellij.fs.read(path)` → string | `zellij.fs.read(path)` → `Uint8Array`; `zellij.decodeUtf8(bytes)` for text |
+| `zellij.fs.remove(path, true)`, `mkdir(path, true)` | `fs.remove(path, {recursive: true})`, `fs.mkdir(path, {all: true})` |
+| `zellij.data.define { name, attrs = {...} }` | `zellij.data.define(name, {attr: kind \| {kind, ...}}, {namespace, version})` |
+| `put(entity, values, uid, rev)` | `put(entity, values, {uid, expectRev})`; `zellij.data.REV_ABSENT` is the same 0 |
+| `data.all / any / negate / is_in` | `data.and / or / not / in` |
+| `data.watch(spec)` + `on("plugin_data_changed")` + `unwatch` | `data.watch(query, onChange)` → `{initial, dispose()}` |
+| `zellij.rpc.call {}` resolves `{result}` or `{error}` | `zellij.rpc.call({...})` resolves the result or **rejects**; `timeoutMs` |
+| `zellij.hocus.complete {}` resolves `{error}` on failure; `timeout` seconds | rejects; `timeoutMs`; result is `{content, toolCalls, finishReason, usage, model}` |
+| `ui.radio_group` / `ui.select` values start at **1** | selections are **0-based**; `null` is no selection |
+| `zellij.pane_key(id)` → `"terminal:3"` | `zellij.paneKey(id)` → `"terminal_3"`, the `PaneRenderReport` key |
+| `zellij.bytes_to_string(list)` | `zellij.decodeUtf8(zellij.bytes(list))`, or `zellij.text.sanitizeBytes` for display |
+| `zellij.json.encode / decode`, `zellij.null` | `JSON.stringify / parse`, `null` |
+| `require "./mod"` | `import {x} from "./mod.ts"` - an explicit relative file in the plugin's folder |
+| `Text:serialize()` | not exposed: tables and lists take `StyledText` values directly |
+| `M.pipe` sees a default-keybinding message after its handler ran | reserved pipes never reach `pipe` |
+
 ## Authoring loop
 
 Use an explicit extension when writing JavaScript or TypeScript:
@@ -734,8 +1469,6 @@ Imported default/named aliases and SDK namespace imports are recognized; comment
 Computed requests use normal runtime approval and produce warnings. Imported modules do not add inferred grants.
 The approval shows inferred grants; edits show newly requested grants. Grants are applied only after a successful write.
 
-Queued jobs keep running after their enqueuer reloads. Addressed start/finish events belong to the original Deno generation.
-The replacement can query `QueueStatus` and receive broadcast `QueueChanged` events.
 
 ## Build inputs
 

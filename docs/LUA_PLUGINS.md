@@ -1099,6 +1099,17 @@ local todos = data.fetch {
 }
 ```
 
+The same fetch in TypeScript, where `and` is the conjunction and a sort names its direction:
+
+```ts
+const d = zellij.data;
+const todos = d.fetch({
+  namespace: "shared:hocus", entity: "todo",
+  filter: d.and(d.eq("root", projectRoot), d.eq("done", false)),
+  sort: [["id", "Asc"]],
+});
+```
+
 `example-plugins/hocus-todos.ts` is a working read-only plugin over exactly this, and
 `example-plugins/hocus-notes.ts` is the same over the notes and their side tables.
 

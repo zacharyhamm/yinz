@@ -130,12 +130,14 @@ impl Guide {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing a guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 78] = [
+pub const SECTIONS: [&str; 89] = [
     "index",
     "quickstart",
     "overview",
     "lifecycle",
+    "events",
     "commands",
+    "permissions",
     "helpers",
     "limits",
     "async",
@@ -144,13 +146,22 @@ pub const SECTIONS: [&str; 78] = [
     "async_timers",
     "files",
     "data",
+    "queues",
     "rpc",
     "builtins",
     "agents",
     "hocus_completions",
     "hocus_extensions",
+    "rendering",
     "ui",
+    "hooks",
+    "hooks_workflow",
+    "hooks_headless",
+    "hooks_context_menu",
     "modules",
+    "errors",
+    "restrictions",
+    "porting",
     "authoring",
     "build",
     "sdk_core",
@@ -218,19 +229,25 @@ fn heading(section: &str) -> Option<(Guide, &'static str)> {
     let lua = |heading| Some((Guide::Lua, heading));
     match section {
         "lifecycle" => ts("Lifecycle"),
-        "commands" => ts("Host commands and permissions"),
+        "events" => ts("Events"),
+        "commands" | "permissions" => ts("Host commands and permissions"),
         "helpers" => ts("Host command helpers"),
         "limits" => ts("Numbers and allocation limits"),
         "async" | "async_panes" | "async_waits" | "async_timers" => ts("Async helpers"),
         "files" => ts("Files and project configuration"),
         "data" => ts("Persistent data"),
+        "queues" => ts("Work queues"),
         "rpc" => ts("Plugin RPC"),
         "builtins" => ts("Embedded builtins and server identity"),
         "agents" => ts("Agent helpers"),
         "hocus_completions" => ts("Hocus completions"),
         "hocus_extensions" => ts("Hocus extensions"),
-        "ui" => ts("Shared UI and terminal text"),
+        "rendering" | "ui" => ts("Rendering"),
+        "hooks" | "hooks_workflow" | "hooks_headless" | "hooks_context_menu" => ts("Hooks"),
         "modules" => ts("Modules and checking"),
+        "errors" => ts("Errors"),
+        "restrictions" => ts("What TypeScript plugins may not do"),
+        "porting" => ts("Porting a Lua plugin"),
         "authoring" => ts("Authoring loop"),
         "build" => ts("Build inputs"),
         "lua_quickstart" => lua("A plugin"),
@@ -278,6 +295,14 @@ enum Cut {
 /// The `###` child a name is cut at, and whether it is the head or the child that is kept.
 fn cut(section: &str) -> Cut {
     match section {
+        "commands" => Cut::Until("Permissions"),
+        "permissions" => Cut::Only("Permissions"),
+        "rendering" => Cut::Until("Shared UI and terminal text"),
+        "ui" => Cut::Only("Shared UI and terminal text"),
+        "hooks" => Cut::Until("Project-owned Swamp workflows"),
+        "hooks_workflow" => Cut::Only("Project-owned Swamp workflows"),
+        "hooks_headless" => Cut::Only("Headless hooks"),
+        "hooks_context_menu" => Cut::Only("The `context_menu` hook"),
         "async" => Cut::Until("Commands in one pane"),
         "async_panes" => Cut::Only("Commands in one pane"),
         "async_waits" => Cut::Only("Waits and cancellation"),
@@ -385,8 +410,10 @@ fn index() -> String {
             "index" => continue,
             "quickstart" => "a complete minimal TypeScript plugin",
             "overview" => "what a plugin is, and how it is named and loaded",
-            "lifecycle" => "definePlugin, load/update/render/pipe, events",
-            "commands" => "zellij.command, raw shapes, permissions",
+            "lifecycle" => "definePlugin, load/update/render/pipe",
+            "events" => "raw shapes, zellij.event/onEvent, delivery order",
+            "commands" => "zellij.command and raw shapes",
+            "permissions" => "every permission a plugin can request, and what each allows",
             "helpers" => "zellij.host helpers, default keybindings",
             "limits" => "numbers, BigInt, allocation budgets",
             "async" => "async helpers: runCommand, webRequest, the rest below",
@@ -394,14 +421,23 @@ fn index() -> String {
             "async_waits" => "waitForEvent/Pipe/Permissions, cancellation",
             "async_timers" => "sleep, after, every",
             "files" => "zellij.fs and projectConfig",
-            "data" => "zellij.data: the persistent store",
+            "data" => "zellij.data: the store, revisions, shared namespaces, hocus data",
+            "queues" => "work queues: other plugin code, one slot at a time",
             "rpc" => "zellij.rpc: a call with an answer, between plugins",
             "builtins" => "embedded builtins and server identity",
             "agents" => "zellij.agent: spawning, observing and steering agents",
             "hocus_completions" => "zellij.hocus.complete: a plugin's own model turn",
             "hocus_extensions" => "zellij.hocus.tools: JS/TS Hocus tools",
+            "rendering" => "the render contract and themed components",
             "ui" => "widgets, forms, Markdown, terminal text",
+            "hooks" => "hook points, and the agent_exit one",
+            "hooks_workflow" => "project-owned Swamp launch, questions, evidence and recovery",
+            "hooks_headless" => "hooks that run with no pane",
+            "hooks_context_menu" => "the context_menu hook",
             "modules" => "imports, the checker, tracing",
+            "errors" => "exceptions, the log, console",
+            "restrictions" => "what a TypeScript plugin may not do",
+            "porting" => "Lua to TypeScript: every spelling and unit that differs",
             "authoring" => "the write/check/reload loop and inferred grants",
             "build" => "build inputs and binary size",
             "sdk_core" => "declarations: events, Plugin, the Zellij interface",
@@ -646,7 +682,14 @@ mod tests {
         );
         let lifecycle = section("lifecycle").unwrap();
         assert!(lifecycle.starts_with("## Lifecycle"), "{lifecycle}");
-        assert!(!lifecycle.contains("\n## Host commands"), "{lifecycle}");
+        assert!(!lifecycle.contains("\n## Events"), "{lifecycle}");
+        let events = section("events").unwrap();
+        assert!(
+            events.starts_with("## Events") && events.contains("onEvent"),
+            "{events}"
+        );
+        assert!(!section("commands").unwrap().contains("### Permissions"));
+        assert!(section("permissions").unwrap().contains("| `ReadFiles` |"));
         // The `###` subsections belong to the `##` they sit under and travel with it, unless
         // the `##` was too big to send whole - see `cut`.
         let commands = section("lua_commands").unwrap();
@@ -707,6 +750,12 @@ mod tests {
                 &["lua_hooks_headless", "lua_hooks_context_menu"][..],
             ),
             ("async", &["async_panes", "async_waits", "async_timers"][..]),
+            ("commands", &["permissions"][..]),
+            ("rendering", &["ui"][..]),
+            (
+                "hooks",
+                &["hooks_workflow", "hooks_headless", "hooks_context_menu"][..],
+            ),
         ] {
             let text = section(head).unwrap();
             for name in parts {
@@ -727,7 +776,7 @@ mod tests {
         // The budget grew with the TypeScript guide's sections and the declaration parts; the
         // Lua guide is one line. It is still one short listing.
         assert!(
-            index.len() < 4_700,
+            index.len() < 5_400,
             "the index is {} bytes and is paid for on every later turn",
             index.len()
         );
@@ -799,7 +848,14 @@ mod tests {
     /// If any grows back past a few kilobytes the split has stopped working.
     #[test]
     fn the_split_sections_are_a_fraction_of_what_they_were() {
-        for name in ["lua_commands", "lua_hooks", "async"] {
+        for name in [
+            "lua_commands",
+            "lua_hooks",
+            "async",
+            "commands",
+            "hooks",
+            "rendering",
+        ] {
             let len = section(name).unwrap().len();
             assert!(
                 len < 6_000,
@@ -904,12 +960,28 @@ mod tests {
     /// until the plugin runs. So every permission zellij has must be nameable from the guide,
     /// and a permission added later must fail here rather than be undocumented.
     #[test]
-    fn the_guide_names_every_permission_a_plugin_can_ask_for() {
-        let permissions = section("lua_permissions").expect("the permission table's own section");
+    fn the_guides_name_every_permission_a_plugin_can_ask_for() {
+        let lua = section("lua_permissions").expect("the Lua permission table's own section");
+        let ts = section("permissions").expect("the TypeScript permission table's own section");
         for name in zellij_tile::plugin_authoring::all_permission_names() {
             assert!(
-                permissions.contains(&format!("`{name}`")),
-                "the guide's permission table has no `{name}`"
+                lua.contains(&format!("`{name}`")),
+                "the Lua guide's permission table has no `{name}`"
+            );
+            // The TypeScript spelling is the Rust one: PascalCase.
+            let pascal: String = name
+                .split('_')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    chars
+                        .next()
+                        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                        .unwrap_or_default()
+                })
+                .collect();
+            assert!(
+                ts.contains(&format!("`{pascal}`")),
+                "the TypeScript guide's permission table has no `{pascal}`"
             );
         }
     }
@@ -931,17 +1003,19 @@ mod tests {
     /// `shared:`-prefixed is refused, and a declared `created_at` fails the whole define. Both
     /// are enforced in `zellij_types::plugin_data`, and both have to be sayable from the guide.
     #[test]
-    fn the_guide_states_the_data_store_rules_it_cannot_enforce() {
-        let data = section("lua_data").expect("the data section");
-        assert!(
-            data.contains(zellij_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX),
-            "the guide does not mention the shared namespace prefix"
-        );
-        for reserved in zellij_tile::plugin_authoring::RESERVED_ATTR_NAMES {
+    fn the_guides_state_the_data_store_rules_they_cannot_enforce() {
+        for name in ["data", "lua_data"] {
+            let data = section(name).expect("the data section");
             assert!(
-                data.contains(reserved),
-                "the guide does not say `{reserved}` is reserved"
+                data.contains(zellij_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX),
+                "{name} does not mention the shared namespace prefix"
             );
+            for reserved in zellij_tile::plugin_authoring::RESERVED_ATTR_NAMES {
+                assert!(
+                    data.contains(reserved),
+                    "{name} does not say `{reserved}` is reserved"
+                );
+            }
         }
     }
 
@@ -961,8 +1035,9 @@ mod tests {
     fn a_docs_query_answers_section_line_hits_and_stays_far_under_the_cap() {
         let hits = search(None, &query("run_command"));
         assert!(hits.contains("lua_events:"), "{hits}");
+        // A third of the cap: the spelling is in both guides and the porting table now.
         assert!(
-            hits.len() < MAX_DOCS_OUTPUT / 4,
+            hits.len() < MAX_DOCS_OUTPUT / 3,
             "{} bytes is not a cheap grain",
             hits.len()
         );
