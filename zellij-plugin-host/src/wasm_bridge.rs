@@ -2005,6 +2005,18 @@ impl WasmBridge {
                         if plugin_id == &plugin_id_to_update && client_id == &client_id_to_update {
                             let mut running_plugin = running_plugin.lock().unwrap();
                             let plugin_env = running_plugin.env_mut();
+                            if plugin_env.wasi_ctx.is_none() {
+                                // A script plugin has no WASI layer to rebuild: its `/host` is
+                                // `plugin_cwd`, which the `Fs*` handlers read. Building a
+                                // context it would never use could only fail it for nothing.
+                                plugin_env.plugin_cwd = new_host_dir.clone();
+                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                    Some(*plugin_id),
+                                    Some(*client_id),
+                                    Event::HostFolderChanged(new_host_dir.clone()),
+                                )]));
+                                continue;
+                            }
                             let stdin_pipe = plugin_env.stdin_pipe.clone();
                             let stdout_pipe = plugin_env.stdout_pipe.clone();
                             let wasi_ctx = PluginLoader::create_wasi_ctx(
