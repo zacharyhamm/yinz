@@ -1119,11 +1119,13 @@ pub fn report_agent_hook(started: std::time::Instant) -> Result<()> {
         if json.len() > zellij_types::agent::HOOK_BROADCAST_MAX_BYTES {
             return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
         }
-        let event = serde_json::from_slice::<zellij_types::agent::HookEvent>(&json)
+        let json = String::from_utf8(json).context("agent hook JSON is not UTF-8")?;
+        // Validated through the same reading the report itself uses, so an opencode event
+        // written in opencode's own shape is accepted here rather than only further on.
+        let (event, _) = zellij_runtime::agent::hooks::parse_hook_event(&kind, json.clone())
             .context("invalid agent hook JSON")?;
         trace.event = event.hook_event_name.clone();
         trace.payload_bytes = json.len();
-        let json = String::from_utf8(json).context("agent hook JSON is not UTF-8")?;
         report_agent_hook_to_traced(&broker_socket_path(), &pane_token, &kind, &json, &mut trace)
     })();
     trace.finish(result.is_ok());

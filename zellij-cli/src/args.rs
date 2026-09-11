@@ -234,6 +234,7 @@ pub enum HocusSkills {
 pub enum HocusHookAgent {
     Claude,
     Codex,
+    Opencode,
     All,
 }
 
@@ -244,8 +245,9 @@ pub enum HocusHooks {
     /// Idempotent: running it again rewrites the script and replaces the entries it
     /// put there before, leaving everything else in the file alone.
     Install {
-        /// Install for one agent. User-level installs default to both agents; a project
-        /// install defaults to Claude because Codex has no machine-local project file.
+        /// Install for one agent. User-level installs default to every agent; a project
+        /// install defaults to Claude because only Claude Code has a machine-local
+        /// project file.
         #[clap(long, value_enum)]
         agent: Option<HocusHookAgent>,
         /// Install into this project's `.claude/settings.local.json` (not committed)
@@ -266,7 +268,7 @@ pub enum HocusHooks {
     },
     /// Remove the hook entries and the script.
     Uninstall {
-        /// Uninstall for one agent. User-level uninstalls default to both agents; a project
+        /// Uninstall for one agent. User-level uninstalls default to every agent; a project
         /// uninstall defaults to Claude.
         #[clap(long, value_enum)]
         agent: Option<HocusHookAgent>,
@@ -281,7 +283,7 @@ pub enum HocusHooks {
     },
     /// Say what is wired up, and what would stop it working.
     Status {
-        /// Show one agent instead of both.
+        /// Show one agent instead of every one.
         #[clap(long, value_enum)]
         agent: Option<HocusHookAgent>,
     },

@@ -341,6 +341,16 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
         })))
     ));
 
+    let opencode = try_parse_cli(["zellij", "hocus", "hooks", "install", "--agent", "opencode"])
+        .expect("parsed");
+    assert!(matches!(
+        opencode.command,
+        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+            agent: Some(zellij_cli::args::HocusHookAgent::Opencode),
+            ..
+        })))
+    ));
+
     assert!(
         try_parse_cli(["zellij", "hocus", "hooks"]).is_err(),
         "`hooks` on its own names no action"

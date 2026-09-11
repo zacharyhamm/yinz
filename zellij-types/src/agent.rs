@@ -205,4 +205,6 @@ pub struct SpawnedAgent {
 
 mod hooks;
 pub use hooks::*;
+pub mod opencode;
+pub use opencode::*;
 pub mod report;

@@ -6,14 +6,15 @@
 //! thing that works for an agent which says nothing about itself, and it is a guess
 //! bought with about fifteen seconds and an HTTP round trip.
 //!
-//! Claude Code and Codex say. This command installs a small script as an agent hook so
-//! that an agent running in a zellij pane reports its own state, and the daemon
-//! stops guessing about that pane. Everything here is local file work: it writes a
-//! script and merges some entries into a settings file, and never needs a session.
+//! Claude Code, Codex and opencode say. This command installs a small script (or, for
+//! opencode, a plugin) as an agent hook so that an agent running in a zellij pane reports
+//! its own state, and the daemon stops guessing about that pane. Everything here is local
+//! file work: it writes a script and merges some entries into a settings file, and never
+//! needs a session.
 //!
-//! The two halves that must agree with something else are marked where they appear:
-//! the pipe's name and its argument, which are `hocus_proto::wire`'s, and the shape
-//! of the settings block, which both agents share.
+//! The two halves that must agree with something else are marked where they appear: the
+//! pipe's name and its argument, which are `hocus_proto::wire`'s, and the shape of the
+//! settings block, which the JSON agents share.
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
@@ -30,6 +31,7 @@ use {zellij_cli::args::Hocus, zellij_cli::args::HocusHookAgent, zellij_cli::args
 /// it does.
 pub(crate) const CLAUDE_EVENTS: &[&str] = zellij_types::agent::CLAUDE_HOOK_EVENTS;
 const CODEX_EVENTS: &[&str] = zellij_types::agent::CODEX_HOOK_EVENTS;
+const OPENCODE_EVENTS: &[&str] = zellij_types::agent::OPENCODE_HOOK_EVENTS;
 
 /// Bumped whenever [`script`] changes, or whenever the set of events wired around it does, so
 /// `status` can say the installed copy is old. v4 was the seventeen-event table; v5 is the one
@@ -40,11 +42,19 @@ const CODEX_EVENTS: &[&str] = zellij_types::agent::CODEX_HOOK_EVENTS;
 /// on a machine installed before the change goes nowhere.
 const SCRIPT_VERSION: u32 = 7;
 
+/// The same discipline for the generated opencode plugin, which is one file rather than a
+/// script plus a settings block. Bumped whenever [`opencode_plugin`] changes.
+const OPENCODE_PLUGIN_VERSION: u32 = 1;
+
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///
 /// Matched against the entry's `command`, so a person who moved the script or wrapped
 /// it in something still has their entry replaced rather than duplicated.
 const MARKER: &str = "hocus-hook.sh";
+
+/// The opencode plugin's file name and the string that marks the file as ours.
+const OPENCODE_PLUGIN_FILE: &str = "hocus.js";
+const OPENCODE_MARKER: &str = "hocus-opencode-plugin";
 
 pub(crate) fn hocus(command: Hocus) -> Result<()> {
     let hooks = match command {
@@ -55,7 +65,12 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
             force,
         }) => {
             return for_each_agent(selected_agents(Some(agent), false)?, |agent| {
-                let root = agent_root(agent, std::env::var_os("CODEX_HOME"), home)?;
+                let root = agent_root(
+                    agent,
+                    std::env::var_os("CODEX_HOME"),
+                    std::env::var_os("XDG_CONFIG_HOME"),
+                    home,
+                )?;
                 crate::hocus_skills::install(
                     &root.join("skills/zellij-notes-todos/SKILL.md"),
                     dry_run,
@@ -117,11 +132,11 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
 
 /// Run a command once for each selected agent, keeping one agent's failure to itself.
 ///
-/// The two are wired independently - an unparseable `~/.claude/settings.json` has nothing to
-/// say about Codex - and the default form of each of these commands does both. Stopping at the
-/// first error would leave the second agent untouched and unmentioned, which is the one thing a
-/// command that promises "both" must not do. Every failure is named where it happened, and the
-/// run still ends non-zero, so a setup script still notices.
+/// The agents are wired independently - an unparseable `~/.claude/settings.json` has nothing to
+/// say about Codex or opencode - and the default form of each of these commands does all of
+/// them. Stopping at the first error would leave the rest untouched and unmentioned, which is
+/// the one thing a command that promises "every agent" must not do. Every failure is named
+/// where it happened, and the run still ends non-zero, so a setup script still notices.
 fn for_each_agent(
     agents: Vec<HocusHookAgent>,
     mut run: impl FnMut(HocusHookAgent) -> Result<()>,
@@ -145,6 +160,7 @@ fn agent_name(agent: HocusHookAgent) -> &'static str {
     match agent {
         HocusHookAgent::Claude => "Claude Code",
         HocusHookAgent::Codex => "Codex",
+        HocusHookAgent::Opencode => "opencode",
         HocusHookAgent::All => unreachable!("all is expanded before an agent is named"),
     }
 }
@@ -157,13 +173,18 @@ fn selected_agents(agent: Option<HocusHookAgent>, project: bool) -> Result<Vec<H
     });
     if project && agent != HocusHookAgent::Claude {
         return Err(anyhow!(
-            "Codex hooks are user-level only; use --agent claude with --project"
+            "only Claude Code has a machine-local project file; use --agent claude with --project"
         ));
     }
     Ok(match agent {
         HocusHookAgent::Claude => vec![HocusHookAgent::Claude],
         HocusHookAgent::Codex => vec![HocusHookAgent::Codex],
-        HocusHookAgent::All => vec![HocusHookAgent::Claude, HocusHookAgent::Codex],
+        HocusHookAgent::Opencode => vec![HocusHookAgent::Opencode],
+        HocusHookAgent::All => vec![
+            HocusHookAgent::Claude,
+            HocusHookAgent::Codex,
+            HocusHookAgent::Opencode,
+        ],
     })
 }
 
@@ -193,6 +214,9 @@ fn script(agent: HocusHookAgent, zellij: &Path) -> String {
             "printf '{}\\n'",
             "it writes only neutral JSON, which Codex requires from Stop hooks",
         ),
+        HocusHookAgent::Opencode => {
+            unreachable!("opencode runs a plugin, not a shell script; see `opencode_plugin`")
+        },
         HocusHookAgent::All => unreachable!("all is expanded before a script is generated"),
     };
     // Spelled from the constant the broker reads, so the two halves of the remote route
@@ -243,6 +267,218 @@ exit 0
 "#
     )
 }
+
+/// The opencode plugin `install` writes, with this binary's own path baked in.
+///
+/// opencode is extended with a JS module rather than a shell hook, so this is the one
+/// agent whose wiring is a file it loads instead of an entry it runs. The plugin is a
+/// thin transport: it forwards opencode's own events and interception hooks, and the
+/// reading of them is `zellij_types::agent::opencode`, in the session, so opencode and
+/// the other two agents cannot disagree about what an event meant.
+///
+/// The path is baked for the same reason the shell script's is: the server inherits the
+/// environment the pane's shell was started with, which is not always one where `zellij`
+/// is on the path. There is no fallback to a `zellij` from PATH because opencode gives
+/// the plugin no shell; a moved binary is an `install` away from being rewritten, and
+/// `status` is what says the path has stopped existing.
+fn opencode_plugin(zellij: &Path) -> String {
+    let zellij = serde_json::to_string(&zellij.display().to_string()).expect("a path serializes");
+    // Spelled from the constant the broker reads, so the two halves of the remote route
+    // cannot drift apart: a variable name that does not match is silently no route at all.
+    let token_env = serde_json::to_string(zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV)
+        .expect("a name serializes");
+    OPENCODE_PLUGIN_TEMPLATE
+        .replace("__ZELLIJ_BIN__", &zellij)
+        .replace("__TOKEN_ENV__", &token_env)
+        .replace("__VERSION__", &OPENCODE_PLUGIN_VERSION.to_string())
+}
+
+/// [`opencode_plugin`]'s body, with the three substitutions left to be filled in.
+///
+/// A template rather than a `format!` because the body is JavaScript, whose braces would
+/// all have to be doubled; and because a missed substitution has to fail a test rather
+/// than write a plugin opencode cannot parse.
+const OPENCODE_PLUGIN_TEMPLATE: &str = r#"// hocus-opencode-plugin v__VERSION__ - generated by `zellij hocus hooks install`.
+// Do not edit; `zellij hocus hooks install` rewrites this file, and `--uninstall`
+// removes it.
+//
+// opencode loads this plugin from `~/.config/opencode/plugin/hocus.js`. It forwards
+// opencode's own event stream - and the interception hooks that are not events - to
+// whoever owns the pane: `zellij action agent-report --hook-json --kind opencode` for a
+// local pane, `zellij --pty-broker report opencode` for a remote one. The session reads
+// the events (`zellij-types/src/agent/opencode.rs`) and carries what they mean on the
+// pane, so the pane reports its own busy/waiting/idle state instead of being guessed at
+// from its screen.
+//
+// Two rules this file keeps, both of which matter:
+//   - it never throws. A report that fails must not interfere with the agent it is only
+//     reporting on.
+//   - it never blocks. The child is handed its JSON on stdin and is not waited for.
+
+import { spawn } from "node:child_process"
+
+const ZELLIJ_BIN = __ZELLIJ_BIN__
+const PANE_TOKEN_ENV = __TOKEN_ENV__
+const PANE_TOKEN = process.env[PANE_TOKEN_ENV]
+const PANE_ID = process.env.ZELLIJ_PANE_ID
+
+function report(payload) {
+  // The remote token is tested first, and that order is the whole point: a remote pane
+  // carries a token *and* a pane id, and the pane id it carries is the asking session's,
+  // on a machine that has no such session. Neither set: not a zellij pane at all, and
+  // nothing to report to.
+  if (!PANE_TOKEN && !PANE_ID) return
+  const args = PANE_TOKEN
+    ? ["--pty-broker", "report", "opencode"]
+    : ["action", "agent-report", "--hook-json", "--kind", "opencode"]
+  let child
+  try {
+    child = spawn(ZELLIJ_BIN, args, { stdio: ["pipe", "ignore", "ignore"] })
+  } catch {
+    return
+  }
+  child.on("error", () => {})
+  child.stdin.on("error", () => {})
+  try {
+    child.stdin.end(JSON.stringify(payload))
+  } catch {}
+}
+
+export const Hocus = async ({ directory }) => {
+  // The folder the server is working in. Stamped on every event because an opencode
+  // record is complete every time it is set, and an event that omitted the folder
+  // would clear one an earlier event had set.
+  const cwd = directory
+  // Sessions opencode started under another (a `task` subagent). Their work is the
+  // parent's, so their idle and deletion must not end the pane's turn.
+  const childSessions = new Set()
+  const textParts = new Map()
+  const lastAssistant = new Map()
+
+  const send = (type, properties) =>
+    report({ type, properties: { cwd, ...properties } })
+
+  const forget = (sessionID) => {
+    childSessions.delete(sessionID)
+    textParts.delete(sessionID)
+    lastAssistant.delete(sessionID)
+  }
+
+  return {
+    event: async ({ event }) => {
+      const p = event.properties ?? {}
+      switch (event.type) {
+        case "session.created":
+          if (p.info?.parentID) {
+            childSessions.add(p.info.id)
+            return
+          }
+          send("session.created", { sessionID: p.info?.id })
+          return
+        case "session.deleted":
+          if (p.info?.id && childSessions.has(p.info.id)) {
+            forget(p.info.id)
+            return
+          }
+          send("session.deleted", { sessionID: p.info?.id })
+          return
+        case "session.idle": {
+          if (childSessions.has(p.sessionID)) return
+          const last = lastAssistant.get(p.sessionID)
+          send("session.idle", {
+            sessionID: p.sessionID,
+            lastAssistantMessage: last?.text,
+            turnID: last?.messageID,
+          })
+          return
+        }
+        case "session.error": {
+          if (childSessions.has(p.sessionID)) return
+          const last = lastAssistant.get(p.sessionID)
+          send("session.error", {
+            sessionID: p.sessionID,
+            lastAssistantMessage: last?.text,
+            turnID: last?.messageID,
+          })
+          return
+        }
+        case "session.compacted":
+          if (childSessions.has(p.sessionID)) return
+          send("session.compacted", { sessionID: p.sessionID })
+          return
+        case "message.part.updated": {
+          const part = p.part
+          if (part?.type !== "text" || part.synthetic || part.ignored) return
+          const parts = textParts.get(part.sessionID) ?? new Map()
+          parts.set(part.messageID, part.text ?? "")
+          textParts.set(part.sessionID, parts)
+          return
+        }
+        case "message.updated": {
+          const info = p.info
+          if (info?.role !== "assistant" || !info.time?.completed) return
+          if (childSessions.has(info.sessionID)) return
+          const text = textParts.get(info.sessionID)?.get(info.id)
+          if (!text) return
+          // Once consumed, the parts are dropped: the message's text lives on in
+          // `lastAssistant` until the next turn replaces it.
+          textParts.get(info.sessionID)?.delete(info.id)
+          lastAssistant.set(info.sessionID, { messageID: info.id, text })
+          send("assistant.message", {
+            sessionID: info.sessionID,
+            messageID: info.id,
+            text,
+          })
+          return
+        }
+        case "permission.asked":
+        case "permission.updated":
+          if (childSessions.has(p.sessionID)) return
+          send("permission.asked", { ...p })
+          return
+        case "permission.replied":
+          if (childSessions.has(p.sessionID)) return
+          send("permission.replied", { sessionID: p.sessionID })
+          return
+        default:
+          return
+      }
+    },
+    "chat.message": async (input, output) => {
+      if (childSessions.has(input.sessionID)) return
+      const text = (output.parts ?? [])
+        .filter((part) => part.type === "text" && !part.synthetic && !part.ignored)
+        .map((part) => part.text ?? "")
+        .join(" ")
+        .trim()
+      if (!text) return
+      send("chat.message", {
+        sessionID: input.sessionID,
+        messageID: output.message?.id,
+        prompt: text,
+      })
+    },
+    "tool.execute.before": async (input, output) => {
+      if (childSessions.has(input.sessionID)) return
+      send("tool.execute.before", {
+        sessionID: input.sessionID,
+        callID: input.callID,
+        tool: input.tool,
+        args: output.args,
+      })
+    },
+    "tool.execute.after": async (input) => {
+      if (childSessions.has(input.sessionID)) return
+      send("tool.execute.after", {
+        sessionID: input.sessionID,
+        callID: input.callID,
+        tool: input.tool,
+        args: input.args,
+      })
+    },
+  }
+}
+"#;
 
 /// One handler entry, as both agents' settings spell it.
 fn handler(command: &str, timeout: u64) -> Value {
@@ -388,6 +624,7 @@ fn home() -> Result<PathBuf> {
 fn agent_root(
     agent: HocusHookAgent,
     codex_home: Option<OsString>,
+    xdg_config_home: Option<OsString>,
     home: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<PathBuf> {
     Ok(match agent {
@@ -395,6 +632,12 @@ fn agent_root(
         HocusHookAgent::Codex => match non_empty(codex_home) {
             Some(root) => root,
             None => home()?.join(".codex"),
+        },
+        // opencode reads its config from `$XDG_CONFIG_HOME/opencode`, and falls back to
+        // `~/.config/opencode` where that is unset, the way opencode itself does.
+        HocusHookAgent::Opencode => match non_empty(xdg_config_home) {
+            Some(root) => root.join("opencode"),
+            None => home()?.join(".config/opencode"),
         },
         HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
     })
@@ -425,8 +668,10 @@ impl Files {
         project: bool,
         project_dir: Option<PathBuf>,
     ) -> Result<Files> {
-        if agent == HocusHookAgent::Codex && (project || project_dir.is_some()) {
-            return Err(anyhow!("Codex hooks are user-level only"));
+        if matches!(agent, HocusHookAgent::Codex | HocusHookAgent::Opencode)
+            && (project || project_dir.is_some())
+        {
+            return Err(anyhow!("{} hooks are user-level only", agent_name(agent)));
         }
         let project = match project_dir {
             Some(dir) => Some(dir),
@@ -435,15 +680,27 @@ impl Files {
             },
             None => None,
         };
-        let root = agent_root(agent, std::env::var_os("CODEX_HOME"), home)?;
-        let user_settings = match agent {
-            HocusHookAgent::Claude => root.join("settings.json"),
-            HocusHookAgent::Codex => root.join("hooks.json"),
+        let root = agent_root(
+            agent,
+            std::env::var_os("CODEX_HOME"),
+            std::env::var_os("XDG_CONFIG_HOME"),
+            home,
+        )?;
+        // For Claude Code and Codex the generated artefact is a script and the wiring is a
+        // settings document beside it. opencode loads a plugin file, so the file *is* the
+        // wiring: one path is both, and `settings()` is never asked for it.
+        let (script, user_settings) = match agent {
+            HocusHookAgent::Claude => (root.join("hocus").join(MARKER), root.join("settings.json")),
+            HocusHookAgent::Codex => (root.join("hocus").join(MARKER), root.join("hooks.json")),
+            HocusHookAgent::Opencode => {
+                let plugin = root.join("plugin").join(OPENCODE_PLUGIN_FILE);
+                (plugin.clone(), plugin)
+            },
             HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
         };
         Ok(Files {
             agent,
-            script: root.join("hocus").join(MARKER),
+            script,
             user_settings,
             project,
         })
@@ -478,6 +735,7 @@ impl Files {
         match self.agent {
             HocusHookAgent::Claude => CLAUDE_EVENTS,
             HocusHookAgent::Codex => CODEX_EVENTS,
+            HocusHookAgent::Opencode => OPENCODE_EVENTS,
             HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
         }
     }
@@ -490,6 +748,7 @@ impl Files {
         match self.agent {
             HocusHookAgent::Claude => zellij_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
             HocusHookAgent::Codex => zellij_types::agent::CODEX_HOOK_TIMEOUT_SECONDS,
+            HocusHookAgent::Opencode => zellij_types::agent::OPENCODE_HOOK_TIMEOUT_SECONDS,
             HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
         }
     }
@@ -544,7 +803,78 @@ fn write_settings(path: &Path, settings: &Value) -> Result<bool> {
     Ok(backed_up)
 }
 
+/// The contents of a generated file, or `None` where there is no file.
+fn read_generated(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
+    }
+}
+
+/// Write a generated file, keeping a copy of what was there.
+///
+/// The same temporary-and-rename as [`write_settings`], because the opencode plugin is
+/// loaded by a running server: a half-written file would be a plugin that does not parse.
+fn write_generated(path: &Path, text: &str) -> Result<bool> {
+    let folder = path
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no folder to write into", path.display()))?;
+    std::fs::create_dir_all(folder)
+        .with_context(|| format!("cannot create {}", folder.display()))?;
+    let backed_up = path.exists();
+    if backed_up {
+        let backup = path.with_extension("js.bak");
+        std::fs::copy(path, &backup).with_context(|| {
+            format!("cannot back {} up to {}", path.display(), backup.display())
+        })?;
+    }
+    let temporary = path.with_extension("js.hocus-tmp");
+    std::fs::write(&temporary, text)
+        .with_context(|| format!("cannot write {}", temporary.display()))?;
+    std::fs::rename(&temporary, path)
+        .with_context(|| format!("cannot replace {}", path.display()))?;
+    Ok(backed_up)
+}
+
+/// opencode's install: one plugin file, and no settings merge, because the file *is* the
+/// wiring.
+fn install_opencode(files: &Files, zellij: &Path, dry_run: bool) -> Result<()> {
+    let plugin = opencode_plugin(zellij);
+    if let Some(existing) = read_generated(&files.script)? {
+        if !existing.contains(OPENCODE_MARKER) {
+            return Err(anyhow!(
+                "{} exists and was not written by zellij; move it aside first",
+                files.script.display()
+            ));
+        }
+    }
+    if dry_run {
+        println!("would write {}:\n", files.script.display());
+        println!("{plugin}");
+        return Ok(());
+    }
+    let backed_up = write_generated(&files.script, &plugin)?;
+    println!("wrote {}", files.script.display());
+    println!(
+        "wired {} events through the opencode plugin",
+        files.events().len()
+    );
+    if backed_up {
+        println!(
+            "kept the previous plugin as {}",
+            files.script.with_extension("js.bak").display()
+        );
+    }
+    println!("restart opencode so it loads the plugin");
+    println!("run `zellij hocus hooks status` to check");
+    Ok(())
+}
+
 pub(crate) fn install(files: &Files, zellij: &Path, dry_run: bool) -> Result<()> {
+    if files.agent == HocusHookAgent::Opencode {
+        return install_opencode(files, zellij, dry_run);
+    }
     let script = script(files.agent, zellij);
     let settings_path = files.settings();
     let settings = read_settings(&settings_path)?;
@@ -625,6 +955,9 @@ fn make_executable(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn uninstall(files: &Files) -> Result<()> {
+    if files.agent == HocusHookAgent::Opencode {
+        return uninstall_opencode(files);
+    }
     let settings_path = files.settings();
     let settings = read_settings(&settings_path)?;
     let removed = installed_events(&settings).len();
@@ -660,8 +993,43 @@ pub(crate) fn uninstall(files: &Files) -> Result<()> {
     Ok(())
 }
 
+/// Remove the opencode plugin, if it is one we wrote.
+fn uninstall_opencode(files: &Files) -> Result<()> {
+    match read_generated(&files.script)? {
+        Some(text) if text.contains(OPENCODE_MARKER) => {
+            std::fs::remove_file(&files.script)
+                .with_context(|| format!("cannot remove {}", files.script.display()))?;
+            println!("removed {}", files.script.display());
+        },
+        Some(_) => {
+            return Err(anyhow!(
+                "{} was not written by zellij; leaving it alone",
+                files.script.display()
+            ))
+        },
+        None => println!("nothing to remove at {}", files.script.display()),
+    }
+    Ok(())
+}
+
 /// What is wired, and the things that would quietly stop it working.
 fn status(files: &Files) -> Result<()> {
+    if files.agent == HocusHookAgent::Opencode {
+        println!("{}:", files.name());
+        match read_generated(&files.script)? {
+            Some(text)
+                if text.contains(&format!("hocus-opencode-plugin v{OPENCODE_PLUGIN_VERSION}")) =>
+            {
+                println!("plugin:  {} (current)", files.script.display());
+            },
+            Some(_) => println!(
+                "plugin:  {} (older than this zellij - run `install` again)",
+                files.script.display()
+            ),
+            None => println!("plugin:  {} (missing)", files.script.display()),
+        }
+        return Ok(());
+    }
     println!("{}:", files.name());
     match std::fs::read_to_string(&files.script) {
         Ok(text) if text.contains(&format!("hocus-hook v{SCRIPT_VERSION} ")) => {
@@ -1009,6 +1377,18 @@ mod tests {
         }
     }
 
+    fn opencode_files(temp: &Path) -> Files {
+        let plugin = temp
+            .join("home/.config/opencode/plugin")
+            .join(OPENCODE_PLUGIN_FILE);
+        Files {
+            agent: HocusHookAgent::Opencode,
+            script: plugin.clone(),
+            user_settings: plugin,
+            project: None,
+        }
+    }
+
     fn events_in(path: &Path) -> Vec<String> {
         installed_events(&read_settings(path).unwrap())
     }
@@ -1055,12 +1435,72 @@ mod tests {
         std::fs::remove_dir_all(temp).unwrap();
     }
 
+    /// opencode's wiring is one plugin file and no settings merge, so installing twice is
+    /// one file either way and uninstalling takes it with it.
+    #[test]
+    fn an_opencode_install_writes_a_versioned_plugin_and_uninstall_removes_it() {
+        let temp = temp_dir("opencode-install");
+        let files = opencode_files(&temp);
+        install(&files, &fake_zellij(&temp), false).unwrap();
+
+        let plugin = read_generated(&files.script).unwrap().unwrap();
+        assert!(plugin.contains("hocus-opencode-plugin v1"), "{plugin}");
+        assert!(plugin.contains("\"agent-report\""), "{plugin}");
+        assert!(plugin.contains("\"--pty-broker\""), "{plugin}");
+        assert!(
+            plugin.contains("childSessions.has(input.sessionID)")
+                && plugin.contains("childSessions.has(p.sessionID)"),
+            "subagent tool and permission events must not reach the parent run: {plugin}"
+        );
+        assert!(
+            !plugin.contains("__ZELLIJ_BIN__")
+                && !plugin.contains("__TOKEN_ENV__")
+                && !plugin.contains("__VERSION__"),
+            "every substitution is filled in"
+        );
+        assert!(!temp.join("home/.config/opencode/settings.json").exists());
+
+        install(&files, &fake_zellij(&temp), false).unwrap();
+        assert_eq!(read_generated(&files.script).unwrap().unwrap(), plugin);
+
+        uninstall(&files).unwrap();
+        assert!(read_generated(&files.script).unwrap().is_none());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// A plugin file we did not write is somebody else's: neither install nor uninstall may
+    /// touch it, and both say so.
+    #[test]
+    fn opencode_leaves_a_plugin_file_it_did_not_write_alone() {
+        let temp = temp_dir("opencode-foreign");
+        let files = opencode_files(&temp);
+        std::fs::create_dir_all(files.script.parent().unwrap()).unwrap();
+        std::fs::write(&files.script, "// somebody else's plugin\n").unwrap();
+
+        assert!(install(&files, &fake_zellij(&temp), false).is_err());
+        assert!(uninstall(&files).is_err());
+        assert_eq!(
+            read_generated(&files.script).unwrap().unwrap(),
+            "// somebody else's plugin\n"
+        );
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// The binary path is a JavaScript string, not a shell word: a folder name with a space
+    /// or a quote in it must not write a plugin opencode cannot parse.
+    #[test]
+    fn the_opencode_plugin_bakes_a_json_quoted_binary_path() {
+        let plugin = opencode_plugin(Path::new("/opt/my zellij/zellij"));
+        assert!(plugin.contains("\"/opt/my zellij/zellij\""), "{plugin}");
+    }
+
     #[test]
     fn a_custom_codex_home_does_not_require_home() {
         assert_eq!(
             agent_root(
                 HocusHookAgent::Codex,
                 Some(OsString::from("/custom/codex")),
+                None,
                 || Err(anyhow!("HOME is unavailable"))
             )
             .unwrap(),
@@ -1069,22 +1509,55 @@ mod tests {
     }
 
     /// `export CODEX_HOME="$UNSET"` used to resolve to `""`, and an install into `""` writes
-    /// `hooks.json` and `hocus/` into whichever folder the person was standing in - and says it
-    /// worked. An empty variable is an unset one.
+    /// `hooks.json` and `hocus/` into whichever folder the person was standing in. An empty
+    /// variable is an unset one.
     #[test]
     fn an_empty_codex_home_falls_back_to_home_rather_than_to_the_current_folder() {
         assert_eq!(
-            agent_root(HocusHookAgent::Codex, Some(OsString::new()), || Ok(
+            agent_root(HocusHookAgent::Codex, Some(OsString::new()), None, || Ok(
                 PathBuf::from("/home/me")
             ))
             .unwrap(),
             PathBuf::from("/home/me/.codex")
         );
         assert!(
-            agent_root(HocusHookAgent::Codex, Some(OsString::new()), || Err(
+            agent_root(HocusHookAgent::Codex, Some(OsString::new()), None, || Err(
                 anyhow!("HOME is unavailable")
             ))
             .is_err()
+        );
+    }
+
+    /// opencode's config root is the one that follows `XDG_CONFIG_HOME`, and its empty
+    /// value is an unset one the same way `CODEX_HOME`'s is.
+    #[test]
+    fn opencode_honours_xdg_config_home_and_falls_back_to_dot_config() {
+        assert_eq!(
+            agent_root(
+                HocusHookAgent::Opencode,
+                None,
+                Some(OsString::from("/xdg")),
+                || Ok(PathBuf::from("/home/me"))
+            )
+            .unwrap(),
+            PathBuf::from("/xdg/opencode")
+        );
+        assert_eq!(
+            agent_root(
+                HocusHookAgent::Opencode,
+                None,
+                Some(OsString::new()),
+                || Ok(PathBuf::from("/home/me"))
+            )
+            .unwrap(),
+            PathBuf::from("/home/me/.config/opencode")
+        );
+        assert_eq!(
+            agent_root(HocusHookAgent::Opencode, None, None, || Ok(PathBuf::from(
+                "/home/me"
+            )))
+            .unwrap(),
+            PathBuf::from("/home/me/.config/opencode")
         );
     }
 
@@ -1119,16 +1592,21 @@ mod tests {
     }
 
     #[test]
-    fn user_commands_default_to_both_agents_but_project_commands_to_claude() {
+    fn user_commands_default_to_every_agent_but_project_commands_to_claude() {
         assert_eq!(
             selected_agents(None, false).unwrap(),
-            vec![HocusHookAgent::Claude, HocusHookAgent::Codex]
+            vec![
+                HocusHookAgent::Claude,
+                HocusHookAgent::Codex,
+                HocusHookAgent::Opencode
+            ]
         );
         assert_eq!(
             selected_agents(None, true).unwrap(),
             vec![HocusHookAgent::Claude]
         );
         assert!(selected_agents(Some(HocusHookAgent::Codex), true).is_err());
+        assert!(selected_agents(Some(HocusHookAgent::Opencode), true).is_err());
         assert!(selected_agents(Some(HocusHookAgent::All), true).is_err());
     }
 

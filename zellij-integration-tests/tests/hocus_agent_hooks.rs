@@ -87,6 +87,43 @@ fn send_hook(zellij: &mut TestSession, pane_id: u32, payload: &str) {
     assert_eq!(exit_code, 0, "{reported}");
 }
 
+/// The pane's agent record off `list-panes --json`.
+fn pane_agent(zellij: &mut TestSession, pane_id: u32) -> serde_json::Value {
+    let (exit_code, listed) = zellij.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(exit_code, 0, "{listed}");
+    let panes: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["id"] == pane_id && pane["is_plugin"] == false)
+        .expect("the agent pane is in the manifest")["agent"]
+        .clone()
+}
+
+/// One opencode event, translated on the way in exactly as the installed plugin's payload is,
+/// then reported the way the plugin's `zellij action agent-report` reports it.
+fn send_opencode_hook(zellij: &mut TestSession, pane_id: u32, native: &str) {
+    let (event, payload) =
+        zellij_runtime::agent::hooks::parse_hook_event("opencode", native.to_owned())
+            .expect("the test's own opencode event translates");
+    let actions = hook_report_actions(
+        "opencode",
+        PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(pane_id)),
+        &event,
+        payload,
+    );
+    let (exit_code, reported) = zellij.run_actions_reporting(actions);
+    assert_eq!(exit_code, 0, "{reported}");
+}
+
 /// Clear hocus's transcript, so the next answer is the only thing that can put a word
 /// back on the screen.
 fn clear(zellij: &TestSession, gone: &str) {
@@ -466,4 +503,66 @@ keybinds {{
     zellij.wait_until("the ended agent leaves active counts", |grid| {
         !grid.contains("·1") && !grid.contains("1i")
     });
+}
+
+/// opencode has no shell hook to run, so the seam this proves is the one it has instead: the
+/// Rust translation (`zellij-types/src/agent/opencode.rs`) reading opencode's own event shape
+/// into the same `HookEvent` the other two agents write, through the real session.
+#[test]
+fn opencode_events_report_the_pane_and_a_question_waits() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
+        .start();
+    zellij.wait_until("hocus asks for permissions", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("the prompt is dismissed", |grid| {
+        !grid.contains("Allow? (y/n)")
+    });
+    submit(&zellij, r#"/agent_list {}"#);
+    zellij.wait_until("the daemon has found the agent pane", |grid| {
+        grid.contains("agents")
+    });
+    let pane_id = agent_pane_id(&zellij.snapshot().to_string());
+    clear(&zellij, "agents");
+
+    // A prompt, then a tool starting: busy, naming the tool.
+    send_opencode_hook(
+        &mut zellij,
+        pane_id,
+        r#"{"type":"chat.message","properties":{"sessionID":"ses_1","cwd":"/work","prompt":"fix the parser"}}"#,
+    );
+    send_opencode_hook(
+        &mut zellij,
+        pane_id,
+        r#"{"type":"tool.execute.before","properties":{"sessionID":"ses_1","cwd":"/work","callID":"call_1","tool":"bash","args":{"command":"cargo build"}}}"#,
+    );
+    let busy = pane_agent(&mut zellij, pane_id);
+    assert_eq!(busy["kind"], "opencode");
+    assert_eq!(busy["state"], "Busy");
+    assert_eq!(busy["detail"], "Bash cargo");
+    assert_eq!(busy["cwd"], "/work");
+
+    // opencode's question tool is the wait, and the toast is the answer a person sees.
+    send_opencode_hook(
+        &mut zellij,
+        pane_id,
+        r#"{"type":"tool.execute.before","properties":{"sessionID":"ses_1","cwd":"/work","callID":"call_2","tool":"question","args":{"questions":[{"question":"Which library should we use?"}]}}}"#,
+    );
+    zellij.wait_until("opencode's question raises the waiting toast", |grid| {
+        grid.contains("agent waiting")
+    });
+    let waiting = pane_agent(&mut zellij, pane_id);
+    assert_eq!(waiting["state"], "Waiting");
+    assert_eq!(waiting["waiting_on"], "Which library should we use?");
+
+    // The turn ends, and the record goes back to idle.
+    send_opencode_hook(
+        &mut zellij,
+        pane_id,
+        r#"{"type":"session.idle","properties":{"sessionID":"ses_1","cwd":"/work","lastAssistantMessage":"Done."}}"#,
+    );
+    assert_eq!(pane_agent(&mut zellij, pane_id)["state"], "Idle");
 }

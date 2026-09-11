@@ -225,6 +225,11 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
             }
         },
         Some("opencode") => {
+            // No hooks are handed over here: opencode's wiring is a plugin file it loads
+            // from `~/.config/opencode/plugin/`, so a spawned pane reports itself only when
+            // `zellij hocus hooks install` has run - the same shape Codex has, for the same
+            // reason (a plugin file cannot be carried on the command line the way Claude
+            // Code's `--settings` can).
             match mode {
                 None => {},
                 Some("auto" | "skip") => flags.push("--auto".to_owned()),

@@ -6,39 +6,44 @@ pane busy if the hash moved. That is all it can tell — whether the agent is *b
 the user* is not observed at all, and neither is what it has been doing.
 
 That is the only thing that works for an agent which says nothing about itself, and it is a
-guess made from a picture. Claude Code and Codex say. Install their hooks and a `claude` or a
-`codex` pane reports its own state instead — and, when its session ends, gets one summary of
-what the whole session was:
+guess made from a picture. Claude Code, Codex and opencode say. Install their hooks and a
+`claude`, a `codex` or an `opencode` pane reports its own state instead — and, when its session
+ends, gets one summary of what the whole session was:
 
 ```sh
-zellij hocus hooks install                  # both, user-level
-zellij hocus hooks install --agent codex    # one of them
+zellij hocus hooks install                  # every agent, user-level
+zellij hocus hooks install --agent opencode # one of them
 zellij hocus hooks status                   # what is wired, and what would stop it working
 zellij hocus hooks uninstall
 ```
 
-A user-level command with no `--agent` does both. Claude Code's install lands in
+A user-level command with no `--agent` does every agent. Claude Code's install lands in
 `~/.claude/settings.json`; Codex's in `~/.codex/hooks.json`, or `$CODEX_HOME/hooks.json` where
-that is set. **Codex will not run a hook it has not been told to trust**, so open `/hooks`
-inside Codex afterwards and approve what the installer wrote; nothing reports until you do.
+that is set; opencode's is a plugin file at `~/.config/opencode/plugin/hocus.js`, or under
+`$XDG_CONFIG_HOME/opencode/plugin/` where that is set. **Codex will not run a hook it has not
+been told to trust**, so open `/hooks` inside Codex afterwards and approve what the installer
+wrote; nothing reports until you do. opencode loads its plugin at startup, so restart opencode
+after installing.
 
 `--project` writes to `<cwd>/.claude/settings.local.json` instead - the file Claude Code
 reads beside a project's committed `settings.json` and keeps out of git, so the install (which
 carries this machine's path to the binary) never lands in the project's history.
 `--project-dir <dir>` names the folder, for a plugin or a script installing for a project it is
 not sitting in. Both are Claude Code's alone, and a project command defaults to `--agent
-claude` rather than to both: Codex's project file, `<repo>/.codex/hooks.json`, is one that gets
-committed, and what this installs is a path that means nothing on anybody else's machine.
+claude` rather than to every agent: Codex's project file, `<repo>/.codex/hooks.json`, and
+opencode's, `<repo>/.opencode/plugin/hocus.js`, are ones that get committed, and what this
+installs is a path that means nothing on anybody else's machine.
 
 Do **not** install into both the user's file and a project's: Claude Code
 merges hooks across settings files rather than one overriding the other, so every event
-would fire twice. `status` says so if it sees it. An older zellij wrote a project install into
+would fire twice (opencode loads both plugin directories the same way). `status` says so if it
+sees it. An older zellij wrote a project install into
 the committed `settings.json`; `install --project` moves those entries out, and `status` lists
 that file as `legacy:` while they are still there.
 
 ## What is wired
 
-The installer writes one small script per agent - `~/.claude/hocus/hocus-hook.sh`,
+The installer writes one small script per shell-hook agent - `~/.claude/hocus/hocus-hook.sh`,
 `~/.codex/hocus/hocus-hook.sh` - and registers it, with no matcher, against eighteen events
 for Claude Code and twelve for Codex. The script hands each event's JSON to the session:
 
@@ -47,13 +52,52 @@ zellij action agent-report --hook-json < "$payload"              # a claude
 zellij action agent-report --hook-json --kind codex < "$payload" # a codex
 ```
 
+opencode is not a settings file of shell hooks but a JS plugin, so its install is one
+generated file, `~/.config/opencode/plugin/hocus.js`, that forwards opencode's own event
+stream (and the three interception hooks that are not events) the same way:
+
+```sh
+zellij action agent-report --hook-json --kind opencode < "$payload"  # an opencode, local
+zellij --pty-broker report opencode < "$payload"                     # an opencode, remote
+```
+
+The plugin is a thin transport. The reading of opencode's events is
+`zellij-types/src/agent/opencode.rs`, in the session, and it turns each one into the same
+`HookEvent` the other two agents write — so the record, the broadcast and the run history
+read opencode through one code path and cannot drift from `hook_outcome`. opencode's tool
+names are spelled the readers' way there (`bash` → `Bash`, `read`/`edit`/`write` →
+`Read`/`Edit`/`Write`, `question` → `AskUserQuestion`), as is its file argument (`filePath` →
+`file_path`).
+
+| opencode event / hook | means |
+|---|---|
+| `session.created` | `SessionStart`, idle |
+| `chat.message` | `UserPromptSubmit`, busy — the prompt names the pane |
+| `tool.execute.before` | `PreToolUse`; `question` is a wait |
+| `tool.execute.after` | `PostToolUse` |
+| `permission.asked` / `permission.updated` | `PermissionRequest`, waiting |
+| `permission.replied` | `PostToolUse`, the wait clears |
+| `session.compacted` | `PostCompact`, busy |
+| `session.idle` | `Stop`, idle, carrying the last assistant message |
+| `session.error` | `StopFailure`, idle |
+| `session.deleted` | `SessionEnd`, the feed ends |
+| `assistant.message` | `MessageDisplay`, one completed message for the run history |
+
+opencode's subagent sessions (a `task` under the parent) are tracked by the plugin and their
+events are not forwarded — a worker's lifecycle, tool calls and permission prompts stay out of
+the parent's run, so a child finishing, compacting or asking does not replace or fragment the
+pane's turn. Automatic approval emits no permission prompt, so a prompt that arrives is
+always one a person is being waited on for. A completed assistant message is captured by the
+plugin from the turn's text parts and attached to the idle event, so the run history gets the
+agent's own words the way a `MessageDisplay` does.
+
 One script covers both a local pane and a remote one. It looks for
 `ZELLIJ_REMOTE_PANE_TOKEN` **first**, and reports through the broker when it finds one
 ("Remote panes", below); only failing that does it read `$ZELLIJ_PANE_ID`. That order is the
 behaviour, not a preference: a remote pane carries a `ZELLIJ_PANE_ID` as well, and the one it
 carries is the *asking* session's, on a machine that has no such session - reading it there
 sends every event to whatever session happens to be running on that box, under a pane id that
-means something else.
+means something else. The opencode plugin keeps the same order for the same reason.
 
 `agent-report` reads the event, works out what it means (`zellij-types/src/agent/hooks.rs`,
 `hook_outcome`) and sets the pane's **agent record** — `PaneInfo.agent`: the kind,
@@ -130,9 +174,9 @@ a local tool result is not passed through hocus's `MAX_TOOL_OUTPUT`, so each pag
 own size, cutting entries to a per-entry cap once a page holds more than one — and a page of
 *one* is exempt, which is how a single enormous plan is read whole.
 
-For a claude or a codex the name needs no help: a run is `"{kind}:{the agent's own session
-id}"`, and the session id does not change when the pane moves, so the adopting session derives
-the same id the losing one used. `run_id` is for everything else — a hand-rolled
+For a claude, a codex or an opencode the name needs no help: a run is `"{kind}:{the agent's
+own session id}"`, and the session id does not change when the pane moves, so the adopting
+session derives the same id the losing one used. `run_id` is for everything else — a hand-rolled
 `agent-report` script, or a legacy hook that reports no session id, whose run is keyed
 `"{kind}:pane:{pane id}:{started at}:{machine}"` and means nothing in the session it arrives
 in. Such a script names its run once with `zellij action agent-report --run-id <id>` and need
@@ -287,12 +331,14 @@ Rules the generated scripts keep, all of which matter:
   `SessionStart`, an exit-0 hook's stdout is injected verbatim into Claude's context.
 - **The Codex script writes `{}` and nothing else.** Codex wants JSON back from a `Stop`
   hook; a neutral object is the answer that decides nothing.
-- **Both always exit 0.** A hook that fails must not interfere with the agent it is
-  only reporting on.
+- **Every one of them exits 0.** A hook that fails must not interfere with the agent it is
+  only reporting on. The opencode plugin is the same rule in JS: it never throws and never
+  waits on the child it spawns.
 
 Each entry carries an explicit timeout — five seconds for Claude Code, three for Codex, which
 caps a `SessionEnd` hook at that anyway. Claude Code's default is ten minutes, and a hook
-blocks the turn.
+blocks the turn. opencode's plugin hooks are not awaited on by the agent, so the report is
+fire-and-forget.
 
 ## Remote panes: reporting through the broker
 
@@ -306,8 +352,9 @@ printf '%s' "$payload" | zellij --pty-broker report claude   # a claude in a rem
 This is the branch the installed script takes by itself, so `zellij hocus hooks install` on the
 far machine is all a remote pane needs. **A Firecracker VM installs it without being asked**: the
 provider runs the install in the guest when the VM is provisioned (`provision_guest` in
-`zellij-server/src/firecracker/provider.rs`), wiring both agents, so a `claude` or a `codex`
-typed at a shell in a VM pane reports like any other. The install runs again whenever a session
+`zellij-server/src/firecracker/provider.rs`), wiring every agent, so a `claude`, a `codex` or an
+`opencode` typed at a shell in a VM pane reports like any other (opencode's plugin counts too, and
+loads the next time opencode starts in the guest). The install runs again whenever a session
 *joins* a VM that is already up, which is the only moment a VM left running across a Zellij
 upgrade meets the new one; it rewrites rather than appends, so joining a current VM changes
 nothing. Codex still has to be told to trust what was written - `/hooks`, once per VM.

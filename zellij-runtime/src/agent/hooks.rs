@@ -12,6 +12,15 @@ const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 /// Parse a hook on the machine running the agent. Preserve unknown JSON fields when adding
 /// Codex's reviewer and assistant messages. Unreadable transcripts leave reporting functional.
 pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEvent, String)> {
+    // opencode's plugin forwards its own event stream, so the one reading of it is here,
+    // on the way in: the translated event is what the session keeps as `raw`, because the
+    // broker validates `raw` as a `HookEvent` and `hocus-agentd` re-parses it.
+    if kind == "opencode" {
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        let event = zellij_types::agent::opencode::to_hook_event(&value);
+        let translated = serde_json::to_string(&event)?;
+        return Ok((event, translated));
+    }
     let mut event: HookEvent = serde_json::from_str(&json)?;
     if kind != "codex" {
         return Ok((event, json));

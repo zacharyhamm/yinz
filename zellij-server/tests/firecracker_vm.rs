@@ -214,11 +214,13 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
             "grep -q '\"hasTrustDialogAccepted\":true' /root/.claude.json && printf 'trusted '; ",
             "printf '{\"sentinel\":\"guest-wrote-this\"}' > /root/.claude.json; ",
             "printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' | zellij --pty-broker report claude && printf 'hook-reported '; ",
-            // Provisioning wired both agents, and both scripts take the broker route.
+            // Provisioning wired every agent, and each takes the broker route.
             "test -x /root/.claude/hocus/hocus-hook.sh; ",
             "test -x /root/.codex/hocus/hocus-hook.sh; ",
+            "test -f /root/.config/opencode/plugin/hocus.js; ",
             "grep -q 'pty-broker report claude' /root/.claude/hocus/hocus-hook.sh; ",
             "grep -q 'pty-broker report codex' /root/.codex/hocus/hocus-hook.sh; ",
+            "grep -q '\"--pty-broker\", \"report\", \"opencode\"' /root/.config/opencode/plugin/hocus.js; ",
             "grep -q hocus-hook /root/.claude/settings.json; ",
             "grep -q hocus-hook /root/.codex/hooks.json; ",
             "printf 'hooks-installed '; ",
