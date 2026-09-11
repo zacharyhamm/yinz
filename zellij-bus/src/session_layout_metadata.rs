@@ -7,8 +7,8 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::format_in_format_args)]
-use crate::panes::PaneId;
 use crate::ClientId;
+use crate::PaneId;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};

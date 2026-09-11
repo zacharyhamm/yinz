@@ -29,11 +29,11 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::panes::PaneId;
 use crate::plugins::{PluginId, PluginInstruction};
 use crate::pty::PtyInstruction;
 use crate::screen::ScreenInstruction;
 use crate::thread_bus::Bus;
+use crate::PaneId;
 use crate::{ClientId, ServerInstruction};
 
 /// Identifies an in-flight streaming web request. Scoped to the plugin and client that started

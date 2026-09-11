@@ -151,7 +151,6 @@ mod capabilities;
 mod context_menu;
 mod host_query;
 mod input_modes;
-mod instruction;
 mod mouse;
 mod nested;
 mod notifications;
@@ -165,14 +164,14 @@ mod thread_main;
 mod warp_ops;
 
 pub(crate) use crate::tab::CopyOptions;
-pub use instruction::ScreenInstruction;
-pub(crate) use instruction::{
-    denormalize_notification_response, GuestModalOutcome, HoldForCommand, InitialTitle,
-    NotificationClick, TabOverrideResult,
-};
 #[cfg(test)]
 pub(crate) use thread_main::apply_pane_agent_report;
 pub(crate) use thread_main::screen_thread_main;
+pub use zellij_bus::screen::ScreenInstruction;
+pub(crate) use zellij_bus::screen::{
+    denormalize_notification_response, GuestModalOutcome, HoldForCommand, InitialTitle,
+    NotificationClick, TabOverrideResult,
+};
 
 /// Get the active tab and call a closure on it
 ///

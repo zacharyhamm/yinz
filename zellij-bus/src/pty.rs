@@ -9,10 +9,9 @@
 use crate::os_input_output::AsyncReader;
 use crate::route::NotificationEnd;
 use crate::{
-    panes::PaneId,
     plugins::{DumpSessionLayoutResponse, PluginId},
     session_layout_metadata::SessionLayoutMetadata,
-    ClientId,
+    ClientId, PaneId,
 };
 use std::str::FromStr;
 use std::sync::Arc;
@@ -111,7 +110,7 @@ pub struct AdoptedTabTerminal {
 }
 
 impl AdoptedTabTerminal {
-    pub(crate) fn hold_for_command(&self) -> Option<RunCommand> {
+    pub fn hold_for_command(&self) -> Option<RunCommand> {
         self.child_exit_status.map(|_| self.cmd.clone())
     }
 }
@@ -154,11 +153,11 @@ impl std::fmt::Debug for SpawnedRerun {
 pub struct OneShot<T>(Arc<std::sync::Mutex<Option<T>>>);
 
 impl<T> OneShot<T> {
-    pub(crate) fn new(value: T) -> Self {
+    pub fn new(value: T) -> Self {
         Self(Arc::new(std::sync::Mutex::new(Some(value))))
     }
 
-    pub(crate) fn take(self) -> Result<T> {
+    pub fn take(self) -> Result<T> {
         self.0
             .lock()
             .to_anyhow()?

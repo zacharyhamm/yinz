@@ -148,7 +148,8 @@ Escalate to the full `cargo x test` (and `cargo x integration-test`) when the ch
 past one crate:
 
 - The shared libraries (`zellij-types`, `zellij-runtime`, `zellij-config`, `zellij-plugin-api`,
-  `zellij-ipc`, `zellij-session`, `zellij-cli`, `zellij-storage`) — changes can reach every consumer
+  `zellij-ipc`, `zellij-session`, `zellij-cli`, `zellij-storage`, `zellij-bus`) — changes can reach
+  every consumer; the bus in particular carries every thread's instruction enum
 - `zellij-storage/src/plugin_data_store/` — also run `cargo x postgres-test`: the same test files
   run against SQLite and Postgres, and only the Postgres half needs a server
 - `zellij-tile/`, `zellij-tile-utils/`, or assets under `zellij-config/`, `zellij-plugin-api/`,
@@ -267,7 +268,8 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 
 | Path | What |
 |---|---|
-| `zellij-server/` | screen, tabs, pane orchestration, OS implementations, pty scheduling, plugin host |
+| `zellij-server/` | screen, tabs, pane orchestration, pty scheduling, plugin host |
+| `zellij-bus/` | the server's thread bus: instruction enums and senders, `ServerOsApi`, action routing, warps, background jobs, session recorder |
 | `zellij-process/` | pane supervisors, local/remote protocols, SSH broker, Firecracker provider |
 | `zellij-terminal/` | terminal emulation, graphics, output serialization, host queries, component parsing |
 | `zellij-client/` | input handling and terminal I/O |

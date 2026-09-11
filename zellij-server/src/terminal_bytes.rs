@@ -140,11 +140,7 @@ mod tests {
     use crate::session_recorder::{RecorderInstruction, SessionRecorderHandle};
     use async_trait::async_trait;
     use std::io;
-    use std::sync::{
-        atomic::{AtomicBool, AtomicUsize},
-        Arc,
-    };
-    use std::time::Instant;
+    use std::sync::{atomic::AtomicBool, Arc};
 
     struct FakeReader {
         data: Option<Vec<u8>>,
@@ -166,13 +162,7 @@ mod tests {
     #[tokio::test]
     async fn records_output_and_pane_closed() -> anyhow::Result<()> {
         let (sender, receiver) = crossbeam::channel::unbounded();
-        let handle = SessionRecorderHandle {
-            sender: sender.clone(),
-            started_at: Instant::now(),
-            capture_input: false,
-            enabled: Arc::new(AtomicBool::new(true)),
-            dropped: Arc::new(AtomicUsize::new(0)),
-        };
+        let handle = SessionRecorderHandle::over_channel(sender.clone(), false);
         // create thread senders with recorder
         let senders = ThreadSenders {
             session_recorder: Some(handle),

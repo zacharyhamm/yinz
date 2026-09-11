@@ -2,7 +2,7 @@ This document details the different components of the code base in plain English
 
 ## Shared libraries
 
-Consumers import shared code from its owning crate. The workspace has eight shared libraries:
+Consumers import shared code from its owning crate. The workspace has eleven shared libraries:
 
 | Crate | Ownership | Allowed Zellij dependencies |
 |---|---|---|
@@ -14,6 +14,9 @@ Consumers import shared code from its owning crate. The workspace has eight shar
 | `zellij-ipc` | Client/server and nested-session protocols, framing, sockets, connection retries | Types, Runtime, Plugin API |
 | `zellij-session` | Discovery, lifecycle, resurrection, session metadata and layout serialization, warped tabs | Types, Runtime, Config, IPC |
 | `zellij-cli` | Clap arguments, completions, setup, CLI option merging, action conversion, session listings and diagnostics | All preceding libraries |
+| `zellij-terminal` | Grid and rows, terminal characters, selection, hyperlinks, Sixel and Kitty graphics, output serialization, host queries, damage geometry | Types, Runtime, IPC |
+| `zellij-process` | Pane supervisors, local and remote protocols, SSH transport, the broker, the Firecracker provider | Types, Runtime, Config, IPC, Session |
+| `zellij-bus` | The server's thread bus: `ThreadSenders`/`Bus`, the six instruction enums and their payload types, `ServerOsApi`, action routing, warps, background jobs, the session recorder and layout metadata | Types, Runtime, Storage, Config, IPC, Session, Terminal, Process |
 
 These lists permit dependencies. They do not require every listed dependency.
 `cargo x ci check` enforces them for normal, optional, target-specific, build, and development dependencies.
@@ -217,6 +220,22 @@ Neither `zellij-terminal` nor `zellij-process` depends on the server or on the o
 
 `TerminalPane`, `PluginPane`, pane managers, frames, tabs, screen coordination, and plugin hosting remain in `zellij-server`.
 The terminal crate parses and renders terminal state. The server coordinates panes, clients, plugins, and threads.
+
+## The thread bus (zellij-bus/)
+
+Every server thread owns one instruction enum (`ScreenInstruction`, `PtyInstruction`,
+`PluginInstruction`, `BackgroundJob`, `PtyWriteInstruction`, `ServerInstruction`) and sends the
+others' through `ThreadSenders`. `zellij-bus` holds those enums, the payload types they carry
+(`NotificationEnd`, `SessionLayoutMetadata`, `PluginRenderAsset`, the spawn and adoption records,
+`LoadingIndication`, `FrameColorOverride`), `Bus` itself, and the code that only ever talks over
+it: `route_action` (the `Action` dispatcher), warps, background jobs, the session recorder, and
+the `ServerOsApi` trait with its Unix implementation. Its rule of admission is that nothing in it
+names a tab, a pane, a screen, or the plugin runtime; a type that needs one of those belongs above
+the bus. The server keeps every old path as a re-export (`zellij_server::os_input_output`,
+`zellij_server::background_jobs`, `crate::thread_bus`, ...), so consumers did not change.
+
+`route_thread_main`, the per-client router that reads a client's socket and calls `route_action`,
+stays in the server (`zellij-server/src/client_router.rs`) because it holds `SessionMetaData`.
 
 ## Terminal Pane (zellij-server/src/panes/terminal_pane.rs)
 The TerminalPane represents a pane on screen that connects to a single pty (pseudo terminal) and (presumably) has one shell or other program running inside it.

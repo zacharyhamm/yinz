@@ -470,7 +470,7 @@ fn send_sigint_to_process() {
 
 #[test]
 fn spawn_and_read_output() {
-    use crate::panes::PaneId;
+    use crate::PaneId;
     use zellij_types::input::command::TerminalAction;
 
     let server = make_server();
@@ -780,7 +780,7 @@ fn firecracker_panes_are_refused_a_warp_and_remote_panes_are_not() {
 #[cfg(unix)]
 #[test]
 fn tcgetpgrp_returns_foreground_group() {
-    use crate::panes::PaneId;
+    use crate::PaneId;
     use zellij_types::input::command::TerminalAction;
 
     let server = make_server();
