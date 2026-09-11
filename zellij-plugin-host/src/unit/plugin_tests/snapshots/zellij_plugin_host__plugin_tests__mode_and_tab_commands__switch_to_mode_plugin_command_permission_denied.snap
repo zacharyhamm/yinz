@@ -1,0 +1,5 @@
+---
+source: zellij-plugin-host/src/./unit/plugin_tests/mode_and_tab_commands.rs
+expression: "format!(\"{:#?}\", switch_to_mode_event)"
+---
+None

@@ -24,7 +24,7 @@
 //! ## Why the pane survives fzf exiting
 //!
 //! Every plugin-opened command pane is created with `hold_on_close = true` (hardcoded
-//! in `zellij-server/src/plugins/zellij_exports.rs`). So when fzf exits the pane is
+//! in `zellij-plugin-host/src/zellij_exports.rs`). So when fzf exits the pane is
 //! *held* rather than closed, `Event::CommandPaneExited` arrives while the pane still
 //! exists, and it can be replaced in place. That is what makes "the same floating pane"
 //! literally true rather than a new pane at the same coordinates.

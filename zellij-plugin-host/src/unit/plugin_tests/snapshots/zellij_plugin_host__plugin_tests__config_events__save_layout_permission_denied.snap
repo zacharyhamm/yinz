@@ -1,0 +1,5 @@
+---
+source: zellij-plugin-host/src/./unit/plugin_tests/config_events.rs
+expression: "format!(\"{:#?}\", plugin_bytes_with_save)"
+---
+None

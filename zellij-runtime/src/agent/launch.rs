@@ -446,7 +446,7 @@ pub fn resume_command(
         .map(std::path::PathBuf::from);
     // The mounts a plugin's own paths are read through. The host rewrites the cwd of a local
     // command that starts with one of them (`translate_plugin_path`, in
-    // zellij-server/src/plugins/zellij_exports.rs), and a run's cwd is a real host path taken
+    // zellij-plugin-host/src/zellij_exports.rs), and a run's cwd is a real host path taken
     // from the agent's hook rather than a plugin path: a run recorded in `/tmp/scratch` would
     // resume in `$ZELLIJ_TMP_DIR/scratch`, which is the wrong folder rather than a refusal.
     // A remote cwd is the far machine's and is passed through as it stands, so this is the

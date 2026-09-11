@@ -14,14 +14,13 @@ pub mod tab;
 
 pub use zellij_bus::background_jobs;
 pub(crate) use zellij_bus::global_async_runtime;
-mod logging_pipe;
 pub use zellij_bus::nested_guest;
 pub mod notifications;
 mod pane_groups;
-mod plugins;
-pub use plugins::check_lua_plugin;
+pub(crate) use zellij_plugin_host as plugins;
+pub use zellij_plugin_host::{check_lua_plugin, get_engine};
 mod locked_escape;
-pub mod plugin_authoring;
+pub use zellij_plugin_host::plugin_authoring;
 mod pty;
 #[cfg(unix)]
 pub use zellij_process::pty_host;
@@ -132,8 +131,6 @@ use {
     zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_ROWS,
     zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
-
-use wasmi::Engine;
 
 use crate::{
     os_input_output::ServerOsApi,
@@ -2950,11 +2947,6 @@ fn update_new_saved_config(
                 );
         }
     }
-}
-
-pub fn get_engine() -> Engine {
-    log::info!("Loading plugins using Wasmi interpreter");
-    Engine::default()
 }
 
 // TODO: move elsewhere

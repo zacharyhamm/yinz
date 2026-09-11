@@ -37,6 +37,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-terminal",
         "zellij-process",
         "zellij-bus",
+        "zellij-plugin-host",
     ];
     let metadata = root.path().join("metadata.json");
     fs::write(&metadata, serde_json::json!({

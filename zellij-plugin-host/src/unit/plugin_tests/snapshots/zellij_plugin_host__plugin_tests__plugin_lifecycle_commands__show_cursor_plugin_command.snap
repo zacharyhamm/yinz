@@ -1,0 +1,20 @@
+---
+source: zellij-plugin-host/src/./unit/plugin_tests/plugin_lifecycle_commands.rs
+expression: "format!(\"{:#?}\", show_cursor_instruction)"
+---
+Some(
+    (
+        PluginId(
+            0,
+        ),
+        ClientId(
+            1,
+        ),
+        Some(
+            (
+                5,
+                10,
+            ),
+        ),
+    ),
+)

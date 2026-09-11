@@ -1,0 +1,5 @@
+---
+source: zellij-plugin-host/src/./unit/plugin_tests/plugin_lifecycle_commands.rs
+expression: "format!(\"{:#?}\", copy_instruction)"
+---
+None

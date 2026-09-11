@@ -42,7 +42,7 @@ const EXAMPLE_AGENT_HARNESS: &str = include_str!("../../../example-plugins/agent
 /// The Lua half of the API, verbatim: the argument sugar and the named wrappers live here, so
 /// a model that has read it does not have to guess how a command is spelled. Served in nine
 /// parts, cut at its own section markers, so that none is more than a tool call should cost.
-const PRELUDE: &str = include_str!("../../../zellij-server/src/plugins/lua/prelude.lua");
+const PRELUDE: &str = include_str!("../../../zellij-plugin-host/src/lua/prelude.lua");
 const PRELUDE_CUTS: [&str; 8] = [
     "\n-- Host commands ",
     "\n-- Tasks ",
@@ -320,7 +320,7 @@ pub fn section(name: &str) -> Option<String> {
         "example_capabilities" => Some(fenced(EXAMPLE_CAPABILITIES)),
         "example_forms" => Some(fenced(include_str!("../../../example-plugins/forms.lua"))),
         "prelude_widgets" => Some(fenced(include_str!(
-            "../../../zellij-server/src/plugins/lua/ui.lua"
+            "../../../zellij-plugin-host/src/lua/ui.lua"
         ))),
         "example_agent_harness" => Some(fenced(EXAMPLE_AGENT_HARNESS)),
         "example_playground" => Some(fenced(EXAMPLE_PLAYGROUND)),

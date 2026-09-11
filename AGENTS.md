@@ -157,6 +157,8 @@ past one crate:
 - the render path in `zellij-server/` (grid, panes, output), which the `insta` snapshots and
   integration tests cover broadly
 - screen/tab/pty plumbing that both plugins and the client sit on
+- `zellij-plugin-host/` — `-p zellij-plugin-host` covers the host's own tests; the screen tests
+  in `zellij-server` and the integration tests cover what it sends
 - dependency, toolchain, or `xtask` changes
 - a batch of edits spanning several crates, or any run where snapshots were regenerated
 
@@ -187,9 +189,10 @@ Neither suite is reliable enough for a single red run to be evidence. Before bel
   resurrection failures shared a stale harness teardown: it typed the now-confirmed quit binding
   and silently ignored join timeouts. Teardown now uses lifecycle IPC and treats timeout as a test
   failure, so do not dismiss those tests when they are red.
-- **The two known-flaky `zellij-server` lib tests are fixed** and each now passes 20/20 in a
-  loop: `screen_tests::cli_actions::send_cli_scroll_up_action` and
-  `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins`.
+- **The two known-flaky lib tests are fixed** and each now passes 20/20 in a loop:
+  `screen_tests::cli_actions::send_cli_scroll_up_action` in `zellij-server` and
+  `plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins` in
+  `zellij-plugin-host`.
   Both were fixed in the test. A third, in the since-removed global panes suite, needed a
   **production** fix for real nondeterminism: two equally sized panes were ranked by `HashMap`
   order, so the same layout could grow a new pane in two different places on two runs.
@@ -229,7 +232,7 @@ and `/bin/true` does not exist there — `/usr/bin/true` is on both.
 
 `zellij-test-support` provides `Watched<T>` — shared state plus a bounded
 `wait_until(what, timeout, predicate)` that panics with a diagnostic instead of hanging. The test
-loggers in `unit/screen_tests/` and `plugins/unit/plugin_tests/` already hold their instruction
+loggers in `unit/screen_tests/` and `zellij-plugin-host/src/unit/plugin_tests/` already hold their instruction
 logs in one, so a test can wait for the condition it actually cares about.
 
 Three rules learned the hard way, all from tests that were flaky for years:
@@ -240,7 +243,7 @@ Three rules learned the hard way, all from tests that were flaky for years:
   `wait_for_settled_render` in `unit/screen_tests/mod.rs` does exactly this.
   The rule is about coalescing a test does not control. It does not reach a batch the test itself
   hands over as a single instruction, where the render count is fixed by the code path rather than
-  by timing — `plugins/unit/plugin_tests/batching.rs` counts renders on purpose, because "N events
+  by timing — `zellij-plugin-host/src/unit/plugin_tests/batching.rs` counts renders on purpose, because "N events
   cost one render" *is* the behaviour, and no single frame's content can express it. Counting
   there is fine as long as the test can say why the count cannot vary, in a comment.
 - **A sleep is not a synchronisation primitive.** Instructions sent to the screen or plugin thread
@@ -268,8 +271,9 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 
 | Path | What |
 |---|---|
-| `zellij-server/` | screen, tabs, pane orchestration, pty scheduling, plugin host |
+| `zellij-server/` | screen, tabs, pane orchestration, pty scheduling |
 | `zellij-bus/` | the server's thread bus: instruction enums and senders, `ServerOsApi`, action routing, warps, background jobs, session recorder |
+| `zellij-plugin-host/` | plugin host: wasm and Lua plugin loading, the plugin thread, host functions, pipes |
 | `zellij-process/` | pane supervisors, local/remote protocols, SSH broker, Firecracker provider |
 | `zellij-terminal/` | terminal emulation, graphics, output serialization, host queries, component parsing |
 | `zellij-client/` | input handling and terminal I/O |
@@ -357,7 +361,7 @@ reader of the manifest and broadcasts the event itself to the plugins. See `docs
 ## Lua plugins
 
 Plugins come in two kinds: wasm modules (every builtin) and Lua scripts. See
-`zellij-server/src/plugins/lua/CLAUDE.md` before changing the Lua runtime; `docs/LUA_PLUGINS.md`
+`zellij-plugin-host/src/lua/CLAUDE.md` before changing the Lua runtime; `docs/LUA_PLUGINS.md`
 is the user-facing guide.
 
 ## Hocus skills

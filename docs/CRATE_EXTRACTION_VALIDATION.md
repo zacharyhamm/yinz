@@ -76,3 +76,35 @@ The server drops `isahc`, `futures-lite`, `sysinfo`, `close_fds`, `signal-hook`,
 `rusqlite`, which only the moved code used. `xtask`'s dependency table gains rows for
 `zellij-bus`, and for `zellij-terminal` and `zellij-process`, which the earlier round left
 unenforced. The gate was run on Linux; the macOS gate remains outstanding.
+
+## Plugin host extraction (2026-09-11)
+
+`zellij-plugin-host` takes `zellij-server/src/plugins/` whole (wasm bridge, loader, plugin map,
+pinned executor, pipes, workers, host functions, the Lua runtime and its tests), plus
+`logging_pipe.rs`, `plugin_authoring.rs` and `get_engine`. Its outward calls (`route_action`,
+`warp`, `session_scan_state`, `server_binary`) all resolve in `zellij-bus`, so no dependency
+injection was needed. The server aliases the crate as `crate::plugins` and re-exports
+`check_lua_plugin`, `get_engine` and `plugin_authoring`, so `src/` and the integration tests are
+unchanged. The `hocus` plugin's `include_str!` of the Lua prelude follows the files.
+
+| Stage | Checks | Result |
+| --- | --- | --- |
+| Host extraction | `cargo x test -p zellij-plugin-host` | 534 tests passed |
+| Host extraction | `cargo x test -p zellij-server` | 1,766 tests passed |
+| Host extraction | `cargo x test -p zellij-bus` | 191 tests passed |
+| Host extraction | `cargo x ci check` | Formatting, lint, dependency boundaries, 7,945 unit tests, doctests, and 390 integration tests passed at 16 workers |
+
+`cargo nextest list --workspace` discovers 8,381 tests, the same as before either extraction;
+the plugin tests are named `plugin_tests::…` in `zellij-plugin-host` instead of
+`plugins::plugin_tests::…` in `zellij-server`. All 146 moved snapshots match their original
+bodies by SHA-256 after the `zellij_server__plugins__` → `zellij_plugin_host__` rename; only the
+`source:` header changed (`cargo insta test --force-update-snapshots`).
+
+The first gate run had one red test, `zellij-session warped_tab::test::a_stacks_members_arrive_in_the_order_they_were_stacked`,
+a hegel property test in a crate this extraction does not touch. It passed 25 of 25 runs alone
+and in a 150-run loop, and the repeated gate passed without any change, so it is recorded here as
+a flake to watch rather than as a regression.
+
+The server drops `mlua`, `wasmi`, `wasmi_core`, `wasmi_wasi`, `prost`, `notify-debouncer-full`,
+`highway`, `num_cpus`, `chrono`, `zellij-plugin-api`, `zellij-tile-markdown`, `serial_test` and
+`hocus-proto`. The gate was run on Linux; the macOS gate remains outstanding.

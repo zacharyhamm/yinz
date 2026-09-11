@@ -1,0 +1,20 @@
+---
+source: zellij-plugin-host/src/./unit/plugin_tests/pane_id_commands.rs
+expression: "format!(\"{:#?}\", rerun_command_pane_event)"
+---
+Some(
+    ResizePaneWithId(
+        ResizeStrategy {
+            resize: Increase,
+            direction: Some(
+                Left,
+            ),
+            invert_on_boundaries: false,
+        },
+        Terminal(
+            TerminalId(
+                2,
+            ),
+        ),
+    ),
+)
