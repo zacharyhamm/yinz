@@ -19,6 +19,10 @@ trim_trailing_whitespace = false
 [*.yml]
 indent_size = 2
 
+# The shipped TypeScript plugins, the SDK and the checker host
+[*.{ts,js,mjs,mts}]
+indent_size = 2
+
 # Ignore diffs/patches
 [*.{diff,patch}]
 end_of_line = unset

@@ -31,4 +31,6 @@ pub enum PluginsConfigError {
     InvalidUrlScheme(Url),
     #[error("Could not find plugin at the path: '{0:?}'")]
     InvalidPluginLocation(PathBuf),
+    #[error("remote script plugins are not supported ('{0}'): download the file and load it with file:<path>")]
+    RemoteScriptPlugin(Url),
 }
