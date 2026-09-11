@@ -1,9 +1,13 @@
 use super::*;
 use crate::lua::unit_tests::test_env;
+use std::collections::HashSet;
+use std::sync::Mutex;
+use strum::IntoEnumIterator;
 use zellij_types::{
-    data::{EventType, PluginTag},
+    data::{EventType, PermissionStatus, PermissionType, PluginTag},
     input::layout::RunPluginLocation,
-    internal_ids::{ContextMenuItemId, ContextMenuRequestId},
+    internal_ids::{ContextMenuItemId, ContextMenuRequestId, TabPosition},
+    keys::{BareKey, KeyWithModifier},
 };
 
 fn load_builtin(name: &str, source: &str, mut env: PluginEnv) -> Result<DenoPlugin> {
@@ -676,4 +680,272 @@ fn typescript_reference_examples_load_and_render_in_deno() {
             .render(10, 80)
             .unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
     }
+}
+
+// The reference examples, driven the way `lua/unit_tests.rs` drives their Lua ancestors: every
+// key an example advertises is pressed, so a command shape the file gets wrong fails here.
+
+fn example(name: &str) -> String {
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../example-plugins")
+            .join(name),
+    )
+    .expect("the example plugin should be in the repo")
+}
+
+/// An example loaded as the user plugin it is - not as a builtin, which is granted everything
+/// without asking and would make every permission assertion vacuous.
+fn load_example(name: &str, permissions: HashSet<PermissionType>) -> DenoPlugin {
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(permissions)));
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../example-plugins")
+        .join(name);
+    let mut plugin = DenoPlugin::new(&example(name), &path, env, Arc::default()).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+}
+
+fn press(plugin: &mut DenoPlugin, key: char) {
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char(key))))
+        .unwrap_or_else(|error| panic!("pressing {key:?} should not fail the plugin: {error:#}"));
+}
+
+fn frame(plugin: &mut DenoPlugin, rows: usize, cols: usize) -> String {
+    String::from_utf8(plugin.render(rows, cols).unwrap()).unwrap()
+}
+
+#[test]
+fn the_typescript_playground_example_runs_every_key_it_advertises() {
+    let mut plugin = load_example(
+        "playground.ts",
+        PermissionType::iter()
+            .filter(|permission| permission != &PermissionType::WriteToClipboard)
+            .collect(),
+    );
+    assert!(frame(&mut plugin, 20, 60).contains("zellij TypeScript playground"));
+    for key in ['i', 'v', 'p', 'd', 't', 'r', 'n', 'c', 'w', '+', '-', 'x'] {
+        press(&mut plugin, key);
+    }
+    // `x` is the last key pressed, and the one the plugin deliberately has no permission for.
+    let rendered = frame(&mut plugin, 20, 70);
+    assert!(
+        rendered.contains("x failed") && rendered.contains("WriteToClipboard"),
+        "the unpermitted key should report the permission it wants, got: {rendered}"
+    );
+}
+
+#[test]
+fn the_typescript_workflow_example_runs_on_r() {
+    let mut plugin = load_example("workflow.ts", PermissionType::iter().collect());
+    let rendered = frame(&mut plugin, 12, 70);
+    assert!(rendered.contains("r"), "{rendered}");
+    // With no pty behind the test env the pane never opens; the sequence reports that rather
+    // than starting half-blind, and pressing `c` after it cancels nothing.
+    press(&mut plugin, 'r');
+    press(&mut plugin, 'c');
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            0.0,
+        )))
+        .unwrap();
+    let rendered = frame(&mut plugin, 12, 70);
+    assert!(
+        rendered.contains("cancelling")
+            || rendered.contains("Error")
+            || rendered.contains("sequence"),
+        "pressing r must reach the sequence, got: {rendered}"
+    );
+}
+
+#[test]
+fn the_typescript_dashboard_example_renders_tab_and_pane_updates_and_takes_input() {
+    use zellij_types::data::{PaneInfo, PaneManifest, TabInfo};
+    let mut plugin = load_example("dashboard.ts", PermissionType::iter().collect());
+    plugin
+        .update(&Event::PermissionRequestResult(PermissionStatus::Granted))
+        .unwrap();
+    plugin
+        .update(&Event::TabUpdate(vec![TabInfo {
+            position: TabPosition::new(0),
+            name: "main".to_owned(),
+            active: true,
+            ..Default::default()
+        }]))
+        .unwrap();
+    let mut manifest = PaneManifest::default();
+    manifest.panes.insert(
+        TabPosition::new(0),
+        vec![PaneInfo {
+            id: zellij_types::pane_id::PaneId::from_legacy(3, false),
+            title: "日本 shell".to_owned(),
+            ..Default::default()
+        }],
+    );
+    plugin.update(&Event::PaneUpdate(manifest)).unwrap();
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            b"up 3 days\n".to_vec(),
+            vec![],
+            BTreeMap::new(),
+        ))
+        .unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            0.0,
+        )))
+        .unwrap();
+    for key in ['j', 'k', 'x'] {
+        press(&mut plugin, key);
+    }
+    plugin
+        .update(&Event::Mouse(zellij_types::data::Mouse::LeftClick(3, 1)))
+        .unwrap();
+    let rendered = frame(&mut plugin, 20, 60);
+    let codes = |text: &str| {
+        text.bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert!(rendered.contains(&codes("main")), "{rendered:?}");
+    assert!(rendered.contains(&codes("日本 shell")), "{rendered:?}");
+    assert!(rendered.contains(&codes("clicked row 1")), "{rendered:?}");
+}
+
+#[test]
+fn the_typescript_forms_example_routes_keys_paste_and_mouse() {
+    let mut plugin = load_example("forms.ts", PermissionType::iter().collect());
+    let initial = frame(&mut plugin, 24, 60);
+    assert!(!initial.is_empty());
+    plugin.update(&Event::PastedText("日本語".into())).unwrap();
+    assert_ne!(
+        frame(&mut plugin, 24, 60),
+        initial,
+        "pasting into the focused input redraws"
+    );
+    for key in [
+        BareKey::Tab,
+        BareKey::Enter,
+        BareKey::Down,
+        BareKey::Enter,
+        BareKey::Esc,
+        BareKey::PageDown,
+        BareKey::PageUp,
+    ] {
+        plugin
+            .update(&Event::Key(KeyWithModifier::new(key)))
+            .unwrap_or_else(|error| panic!("{key:?}: {error:#}"));
+    }
+    plugin
+        .update(&Event::Mouse(zellij_types::data::Mouse::LeftClick(2, 4)))
+        .unwrap();
+    plugin
+        .update(&Event::Mouse(zellij_types::data::Mouse::ScrollDown(1)))
+        .unwrap();
+    assert!(!frame(&mut plugin, 24, 60).is_empty());
+}
+
+/// The Hocus todo example reads a project list out of the shared namespace another plugin
+/// declared, on the real SQLite store. See
+/// `the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace`.
+#[test]
+fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
+    use zellij_storage::data_access::DataAccess;
+    use zellij_types::data::{AttrDef, EntityDef, Mutation};
+    let store_dir = tempfile::tempdir().unwrap();
+    let data_access = Arc::new(DataAccess::sqlite(store_dir.path()));
+    let store = data_access.plugin_data();
+    store
+        .define_entity(
+            "shared:hocus",
+            "zellij:hocus-store",
+            &EntityDef::new("project", 1)
+                .attr(AttrDef::text("name").required())
+                .attr(AttrDef::text("root").indexed().required()),
+            false,
+        )
+        .unwrap();
+    store
+        .define_entity(
+            "shared:hocus",
+            "zellij:hocus-store",
+            &EntityDef::new("todo", 1)
+                .attr(AttrDef::text("root").indexed().required())
+                .attr(AttrDef::int("parent_id"))
+                .attr(AttrDef::text("text").full_text().required())
+                .attr(AttrDef::boolean("done").indexed().required().default(false)),
+            false,
+        )
+        .unwrap();
+    store
+        .apply(
+            "shared:hocus",
+            &[
+                Mutation::put("project")
+                    .uid("work")
+                    .set("name", "work")
+                    .set("root", ".")
+                    .build(),
+                Mutation::put("project")
+                    .uid("everything")
+                    .set("name", "everything")
+                    .set("root", "")
+                    .build(),
+            ],
+        )
+        .unwrap();
+    let parent = store
+        .apply(
+            "shared:hocus",
+            &[Mutation::put("todo")
+                .set("root", ".")
+                .set("text", "ship it")
+                .set("done", false)
+                .build()],
+        )
+        .unwrap()
+        .report
+        .ids[0];
+    store
+        .apply(
+            "shared:hocus",
+            &[Mutation::put("todo")
+                .set("root", ".")
+                .set("parent_id", parent)
+                .set("text", "write the test")
+                .set("done", true)
+                .build()],
+        )
+        .unwrap();
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    env.data_access = data_access;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins/hocus-todos.ts");
+    let mut plugin =
+        DenoPlugin::new(&example("hocus-todos.ts"), &path, env, Arc::default()).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+        .update(&Event::PermissionRequestResult(PermissionStatus::Granted))
+        .unwrap();
+    let rendered = frame(&mut plugin, 10, 60);
+    let codes = |text: &str| {
+        text.bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert!(rendered.contains(&codes("work todos")), "{rendered}");
+    assert!(
+        rendered.contains(&format!(";{};", codes("- ship it"))),
+        "{rendered}"
+    );
+    let child = rendered
+        .split(';')
+        .find(|item| item.contains(&codes("x write the test")))
+        .unwrap_or_else(|| panic!("no child item in: {rendered}"));
+    assert!(child.starts_with('|'), "not indented: {child}");
 }

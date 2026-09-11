@@ -1981,6 +1981,19 @@ mod sdk_tests {
     }
 
     #[test]
+    fn load_merges_user_configuration_over_the_plugins_defaults() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            bind({ defaults: {greeting: 'hello', name: 'world'}, load(config) { globalThis.config = config; } });
+            bridge('load', {name: 'zellij'}, 1);
+            check(config.greeting === 'hello' && config.name === 'zellij' && Object.keys(config).length === 2);
+        "#,
+        );
+    }
+
+    #[test]
     fn handle_is_send_without_moving_v8() {
         fn assert_send<T: Send>() {}
         assert_send::<DenoPlugin>();

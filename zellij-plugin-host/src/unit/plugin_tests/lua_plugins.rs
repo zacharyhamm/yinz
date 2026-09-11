@@ -21,7 +21,7 @@ use zellij_types::input::hooks::HookPoint;
 use zellij_types::internal_ids::TabId;
 
 /// Load the Lua fixture and return everything the screen was told to draw for it.
-fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String> {
+pub(super) fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String> {
     instructions
         .iter()
         .filter_map(|instruction| match instruction {
