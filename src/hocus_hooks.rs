@@ -44,7 +44,7 @@ const SCRIPT_VERSION: u32 = 7;
 
 /// The same discipline for the generated opencode plugin, which is one file rather than a
 /// script plus a settings block. Bumped whenever [`opencode_plugin`] changes.
-const OPENCODE_PLUGIN_VERSION: u32 = 1;
+const OPENCODE_PLUGIN_VERSION: u32 = 2;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///
@@ -313,7 +313,7 @@ const OPENCODE_PLUGIN_TEMPLATE: &str = r#"// hocus-opencode-plugin v__VERSION__ 
 // Two rules this file keeps, both of which matter:
 //   - it never throws. A report that fails must not interfere with the agent it is only
 //     reporting on.
-//   - it never blocks. The child is handed its JSON on stdin and is not waited for.
+//   - callbacks never wait. Reports queue in order, starting after the prior child closes.
 
 import { spawn } from "node:child_process"
 
@@ -321,6 +321,8 @@ const ZELLIJ_BIN = __ZELLIJ_BIN__
 const PANE_TOKEN_ENV = __TOKEN_ENV__
 const PANE_TOKEN = process.env[PANE_TOKEN_ENV]
 const PANE_ID = process.env.ZELLIJ_PANE_ID
+
+let reports = Promise.resolve()
 
 function report(payload) {
   // The remote token is tested first, and that order is the whole point: a remote pane
@@ -331,17 +333,30 @@ function report(payload) {
   const args = PANE_TOKEN
     ? ["--pty-broker", "report", "opencode"]
     : ["action", "agent-report", "--hook-json", "--kind", "opencode"]
-  let child
+  let serialized
   try {
-    child = spawn(ZELLIJ_BIN, args, { stdio: ["pipe", "ignore", "ignore"] })
+    serialized = JSON.stringify(payload)
   } catch {
     return
   }
-  child.on("error", () => {})
-  child.stdin.on("error", () => {})
-  try {
-    child.stdin.end(JSON.stringify(payload))
-  } catch {}
+  reports = reports.then(() => new Promise((resolve) => {
+    let child
+    try {
+      child = spawn(ZELLIJ_BIN, args, { stdio: ["pipe", "ignore", "ignore"] })
+    } catch {
+      resolve()
+      return
+    }
+    // Node emits close after error, including when spawning fails.
+    child.on("error", () => {})
+    child.on("close", resolve)
+    child.stdin.on("error", () => {})
+    try {
+      child.stdin.end(serialized)
+    } catch {
+      child.kill()
+    }
+  })).catch(() => {})
 }
 
 export const Hocus = async ({ directory }) => {
@@ -409,20 +424,23 @@ export const Hocus = async ({ directory }) => {
         case "message.part.updated": {
           const part = p.part
           if (part?.type !== "text" || part.synthetic || part.ignored) return
-          const parts = textParts.get(part.sessionID) ?? new Map()
-          parts.set(part.messageID, part.text ?? "")
-          textParts.set(part.sessionID, parts)
+          const messages = textParts.get(part.sessionID) ?? new Map()
+          const parts = messages.get(part.messageID) ?? new Map()
+          parts.set(part.id, part.text ?? "")
+          messages.set(part.messageID, parts)
+          textParts.set(part.sessionID, messages)
           return
         }
         case "message.updated": {
           const info = p.info
           if (info?.role !== "assistant" || !info.time?.completed) return
           if (childSessions.has(info.sessionID)) return
-          const text = textParts.get(info.sessionID)?.get(info.id)
-          if (!text) return
+          const parts = textParts.get(info.sessionID)?.get(info.id)
+          const text = parts ? [...parts.values()].join("") : ""
           // Once consumed, the parts are dropped: the message's text lives on in
           // `lastAssistant` until the next turn replaces it.
           textParts.get(info.sessionID)?.delete(info.id)
+          if (!text) return
           lastAssistant.set(info.sessionID, { messageID: info.id, text })
           send("assistant.message", {
             sessionID: info.sessionID,
@@ -434,7 +452,7 @@ export const Hocus = async ({ directory }) => {
         case "permission.asked":
         case "permission.updated":
           if (childSessions.has(p.sessionID)) return
-          send("permission.asked", { ...p })
+          send(event.type, { ...p })
           return
         case "permission.replied":
           if (childSessions.has(p.sessionID)) return
@@ -446,6 +464,8 @@ export const Hocus = async ({ directory }) => {
     },
     "chat.message": async (input, output) => {
       if (childSessions.has(input.sessionID)) return
+      lastAssistant.delete(input.sessionID)
+      textParts.delete(input.sessionID)
       const text = (output.parts ?? [])
         .filter((part) => part.type === "text" && !part.synthetic && !part.ignored)
         .map((part) => part.text ?? "")
@@ -1444,7 +1464,7 @@ mod tests {
         install(&files, &fake_zellij(&temp), false).unwrap();
 
         let plugin = read_generated(&files.script).unwrap().unwrap();
-        assert!(plugin.contains("hocus-opencode-plugin v1"), "{plugin}");
+        assert!(plugin.contains("hocus-opencode-plugin v2"), "{plugin}");
         assert!(plugin.contains("\"agent-report\""), "{plugin}");
         assert!(plugin.contains("\"--pty-broker\""), "{plugin}");
         assert!(
@@ -1466,6 +1486,37 @@ mod tests {
         uninstall(&files).unwrap();
         assert!(read_generated(&files.script).unwrap().is_none());
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn opencode_plugin_reports_in_order_and_tracks_turn_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin = temp.path().join("hocus.mjs");
+        let harness = temp.path().join("regressions.mjs");
+        std::fs::write(&plugin, opencode_plugin(Path::new("/test/zellij"))).unwrap();
+        std::fs::write(&harness, include_str!("unit/opencode_plugin.mjs")).unwrap();
+        let token = zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV;
+        for remote in [false, true] {
+            let mut command = Command::new("node");
+            command
+                .arg(&harness)
+                .arg(&plugin)
+                .env("ZELLIJ_PANE_ID", "1");
+            if remote {
+                command.env(token, "test-token");
+            } else {
+                command.env_remove(token);
+            }
+            let output = command
+                .output()
+                .expect("Node is required for the OpenCode plugin tests");
+            assert!(
+                output.status.success(),
+                "OpenCode plugin regression failed (remote={remote}):\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
     }
 
     /// A plugin file we did not write is somebody else's: neither install nor uninstall may
