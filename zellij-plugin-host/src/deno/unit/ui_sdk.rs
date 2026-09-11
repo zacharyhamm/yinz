@@ -72,7 +72,16 @@ fn deno_widgets_match_shared_rust_controls_and_markdown() {
     for mouse in [Mouse::LeftClick(3,3),Mouse::Release(3,3),Mouse::Hover(8,3)] {
         let expected = super::ui::action(form.handle_mouse(mouse.clone()));
         run(&mut runtime,&format!("check(JSON.stringify(form.handleMouse({})) === JSON.stringify({expected}));",json!(mouse)));
+        // The raw event as it arrived is accepted too, and means the same thing.
+        let expected = super::ui::action(form.handle_mouse(mouse.clone()));
+        run(&mut runtime,&format!("check(JSON.stringify(form.handleMouse({{Mouse: {}}})) === JSON.stringify({expected}));",json!(mouse)));
     }
+    let key = KeyWithModifier::new(BareKey::Tab);
+    let expected = super::ui::action(form.handle_key(key.clone()));
+    run(&mut runtime,&format!("check(JSON.stringify(form.handleKey({{Key: {}}})) === JSON.stringify({expected}));",json!(key)));
+    let expected = super::ui::action(form.handle_key(key.clone()));
+    run(&mut runtime,&format!("check(JSON.stringify(form.handleKey({{InterceptedKeyPress: {}}})) === JSON.stringify({expected}));",json!(key)));
+    run(&mut runtime, "check(`${zellij.ui.text('x').dim()}` === zellij.ui.text('x').dim().render()); check(String(zellij.ui.ribbon('r')) === zellij.ui.ribbon('r').render());");
     let source = "# 日本語\n\n**bold** ~~gone~~\n\n- [x] done\n\n---\n\n|a|b|\n|-|-|\n|1|2|";
     run(&mut runtime,&format!("globalThis.md = zellij.ui.markdown({});",json!(source)));
     for width in [30,1,0,12,30] {

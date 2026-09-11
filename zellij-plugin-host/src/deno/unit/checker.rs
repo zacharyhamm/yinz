@@ -96,6 +96,11 @@ fn sdk_host_sugar_types_derive_from_command_args() {
       zellij.host.write(new Uint8Array([1]));
       zellij.host.openCommandPaneInGitCheckoutNearPlugin({command: {path: 'sh'}, sourceDirectory: '/src', checkout: 'Current'});
       const log: string = zellij.host.readPluginLog({name: 'x', lines: 1});
+      zellij.host.webRequest({url: 'http://x'});
+      zellij.host.webRequest({url: 'http://x', verb: 'Post', body: 'text', headers: {}, streamId: null});
+      zellij.host.webRequest({url: 'http://x', body: new Uint8Array([1])});
+      // @ts-expect-error a web request needs a url
+      zellij.host.webRequest({verb: 'Get'});
       // @ts-expect-error wrong tuple order
       zellij.host.renameTab('logs', 0);
       // @ts-expect-error unit commands take no payload
@@ -123,7 +128,7 @@ fn sdk_host_sugar_types_derive_from_command_args() {
 fn sdk_keybinding_and_helper_types_check_modes_actions_and_pane_keys() {
     let dir = tempfile::tempdir().unwrap();
     check_semantic_source(&dir.path().join("helpers.ts"), r#"
-      import zellij, {type KeybindAction, type DefaultKeybinding, type PaneId, type MouseSummary} from 'zellij:plugin';
+      import zellij, {type KeybindAction, type DefaultKeybinding, type PaneId, type MouseSummary, type TabInfo, type PaneInfo} from 'zellij:plugin';
       const run: KeybindAction = zellij.action('Run', 'sh', 'ls');
       const props: KeybindAction = zellij.action('MoveFocus', {direction: 'Left'});
       const full: KeybindAction = zellij.action('Run', {args: ['sh'], props: {cwd: '/tmp'}, children: {floating: true}});
@@ -154,6 +159,18 @@ fn sdk_keybinding_and_helper_types_check_modes_actions_and_pane_keys() {
       zellij.closeSelf(); zellij.setSelectable(false);
       const bytes: Uint8Array = zellij.bytes([1, 2]);
       const text: string = zellij.text.sanitizeBytes([27, 91]);
+      zellij.on('TabUpdate', (tabs) => { const active: TabInfo | null = zellij.getFocusedTab(tabs); });
+      zellij.on('PaneUpdate', (manifest) => { const focused: PaneInfo | null = zellij.getFocusedPane(0, manifest); });
+      zellij.runCommandInPane(3, {path: 'ls'}); zellij.runCommandInPane({Terminal: 3}, {path: 'ls'}, {context: {a: 'b'}, keepScrollback: true});
+      const absent: 0 = zellij.data.REV_ABSENT;
+      zellij.data.put('note', {}, {expectRev: zellij.data.REV_ABSENT});
+      const rendered: string = zellij.ui.text('x').toString(); const inline: string = `${zellij.ui.text('x')}`;
+      zellij.on('Key', (key, event) => { zellij.ui.form([]).handleKey(key); zellij.ui.form([]).handleKey(event as {Key: typeof key}); });
+      zellij.on('Mouse', (mouse, event) => { zellij.ui.form([]).handleMouse(mouse); zellij.ui.form([]).handleMouse(event as {Mouse: typeof mouse}); });
+      // @ts-expect-error a plugin pane is not a command pane
+      zellij.runCommandInPane({Plugin: 3}, {path: 'ls'});
+      // @ts-expect-error the guard is a constant
+      zellij.data.REV_ABSENT = 1;
       // @ts-expect-error modes are lowercase
       zellij.registerDefaultKeybindings([{mode: 'Normal', key: 'x', actions: []}]);
       // @ts-expect-error exactly one of actions or handler
