@@ -86,9 +86,10 @@ const BREAKDOWN_BYTES: usize = 100_000;
 /// short enough that a provider which is actually down says so rather than spinning.
 const MAX_RETRIES: u32 = 4;
 
-/// How long a `plugin_reload` waits before reading the plugin's pane. A Lua plugin loads in
-/// well under this; what the wait covers is the screen thread opening the pane and the first
-/// render landing in it, so that what is read back is the plugin and not the loading screen.
+/// How long a `plugin_reload` waits before reading the plugin's pane. A script plugin loads in
+/// well under this, a TypeScript one's module graph compiled and cached included; what the wait
+/// covers is the screen thread opening the pane and the first render landing in it, so that
+/// what is read back is the plugin and not the loading screen.
 const PLUGIN_LOAD_MS: u64 = 750;
 
 /// A `plugin_reload` between asking the host to load the plugin and looking at the result.
@@ -361,9 +362,9 @@ pub struct State {
     /// absolute path that was asked to load, and the tick it was asked on. Parked chats carry
     /// their own in `Chat::plugin_load`; `poll_plugin_load` polls those through `with_parked`.
     pub plugin_load: Option<PluginLoadWatch>,
-    /// Live Lua-provided tools, shared by every conversation in this Hocus instance.
+    /// Live extension-provided tools, shared by every conversation in this Hocus instance.
     extensions: extensions::Registry,
-    /// Valid `hocus/*.lua` files from the latest scan, keyed by their namespace.
+    /// Valid `hocus/*.{ts,js,mjs,mts,lua}` files from the latest scan, keyed by their namespace.
     extension_files: BTreeMap<String, String>,
     /// Running plugin ids whose resolved file location agrees with their Hocus launch config.
     extension_instances: BTreeMap<zellij_tile::prelude::PluginId, (String, String)>,

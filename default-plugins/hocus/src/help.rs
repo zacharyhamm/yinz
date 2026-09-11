@@ -389,7 +389,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_check",
-        "Compile a Lua source, but write nothing and load nothing. Use this to try a correction before you write it. Hocus makes this check for the model, and refuses a source that fails; a plugin_write that you type is not checked, thus check it yourself. A source that compiles can still fail at load; plugin_reload shows that.",
+        "Check a TypeScript, JavaScript or Lua source, but write nothing and load nothing; JS/TS also checks types and local imports. Use this to try a correction before you write it. Hocus makes this check for the model, and refuses a source that fails; a plugin_write that you type is not checked, thus check it yourself. A source that checks can still fail at load; plugin_reload shows that.",
     ),
     (
         "plugin_write",
