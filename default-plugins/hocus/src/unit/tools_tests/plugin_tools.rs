@@ -229,7 +229,6 @@ fn a_load_report_names_the_outcome_before_the_pane_text() {
     for error in [
         "failed to start the script plugin at '/x/main.ts': resolve module /x/missing.ts: No such file or directory (os error 2)",
         "failed to start the script plugin at '/x/main.ts': TypeError: plugin must default-export a lifecycle object",
-        "failed to load the Deno plugin at '/x/main.ts'",
         "failed to load the Lua plugin at '/x/keys.lua'. A plugin must return a table",
         "Panic!\nfailed to run the plugin's `update`: keys.lua:12: attempt to index nil",
     ] {

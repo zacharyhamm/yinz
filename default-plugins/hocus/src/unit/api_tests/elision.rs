@@ -137,6 +137,48 @@ fn the_lua_suffix_does_not_make_it_a_different_file() {
     assert!(!arguments[0].contains("draft one"), "{}", arguments[0]);
 }
 
+/// A TypeScript name is the file's whole identity, extension included, and the note that
+/// stands in for its earlier version has to spell it as it is on disk - not `clock.ts.lua`,
+/// which is a file that does not exist and a `plugin_read` that would fail.
+#[test]
+fn a_typescript_write_is_superseded_without_growing_a_lua_suffix() {
+    let cfg = test_config();
+    let transcript = vec![
+        write("c1", "clock.ts", &draft(DRAFT)),
+        result("c1", "wrote clock.ts"),
+        write("c2", "clock.ts", &draft(FINAL)),
+        result("c2", "wrote clock.ts"),
+    ];
+
+    let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
+
+    assert!(!arguments[0].contains("draft one"), "{}", arguments[0]);
+    assert!(
+        arguments[0].contains("version of clock.ts,"),
+        "{}",
+        arguments[0]
+    );
+    assert!(!arguments[0].contains("clock.ts.lua"), "{}", arguments[0]);
+}
+
+/// The `.lua` suffix is the one that is optional. `todo` is `todo.lua`; `todo.ts` is another
+/// file, and a write of one says nothing about the other.
+#[test]
+fn a_ts_file_and_the_extensionless_lua_name_are_different_subjects() {
+    let cfg = test_config();
+    let transcript = vec![
+        write("c1", "todo", &draft(DRAFT)),
+        result("c1", "wrote todo.lua"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
+    ];
+
+    let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
+
+    assert!(arguments[0].contains("draft one"), "{}", arguments[0]);
+    assert!(arguments[1].contains("draft two"), "{}", arguments[1]);
+}
+
 /// An edit is the cheap path and its strings are small, but a later *write* replaces the whole
 /// file, which makes the diff it describes a diff against something that no longer exists.
 #[test]

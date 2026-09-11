@@ -5179,8 +5179,9 @@ pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> St
     // land near the top today, so truncating first worked by luck rather than by design - and
     // the success cap below is small enough that the luck would have run out.
     let whole = observed.contents.trim_end();
+    // A Lua load error names the Lua plugin; a Deno one is wrapped by the loader as a script
+    // plugin failure, so that arm covers both runtimes' load paths.
     let failed = whole.contains("failed to load the Lua plugin")
-        || whole.contains("failed to load the Deno plugin")
         || whole.contains("failed to start the script plugin")
         || whole.contains("failed to run the plugin's")
         || whole.contains("Panic!");

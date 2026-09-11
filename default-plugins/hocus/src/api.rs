@@ -1131,10 +1131,21 @@ fn subject_of(name: &str, arguments: &str) -> Option<Subject> {
 }
 
 /// The plugin a call names, as the tools take it back: trimmed, `.lua` stripped, so `keys` and
-/// `keys.lua` are the same file. `None` when it names nothing.
+/// `keys.lua` are the same file. `None` when it names nothing. A JavaScript or TypeScript name
+/// keeps its extension, which is its identity: `keys.ts` and `keys` are two files.
 fn plugin_file(name: Option<&str>) -> Option<String> {
     let name = name?.trim().trim_end_matches(".lua");
     (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// The file name a note shows for a plugin, as it exists on disk: an extensionless name is a
+/// Lua file, and a JavaScript or TypeScript name is spelled as it was given.
+fn plugin_display_name(file: &str) -> String {
+    if zellij_tile::plugin_authoring::is_deno_plugin(std::path::Path::new(file)) {
+        file.to_owned()
+    } else {
+        format!("{file}.lua")
+    }
 }
 
 /// A query as the search tools take it: trimmed, and `None` when there is nothing left.
@@ -1178,8 +1189,9 @@ fn stale_arguments(
         // reasoning from, so it goes out whole.
         return None;
     }
+    let display = plugin_display_name(file);
     let note = Value::String(format!(
-        "[elided: an earlier version of {file}.lua, replaced by a later write or edit in this \
+        "[elided: an earlier version of {display}, replaced by a later write or edit in this \
          conversation. plugin_read name={file} for what is on disk now.]"
     ));
     for key in PAYLOAD_KEYS {
@@ -1213,15 +1225,16 @@ fn stale_result(
             let changed = seen.contains(&("read", Subject::File(file.clone())));
             let read_again = !seen.insert(("read", Subject::Page(file.clone(), *start, *end)));
             let count = end.saturating_sub(*start).saturating_add(1);
+            let display = plugin_display_name(file);
             let note = if changed {
                 format!(
-                    "[elided: this read of {file}.lua is out of date - the file was written or \
+                    "[elided: this read of {display} is out of date - the file was written or \
                      edited later in this conversation. plugin_read name={file} \
                      start_line={start} line_count={count} for what is there now.]"
                 )
             } else {
                 format!(
-                    "[elided: lines {start}-{end} of {file}.lua are read again later in this \
+                    "[elided: lines {start}-{end} of {display} are read again later in this \
                      conversation.]"
                 )
             };
@@ -1230,7 +1243,10 @@ fn stale_result(
         // A pane screenshot of a plugin that has been reloaded since.
         ("plugin_reload", Subject::File(file)) => (
             !seen.insert(("reload", Subject::File(file.clone()))),
-            format!("[elided: superseded by a later plugin_reload of {file}.lua.]"),
+            format!(
+                "[elided: superseded by a later plugin_reload of {}.]",
+                plugin_display_name(file)
+            ),
         ),
         // The same section fetched twice. Rare, but it is 4-13 KB when it happens.
         ("plugin_docs", Subject::Section(section)) => (
@@ -1271,10 +1287,11 @@ fn stale_result(
         ("plugin_outline", Subject::Outline(file)) => {
             let changed = seen.contains(&("read", Subject::File(file.clone())));
             let repeat = !seen.insert(("outline", subject.clone()));
+            let display = plugin_display_name(file);
             (
                 changed || repeat,
                 format!(
-                    "[elided: this outline of {file}.lua is out of date or repeated below. \
+                    "[elided: this outline of {display} is out of date or repeated below. \
                      plugin_outline name={file} for the current one.]"
                 ),
             )
