@@ -43,7 +43,7 @@ export default definePlugin({
   render: (rows,cols) => hook.render(rows,cols),
   async pipe(message) {
     if(message.name==='agent_subscribe') {
-      real.command('MessageToPlugin',{destination_plugin_id:message.source.Plugin,message_name:'agent_snapshot',message_payload:'{"panes":[],"activity":{}}'}); return;
+      real.command('MessageToPlugin',{plugin_url:null,destination_plugin_id:message.source.Plugin,plugin_config:{},message_name:'agent_snapshot',message_payload:'{"panes":[],"activity":{}}',message_args:{},new_plugin_args:null,floating_pane_coordinates:null}); return;
     }
     if(message.name==='swamp-pane-result') {
       bridge.pipe(message);
@@ -602,7 +602,7 @@ fn running_exit_view_with_args(
 ) {
     let root = zellij_integration_tests::test_env::init().join("swamp-fork");
     fs::create_dir_all(&root).unwrap();
-    let path = root.join("exit.lua");
+    let path = root.join("exit.ts");
     fs::write(&path, fixture()).unwrap();
     let zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(

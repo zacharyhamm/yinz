@@ -20,28 +20,31 @@ const z: any = {...real,
     return agent;
   }},
   async runCommand(opts: any) {
-    let argv = opts.command, stdout = '';
-    if(argv[0] === 'bash') {if(argv[5] !== 'workflow-history') throw Error('bad history wrapper'); argv = argv.slice(6);}
-    if(argv[0] === 'git') stdout = '/host\n';
-    else if(argv[1] === 'pty-host') stdout = JSON.stringify(hosts);
-    else if(argv[1] === 'workflow' && argv[2] === 'answer') {
-      if(JSON.stringify(argv.slice(3)) !== JSON.stringify(['run', 'questions', 'exit', 'leave'])) throw Error('bad answer');
+    const stdout = opts.command[0] === 'git' ? '/host\n' : JSON.stringify(hosts);
+    return {exitCode: 0, stdout: real.encodeUtf8(stdout), stderr: new Uint8Array()};
+  },
+  async swampRequest(opts: any) {
+    const op = opts.operation, p = opts.payload;
+    if (op === 'workflow.validate') return {passed: true};
+    if (op === 'workflow.run') return {runId: 'run'};
+    if (op === 'model.method.run') {
+      if (p.inputs.run !== 'run' || p.modelIdOrName !== 'questions' || p.inputs.question !== 'exit' || p.inputs.answer !== 'leave') throw Error('bad answer');
       status = 'completed';
-    } else if(argv[1] === 'workflow' && argv[2] === 'cancel') status = 'cancelled';
-    else if(argv[1] === 'workflow' && argv[2] === 'history') {
-      if(argv[3] === 'search') stdout = JSON.stringify({results: [{runId: 'run', workflowName: 'fixture', inputs: {session: real.serverSession, launch: token}}]});
-      else if(argv[3] === 'logs') stdout = Array.from({length: 100}, (_, i) => `LOG ${String(i + 1).padStart(3, '0')} selectable output`).join('\n');
-      else if(argv[3] === 'get') stdout = JSON.stringify({id: 'run', workflowName: 'fixture', status, jobs: [], inputs: {session: real.serverSession, launch: token}});
-    } else if(argv[1] === 'data') {
+      if ((await call({method: 'pane_action', work: token, key: 'leave', action: 'leave'})).outcome !== 'completed') throw Error('leave failed');
+    } else if (op === 'workflow.cancel') status = 'cancelled';
+    else if (op === 'workflow.history.search') return {results: [{runId: 'run', workflowName: 'fixture', inputs: {session: real.serverSession, launch: token}}]};
+    else if (op === 'workflow.history.logs') return {type: 'log', log: {lines: Array.from({length: 100}, (_, i) => `LOG ${String(i + 1).padStart(3, '0')} selectable output`)}};
+    else if (op === 'workflow.history.get') return {id: 'run', workflowName: 'fixture', status, jobs: [], inputs: {session: real.serverSession, launch: token}};
+    else if (op === 'data.query') {
       let results: any[] = [];
-      if(argv[3].includes('question') && status === 'suspended') {
-        if(argv[3] !== 'specName == "question" && attributes.run in ["run"]') throw Error('bad question predicate');
-        results = [{model: 'questions', version: 2, attributes: {question: 'exit', run: 'run', kind: 'choice', prompt: 'Agent exited. Choose Restart, Duplicate, Fork, Begin review, or Leave.', answers: ['restart', 'duplicate', 'fork', 'begin-review', 'leave'], state: 'pending'}},
+      if (p.predicate.includes('question') && status === 'suspended') {
+        if (p.predicate !== 'specName == "question" && attributes.run in ["run"]') throw Error('bad predicate');
+        results = [{model: 'questions', version: 2, attributes: {question: 'exit', run: 'run', kind: 'choice', prompt: 'Agent exited. Choose Restart, Fork, Begin review, or Leave.', answers: ['restart', 'fork', 'begin-review', 'leave'], state: 'pending'}},
           {model: 'questions', version: 1, attributes: {question: 'exit', run: 'run', kind: 'choice', prompt: 'Stale question', answers: ['old'], state: 'pending'}}];
       }
-      stdout = JSON.stringify({results});
+      return {results: [], projected: {shape: 'map', rows: results}};
     }
-    return {exitCode: 0, stdout: real.encodeUtf8(stdout), stderr: new Uint8Array()};
+    return {};
   },
 };
 function call(args: any) {return handler(args, {source: {Plugin: real.getPluginIds().plugin_id}});}

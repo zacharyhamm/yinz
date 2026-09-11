@@ -1,4 +1,70 @@
 // Consumer behavior uses the real Deno SDK widgets with deterministic service replies.
+#[test]
+fn deno_swamp_requests_match_ids_and_wait_for_terminal_frames() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.answers=[];
+      bind({load() {
+        zellij.swampRequest({directory:'/work',operation:'workflow.run',id:'start',started:true,payload:{optional:null}}).then(r=>answers.push(r));
+        zellij.swampRequest({directory:'/work',operation:'model.method.run',id:'end'}).then(r=>answers.push(r));
+      }});
+      bridge('load',{},2);
+      globalThis.frame=(id,type,extra={})=>bridge('update',{CustomMessage:['swamp-response',JSON.stringify({id,type,...extra})]},2);
+      frame('other','error',{error:'wrong request'});
+      frame('start','event',{event:{runId:'one',kind:'started'}});
+      frame('end','event',{event:{runId:'two',kind:'started'}});
+    "#);
+    run(&mut runtime, "check(answers.length===1 && answers[0].runId==='one'); frame('end','event',{event:{kind:'completed',run:{status:'failed'}}}); frame('end','done');");
+    run(&mut runtime, "check(answers.length===2 && answers[1].run.status==='failed');");
+    capture_commands(&mut runtime);
+    run(&mut runtime, "check(sent.some(([command])=>command.SwampRequest?.payload==='{\"optional\":null}'));");
+}
+
+#[test]
+fn deno_swamp_dispatch_keeps_terminal_outcomes_and_recovers_method_attachments() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load();globalThis.done=false;mock.sleep=()=>new Promise(()=>{});
+      (async()=>{
+        for(const kind of ['workflow.run','model.method.run']) {
+          let dispatches=0;
+          mock.swampRequest=async opts=>{
+            dispatches++;
+            const frame=(type,event)=>handlers.CustomMessage(['swamp-response',JSON.stringify({id:opts.id,type,event})]);
+            frame('event',{runId:kind,kind:'started'});
+            frame('event',{kind:'completed',run:{status:'failed'}});frame('done');
+            return {runId:kind};
+          };
+          const args={method:'swamp_dispatch',work:'work',key:kind,directory:'/control',operation:kind,payload:{}};
+          const result=await handler(args,{source:{Plugin:1}});
+          check(result.outcome==='failed' && result.exitCode===1);
+          check((await handler(args,{source:{Plugin:1}})).outcome==='failed' && dispatches===1);
+          let rejected=false;
+          try {await handler({...args,payload:{optional:null}},{source:{Plugin:1}});} catch {rejected=true;}
+          check(rejected && dispatches===1);
+        }
+        const args={method:'swamp_dispatch',work:'work',key:'recover',directory:'/control',operation:'model.method.run',payload:{}};
+        mock.swampRequest=async()=>({runId:'recover'});
+        await handler(args,{source:{Plugin:1}});
+        globalThis.recoveryArgs=args;
+      })().catch(e=>failure=String(e.stack));
+    "#);
+    run(&mut runtime, "if(failure) throw Error(failure);check(recoveryArgs);");
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load();mock.swampRequest=async opts=>{
+        check(opts.operation==='run.attach' && opts.started && opts.payload.runId==='recover');
+        handlers.CustomMessage(['swamp-response',JSON.stringify({id:opts.id,type:'event',event:{kind:'completed',run:{status:'succeeded'}}})]);
+        handlers.CustomMessage(['swamp-response',JSON.stringify({id:opts.id,type:'done'})]);
+        return {};
+      };
+      handler({method:'observe',work:'work',key:'recover'},{source:{Plugin:1}}).then(r=>{check(r.outcome==='completed' && r.exitCode===0);done=true;}).catch(e=>failure=String(e.stack));
+    "#);
+    run(&mut runtime, "if(failure) throw Error(failure);check(done);");
+}
+
 fn consumer(runtime: &mut JsRuntime, name: &str) {
     let builtin = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(format!("../zellij-config/assets/plugins/{name}.ts"));
@@ -145,21 +211,20 @@ fn deno_workflow_view_preserves_question_races_focus_previews_and_scrolling() {
       globalThis.markdowns=[]; globalThis.polls=[]; globalThis.commands=[]; globalThis.closed=0; globalThis.renders=0;
       globalThis.mock={...zellij, ui:{...zellij.ui,markdown(source,options){markdowns.push({source,options});return zellij.ui.markdown(source,options);}}, serverBinary:'zellij', subscribe(){}, every(){}, requestRender(){renders++},
         command(name){if(name==='CloseSelf') closed++;},
-        rpc:{call(){return new Promise(resolve=>polls.push(resolve));}},
-        runCommand(options){return new Promise(resolve=>commands.push({options,resolve}));}};
+        rpc:{call(options){return options.payload.method==='workflow_show' ? new Promise(resolve=>polls.push(resolve)) : new Promise((resolve,reject)=>commands.push({options,resolve,reject}));}}};
       globalThis.q=(question,version=1,answers=['return'],state='pending',run='run')=>({model:'model',version,attributes:{run,question,kind:answers.length?'choice':'text',state,answers,prompt:'Question '+question}});
       globalThis.snapshot=questions=>({run:'run',root:"/work/it's here",history:{id:'run',workflowName:'test',status:'suspended'},questions:{results:questions},outputs:{results:[]}});
       globalThis.key=name=>M.update({Key:{bare_key:name,key_modifiers:[]}});
       globalThis.focus=id=>{for(let n=0;n<20;n++){if(M.focusedControl()===id)return;key('Tab');}throw Error('missing focus '+id+' got '+M.focusedControl());};
       globalThis.resolve=questions=>{check(polls.length===1);polls.shift()(snapshot(questions));};
-      globalThis.finish=(index,exitCode=0,stderr='')=>commands[index].resolve({exitCode,stdout:new Uint8Array(),stderr:zellij.encodeUtf8(stderr)});
+      globalThis.finish=(index,exitCode=0,stderr='')=>exitCode ? commands[index].reject(Error(stderr||'Command failed')) : commands[index].resolve({});
     "#);
     consumer(&mut runtime, "workflow-view");
     run(&mut runtime, "M.load(); M.attach({directory:'/work',run:'run'}); resolve([q('one')]);");
     run(&mut runtime, r#"
       check(M.pending.length===1 && M.focusedControl()==='choice_1');
       M.render(20,100); key('Enter'); key('Enter');
-      check(commands.length===1 && commands[0].options.command[6]==='return' && M.submitting);
+      check(commands.length===1 && commands[0].options.payload.inputs.answer==='return' && M.submitting);
       finish(0);
     "#);
     run(&mut runtime, "resolve([q('one')]);");
@@ -171,7 +236,7 @@ fn deno_workflow_view_preserves_question_races_focus_previews_and_scrolling() {
     "#);
     run(&mut runtime, r#"
       M.refresh(); focus('submit'); key('Enter');
-      check(commands.length===2 && commands[1].options.command[6]==='kept draft');
+      check(commands.length===2 && commands[1].options.payload.inputs.answer==='kept draft');
       resolve([q('old')]); // A poll started before submission must not replace the question.
     "#);
     run(&mut runtime, "check(M.pending[0].attributes.question==='one'); finish(1);");
@@ -187,12 +252,12 @@ fn deno_workflow_view_preserves_question_races_focus_previews_and_scrolling() {
       check(!M.update({Mouse:{Release:[19,0]}})); check(!M.selecting && commands.length===2);
       M.render(20,100); const y=M.formY;
       M.update({Mouse:{LeftClick:[y,2]}}); M.update({Mouse:{Release:[y,2]}});
-      check(commands.length===3 && commands[2].options.command[6]==='yes'); finish(2,1);
+      check(commands.length===3 && commands[2].options.payload.inputs.answer==='yes'); finish(2,1);
     "#);
     run(&mut runtime, "resolve([q('one',2,['yes'],'pending','child')]);");
     run(&mut runtime, r#"
-      check(M.notice==='Command failed'); focus('cancel_run'); key('Enter'); key('Enter');
-      check(commands.length===4 && commands[3].options.command[2]==='cancel'); finish(3);
+      check(M.notice.includes('Command failed')); M.cancellable=true; focus('cancel_run'); key('Enter'); key('Enter');
+      check(commands.length===4 && commands[3].options.payload.method==='workflow_cancel'); finish(3);
     "#);
     run(&mut runtime, "resolve([q('preview')]);");
     run(&mut runtime, r#"
@@ -204,8 +269,8 @@ fn deno_workflow_view_preserves_question_races_focus_previews_and_scrolling() {
       check(markdowns.some(m=>m.source==='Question preview' && m.options.dim===false));
       // A choice question has a choice button, never a free-text Submit button.
       focus('choice_1'); key('PageDown'); key('Enter');
-      check(commands.length===5 && commands[4].options.command[6]==='return');
-      key('Esc'); check(closed===1);
+      check(commands.length===5 && commands[4].options.payload.inputs.answer==='return');
+      key('Esc'); check(closed===0);
     "#);
 }
 
@@ -221,8 +286,8 @@ fn deno_workflow_view_keeps_restart_explicit_and_all_details_reachable() {
       M.active=true;M.load({onRestart(){restarted++}});
       const key=bare_key=>M.update({Key:{bare_key,key_modifiers:[]}});
       for(let i=0;i<6;i++){check(M.focusedControl()!=='restart');key('Tab');}
-      while(M.focusedControl()!=='detach')key('Tab');
-      M.active=false;check(M.focusedControl()==='detach');key('Enter');check(closed===1 && restarted===0);
+      key('Esc');check(closed===0 && restarted===0);
+      M.active=false;
       while(M.focusedControl()!=='restart')key('Tab');
       M.submitting=true;key('Enter');check(restarted===0);M.submitting=false;key('Enter');check(restarted===1);
       M.pending=[{model:'m',version:1,attributes:{run:'r',question:'q',kind:'text',state:'pending',answers:[],prompt:'long '.repeat(100)+'QUESTION-END'}}];
@@ -289,8 +354,7 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
       globalThis.polls=[];globalThis.commands=[];globalThis.filters=[];globalThis.renders=0;
       globalThis.mock={...zellij,subscribe(events){check(events.includes('PaneOutput') && events.includes('CommandPaneExited'));},every(){},
         command(name,args){if(name==='SubscribePaneOutput')filters.push(args);},requestRender(){renders++;},
-        rpc:{call(){return new Promise(resolve=>polls.push(resolve));}},
-        runCommand(options){return new Promise((resolve,reject)=>commands.push({options,resolve,reject}));}};
+        rpc:{call(options){return options.payload.method==='workflow_show' ? new Promise(resolve=>polls.push(resolve)) : new Promise((resolve,reject)=>commands.push({options,resolve,reject}));}}};
       globalThis.key=bare_key=>M.update({Key:{bare_key,key_modifiers:[]}});
       globalThis.focus=id=>{for(let i=0;i<20;i++){if(M.focusedControl()===id)return;key('Tab');}throw Error(id);};
       globalThis.show=(run,launch)=>polls.shift()({run,launch,root:'/root/'+run,active:true,history:{status:'running'},
@@ -321,11 +385,7 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
       frame=plain(M.render(12,100));check(M.scroll<660);check(frame.includes('older output omitted') && frame.includes('BUFFER-END'));
       key('PageUp');M.render(12,100);const scroll=M.scroll;emit('launch-a','new');M.render(12,100);check(M.scroll===scroll);
       key('End');check(plain(M.render(12,100)).includes('BUFFER-ENDnew'));
-      focus('choice_1');key('Enter');check(M.submitting && commands[0].options.cwd==='/root/a');
-      commands[0].options.onOutput({data:zellij.encodeUtf8('ANSWER-LIVE'),stderr:false});
-      check(plain(M.render(12,100)).includes('ANSWER-LIVE'));
-      commands[0].options.onOutput({data:zellij.encodeUtf8('ANSWER-ERR'),stderr:true});
-      check(plain(M.render(12,100)).includes('ANSWER-ERR'));
+      focus('choice_1');key('Enter');check(M.submitting && commands[0].options.payload.directory==='/root/a');
       M.watch('launch-b');
       emit('launch-a','STALE-BEFORE-ATTACH');emit('launch-b','EARLY-B');
       const early=plain(M.render(30,200));
@@ -340,7 +400,7 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
       emit('launch-b','SECOND-SOURCE','build',8);check(plain(M.render(12,100)).includes('Live build / pane 8'));
       emit('launch-b','FIRST-SOURCE','build',7);check(plain(M.render(12,100)).includes('NEW-PANEFIRST-SOURCE'));
       focus('cancel_run');key('Enter');check(M.submitting && commands.length===2);
-      commands[0].options.onOutput({data:zellij.encodeUtf8('STALE'),stderr:false});commands[0].resolve(ok);
+      commands[0].resolve(ok);
     "#);
     run(&mut runtime, r#"
       check(M.submitting && M.notice==='Requesting cancellation...' && M.pending.length===1 && polls.length===0);
@@ -360,9 +420,9 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
     run(&mut runtime, "focus('choice_1');key('Enter');commands[3].resolve(ok);");
     run(&mut runtime, r#"
       check(M.submitting && M.notice==='Submitting answer...' && M.pending.length===1 && polls.length===0);
-      key('Esc');check(filters.at(-1)===null && !M.submitting);commands[4].resolve(ok);
+      key('Esc');check(M.submitting && M.attachment.launch==='launch-e');commands[4].resolve(ok);
     "#);
-    run(&mut runtime, "check(polls.length===0 && M.attachment===undefined);emit('launch-e','DETACHED');check(!plain(M.render(30,200)).includes('DETACHED'));");
+    run(&mut runtime, "check(polls.length===1 && M.attachment.launch==='launch-e');emit('launch-e','STILL-ATTACHED');check(plain(M.render(30,200)).includes('STILL-ATTACHED'));");
 }
 
 #[test]
@@ -384,7 +444,7 @@ fn deno_bridge_background_commands_correlate_parent_work() {
         rows.set(JSON.stringify(['host','session','child','attachment']),{rev:2,value:JSON.stringify({work:'parent',run:'child'})});
         rows.set(JSON.stringify(['host','session','parent','runs']),{rev:1,value:JSON.stringify({entries:{}})});
         mock.projectConfig={read:()=>({root:'/work'})};
-        mock.runCommand=async()=>({exitCode:0,stdout:zellij.encodeUtf8(JSON.stringify({results:[],status:'running'})),stderr:new Uint8Array()});
+        mock.swampRequest=async()=>({results:[],status:'running'});
         const snapshot=await handler({method:'workflow_show',directory:'/work',run:'child'},{source:{Plugin:1}});
         check(snapshot.run==='child' && snapshot.launch==='parent');
         for(const [i,work] of ['child','standalone'].entries())check(JSON.parse(contexts[i].swamp_owner).work===work && contexts[i].swamp_operation==='build');

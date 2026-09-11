@@ -1,4 +1,4 @@
-// Detachable view of authoritative Swamp history. The runner lives in another pane.
+// View of authoritative Swamp history. Execution belongs to the managed Swamp server.
 import z, {type Event, type PipeMessage, type FormWidget, type FieldDescriptor,
   type MarkdownComponent, type WidgetInteraction, type Json} from 'zellij:plugin';
 
@@ -13,7 +13,7 @@ type Snapshot = {run?: string; launch?: string; root: string; history: History; 
 type Attachment = {directory: string; run?: string; launch?: string};
 type Block = {widget?: MarkdownComponent; lines?: string[]; count: number; scroll: number; important?: boolean; live?: boolean};
 export const view = {
-  status: 'No run attached', scroll: 0, pending: [] as Question[], selected: 0, active: false,
+  status: 'No run attached', scroll: 0, pending: [] as Question[], selected: 0, active: false, cancellable: false,
   submitting: false, refreshing: false, selecting: false, dirty: false, formY: 0,
   attachment: undefined as Attachment | undefined, snapshot: undefined as Snapshot | undefined,
   notice: undefined as string | undefined, noticeError: false, refreshError: undefined as string | undefined,
@@ -62,7 +62,7 @@ const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 const identity = (entry?: Question) => entry ? JSON.stringify([entry.attributes.run, entry.model, entry.attributes.question]) : undefined;
 function controls() {
   const entry = view.pending[view.selected], q = entry?.attributes, key = identity(entry);
-  const signature = JSON.stringify([key ?? '', q?.kind ?? '', q?.answers ?? [], view.pending.length > 1, view.active]);
+  const signature = JSON.stringify([key ?? '', q?.kind ?? '', q?.answers ?? [], view.pending.length > 1, view.active, view.cancellable]);
   if (signature === formKey) return;
   const focus = key === questionKey ? form?.focusedId() : undefined;
   const hasInput = !!q && !(q.answers?.length);
@@ -74,12 +74,11 @@ function controls() {
     else fields.push({kind: 'textInput', id: 'answer', label: 'Answer', value}, {kind: 'button', id: 'submit', label: 'Submit'});
   }
   if (view.pending.length > 1) fields.push({kind: 'button', id: 'next', label: 'Next question'});
-  if (view.active) fields.push({kind: 'button', id: 'cancel_run', label: 'Cancel run'});
+  if (view.cancellable) fields.push({kind: 'button', id: 'cancel_run', label: 'Cancel run'});
   if (onRestart && !view.active && !view.pending.length) fields.push({kind: 'button', id: 'restart', label: 'Restart agent'});
-  fields.push({kind: 'button', id: 'detach', label: 'Detach'});
   form = z.ui.form(fields);
   if (focus && fields.some(field => field.id === focus)) form.focus(focus);
-  formKey = signature; questionKey = key; formHasInput = hasInput; formHeight = hasInput ? 2 : 1;
+  formKey = signature; questionKey = key; formHasInput = hasInput; formHeight = hasInput ? 2 : fields.length ? 1 : 0;
 }
 function repaint() { if (view.selecting) view.dirty = true; else z.requestRender(); }
 async function refresh() {
@@ -91,6 +90,7 @@ async function refresh() {
       payload: JSON.parse(JSON.stringify({method: 'workflow_show', ...view.attachment}))}) as unknown as Snapshot;
     if (revision !== generation) return;
     view.refreshError = undefined; view.snapshot = snapshot;
+    view.cancellable = [snapshot.history, ...(snapshot.children ?? [])].some(h => h.status === 'running');
     view.active = !!snapshot.active || [snapshot.history, ...(snapshot.children ?? [])].some(h => ['running', 'suspended'].includes(h.status));
     view.attachment.run = snapshot.run;
     if (snapshot.launch && snapshot.launch !== launch) watch(snapshot.launch);
@@ -126,6 +126,7 @@ function load(options?: {onRestart?: () => void}) {
   controls(); z.every(2000, refresh);
 }
 function pipe(message: PipeMessage) {
+  if (message.name === 'workflow-changed') {void refresh(); return;}
   if (message.name !== 'show' || !message.payload) return;
   attach(JSON.parse(message.payload)); z.command('ShowSelf', true);
   if (typeof message.source === 'object' && 'Cli' in message.source) {
@@ -164,34 +165,31 @@ function update(event: Event): boolean {
   else if ('Mouse' in event) action = form!.handleMouse(event.Mouse);
   else if ('PastedText' in event) action = form!.insertPastedText(event.PastedText);
   else return false;
-  if (action.kind === 'cancel' || ('id' in action && action.id === 'detach')) { generation++; view.attachment = undefined; view.submitting = false; watch(); z.command('CloseSelf'); return true; }
   if ('id' in action && action.id === 'next') { view.selected = (view.selected + 1) % view.pending.length; controls(); return true; }
   if (action.kind !== 'buttonPressed' || view.submitting) return action.kind !== 'ignored';
   if (action.id === 'restart' && onRestart && !view.active && !view.pending.length) { onRestart(); return true; }
   const entry = view.pending[view.selected], choice = /^choice_(\d+)$/.exec(action.id ?? '');
-  let command: string[], success: string;
+  let request: Record<string, Json>, success: string;
   if (entry && (action.id === 'submit' || choice)) {
     if (entry.version <= (answered.get(identity(entry)!) ?? -Infinity)) return false;
     const q = entry.attributes, answer = choice ? q.answers![Number(choice[1]) - 1] : String(form!.value('answer'));
-    command = [z.serverBinary || 'zellij', 'workflow', 'answer', q.run, entry.model, q.question, answer]; success = 'Answer recorded';
+    request = {method: 'workflow_answer', directory: view.snapshot!.root, model: entry.model, inputs: {run: q.run, question: q.question, answer, submission: `${z.instanceId}-${generation + 1}`}}; success = 'Answer recorded';
   } else if (action.id === 'cancel_run' && view.snapshot && view.attachment?.run) {
-    command = [z.serverBinary || 'zellij', 'workflow', 'cancel', view.attachment.run]; success = 'Cancellation requested; resources preserved';
+    request = {method: 'workflow_cancel', directory: view.snapshot.root, run: view.attachment.run}; success = 'Cancellation requested; resources preserved';
   } else return true;
   generation++; view.submitting = true; view.noticeError = false;
   view.notice = success === 'Answer recorded' ? 'Submitting answer...' : 'Requesting cancellation...';
-  void submit(command, success, view.attachment!, view.snapshot!.root, entry);
+  void submit(request, success, view.attachment!, entry);
   return true;
 }
-async function submit(command: string[], success: string, attachment: Attachment, cwd: string, entry?: Question) {
-  const operation = `${command[2] === 'answer' ? identity(entry) : command[3]}: ${command[2] === 'answer' ? command[6] : 'cancel_run'}`;
+async function submit(request: Record<string, Json>, success: string, attachment: Attachment, entry?: Question) {
+  const answering = request.method === 'workflow_answer';
+  const operation = `${answering ? identity(entry) : request.run}: ${answering ? (request.inputs as Record<string, Json>).answer : 'cancel_run'}`;
   try {
-    const result = await z.runCommand({cwd, context: {swamp_owner: 'view'}, command, maxBytesReturned: 8192,
-      onOutput: event => { if (view.attachment === attachment) output(operation, event.stderr ? 'stderr' : 'stdout', event.data); }});
+    await z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp', payload: request, timeoutMs: 90000});
     if (view.attachment !== attachment) return;
-    const accepted = result.exitCode === 0;
-    view.noticeError = !accepted;
-    view.notice = accepted ? success : z.decodeUtf8(result.stderr) || z.decodeUtf8(result.stdout) || 'Command failed';
-    if (accepted && command[2] === 'answer' && entry) {
+    view.noticeError = false; view.notice = success;
+    if (answering && entry) {
       answered.set(identity(entry)!, entry.version);
       view.pending = view.pending.filter(pending => identity(pending) !== identity(entry));
       view.selected = Math.min(view.selected, Math.max(0, view.pending.length - 1)); controls();

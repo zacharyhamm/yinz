@@ -47,6 +47,15 @@ const SDK: &str = include_str!("sdk.js");
 pub(crate) const SDK_MODULE: &str = "export const zellij = globalThis.zellij; export const definePlugin = zellij.definePlugin; export default zellij;";
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+#[op2(fast)]
+fn op_zellij_monotonic_ms() -> f64 {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    EPOCH
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.0
+}
 thread_local! {
     static RUNTIMES: RefCell<HashMap<u64, RuntimeInstance>> = RefCell::new(HashMap::new());
 }
@@ -220,6 +229,7 @@ deno_core::extension!(
     ops = [
         op_zellij_command,
         op_zellij_workflow_remote_panes,
+        op_zellij_monotonic_ms,
         op_zellij_validate,
         op_zellij_encode,
         op_zellij_log,
@@ -684,6 +694,7 @@ impl RuntimeInstance {
                 "instanceId": uuid::Uuid::new_v4().to_string(),
                 "identity": super::host_bridge::server_identity()?,
                 "workflowBridge": super::host_bridge::is_workflow_bridge(&env.plugin.location),
+                "swampTiming": std::env::var("ZELLIJ_SWAMP_TIMING").as_deref() == Ok("1"),
             }),
             None,
         )?;

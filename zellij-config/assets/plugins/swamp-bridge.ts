@@ -10,6 +10,7 @@ type Request = {
   prompt: string; prompt_sha256?: string; waitForExit?: boolean; includeOutput?: boolean;
   action: string; spec: AgentSpawnOptions & {source_directory?: string; automatic_firecracker_vm?: boolean}; argv: string[]; cwd: string;
   inputs?: Record<string, Json>;
+  payload: Record<string, Json>; model: string;
 };
 type Attachment = {run: string; work: string; workflow: string; root: string};
 type Delivery = {
@@ -22,6 +23,7 @@ type Delivery = {
   logError?: string; exitCode?: number | null; workflow?: string; launch?: string;
   view?: number; entries?: Record<string, Attachment>; choice?: string;
   vm?: string | null; clean?: boolean;
+  transport?: string; requestId?: string; correlation?: string; run?: string;
 };
 type Supervisor = {terminal_id: number; host_id: string; child_pid?: number; attached: boolean;
   session_name: string; child_exit_status?: number | null; owner?: string | null; remote_host?: string; pane_token?: string};
@@ -37,6 +39,9 @@ function encode(value: unknown): string {
 // Lua decoded null object fields as absent and encoded empty tables as arrays.
 // Normalize both sides when comparing a persisted request from either runtime.
 function sameRequest(saved: string, request: unknown): boolean {
+  const previous = JSON.parse(saved), current = request as Partial<Request>;
+  const forwarded = current?.method === 'swamp_dispatch' ? 'payload' : current?.method === 'workflow_run' ? 'inputs' : undefined;
+  if (forwarded && encode(previous[forwarded]) !== encode(current[forwarded])) return false;
   const normalize = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(normalize);
     if (value && typeof value === 'object') {
@@ -45,7 +50,7 @@ function sameRequest(saved: string, request: unknown): boolean {
     }
     return value;
   };
-  return encode(normalize(JSON.parse(saved))) === encode(normalize(request));
+  return encode(normalize(previous)) === encode(normalize(request));
 }
 function key(value: string): string {
   assert(typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:\-]*$/.test(value) && value.length <= 200, 'Invalid correlation key');
@@ -67,10 +72,14 @@ function saveEvent(uid: string, outcome: string, fields: Partial<Delivery> = {})
 }
 const terminal = (id: number): PaneId => ({Terminal: id});
 const plugin = (id: number): PaneId => ({Plugin: id});
-function closeView(work: string) {
+function closeView(work: string, restoreSource?: number) {
   const [placement] = read(scope(work, 'view'));
   if (!placement || placement.incarnation !== identity.incarnation || placement.view == null) return;
-  if (z.command('GetPaneInfo', plugin(placement.view))?.plugin_url === 'zellij:agent-exit') z.command('ClosePluginPane', placement.view);
+  const pane = z.command('GetPaneInfo', plugin(placement.view));
+  if (pane?.plugin_url === 'zellij:agent-exit') {
+    if (restoreSource != null && !pane.is_suppressed) z.command('ReplacePaneWithExistingPane', [plugin(placement.view), terminal(restoreSource), true]);
+    z.command('ClosePluginPane', placement.view);
+  }
 }
 function active(work: string): boolean {
   const works = new Set([work, ...Object.keys(read(scope(work, 'runs'))[0]?.entries ?? {})]);
@@ -108,18 +117,136 @@ function present(work: string) {
   if (next === placement.current) return;
   const target = next == null ? view : terminal(next);
   if (!z.command('GetPaneInfo', target)?.is_suppressed) { placement.detached = true; return; }
+  if (placement.current == null && next != null) {
+    const source = read(scope(work, 'source'))[0];
+    if (source?.pane != null) z.command('HidePaneWithId', terminal(source.pane));
+  }
   z.command('ReplacePaneWithExistingPane', [current, target, true]);
   placement.current = next;
 }
 async function command(argv: string[], cwd = '/'): Promise<string> {
-  if (argv[0] === 'swamp' && argv[1] === 'workflow' && argv[2] === 'history' && argv[3] !== 'logs') {
-    argv = ['bash', '-o', 'pipefail', '-c', '"$@" | jq -c \'del(.inputs.state.test.output, .results[]?.inputs.state.test.output)\'', 'workflow-history', ...argv];
-  }
   const r = await z.runCommand({command: argv, cwd, context: {swamp_owner: encode(identity)}, maxBytesReturned: 1048576});
   const stdout = z.decodeUtf8(r.stdout), stderr = z.decodeUtf8(r.stderr);
   assert(r.exitCode === 0, `Host command failed: ${encode(argv)}\nDirectory: ${cwd}\nExit status: ${r.exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   return stdout;
 }
+type SwampRequest = {operation: string; payload?: Record<string, Json>; id?: string; started?: boolean};
+const tracked = new Map<string, string>(), watching = new Set<string>();
+const watchIds = new Map<string, {run: string; work: string}>(), notifications = new Set<string>();
+function changed(work: string) {
+  if (notifications.has(work)) return;
+  notifications.add(work);
+  void z.sleep(100).then(() => {
+    notifications.delete(work);
+    const view = read(scope(work, 'view'))[0];
+    if (view?.incarnation === identity.incarnation && view.view != null) message({destination_plugin_id: view.view, message_name: 'workflow-changed'});
+  });
+}
+async function swamp(request: SwampRequest, directory: string): Promise<string> {
+  const reply = await z.swampRequest({...request, directory}) as Record<string, any>;
+  if (reply.error) throw Error(encode(reply.error));
+  if (request.operation === 'data.query' && reply.limited) throw Error('Swamp data query reached its result limit; narrow the saved-data query');
+  if (request.operation === 'data.query' && reply.projected) {
+    reply.results = reply.projected.rows ?? reply.projected.values ?? []; delete reply.projected;
+  } else if (request.operation === 'workflow.history.logs' && reply.log) return (reply.log.lines ?? []).join('\n');
+  return encode(reply);
+}
+function watchRun(run: string, work: string, root: string) {
+  if (watching.has(run)) return;
+  const id = `${z.instanceId}-watch-${run}`;
+  watching.add(run); watchIds.set(id, {run, work});
+  void swamp({operation: 'run.attach', payload: {runId: run, afterSeq: 0}, id}, root)
+    .catch(() => {}).finally(() => {watching.delete(run); watchIds.delete(id);});
+}
+async function dispatch(uid: string, root: string, operation: string, payload: Record<string, Json>) {
+  let value = result(uid), row = read(uid)[1];
+  Object.assign(value, {transport: 'serve', requestId: z.instanceId + uid, checkout: root, correlation: uid, outcome: 'unknown'});
+  put(uid, value, row);
+  tracked.set(value.requestId!, uid);
+  if (operation === 'workflow.run') {
+    payload = {...payload, noSupersede: true, runtimeTags: {...(payload.runtimeTags as Record<string, Json> ?? {}), zellijOperation: uid}};
+  }
+  const reply = JSON.parse(await swamp({operation, payload, id: value.requestId, started: true}, root));
+  value = result(uid); row = read(uid)[1];
+  if (reply.runId) value.run = reply.runId;
+  if (value.outcome === 'unknown' && tracked.has(value.requestId!)) value.outcome = 'pending';
+  put(uid, value, row); return value;
+}
+async function serveObserve(uid: string, operation: Delivery, row?: DataRecord): Promise<Delivery> {
+  let attachment: {ok: boolean; error?: string} | undefined;
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    if (!['pending', 'unknown'].includes(operation.outcome)) return operation;
+    const request = JSON.parse(operation.request);
+    if (request.operation === 'model.method.run') {
+      if (operation.run) {
+        const id = `${z.instanceId}-attach-${uid}`;
+        if (![...tracked.values()].includes(uid) && !attachment) {
+          tracked.set(id, uid);
+          try { await swamp({operation: 'run.attach', payload: {runId: operation.run, afterSeq: 0}, id, started: true}, operation.checkout!); attachment = {ok: true}; }
+          catch (error) { tracked.delete(id); attachment = {ok: false, error: String(error)}; }
+        }
+        if (attachment) {
+          operation.outcome = attachment.ok && tracked.has(id) ? 'pending' : 'unknown';
+          if (attachment.ok) operation.dispatcher = z.instanceId; else operation.error = attachment.error;
+        }
+      } else operation.outcome = 'unknown';
+    } else {
+      if (request.operation === 'workflow.resume') operation.run ??= request.payload.runId;
+      if (!operation.run && request.operation !== 'workflow.resume') {
+        const history = JSON.parse(await swamp({operation: 'workflow.history.search', payload: {filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(operation.correlation)}`}}, operation.checkout!));
+        assert((history.results ?? []).length <= 1, 'Multiple runs have the same operation identity; reconcile explicitly');
+        operation.run = history.results?.[0]?.runId;
+      }
+      if (operation.run) {
+        const history = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: operation.run}}, operation.checkout!));
+        if (request.operation !== 'workflow.resume' || history.inputs?.submission === request.payload.inputs.submission) {
+          if (history.status === 'running') {
+            if (operation.outcome === 'unknown' || operation.dispatcher !== z.instanceId) {
+              try { await swamp({operation: 'run.attach', payload: {runId: operation.run, afterSeq: 0}, started: true}, operation.checkout!); operation.outcome = 'pending'; operation.dispatcher = z.instanceId; }
+              catch { operation.outcome = 'unknown'; operation.error = 'Execution is unavailable; reconcile persisted history before proceeding'; }
+            } else operation.outcome = 'pending';
+          } else if (['succeeded', 'suspended'].includes(history.status)) {operation.outcome = 'completed'; operation.exitCode = 0;}
+          else if (['failed', 'cancelled', 'interrupted'].includes(history.status)) {operation.outcome = 'failed'; operation.exitCode = 1;}
+        }
+      }
+    }
+    try {put(uid, operation, row); return operation;} catch (error) {if (!D.isConflict(error) || attempt === 8) throw error;}
+    operation = result(uid); row = read(uid)[1];
+  }
+  return operation;
+}
+z.on('CustomMessage', ([name, payload]) => {
+  if (name !== 'swamp-response') return;
+  const frame = JSON.parse(payload), watch = watchIds.get(frame.id);
+  if (watch) {changed(watch.work); return;}
+  const uid = tracked.get(frame.id);
+  if (!uid) return;
+  const [operation, row] = read(uid);
+  if (!operation) return;
+  let write = false;
+  const pending = ['pending', 'unknown'].includes(operation.outcome), method = JSON.parse(operation.request).operation === 'model.method.run';
+  if (frame.event?.runId) {operation.run = frame.event.runId; if (pending) operation.outcome = 'pending'; write = true;}
+  if (pending && frame.event && (['completed', 'cancelled'].includes(frame.event.kind) || (!method && frame.event.kind === 'suspended'))) {
+    const status = frame.event.run?.status;
+    const succeeded = frame.event.kind !== 'cancelled' && (status === 'succeeded' || (!method && status === 'suspended'));
+    operation.outcome = succeeded ? 'completed' : 'failed'; operation.exitCode = succeeded ? 0 : 1;
+    if (!succeeded) operation.error = encode(frame.event); write = true;
+  }
+  if (pending && frame.event?.kind === 'error') {operation.error = encode(frame.event.error); operation.outcome = 'failed'; operation.exitCode = 1; write = true;}
+  if (frame.type === 'done') {
+    if (['pending', 'unknown'].includes(operation.outcome)) operation.outcome = 'unknown';
+    tracked.delete(frame.id); write = true;
+  } else if (frame.type === 'error') {
+    if (pending) {
+      operation.error = encode(frame.error);
+      const attaching = method && frame.id === `${z.instanceId}-attach-${uid}`;
+      operation.outcome = attaching || ['transport_unknown', 'host_error', 'not_found'].includes(frame.error.code) ? 'unknown' : 'failed';
+    }
+    tracked.delete(frame.id); write = true;
+  }
+  if (write) put(uid, operation, row);
+  changed(read<Attachment>(scope(operation.work, 'attachment'))[0]?.work ?? operation.work);
+});
 async function supervisor(pane: number, saved?: string): Promise<Supervisor> {
   for (const row of z.workflowRemotePanes?.() ?? []) {
     if (saved ? row.host_id === saved : row.terminal_id === pane) {
@@ -137,6 +264,7 @@ async function supervisor(pane: number, saved?: string): Promise<Supervisor> {
 async function owned(args: {work: string; agent: string}, running = false): Promise<Delivery & {pane: number}> {
   let agent = result(scope(args.work, args.agent));
   assert(agent.owner?.host_id === identity.host_id && agent.owner.session === identity.session, 'Wrong host or session');
+  assert(agent.owner.work === args.work && agent.owner.agent === args.agent, 'Wrong work or agent');
   assert(agent.pane != null && agent.supervisor, 'Agent dispatch is unknown; reconcile it first');
   const current = await supervisor(agent.pane, agent.supervisor);
   assert(current.host_id === agent.supervisor, 'Pane belongs to a different supervisor');
@@ -175,7 +303,7 @@ function claim(args: Partial<Request>): [string, Delivery | undefined] {
 async function discover(work: string, root: string) {
   const launch = result(scope(work, 'launch'));
   assert(launch.checkout === root, 'Launch belongs to a different control checkout');
-  const history = JSON.parse(await command(['swamp', 'workflow', 'history', 'search', '--input', `launch=${work}`, '--json'], root));
+  const history = JSON.parse(await swamp({operation: 'workflow.history.search', payload: {inputs: {launch: work}}}, root));
   for (const run of history.results ?? []) if (run.inputs.session === identity.session) {
     await handle({method: 'workflow_attach', work, key: 'attachment', run: run.runId, workflow: run.workflowName, directory: root});
   }
@@ -186,12 +314,20 @@ async function handle(input: Partial<Request>): Promise<unknown> {
   // Each method validates the fields it consumes; correlation keys are checked by scope().
   const args = input as Request;
   if (args.method === 'identity') return identity;
+  if (args.method === 'swamp_read') {
+    assert(['workflow.history.get', 'workflow.history.search', 'data.query', 'workflow.approve'].includes(args.operation), 'Unsupported bridge request');
+    return JSON.parse(await swamp({operation: args.operation, payload: args.payload}, args.directory));
+  }
+  if (args.method === 'workflow_answer') {
+    const reply = JSON.parse(await swamp({operation: 'model.method.run', payload: {modelIdOrName: args.model, methodName: 'submit', inputs: args.inputs ?? {}}}, args.directory));
+    if (['failed', 'cancelled'].includes(reply.run?.status)) throw Error(encode(reply.run));
+    return reply.run ?? reply;
+  }
   if (args.method === 'workflow_cancel') {
     const snapshot = await handle({method: 'workflow_show', directory: args.directory, run: args.run}) as {root: string; history: History; children: History[]};
     const operations = [];
-    for (const history of [snapshot.history, ...snapshot.children]) if (['running', 'suspended'].includes(history.status)) {
-      operations.push(await handle({method: 'command', work: history.inputs.launch, key: `cancel-${history.id}`, cwd: snapshot.root,
-        argv: ['swamp', 'workflow', 'cancel', history.workflowName, '--run', history.id, '--json']}));
+    for (const history of [snapshot.history, ...snapshot.children]) if (history.status === 'running') {
+      operations.push(JSON.parse(await swamp({operation: 'workflow.cancel', payload: {runId: history.id}}, snapshot.root)));
     }
     return {operations};
   }
@@ -206,7 +342,7 @@ async function handle(input: Partial<Request>): Promise<unknown> {
       [attachment] = read<Attachment>(scope(args.run, 'attachment'));
       if (attachment) work = attachment.work;
       else {
-        const history: History = JSON.parse(await command(['swamp', 'workflow', 'history', 'get', args.run, '--json'], config.root));
+        const history: History = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: args.run}}, config.root));
         assert(history.inputs.session === identity.session, 'Run belongs to a different session');
         work = history.inputs.launch;
       }
@@ -228,22 +364,26 @@ async function handle(input: Partial<Request>): Promise<unknown> {
     }
     assert(attachment, 'Launch has no reported run yet; reconcile by launch token without repeating it');
     const run = attachment.run;
-    const history = JSON.parse(await command(['swamp', 'workflow', 'history', 'get', run, '--json'], config.root));
+    const history = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: run}}, config.root));
     const ids = Object.keys(result(scope(attachment.work, 'runs')).entries ?? {});
-    const questions = JSON.parse(await command(['swamp', 'data', 'query', `specName == "question" && attributes.run in ${encode(ids)}`,
-      '--select', '{"model": modelName, "version": version, "attributes": attributes}', '--json'], config.root));
-    const outputs = JSON.parse(await command(['swamp', 'data', 'query', `has(tags.workflowRunId) && tags.workflowRunId in ${encode(ids)}`,
-      '--select', outputProjection, '--json'], config.root));
+    const questions = JSON.parse(await swamp({operation: 'data.query', payload: {predicate: `specName == "question" && attributes.run in ${encode(ids)}`, select: '{"model": modelName, "version": version, "attributes": attributes}'}}, config.root));
+    const outputs = JSON.parse(await swamp({operation: 'data.query', payload: {predicate: `has(tags.workflowRunId) && tags.workflowRunId in ${encode(ids)}`, select: outputProjection}}, config.root));
     const children = [];
-    for (const id of ids) if (id !== run) children.push(JSON.parse(await command(['swamp', 'workflow', 'history', 'get', id, '--json'], config.root)));
+    if (history.status === 'running') watchRun(run, attachment.work, config.root);
+    for (const id of ids) if (id !== run) {
+      const child = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: id}}, config.root));
+      children.push(child);
+      if (child.status === 'running') watchRun(child.id, attachment.work, config.root);
+    }
     return {run, launch: attachment.work, root: config.root, history, children, active: active(attachment.work), outputs,
-      logs: await command(['swamp', 'workflow', 'history', 'logs', run, '--tail', '100', '--json'], config.root), questions};
+      logs: await swamp({operation: 'workflow.history.logs', payload: {runIdOrWorkflow: run, tail: 100}}, config.root), questions};
   }
   key(args.work);
   if (args.method === 'lookup') return read(scope(args.work, args.key))[0] ?? null;
   if (args.method === 'observe') {
     const uid = scope(args.work, args.key), [operation, row] = read(uid);
     assert(operation, 'No operation with that identity');
+    if (operation.transport === 'serve') return serveObserve(uid, operation, row);
     if (operation.outcome === 'pending' && operation.dispatcher !== z.instanceId) { operation.outcome = 'unknown'; put(uid, operation, row); }
     if (args.includeOutput !== false && operation.log && operation.pane != null && operation.supervisor) {
       try {
@@ -279,6 +419,7 @@ async function handle(input: Partial<Request>): Promise<unknown> {
     const uid = scope(args.work, args.operation), [operation, row] = read(uid);
     assert(operation, 'Operation is absent');
     if (JSON.parse(operation.request).method === 'workflow_run' && operation.checkout) await discover(args.work, operation.checkout);
+    if (operation.transport === 'serve') return serveObserve(uid, operation, row);
     if (operation.pane != null && operation.supervisor) {
       const host = await supervisor(operation.pane, operation.supervisor);
       assert(host.host_id === operation.supervisor, 'Supervisor mismatch; attachment remains unknown');
@@ -308,8 +449,9 @@ async function handle(input: Partial<Request>): Promise<unknown> {
     assert(!config.error, config.error ?? 'Invalid project config');
     const name = args.workflow ?? config.config.workflow;
     assert(name, 'No exit workflow configured. Use Hocus /project-setup.');
-    await command(['swamp', 'workflow', 'validate', name, '--json'], config.root);
-    const inputs = args.inputs ?? {};
+    const validation = await swamp({operation: 'workflow.validate', payload: {workflowIdOrName: name}}, config.root);
+    assert(JSON.parse(validation).passed === true, 'Workflow validation failed: ' + validation);
+    const inputs = {...args.inputs ?? {}};
     inputs.launch = args.work; inputs.session = identity.session; inputs.binary = z.serverBinary || 'zellij';
     inputs.checkout ??= (await command(['git', 'rev-parse', '--show-toplevel'], args.directory)).replace(/\n$/, '');
     if (typeof inputs.sourcePane === 'number' && inputs.sourcePane >= 0) {
@@ -327,17 +469,25 @@ async function handle(input: Partial<Request>): Promise<unknown> {
     inputs.target ??= config.root; inputs.gate ??= config.config.ci ?? ['cargo', 'x', 'ci', 'check'];
     inputs.targetBranch ??= config.config.default_branch ?? 'main';
     Object.assign(value, {workflow: name, checkout: config.root, launch: args.work}); put(uid!, value, row);
-    const launch = await handle({method: 'command', work: args.work, key: 'swamp-process', cwd: config.root,
-      argv: ['swamp', 'workflow', 'run', name, '--no-supersede', '--input', encode(inputs), '--json']}) as Delivery;
-    value = result(uid!); [, row] = read(uid!);
-    Object.assign(value, {outcome: launch.outcome, pane: launch.pane, supervisor: launch.supervisor, process: launch.process,
-      checkout: config.root, log: launch.log, workflow: name, launch: args.work}); put(uid!, value, row);
+    return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs});
+  } else if (args.method === 'swamp_dispatch') {
+    return dispatch(uid!, args.directory, args.operation, args.payload);
   } else if (args.method === 'pane_action') {
-    if (args.action === 'leave') { value.outcome = 'completed'; put(uid!, value, row); closeView(args.work); return value; }
-    const source = await owned({work: args.work, agent: 'source'});
-    assert(z.command('GetPaneInfo', terminal(source.pane))?.exited, 'Source pane is no longer exited');
+    let source: (Delivery & {pane: number}) | undefined;
+    const saved = read(scope(args.work, 'source'))[0];
+    if (args.action !== 'leave' || saved) {
+      const closed = args.action === 'leave' && saved?.owner?.incarnation === identity.incarnation && saved.pane != null && !z.command('GetPaneInfo', terminal(saved.pane));
+      if (closed) assert(saved.owner?.host_id === identity.host_id && saved.owner.session === identity.session && saved.owner.work === args.work && saved.owner.agent === 'source' && saved.supervisor, 'Wrong source ownership');
+      else source = await owned({work: args.work, agent: 'source'});
+    }
+    if (source) assert(z.command('GetPaneInfo', terminal(source.pane))?.exited, 'Source pane is no longer exited');
+    if (args.action === 'leave') {
+      if (source) z.command('CloseTerminalPane', source.pane);
+      value.outcome = 'completed'; put(uid!, value, row); closeView(args.work); return value;
+    }
+    assert(source, 'Missing source pane');
     if (args.action === 'restart') {
-      z.command('RerunCommandPane', source.pane); value.outcome = 'completed'; put(uid!, value, row); closeView(args.work);
+      closeView(args.work, source.pane); z.command('RerunCommandPane', source.pane); value.outcome = 'completed'; put(uid!, value, row);
     } else {
       assert(args.action === 'fork' || args.action === 'duplicate', 'Unknown pane choice');
       value.outcome = 'pending'; put(uid!, value, row);
@@ -432,12 +582,12 @@ function preview(path: string): string {
     "previewTruncated":has(VALUE.output) && VALUE.output.size() > 16384`.replaceAll('VALUE', path);
 }
 function testPreview(path: string): string {
-  return `{"evidence":${path}.evidence,"outcome":${path}.outcome,"exitCode":${path}.exitCode,"log":${path}.log,"passed":${path}.passed,${preview(path)}}`;
+  return `{"evidence":${path}.evidence,"outcome":${path}.outcome,"exitCode":${path}.exitCode,"log":${path}.log,"passed":${path}.passed,"outputRef":has(${path}.outputRef) ? ${path}.outputRef : null,${preview(path)}}`;
 }
 const outputProjection = `{"model":modelName,"name":name,"version":version,"attributes":
   specName == "diff" ? {"evidence":attributes.evidence,${preview('attributes')}} :
   specName == "test" ? ${testPreview('attributes')} :
-  specName == "operation" && has(attributes.output) ? {
+  specName == "operation" ? {
     "outcome":attributes.outcome,"pane":has(attributes.pane) ? attributes.pane : false,
     "log":has(attributes.log) ? attributes.log : "", "exitCode":has(attributes.exitCode) ? attributes.exitCode : null,
     "outputTruncated":has(attributes.outputTruncated) && attributes.outputTruncated,
@@ -451,11 +601,23 @@ function message(options: Partial<MessageToPlugin> & {message_name: string}) {
   z.command('MessageToPlugin', {plugin_url: null, destination_plugin_id: null, plugin_config: {}, message_payload: null,
     message_args: {}, new_plugin_args: null, floating_pane_coordinates: null, ...options});
 }
+let timingAttempt = 0;
 async function invoke(args: Partial<Request>): Promise<Json> {
+  if (!z.swampTiming) return invokeInner(args);
+  const attempt = ++timingAttempt, start = z.monotonicMs();
+  let outcome = 'error', response: any;
+  try {response = await invokeInner(args); outcome = 'ok'; return response;}
+  finally {
+    try {z.log('swamp_timing ' + encode({layer: 'deno', phase: 'invoke', attempt: `${z.instanceId}:${attempt}`,
+      elapsedMs: z.monotonicMs() - start, outcome, method: args?.method, work: args?.work, key: args?.key,
+      requestId: response?.requestId, run: response?.run}));} catch { /* Keep the operation's result. */ }
+  }
+}
+async function invokeInner(args: Partial<Request>): Promise<Json> {
   const newLaunch = args?.method === 'workflow_run' && !read(scope(args.work!, args.key!))[0];
   try { return JSON.parse(encode(await handle(args))); } catch (error) {
     try {
-      if (newLaunch && !read(scope(args.work!, 'swamp-process'))[0]) saveEvent(scope(args.work!, args.key!), 'failed', {error: String(error)});
+      if (newLaunch && !read(scope(args.work!, 'swamp-process'))[0] && !read(scope(args.work!, args.key!))[0]?.transport) saveEvent(scope(args.work!, args.key!), 'failed', {error: String(error)});
       const [value] = read(scope(args.work!, args.key!));
       if (value && sameRequest(value.request, args) && value.outcome === 'pending') {
         saveEvent(scope(args.work!, args.key!), 'unknown', {error: String(error)}); present(args.work!);
@@ -496,8 +658,8 @@ export default definePlugin({
       if (current.outcome === 'completed') assert(current.choice === reply.choice, 'Picker result already differs');
       else assert(['pending', 'unknown'].includes(current.outcome), 'Picker dispatch cannot accept a result');
       saveEvent(uid, 'completed', {choice: reply.choice});
-      message({destination_plugin_id: from, message_name: 'swamp-pane-ack'});
       if (reply.choice === 'started') closeView(reply.work);
+      message({destination_plugin_id: from, message_name: 'swamp-pane-ack'});
       return;
     }
     if (messageIn.name !== 'swamp' || !messageIn.payload || typeof messageIn.source !== 'object' || !('Cli' in messageIn.source)) return;

@@ -247,6 +247,34 @@
     }
     command(name, args);
   }
+  function swampRequest(options) {
+    return cancellable((operation) => {
+      const {directory, operation: name, payload = {}, id = `${rpcPrefix}-swamp-${++nextAsync}`, started = false} = record(options, "swampRequest options");
+      let last;
+      observeEvent(operation, "CustomMessage", ([message, encoded]) => {
+        if (message !== "swamp-response") return false;
+        const frame = JSON.parse(encoded);
+        if (frame.id !== id) return false;
+        if (frame.type === "error") { last = {error: frame.error}; return true; }
+        if (frame.type === "event") {
+          last = frame.event;
+          if (started && last.runId) { last = {runId: last.runId}; return true; }
+          return false;
+        }
+        if (frame.type === "run.attached") {
+          if (started) { last = {runId: frame.payload.runId}; return true; }
+          return false;
+        }
+        if (frame.type === "done") { last ??= {}; return true; }
+        if (frame.type === "run.interrupted" || frame.type === "run.elsewhere") {
+          last = {error: {message: "Run stream is unavailable; reconcile persisted history"}}; return true;
+        }
+        last = frame.payload?.data ?? frame.payload ?? frame;
+        return true;
+      }, () => last);
+      command("SwampRequest", {directory, id, operation: name, payload: JSON.stringify(payload)});
+    });
+  }
   function runCommand(options) {
     return cancellable((operation) => {
       const { command: argv, envVariables, cwd = "/host", context, maxBytesReturned, onOutput } = record(options, "runCommand options");
@@ -981,7 +1009,7 @@
     sanitizeBytes: (value) => pure('Sanitize', decodeUtf8(bytes(value))),
   });
   // Every PluginCommand, first letter lowercased. The inventory is checked against the Rust enum.
-  const HOST_COMMANDS = "CheckPlugin Subscribe Unsubscribe SetSelectable ShowCursor GetPluginIds GetZellijVersion OpenFile OpenFileFloating OpenTerminal OpenTerminalFloating OpenCommandPane OpenCommandPaneFloating OpenCommandPaneOverlay SwitchTabTo SetTimeout ExecCmd PostMessageTo PostMessageToPlugin HideSelf ShowSelf SwitchToMode NewTabsWithLayout NewTab NewTabUnfocused NewTiledPaneInTab ToggleFloatingPanes NewPane GoToNextTab GoToPreviousTab Resize ResizeWithDirection FocusNextPane FocusPreviousPane FocusLastPane MoveFocus MoveFocusOrTab Detach EditScrollback Write WriteChars ToggleTab MovePane MovePaneWithDirection ClearScreen ScrollUp ScrollDown ScrollToTop ScrollToBottom PageScrollUp PageScrollDown ToggleFocusFullscreen ToggleFocusNoUiFullscreen TogglePaneFrames SetPaneFrameStyle TogglePaneEmbedOrEject UndoRenamePane CloseFocus ToggleActiveTabSync CloseFocusedTab UndoRenameTab QuitZellij PreviousSwapLayout NextSwapLayout GoToTabName FocusOrCreateTab GoToTab StartOrReloadPlugin CloseTerminalPane ClosePluginPane FocusTerminalPane FocusPluginPane RenameTerminalPane RenamePluginPane RenameTab ReportPanic RequestPluginPermissions SwitchSession DeleteDeadSession DeleteAllDeadSessions OpenTerminalInPlace OpenFileInPlace OpenCommandPaneInPlace SubscribePaneOutput RunCommand WebRequest CancelWebRequest RenameSession Notify UnblockCliPipeInput BlockCliPipeInput CliPipeOutput MessageToPlugin DisconnectOtherClients KillSessions ScanHostFolder WatchFilesystem FsRead FsList FsMetadata FsWrite FsRemove FsCreateDir FsRename GrantPluginPermissions DumpSessionLayout CloseSelf NewTabsWithLayoutInfo Reconfigure HidePaneWithId ShowPaneWithId OpenCommandPaneBackground RerunCommandPane RunCommandInPane ResizePaneIdWithDirection EditScrollbackForPaneWithId GetPaneScrollback WriteToPaneId WriteCharsToPaneId SendSigintToPaneId SendSigkillToPaneId GetPanePid GetPaneRunningCommand GetPaneCwd GetPaneGitProbe MovePaneWithPaneId MovePaneWithPaneIdInDirection ClearScreenForPaneId ScrollUpInPaneId ScrollDownInPaneId ScrollToTopInPaneId ScrollToBottomInPaneId PageScrollUpInPaneId PageScrollDownInPaneId TogglePaneIdFullscreen TogglePaneEmbedOrEjectForPaneId CloseTabWithIndex BreakPanesToNewTab BreakPanesToTabWithIndex SwitchTabToId GoToTabWithId CloseTabWithId RenameTabWithId ArrangeProjectPanes SetTabProjects BreakPanesToTabWithId ReloadPlugin LoadNewPlugin RebindKeys RegisterDefaultKeybindings ListClients ChangeHostFolder SetFloatingPanePinned StackPanes ChangeFloatingPanesCoordinates ChangeOverlayCoordinates TogglePaneBorderless SetPaneBorderless OpenCommandPaneNearPlugin OpenCommandPaneInGitCheckoutNearPlugin OpenTerminalNearPlugin OpenTerminalFloatingNearPlugin OpenTerminalInPlaceOfPlugin OpenCommandPaneFloatingNearPlugin OpenCommandPaneInPlaceOfPlugin OpenFileNearPlugin OpenFileFloatingNearPlugin OpenFileInPlaceOfPlugin GroupAndUngroupPanes HighlightAndUnhighlightPanes SetRelatedPanes RevealPaneWithId CloseMultiplePanes FloatMultiplePanes EmbedMultiplePanes SetSelfMouseSelectionSupport InterceptKeyPresses ClearKeyPressesIntercepts ReplacePaneWithExistingPane RunAction CopyToClipboard OverrideLayout SaveLayout DeleteLayout RenameLayout EditLayout GenerateRandomName DumpLayout ParseLayout GetLayoutDir GetUserPluginDir GetFocusedPaneInfo SaveSession CurrentSessionLastSavedTime GetPaneInfo GetTabInfo GetSessionEnvironmentVariables GetPluginAliasConfiguration OpenCommandPaneInNewTab OpenPluginPaneInNewTab OpenEditorPaneInNewTab OpenCommandPaneInPlaceOfPaneId OpenTerminalPaneInPlaceOfPaneId OpenEditPaneInPlaceOfPaneId HideFloatingPanes ShowFloatingPanes SetPaneColor SetPaneRegexHighlights SetContextMenu ClearPaneHighlights OpenPluginPaneFloating GetSessionList KillSessionsAndReply DeleteDeadSessionAndReply DeleteAllDeadSessionsAndReply FocusHostSession ListRecordings ListNotifications SearchRecordings WarpPaneToSession WarpPaneFromSession WarpTabToSession WarpTabFromSession ListOrphanedPanes AdoptOrphanedPane DataDefineEntity DataApply DataFetch DataCount DataWatch DataUnwatch DataCatalog SetPaneTitlePrefix EnqueueQueueJob ConfigureQueue CancelQueueJob QueueStatus FinishQueueJob CheckLuaPlugin SetPaneAgent SetPaneAgentRun ProjectConfigRead ProjectConfigWrite SpawnAgent SetQuitNotice ReloadPluginByUrl ReadPluginLog GetLocalUtcOffset".split(" ");
+  const HOST_COMMANDS = "SwampRequest CheckPlugin Subscribe Unsubscribe SetSelectable ShowCursor GetPluginIds GetZellijVersion OpenFile OpenFileFloating OpenTerminal OpenTerminalFloating OpenCommandPane OpenCommandPaneFloating OpenCommandPaneOverlay SwitchTabTo SetTimeout ExecCmd PostMessageTo PostMessageToPlugin HideSelf ShowSelf SwitchToMode NewTabsWithLayout NewTab NewTabUnfocused NewTiledPaneInTab ToggleFloatingPanes NewPane GoToNextTab GoToPreviousTab Resize ResizeWithDirection FocusNextPane FocusPreviousPane FocusLastPane MoveFocus MoveFocusOrTab Detach EditScrollback Write WriteChars ToggleTab MovePane MovePaneWithDirection ClearScreen ScrollUp ScrollDown ScrollToTop ScrollToBottom PageScrollUp PageScrollDown ToggleFocusFullscreen ToggleFocusNoUiFullscreen TogglePaneFrames SetPaneFrameStyle TogglePaneEmbedOrEject UndoRenamePane CloseFocus ToggleActiveTabSync CloseFocusedTab UndoRenameTab QuitZellij PreviousSwapLayout NextSwapLayout GoToTabName FocusOrCreateTab GoToTab StartOrReloadPlugin CloseTerminalPane ClosePluginPane FocusTerminalPane FocusPluginPane RenameTerminalPane RenamePluginPane RenameTab ReportPanic RequestPluginPermissions SwitchSession DeleteDeadSession DeleteAllDeadSessions OpenTerminalInPlace OpenFileInPlace OpenCommandPaneInPlace SubscribePaneOutput RunCommand WebRequest CancelWebRequest RenameSession Notify UnblockCliPipeInput BlockCliPipeInput CliPipeOutput MessageToPlugin DisconnectOtherClients KillSessions ScanHostFolder WatchFilesystem FsRead FsList FsMetadata FsWrite FsRemove FsCreateDir FsRename GrantPluginPermissions DumpSessionLayout CloseSelf NewTabsWithLayoutInfo Reconfigure HidePaneWithId ShowPaneWithId OpenCommandPaneBackground RerunCommandPane RunCommandInPane ResizePaneIdWithDirection EditScrollbackForPaneWithId GetPaneScrollback WriteToPaneId WriteCharsToPaneId SendSigintToPaneId SendSigkillToPaneId GetPanePid GetPaneRunningCommand GetPaneCwd GetPaneGitProbe MovePaneWithPaneId MovePaneWithPaneIdInDirection ClearScreenForPaneId ScrollUpInPaneId ScrollDownInPaneId ScrollToTopInPaneId ScrollToBottomInPaneId PageScrollUpInPaneId PageScrollDownInPaneId TogglePaneIdFullscreen TogglePaneEmbedOrEjectForPaneId CloseTabWithIndex BreakPanesToNewTab BreakPanesToTabWithIndex SwitchTabToId GoToTabWithId CloseTabWithId RenameTabWithId ArrangeProjectPanes SetTabProjects BreakPanesToTabWithId ReloadPlugin LoadNewPlugin RebindKeys RegisterDefaultKeybindings ListClients ChangeHostFolder SetFloatingPanePinned StackPanes ChangeFloatingPanesCoordinates ChangeOverlayCoordinates TogglePaneBorderless SetPaneBorderless OpenCommandPaneNearPlugin OpenCommandPaneInGitCheckoutNearPlugin OpenTerminalNearPlugin OpenTerminalFloatingNearPlugin OpenTerminalInPlaceOfPlugin OpenCommandPaneFloatingNearPlugin OpenCommandPaneInPlaceOfPlugin OpenFileNearPlugin OpenFileFloatingNearPlugin OpenFileInPlaceOfPlugin GroupAndUngroupPanes HighlightAndUnhighlightPanes SetRelatedPanes RevealPaneWithId CloseMultiplePanes FloatMultiplePanes EmbedMultiplePanes SetSelfMouseSelectionSupport InterceptKeyPresses ClearKeyPressesIntercepts ReplacePaneWithExistingPane RunAction CopyToClipboard OverrideLayout SaveLayout DeleteLayout RenameLayout EditLayout GenerateRandomName DumpLayout ParseLayout GetLayoutDir GetUserPluginDir GetFocusedPaneInfo SaveSession CurrentSessionLastSavedTime GetPaneInfo GetTabInfo GetSessionEnvironmentVariables GetPluginAliasConfiguration OpenCommandPaneInNewTab OpenPluginPaneInNewTab OpenEditorPaneInNewTab OpenCommandPaneInPlaceOfPaneId OpenTerminalPaneInPlaceOfPaneId OpenEditPaneInPlaceOfPaneId HideFloatingPanes ShowFloatingPanes SetPaneColor SetPaneRegexHighlights SetContextMenu ClearPaneHighlights OpenPluginPaneFloating GetSessionList KillSessionsAndReply DeleteDeadSessionAndReply DeleteAllDeadSessionsAndReply FocusHostSession ListRecordings ListNotifications SearchRecordings WarpPaneToSession WarpPaneFromSession WarpTabToSession WarpTabFromSession ListOrphanedPanes AdoptOrphanedPane DataDefineEntity DataApply DataFetch DataCount DataWatch DataUnwatch DataCatalog SetPaneTitlePrefix EnqueueQueueJob ConfigureQueue CancelQueueJob QueueStatus FinishQueueJob CheckLuaPlugin SetPaneAgent SetPaneAgentRun ProjectConfigRead ProjectConfigWrite SpawnAgent SetQuitNotice ReloadPluginByUrl ReadPluginLog GetLocalUtcOffset".split(" ");
   // Tuple commands that also accept one object of named arguments. Omitted fields become null,
   // which keeps the arity serde counts and reads as absent for an Option slot.
   const tupleFields = {
@@ -1279,6 +1307,8 @@
     get serverBinary() { return metadata.serverBinary; },
     get serverSession() { return metadata.serverSession; },
     get serverIncarnation() { return metadata.serverIncarnation; },
+    get swampTiming() { return metadata.swampTiming === true; },
+    monotonicMs: () => core.ops.op_zellij_monotonic_ms(),
     get instanceId() { return rpcPrefix; },
     command,
     trace,
@@ -1294,6 +1324,7 @@
     after: (milliseconds, callback) => callbackTimer(milliseconds, callback, false),
     every: (milliseconds, callback) => callbackTimer(milliseconds, callback, true),
     runCommand,
+    swampRequest,
     paneSequence,
     waitForPaneExit,
     runInPane,
@@ -1466,6 +1497,7 @@
         if (rpcPrefix !== null) throw new Error("SDK already initialized");
         rpcPrefix = arg.instanceId;
         metadata = arg.identity;
+        metadata.swampTiming = arg.swampTiming;
         if (arg.workflowBridge) api.workflowRemotePanes = () => {
           if (client === null) throw new Error("host commands are unavailable during module initialization");
           return workflowRemotePanes();
