@@ -1,4 +1,4 @@
-// Attach a project-owned Swamp workflow. Preserve the held pane and its scrollback.
+// Attach a project-owned Swamp workflow. Retain the source until Leave.
 import z, {definePlugin, type Event} from 'zellij:plugin';
 import {view} from 'zellij:workflow-view';
 let status = 'Agent exited.', busy = false, workflow = false;
@@ -37,6 +37,7 @@ export default definePlugin({
     view.active = true;
     view.load({onRestart() {
       if (!busy && !view.active && !view.submitting && !view.pending.length && pane != null) {
+        z.command('ReplacePaneWithExistingPane', [{Plugin: z.getPluginIds().plugin_id}, {Terminal: pane}, true]);
         z.command('RerunCommandPane', pane); z.command('CloseSelf');
       }
     }});
@@ -57,10 +58,11 @@ export default definePlugin({
     else if (event.Key.bare_key === 'Delete' && !busy) { if (pane != null) z.command('CloseTerminalPane', pane); z.command('CloseSelf'); }
     return true;
   },
+  pipe: message => view.pipe(message),
   render(rows, cols) {
-    if (workflow) return view.render(Math.max(0, rows - 1), cols) + z.ui.text(z.text.truncate(busy || view.active
-      ? 'Workflow active. Esc: scrollback (detach). Cancel run: explicit cancellation.'
-      : 'Enter: activate button  Esc: scrollback  Delete: close held pane', cols)).dim().render({x: 0, y: Math.max(0, rows - 1), width: cols, height: 1});
+    if (workflow) return view.render(Math.max(0, rows - 1), cols) + z.ui.text(z.text.truncate(busy || view.active || view.submitting
+      ? 'Enter: activate button. Leave: close held pane. Cancel run: explicit cancellation.'
+      : 'Enter: activate button  Delete: leave and close held pane', cols)).dim().render({x: 0, y: Math.max(0, rows - 1), width: cols, height: 1});
     return [...status.split('\n').filter(Boolean), `Directory: ${directory ?? 'unknown'}`, 'Enter: restart agent  Esc: scrollback  Delete: close held pane']
       .slice(0, rows).map((line, y) => z.ui.text(z.text.truncate(z.text.sanitize(line), cols)).render({x: 0, y, width: cols, height: 1})).join('');
   },

@@ -126,6 +126,8 @@ export interface Zellij {
   readonly serverBinary: string;
   readonly serverSession: string;
   readonly serverIncarnation: string;
+  readonly swampTiming: boolean;
+  monotonicMs(): number;
   readonly instanceId: string;
   /** Internal: available only to the trusted zellij:swamp-bridge builtin. */
   readonly workflowRemotePanes?: () => {terminal_id: number; host_id: string; remote_host: string; pane_token: string; owner: string | null}[];
@@ -163,6 +165,7 @@ export interface Zellij {
   runInPane(pane: AgentPane, step: PaneStep): CancellablePromise<PaneExit>;
   /** Requires RunCommands. Defaults: empty maps, /host, host output limit. Nonzero exits resolve. */
   runCommand(options: RunCommandOptions): CancellablePromise<RunCommandResult>;
+  swampRequest(options: {directory: string; operation: string; payload?: Json; id?: string; started?: boolean}): CancellablePromise<Json>;
   /** Requires WebAccess. Default Get. With streamId, resolves the leading response (empty body for 2xx).
    * HTTP error bodies stay buffered. cancel() stops the wait; command("CancelWebRequest", streamId) stops streaming. */
   webRequest(options: WebRequestOptions): CancellablePromise<WebRequestResult>;
@@ -229,6 +232,7 @@ type Tagged<M> = { [K in keyof M]: { [P in K]: M[K] } }[keyof M];
 /** Raw command payloads retain Rust field names and tuple positions. */
 export interface CommandArgs {
   CheckPlugin: {name: string; source: string; mode: PluginCheckMode};
+  SwampRequest: {directory: string; id: string; operation: string; payload: string};
   Subscribe: EventType[]; Unsubscribe: EventType[]; SetSelectable: boolean;
   ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetZellijVersion: undefined;
   OpenFile: [FileToOpen, StringMap]; OpenFileFloating: [FileToOpen, FloatingPaneCoordinates | null, StringMap];
@@ -543,6 +547,7 @@ export interface RunPlugin { _allow_exec_host_cmd?: boolean; location: {File: st
 export type RunPluginOrAlias = {RunPlugin: RunPlugin} | {Alias: {name: string; configuration: StringMap | null; initial_cwd: string | null; run_plugin: RunPlugin | null}};
 export type Run = {plugin: RunPluginOrAlias} | {command: RunCommand} | {EditFile: [string, Integer | null, string | null]} | {Cwd: string};
 export interface TiledPaneLayout {
+  user_named?: boolean;
   children_split_direction: 'Horizontal' | 'Vertical'; name: string | null; children: TiledPaneLayout[]; split_size: PercentOrFixed | null;
   run: Run | null; borderless: boolean | null; focus: boolean | null; external_children_index: Integer | null;
   children_are_stacked: boolean; is_expanded_in_stack: boolean; exclude_from_sync: boolean | null; run_instructions_to_ignore: (Run | null)[];

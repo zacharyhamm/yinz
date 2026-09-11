@@ -3690,11 +3690,12 @@ fn swamp_request(
     let sender = env.senders.to_plugin.clone();
     let target = env.plugin_id;
     let client = env.client_id;
+    let generation = env.deno_generation;
     get_tokio_runtime().spawn(async move {
         let emit = |frame: serde_json::Value| {
             if let Some(sender) = &sender {
-                sender.send(PluginInstruction::Update(vec![(Some(target), Some(client),
-                    Event::CustomMessage("swamp-response".into(), frame.to_string()))])).to_anyhow().context("cannot deliver Swamp response").non_fatal();
+                sender.send(PluginInstruction::for_plugin_event(target, client, generation,
+                    Event::CustomMessage("swamp-response".into(), frame.to_string()))).to_anyhow().context("cannot deliver Swamp response").non_fatal();
             }
         };
         let result: Result<()> = async {
