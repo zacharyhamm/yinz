@@ -2,6 +2,7 @@
 local z = require('zellij')
 local M = {status='Agent exited.', busy=false}
 local view=require('zellij.workflow_view')
+local launch_rpc,launch_ready
 function M.load(config)
   M.pane=tonumber(config.agent_pane_id)
   M.directory=config.agent_firecracker_worktree or config.agent_cwd
@@ -43,7 +44,10 @@ function M.load(config)
     -- An exit reloaded in the same server attaches through the same launch claim.
     local token=assert(config.agent_exit_token, 'Missing host exit correlation token')
     view.attach{directory=M.directory,launch=token}
-    local reply=z.await(z.rpc.call {plugin_url='zellij:swamp-bridge',name='swamp',payload={method='workflow_run',work=token,key='launch',directory=M.directory,inputs={sourcePane=M.pane,kind=config.agent_kind or '',firecracker=config.agent_firecracker_vm or ''}}})
+    launch_ready=false
+    launch_rpc=z.rpc.call {timeout=90,plugin_url='zellij:swamp-bridge',name='swamp',payload={method='workflow_run',work=token,key='launch',directory=M.directory,inputs={sourcePane=M.pane,kind=config.agent_kind or '',firecracker=config.agent_firecracker_vm or ''}}}
+    local reply=z.await(launch_rpc)
+    launch_rpc=nil
     if reply.error then
       view.status=reply.error
       -- The launch may have dispatched before the response failed. Keep reconciling.
@@ -53,7 +57,17 @@ function M.load(config)
     z.request_render()
   end)
 end
-function M.pipe(message) if M.workflow then view.pipe(message) end end
+function M.pipe(message)
+  if not M.workflow then return end
+  if message.name=='workflow-progress' and message.payload and launch_rpc and not launch_ready then
+    local progress=z.json.decode(message.payload)
+    if not progress.submission then
+      launch_ready=progress.status=='ready'
+      launch_rpc:reset_timeout(90)
+    end
+  end
+  view.pipe(message)
+end
 function M.update(event)
   if M.workflow then
     local active=M.busy or view.active or view.submitting

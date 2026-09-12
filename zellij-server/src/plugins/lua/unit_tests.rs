@@ -7598,6 +7598,64 @@ assert(submitted and not M.submitting, M.notice)
 }
 
 #[test]
+fn swamp_exit_launch_deadline_renews_until_ready_and_reconciles_without_redispatch() {
+    for ending in ["lost", "ready", "completed"] {
+        let plugin =
+            load(zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap()).unwrap();
+        plugin
+            .lua
+            .globals()
+            .set("M", plugin.plugin.clone())
+            .unwrap();
+        plugin.lua.globals().set("ending", ending).unwrap();
+        plugin.lua.load(r#"
+local z=require('zellij')
+local view=require('zellij.workflow_view')
+local now=1000
+os.time=function() return now end
+z.subscribe=function() end
+z.subscribe_pane_output=function() end
+z.set_timeout=function() end
+z.set_self_mouse_selection_support=function() end
+z.request_render=function() end
+z.get_plugin_ids=function() return {plugin_id=1} end
+z.get_pane_info=function() return {is_suppressed=false} end
+z.project_config.read=function() return {config={workflow='configured'}} end
+local refreshes,launches,call=0,0,nil
+view.refresh=function() refreshes=refreshes+1 end
+z.message_to_plugin=function(opts)
+  if opts.message_name~='zellij_rpc_call' then return end
+  call=z.json.decode(opts.message_payload)
+  assert(call.payload.method=='workflow_run' and call.payload.work=='exit-token')
+  launches=launches+1
+end
+local function tick(seconds) now=now+seconds;z.__update(M,{Timer=0}) end
+local function progress(status,submission)
+  M.pipe{name='workflow-progress',payload=z.json.encode{status=status,submission=submission}}
+end
+M.load{agent_pane_id='7',agent_cwd='/work',agent_exit_token='exit-token'}
+assert(M.busy and launches==1)
+for _=1,12 do tick(10);progress('waiting') end
+assert(M.busy,'queued launch survives longer than 90 seconds')
+if ending=='completed' then
+  z.__pipe(M,{name='zellij_rpc_reply',payload=z.json.encode{version=1,call_id=call.call_id,result={}},source={Plugin=9}})
+else
+  if ending=='ready' then progress('ready') end
+  tick(89)
+  assert(M.busy)
+  if ending=='ready' then progress('waiting') else progress('waiting','unrelated-submission') end
+  tick(1)
+end
+assert(not M.busy and launches==1,'completion or silence releases busy without redispatch')
+assert(view.attachment.launch=='exit-token' and not view.attachment.run)
+assert(refreshes>=2,'the original launch is reconciled after the RPC settles')
+progress('waiting');tick(100)
+assert(not M.busy and launches==1,'late progress cannot revive a completed RPC')
+"#).exec().unwrap();
+    }
+}
+
+#[test]
 fn swamp_exit_enter_activates_the_focused_workflow_button() {
     let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
     let plugin = load(source).unwrap();
@@ -8255,24 +8313,49 @@ z.async.swamp_request=service
 -- A normal validation response must explicitly pass before dispatch.
 local validation_service=z.async.swamp_request
 -- Refresh progress must keep the same launch observable without dispatching it.
+local clock=1000
+os.time=function() return clock end
+local old_message=z.message_to_plugin
+local progress_messages=0
+z.message_to_plugin=function(opts)
+  if opts.message_name=='workflow-progress' then progress_messages=progress_messages+1
+  elseif opts.message_name~='workflow-changed' then old_message(opts) end
+end
+for _,ending in ipairs{'ready','failure'} do
+local work='refresh-'..ending
+progress_messages=0
+rows[z.json.encode{'host','session',work,'view'}]={rev=1,value=z.json.encode{view=1,incarnation='incarnation'}}
 z.async.swamp_request=function(opts)
   if opts.operation=='workflow.validate' then
     opts.on_progress('waiting')
-    local snapshot=call{method='workflow_show',launch='refresh-wait',directory='/control'}
+    local uid=z.json.encode{'host','session',work,'launch'}
+    local rev=rows[uid].rev
+    for _=1,12 do clock=clock+10;z.__update(M,{Timer=0}) end
+    assert(progress_messages==13,'queued launches heartbeat every 10 seconds')
+    assert(rows[uid].rev==rev and not z.json.decode(rows[uid].value).waiting,'queue state is interpreter-local')
+    local snapshot=call{method='workflow_show',launch=work,directory='/control'}
     assert(snapshot.history.status=='queued' and snapshot.active and snapshot.logs:find('Waiting for active workflows',1,true))
     assert(service_runs==2,'Waiting must not dispatch a workflow')
     opts.on_progress('reloading')
-    snapshot=call{method='workflow_show',launch='refresh-wait',directory='/control'}
+    snapshot=call{method='workflow_show',launch=work,directory='/control'}
     assert(snapshot.logs=='Loading updated extensions.')
-    opts.on_progress('ready')
+    if ending=='ready' then
+      opts.on_progress('ready')
+      local count=progress_messages;clock=clock+100;z.__update(M,{Timer=0})
+      assert(progress_messages==count,'ready stops the heartbeat')
+    end
     local a,r=z.async.future();r{error={code='not_dispatched',message='Cannot load updated Swamp extensions'}};return a
   end
   error('Refresh failure dispatched a workflow')
 end
-local waiting=launch('refresh-wait')
+local waiting=launch(work)
 assert(tostring(select(2,call(waiting))):find('Cannot load updated Swamp extensions',1,true))
 assert(call(waiting).outcome=='failed' and service_runs==2)
 assert(call{method='workflow_show',launch=waiting.work,directory='/control'}.history.status=='failed')
+local count=progress_messages;clock=clock+100;z.__update(M,{Timer=0})
+assert(progress_messages==count,'completion stops the heartbeat')
+end
+z.message_to_plugin=old_message
 z.async.swamp_request=function(opts)
   assert(opts.operation=='workflow.validate')
   local a,r=z.async.future();r{passed=false,diagnostics={'invalid workflow'}};return a
@@ -8595,9 +8678,29 @@ local before_reload=replacements
 view_exists=true
 local handlers={}
 z.on=function(name,handler) handlers[name]=handler end
+local recovery={method='workflow_run',work='waiting-reload',key='launch',directory='/control'}
+local recovery_uid=z.json.encode{'host','session',recovery.work,'launch'}
+rows[recovery_uid]={rev=1,value=z.json.encode{work=recovery.work,request=z.json.encode(recovery),outcome='unknown',checkout='/control',waiting='waiting'}}
 M=reload_bridge()
 z.instance_id='fresh-bridge'
 M.load{}
+local old_service=z.async.swamp_request
+local searches,reads=0,0
+z.async.swamp_request=function(opts)
+  local reply
+  if opts.operation=='workflow.history.search' then
+    searches=searches+1
+    reply={results={{runId='completed-after-reload',workflowName='configured',inputs={session='session',launch=recovery.work}}}}
+  elseif opts.operation=='workflow.history.get' then
+    reads=reads+1;reply={id='completed-after-reload',status='succeeded'}
+  elseif opts.operation=='workflow.history.logs' then reply={log={lines={}}}
+  else assert(opts.operation=='data.query','reload must not dispatch');reply={results={}} end
+  local a,r=z.async.future();r(reply);return a
+end
+local recovered=assert(call{method='workflow_show',launch=recovery.work,directory='/control'})
+assert(recovered.history.status=='succeeded' and not recovered.active and searches==1 and reads==1)
+assert(call(recovery).outcome=='unknown','the durable claim still prevents duplicate dispatch')
+z.async.swamp_request=old_service
 z.__update=function(_,event)
   if event.AgentEvent then handlers.agent_event(event.AgentEvent)
   else
