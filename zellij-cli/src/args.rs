@@ -579,7 +579,9 @@ pub enum Sessions {
     /// Attach to a session
     #[clap(visible_alias = "a")]
     Attach {
-        /// Name of the session to attach to.
+        /// Name of the session to attach to. Without one, attaches to the only running session,
+        /// or on a terminal opens a picker when there are several (switching, from inside a
+        /// session).
         #[clap(value_parser)]
         session_name: Option<String>,
 

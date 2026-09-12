@@ -4739,6 +4739,7 @@ version = "0.45.0"
 dependencies = [
  "anyhow",
  "clap",
+ "console 0.15.0",
  "dialoguer",
  "humantime",
  "insta",
@@ -4747,6 +4748,7 @@ dependencies = [
  "log",
  "miette 7.6.0",
  "names",
+ "nix",
  "rand 0.10.2",
  "regex",
  "serde",
@@ -4791,6 +4793,7 @@ dependencies = [
  "strum_macros",
  "suggest",
  "tempfile",
+ "unicode-width 0.2.2",
  "url",
  "uuid",
  "zellij-config",

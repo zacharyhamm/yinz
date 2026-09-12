@@ -47,6 +47,75 @@ use {
 
 pub(crate) use zellij_cli::sessions::list_sessions;
 
+/// Whether a nameless `zellij attach` may ask which session to attach to: only
+/// a person at a terminal can answer.
+fn can_pick_a_session() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal()
+}
+
+/// A nameless `zellij attach` with several sessions running: a menu that
+/// attaches to the session picked, or switches to it when run from inside a
+/// session.
+fn pick_session_to_attach(config_options: Options, config: &Config) -> ClientInfo {
+    use zellij_cli::session_picker::{Outcome, PickerRow};
+    let mut sessions = zellij_cli::sessions::collect_sessions(false).unwrap_or_else(|e| {
+        eprintln!("Error occurred: {:?}", e);
+        process::exit(1);
+    });
+    if sessions.is_empty() {
+        eprintln!("No active zellij sessions found.");
+        process::exit(1);
+    }
+    // Newest first, as the listing this replaces printed them.
+    zellij_cli::sessions::sort_sessions(&mut sessions, true);
+    let current = envs::get_session_name().ok();
+    let rows = sessions
+        .into_iter()
+        .map(|(name, age, listing)| PickerRow {
+            current: current.as_ref() == Some(&name),
+            name,
+            age,
+            listing,
+        })
+        .collect();
+    let verb = if current.is_some() {
+        "switch"
+    } else {
+        "attach"
+    };
+    match crate::session_menu::run(rows, verb) {
+        Ok(Outcome::Picked(name)) if current.is_some() => {
+            let switch = zellij_cli::args::CliAction::SwitchSession {
+                name: name.into_string(),
+                tab_position: None,
+                pane_id: None,
+                layout: None,
+                layout_string: None,
+                layout_dir: None,
+                cwd: None,
+            };
+            send_action_to_session(switch, None, Some(config.clone()));
+            process::exit(0);
+        },
+        Ok(Outcome::Picked(name)) => ClientInfo::Attach(name, config_options),
+        Ok(Outcome::Cancelled(message)) => {
+            if let Some(message) = message {
+                eprintln!("{message}");
+            }
+            process::exit(0);
+        },
+        Ok(Outcome::Interrupted) => process::exit(130),
+        Ok(Outcome::Continue) => process::exit(0),
+        Err(e) => {
+            eprintln!("Error occurred: {e}");
+            process::exit(1);
+        },
+    }
+}
+
 fn sessions_to_kill(
     get_sessions: impl FnOnce()
         -> Result<Vec<(SessionName, Duration, SessionProbe)>, std::io::ErrorKind>,
@@ -932,10 +1001,13 @@ fn named_session_exists_or_error(
     }
 }
 
+/// `picker` is the config to switch sessions with when no name is given and
+/// the choice is put to the person; `None` lists the sessions and exits instead.
 fn attach_with_session_name(
     session_name: Option<SessionName>,
     config_options: Options,
     create: bool,
+    picker: Option<&Config>,
 ) -> ClientInfo {
     match &session_name {
         Some(session) if create => {
@@ -986,10 +1058,13 @@ fn attach_with_session_name(
                 process::exit(1);
             },
             ActiveSession::One(session_name) => ClientInfo::Attach(session_name, config_options),
-            ActiveSession::Many => {
-                println!("Please specify the session to attach to, either by using the full name or a unique prefix.\nThe following sessions are active:");
-                list_sessions(false, false, true, false);
-                process::exit(1);
+            ActiveSession::Many => match picker {
+                Some(config) => pick_session_to_attach(config_options, config),
+                None => {
+                    println!("Please specify the session to attach to, either by using the full name or a unique prefix.\nThe following sessions are active:");
+                    list_sessions(false, false, true, false);
+                    process::exit(1);
+                },
             },
         },
     }
@@ -1137,6 +1212,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                         session_name,
                         config_options.clone(),
                         create || should_create_detached,
+                        (!should_create_detached && can_pick_a_session()).then_some(&config),
                     ),
                 }
             };
@@ -1203,6 +1279,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                                 Some(session_name.clone()),
                                 config_options.clone(),
                                 true,
+                                None,
                             );
                             reconnect_to_session = start_client_impl(
                                 Box::new(os_input),
