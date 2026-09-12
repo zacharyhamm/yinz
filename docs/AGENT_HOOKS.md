@@ -352,7 +352,7 @@ printf '%s' "$payload" | zellij --pty-broker report claude   # a claude in a rem
 This is the branch the installed script takes by itself, so `zellij hocus hooks install` on the
 far machine is all a remote pane needs. **A Firecracker VM installs it without being asked**: the
 provider runs the install in the guest when the VM is provisioned (`provision_guest` in
-`zellij-server/src/firecracker/provider.rs`), wiring every agent, so a `claude`, a `codex` or an
+`zellij-process/src/firecracker/provider.rs`), wiring every agent, so a `claude`, a `codex` or an
 `opencode` typed at a shell in a VM pane reports like any other (opencode's plugin counts too, and
 loads the next time opencode starts in the guest). The install runs again whenever a session
 *joins* a VM that is already up, which is the only moment a VM left running across a Zellij
@@ -805,7 +805,7 @@ installed script is old, and `zellij hocus hooks install` rewrites it.
 | The action, the fan-out, and the installer | `zellij-cli/src/args.rs` (`AgentReport`), `zellij-types/src/input/actions.rs`, `src/hocus_hooks.rs` |
 | Carrying it on the pane | `zellij-panes/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
 | The event, typed, and its route to plugins | `zellij-types/src/agent/hooks.rs` (`AgentEvent`, `from_hook`), `zellij-types/src/input/actions.rs` (`hook_report_actions`, `Action::AgentEvent`), `zellij-bus/src/route.rs` (to the plugin thread as `Event::AgentEvent`), `zellij-server/src/pty.rs` (`handle_remote_agent_report`, the broker's road to the same event) |
-| The blinking bell in the pane's corner | `zellij-panes/src/panes/terminal_pane.rs` (`agent_attention_since`, `acknowledge_agent_attention`), `ui/pane_boundaries_frame.rs` (`render_agent_attention`), `screen/mod.rs` (`blinking_agent_panes`, `animation_clock_period`, `advance_agent_attention_blinks`), `zellij-types/src/animation.rs` (`blink_is_lit`, `BLINK_PERIOD`) |
+| The blinking bell in the pane's corner | `zellij-panes/src/panes/terminal_pane.rs` (`agent_attention_since`, `acknowledge_agent_attention`), `zellij-panes/src/ui/pane_boundaries_frame.rs` (`render_agent_attention`), `zellij-server/src/screen/mod.rs` (`blinking_agent_panes`, `animation_clock_period`, `advance_agent_attention_blinks`), `zellij-types/src/animation.rs` (`blink_is_lit`, `BLINK_PERIOD`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `run_summary_request_body`, `local_summary`) |
 | Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutations`, `rows::hydrate_entries`) |

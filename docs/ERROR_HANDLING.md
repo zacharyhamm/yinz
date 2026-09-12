@@ -106,7 +106,7 @@ error usually calls for actions to be taken rather than ignoring it.
 
 You can have a look at the commit that introduced error handling to the
 `zellij_server::screen` module [right here][1] (look at the changes in
-`zellij-server/src/screen.rs`). We'll use this to demonstrate a few things in
+`zellij-server/src/screen/`). We'll use this to demonstrate a few things in
 the following text. You can find countless other examples in the [tracking
 issue for error handling][3]
 

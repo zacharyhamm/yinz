@@ -2,7 +2,7 @@
 //! once?
 //!
 //! This drives the server's render pipeline in-process — no ptys, no threads, no client, and
-//! none of the 10ms render debounce (`REPAINT_DELAY_MS` in `zellij-server/src/background_jobs.rs`).
+//! none of the 10ms render debounce (`REPAINT_DELAY_MS` in `zellij-bus/src/background_jobs.rs`).
 //! What is measured is everything between "bytes arrived from the pty" and "string handed to the
 //! client":
 //!
@@ -14,7 +14,7 @@
 //! `Screen` and `Tab` are not constructible from outside the crate (`mod screen` and
 //! `mod thread_bus` are private), so this builds the same fleet-of-panes-into-one-`Output` shape
 //! that `Tab::render_with_inactive_clients` does, mirroring the chunk plumbing in
-//! `zellij-server/src/ui/pane_contents_and_ui.rs`. Pane frames are not drawn (`FrameParams` lives
+//! `zellij-panes/src/ui/pane_contents_and_ui.rs`. Pane frames are not drawn (`FrameParams` lives
 //! in the private `ui` module), which matches a `pane_frames false` session; frames are chrome
 //! redrawn only when a pane's boundaries change, so they are not part of the steady-state cost
 //! this measures anyway.

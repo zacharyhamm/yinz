@@ -20,7 +20,7 @@ use crate::colors::{eightbit_to_rgb, PaletteColor};
 /// This only guarantees a *wakeup*. Nothing advances on a tick: the frame samples every live
 /// animation at one `Instant` just before it composites, so a tick the screen thread was too busy
 /// to service costs a frame and never a position. That is also why this is well inside the render
-/// debounce (`REPAINT_DELAY_MS` in `zellij-server/src/background_jobs.rs`) rather than a multiple
+/// debounce (`REPAINT_DELAY_MS` in `zellij-bus/src/background_jobs.rs`) rather than a multiple
 /// of it - the debounce coalescing two ticks into one frame is a dropped frame, not a stretched
 /// animation.
 ///

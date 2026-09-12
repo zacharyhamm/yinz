@@ -1,5 +1,5 @@
 ---
-source: zellij-server/src/tab/./unit/layout_applier_tests.rs
+source: zellij-panes/src/tab/./unit/layout_applier_tests.rs
 expression: "take_pane_state_snapshot(&tiled_panes, &floating_panes, &focus_pane_id,\n&viewport, &display_area,)"
 ---
 VIEWPORT: x=0, y=0, cols=100, rows=50

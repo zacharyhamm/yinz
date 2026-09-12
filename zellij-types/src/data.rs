@@ -711,7 +711,7 @@ pub struct RegexHighlight {
 ///
 /// A menu is a list of these and nothing else: the server draws them, hit-tests them, and runs
 /// `actions` against the pane the click landed in. There is no widget tree and no nesting - see
-/// `zellij-server/src/ui/context_menu.rs` for the drawing and `input::context_menu` for the
+/// `zellij-panes/src/ui/context_menu.rs` for the drawing and `input::context_menu` for the
 /// configured half of where they come from.
 ///
 /// **`actions` does not cross the plugin boundary, and `id` is why it does not have to.** A good
