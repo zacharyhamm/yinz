@@ -1309,6 +1309,11 @@ fn agent_double_escape_screen_resets_and_menu_dismissal() {
         mock.config.options.agent_double_escape = Some(true);
         mock.config.options.context_menu_on_right_click = Some(true);
         let handle = mock.run(None, vec![]);
+        let renders = Watched::new(vec![]);
+        let server_receiver = mock.server_receiver.take().unwrap();
+        let server_thread =
+            log_actions_in_thread!(renders, ServerInstruction::KillSession, server_receiver);
+        let size = Size { cols: 80, rows: 20 };
         let client = mock.main_client_id;
         let pane = PaneId::Terminal(crate::TerminalId::new(0));
         let esc = || {
@@ -1324,8 +1329,24 @@ fn agent_double_escape_screen_resets_and_menu_dismissal() {
             .send(set_agent(0, Some(report(AgentState::Busy, Some("s1")))))
             .unwrap();
         mock.to_screen.send(esc()).unwrap();
+        wait_for_settled_render(&renders, size, "first Esc hint", |frame| {
+            frame.contains("Esc again")
+        });
+        let checkpoint = renders.lock().len();
         mock.to_screen.send(esc()).unwrap();
+        wait_for_render_after(
+            &renders,
+            size,
+            checkpoint,
+            "confirmed Esc clears hint",
+            |_, frame| !frame.contains("Esc again"),
+        );
+        let checkpoint = renders.lock().len();
         mock.to_screen.send(esc()).unwrap();
+        wait_for_render_after(&renders, size, checkpoint, "next Esc hint", |_, frame| {
+            frame.contains("Esc again")
+        });
+        let checkpoint = renders.lock().len();
         match reset {
             "key" => mock
                 .to_screen
@@ -1401,6 +1422,9 @@ fn agent_double_escape_screen_resets_and_menu_dismissal() {
             },
             _ => unreachable!(),
         }
+        wait_for_render_after(&renders, size, checkpoint, reset, |_, frame| {
+            !frame.contains("Esc again")
+        });
         mock.to_screen.send(esc()).unwrap();
         mock.to_screen.send(ScreenInstruction::Exit).unwrap();
         handle.join().unwrap();
@@ -1422,6 +1446,7 @@ fn agent_double_escape_screen_resets_and_menu_dismissal() {
             1,
             "{reset}: {writes:?}"
         );
+        mock.teardown(vec![server_thread]);
     }
 }
 

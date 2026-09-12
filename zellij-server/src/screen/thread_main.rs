@@ -419,16 +419,8 @@ pub(crate) fn screen_thread_main(
     let mut attach_traces_waiting_for_first_render: HashMap<ClientId, Instant> = HashMap::new();
     let mut keybind_intercepts = HashMap::new();
     let mut escape_focus = HashMap::new();
+    let mut pending_escape_count = 0;
     loop {
-        let (event, mut err_ctx) = screen
-            .bus
-            .recv()
-            .context("failed to receive event on channel")?;
-        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::Screen((&event).into()));
-        // here we start caching resizes, so that we'll send them in bulk at the end of each event
-        // when this cache is Dropped, for more information, see the comments in PtyWriter
-        let _resize_cache = ResizeCache::new(thread_senders.clone());
-
         if agent_double_escape {
             // Observe every screen transition, including programmatic focus changes. Keeping the
             // previous focus/mode catches leaving and returning before the next key arrives.
@@ -453,6 +445,28 @@ pub(crate) fn screen_thread_main(
                 });
             }
             escape_focus = focus;
+        }
+        // Run before receiving, so even input handlers that `continue` repaint cancellations.
+        let pending_now: usize = screen
+            .tabs
+            .values()
+            .map(|tab| tab.pending_agent_escapes.len())
+            .sum();
+        if pending_escape_count != pending_now {
+            pending_escape_count = pending_now;
+            screen.render(None)?;
+            screen.sync_animation_clock(Instant::now())?;
+        }
+        let (event, mut err_ctx) = screen
+            .bus
+            .recv()
+            .context("failed to receive event on channel")?;
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::Screen((&event).into()));
+        // here we start caching resizes, so that we'll send them in bulk at the end of each event
+        // when this cache is Dropped, for more information, see the comments in PtyWriter
+        let _resize_cache = ResizeCache::new(thread_senders.clone());
+
+        if agent_double_escape {
             let reset_client = match &event {
                 ScreenInstruction::MouseEvent(_, client, ..)
                 | ScreenInstruction::HostTerminalFocusChanged(client, _)
