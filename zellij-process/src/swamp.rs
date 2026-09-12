@@ -345,32 +345,43 @@ fn check_extension_sources(root: &Path, report: &Value) -> Result<()> {
                 .as_str()
                 .context("missing extension source path")?,
         );
-        match File::open(&path) {
-            Ok(_) => {},
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
                 return Err(e).with_context(|| format!("cannot read extension {}", path.display()))
             },
-        }
-        let output = Command::new(
+        };
+        let mut command = Command::new(
             report["denoPath"]
                 .as_str()
                 .context("missing bundled Deno path")?,
-        )
-        .current_dir(root)
-        .args([
+        );
+        command.current_dir(root).args([
             "bundle",
             "--no-lock",
             "--node-modules-dir=none",
-            "--platform",
-            "deno",
-        ])
-        .arg(&path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .context("cannot verify extension import graph")?;
+            "--external",
+            "npm:zod@4",
+            "--external",
+            "npm:zod",
+        ]);
+        // Like Swamp's default bundler, externalize inline pinned Zod imports
+        // too: Deno matches external specifiers exactly. Bundle other packages.
+        for specifier in contents
+            .split(['\'', '"'])
+            .filter(|specifier| specifier.starts_with("npm:zod@4."))
+        {
+            command.args(["--external", specifier]);
+        }
+        let output = command
+            .args(["--platform", "deno"])
+            .arg(&path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .context("cannot verify extension import graph")?;
         if !output.status.success() {
             return Err(anyhow!(
                 "Cannot load updated Swamp extensions: {}\n{}",
@@ -1640,10 +1651,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let deno = root.join("deno");
-        zellij_test_support::write_warm_script(&deno,
-            "#!/bin/sh\n[ \"$1\" = bundle ] || exit 0\nfor source do :; done\n[ \"$(cat \"$source\")\" = valid ]\n");
+        zellij_test_support::write_warm_script(
+            &deno,
+            r#"#!/bin/sh
+[ "$1" = bundle ] || exit 0
+for source do :; done
+[ "$*" = "bundle --no-lock --node-modules-dir=none --external npm:zod@4 --external npm:zod --external npm:zod@4.3.6 --platform deno $source" ] || exit 1
+! grep -q 'broken import' "$source"
+"#,
+        );
         let live = root.join("source.ts");
-        std::fs::write(&live, "valid").unwrap();
+        let valid = r#"import { z } from "npm:zod@4.3.6";
+import "npm:zod@4";
+import "npm:zod";
+import "npm:lodash-es@4.17.21";
+export const schema = z.string();"#;
+        std::fs::write(&live, valid).unwrap();
         let mut report = json!({"denoPath":deno,"aggregateState":{"sourceDetails":[
             {"sourcePath":"deleted.ts","stateTag":"Indexed"},
             {"sourcePath":"source.ts","stateTag":"Indexed"},
@@ -1656,8 +1679,13 @@ mod tests {
         std::fs::rename(&live, root.join("renamed.ts")).unwrap();
         check_extension_sources(root, &report).unwrap();
         report["aggregateState"]["sourceDetails"][1]["sourcePath"] = json!("renamed.ts");
+        std::fs::write(root.join("renamed.ts"), valid.replace('"', "'")).unwrap();
         check_extension_sources(root, &report).unwrap();
-        std::fs::write(root.join("renamed.ts"), "broken import").unwrap();
+        std::fs::write(
+            root.join("renamed.ts"),
+            format!("{valid}\n// broken import"),
+        )
+        .unwrap();
         assert!(check_extension_sources(root, &report).is_err());
         report["aggregateState"]["sourceDetails"][1]["sourcePath"] = json!(root.join("renamed.ts"));
         assert!(check_extension_sources(root, &report).is_err());
