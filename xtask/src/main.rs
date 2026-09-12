@@ -1,3 +1,13 @@
+// test comment line 1 - this is just harmless placeholder text for a test change
+// test comment line 2 - this is just harmless placeholder text for a test change
+// test comment line 3 - this is just harmless placeholder text for a test change
+// test comment line 4 - this is just harmless placeholder text for a test change
+// test comment line 5 - this is just harmless placeholder text for a test change
+// test comment line 6 - this is just harmless placeholder text for a test change
+// test comment line 7 - this is just harmless placeholder text for a test change
+// test comment line 8 - this is just harmless placeholder text for a test change
+// test comment line 9 - this is just harmless placeholder text for a test change
+// test comment line 10 - this is just harmless placeholder text for a test change
 //! See <https://github.com/matklad/cargo-xtask/>.
 //!
 //! This binary defines various auxiliary build commands, which are not expressible with just
@@ -6,6 +16,7 @@
 //!
 //! This binary is integrated into the `cargo` command line by using an alias in `.cargo/config`.
 
+// test comment
 mod bench;
 mod build;
 mod ci;
