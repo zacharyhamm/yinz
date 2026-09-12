@@ -8979,11 +8979,18 @@ end
 
 #[test]
 fn swamp_closing_owned_panes_cancels_the_lifecycle_and_rejects_late_results() {
-    let plugin = load(zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap()).unwrap();
+    let plugin = load("return {}").unwrap();
     plugin
         .lua
         .globals()
-        .set("M", plugin.plugin.clone())
+        .set(
+            "new_bridge",
+            plugin
+                .lua
+                .load(zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap())
+                .into_function()
+                .unwrap(),
+        )
         .unwrap();
     plugin
         .lua

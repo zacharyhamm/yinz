@@ -10,6 +10,60 @@ use {zellij_types::data::OverlayKind, zellij_types::data::OverlayPlacement};
 
 type ScreenReceiver = Receiver<(ScreenInstruction, ErrorContext)>;
 
+#[test]
+fn last_pane_exit_returns_each_client_to_the_previous_usable_tab() {
+    for unavailable in [None, Some("missing"), Some("pending"), Some("hidden")] {
+        let client = ClientId::new(1);
+        let (mut screen, _, _, _plugins) = screen_with_plugin_senders_and_clients(
+            &[TabId::new(1), TabId::new(2), TabId::new(3)],
+            &[client, CLIENT_2],
+        );
+        screen.session_is_mirrored = false;
+        screen
+            .go_to_tab(zellij_types::internal_ids::TabNumber::new(2), client)
+            .unwrap();
+        screen
+            .go_to_tab(zellij_types::internal_ids::TabNumber::new(3), client)
+            .unwrap();
+        assert_eq!(screen.tab_history[&client].last(), Some(&TabId::new(2)));
+        screen.tab_history.insert(CLIENT_2, vec![TabId::new(1)]);
+        match unavailable {
+            Some("missing") => {
+                screen.tab_history.insert(client, vec![TabId::new(99)]);
+            },
+            Some("pending") => {
+                let pending = TabId::new(4);
+                screen
+                    .new_tab(pending, (vec![], vec![]), None, None)
+                    .unwrap();
+                screen.tab_history.insert(client, vec![pending]);
+            },
+            Some("hidden") => {
+                screen
+                    .tabs
+                    .get_mut(&TabId::new(2))
+                    .unwrap()
+                    .suppress_pane(PaneId::Terminal(TerminalId::new(2)), None);
+            },
+            _ => {},
+        }
+        screen.tabs.get_mut(&TabId::new(3)).unwrap().close_pane(
+            PaneId::Terminal(TerminalId::new(3)),
+            false,
+            Some(0),
+        );
+        screen.settle_tabs().unwrap();
+        assert_eq!(
+            screen.active_tab_ids[&client],
+            TabId::new(if unavailable.is_some() { 1 } else { 2 })
+        );
+        assert_eq!(screen.active_tab_ids[&CLIENT_2], TabId::new(1));
+        assert!(!screen.tabs.contains_key(&TabId::new(3)));
+        assert!(screen.tabs.contains_key(&TabId::new(2)));
+        assert_every_client_has_a_tab(&screen);
+    }
+}
+
 /// Close a pane the way the pty and the close-pane action both end up doing. What that leaves
 /// the session with is decided by `settle_tabs`, which the screen thread runs after every
 /// instruction.

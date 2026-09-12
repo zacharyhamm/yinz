@@ -1,6 +1,25 @@
 local z=require('zellij')
 local rows,panes,cancelled,requests={},{},{},{}
 local handler,delayed,resolve_delay
+-- Reload the bridge module with only durable rows surviving: retire its handlers and timers.
+local generation,timers=0,{}
+local on=z.on
+z.on=function(event,fn)
+  local registered=generation
+  on(event,function(...) if registered==generation then return fn(...) end end)
+end
+for _,name in ipairs{'after','every'} do
+  local schedule=z[name]
+  z[name]=function(...)
+    local timer=schedule(...);timers[#timers+1]=timer
+    return timer
+  end
+end
+local function reload_bridge()
+  for _,timer in ipairs(timers) do timer:cancel() end
+  timers={};generation=generation+1
+  M=new_bridge();M.load()
+end
 local now=1000
 os.time=function() return now end
 local function tick()
@@ -86,7 +105,7 @@ local function seed()
   save('unrelated','worker',{pane=5,owner=owner('unrelated','worker'),outcome='pending',request=z.json.encode{method='command'}})
   panes.t5={target='Local'}
 end
-M.load()
+reload_bridge()
 for _,pane in ipairs{{Plugin=2},{Terminal=1},{Terminal=3}} do
   seed()
   close(pane)
@@ -229,7 +248,7 @@ for _,during_close in ipairs{false,true} do
     assert(history_searches()==searches,'confirmed non-dispatch never searches launch history')
     if known_runs then assert(cancelled.run and cancelled.child,'independently recorded runs still cancel') end
     local count=#requests
-    M.load();tick();tick()
+    reload_bridge();tick();tick()
     assert(#requests==count,'reload must not resume settled cancellation polling')
   end
 end
@@ -243,8 +262,72 @@ for _=1,2 do
   local searches=history_searches();tick()
   assert(history_searches()>searches and read('work','view').cancel_pending)
 end
-local searches=history_searches();M.load()
+local searches=history_searches();reload_bridge()
 assert(history_searches()>searches and read('work','view').cancel_pending,'reload recovers ambiguous launches')
+
+-- A known parent cannot settle cancellation while a continuation's reply is lost.
+for _,reload in ipairs{false,true} do
+  seed()
+  delayed='workflow.run';resolve_delay=nil
+  local continuation=call{method='swamp_dispatch',work='run',key='continuation',directory='/checkout',
+    operation='workflow.run',payload={workflowIdOrName='child-workflow'}}
+  assert(resolve_delay and continuation.ok==nil)
+  close{Plugin=2}
+  delayed=nil;resolve_delay{error={code='transport_unknown',message='connection lost'}}
+  z.__update(M,{Timer=0})
+  assert(continuation.ok==false)
+  assert(cancelled.run and cancelled.child,'known runs still cancel')
+  assert(read('work','view').cancel_pending,'the unresolved continuation still needs cancellation')
+  local searches=history_searches()
+  if reload then reload_bridge() else tick() end
+  assert(history_searches()>searches and read('work','view').cancel_pending)
+  local search
+  for _,request in ipairs(requests) do
+    if request.operation=='workflow.history.search' then search=request end
+  end
+  assert(search.directory=='/checkout','search the continuation checkout')
+  assert(search.payload.filter=='has(tags.zellijOperation) && tags.zellijOperation == '..z.json.encode(uid('run','continuation')))
+
+  -- Delivery can advance while history is in flight. Keep its fields and outcome.
+  delayed='workflow.history.search';tick()
+  local current=read('run','continuation')
+  current.message='concurrent delivery';current.outcome='failed'
+  z.data.apply(z.data.put('delivery',{value=z.json.encode(current)},uid('run','continuation'),rows[uid('run','continuation')].rev))
+  delayed='workflow.cancel'
+  resolve_delay{results={{runId='late-child'}}}
+  z.__update(M,{Timer=0})
+  current=read('run','continuation')
+  assert(current.run=='late-child' and current.message=='concurrent delivery' and current.outcome=='failed')
+  assert(not read('late-child','attachment'),'discovery needs no attachment callback')
+  assert(read('work','view').cancel_pending,'cancellation must finish before clearing the retry')
+  delayed=nil;resolve_delay{error={code='transport_unknown',message='cancel reply lost'}}
+  z.__update(M,{Timer=0})
+  assert(read('work','view').cancel_pending,'failed cancellation stays durable')
+  tick()
+  assert(cancelled['late-child'] and not read('work','view').cancel_pending)
+  assert(panes.t5 and read('unrelated','worker').outcome=='pending','unrelated work survives')
+  local launches=0
+  for _,request in ipairs(requests) do
+    if request.operation=='workflow.run' then launches=launches+1 end
+  end
+  assert(launches==1,'cancellation never redispatches a continuation')
+  local count=#requests;reload_bridge();tick();tick()
+  assert(#requests==count,'resolved cancellation stops polling')
+end
+
+-- Definitive non-dispatch also settles an unresolved continuation beside known runs.
+seed();delayed='workflow.run'
+local continuation=call{method='swamp_dispatch',work='run',key='continuation',directory='/checkout',
+  operation='workflow.run',payload={workflowIdOrName='child-workflow'}}
+close{Plugin=2}
+local searches=history_searches()
+delayed=nil;resolve_delay{error={code='not_dispatched',message='not admitted'}}
+z.__update(M,{Timer=0});tick()
+assert(continuation.ok==false and read('run','continuation').not_dispatched)
+assert(cancelled.run and cancelled.child and not read('work','view').cancel_pending)
+assert(history_searches()==searches,'confirmed non-dispatch stops continuation searches')
+local count=#requests;reload_bridge();tick();tick()
+assert(#requests==count,'non-dispatched continuation stays settled after reload')
 
 -- A picker launches before reporting: closure can win between those two actions.
 for _,action in ipairs{'duplicate','fork'} do
