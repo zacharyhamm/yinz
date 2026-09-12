@@ -116,7 +116,8 @@ The server drops `mlua`, `wasmi`, `wasmi_core`, `wasmi_wasi`, `prost`, `notify-d
 (`crate::os_input_output`, `crate::plugins`, `crate::screen`, ... resolve to the bus modules), the
 same device `zellij-server` uses. The `pub(crate)` pane API becomes `pub`, and the test helpers
 the server's screen tests drive sit behind a `test-support` feature that the server's
-dev-dependency enables. The server re-exports `panes` and `tab` so external paths are unchanged.
+normal dependency enables for consistent build and test selection. The server re-exports `panes`
+and `tab` so external paths are unchanged.
 
 | Stage | Checks | Result |
 | --- | --- | --- |
@@ -195,10 +196,6 @@ state and carry a banner saying so; `docs/TEST_INVENTORY.md` is the current per-
   `zellij-panes/src/tab/unit/snapshots/`, and
   `zellij-panes/src/panes/tiled_panes/unit/snapshots/…break_focused_pane_out_of_stack.snap`. No
   test writes them; `cargo insta test --unreferenced=delete` on each crate would remove them.
-- **`test-support` feature unification.** `zellij-server`'s dev-dependency enables
-  `zellij-panes/test-support`, and cargo unifies features per build, so a workspace test build
-  compiles `Tab::render` and its siblings into the library under test too. The release binary is
-  unaffected. Harmless today; worth knowing if a test-only helper ever changes behaviour.
 - The optional plugin-thread inversion and moving the bench into `zellij-panes`, as noted in the
   original plan, are not started.
 
@@ -228,3 +225,24 @@ Validation on Linux:
 - Second `cargo x ci check`: all checks passed, including 7,945 unit tests, doctests and
   390 integration tests at 16 workers.
 - Test inventory regenerated with its existing `--fast` scope; test count unchanged.
+
+## Panes feature selection (2026-09-12)
+
+`zellij-server` enables `zellij-panes/test-support` through its normal dependency. The duplicate
+dev-dependency is removed. Build, run, integration tests, unit tests and lint now select this
+feature consistently. The helpers compile in release builds too, but production code does not
+invoke them. Helper guards, behavior, public signatures, dependency boundaries and scheduling
+are unchanged.
+
+Other dependency features, profiles and Clippy artifacts can still require separate compilation.
+
+Validation on Linux:
+
+- `cargo tree -p zellij-server -e normal,build,features` and the same command with
+  `-e normal,build,dev,features` both enable `zellij-panes/test-support`.
+- `cargo x build` passed. Verbose compiler output confirms `feature="test-support"`.
+- `cargo x ci check` passed with socket access: dependency boundaries, formatting, lint,
+  7,945 unit tests, doctests and 390 integration tests at 16 workers.
+- Verbose gate output shows cached panes artifacts for lint and unit tests. Integration
+  compilation also selects `test-support`. Its separate panes artifact has the same feature
+  and profile, but different dependency fingerprints.
