@@ -171,6 +171,37 @@ It is in charge of actions such as:
   * Creating new panes
   * Closing existing panes (and filling up their space by other panes)
 
+### When a tab has nothing left in it
+
+`Screen::settle_tabs` (`screen/tabs.rs`) runs after every screen instruction. Rendering does
+not decide tab lifetime. A usable destination has finished its layout and has a selectable
+pane. Pending tabs and arrangement destinations wait for their panes. Deferred tab switches
+store stable tab IDs and resolve display positions when applied.
+
+An empty tab closes into a usable destination. A hidden-only tab with a live terminal keeps
+its ID and panes when another usable tab exists. If no destination is usable, settlement waits
+for pending layouts. Without pending layouts, the session ends unless a plugin guards quit or
+a hidden terminal still runs. In those cases, settlement requests a default replacement tab.
+With no attached client, that request waits for attachment.
+
+The emptied tabs remain until a destination becomes usable. If the replacement becomes usable
+first, their clients and hidden work move there. Guarding plugins also survive, including tiled,
+floating, suppressed, and overlay plugins. Their quit notices remain registered. Settlement then
+raises the quit confirmation. If another tab becomes usable first, settlement uses it and cancels
+the obsolete confirmation request.
+
+Replacement identity remains after layout loading and confirmation. A replacement terminal that
+exits naturally becomes a held pane that can be rerun. Buffered exits follow the same rule.
+Explicitly closing that pane can request another replacement and confirmation. A replacement
+layout with no selectable pane ends the session instead of starting a spawn loop.
+
+Focused-tab, tab-ID, and tab-position close actions share a preflight. A guarded last-tab request
+asks for confirmation before destruction. Hidden live terminals get a usable destination before
+their tab closes. Internal teardown does not repeat this preflight. A failed PTY shutdown send
+does not interrupt client relocation or tab renumbering. Settlement errors are non-fatal at the
+instruction boundary. Plugin destruction removes quit notices synchronously. Runtime unload
+notifications provide eventual cleanup.
+
 ## Terminal emulation (zellij-terminal/)
 
 `zellij-terminal` owns the grid and rows, terminal characters, selection and search, hyperlinks, ANSI helpers, Sixel, and Kitty graphics.

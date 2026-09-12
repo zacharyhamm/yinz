@@ -929,13 +929,12 @@ pub(crate) struct Screen {
     /// Keyed by plugin id and dropped when that plugin's pane closes, so a plugin that goes away
     /// cannot leave a guard behind that nothing can lift. See `PluginCommand::SetQuitNotice`.
     quit_notices: BTreeMap<PluginId, QuitNotice>,
-    /// Whether the session's last tab is being kept alive with nothing selectable in it because
-    /// a plugin asked for a quit to be confirmed.
-    ///
-    /// Set when the confirmation goes up, cleared the moment something selectable is opened in
-    /// that tab - which is also what makes a later close ask again. Cancelling the confirmation
-    /// needs no signal of its own: the tab simply stays held, which is the point.
-    last_tab_held_open: bool,
+    /// Retained after loading so replacement terminals hold on natural exit.
+    pub(super) replacement_tab: Option<TabId>,
+    /// Waiting to relocate the emptied tabs and, if still needed, ask for confirmation.
+    pub(super) replacement_pending: bool,
+    /// Explicit close requests waiting for a usable destination for hidden work.
+    pub(super) deferred_tab_closes: HashSet<TabId>,
     /// Whether a `zellij events` client is listening, so pane and tab state is reported even
     /// when no plugin asked for it. Set by the plugin thread, which keeps the subscribers.
     pub(super) cli_event_subscribers_present: bool,
@@ -1484,7 +1483,9 @@ impl Screen {
             cached_layout_errors: vec![],
             pane_render_subscribers: HashMap::new(),
             quit_notices: BTreeMap::new(),
-            last_tab_held_open: false,
+            replacement_tab: None,
+            replacement_pending: false,
+            deferred_tab_closes: HashSet::new(),
             cli_event_subscribers_present: false,
             background_plugin_subscriptions: HashMap::new(),
             next_forward_token: 1, // 0 is reserved as the startup sentinel
@@ -3666,7 +3667,10 @@ impl Screen {
     /// remote pane can be a VM boot later. Nothing owns it now, so the pty
     /// thread is asked to close it; otherwise its process, transport and reader
     /// would run until the session ends.
-    pub fn forget_unplaced_pane(&self, pane_id: PaneId, why: String) {
+    pub fn forget_unplaced_pane(&mut self, pane_id: PaneId, why: String) {
+        if let PaneId::Plugin(plugin_id) = pane_id {
+            self.drop_quit_notice(plugin_id);
+        }
         log::error!("dropping pane {pane_id:?}: {why}");
         self.bus
             .senders
@@ -3733,6 +3737,11 @@ impl Screen {
             if let Some(entry) = carried_respawn {
                 tab.1
                     .restore_pending_respawn(pane_id_of_existing_pane, entry);
+            }
+        }
+        if !suppress_replaced_pane && self.tab_containing_pane(pane_id_to_replace).is_none() {
+            if let PaneId::Plugin(plugin_id) = pane_id_to_replace {
+                self.drop_quit_notice(plugin_id);
             }
         }
         let _ = self.log_and_report_session_state();
@@ -5150,6 +5159,9 @@ fn replay_pending_plugin_events(
                     {
                         screen.fire_pane_exit_hook(pane_id, exit_status, &run_command, false);
                     }
+                }
+                if let PaneId::Plugin(plugin_id) = pane_id {
+                    screen.drop_quit_notice(plugin_id);
                 }
                 let mut found = false;
                 for tab in screen.tabs.values_mut() {

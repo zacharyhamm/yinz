@@ -6520,13 +6520,32 @@ impl Tab {
             .filter(|(_, p)| p.selectable());
         selectable_tiled_panes.count() > 0 || selectable_floating_panes.count() > 0
     }
+    /// Retain hidden live work as well as selectable panes. Screen settlement handles the
+    /// separate case where no tab provides a usable destination.
     pub(crate) fn should_retain_tab(&self) -> bool {
-        self.has_selectable_panes()
-            || self.get_all_pane_ids().iter().any(|id| {
+        self.has_selectable_panes() || self.has_live_terminal()
+    }
+    /// Whether a terminal in this tab - shown or hidden - is still running. A hidden one (parked
+    /// by a plugin, say) does not make the tab usable, but it does mean the session has something
+    /// in it worth keeping: `Screen::settle_tabs` moves it to a fresh tab rather than ending the
+    /// session with it.
+    pub(crate) fn has_live_terminal(&self) -> bool {
+        self.get_all_pane_ids().iter().any(|id| {
+            matches!(id, PaneId::Terminal(_))
+                && self
+                    .get_pane_with_id(*id)
+                    .is_some_and(|pane| !pane.exited())
+        })
+    }
+
+    pub(crate) fn has_hidden_live_terminal(&self) -> bool {
+        self.get_suppressed_panes()
+            .any(|(id, pane)| matches!(id, PaneId::Terminal(_)) && !pane.pane.exited())
+            || self.get_all_pane_ids().into_iter().any(|id| {
                 matches!(id, PaneId::Terminal(_))
                     && self
-                        .get_pane_with_id(*id)
-                        .is_some_and(|pane| !pane.exited())
+                        .get_pane_with_id(id)
+                        .is_some_and(|pane| !pane.selectable() && !pane.exited())
             })
     }
 
