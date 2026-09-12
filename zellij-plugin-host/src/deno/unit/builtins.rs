@@ -677,6 +677,228 @@ export default {load() {
     }
 }
 
+/// A shipped script with its imports removed, so a scenario can hand it a stubbed `z`. The
+/// default export is returned only after the handlers registered below it.
+fn builtin_body(source: &str) -> String {
+    let mut source = source.to_owned();
+    while let Some(start) = source.find("import ") {
+        let end = start + source[start..].find(';').unwrap() + 1;
+        source.replace_range(start..end, "");
+    }
+    let source = source
+        .replace(
+            "export default definePlugin",
+            "const shipped = definePlugin",
+        )
+        .replace("export const view", "const view");
+    if source.contains("const shipped") {
+        format!("{source}\nreturn shipped;")
+    } else {
+        source
+    }
+}
+
+const SCENARIO_HARNESS: &str = r#"
+function check(value: unknown, message: string) { if (!value) throw Error(message); }
+function eq(actual: unknown, expected: unknown, message = '') {
+  check(actual === expected, `${message}: ${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);
+}
+export default definePlugin({
+  async pipe(message: any) {
+    let verdict = 'ok';
+    try { await scenario(); } catch (error) { verdict = String((error as Error)?.stack ?? error); }
+    real.command('CliPipeOutput', [message.source.Cli, verdict]);
+  },
+});
+"#;
+
+/// Runs a scenario plugin's `scenario()` and asserts it finished without throwing.
+fn run_scenario(name: &str, source: &str) {
+    use crate::ServerInstruction;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::data::{PipeMessage, PipeSource};
+    zellij_runtime::envs::set_session_name("swamp-subtitles".into());
+    let directory = tempfile::tempdir().unwrap();
+    let (server_tx, server_rx) = zellij_runtime::channels::unbounded();
+    let mut env = test_env();
+    env.data_access = Arc::new(zellij_storage::data_access::DataAccess::sqlite(
+        directory.path(),
+    ));
+    env.plugin_own_data_dir = directory.path().to_owned();
+    env.senders.to_server = Some(SenderWithContext::new(server_tx));
+    let source = format!("{source}\n{SCENARIO_HARNESS}");
+    let mut plugin = load_builtin(name, &source, env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+        .pipe(&PipeMessage::new(
+            PipeSource::Cli("scenario".into()),
+            "scenario",
+            &Some("run".into()),
+            &None,
+            false,
+        ))
+        .unwrap();
+    for _ in 0..100 {
+        plugin.tick().unwrap();
+        let verdict = server_rx
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                ServerInstruction::CliPipeOutput(_, output) => Some(output),
+                _ => None,
+            });
+        if let Some(verdict) = verdict {
+            assert_eq!(verdict, "ok");
+            return;
+        }
+    }
+    panic!("the scenario never answered");
+}
+
+#[test]
+fn swamp_subtitle_uses_history_and_clears_placement_on_restart_or_close() {
+    let bridge = builtin_body(zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap());
+    let source = r#"
+import real, {definePlugin} from 'zellij:plugin';
+const subtitles = new Map<string, string | null>(), messages: string[] = [], handlers: Record<string, any> = {};
+let handler: any, exists = true, sourceExited = true, fail = false;
+const history: any = {id: 'main', workflowName: 'review', status: 'running', jobs: [{name: 'review', steps: [{name: 'wait', status: 'running'}]}]};
+const child: any = {id: 'child', workflowName: 'checks', status: 'succeeded'};
+const z: any = {...real,
+  command(name: string, args: any) {
+    if (name === 'SetPaneSubtitle') { subtitles.set(String(args.pane_id.Plugin ?? args.pane_id.Terminal), args.subtitle); return; }
+    if (name === 'MessageToPlugin') { messages.push(args.message_name); return; }
+    if (name === 'GetPaneInfo') return 'Terminal' in args ? {exited: sourceExited, is_suppressed: true}
+      : exists ? {plugin_url: 'zellij:swamp-workflow', is_suppressed: false} : null;
+    return (real.command as any)(name, args);
+  },
+  projectConfig: {read: () => ({root: '/work', config: {}})},
+  rpc: {handle(_name: string, callback: any) { handler = callback; }},
+  on(name: string, callback: any) { handlers[name] = callback; return (real.on as any)(name, callback); },
+  async swampRequest(opts: any) {
+    if (opts.payload?.select) check(opts.payload.select.length <= 4096, 'Swamp query projection exceeds the serve limit');
+    if (opts.operation === 'workflow.history.get') {
+      if (fail) throw Error('history unavailable');
+      return opts.payload.workflowIdOrName === 'main' ? history : child;
+    }
+    if (opts.operation === 'workflow.history.logs') return {log: {lines: []}};
+    return {results: []};
+  },
+};
+const bridge: any = (() => {/*BODY*/})();
+function row(work: string, key: string, value: unknown) {
+  const uid = JSON.stringify([real.getPluginIds().host_id, real.serverSession, work, key]);
+  z.data.apply([z.data.put('delivery', {value: JSON.stringify(value)}, {uid, expectRev: z.data.REV_ABSENT})]);
+}
+const show = () => handler({method: 'workflow_show', run: 'main', directory: '/work'}, {source: {Plugin: 1}});
+async function scenario() {
+  bridge.load();
+  row('launch', 'launch', {checkout: '/work'});
+  row('main', 'attachment', {run: 'main', work: 'launch', workflow: 'review', root: '/work'});
+  row('launch', 'runs', {entries: {main: {workflow: 'review'}, child: {workflow: 'checks'}}});
+  eq((await show()).subtitle, 'review · review/wait · running');
+  eq(subtitles.get('1'), 'review · review/wait · running');
+  child.status = 'running';
+  child.jobs = [{name: 'z', steps: [{name: 'test', status: 'running'}]}, {name: 'a', steps: [{name: 'lint', status: 'running'}]}];
+  const expected = 'review · checks/a/lint · running, checks/z/test · running';
+  eq((await show()).subtitle, expected, 'active children take precedence over the parent waiting step');
+  child.jobs.reverse();
+  eq((await show()).subtitle, expected, 'concurrent steps sort independently of history order');
+  history.status = 'suspended'; history.jobs[0].steps[0].status = 'waiting_approval'; child.status = 'succeeded';
+  eq((await show()).subtitle, 'review · review/wait · waiting_approval');
+  history.jobs = [];
+  for (const status of ['suspended', 'succeeded', 'cancelled', 'interrupted']) {
+    history.status = status;
+    eq((await show()).subtitle, `review · ${status}`);
+  }
+  history.status = 'failed'; history.jobs = [{name: 'gate', steps: [{name: 'test', status: 'failed'}]}];
+  eq((await show()).subtitle, 'review · gate/test · failed');
+  child.status = 'failed'; child.jobs = [{name: 'ci', steps: [{name: 'lint', status: 'failed'}]}];
+  eq((await show()).subtitle, 'review · checks/ci/lint · failed');
+  history.status = 'cancelled';
+  eq((await show()).subtitle, 'review · checks/ci/lint (failed) · cancelled');
+  history.status = 'failed';
+  await show();
+  await bridge.pipe({name: 'workflow-refresh-failed', source: {Plugin: 9}, payload: 'launch'});
+  eq(subtitles.get('1'), 'review · checks/ci/lint · failed', 'another view cannot change this placement');
+  await bridge.pipe({name: 'workflow-refresh-failed', source: {Plugin: 1}, payload: ''});
+  eq(subtitles.get('1'), 'review · status unavailable', 'a first-snapshot timeout may not yet know its launch');
+  await show();
+  fail = true;
+  let failed = false;
+  try { await show(); } catch { failed = true; }
+  check(failed, 'failed reads are surfaced');
+  eq(subtitles.get('1'), 'review · status unavailable', 'bridge failures also invalidate foreground progress');
+  fail = false;
+  eq((await show()).subtitle, 'review · checks/ci/lint · failed');
+  row('launch', 'source', {pane: 7});
+  sourceExited = false;
+  handlers.PaneUpdate({panes: {}});
+  check(subtitles.get('1') == null && messages.at(-1) === 'workflow-detached', 'agent restart clears the subtitle');
+  await show();
+  check(subtitles.get('1') == null, 'polling cannot revive a detached placement');
+  exists = false;
+  handlers.PaneUpdate({panes: {}});
+  check(subtitles.get('1') == null, 'a closed view stays cleared');
+}
+"#
+    .replace("/*BODY*/", &bridge);
+    run_scenario("swamp-bridge", &source);
+}
+
+#[test]
+fn swamp_subtitle_loading_refresh_failure_and_detachment_reach_the_view() {
+    let view = builtin_body(include_str!(
+        "../../../../zellij-config/assets/plugins/workflow-view.ts"
+    ));
+    let source = r#"
+import real, {definePlugin} from 'zellij:plugin';
+let subtitle: string | null | undefined, message: any, settle: any;
+const z: any = {...real,
+  command(name: string, args: any) {
+    if (name === 'SetPaneSubtitle') { subtitle = args.subtitle; return; }
+    if (name === 'MessageToPlugin') { message = args; return; }
+    if (name === 'SubscribePaneOutput' || name === 'SetSelfMouseSelectionSupport') return;
+    return (real.command as any)(name, args);
+  },
+  subscribe() {}, every() {}, requestRender() {},
+  rpc: {call: () => new Promise((resolve, reject) => { settle = {resolve, reject}; })},
+};
+const view: any = (() => {/*BODY*/
+return view;})();
+async function answer(reply: (settle: any) => void) {
+  reply(settle);
+  for (let i = 0; i < 20; i++) await null;
+}
+async function scenario() {
+  view.load();
+  view.attach({directory: '/work', run: 'run'});
+  eq(subtitle, 'Workflow · loading');
+  await answer(s => s.reject(Error('first snapshot unavailable')));
+  eq(subtitle, 'Workflow · status unavailable');
+  eq(message.message_payload, '', 'a first-snapshot failure does not know its launch yet');
+  void view.refresh();
+  const snapshot: any = {launch: 'launch', run: 'run', root: '/work', history: {workflowName: 'review', status: 'running'}, subtitle: 'review · test/unit · running'};
+  await answer(s => s.resolve(snapshot));
+  eq(subtitle, snapshot.subtitle);
+  void view.refresh();
+  await answer(s => s.reject(Error('history unavailable')));
+  eq(subtitle, 'review · status unavailable');
+  check(message.message_name === 'workflow-refresh-failed' && message.message_payload === 'launch', 'the bridge is told which launch failed');
+  void view.refresh();
+  snapshot.history.status = 'succeeded'; snapshot.subtitle = 'review · succeeded';
+  await answer(s => s.resolve(snapshot));
+  eq(subtitle, 'review · succeeded');
+  view.pipe({name: 'workflow-detached'});
+  check(subtitle == null, 'detachment clears the subtitle');
+  void view.refresh();
+  await answer(s => s.resolve(snapshot));
+  check(subtitle == null, 'late snapshots cannot restore a detached subtitle');
+}
+"#
+    .replace("/*BODY*/", &view);
+    run_scenario("swamp-workflow", &source);
+}
+
 #[test]
 fn typescript_reference_examples_load_and_render_in_deno() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins");

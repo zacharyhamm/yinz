@@ -1,6 +1,6 @@
 import real, {definePlugin} from 'zellij:plugin';
 let handler: any, token: string, worker: number, agentHandler: any;
-let status = 'running';
+let status = 'running', step = 'prepare', refreshFailed = false;
 const owners: Record<number, string> = {}, hosts: any[] = [];
 const z: any = {...real,
   command(name: any, args: any) {
@@ -34,7 +34,11 @@ const z: any = {...real,
     } else if (op === 'workflow.cancel') status = 'cancelled';
     else if (op === 'workflow.history.search') return {results: [{runId: 'run', workflowName: 'fixture', inputs: {session: real.serverSession, launch: token}}]};
     else if (op === 'workflow.history.logs') return {type: 'log', log: {lines: Array.from({length: 100}, (_, i) => `LOG ${String(i + 1).padStart(3, '0')} selectable output`)}};
-    else if (op === 'workflow.history.get') return {id: 'run', workflowName: 'fixture', status, jobs: [], inputs: {session: real.serverSession, launch: token}};
+    else if (op === 'workflow.history.get') {
+      if (refreshFailed) throw Error('fixture history unavailable');
+      return {id: 'run', workflowName: 'fixture', status, jobs: [{name: 'workflow', steps: [{name: step, status: status === 'suspended' ? 'waiting_approval' : status}]}],
+        inputs: {session: real.serverSession, launch: token}};
+    }
     else if (op === 'data.query') {
       let results: any[] = [];
       if (p.predicate.includes('question') && status === 'suspended') {

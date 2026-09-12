@@ -267,7 +267,8 @@ SetRelatedPanes = 284;
 ArrangeProjectPanes = 285;
 SubscribePaneOutput = 286;
 SwampRequest = 287;
-CheckPlugin = 288;
+SetPaneSubtitle = 288;
+CheckPlugin = 289;
 }
 message PluginCommand {
 reserved 213;
@@ -464,7 +465,7 @@ FsRenamePayload fs_rename_payload = 209;
 GrantPluginPermissionsPayload grant_plugin_permissions_payload = 210;
 SetContextMenuPayload set_context_menu_payload = 211;
 string register_default_keybindings_payload = 212;
-CheckPluginPayload check_plugin_payload = 229;
+CheckPluginPayload check_plugin_payload = 230;
 SetPaneAgentPayload set_pane_agent_payload = 214;
 string reload_plugin_by_url_payload = 215;
 ReadPluginLogPayload read_plugin_log_payload = 216;
@@ -480,6 +481,7 @@ SetRelatedPanesPayload set_related_panes_payload = 225;
 ArrangeProjectPanesPayload arrange_project_panes_payload = 226;
 PaneOutputSubscription pane_output_subscription = 227;
 SwampRequestPayload swamp_request_payload = 228;
+SetPaneSubtitlePayload set_pane_subtitle_payload = 229;
 }
 }
 message FsReadPayload {
@@ -696,6 +698,10 @@ sint32 offset_seconds = 1;
 message SetPaneTitlePrefixPayload {
 PaneId pane_id = 1;
 optional string prefix = 2;
+}
+message SetPaneSubtitlePayload {
+PaneId pane_id = 1;
+optional string subtitle = 2;
 }
 message DataDefineResponse {
 oneof result {

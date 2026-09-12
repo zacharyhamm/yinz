@@ -58,7 +58,10 @@ export default definePlugin({
       const agent=await call({method:'agent_spawn',work:token,key:'worker',spec:{kind:'claude',cwd:'/host',allow_outside_worktree:true}});
       worker=agent.pane; emit('SessionStart');
       await call({method:'agent_prompt',work:token,key:'turn',agent:'worker',prompt:'work'});
-    } else if(message.payload==='done') {emit('UserPromptSubmit','work');emit('Stop');status='suspended';await view.refresh();}
+      step='agent'; await view.refresh();
+    } else if(message.payload==='test') {step='test';await view.refresh();}
+    else if(message.payload==='refresh-failed') {refreshFailed=true;await view.refresh();}
+    else if(message.payload==='done') {refreshFailed=false;step='choose';emit('UserPromptSubmit','work');emit('Stop');status='suspended';await view.refresh();}
     if(typeof message.source==='object' && 'Cli' in message.source) {
       real.command('CliPipeOutput',[message.source.Cli,'ok']);real.command('UnblockCliPipeInput',message.source.Cli);
     }
