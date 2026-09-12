@@ -1895,7 +1895,11 @@ pub(crate) fn screen_thread_main(
                             screen.fire_pane_exit_hook(id, exit_status, &run_command, false);
                         }
                     }
-                    if client_id.is_some() || completion_tx.is_some() {
+                    if screen.destroyed_panes.contains(&id)
+                        && screen.tab_containing_pane(id).is_none()
+                    {
+                        drop(completion_tx);
+                    } else if client_id.is_some() || completion_tx.is_some() {
                         if screen.tab_containing_pane(id).is_some() {
                             screen.close_pane_explicitly(id, completion_tx);
                         } else {
@@ -1912,13 +1916,15 @@ pub(crate) fn screen_thread_main(
                         screen.repaint_tab_of_closing_overlay(id);
                         if let Some(tab) = screen.tab_containing_pane_mut(id) {
                             tab.close_pane(id, false, exit_status);
+                            if !tab.has_pane_with_pid(&id) {
+                                screen.cleanup_closed_pane(id);
+                            }
                         } else {
                             pending_events_waiting_for_pane
                                 .entry(id)
                                 .or_default()
                                 .push(ScreenInstruction::ClosePane(id, None, None, exit_status));
                         }
-                        screen.cleanup_closed_pane(id);
                         // Natural process exit still owes the PTY its resource cleanup.
                         let _ = screen
                             .bus
@@ -5255,6 +5261,8 @@ pub(crate) fn screen_thread_main(
                     screen.subscribe_to_pane_renders(client_id, pane_ids, scrollback, ansi);
                 },
                 ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id } => {
+                    screen.cleanup_closed_pane(pane_id);
+                    pending_events_waiting_for_pane.remove(&pane_id);
                     screen.notify_pane_closed_to_subscribers(pane_id);
                 },
                 ScreenInstruction::SetCliEventSubscribersPresent(present) => {
@@ -5601,6 +5609,8 @@ pub(crate) fn screen_thread_main(
             .settle_tabs()
             .context("failed to settle tabs after instruction")
             .non_fatal();
+        // Teardown can finish before its queued close notification reaches this thread.
+        pending_events_waiting_for_pane.retain(|id, _| !screen.destroyed_panes.contains(id));
         // IDs can be reused after removal; discard stale focus before another tab is created.
         pending_tab_switches.retain(|(id, _)| screen.tabs.contains_key(id));
     }

@@ -247,6 +247,9 @@ impl TiledPanes {
             if self.fullscreen_is_active == Some(pane_id) {
                 self.fullscreen_is_active = Some(with_pane_id);
             }
+            if self.panes_to_hide.remove(&pane_id) {
+                self.panes_to_hide.insert(with_pane_id);
+            }
             removed_pane
         });
 

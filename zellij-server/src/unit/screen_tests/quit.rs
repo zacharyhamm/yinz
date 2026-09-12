@@ -1157,11 +1157,92 @@ fn hidden_only_non_last_tab_keeps_its_identity_and_terminal() {
 }
 
 #[test]
+fn settlement_repairs_floating_focus_after_last_tiled_exit_alone_or_beside_another_tab() {
+    for another_tab in [false, true] {
+        let source = TabId::new(1);
+        let client = ClientId::new(1);
+        let tabs = if another_tab {
+            vec![source, TabId::new(2)]
+        } else {
+            vec![source]
+        };
+        let (mut screen, _, _, plugins) = screen_with_plugin_senders_and_clients(&tabs, &[client]);
+        screen
+            .go_to_tab(zellij_types::internal_ids::TabNumber::new(1), client)
+            .unwrap();
+        let tab = screen.tabs.get_mut(&source).unwrap();
+        let floating = PaneId::Terminal(TerminalId::new(3));
+        tab.new_pane(
+            floating,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Floating(None),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        tab.hide_floating_panes();
+        tab.close_pane(PaneId::Terminal(TerminalId::new(1)), false, None);
+        // Also exercise settlement itself, independently of removal's immediate repair.
+        tab.hide_floating_panes();
+        screen.settle_tabs().unwrap();
+        assert_eq!(screen.active_tab_ids[&client], source);
+        assert_eq!(
+            screen.tabs[&source].get_active_pane_id(client),
+            Some(floating)
+        );
+        assert!(screen.tabs[&source].are_floating_panes_visible());
+        assert_every_client_has_a_tab(&screen);
+        assert!(requested_tabs(&plugins).is_empty());
+    }
+}
+
+#[test]
+fn tab_teardown_records_destruction_but_not_held_or_relocated_panes() {
+    let source = TabId::new(1);
+    let destination = TabId::new(2);
+    let client = ClientId::new(1);
+    let (mut screen, _, _, _) =
+        screen_with_plugin_senders_and_clients(&[source, destination], &[client]);
+    let destroyed = PaneId::Terminal(TerminalId::new(1));
+    let moved = PaneId::Terminal(TerminalId::new(8));
+    let tab = screen.tabs.get_mut(&source).unwrap();
+    tab.new_pane(
+        moved,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.hold_pane(destroyed, Some(0), false, RunCommand::default());
+    tab.suppress_pane(moved, None);
+    assert!(screen.destroyed_panes.is_empty());
+    screen.close_tab_by_id(source).unwrap();
+    assert_eq!(screen.destroyed_panes, HashSet::from([destroyed]));
+    assert!(screen.tabs[&destination].has_pane_with_pid(&moved));
+    screen.close_pane_explicitly(moved, None);
+    assert!(screen.destroyed_panes.contains(&moved));
+    assert!(!screen.tabs[&destination].has_pane_with_pid(&moved));
+    let discarded = PaneId::Terminal(TerminalId::new(9));
+    screen.forget_unplaced_pane(discarded, "destination closed during spawn".into());
+    assert!(screen.destroyed_panes.contains(&discarded));
+}
+
+#[test]
 fn homeless_plugin_drops_its_notice_before_settlement() {
     let (mut screen, _, server, plugins) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
     screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
     screen.close_homeless_pane(PaneId::Plugin(HOCUS_PLUGIN_ID));
+    assert!(screen
+        .destroyed_panes
+        .contains(&PaneId::Plugin(HOCUS_PLUGIN_ID)));
     assert!(!screen.quit_is_guarded());
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().unwrap();
@@ -1309,6 +1390,22 @@ fn explicit_close_before_creation_waits_for_removal_and_completion() {
             let client = mock.main_client_id;
             let screen_thread = mock.run(None, vec![]);
             let server = mock.server_receiver.take().unwrap();
+            let processed = || {
+                let deadline = std::time::Instant::now() + zellij_test_support::default_timeout();
+                loop {
+                    if matches!(
+                        server
+                            .recv_timeout(
+                                deadline.saturating_duration_since(std::time::Instant::now()),
+                            )
+                            .unwrap()
+                            .0,
+                        ServerInstruction::Log(..)
+                    ) {
+                        break;
+                    }
+                }
+            };
             let plugins = mock.plugin_receiver.take().unwrap();
             let received = Watched::new(vec![]);
             let plugin_thread = log_actions_in_thread!(received, PluginInstruction::Exit, plugins);
@@ -1328,21 +1425,21 @@ fn explicit_close_before_creation_waits_for_removal_and_completion() {
                     Some(23),
                 ))
                 .unwrap();
+            // Both requests are replayed together when creation arrives, so the duplicate
+            // precedes the close notification queued by the first request.
+            let (duplicate_tx, mut duplicate_rx) = tokio::sync::oneshot::channel();
+            mock.to_screen
+                .send(ScreenInstruction::ClosePane(
+                    id,
+                    with_client.then_some(client),
+                    Some(crate::NotificationEnd::new(duplicate_tx)),
+                    None,
+                ))
+                .unwrap();
             mock.to_screen
                 .send(ScreenInstruction::QueryTabNames(client, None))
                 .unwrap();
-            let deadline = std::time::Instant::now() + zellij_test_support::default_timeout();
-            loop {
-                if matches!(
-                    server
-                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                        .unwrap()
-                        .0,
-                    ServerInstruction::Log(..)
-                ) {
-                    break;
-                }
-            }
+            processed();
             assert!(
                 matches!(
                     rx.try_recv(),
@@ -1350,6 +1447,10 @@ fn explicit_close_before_creation_waits_for_removal_and_completion() {
                 ),
                 "close completion must wait for creation"
             );
+            assert!(matches!(
+                duplicate_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
             let creation = if plugin {
                 ScreenInstruction::AddPlugin(
                     Some(true),
@@ -1398,9 +1499,100 @@ fn explicit_close_before_creation_waits_for_removal_and_completion() {
                 log.iter().any(|instruction| matches!(instruction, PluginInstruction::Update(events)
                     if events.iter().any(|(_, _, event)| matches!(event, Event::PaneClosed(closed) if *closed == id)))).then_some(())
             });
+            mock.to_screen
+                .send(ScreenInstruction::QueryTabNames(client, None))
+                .unwrap();
+            processed();
+            assert!(
+                duplicate_rx.try_recv().is_ok(),
+                "queued duplicate must complete before another creation"
+            );
+
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            mock.to_screen
+                .send(ScreenInstruction::ClosePane(
+                    id,
+                    with_client.then_some(client),
+                    Some(crate::NotificationEnd::new(tx)),
+                    None,
+                ))
+                .unwrap();
+            mock.to_screen
+                .send(ScreenInstruction::QueryTabNames(client, None))
+                .unwrap();
+            processed();
+            let duplicate_finished = rx.try_recv().is_ok();
             mock.teardown(vec![plugin_thread, screen_thread]);
+            assert!(
+                duplicate_finished,
+                "closing an already closed pane left completion pending"
+            );
+            let count = received
+                .lock()
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    PluginInstruction::Update(events) => Some(events),
+                    _ => None,
+                })
+                .flatten()
+                .filter(|(_, _, event)| matches!(event, Event::PaneClosed(closed) if *closed == id))
+                .count();
+            assert_eq!(count, 1, "one notification per destroyed pane");
         }
     }
+}
+
+#[test]
+fn close_notification_releases_requests_buffered_for_a_discarded_pane() {
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    let client = mock.main_client_id;
+    let screen_thread = mock.run(None, vec![]);
+    let server = mock.server_receiver.take().unwrap();
+    let processed = || {
+        let deadline = std::time::Instant::now() + zellij_test_support::default_timeout();
+        loop {
+            if matches!(
+                server
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .unwrap()
+                    .0,
+                ServerInstruction::Log(..)
+            ) {
+                break;
+            }
+        }
+    };
+    for id in [
+        PaneId::Terminal(TerminalId::new(42)),
+        PaneId::Plugin(PluginId::new(42)),
+    ] {
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        mock.to_screen
+            .send(ScreenInstruction::ClosePane(
+                id,
+                None,
+                Some(crate::NotificationEnd::new(tx)),
+                None,
+            ))
+            .unwrap();
+        mock.to_screen
+            .send(ScreenInstruction::QueryTabNames(client, None))
+            .unwrap();
+        processed();
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        mock.to_screen
+            .send(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id: id })
+            .unwrap();
+        mock.to_screen
+            .send(ScreenInstruction::QueryTabNames(client, None))
+            .unwrap();
+        processed();
+        assert!(rx.try_recv().is_ok());
+    }
+    mock.teardown(vec![screen_thread]);
 }
 
 #[test]

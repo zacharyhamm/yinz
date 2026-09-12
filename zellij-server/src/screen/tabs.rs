@@ -732,6 +732,11 @@ impl Screen {
     /// Keep replacement identity after loading so natural exits hold instead of respawning.
     pub(crate) fn settle_tabs(&mut self) -> Result<()> {
         let err_context = "failed to settle tabs";
+        for (client, tab_id) in &self.active_tab_ids {
+            if let Some(tab) = self.tabs.get_mut(tab_id) {
+                tab.ensure_selectable_focus(*client).context(err_context)?;
+            }
+        }
         let usable: Vec<TabId> = self
             .tabs
             .values()
@@ -1027,9 +1032,7 @@ impl Screen {
         // as they do when closed one at a time (`ScreenInstruction::ClosePane`). Left behind, a
         // guard nothing could lift would keep the session from ever ending.
         for p_id in &pane_ids {
-            if let PaneId::Plugin(plugin_id) = p_id {
-                self.drop_quit_notice(*plugin_id);
-            }
+            self.cleanup_closed_pane(*p_id);
         }
         // Nothing should be able to aim at this tab again: `toggle_tab` reads the history, and
         // an arrangement's memory of the project here would otherwise outlive the tab.
@@ -1052,14 +1055,6 @@ impl Screen {
         // Notify pane render subscribers of each closed pane
         for p_id in &pane_ids {
             self.notify_pane_closed_to_subscribers((*p_id).into());
-        }
-
-        // A closing tab takes its panes with it without ever emitting a per-pane `ClosePane`, so
-        // the menus opened over them have to be closed here too - `close_context_menus_for_pane`
-        // is otherwise only reached from that instruction. The suppressed panes have already been
-        // filtered out above: they move to another tab and keep theirs.
-        for p_id in &pane_ids {
-            self.close_context_menus_for_pane(*p_id);
         }
 
         // below we don't check the result of sending the CloseTab instruction to the pty thread

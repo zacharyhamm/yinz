@@ -327,10 +327,7 @@ impl Screen {
     /// with nothing attached to it - the failure mode this whole path exists to prevent.
     /// Mirrors the teardown `close_tab_by_id` does for the panes of a tab it removes.
     pub(super) fn close_homeless_pane(&mut self, pane_id: PaneId) {
-        if let PaneId::Plugin(plugin_id) = pane_id {
-            self.drop_quit_notice(plugin_id);
-        }
-        self.close_context_menus_for_pane(pane_id);
+        self.cleanup_closed_pane(pane_id);
         let _ = self
             .bus
             .senders
