@@ -126,6 +126,7 @@ use hocus_proto::agents::{self, now_ms, Strip, StripRow, Summaries};
 use hocus_proto::envelope;
 use hocus_proto::launch;
 use hocus_proto::markdown;
+use hocus_proto::tabs::{self, TabCell};
 use hocus_proto::wire;
 use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::*;
@@ -135,7 +136,7 @@ struct State {
     own_plugin_id: PluginId,
     vm_tab: bool,
     tabs_focused: bool,
-    vm_tab_column: usize,
+    tab_cells: Vec<TabCell<bool>>,
     age_minute: i64,
     vms: vms::View,
     /// The strip as hocus last sent it.
@@ -575,13 +576,6 @@ impl ZellijPlugin for State {
         if rows == 0 || cols == 0 {
             return;
         }
-        self.vm_tab_column = if cols >= 14 {
-            9
-        } else if cols >= 3 {
-            2
-        } else {
-            1
-        };
         let label = if self.search_editing {
             format!("Search: {}  [Enter apply  Esc cancel]", self.search_query)
         } else if self.search_base.is_some() {
@@ -597,37 +591,34 @@ impl ZellijPlugin for State {
                     }
                 });
             format!("Search: {}{}", self.search_query, suffix)
-        } else if cols >= 14 {
-            if self.vm_tab {
-                if self.vms.has_error() {
-                    " Agents  [VMs!]".to_owned()
-                } else {
-                    " Agents  [VMs]".to_owned()
-                }
-            } else {
-                "[Agents]  VMs".to_owned()
-            }
-        } else if cols >= 3 {
-            "A V".to_owned()
         } else {
-            "AV".to_owned()
+            String::new()
         };
-        let mut text = Text::new(label);
-        if cols < 14 {
-            let selected = if self.vm_tab { self.vm_tab_column } else { 0 };
-            text = text.color_range(2, selected..selected + 1);
+        self.tab_cells.clear();
+        if label.is_empty() {
+            self.tab_cells = tabs::cells(
+                [
+                    (
+                        "Agents".to_owned(),
+                        !self.vm_tab,
+                        self.tabs_focused && !self.vm_tab,
+                        false,
+                    ),
+                    (
+                        if self.vms.has_error() { "VMs!" } else { "VMs" }.to_owned(),
+                        self.vm_tab,
+                        self.tabs_focused && self.vm_tab,
+                        true,
+                    ),
+                ],
+                cols,
+            );
+            for cell in &self.tab_cells {
+                print_text_with_coordinates(cell.styled(), cell.x, 0, Some(cell.width), None);
+            }
+        } else {
+            print_text_with_coordinates(Text::new(label), 0, 0, Some(cols), None);
         }
-        print_text_with_coordinates(
-            if self.tabs_focused {
-                text.selected()
-            } else {
-                text
-            },
-            0,
-            0,
-            Some(cols),
-            None,
-        );
         let rows = rows.saturating_sub(1);
         if rows == 0 {
             return;
@@ -1356,9 +1347,16 @@ impl State {
             }
         }
         if let Mouse::LeftClick(0, column) = mouse_event {
-            self.tabs_focused = true;
-            self.switch_vm_tab(column >= self.vm_tab_column.max(1));
-            return true;
+            if let Some(target) = self
+                .tab_cells
+                .iter()
+                .find(|cell| column >= cell.x && column < cell.x + cell.width)
+                .map(|cell| cell.target)
+            {
+                self.tabs_focused = true;
+                self.switch_vm_tab(target);
+                return true;
+            }
         }
         if self.last_rows <= 1 || self.mouse_position.is_some_and(|(line, _)| line == 0) {
             return false;
@@ -4097,6 +4095,35 @@ mod tests {
             .iter()
             .any(|row| row.text.contains("result: Implemented")));
         assert!(!state.on_key(KeyWithModifier::new(BareKey::Enter)));
+    }
+
+    #[test]
+    fn tab_clicks_use_the_drawn_cells_and_keep_each_surface() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.selected = 3;
+        state.history_scroll = 2;
+        state.render(12, 20);
+        let agents_state = (state.selected, state.history_scroll);
+        assert_eq!(
+            state
+                .tab_cells
+                .iter()
+                .map(|cell| (cell.text.as_str(), cell.target))
+                .collect::<Vec<_>>(),
+            [(" Agents │", false), (" VMs │", true)]
+        );
+
+        let vm_x = state.tab_cells[1].x;
+        assert!(state.on_mouse(Mouse::LeftClick(0, vm_x)));
+        assert!(state.vm_tab);
+        assert_eq!((state.selected, state.history_scroll), agents_state);
+
+        let agents_x = state.tab_cells[0].x;
+        assert!(state.on_mouse(Mouse::LeftClick(0, agents_x)));
+        assert!(!state.vm_tab);
+        assert_eq!((state.selected, state.history_scroll), agents_state);
+        assert!(!state.on_mouse(Mouse::LeftClick(0, 19)));
     }
 
     #[test]

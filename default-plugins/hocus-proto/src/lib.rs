@@ -28,6 +28,7 @@ pub mod paths;
 pub mod projects;
 pub mod run_history;
 pub mod store;
+pub mod tabs;
 pub mod text;
 pub mod todos;
 pub mod wire;
