@@ -3090,6 +3090,13 @@ impl Tab {
                         .filter(|(_, pane)| pane.selectable())
                         .map(|(id, _)| *id)
                         .min()
+                })
+                .or_else(|| {
+                    self.tiled_panes
+                        .get_panes()
+                        .filter(|(_, pane)| pane.selectable())
+                        .map(|(id, _)| *id)
+                        .min()
                 });
             if let Some(id) = candidate {
                 self.focus_pane_with_id(id, false, false, client_id)?;
@@ -5375,7 +5382,12 @@ impl Tab {
                             .with_context(err_context)?;
                     },
                     Some(AdjustedInput::CloseThisPane) => {
-                        self.close_pane(PaneId::Terminal(active_terminal_id), false, None);
+                        self.senders
+                            .send_to_screen(ScreenInstruction::CloseFocusWithPaneId(
+                                PaneId::Terminal(active_terminal_id),
+                                completion_tx,
+                            ))
+                            .with_context(err_context)?;
                         should_update_ui = true;
                     },
                     Some(AdjustedInput::DropToShellInThisPane { working_dir }) => {
@@ -10511,16 +10523,6 @@ impl Tab {
     }
     pub fn toggle_no_ui_fullscreen_by_pane_id(&mut self, pane_id: PaneId) {
         self.toggle_pane_no_ui_fullscreen(pane_id);
-    }
-    pub fn close_pane_by_pane_id(
-        &mut self,
-        pane_id: PaneId,
-        completion_tx: Option<NotificationEnd>,
-    ) -> Result<()> {
-        self.close_pane(pane_id, false, None);
-        self.senders
-            .send_to_pty(PtyInstruction::ClosePane(pane_id, completion_tx))?;
-        Ok(())
     }
     pub fn rename_pane_by_pane_id(&mut self, pane_id: PaneId, name: Vec<u8>) -> Result<()> {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {

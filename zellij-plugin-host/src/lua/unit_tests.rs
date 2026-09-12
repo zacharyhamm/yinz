@@ -8100,7 +8100,7 @@ for _,action in ipairs{'fork','duplicate'} do
         z.instance_id=z.instance_id..'-reloaded'
         assert(call{method='observe',work='one',key=request.key}.outcome=='unknown')
       end
-      local reply={name='swamp-pane-result',source={Plugin=42},payload=z.json.encode{work='one',key=request.key,choice=choice}}
+      local reply={name='swamp-pane-result',source={Plugin=42},payload=z.json.encode{work='one',key=request.key,choice=choice,pane_id=choice=='started' and {Terminal=7} or z.null}}
       assert(not pcall(M.pipe,{name=reply.name,source={Plugin=43},payload=reply.payload}))
       assert(acks==before_acks,'Only the picker can settle its result')
       M.pipe(reply)
@@ -8108,7 +8108,7 @@ for _,action in ipairs{'fork','duplicate'} do
       local observed=call{method='observe',work='one',key=request.key}
       assert(observed.choice==choice and observed.outcome=='completed')
       assert(picked==before_picked+1 and acks==before_acks+2,'Retries acknowledge without redispatching')
-      reply.payload=z.json.encode{work='one',key=request.key,choice=choice=='started' and 'cancelled' or 'started'}
+      reply.payload=z.json.encode{work='one',key=request.key,choice=choice=='started' and 'cancelled' or 'started',pane_id=choice=='cancelled' and {Terminal=7} or z.null}
       assert(not pcall(M.pipe,reply),'A conflicting result cannot replace completion')
       assert(acks==before_acks+2)
     end
