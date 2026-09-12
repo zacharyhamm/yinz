@@ -2096,8 +2096,6 @@ impl Screen {
     pub fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to remove client {client_id}");
 
-        self.pane_output_subscriptions
-            .retain(|(_, client), _| *client != client_id);
         self.notification_mouse_captures.remove(&client_id);
         // No force-render: the client is going, and the cells its menu occupied belong to a screen
         // nobody is looking at any more.

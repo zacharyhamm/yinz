@@ -1069,7 +1069,7 @@ fn pane_output_uses_subscriber_generations_and_cleans_up_each_client() {
         output(1),
         ScreenInstruction::RemoveClient(client),
         output(2),
-        // Reusing the client ID alone does not restore its old registration.
+        // Only plugin retirement removes a registration; disconnect preserves it.
         ScreenInstruction::SubscribePaneOutput(plugin, client, None, Some(12)),
         output(3),
         subscribe(plugin, client, Some(12)),
@@ -1108,6 +1108,7 @@ fn pane_output_uses_subscriber_generations_and_cleans_up_each_client() {
     deliveries.sort();
     let mut expected = vec![
         (1, plugin, client, Some(10)),
+        (2, plugin, client, Some(10)),
         (4, plugin, client, Some(12)),
         (6, plugin, client, Some(13)),
     ];

@@ -4,12 +4,12 @@ globalThis.handler=null; globalThis.conflictNext=false; globalThis.failure=null;
 const clone=v=>JSON.parse(JSON.stringify(v));
 globalThis.mock={...zellij, serverSession:'session',serverIncarnation:'incarnation',serverBinary:'zellij',instanceId:'instance',
   subscribe(){}, getPluginIds:()=>({host_id:'host',plugin_id:1}), on(name,callback){handlers[name]=callback;},
-  workflowRemotePanes:()=>[],
+  workflowRemotePanes:()=>[], sleep:()=>new Promise(()=>{}),
   data:{...zellij.data,
     define(){}, eq:(_column,uid)=>uid,
     fetch(q){
       if(q.filter) return {records:rows.has(q.filter)?[clone(rows.get(q.filter))]:[],raw:{next_cursor:null}};
-      const entries=[...rows.entries()].sort(([a],[b])=>a<b?-1:1), start=Number(q.afterId??0);
+      const entries=[...rows.entries()], start=Number(q.afterId??0);
       return {records:entries.slice(start,start+3).map(([uid,row])=>({uid,...clone(row)})),raw:{next_cursor:start+3<entries.length?start+3:null}};
     },
     put(_entity,value,options){return {...value,...options}},

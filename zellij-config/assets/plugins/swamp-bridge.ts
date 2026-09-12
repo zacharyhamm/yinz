@@ -7,7 +7,7 @@ type Identity = Pick<Owner, 'host_id' | 'session' | 'incarnation'>;
 type Request = {
   method: string; work: string; key: string; agent: string; operation: string;
   directory: string; run: string; launch: string; workflow: string;
-  prompt: string; prompt_sha256?: string; waitForExit?: boolean; includeOutput?: boolean;
+  prompt: string; prompt_sha256?: string; waitForExit?: boolean; includeOutput?: boolean; foreground?: boolean;
   action: string; spec: AgentSpawnOptions & {source_directory?: string; automatic_firecracker_vm?: boolean}; argv: string[]; cwd: string;
   inputs?: Record<string, Json>;
   payload: Record<string, Json>; model: string;
@@ -29,7 +29,7 @@ type Supervisor = {terminal_id: number; host_id: string; child_pid?: number; att
   session_name: string; child_exit_status?: number | null; owner?: string | null; remote_host?: string; pane_token?: string};
 const D = z.data;
 let identity: Identity;
-const placements = new Map<string, {view: number; queue: string[]; current?: number; detached?: boolean}>();
+const placements = new Map<string, {view: number; queue: string[]; current?: number; detached?: boolean; manual?: boolean}>();
 function assert(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 // Lua's encoder sorts object keys recursively. Preserve exact request/owner comparisons on reload.
 function encode(value: unknown): string {
@@ -107,7 +107,7 @@ function present(work: string) {
   const info = z.command('GetPaneInfo', view);
   const current = placement.current == null ? view : terminal(placement.current);
   const currentInfo = z.command('GetPaneInfo', current);
-  if (info?.plugin_url !== 'zellij:agent-exit' || !currentInfo || currentInfo.is_suppressed) { placement.detached = true; return; }
+  if ((info?.plugin_url !== 'zellij:agent-exit' && info?.plugin_url !== 'zellij:swamp-workflow') || !currentInfo || currentInfo.is_suppressed) { placement.detached = true; return; }
   let next: number | undefined;
   while (placement.queue.length) {
     const [operation] = read(placement.queue[0]);
@@ -123,6 +123,28 @@ function present(work: string) {
   }
   z.command('ReplacePaneWithExistingPane', [current, target, true]);
   placement.current = next;
+}
+function attachManual(work: string, view: number) {
+  if (read(scope(work, 'view'))[0]) return;
+  const existing = placements.get(work);
+  if (existing && z.command('GetPaneInfo', plugin(existing.view))) return;
+  const placement = {view, queue: [] as string[], manual: true};
+  placements.set(work, placement);
+  let cursor: Integer | null = null;
+  do {
+    // Default row-id order preserves delivery order across pages.
+    const {records, raw} = D.fetch({entity: 'delivery', afterId: cursor});
+    for (const row of records) {
+      const id: string[] = JSON.parse(String(row.uid));
+      if (id[0] !== identity.host_id || id[1] !== identity.session || id[2] !== work) continue;
+      const operation: Delivery = JSON.parse(String(row.value));
+      if (operation.outcome !== 'pending' || operation.pane == null) continue;
+      const request: Request = JSON.parse(operation.request);
+      if (request.method === 'command' && request.foreground) placement.queue.push(String(row.uid));
+    }
+    cursor = raw.next_cursor;
+  } while (cursor != null);
+  present(work);
 }
 async function command(argv: string[], cwd = '/'): Promise<string> {
   const r = await z.runCommand({command: argv, cwd, context: {swamp_owner: encode(identity)}, maxBytesReturned: 1048576});
@@ -140,6 +162,8 @@ function changed(work: string) {
     notifications.delete(work);
     const view = read(scope(work, 'view'))[0];
     if (view?.incarnation === identity.incarnation && view.view != null) message({destination_plugin_id: view.view, message_name: 'workflow-changed'});
+    const placement = placements.get(work);
+    if (placement?.manual && !placement.detached) message({destination_plugin_id: placement.view, message_name: 'workflow-changed'});
   });
 }
 async function swamp(request: SwampRequest, directory: string): Promise<string> {
@@ -159,7 +183,8 @@ function watchRun(run: string, work: string, root: string) {
     .catch(() => {}).finally(() => {watching.delete(run); watchIds.delete(id);});
 }
 async function dispatch(uid: string, root: string, operation: string, payload: Record<string, Json>) {
-  let value = result(uid), row = read(uid)[1];
+  let [value, row] = read(uid);
+  assert(value, 'No operation with that identity');
   Object.assign(value, {transport: 'serve', requestId: z.instanceId + uid, checkout: root, correlation: uid, outcome: 'unknown'});
   put(uid, value, row);
   tracked.set(value.requestId!, uid);
@@ -167,7 +192,7 @@ async function dispatch(uid: string, root: string, operation: string, payload: R
     payload = {...payload, noSupersede: true, runtimeTags: {...(payload.runtimeTags as Record<string, Json> ?? {}), zellijOperation: uid}};
   }
   const reply = JSON.parse(await swamp({operation, payload, id: value.requestId, started: true}, root));
-  value = result(uid); row = read(uid)[1];
+  [value, row] = read(uid); assert(value, 'No operation with that identity');
   if (reply.runId) value.run = reply.runId;
   if (value.outcome === 'unknown' && tracked.has(value.requestId!)) value.outcome = 'pending';
   put(uid, value, row); return value;
@@ -211,7 +236,8 @@ async function serveObserve(uid: string, operation: Delivery, row?: DataRecord):
       }
     }
     try {put(uid, operation, row); return operation;} catch (error) {if (!D.isConflict(error) || attempt === 8) throw error;}
-    operation = result(uid); row = read(uid)[1];
+    const [fresh, freshRow] = read(uid); assert(fresh, 'No operation with that identity');
+    operation = fresh; row = freshRow;
   }
   return operation;
 }
@@ -309,7 +335,7 @@ async function discover(work: string, root: string) {
   }
   return read(scope(work, 'runs'))[0];
 }
-async function handle(input: Partial<Request>): Promise<unknown> {
+async function handle(input: Partial<Request>, manualView?: number): Promise<unknown> {
   assert(input && typeof input === 'object' && !Array.isArray(input), 'Expected a typed request');
   // Each method validates the fields it consumes; correlation keys are checked by scope().
   const args = input as Request;
@@ -347,6 +373,7 @@ async function handle(input: Partial<Request>): Promise<unknown> {
         work = history.inputs.launch;
       }
     } else if (args.launch) work = args.launch;
+    if (work && manualView != null) attachManual(work, manualView);
     const runs = work ? await discover(work, config.root) : undefined;
     if (args.run) [attachment] = read<Attachment>(scope(args.run, 'attachment'));
     else if (runs) for (const [id, entry] of Object.entries(runs.entries ?? {})) {
@@ -413,6 +440,7 @@ async function handle(input: Partial<Request>): Promise<unknown> {
       runs.entries[args.run] = entry;
       try { put(runsUid, runs, runsRow); break; } catch (error) { if (!D.isConflict(error) || attempt === 8) throw error; }
     }
+    if (!existing) changed(args.work);
     return {work: args.work, key: args.key, request: encode(args), incarnation: identity.incarnation, outcome: 'completed'};
   }
   if (args.method === 'reconcile') {
@@ -436,12 +464,12 @@ async function handle(input: Partial<Request>): Promise<unknown> {
   }
   if (args.method === 'agent_prompt') assert(typeof args.prompt === 'string' && z.encodeUtf8(args.prompt).length > 0 && z.encodeUtf8(args.prompt).length <= 262144,
     'Prompt must contain 1–262144 UTF-8 bytes (256 KiB)');
-  let uid: string | undefined, value: Delivery, row: DataRecord | undefined;
+  let uid: string | undefined, value: Delivery | undefined, row: DataRecord | undefined;
   if (args.method === 'vm_status') value = {work: args.work, key: args.key, request: encode(args), incarnation: identity.incarnation} as Delivery;
   else {
     const [claimed, previous] = claim(args); uid = claimed;
     if (previous) return previous;
-    value = result(uid); [, row] = read(uid);
+    [value, row] = read(uid); assert(value, 'No operation with that identity');
   }
   if (args.method === 'workflow_run') {
     assert(args.directory, 'Missing project directory');
@@ -508,11 +536,11 @@ async function handle(input: Partial<Request>): Promise<unknown> {
       context: {swamp_owner: encode(owner), swamp_operation: args.key}, startSuppressed: !!read(scope(args.work, 'view'))[0]};
     const spawned = z.agent.spawnDetails(opts);
     assert('Terminal' in spawned.pane_id, 'Expected an agent terminal');
-    value = result(uid!); [, row] = read(uid!);
+    [value, row] = read(uid!); assert(value, 'No operation with that identity');
     value.pane = spawned.pane_id.Terminal; value.branch = spawned.branch ?? null; value.checkout = spawned.cwd ?? null;
     put(uid!, value, row);
     const info = z.command('GetPaneInfo', terminal(value.pane));
-    value = result(uid!); [, row] = read(uid!); value.target = info?.target; put(uid!, value, row);
+    [value, row] = read(uid!); assert(value, 'No operation with that identity'); value.target = info?.target; put(uid!, value, row);
     let host: Supervisor;
     if (typeof value.target === 'object' && 'Firecracker' in value.target) {
       const deadline = Date.now() + 150000;
@@ -523,7 +551,7 @@ async function handle(input: Partial<Request>): Promise<unknown> {
         }
       }
     } else host = await supervisor(value.pane!);
-    value = result(uid!); [, row] = read(uid!);
+    [value, row] = read(uid!); assert(value, 'No operation with that identity');
     Object.assign(value, {supervisor: host.host_id, process: host.child_pid, remoteHost: host.remote_host, remotePaneId: host.pane_token, outcome: 'completed'});
     put(uid!, value, row);
   } else if (args.method === 'agent_prompt') {
@@ -538,7 +566,7 @@ async function handle(input: Partial<Request>): Promise<unknown> {
     D.apply([D.put('delivery', {value: encode(value)}, {uid, expectRev: row.rev}),
       D.put('delivery', {value: encode(agent)}, {uid: agentUid, expectRev: agentRow.rev})]);
     const placement = placements.get(args.work);
-    if (placement && !placement.detached) { placement.queue.push(uid!); present(args.work); }
+    if (placement && !placement.manual && !placement.detached) { placement.queue.push(uid!); present(args.work); }
     dispatchPrompt(agent);
   } else if (args.method === 'command') {
     assert(Array.isArray(args.argv) && args.argv.length > 0 && args.argv.every(arg => typeof arg === 'string'), 'Missing literal argv');
@@ -546,11 +574,13 @@ async function handle(input: Partial<Request>): Promise<unknown> {
     value.owner = owner; value.outcome = 'pending'; put(uid!, value, row);
     const pane = z.command('OpenCommandPaneBackground', [{path: args.argv[0], args: args.argv.slice(1), cwd: args.cwd},
       {swamp_owner: encode(owner), swamp_operation: args.key, swamp_work: read<Attachment>(scope(args.work, 'attachment'))[0]?.work ?? args.work}]);
-    value = result(uid!); [, row] = read(uid!);
+    [value, row] = read(uid!); assert(value, 'No operation with that identity');
     assert(pane && 'Terminal' in pane, 'Command dispatch was not acknowledged; reconcile the saved operation before any further action');
     value.pane = pane.Terminal; value.checkout = args.cwd; value.log = `terminal_${value.pane}`; put(uid!, value, row);
+    const placement = placements.get(args.work);
+    if (args.foreground && placement && !placement.detached) { placement.queue.push(uid!); present(args.work); }
     const host = await supervisor(value.pane);
-    value = result(uid!); [, row] = read(uid!); value.supervisor = host.host_id; value.process = host.child_pid; put(uid!, value, row);
+    [value, row] = read(uid!); assert(value, 'No operation with that identity'); value.supervisor = host.host_id; value.process = host.child_pid; put(uid!, value, row);
   } else if (['source_sync', 'vm_inspect', 'vm_sync', 'vm_status'].includes(args.method)) {
     const agent: Partial<Delivery> = args.method === 'source_sync'
       ? (read(scope(args.work, 'source'))[0] ? await owned({work: args.work, agent: 'source'}) : {target: 'Local'}) : await owned(args);
@@ -602,20 +632,20 @@ function message(options: Partial<MessageToPlugin> & {message_name: string}) {
     message_args: {}, new_plugin_args: null, floating_pane_coordinates: null, ...options});
 }
 let timingAttempt = 0;
-async function invoke(args: Partial<Request>): Promise<Json> {
-  if (!z.swampTiming) return invokeInner(args);
+async function invoke(args: Partial<Request>, manualView?: number): Promise<Json> {
+  if (!z.swampTiming) return invokeInner(args, manualView);
   const attempt = ++timingAttempt, start = z.monotonicMs();
   let outcome = 'error', response: any;
-  try {response = await invokeInner(args); outcome = 'ok'; return response;}
+  try {response = await invokeInner(args, manualView); outcome = 'ok'; return response;}
   finally {
     try {z.log('swamp_timing ' + encode({layer: 'deno', phase: 'invoke', attempt: `${z.instanceId}:${attempt}`,
       elapsedMs: z.monotonicMs() - start, outcome, method: args?.method, work: args?.work, key: args?.key,
       requestId: response?.requestId, run: response?.run}));} catch { /* Keep the operation's result. */ }
   }
 }
-async function invokeInner(args: Partial<Request>): Promise<Json> {
+async function invokeInner(args: Partial<Request>, manualView?: number): Promise<Json> {
   const newLaunch = args?.method === 'workflow_run' && !read(scope(args.work!, args.key!))[0];
-  try { return JSON.parse(encode(await handle(args))); } catch (error) {
+  try { return JSON.parse(encode(await handle(args, manualView))); } catch (error) {
     try {
       if (newLaunch && !read(scope(args.work!, 'swamp-process'))[0] && !read(scope(args.work!, args.key!))[0]?.transport) saveEvent(scope(args.work!, args.key!), 'failed', {error: String(error)});
       const [value] = read(scope(args.work!, args.key!));
@@ -643,7 +673,7 @@ export default definePlugin({
         if (existing) assert(existing.view === from && existing.incarnation === identity.incarnation, 'Launch already belongs to another hook instance');
         else { put(uid, {view: from, incarnation: identity.incarnation}); placements.set(args.work!, {view: from, queue: []}); }
       }
-      return invoke(args);
+      return invoke(args, args.method === 'workflow_show' && pane.plugin_url === 'zellij:swamp-workflow' ? from : undefined);
     });
   },
   async pipe(messageIn) {
@@ -681,7 +711,7 @@ z.on('AgentEvent', event => {
   const uid = scope(owner.work, owner.agent), [agent] = read(uid);
   if (!agent || (agent.pane != null && agent.pane !== event.pane_id) || encode(agent.owner) !== encode(owner)) return;
   if (event.hook === 'SessionStart') {
-    const current = result(uid), [, row] = read(uid); current.ready = true; put(uid, current, row);
+    const [current, row] = read(uid); assert(current, 'No operation with that identity'); current.ready = true; put(uid, current, row);
     if (current.outstanding && current.supervisor) void owned({work: owner.work, agent: owner.agent}, true).then(dispatchPrompt).catch(error => z.log(String(error)));
   }
   if (event.hook === 'UserPromptSubmit' && agent.outstanding) {
@@ -704,7 +734,8 @@ function finishAgent(owner: Owner, event: AgentEvent, raw: {turn_id?: string}) {
   const operation = result(agent.outstanding);
   if (!operation.accepted || operation.agentSession !== event.session_id || (operation.turn && operation.turn !== raw.turn_id)) return;
   if (JSON.parse(operation.request).waitForExit) {
-    const current = result(agent.outstanding), [, currentRow] = read(agent.outstanding);
+    const [current, currentRow] = read(agent.outstanding);
+    assert(current, 'No operation with that identity');
     current.message = event.last_message ?? null; current.hook = event.hook; put(agent.outstanding, current, currentRow); return;
   }
   saveEvent(agent.outstanding, outcome, {message: event.last_message ?? null, hook: event.hook, agentSession: event.session_id ?? null});
@@ -718,7 +749,7 @@ z.on('CommandPaneExited', ([pane, exitCode, context]) => {
   if (!value || encode(value.owner) !== encode(owner) || (value.pane != null && value.pane !== pane)) return;
   const request: Request = JSON.parse(value.request);
   saveEvent(uid, request.method === 'command' ? (exitCode === 0 ? 'completed' : 'failed') : 'process-exit', {exitCode});
-  if (request.method === 'agent_spawn') { const current = result(uid), [, row] = read(uid); current.processExited = true; put(uid, current, row); }
+  if (request.method === 'agent_spawn') { const [current, row] = read(uid); assert(current, 'No operation with that identity'); current.processExited = true; put(uid, current, row); }
   if (value.outstanding) saveEvent(value.outstanding, 'process-exit', {exitCode});
-  present(owner.work);
+  present(owner.work); changed(owner.work);
 });

@@ -479,3 +479,130 @@ fn typescript_pane_sequence_reuses_scrollback_and_escalates_cancellation() {
     run(&mut runtime, "check(sent.some(([c])=>c.SendSigkillToPaneId));event('CommandPaneExited',1)");
     run(&mut runtime, "check(M.render().includes('sequence cancelled'));now+=4000;bridge('update',{Timer:0},2)");
 }
+#[test]
+fn deno_bridge_foreground_commands_restore_manual_views_in_dispatch_order() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    run(&mut runtime, r#"
+      globalThis.info=new Map(),globalThis.swaps=[],globalThis.notified=[];
+      const original=mock.command;
+      mock.sleep=async()=>{};
+      mock.command=(name,args)=>{
+        const id=p=>JSON.stringify(p);
+        if(name==='GetPaneInfo')return info.get(id(args))??original(name,args);
+        if(name==='MessageToPlugin'){notified.push(args.destination_plugin_id);return;}
+        if(name==='ReplacePaneWithExistingPane'){
+          const [from,to]=args;check(!info.get(id(from)).is_suppressed && info.get(id(to)).is_suppressed);
+          info.get(id(from)).is_suppressed=true;info.get(id(to)).is_suppressed=false;swaps.push([from,to]);return;
+        }
+        const value=original(name,args);
+        if(name==='OpenCommandPaneBackground')info.set(id(value),{is_suppressed:true,target:'Local'});
+        return value;
+      };
+      mock.projectConfig={read:()=>({root:'/work'})};
+      mock.swampRequest=async()=>({results:[],status:'running'});
+      globalThis.call=args=>handler(args,{source:{Plugin:1}});
+      globalThis.uid=(work,key)=>JSON.stringify(['host','session',work,key]);
+      globalThis.setup=work=>{
+        rows.set(uid(work,'launch'),{rev:1,value:JSON.stringify({checkout:'/work'})});
+        rows.set(uid(work,'runs'),{rev:1,value:JSON.stringify({entries:{}})});
+        rows.set(uid(work,'attachment'),{rev:1,value:JSON.stringify({work,run:work})});
+        info.set(JSON.stringify({Plugin:1}),{plugin_url:'zellij:swamp-workflow',is_suppressed:false});
+      };
+      globalThis.show=work=>call({method:'workflow_show',directory:'/work',run:work});
+      globalThis.commandArgs=(work,key,foreground)=>({method:'command',work,key,foreground,argv:['true']});
+      globalThis.exit=pane=>handlers.CommandPaneExited([pane,0,{swamp_owner:owners[pane]}]);
+    "#);
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load();globalThis.done=false;
+      (async()=>{
+        setup('before');await show('before');
+        const supervisor=mock.runCommand;
+        mock.runCommand=async opts=>{check(swaps.length===1);return supervisor(opts);};
+        const first=await call(commandArgs('before','z-first',true));
+        mock.runCommand=supervisor;
+        const background=await call(commandArgs('before','a-background',false));
+        const second=await call(commandArgs('before','a-second',true));
+        check(swaps.length===1);
+        exit(first.pane);check(swaps.at(-1)[1].Terminal===second.pane);
+        exit(second.pane);check(swaps.at(-1)[1].Plugin===1);
+        check(info.get(JSON.stringify({Terminal:background.pane})).is_suppressed);
+        const agent=await call({method:'agent_spawn',work:'before',key:'agent',spec:{kind:'claude'}});
+        await call({method:'agent_prompt',work:'before',key:'prompt',agent:'agent',prompt:'wait'});
+        check(swaps.length===3);check(notified.includes(1));
+        setup('after');
+        const lateFirst=await call(commandArgs('after','z-first',true));
+        await call(commandArgs('after','background',false));
+        const lateSecond=await call(commandArgs('after','a-second',true));
+        check(swaps.length===3);
+        await show('after');check(swaps.at(-1)[1].Terminal===lateFirst.pane);
+        await show('after');check(swaps.length===4);
+        exit(lateFirst.pane);check(swaps.at(-1)[1].Terminal===lateSecond.pane);
+        exit(lateSecond.pane);check(swaps.at(-1)[1].Plugin===1);
+        info.set(JSON.stringify({Plugin:1}),{plugin_url:'zellij:agent-exit',is_suppressed:false});
+        mock.projectConfig={read:()=>({root:'/work',config:{}})};
+        mock.swampRequest=async opts=>opts.operation==='workflow.validate'?{passed:true}:{runId:'hook'};
+        await call({method:'workflow_run',work:'hook',key:'launch',workflow:'test',directory:'/work',inputs:{checkout:'/work'}});
+        const hookCommand=await call(commandArgs('hook','foreground',true));
+        check(swaps.at(-1)[1].Terminal===hookCommand.pane);
+        exit(hookCommand.pane);check(swaps.at(-1)[1].Plugin===1);
+        done=true;
+      })().catch(e=>failure=String(e.stack));
+    "#);
+    run(&mut runtime, "if(failure)throw Error(failure);check(done);");
+}
+
+#[test]
+fn deno_bridge_pairs_values_with_revisions_and_retries_from_concurrent_fields() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load();mock.sleep=()=>new Promise(()=>{});globalThis.done=false;
+      (async()=>{
+        const call=args=>handler(args,{source:{Plugin:1}});
+        const uid=JSON.stringify(['host','session','work','command']);
+        const fetch=mock.data.fetch,supervisor=mock.runCommand;let inject=false;
+        mock.runCommand=async opts=>{const reply=await supervisor(opts);inject=true;return reply;};
+        mock.data.fetch=q=>{
+          const snapshot=fetch(q);
+          if(inject && q.filter===uid){
+            inject=false;const row=rows.get(uid);
+            rows.set(uid,{rev:row.rev+1,value:JSON.stringify({...JSON.parse(row.value),message:'concurrent'})});
+          }
+          return snapshot;
+        };
+        const args={method:'command',work:'work',key:'command',argv:['true']};
+        let conflicted=false;try{await call(args);}catch(e){conflicted=mock.data.isConflict(e);}
+        check(conflicted && opened===1);
+        const saved=await call(args);check(saved.message==='concurrent' && opened===1);
+        mock.data.fetch=fetch;mock.runCommand=supervisor;
+        let attaches=0;
+        mock.swampRequest=async opts=>{
+          if(opts.operation==='run.attach')attaches++;
+          return {runId:'run'};
+        };
+        await call({method:'swamp_dispatch',work:'work',key:'method',directory:'/work',operation:'model.method.run',payload:{}});
+        globalThis.attaches=()=>attaches;
+        done=true;
+      })().catch(e=>failure=String(e.stack));
+    "#);
+    run(&mut runtime, "if(failure)throw Error(failure);check(done);");
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load();done=false;
+      const apply=mock.data.apply;let inject=true;
+      mock.data.apply=changes=>{
+        if(inject){
+          inject=false;const uid=changes[0].uid,row=rows.get(uid);
+          rows.set(uid,{rev:row.rev+1,value:JSON.stringify({...JSON.parse(row.value),message:'concurrent retry'})});
+        }
+        return apply(changes);
+      };
+      handler({method:'observe',work:'work',key:'method'},{source:{Plugin:1}}).then(result=>{
+        check(result.message==='concurrent retry' && result.outcome==='pending' && attaches()===1);done=true;
+      }).catch(e=>failure=String(e.stack));
+    "#);
+    run(&mut runtime, "if(failure)throw Error(failure);check(done);");
+}
