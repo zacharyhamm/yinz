@@ -781,7 +781,8 @@ jobs:
         session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
       inputs:
-        prompt: '${{ inputs.phase == "resolve" ? "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done." : (inputs.phase == "fix" ? "Fix the failed tests below. Do not merge, remove resources, or contact remotes. Report the result and exit when done.\n" + inputs.state.test.output : "Review the checkout against the local target branch " + inputs.targetBranch + ". Do not edit, commit, merge, remove resources, or contact remotes. Return only JSON {\"findings\":[{\"severity\":\"error|warning|info\",\"file\":\"path\",\"message\":\"finding\"}]}; an empty array means a completed clean review. Then exit.") }}'
+        test: '${{ inputs.phase == "fix" ? inputs.state.test : null }}'
+        prompt: '${{ inputs.phase == "resolve" ? "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done." : (inputs.phase == "fix" ? "Fix the failed tests below. Do not merge, remove resources, or contact remotes. Report the result and exit when done.\n" : "Review the checkout against the local target branch " + inputs.targetBranch + ". Do not edit, commit, merge, remove resources, or contact remotes. Return only JSON {\"findings\":[{\"severity\":\"error|warning|info\",\"file\":\"path\",\"message\":\"finding\"}]}; an empty array means a completed clean review. Then exit.") }}'
     dependsOn:
     - step: review-start-stale
       condition:
@@ -1394,6 +1395,7 @@ jobs:
         key: ${{ run.id + "-tests" }}
         session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
+        captureOutput: true
         argv: "${{ inputs.gate }}"
         cwd: "${{ inputs.checkout }}"
     dependsOn:

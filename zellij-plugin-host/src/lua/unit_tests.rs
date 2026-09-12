@@ -9389,3 +9389,63 @@ M.refresh();answer{result=snapshot}
 assert(subtitle==nil,'late snapshots cannot restore a detached subtitle')
 "#).exec().unwrap();
 }
+
+#[test]
+fn swamp_complete_test_report_is_chunked_scrollable_and_reattachable() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.get_plugin_ids=function() return {plugin_id=1} end
+z.set_pane_subtitle=function() end
+z.show_cursor=function() end
+z.ui.text=function(value) return {dim=function(self) return self end,error=function(self) return self end,render=function() return value end} end
+z.subscribe=function() end
+z.subscribe_pane_output=function() end
+z.set_self_mouse_selection_support=function() end
+z.every=function() end
+z.request_render=function() end
+z.task=function(f) f() end
+z.await=function(value) return value end
+local summary='Test report: FAILED\nfirst failure output\n'..string.rep('diagnostic line\n',2400)..'middle failure output\n'..string.rep('diagnostic line\n',2400)..'last failure output\n'
+local calls=0
+z.rpc.call=function(request)
+  local a=request.payload
+  if a.method=='workflow_report' then
+    assert(a.model=='test-model' and a.name=='test-current' and a.version==3)
+    calls=calls+1
+    local finish=math.min(#summary,a.offset+32768)
+    return {result={text=summary:sub(a.offset+1,finish),next=finish,total=#summary}}
+  end
+  assert(a.method=='workflow_show')
+  return {result={run='run',launch='launch',root='/tmp/control',history={id='run',workflowName='tests',status='suspended'},children={},
+    questions={results={{model='question',version=1,attributes={run='run',question='failed-tests',state='pending',kind='choice',prompt='Choose next action',answers={'start-fix-agent','leave'}}}}},
+    outputs={results={{model='test-model',name='test-current',version=3,attributes={summaryLength=#summary}}}}}}
+end
+M.load()
+M.attach{directory='/tmp/control',run='run'}
+assert(calls==3,'Chunk requests: '..calls..'; refresh error: '..tostring(M.refresh_error))
+local frame=M.render(24,100)
+assert(frame:find('Test report: FAILED',1,true) and frame:find('first failure output',1,true))
+assert(not frame:find('Execution details:',1,true))
+assert(M.focused_control()=='choice_1' and M.pending[1].attributes.answers[1]=='start-fix-agent')
+local middle,last=false,false
+for _=1,260 do
+  M.update{name='key',key='PageDown'}
+  frame=M.render(24,100)
+  middle=middle or frame:find('middle failure output',1,true)
+  last=last or frame:find('last failure output',1,true)
+end
+assert(middle and last,'All failure output must remain reachable')
+M.update{name='key',key='Home'}
+assert(M.render(24,100):find('Test report: FAILED',1,true))
+M.attach{directory='/tmp/reattached',run='run'}
+assert(calls==6 and M.render(24,100):find('Test report: FAILED',1,true))
+assert(M.focused_control()=='choice_1','Report loading must preserve next-action controls')
+"#).exec().unwrap();
+}

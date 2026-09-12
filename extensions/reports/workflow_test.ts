@@ -56,6 +56,14 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
             run: "other",
             state: "answered",
         }],
+        ["@hammz/zellij", "current", "test-with-summary", 1, {
+            workflowRunId: "run",
+            specName: "test",
+        }, {
+            output: large,
+            summary: "Test report: FAILED\n" + large,
+            outputComplete: true,
+        }],
     ] as const;
     try {
         const result = await report.execute({
@@ -109,12 +117,18 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
             },
         });
         if (
-            result.json.resources.length !== 4 ||
+            result.json.resources.length !== 5 ||
             result.json.outstanding[0] !== "approval" ||
             result.markdown.includes("<script>") ||
             result.json.resources[0].model !== "earlier-name" ||
             result.json.resources[1].attributes.test.output !== large ||
             result.json.resources[2].attributes !== null ||
+            result.json.resources[4].attributes.output !== undefined ||
+            result.json.resources[4].attributes.reportIndex !== 0 ||
+            result.json.testReports[0] !== "Test report: FAILED\n" + large ||
+            !result.markdown.includes(
+                "```text\nTest report: FAILED\n" + large,
+            ) ||
             result.json.steps[0].outputs[0].attributes.state !== "pending"
         ) {
             throw new Error(
