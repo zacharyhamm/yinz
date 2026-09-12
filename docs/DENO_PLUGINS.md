@@ -1,6 +1,6 @@
 # JavaScript and TypeScript plugins
 
-Zellij embeds Deno Core to run local JavaScript and TypeScript plugins alongside Lua and Wasm plugins.
+Zellij embeds Deno Core to run local JavaScript and TypeScript plugins alongside Wasm plugins.
 No Deno or Node installation is needed to run or check a plugin.
 
 Use an explicit `.js`, `.mjs`, `.ts`, or `.mts` filename in a file URL:
@@ -13,10 +13,10 @@ layout {
 }
 ```
 
-File URLs also work in aliases, background plugins, and hooks. Source lookup follows the same rules as Lua plugins:
+File URLs also work in aliases, background plugins, and hooks. Source lookup uses these rules:
 a bare `file:hello.ts` is looked for in the user's plugin folder. Set `shared true` in the plugin configuration
 to use one instance across clients. A plugin is a local file: `https://` URLs load Wasm plugins only, and a remote
-`.ts`, `.js` or `.lua` URL is refused with a message to download the file and load it with `file:`.
+`.ts`, `.mts`, `.js` or `.mjs` URL is refused with a message to download the file and load it with `file:`.
 
 ## Lifecycle
 
@@ -108,7 +108,7 @@ field is a `Uint8Array`. Struct payloads such as `Hook` and `AgentEvent` are not
 the agent's own JSON. It needs `ReadApplicationState`. See [Agent helpers](#agent-helpers).
 
 **Order.** For one event, `update` runs first, then the pipe waiters (for a pipe), then the `on` and `onEvent`
-handlers in registration order; the Lua runtime runs its handlers before `update`. `waitForEvent` waiters settle
+handlers in registration order. `waitForEvent` waiters settle
 before any of them and do not consume the event. Either `update` or a handler returning `true` requests a render.
 The reserved pipes the SDK consumes - RPC, completions, Hocus extension messages and default-keybinding handlers -
 never reach `pipe` or `waitForPipe`.
@@ -123,7 +123,7 @@ const ids = zellij.command("GetPluginIds");
 zellij.command("Subscribe", ["Key", "Timer"]);
 ```
 
-Commands are validated at runtime and use the same permission checks as Lua and Wasm.
+Commands are validated at runtime and use the same permission checks as Wasm.
 Arbitrary replies have JSON values or binary file bytes. Use the SDK's typed helpers for its core operations.
 Do not treat a request for permission as a grant. Wait for the permission answer before calling a protected command.
 
@@ -252,7 +252,7 @@ an omitted field becomes `null`, which an optional slot reads as absent, and an 
 `zellij.host.runCommand` is the raw command; `zellij.runCommand` remains the promise-returning helper.
 `PostMessageTo` throws before dispatch: Deno plugins have no workers. Use timers, the async helpers, or a work queue.
 
-The root object also carries the Lua prelude's conveniences:
+The root object also provides these helpers:
 
 - `keyName(bareKey)`: `"t"`, `"Esc"`, `"F2"`. `mouse(event)` returns `{kind, line, col}` or `{kind, lines}` with the Rust variant name as `kind`.
 - `paneKey(paneId)`: `"terminal_3"`, the `PaneRenderReport` key. `terminalPane(id)` and `pluginPane(id)` build `PaneId` values.
@@ -723,7 +723,7 @@ Another plugin's private namespace is never listed.
 
 Hocus keeps its projects, todos, notes, scheduled prompts and coding-agent records in the shared namespace
 `shared:hocus`, declared at session start whether or not a Hocus pane is open. Any plugin holding `PluginData` and
-`SharedPluginData` can read them. `plugin_docs section=hocus_data` (the Lua guide's "Hocus data", whose tables are
+`SharedPluginData` can read them. `plugin_docs section=hocus_data` (the "Hocus data" section, whose tables are
 language-neutral) lists every entity and attribute, and `hocus-todos.ts` and `hocus-notes.ts` in `example-plugins/`
 are working read-only plugins over them:
 
@@ -743,6 +743,169 @@ row added by hand can produce a list Hocus will not accept. Mutate through Hocus
 `/note_add`) or `zellij pipe` to `hocus-store` instead. `id`, `uid`, `created_at`, `updated_at`, `rev` are on
 every row without being declared, here as anywhere else, and the storage engines' own column names (`rowid`, `oid`, `xmin`, `xmax`, `cmin`, `cmax`, `ctid`, `tableoid`) are
 reserved with them; a `define` that names any of these fails whole.
+
+## Hocus data
+
+Hocus keeps its projects, todos, notes, scheduled prompts and coding-agent records in the shared
+namespace `shared:hocus`, and `hocus-store` declares every entity at session start - so the
+tables are there whether or not a hocus pane is open. Any plugin holding `PluginData` and
+`SharedPluginData` can read them:
+
+```ts
+import zellij from "zellij:plugin";
+const projectRoot = "/work";
+const d = zellij.data;
+const todos = d.fetch({
+  namespace: "shared:hocus", entity: "todo",
+  filter: d.and(d.eq("root", projectRoot), d.eq("done", false)),
+  sort: [["id", "Asc"]],
+});
+```
+
+`example-plugins/hocus-todos.ts` is a working read-only plugin over exactly this, and
+`example-plugins/hocus-notes.ts` is the same over the notes and their side tables.
+
+**Read these; do not write them.** Nothing blocks a write, but hocus maintains invariants the
+rows do not carry - list caps, tree shape, project discovery, a note's tags and links - so a
+plugin that adds a row by hand can produce a list hocus will not accept. Mutate through hocus's
+tools (`/todo_add`, `/todo_done`, `/note_add`) or `zellij pipe` to `hocus-store` instead.
+
+`id`, `uid`, `created_at`, `updated_at` and `rev` are on every row without being declared, here
+as anywhere else.
+
+**`project`** - the project registry. `uid` is the name.
+
+| Attribute | Kind | |
+|---|---|---|
+| `name` | text | required; also the uid |
+| `root` | text | required, indexed; the folder. Not unique - resolve a cwd by *longest matching root* |
+| `firecracker_image` | text | the default Firecracker image for agents in this project |
+| `remote` | text | |
+| `worktree_status` | text | snake case, as serde spells it |
+| `common_dir` | text | the main checkout, for a worktree |
+| `discovered` | bool | required; true for one found by a running agent rather than named by hand |
+
+**`todo`** - one item. The tree is edges, not nesting.
+
+| Attribute | Kind | |
+|---|---|---|
+| `root` | text | required, indexed; the project's `root`, which is how a list is scoped |
+| `parent_id` | int | the store `id` of the item above; null at top level |
+| `text` | text | required, full-text searchable; Markdown |
+| `done` | bool | required, indexed |
+
+There is no `position` and no `depth`: siblings are only ever appended, so `id` ascending *is*
+sibling order, and depth follows from the parent chain. One project's whole list fits in a single
+fetch.
+
+**`note`** - one note: a title and a Markdown body, kept with a project the way a todo list is,
+or with none.
+
+| Attribute | Kind | |
+|---|---|---|
+| `root` | text | indexed; the project's `root`, or **null for a global note** - filter with `isNull` |
+| `title` | text | required, full-text searchable |
+| `body` | text | required, full-text searchable; Markdown, up to 16 KB |
+| `author` | text | required; `user`, `hocus` for one the model wrote, or an agent kind |
+| `archived` | bool | required, indexed; hidden from hocus's listings until un-archived |
+
+The note's timestamps are the store's own `created_at` and `updated_at`, in milliseconds. Both
+text columns are in one full-text index, so `search = "word"` finds it in either and answers one
+row per note. A listing should `select` everything *but* `body` - a thousand notes at the cap
+would exceed one fetch's byte limit, and a listing does not show one anyway.
+
+**`note_link`** - a note referencing one todo item, many to many. `uid` is `<note id>:<todo id>`.
+**`note_tag`** - one tag on one note. `uid` is `<note id>:<tag>`.
+
+| Attribute | Kind | |
+|---|---|---|
+| `note_id` | int | required, indexed; both entities |
+| `todo_id` | int | required, indexed; `note_link` only - the store `id` of a `todo` row |
+| `tag` | text | required, indexed; `note_tag` only - lowercase, `[a-z0-9_-]` |
+
+A note's tags and links are the rows naming its id; a todo item's notes are the `note_link` rows
+naming its `todo_id`; and a list's notes are the notes with its `root` plus the ones linked to
+any item in it. Fetch a side table with `in("note_id", ids)` for the notes on screen rather
+than the whole table - and not at all when there are none, since an empty `in` is refused.
+
+**`job`** - a scheduled prompt.
+
+| Attribute | Kind | |
+|---|---|---|
+| `host_id` | text | required, indexed; the machine that armed it. `uid` is `<host id>:<job id>` |
+| `zellij_session_name` | text | required, indexed; the session that armed it, as attribution — not part of the key |
+| `job_id` | int | required; a per-machine counter, so it is *not* unique across machines |
+| `chat_id` | int | the chat that armed it; null for one never saved |
+| `every` | real | seconds |
+| `next_due_at` | int | wall-clock seconds; written when armed and when it fires, never per tick |
+| `prompt` | text | required |
+| `show` | bool | required |
+| `auto_confirm` | bool | required |
+
+**`agent_latch`** - a kind set on a pane by hand with `agent_register`. **`agent_summary`** - what
+the daemon's model last said about an idle agent's pane. Both are keyed
+`<host id>:<session>:<pane id>`:
+
+| Attribute | Kind | |
+|---|---|---|
+| `pane_id` | int | required, indexed |
+| `zellij_session_name` | text | required, indexed |
+| `host_id` | text | required, indexed; the machine the pane is on |
+| `kind` | text | `agent_latch` only - `claude`, `codex`, ... |
+| `text`, `title` | text | `agent_summary` only |
+| `awaiting` | bool | `agent_summary` only |
+| `created_at_ms` | int | `agent_summary` only - epoch milliseconds it was made; absent on a summary stored before this attribute existed |
+
+The session and the host are part of the key because the store is neither per-session nor, with
+Postgres, per-machine: a bare pane id would make two sessions' pane 5 into one row, and a
+session name alone would do the same to two machines that both run a session called `main`. A
+pane id means nothing outside the server that handed it out, so filter on **both**
+`host_id` and `zellij_session_name` before believing a `pane_id`. Rows written before this
+existed have an empty `host_id`; do **not** treat those as yours - they name panes in a server
+that is gone, and hocus deletes them on its next restore.
+
+**`agent_run`** - one hook-backed agent session, live or finished. `uid` is `<kind>:<session
+id>`, or `<kind>:pane:<pane id>:<started at>:<host id>` for a hook that reports no session id of
+its own. The machine is in the second shape because a pane id and a millisecond are a name two
+servers sharing the store can reach for at once; the first needs no help, since the agent's own
+session id is a uuid.
+
+| Attribute | Kind | |
+|---|---|---|
+| `pane_id` | int | required, indexed |
+| `session_id` | text | required, indexed; the agent's own |
+| `zellij_session_name` | text | indexed |
+| `host_id` | text | required, indexed; the machine whose server owns the run. Empty on runs recorded before this attribute existed, which reads as *this* machine - unlike `agent_latch` above, a run is history and is claimed rather than dropped |
+| `kind` | text | required |
+| `active` | bool | required, indexed; false once the run ended |
+| `started_at_ms` | int | required |
+| `header` | json | the cheap summary an archive listing reads |
+| `payload` | json | required; the run's metadata |
+
+`payload` is the larger of the two columns, so `select: ["header"]` a listing and fetch
+`payload` only for the row you are showing. Decode either with `JSON.parse`.
+
+**`agent_run_entry`** - one retained event on a run's timeline: a prompt, a plan, a question, a
+result, or a summary somebody asked for. `uid` is `<run uid>#<revision>`.
+
+| Attribute | Kind | |
+|---|---|---|
+| `run_id` | text | required, indexed; the `agent_run` uid this belongs to |
+| `host_id` | text | required, indexed; where the entry was recorded. Attribution only — a run id does not collide between machines either way, carrying the agent's own session uuid or, in the fallback shape, the machine — so entries do not collide |
+| `revision` | int | required; the run's own counter, and what orders the timeline |
+| `event_id` | text | the provider's id for the event behind it, where it has one |
+| `kind` | text | required; `prompt`, `plan`, `question`, `step`, `result`, `summary` |
+| `text` | text | required; the whole of what the agent said, uncut |
+| `created_at_ms` | int | epoch milliseconds this entry was recorded; absent on an entry recorded before this attribute existed |
+
+A row per event rather than a list inside `payload`, so a long-running agent costs one small
+insert per event instead of a rewrite of its whole history - and so nothing has to be cut down
+to keep that rewrite cheap. Filter by `run_id` and sort by `revision`; a run recorded by an
+older hocus has no rows here and keeps its timeline inside `payload` instead.
+
+Pane-level agent state - busy, waiting, idle - does not need this table at all: it is on
+`PaneInfo.agent` in the pane manifest, and the `agent_start` / `agent_waiting` hook points below
+fire on the transitions.
 
 ## Work queues
 
@@ -840,10 +1003,9 @@ Client context survives `await`. Sender-supplied `source` and `reply_to` fields 
 ID-addressed calls accept replies only from that plugin ID. URL-addressed calls match the opaque call ID because the host does not return the destination ID.
 Each isolate uses a new UUID prefix, so replies from an old instance cannot settle replacement calls.
 
-RPC uses Lua's version-1 `zellij_rpc_call` and `zellij_rpc_reply` envelopes, with a 64,000-byte limit.
+RPC uses version-1 `zellij_rpc_call` and `zellij_rpc_reply` envelopes, with a 64,000-byte limit.
 Unsupported JSON values reject instead of losing fields. Malformed, stale, and duplicate replies are ignored.
 RPC messages stay internal. Ordinary pipe messages still reach `pipe` callbacks and `waitForPipe()`.
-Lua callers retain their existing `{result}` or `{error}` wrapper.
 
 ## Embedded builtins and server identity
 
@@ -855,15 +1017,14 @@ Embedded plugins can import `zellij:plugin` and the registered `zellij:workflow-
 The shared view resolves from embedded source during execution and semantic checking.
 There is no filesystem fallback. Filesystem plugins retain their directory confinement.
 
-New plugins and reference examples use explicit `.ts` filenames. Extensionless authoring
-names still select Lua. Lua plugins, `require('zellij.workflow_view')`, `CheckLuaPlugin`,
-and `config.lua` remain supported.
+New plugins and reference examples use TypeScript. Extensionless authoring names select `.ts`.
+Configuration uses `config.kdl`. See [Migrate from Lua](LUA_REMOVAL.md) for the breaking removal.
 
 The SDK exposes four readonly strings during module initialization:
 
 - `serverBinary`: the resolved server executable path.
-- `serverSession`: the session identity also supplied to Lua.
-- `serverIncarnation`: one UUID per server process, shared with Lua and retained across plugin reloads.
+- `serverSession`: the server session identity.
+- `serverIncarnation`: one UUID per server process, retained across plugin reloads.
 - `instanceId`: one UUID per isolate, replaced on reload.
 
 Metadata access does not enable host commands during module initialization.
@@ -955,7 +1116,7 @@ Async continuations retain the originating client, and reload creates new reques
 
 Put an extension directly in the user plugin directory's `hocus/` folder.
 Use a lower-snake-case file stem, such as `hocus/weather.ts`.
-Hocus accepts `.lua`, `.js`, `.mjs`, `.ts`, and `.mts`. Backups are excluded.
+Hocus accepts `.js`, `.mjs`, `.ts`, and `.mts`. Backups are excluded.
 Two files with the same stem conflict, even with different suffixes.
 Discovery and `plugin_reload` report both paths and register neither candidate.
 
@@ -1011,7 +1172,7 @@ whatever is in it.
 
 ### Shared UI and terminal text
 
-`zellij.ui` uses the same Rust rendering toolkit as Lua and Wasm plugins.
+`zellij.ui` uses the same Rust rendering toolkit as Wasm plugins.
 Use `zellij.ui.markdown(source, {dim: true})` for subdued history output.
 Construct components during module initialization if needed. Rendering returns terminal strings.
 The plugin controls subscriptions, host commands, and submission behavior.
@@ -1404,45 +1565,13 @@ log. Each isolate has the [allocation limits](#numbers-and-allocation-limits) ab
 
 ## Porting a Lua plugin
 
-The two runtimes share the host, so every command, event and permission is the same thing under another spelling;
-these are the spellings and semantics that differ.
-
-| Lua | TypeScript |
-|---|---|
-| `local M = {}` … `return M` | `export default definePlugin({...})` from `zellij:plugin` |
-| `M.load(config)` / `M.update(event)` / `M.render(rows, cols)` / `M.pipe(message)` | the same methods, each optionally `async` |
-| `zellij.subscribe { "key" }` (either casing) | `zellij.subscribe(["Key"])` - the Rust spelling, checked by the type |
-| `event.name == "run_command_result"`, `event.exit_code` | `zellij.event(event)`: `e.type === "RunCommandResult"`, `e.exitCode`; `e.value` is the raw payload |
-| `zellij.on("key", function(event) … event.key)` | `zellij.onEvent("Key", (e) => e.key)`; `zellij.on` hands `(payload, event)` raw |
-| handlers run before `update` | `update` runs first, then handlers |
-| `zellij.rename_tab(0, "x")` (any command, snake_case) | `zellij.host.renameTab(0, "x")` or `zellij.command("RenameTab", [0, "x"])` |
-| `zellij.request_permission { "plugin_data" }` | `zellij.requestPermission(["PluginData"])`, or `await zellij.waitForPermissions([...])` in `load` |
-| `zellij.task(fn)` / `zellij.await(aw)` / `zellij.async.all`, `.race` | `async` functions, `await`, `Promise.all` / `Promise.race` (which do not cancel their inputs) |
-| `zellij.async.sleep(2)`, `after(2, fn)`, `every(2, fn)` - **seconds** | `zellij.sleep(2000)`, `after(2000, cb)`, `every(2000, cb)` - **milliseconds** |
-| `zellij.async.run_command { {"ls"} }` | `zellij.runCommand({command: ["ls"]})` |
-| `zellij.async.event / pipe / permissions` | `zellij.waitForEvent / waitForPipe / waitForPermissions` (rejects on denial) |
-| `zellij.async.agent_state / agent_event / turn` | `zellij.agent.waitForState / waitForEvent / waitForTurn` |
-| `zellij.pane_workflow { timeout = 30, kill_grace = 5 }` | `zellij.paneSequence({timeoutMs: 30_000, killGraceMs: 5000})`; every option camelCased |
-| `zellij.run_command_in_pane { pane_id, command }` | `zellij.runCommandInPane(pane, command, {context, keepScrollback})` |
-| `zellij.fs.read(path)` → string | `zellij.fs.read(path)` → `Uint8Array`; `zellij.decodeUtf8(bytes)` for text |
-| `zellij.fs.remove(path, true)`, `mkdir(path, true)` | `fs.remove(path, {recursive: true})`, `fs.mkdir(path, {all: true})` |
-| `zellij.data.define { name, attrs = {...} }` | `zellij.data.define(name, {attr: kind \| {kind, ...}}, {namespace, version})` |
-| `put(entity, values, uid, rev)` | `put(entity, values, {uid, expectRev})`; `zellij.data.REV_ABSENT` is the same 0 |
-| `data.all / any / negate / is_in` | `data.and / or / not / in` |
-| `data.watch(spec)` + `on("plugin_data_changed")` + `unwatch` | `data.watch(query, onChange)` → `{initial, dispose()}` |
-| `zellij.rpc.call {}` resolves `{result}` or `{error}` | `zellij.rpc.call({...})` resolves the result or **rejects**; `timeoutMs` |
-| `zellij.hocus.complete {}` resolves `{error}` on failure; `timeout` seconds | rejects; `timeoutMs`; result is `{content, toolCalls, finishReason, usage, model}` |
-| `ui.radio_group` / `ui.select` values start at **1** | selections are **0-based**; `null` is no selection |
-| `zellij.pane_key(id)` → `"terminal:3"` | `zellij.paneKey(id)` → `"terminal_3"`, the `PaneRenderReport` key |
-| `zellij.bytes_to_string(list)` | `zellij.decodeUtf8(zellij.bytes(list))`, or `zellij.text.sanitizeBytes` for display |
-| `zellij.json.encode / decode`, `zellij.null` | `JSON.stringify / parse`, `null` |
-| `require "./mod"` | `import {x} from "./mod.ts"` - an explicit relative file in the plugin's folder |
-| `Text:serialize()` | not exposed: tables and lists take `StyledText` values directly |
-| `M.pipe` sees a default-keybinding message after its handler ran | reserved pipes never reach `pipe` |
+Lua plugins and configuration have been removed. Follow [Migrate from Lua](LUA_REMOVAL.md) for file and configuration changes.
+Rewrite plugins with `export default`, explicit imports, and the SDK documented here.
+Use `async` functions and `await` for tasks. Timer arguments use milliseconds, and UI selections start at zero.
 
 ## Authoring loop
 
-Use an explicit extension when writing JavaScript or TypeScript:
+Names without an extension select TypeScript. Use an explicit extension to select another supported source format:
 
 ```sh
 zellij plugins write hello.ts < ./hello.ts
@@ -1454,7 +1583,7 @@ zellij plugins log hello.ts
 Writes validate syntax and transpilation. They do not perform semantic checking.
 Use `--overwrite` to replace a file. The previous version is preserved as `hello.bak.ts`.
 The existing directory and symlink protections also apply to these filenames.
-An extensionless authoring name still means a Lua plugin.
+An extensionless authoring name selects `.ts`.
 
 The SDK does not include npm, JSR, general Deno I/O, or workers.
 Hocus supports the same names through `plugin_write`, `plugin_edit`, `plugin_list`, `plugin_read`,
@@ -1462,7 +1591,6 @@ Hocus supports the same names through `plugin_write`, `plugin_edit`, `plugin_lis
 `plugin_docs` serves this guide a `##` section at a time (`section=lifecycle`, `commands`, `helpers`, `async`, `files`, `data`, and the rest the index lists), the SDK declarations in parts (`section=sdk_core` onward), and the worked examples. Writes and edits check syntax before approval;
 explicit JS/TS `plugin_check` checks types and local imports. `CheckPlugin` exposes the report as
 `{diagnostics, outline, permissions, warnings}` with `Syntax` or `Semantic` mode and requires `ReadFiles`.
-`CheckLuaPlugin` remains compatible.
 
 Hocus infers grants only from literal SDK requests in the proposed entrypoint, using parsed JS/TS bindings.
 Imported default/named aliases and SDK namespace imports are recognized; comments and shadowed names grant nothing.

@@ -29,6 +29,10 @@ serde_json = { workspace = true }
 regex = { workspace = true, features = ["unicode-case"] }
 unicode-width = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+zellij-plugin-host = { path = "../../zellij-plugin-host" }
+tempfile = { workspace = true }
+
 [dev-dependencies]
 criterion = { workspace = true }
 

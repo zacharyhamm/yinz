@@ -1,5 +1,7 @@
 # Swamp workflow timings
 
+This historical record includes the former Lua runtime. Current plugins use [Deno/Wasm](DENO_PLUGINS.md); see [migration](LUA_REMOVAL.md).
+
 Set `ZELLIJ_SWAMP_TIMING=1` before starting the diagnostic Zellij server and its managed Swamp child. Diagnostics are disabled by default. Existing servers retain their startup environment.
 
 Run the disposable acceptance scenario with the built binary:

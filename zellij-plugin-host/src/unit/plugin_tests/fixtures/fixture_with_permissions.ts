@@ -1,0 +1,11 @@
+import zellij from 'zellij:plugin';
+export default {
+  load() { zellij.subscribe(['Key']); zellij.requestPermission(['ChangeApplicationState', 'OpenTerminalsOrPlugins']); },
+  update(event) {
+    const key=zellij.event(event).key;
+    if (key === 't') zellij.command('OpenTerminal', {path:'/tmp/typescript-fixture-cwd', line_number:null, cwd:null});
+    else if (key === 'Esc') zellij.host.closeSelf();
+    return !!event.Key;
+  },
+  render() { return 'typescript fixture with permissions'; }
+};

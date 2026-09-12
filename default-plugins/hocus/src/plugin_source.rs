@@ -107,13 +107,14 @@ pub fn search(files: &[(&str, &str)], search: &Search) -> Result<Option<String>,
 
 // Outline and listing ---------------------------------------------------------------------------
 
-/// A plugin name as a listing prints it: `keys.lua`, whether or not the caller wrote the suffix.
+/// A plugin name as a listing prints it: `keys.ts`, whether or not the caller wrote the suffix.
 pub fn file_name(name: &str) -> String {
     let name = name.trim();
+    // Preserve a rejected name in diagnostics; resolve_plugin_file rejects this extension.
     if name.ends_with(".lua") || plugin_authoring::is_deno_plugin(std::path::Path::new(name)) {
         name.to_owned()
     } else {
-        format!("{name}.lua")
+        format!("{name}.ts")
     }
 }
 
@@ -136,7 +137,7 @@ pub fn outline_answer(name: &str, source: &str) -> String {
     };
     if entries.is_empty() {
         return format!(
-            "{file}: {total} lines; nothing to outline - no functions, handlers, requires or \
+            "{file}: {total} lines; nothing to outline - no functions, handlers, imports or \
              permission requests"
         );
     }
@@ -157,7 +158,7 @@ pub fn outline_answer(name: &str, source: &str) -> String {
 /// One plugin as `plugin_list` describes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Listed<'a> {
-    /// The name the tools take back: `keys.lua`, `app/ui.lua`.
+    /// The name the tools take back: `keys.ts`, `app/ui.ts`.
     pub name: &'a str,
     /// Its length, or why it could not be read.
     pub lines: Result<usize, String>,
@@ -165,7 +166,7 @@ pub struct Listed<'a> {
     pub backup: bool,
 }
 
-/// `keys.lua  412 lines`, one per plugin, with the backup noted where there is one - so the
+/// `keys.ts  412 lines`, one per plugin, with the backup noted where there is one - so the
 /// model can tell a 40-line plugin from a 900-line one before deciding how to read it.
 pub fn listing(entries: &[Listed]) -> String {
     if entries.is_empty() {

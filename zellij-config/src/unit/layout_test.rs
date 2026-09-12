@@ -3010,18 +3010,18 @@ fn only_a_relative_file_url_reports_the_path_as_written() {
 
     let (location, relative) =
         zellij_runtime::plugin_location::parse_plugin_location_with_relative(
-            "file:keys.lua",
+            "file:keys.ts",
             Some(cwd.clone()),
         )
         .unwrap();
-    assert_eq!(relative, Some(std::path::PathBuf::from("keys.lua")));
+    assert_eq!(relative, Some(std::path::PathBuf::from("keys.ts")));
     assert_eq!(
         location,
-        RunPluginLocation::File(cwd.join("keys.lua")),
+        RunPluginLocation::File(cwd.join("keys.ts")),
         "the location itself is still the absolute path everything downstream expects"
     );
 
-    for absolute in ["file:/etc/keys.lua", "file:~/keys.lua"] {
+    for absolute in ["file:/etc/keys.ts", "file:~/keys.ts"] {
         let (_, relative) = zellij_runtime::plugin_location::parse_plugin_location_with_relative(
             absolute,
             Some(cwd.clone()),

@@ -20,15 +20,13 @@
 #![allow(clippy::manual_inspect)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
-//! The plugin host: loads Wasm, Lua, and Deno plugins, runs them on the plugin thread, and turns their
+//! The plugin host: loads Wasm and Deno plugins, runs them on the plugin thread, and turns their
 //! commands into instructions for the other server threads. It talks to the rest of the server
 //! over [`zellij_bus`], using [`zellij_routing`] to dispatch actions. It owns plugin job queues.
 pub mod deno;
 #[doc(hidden)]
 pub use deno::run_compilation_worker;
 mod host_bridge;
-mod lua;
-pub use lua::check_lua_plugin;
 pub mod logging_pipe;
 mod pinned_executor;
 mod pipes;
@@ -2155,3 +2153,6 @@ fn coalesce_hovers(mut updates: Vec<PluginUpdate>) -> Vec<PluginUpdate> {
 mod plugin_tests;
 
 mod ui;
+
+#[cfg(test)]
+mod test_env;

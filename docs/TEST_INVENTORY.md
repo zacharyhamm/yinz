@@ -1,19 +1,19 @@
 # Test inventory
 
-Generated 2026-09-12 from `d7f264e23` by `scripts/test-inventory.sh`.
+Generated 2026-09-12 from `6767be45a` by `scripts/test-inventory.sh`.
 One item per automated test; the heading above each block is the gate that runs it.
 
 ## Totals
 
 | gate | tests | ignored |
 |---|---:|---:|
-| `cargo x test` | 8292 | 4 |
+| `cargo x test` | 8058 | 4 |
 | `cargo x integration-test` | 414 | 0 |
 | `cargo x ci e2e --test` | 5 | 5 |
 | `cargo x remote-test --build && cargo x remote-test --test` | 41 | 41 |
 | `cargo x firecracker-test --build && cargo x firecracker-test --test` | 4 | 4 |
 | `cargo x postgres-test --build && cargo x postgres-test --test` | 108 | 0 |
-| **total** | **8864** | **54** |
+| **total** | **8630** | **54** |
 
 ## configuration (bin/configuration)
 
@@ -103,6 +103,7 @@ Run: `cargo x test`
 - [ ] `api::api_tests::elision::a_check_does_not_supersede_the_write_it_is_checking`
 - [ ] `api::api_tests::elision::a_docs_page_and_a_plugin_page_of_the_same_name_are_different_subjects`
 - [ ] `api::api_tests::elision::a_folder_wide_search_is_superseded_by_any_later_write_but_a_named_one_only_by_its_own`
+- [ ] `api::api_tests::elision::a_js_file_and_an_extensionless_typescript_name_are_different_subjects`
 - [ ] `api::api_tests::elision::a_listing_is_superseded_by_a_later_write_or_listing`
 - [ ] `api::api_tests::elision::a_page_a_write_invalidated_is_recovered_at_its_own_line`
 - [ ] `api::api_tests::elision::a_read_is_superseded_by_a_later_read_or_change_of_the_same_file`
@@ -113,8 +114,7 @@ Run: `cargo x test`
 - [ ] `api::api_tests::elision::a_search_is_superseded_by_a_later_edit_of_the_plugin_it_searched`
 - [ ] `api::api_tests::elision::a_superseded_batch_edit_sends_a_placeholder_instead_of_its_edits`
 - [ ] `api::api_tests::elision::a_superseded_write_sends_a_placeholder_instead_of_the_source`
-- [ ] `api::api_tests::elision::a_ts_file_and_the_extensionless_lua_name_are_different_subjects`
-- [ ] `api::api_tests::elision::a_typescript_write_is_superseded_without_growing_a_lua_suffix`
+- [ ] `api::api_tests::elision::a_typescript_write_is_superseded_without_growing_an_extra_suffix`
 - [ ] `api::api_tests::elision::a_write_is_only_superseded_by_a_write_of_the_same_file`
 - [ ] `api::api_tests::elision::an_edit_is_superseded_by_a_later_write_of_the_same_file`
 - [ ] `api::api_tests::elision::an_elided_body_is_still_a_well_formed_request`
@@ -127,9 +127,9 @@ Run: `cargo x test`
 - [ ] `api::api_tests::elision::the_breakdown_names_the_biggest_contributors`
 - [ ] `api::api_tests::elision::the_breakdown_reports_the_elided_sizes`
 - [ ] `api::api_tests::elision::the_last_call_of_a_batch_is_the_one_that_stands`
-- [ ] `api::api_tests::elision::the_lua_suffix_does_not_make_it_a_different_file`
 - [ ] `api::api_tests::elision::the_same_page_read_twice_is_sent_once`
 - [ ] `api::api_tests::elision::the_same_search_twice_is_sent_once_whatever_its_context`
+- [ ] `api::api_tests::elision::the_typescript_suffix_does_not_make_it_a_different_file`
 - [ ] `api::api_tests::errors::api_error_message_extracts_the_openai_error_field`
 - [ ] `api::api_tests::errors::api_error_message_falls_back_to_the_raw_body`
 - [ ] `api::api_tests::errors::api_error_message_handles_an_empty_body`
@@ -1763,6 +1763,7 @@ Run: `cargo x test`
 - [ ] `tests::stepping_off_the_focused_agent_and_back_takes_the_liveness_with_it`
 - [ ] `tests::stepping_skips_headers_in_both_directions`
 - [ ] `tests::strips_during_search_save_the_latest_rows_without_replacing_matches`
+- [ ] `tests::tab_clicks_use_the_drawn_cells_and_keep_each_surface`
 - [ ] `tests::tab_walks_the_ring_and_jk_follow_the_focus`
 - [ ] `tests::the_archive_table_lines_its_columns_up`
 - [ ] `tests::the_arrows_are_a_motion_whatever_is_held_with_them`
@@ -2253,6 +2254,8 @@ Run: `cargo x test`
 - [ ] `store::tests::the_import_marker_is_declared_in_both_namespaces`
 - [ ] `store::tests::the_searched_entities_declare_a_full_text_attribute`
 - [ ] `store::tests::two_plugins_see_the_same_rows`
+- [ ] `tabs::tests::narrow_cells_stay_within_the_width`
+- [ ] `tabs::tests::padded_cells_carry_geometry_state_and_targets`
 - [ ] `todos::tests::a_cycle_does_not_hang_and_loses_no_items`
 - [ ] `todos::tests::a_done_parent_with_a_done_sub_item_stays_done`
 - [ ] `todos::tests::a_full_list_still_fits_in_one_fetch`
@@ -3291,6 +3294,7 @@ Run: `cargo x test`
 - [ ] `config::config_test::omitting_required_style_errors`
 - [ ] `config::config_test::partial_declaration_of_styles_defaults_omitted`
 - [ ] `config::config_test::the_default_hooks_bind_the_shipped_context_menu`
+- [ ] `config::kdl_discovery_tests::discovery_ignores_lua_and_reloads_kdl_and_overlays`
 - [ ] `config::overlay_tests::a_child_with_new_arguments_replaces_its_namesake`
 - [ ] `config::overlay_tests::a_clear_defaults_block_replaces_its_namesake_whole`
 - [ ] `config::overlay_tests::a_fragment_merges_by_block_and_then_by_child_name`
@@ -3496,19 +3500,16 @@ Run: `cargo x test`
 - [ ] `layout::layout_test::tab_cwd_given_to_panes_without_cwd`
 - [ ] `layout::layout_test::tab_cwd_prepended_to_panes_with_cwd`
 - [ ] `layout::layout_test::tiled_pane_still_rejects_zero_percent`
-- [ ] `lua_config::tests::automatic_discovery_prefers_lua_but_an_explicit_kdl_path_wins`
-- [ ] `lua_config::tests::lua_config_can_require_a_sibling_and_clear_inherited_keybindings`
-- [ ] `lua_config::tests::lua_config_uses_the_existing_config_and_keybinding_parser`
 - [ ] `plugins::tests::a_builtin_beats_a_same_named_file_in_the_user_plugin_dir`
 - [ ] `plugins::tests::a_builtin_deno_plugin_serves_its_compiled_in_source`
 - [ ] `plugins::tests::a_file_plugin_skips_the_builtin_folders`
-- [ ] `plugins::tests::a_lua_plugin_is_found_in_the_user_plugin_dir_by_name`
-- [ ] `plugins::tests::a_lua_plugin_resolves_with_no_user_plugin_dir_at_all`
-- [ ] `plugins::tests::a_missing_lua_plugin_names_every_path_tried`
+- [ ] `plugins::tests::a_missing_script_plugin_names_every_path_tried`
 - [ ] `plugins::tests::a_path_that_exists_beats_the_user_plugin_dir`
 - [ ] `plugins::tests::a_relative_url_launched_from_elsewhere_is_found_in_the_user_plugin_dir`
+- [ ] `plugins::tests::a_script_plugin_is_found_in_the_user_plugin_dir_by_name`
+- [ ] `plugins::tests::a_script_plugin_resolves_with_no_user_plugin_dir_at_all`
 - [ ] `plugins::tests::an_absolute_url_that_is_missing_does_not_fall_back_to_the_user_plugin_dir`
-- [ ] `plugins::tests::an_extensionless_path_is_not_lua_however_it_resolves`
+- [ ] `plugins::tests::an_extensionless_path_is_not_a_script_however_it_resolves`
 - [ ] `plugins::tests::an_installed_builtin_is_found_under_the_data_dir`
 - [ ] `plugins::tests::an_installed_builtin_of_another_version_is_ignored`
 - [ ] `plugins::tests::an_ordinary_builtin_is_still_wasm`
@@ -4523,27 +4524,8 @@ Run: `cargo x test`
 - [ ] `action::tests::props::every_action_survives_the_plugin_api_round_trip`
 - [ ] `action::tests::set_pane_frame_style_action_protobuf_round_trip`
 - [ ] `authoring::tests::a_backup_is_a_plugin_name_that_a_listing_leaves_out`
-- [ ] `authoring::tests::a_call_at_the_start_of_a_line_is_on_that_line`
 - [ ] `authoring::tests::a_name_is_a_file_or_one_folder_deep_and_nothing_else`
-- [ ] `authoring::tests::a_namespace_outside_a_data_call_is_not_the_stores`
-- [ ] `authoring::tests::a_permission_zellij_does_not_know_grants_nothing_and_says_so`
-- [ ] `authoring::tests::a_request_permission_that_is_not_code_grants_nothing`
-- [ ] `authoring::tests::a_shared_namespace_asks_for_the_permission_that_makes_it_work`
-- [ ] `authoring::tests::a_source_full_of_wide_characters_is_read_without_panicking`
-- [ ] `authoring::tests::an_apostrophe_inside_the_braces_does_not_shift_the_strings_after_it`
-- [ ] `authoring::tests::an_extension_needs_the_permission_its_registration_is_sent_with`
-- [ ] `authoring::tests::an_ordinary_plugin_is_quiet`
-- [ ] `authoring::tests::an_outline_ignores_what_is_only_written_about`
-- [ ] `authoring::tests::an_outline_of_the_todo_extension_names_its_lifecycle`
-- [ ] `authoring::tests::an_outline_reads_a_registration_in_either_spelling`
-- [ ] `authoring::tests::data_calls_during_initial_load_explain_permission_cache_semantics`
-- [ ] `authoring::tests::data_calls_in_ordinary_event_handlers_do_not_get_the_load_warning`
 - [ ] `authoring::tests::deno_names_and_backups_preserve_extensions_and_name_guards`
-- [ ] `authoring::tests::every_named_spelling_is_a_definition_and_an_anonymous_function_is_not`
-- [ ] `authoring::tests::only_a_declared_attribute_is_a_reserved_one`
-- [ ] `authoring::tests::only_a_namespace_makes_the_shared_permission_a_finding`
-- [ ] `authoring::tests::the_shared_store_traps_are_all_named_before_a_reload`
-- [ ] `authoring::tests::the_worked_examples_are_quiet`
 - [ ] `command::tests::a_local_command_carries_no_remote_host`
 - [ ] `command::tests::a_remote_default_shell_survives_the_round_trip_with_no_command`
 - [ ] `command::tests::remote_host_survives_the_round_trip_through_the_protobuf_command`
@@ -4652,10 +4634,11 @@ Run: `cargo x test`
 - [ ] `deno::analysis::tests::runtime_check_reports_syntax_semantics_and_confined_dependency_failures`
 - [ ] `deno::analysis::tests::the_shipped_typescript_examples_are_quiet_and_the_builtins_analyse`
 - [ ] `deno::analysis::tests::using_the_data_store_without_plugin_data_is_a_finding_in_every_spelling`
+- [ ] `deno::builtin_tests::deno_preserves_server_identity_but_reload_replaces_instance_identity`
 - [ ] `deno::builtin_tests::embedded_builtin_loads_without_a_working_directory`
 - [ ] `deno::builtin_tests::embedded_loading_imports_diagnostics_and_compiler_recovery`
-- [ ] `deno::builtin_tests::lua_and_deno_share_server_identity_but_reload_replaces_instance_identity`
-- [ ] `deno::builtin_tests::shipped_bridge_reads_lua_delivery_rows_after_reload_without_dispatching_again`
+- [ ] `deno::builtin_tests::every_embedded_typescript_builtin_loads_and_renders`
+- [ ] `deno::builtin_tests::shipped_bridge_reads_legacy_delivery_rows_after_reload_without_dispatching_again`
 - [ ] `deno::builtin_tests::shipped_context_menu_passes_the_typescript_checker`
 - [ ] `deno::builtin_tests::the_shipped_agent_policy_hook_notifies_when_an_agent_waits`
 - [ ] `deno::builtin_tests::the_shipped_context_menu_hook_filters_the_items_it_is_given`
@@ -4725,10 +4708,12 @@ Run: `cargo x test`
 - [ ] `deno::sdk_tests::completion_concurrency_provenance_round_trips_deadlines_and_cleanup`
 - [ ] `deno::sdk_tests::completion_request_limit_counts_the_encoded_envelope_and_isolate_ids_change`
 - [ ] `deno::sdk_tests::completion_validates_before_dispatch_and_handles_discovery_and_dispatch_errors`
-- [ ] `deno::sdk_tests::default_keybindings_emit_lua_identical_kdl_and_dispatch_reserved_pipes`
+- [ ] `deno::sdk_tests::default_keybindings_emit_stable_kdl_and_dispatch_reserved_pipes`
 - [ ] `deno::sdk_tests::defaults_options_and_utf8_validate_without_mutating_inputs`
 - [ ] `deno::sdk_tests::deno_agent_exit_preserves_output_before_successful_and_rejected_launch_replies`
+- [ ] `deno::sdk_tests::deno_agent_harness_spawns_with_defaults_and_a_configured_branch`
 - [ ] `deno::sdk_tests::deno_bridge_background_commands_correlate_parent_work`
+- [ ] `deno::sdk_tests::deno_bridge_commands_use_sdk_validation_with_optional_cwd`
 - [ ] `deno::sdk_tests::deno_bridge_foreground_commands_restore_manual_views_in_dispatch_order`
 - [ ] `deno::sdk_tests::deno_bridge_guards_claims_callers_turns_and_reload_recovery`
 - [ ] `deno::sdk_tests::deno_bridge_pairs_values_with_revisions_and_retries_from_concurrent_fields`
@@ -4806,226 +4791,6 @@ Run: `cargo x test`
 - [ ] `logging_pipe::logging_pipe_test::write_with_many_endls_consumes_everything_after_flush`
 - [ ] `logging_pipe::logging_pipe_test::write_with_single_endl_at_the_end_consumes_whole_buffer_after_flush`
 - [ ] `logging_pipe::logging_pipe_test::write_without_endl_does_not_consume_buffer_after_flush`
-- [ ] `lua::response::tests::data_reply_preserves_large_signed_integers_and_tagged_values`
-- [ ] `lua::response::tests::file_bytes_and_json_nulls_keep_their_lua_representation`
-- [ ] `lua::response::tests::pane_reply_keeps_numeric_client_keys`
-- [ ] `lua::response::tests::session_reply_preserves_all_numeric_maps_and_string_configuration_keys`
-- [ ] `lua::response::tests::tab_reply_preserves_numeric_values_array_indices_and_missing_fields`
-- [ ] `lua::ui::tests::lua_controls_activate_explicitly_and_submit_only_through_buttons`
-- [ ] `lua::ui::tests::lua_dialog_output_matches_rust_at_every_viewport_size`
-- [ ] `lua::ui::tests::lua_forms_share_rust_editing_focus_dropdown_mouse_and_rendering`
-- [ ] `lua::ui::tests::lua_markdown_reuses_parse_and_matches_shared_wrapping_after_resize`
-- [ ] `lua::ui::tests::lua_widgets_validate_descriptors_values_and_keep_state_per_interpreter`
-- [ ] `lua::unit_tests::a_byte_payload_is_written_as_a_string`
-- [ ] `lua::unit_tests::a_cancelled_plugin_stops_inside_a_coroutine`
-- [ ] `lua::unit_tests::a_cancelled_plugin_stops_inside_a_pcall_loop`
-- [ ] `lua::unit_tests::a_cancelled_plugin_stops_mid_loop`
-- [ ] `lua::unit_tests::a_cancelled_task_propagates_the_hosts_cancel`
-- [ ] `lua::unit_tests::a_circular_require_is_an_error_rather_than_a_stack_overflow`
-- [ ] `lua::unit_tests::a_cli_pipes_pane_reaches_lua_on_the_message`
-- [ ] `lua::unit_tests::a_command_cannot_be_called_re_entrantly`
-- [ ] `lua::unit_tests::a_command_needing_no_permission_is_not_refused`
-- [ ] `lua::unit_tests::a_command_result_has_named_fields_and_string_output`
-- [ ] `lua::unit_tests::a_command_that_answers_hands_back_a_table`
-- [ ] `lua::unit_tests::a_command_the_plugin_may_not_run_is_an_error_rather_than_silence`
-- [ ] `lua::unit_tests::a_completion_request_never_reaches_a_plugins_own_pipe`
-- [ ] `lua::unit_tests::a_default_keybinding_callback_is_dispatched_from_its_reserved_pipe`
-- [ ] `lua::unit_tests::a_denial_before_any_answer_says_to_wait_for_the_answer`
-- [ ] `lua::unit_tests::a_denial_with_no_request_behind_it_says_to_ask`
-- [ ] `lua::unit_tests::a_failing_agent_listener_does_not_strand_later_listeners`
-- [ ] `lua::unit_tests::a_failing_step_ends_the_workflow_by_default`
-- [ ] `lua::unit_tests::a_file_written_under_host_can_be_read_back`
-- [ ] `lua::unit_tests::a_git_checkout_command_needs_all_three_arguments`
-- [ ] `lua::unit_tests::a_git_checkout_command_takes_named_arguments`
-- [ ] `lua::unit_tests::a_hook_event_has_its_point_and_payload`
-- [ ] `lua::unit_tests::a_hook_handler_registered_with_on_runs`
-- [ ] `lua::unit_tests::a_list_payload_arrives_whole_rather_than_unwrapped`
-- [ ] `lua::unit_tests::a_lua_plugin_can_guard_a_write_on_a_revision`
-- [ ] `lua::unit_tests::a_lua_plugin_tells_a_write_conflict_from_a_failure_that_will_not_pass`
-- [ ] `lua::unit_tests::a_module_may_return_the_value_the_cycle_check_marks_with`
-- [ ] `lua::unit_tests::a_mouse_event_says_what_kind_and_where`
-- [ ] `lua::unit_tests::a_named_call_may_leave_an_optional_tuple_element_out`
-- [ ] `lua::unit_tests::a_nested_enum_is_read_as_the_variant_it_names`
-- [ ] `lua::unit_tests::a_nested_payload_is_built_from_a_plain_table`
-- [ ] `lua::unit_tests::a_pane_id_is_built_by_the_prelude`
-- [ ] `lua::unit_tests::a_pane_id_reply_is_the_same_table_the_prelude_builds`
-- [ ] `lua::unit_tests::a_pane_in_a_new_tab_arrives_as_named_fields`
-- [ ] `lua::unit_tests::a_pane_scrollback_reply_is_the_pane_contents`
-- [ ] `lua::unit_tests::a_pane_that_could_not_be_opened_is_nil`
-- [ ] `lua::unit_tests::a_pane_workflow_runs_each_step_in_the_same_pane`
-- [ ] `lua::unit_tests::a_parsed_layout_reaches_lua_as_metadata_and_a_bad_one_raises`
-- [ ] `lua::unit_tests::a_path_cannot_climb_out_of_its_root`
-- [ ] `lua::unit_tests::a_plugin_can_require_a_file_beside_it_once`
-- [ ] `lua::unit_tests::a_plugin_can_set_a_panes_agent_record`
-- [ ] `lua::unit_tests::a_plugin_that_asked_for_nothing_cannot_touch_the_filesystem`
-- [ ] `lua::unit_tests::a_plugin_that_does_not_return_a_table_fails_to_load`
-- [ ] `lua::unit_tests::a_plugin_with_no_render_renders_nothing`
-- [ ] `lua::unit_tests::a_positional_call_still_has_to_give_every_tuple_element`
-- [ ] `lua::unit_tests::a_prompt_sends_and_resolves_when_the_agents_turn_ends`
-- [ ] `lua::unit_tests::a_queued_steps_timeout_starts_only_when_that_step_does`
-- [ ] `lua::unit_tests::a_raising_after_callback_does_not_strand_a_sleeper_due_on_the_same_tick`
-- [ ] `lua::unit_tests::a_raising_after_callback_still_settles_the_other_due_deadlines`
-- [ ] `lua::unit_tests::a_raising_every_callback_re_arms_and_keeps_ticking`
-- [ ] `lua::unit_tests::a_raising_task_does_not_strand_the_others_in_its_batch`
-- [ ] `lua::unit_tests::a_raising_task_drains_newly_ready_tasks_before_reporting_the_error`
-- [ ] `lua::unit_tests::a_read_larger_than_the_cap_is_refused`
-- [ ] `lua::unit_tests::a_read_of_a_missing_file_raises_rather_than_returning_nil`
-- [ ] `lua::unit_tests::a_relative_path_is_read_against_host`
-- [ ] `lua::unit_tests::a_remote_command_pane_keeps_its_guest_cwd`
-- [ ] `lua::unit_tests::a_remote_replacement_does_not_inherit_the_plugins_cwd`
-- [ ] `lua::unit_tests::a_render_report_can_be_looked_up_by_pane`
-- [ ] `lua::unit_tests::a_runtime_error_in_an_entrypoint_is_reported_not_swallowed`
-- [ ] `lua::unit_tests::a_scalar_answer_arrives_as_a_scalar`
-- [ ] `lua::unit_tests::a_scalar_payload_arrives_as_value`
-- [ ] `lua::unit_tests::a_stale_exit_from_an_earlier_step_is_ignored`
-- [ ] `lua::unit_tests::a_step_pushed_while_running_extends_the_workflow`
-- [ ] `lua::unit_tests::a_step_timeout_escalates_from_sigint_to_sigkill`
-- [ ] `lua::unit_tests::a_steps_stdin_is_written_when_the_step_starts`
-- [ ] `lua::unit_tests::a_struct_command_takes_named_arguments`
-- [ ] `lua::unit_tests::a_struct_payloads_fields_are_readable_directly_on_the_event`
-- [ ] `lua::unit_tests::a_success_or_error_reply_is_true_or_raises`
-- [ ] `lua::unit_tests::a_symlink_out_of_a_root_is_followed_and_then_refused`
-- [ ] `lua::unit_tests::a_task_asks_for_a_render_by_returning_truthy_or_calling_request_render`
-- [ ] `lua::unit_tests::a_task_can_cancel_another_task_already_queued_in_its_batch`
-- [ ] `lua::unit_tests::a_task_runs_to_its_first_await_and_resumes_on_the_reply_bearing_its_token`
-- [ ] `lua::unit_tests::a_task_that_awaits_the_same_pipe_again_waits_for_the_next_message`
-- [ ] `lua::unit_tests::a_text_component_serializes_the_way_zellij_tile_does`
-- [ ] `lua::unit_tests::a_tuple_command_takes_positional_or_named_arguments`
-- [ ] `lua::unit_tests::a_turn_ends_on_a_stop_and_not_on_a_session_start`
-- [ ] `lua::unit_tests::a_turn_with_an_idle_fallback_resolves_on_the_records_edge_into_idle`
-- [ ] `lua::unit_tests::a_typo_is_reported_in_the_spelling_the_plugin_used`
-- [ ] `lua::unit_tests::a_unit_command_is_reachable_by_name`
-- [ ] `lua::unit_tests::a_web_result_body_is_a_string_and_a_stream_chunk_too`
-- [ ] `lua::unit_tests::a_workflow_inherits_cwd_only_on_the_same_host`
-- [ ] `lua::unit_tests::a_workflow_subscribes_before_opening_its_first_pane`
-- [ ] `lua::unit_tests::a_write_conflict_is_marked_and_an_ordinary_failure_is_not`
-- [ ] `lua::unit_tests::agent_records_are_current_on_the_first_ask_and_forget_a_closed_pane`
-- [ ] `lua::unit_tests::agent_send_writes_a_bracketed_paste_then_enter`
-- [ ] `lua::unit_tests::agent_state_resolves_on_the_state_asked_for_and_after_the_edge_when_told_to`
-- [ ] `lua::unit_tests::all_resolves_when_every_child_has_and_race_with_the_first`
-- [ ] `lua::unit_tests::all_with_an_already_settled_child_waits_for_the_pending_ones`
-- [ ] `lua::unit_tests::an_absent_exit_code_does_not_shift_the_fields_after_it`
-- [ ] `lua::unit_tests::an_absolute_path_outside_every_root_needs_full_hd_access`
-- [ ] `lua::unit_tests::an_agent_event_arrives_flat_and_typed`
-- [ ] `lua::unit_tests::an_error_in_a_resumed_task_fails_the_update_that_resumed_it`
-- [ ] `lua::unit_tests::an_event_a_task_awaited_still_reaches_handlers_and_update`
-- [ ] `lua::unit_tests::an_rpc_call_is_answered_by_the_handler_and_the_reply_resumes_the_caller`
-- [ ] `lua::unit_tests::an_unavailable_session_list_raises_the_hosts_reason`
-- [ ] `lua::unit_tests::an_unknown_command_is_an_error_naming_it`
-- [ ] `lua::unit_tests::async_command_stream_registers_before_dispatch_and_cleans_up_at_completion`
-- [ ] `lua::unit_tests::async_constructors_subscribe_to_the_events_they_need`
-- [ ] `lua::unit_tests::await_outside_a_task_is_an_error`
-- [ ] `lua::unit_tests::bad_arguments_are_an_error_naming_the_command_rather_than_a_panic`
-- [ ] `lua::unit_tests::bytes_to_string_copes_with_more_than_a_stack_of_bytes`
-- [ ] `lua::unit_tests::cancelling_interrupts_the_running_step_and_reports_cancelled`
-- [ ] `lua::unit_tests::check_lua_plugin_answers_nil_or_the_compile_error`
-- [ ] `lua::unit_tests::close_on_success_closes_the_pane_after_a_clean_run`
-- [ ] `lua::unit_tests::close_on_success_surfaces_a_missing_change_state_permission`
-- [ ] `lua::unit_tests::commands_cannot_be_called_outside_an_entrypoint`
-- [ ] `lua::unit_tests::concurrent_permission_awaitables_are_dispatched_and_resolved_in_order`
-- [ ] `lua::unit_tests::coroutines_are_available`
-- [ ] `lua::unit_tests::data_watches_keep_recipient_generations_and_disposal_unregisters_only_its_runtime`
-- [ ] `lua::unit_tests::denied_cancellation_does_not_advance_or_finish_the_workflow`
-- [ ] `lua::unit_tests::each_root_is_a_different_folder`
-- [ ] `lua::unit_tests::every_command_zellij_knows_is_a_name_serde_accepts`
-- [ ] `lua::unit_tests::every_reply_the_shim_reads_is_decoded`
-- [ ] `lua::unit_tests::every_ticks_until_cancelled_and_after_fires_once`
-- [ ] `lua::unit_tests::failing_batches_keep_the_first_error_and_drain_later_tasks`
-- [ ] `lua::unit_tests::file_system_events_carry_named_pairs`
-- [ ] `lua::unit_tests::focused_pane_reply_uses_tab_id`
-- [ ] `lua::unit_tests::folders_and_files_can_be_made_renamed_and_removed`
-- [ ] `lua::unit_tests::handlers_registered_with_on_run_alongside_update`
-- [ ] `lua::unit_tests::hocus_complete_addresses_daemon_and_checks_reply_source`
-- [ ] `lua::unit_tests::hocus_complete_checks_encoded_bytes_before_sending_or_scheduling`
-- [ ] `lua::unit_tests::hocus_complete_discovery_failures_send_no_transcript`
-- [ ] `lua::unit_tests::hocus_complete_encodes_lists_without_changing_callers_tables`
-- [ ] `lua::unit_tests::hocus_complete_gives_up_when_nothing_answers`
-- [ ] `lua::unit_tests::hocus_tools_registers_once_launched_and_answers_calls_over_rpc`
-- [ ] `lua::unit_tests::host_names_are_absent_from_the_manufactured_command_table`
-- [ ] `lua::unit_tests::json_round_trips_and_decodes_null_to_nil`
-- [ ] `lua::unit_tests::key_events_carry_a_readable_key_name`
-- [ ] `lua::unit_tests::listing_answers_in_the_root_the_caller_used`
-- [ ] `lua::unit_tests::live_output_events_reach_lua_as_binary_strings`
-- [ ] `lua::unit_tests::load_merges_user_configuration_over_the_plugins_defaults`
-- [ ] `lua::unit_tests::malformed_json_raises_rather_than_returning_nil`
-- [ ] `lua::unit_tests::metadata_is_nil_for_something_that_is_not_there`
-- [ ] `lua::unit_tests::pane_exit_resolves_on_close_as_well_as_on_exit`
-- [ ] `lua::unit_tests::pcall_still_reports_ordinary_errors_as_values`
-- [ ] `lua::unit_tests::permissions_awaitable_resolves_with_the_answer`
-- [ ] `lua::unit_tests::post_message_to_is_refused_by_name`
-- [ ] `lua::unit_tests::print_is_zellij_log_and_neither_minds_what_it_is_given`
-- [ ] `lua::unit_tests::race_detaches_its_listeners_without_unregistering_the_losers`
-- [ ] `lua::unit_tests::reading_a_plugins_log_is_an_author_plugins_command`
-- [ ] `lua::unit_tests::reading_and_writing_each_need_their_own_permission`
-- [ ] `lua::unit_tests::redirected_project_configuration_requires_authorization_for_both_checkouts`
-- [ ] `lua::unit_tests::reloading_a_plugin_by_url_asks_the_plugin_thread`
-- [ ] `lua::unit_tests::renaming_out_of_the_plugins_folders_is_refused`
-- [ ] `lua::unit_tests::renders_the_string_its_render_returns`
-- [ ] `lua::unit_tests::requesting_permissions_is_recorded_against_the_plugin`
-- [ ] `lua::unit_tests::require_is_confined_to_the_plugins_folder`
-- [ ] `lua::unit_tests::require_only_serves_the_zellij_module`
-- [ ] `lua::unit_tests::require_without_a_folder_serves_only_zellij`
-- [ ] `lua::unit_tests::run_command_in_pane_takes_a_numeric_pane_id`
-- [ ] `lua::unit_tests::run_command_takes_named_arguments`
-- [ ] `lua::unit_tests::several_sleeps_arm_one_host_timer_and_wake_in_deadline_order`
-- [ ] `lua::unit_tests::spawn_agent_is_built_from_a_nested_spec_table`
-- [ ] `lua::unit_tests::spawn_reply_preserves_actual_checkout_and_lua_spawn_compatibility`
-- [ ] `lua::unit_tests::stop_on_failure_false_runs_on_through_a_failure`
-- [ ] `lua::unit_tests::subscribing_reaches_the_plugin_environment`
-- [ ] `lua::unit_tests::swamp_answer_bridge_heartbeats_target_the_requester_and_stop_on_ready_or_failure`
-- [ ] `lua::unit_tests::swamp_answer_deadline_renews_only_for_current_submission_and_reconciles_on_loss`
-- [ ] `lua::unit_tests::swamp_bridge_claims_ownership_before_dispatch_and_never_infers_completion_from_idle`
-- [ ] `lua::unit_tests::swamp_bridge_timing_is_opt_in_and_excludes_payloads`
-- [ ] `lua::unit_tests::swamp_exit_enter_activates_the_focused_workflow_button`
-- [ ] `lua::unit_tests::swamp_exit_launch_deadline_renews_until_ready_and_reconciles_without_redispatch`
-- [ ] `lua::unit_tests::swamp_exit_preserves_scrollback_and_does_not_launch_unconfigured_or_managed_work`
-- [ ] `lua::unit_tests::swamp_output_preview_names_the_saved_version_and_keeps_return_actionable`
-- [ ] `lua::unit_tests::swamp_requests_are_builtin_only_even_with_all_permissions`
-- [ ] `lua::unit_tests::swamp_workflow_all_wrapped_details_remain_reachable_in_small_panes`
-- [ ] `lua::unit_tests::swamp_workflow_answer_requires_the_submit_button`
-- [ ] `lua::unit_tests::swamp_workflow_dims_markdown_history_and_prioritizes_the_question`
-- [ ] `lua::unit_tests::swamp_workflow_off_form_release_keeps_offscreen_choices_clickable`
-- [ ] `lua::unit_tests::swamp_workflow_question_transitions_survive_polling_and_submission_races`
-- [ ] `lua::unit_tests::swamp_workflow_renders_only_for_input_and_refresh_completion`
-- [ ] `lua::unit_tests::swamp_workflow_restricted_answers_and_free_text_transitions`
-- [ ] `lua::unit_tests::table_and_list_components_serialize_the_way_zellij_tile_does`
-- [ ] `lua::unit_tests::text_helpers_pad_and_cut_by_columns`
-- [ ] `lua::unit_tests::text_width_measures_columns`
-- [ ] `lua::unit_tests::the_agent_commit_example_loads_and_stages_on_c`
-- [ ] `lua::unit_tests::the_agent_harness_example_loads_and_waits_for_its_permissions`
-- [ ] `lua::unit_tests::the_catalog_answers_with_the_entities_the_plugin_may_see`
-- [ ] `lua::unit_tests::the_catalog_shows_shared_namespaces_only_with_the_permission_and_never_a_private_one`
-- [ ] `lua::unit_tests::the_clock_is_readable_without_asking_permission`
-- [ ] `lua::unit_tests::the_compile_check_compiles_only`
-- [ ] `lua::unit_tests::the_dangerous_stdlib_is_absent_rather_than_merely_erroring`
-- [ ] `lua::unit_tests::the_dashboard_example_loads_renders_components_and_takes_input`
-- [ ] `lua::unit_tests::the_data_helpers_spell_the_stores_shapes`
-- [ ] `lua::unit_tests::the_data_sugar_builds_requests_the_host_accepts`
-- [ ] `lua::unit_tests::the_filesystem_is_not_reachable_from_lua`
-- [ ] `lua::unit_tests::the_forms_example_routes_events_and_cursor_commands_and_reloads_cleanly`
-- [ ] `lua::unit_tests::the_hocus_complete_example_runs_a_whole_tool_loop`
-- [ ] `lua::unit_tests::the_hocus_notes_example_reads_a_projects_notes_out_of_the_shared_namespace`
-- [ ] `lua::unit_tests::the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace`
-- [ ] `lua::unit_tests::the_os_library_keeps_the_clock_and_nothing_else`
-- [ ] `lua::unit_tests::the_playground_plugin_loads_and_runs_every_key_it_advertises`
-- [ ] `lua::unit_tests::the_plugin_folder_is_a_root_that_needs_author_plugins_to_write`
-- [ ] `lua::unit_tests::the_session_list_arrives_as_the_snapshot_the_shim_builds`
-- [ ] `lua::unit_tests::the_shipped_example_plugin_loads_and_renders`
-- [ ] `lua::unit_tests::the_tmp_root_is_zellijs_own_temp_folder`
-- [ ] `lua::unit_tests::the_todo_examples_load_and_the_pane_renders_its_keys`
-- [ ] `lua::unit_tests::the_user_plugin_dir_reaches_lua_as_a_string`
-- [ ] `lua::unit_tests::the_workflow_example_loads_and_runs_on_r`
-- [ ] `lua::unit_tests::the_workflows_pane_closing_ends_it`
-- [ ] `lua::unit_tests::tracing_logs_commands_events_and_tasks`
-- [ ] `lua::unit_tests::translates_newlines_for_the_terminal`
-- [ ] `lua::unit_tests::truncating_into_less_room_than_the_ellipsis_still_returns_characters`
-- [ ] `lua::unit_tests::two_outstanding_commands_resolve_in_whichever_order_they_answer`
-- [ ] `lua::unit_tests::update_receives_a_normalized_event_and_reports_whether_to_render`
-- [ ] `lua::unit_tests::web_request_takes_named_arguments_with_absent_stream_and_proxy`
-- [ ] `lua::unit_tests::workflow_scroll_indicators_track_wrapped_rows_and_stay_above_pinned_controls`
-- [ ] `lua::unit_tests::workflow_stream_tail_preserves_utf8_and_status_while_scrolled`
-- [ ] `lua::unit_tests::writes_append_and_create_folders_when_asked`
-- [ ] `lua::unit_tests::zellij_agent_spawn_flattens_the_authors_table`
 - [ ] `pinned_executor::tests::a_job_submitted_after_the_unload_finished_is_dropped`
 - [ ] `pinned_executor::tests::a_reclaimed_thread_slot_is_reused_on_the_next_growth`
 - [ ] `pinned_executor::tests::cleanups_stay_ordered_when_a_thread_mate_has_input_waiting`
@@ -5065,10 +4830,9 @@ Run: `cargo x test`
 - [ ] `pinned_executor::tests::test_vacant_thread_slot_is_reused_before_sharing`
 - [ ] `pinned_executor::tests::test_without_input_jobs_the_queue_stays_fifo`
 - [ ] `plugin_authoring::tests::a_write_compiles_first_and_never_clobbers_or_follows_a_link`
-- [ ] `plugin_authoring::tests::check_plugin_report_carries_deno_warnings_and_lua_lint`
-- [ ] `plugin_authoring::tests::deno_builtin_logs_match_legacy_names_and_explicit_typescript`
-- [ ] `plugin_authoring::tests::deno_logs_do_not_include_same_stem_lua_builtins`
+- [ ] `plugin_authoring::tests::check_plugin_report_carries_deno_warnings`
 - [ ] `plugin_authoring::tests::deno_writes_check_syntax_and_preserve_previous_versions`
+- [ ] `plugin_authoring::tests::lua_names_are_rejected_even_without_a_syntax_check`
 - [ ] `plugin_authoring::tests::the_log_tail_is_the_plugins_lines_only`
 - [ ] `plugin_limits::tests::a_modules_own_maximum_still_binds_under_the_ceiling`
 - [ ] `plugin_limits::tests::a_plugin_may_grow_up_to_the_ceiling`
@@ -5159,10 +4923,12 @@ Run: `cargo x test`
 - [ ] `plugin_tests::deno_plugins::deno_renaming_out_of_the_plugins_folder_is_refused`
 - [ ] `plugin_tests::deno_plugins::deno_resize_discards_an_in_flight_async_render_with_the_old_dimensions`
 - [ ] `plugin_tests::deno_plugins::deno_reused_client_id_reconnects_without_waiting_for_disposal`
-- [ ] `plugin_tests::deno_plugins::deno_rpc_calls_deno_and_lua_peers_by_url_and_id`
+- [ ] `plugin_tests::deno_plugins::deno_rpc_calls_peers_by_url_and_id`
 - [ ] `plugin_tests::deno_plugins::deno_rpc_rejects_calls_without_message_permission`
 - [ ] `plugin_tests::deno_plugins::deno_rpc_reload_ignores_old_replies_before_settling_the_new_call`
 - [ ] `plugin_tests::deno_plugins::deno_scan_host_folder_answers_the_requesting_generation`
+- [ ] `plugin_tests::deno_plugins::deno_shared_infinite_load_can_unload_after_its_last_client_disconnects`
+- [ ] `plugin_tests::deno_plugins::deno_shared_infinite_load_can_unload_after_its_owner_disconnects`
 - [ ] `plugin_tests::deno_plugins::deno_shared_instance_survives_its_owners_disconnect`
 - [ ] `plugin_tests::deno_plugins::deno_shared_permission_wait_survives_an_attach_and_replays_the_queued_event`
 - [ ] `plugin_tests::deno_plugins::deno_shared_promises_keep_their_origin_after_another_clients_event_and_timer`
@@ -5177,7 +4943,6 @@ Run: `cargo x test`
 - [ ] `plugin_tests::deno_plugins::deno_unload_disposes_pending_load_and_render_awaits`
 - [ ] `plugin_tests::deno_plugins::deno_unload_interrupts_an_infinite_load_without_host_calls`
 - [ ] `plugin_tests::deno_plugins::deno_unload_interrupts_an_infinite_update_without_host_calls`
-- [ ] `plugin_tests::deno_plugins::lua_detach_retains_state_and_output_subscriptions`
 - [ ] `plugin_tests::deno_plugins::wasm_detach_retains_state_and_output_subscriptions`
 - [ ] `plugin_tests::focused_pane_commands::clear_screen_plugin_command`
 - [ ] `plugin_tests::focused_pane_commands::close_focus_plugin_command`
@@ -5242,27 +5007,6 @@ Run: `cargo x test`
 - [ ] `plugin_tests::loading::plugin_workers`
 - [ ] `plugin_tests::loading::plugin_workers_persist_state`
 - [ ] `plugin_tests::loading::shared_plugin_has_one_instance_serving_all_clients`
-- [ ] `plugin_tests::lua_plugins::a_client_attaching_while_a_hook_waits_on_its_permission_does_not_lose_the_firing`
-- [ ] `plugin_tests::lua_plugins::a_firing_during_the_headless_hooks_load_reaches_the_loading_instance`
-- [ ] `plugin_tests::lua_plugins::a_headless_hook_is_loaded_on_first_fire_and_receives_the_event`
-- [ ] `plugin_tests::lua_plugins::a_lua_plugin_is_found_in_the_user_plugin_dir_by_name`
-- [ ] `plugin_tests::lua_plugins::a_lua_plugin_spawns_an_agent_pane_with_the_planned_argv_and_an_agent_marker`
-- [ ] `plugin_tests::lua_plugins::a_newly_reachable_command_works_end_to_end`
-- [ ] `plugin_tests::lua_plugins::a_reload_by_absolute_path_reloads_a_plugin_started_by_name`
-- [ ] `plugin_tests::lua_plugins::a_replace_pane_hook_without_a_pane_opens_nothing`
-- [ ] `plugin_tests::lua_plugins::a_second_firing_reuses_the_headless_hook_instance`
-- [ ] `plugin_tests::lua_plugins::a_spawned_agent_is_handed_its_hooks_inline_unless_told_not_to`
-- [ ] `plugin_tests::lua_plugins::lua_plugin_host_command_reaches_the_pty_thread`
-- [ ] `plugin_tests::lua_plugins::lua_plugin_is_not_sent_events_it_did_not_subscribe_to`
-- [ ] `plugin_tests::lua_plugins::lua_plugin_loads_and_renders`
-- [ ] `plugin_tests::lua_plugins::lua_plugin_receives_its_configuration`
-- [ ] `plugin_tests::lua_plugins::plugin_configuration_reaches_load_without_being_re_normalized`
-- [ ] `plugin_tests::lua_plugins::session_start_fires_for_the_initiating_client`
-- [ ] `plugin_tests::lua_plugins::the_agent_exit_hook_closes_the_pane_on_delete`
-- [ ] `plugin_tests::lua_plugins::the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited`
-- [ ] `plugin_tests::lua_plugins::the_agent_exit_hook_opens_again_after_the_first_one_is_closed`
-- [ ] `plugin_tests::lua_plugins::the_agent_exit_hook_renders_the_screen_it_replaced`
-- [ ] `plugin_tests::lua_plugins::the_agent_exit_hook_restarts_the_pane_on_enter`
 - [ ] `plugin_tests::mode_and_tab_commands::go_to_next_tab_plugin_command`
 - [ ] `plugin_tests::mode_and_tab_commands::go_to_previous_tab_plugin_command`
 - [ ] `plugin_tests::mode_and_tab_commands::new_tab_plugin_command`
@@ -5329,7 +5073,6 @@ Run: `cargo x test`
 - [ ] `plugin_tests::queues::deno_jobs_survive_enqueuer_reload_but_addressed_events_keep_the_original_generation`
 - [ ] `plugin_tests::queues::enqueue_is_denied_without_permission`
 - [ ] `plugin_tests::queues::first_cli_pipe_and_reload_reach_deno_without_an_attached_ui`
-- [ ] `plugin_tests::queues::first_cli_pipe_reaches_a_plugin_loaded_without_an_attached_ui`
 - [ ] `plugin_tests::queues::queue_changed_is_broadcast_to_other_subscribers`
 - [ ] `plugin_tests::queues::queue_status_answers_with_pending_and_running_jobs`
 - [ ] `plugin_tests::queues::raising_concurrency_releases_pending_jobs`
@@ -5347,11 +5090,30 @@ Run: `cargo x test`
 - [ ] `plugin_tests::run_and_pipe_commands::switch_session_with_layout_plugin_command`
 - [ ] `plugin_tests::run_and_pipe_commands::unblock_input_plugin_command`
 - [ ] `plugin_tests::run_and_pipe_commands::web_request_plugin_command`
-- [ ] `plugin_tests::runaway::a_lua_plugin_stuck_in_load_is_stopped_by_its_unload`
-- [ ] `plugin_tests::runaway::a_runaway_lua_plugin_is_stopped_by_its_unload`
 - [ ] `plugin_tests::runaway::a_runaway_wasm_plugin_is_stopped_by_its_unload`
-- [ ] `plugin_tests::runaway::session_shutdown_stops_a_runaway_lua_plugin_inside_its_budget`
+- [ ] `plugin_tests::runaway::session_shutdown_stops_a_runaway_deno_plugin_inside_its_budget`
 - [ ] `plugin_tests::runaway::session_shutdown_stops_a_runaway_wasm_plugin_inside_its_budget`
+- [ ] `plugin_tests::script_plugins::a_client_attaching_while_a_hook_waits_on_its_permission_does_not_lose_the_firing`
+- [ ] `plugin_tests::script_plugins::a_firing_during_the_headless_hooks_load_reaches_the_loading_instance`
+- [ ] `plugin_tests::script_plugins::a_headless_hook_is_loaded_on_first_fire_and_receives_the_event`
+- [ ] `plugin_tests::script_plugins::a_newly_reachable_command_works_end_to_end`
+- [ ] `plugin_tests::script_plugins::a_reload_by_absolute_path_reloads_a_plugin_started_by_name`
+- [ ] `plugin_tests::script_plugins::a_replace_pane_hook_without_a_pane_opens_nothing`
+- [ ] `plugin_tests::script_plugins::a_script_plugin_is_found_in_the_user_plugin_dir_by_name`
+- [ ] `plugin_tests::script_plugins::a_script_plugin_spawns_an_agent_pane_with_the_planned_argv_and_an_agent_marker`
+- [ ] `plugin_tests::script_plugins::a_second_firing_reuses_the_headless_hook_instance`
+- [ ] `plugin_tests::script_plugins::a_spawned_agent_is_handed_its_hooks_inline_unless_told_not_to`
+- [ ] `plugin_tests::script_plugins::plugin_configuration_reaches_load_without_being_re_normalized`
+- [ ] `plugin_tests::script_plugins::script_plugin_host_command_reaches_the_pty_thread`
+- [ ] `plugin_tests::script_plugins::script_plugin_is_not_sent_events_it_did_not_subscribe_to`
+- [ ] `plugin_tests::script_plugins::script_plugin_loads_and_renders`
+- [ ] `plugin_tests::script_plugins::script_plugin_receives_its_configuration`
+- [ ] `plugin_tests::script_plugins::session_start_fires_for_the_initiating_client`
+- [ ] `plugin_tests::script_plugins::the_agent_exit_hook_closes_the_pane_on_delete`
+- [ ] `plugin_tests::script_plugins::the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited`
+- [ ] `plugin_tests::script_plugins::the_agent_exit_hook_opens_again_after_the_first_one_is_closed`
+- [ ] `plugin_tests::script_plugins::the_agent_exit_hook_renders_the_screen_it_replaced`
+- [ ] `plugin_tests::script_plugins::the_agent_exit_hook_restarts_the_pane_on_enter`
 - [ ] `plugin_tests::self_and_pane_commands::close_plugin_pane_plugin_command`
 - [ ] `plugin_tests::self_and_pane_commands::close_terminal_pane_plugin_command`
 - [ ] `plugin_tests::self_and_pane_commands::focus_plugin_pane_plugin_command`
@@ -5396,6 +5158,9 @@ Run: `cargo x test`
 - [ ] `wasm_bridge::wasm_bridge_tests::a_job_that_trapped_while_still_loading_is_cancelled`
 - [ ] `wasm_bridge::wasm_bridge_tests::a_job_whose_load_failed_leaves_no_cancellation_mark`
 - [ ] `wasm_bridge::wasm_bridge_tests::a_stale_deno_failure_neither_paints_an_error_nor_finishes_a_job`
+- [ ] `wasm_bridge::wasm_bridge_tests::deno_cli_pipe_error_releases_its_registration_owner_after_a_queued_rekey`
+- [ ] `wasm_bridge::wasm_bridge_tests::deno_cli_pipe_render_releases_its_registration_owner_after_a_queued_rekey`
+- [ ] `wasm_bridge::wasm_bridge_tests::deno_cli_pipe_without_render_releases_its_registration_owner_after_a_queued_rekey`
 - [ ] `wasm_bridge::wasm_bridge_tests::deno_startup_instance_is_cancelled_and_recreated_on_reattach`
 - [ ] `wasm_bridge::wasm_bridge_tests::deno_tagged_output_batch_renders_once_per_client_and_replays_cached_identities`
 - [ ] `wasm_bridge::wasm_bridge_tests::shutting_down_after_screen_exit_cancels_a_plugin_that_is_still_loading`
@@ -5975,6 +5740,7 @@ Run: `cargo x test`
 - [ ] `keys::compatibility_tests::terminal_keys_preserve_bytes_and_binding_precedence`
 - [ ] `keys::tests::modified_backtab_keeps_implicit_shift`
 - [ ] `plugin_location::remote_script_tests::remote_script_urls_are_refused_before_download`
+- [ ] `plugin_location::retired_script_tests::lua_urls_fail_before_aliases_or_downloads`
 - [ ] `session_checkpoint::tests::a_sync_failure_after_publication_keeps_both_complete_snapshots`
 - [ ] `session_checkpoint::tests::external_file_paths_cannot_escape_the_checkpoint`
 - [ ] `session_checkpoint::tests::failed_staging_and_publication_preserve_the_complete_previous_snapshot`
@@ -8464,19 +8230,19 @@ Run: `cargo x test`
 - [ ] `zellij-runtime/src/common_path.rs - common_path::common_path (line 61)`
 - [ ] `zellij-runtime/src/common_path.rs - common_path::common_path_all (line 33)`
 - [ ] `zellij-runtime/src/errors.rs - errors::LoggableError::print_error (line 52)`
-- [ ] `zellij-tile/src/lib.rs - register_plugin (line 95)`
-- [ ] `zellij-tile/src/lib.rs - register_worker (line 199)`
-- [ ] `zellij-tile/src/shim.rs - shim::FetchRequestExt (line 2517)`
-- [ ] `zellij-tile/src/shim.rs - shim::current_session_last_saved_time (line 503)`
-- [ ] `zellij-tile/src/shim.rs - shim::data_apply (line 2358)`
-- [ ] `zellij-tile/src/shim.rs - shim::data_define_entity (line 2315)`
-- [ ] `zellij-tile/src/shim.rs - shim::delete_layout (line 3335)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_cwd (line 3213)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_info (line 383)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_running_command (line 3154)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_tab_info (line 427)`
-- [ ] `zellij-tile/src/shim.rs - shim::rename_layout (line 3395)`
-- [ ] `zellij-tile/src/shim.rs - shim::save_session (line 468)`
+- [ ] `zellij-tile/src/lib.rs - register_plugin (line 110)`
+- [ ] `zellij-tile/src/lib.rs - register_worker (line 214)`
+- [ ] `zellij-tile/src/shim.rs - shim::FetchRequestExt (line 2516)`
+- [ ] `zellij-tile/src/shim.rs - shim::current_session_last_saved_time (line 502)`
+- [ ] `zellij-tile/src/shim.rs - shim::data_apply (line 2357)`
+- [ ] `zellij-tile/src/shim.rs - shim::data_define_entity (line 2314)`
+- [ ] `zellij-tile/src/shim.rs - shim::delete_layout (line 3314)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_cwd (line 3192)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_info (line 382)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_running_command (line 3133)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_tab_info (line 426)`
+- [ ] `zellij-tile/src/shim.rs - shim::rename_layout (line 3374)`
+- [ ] `zellij-tile/src/shim.rs - shim::save_session (line 467)`
 - [ ] `zellij-tile/src/ui_components/forms/mod.rs - ui_components::forms (line 19)`
 - [ ] `zellij-types/src/internal_ids.rs - internal_ids::ClientId (line 72)`
 - [ ] `zellij-types/src/internal_ids.rs - internal_ids::ClientId (line 77)`
@@ -8593,9 +8359,9 @@ Run: `cargo x integration-test`
 
 Run: `cargo x integration-test`
 
-- [ ] `deno_forms_and_markdown_render_beside_lua_and_wasm`
+- [ ] `deno_and_wasm_share_a_session_through_permissions_events_reload_and_close`
+- [ ] `deno_forms_and_markdown_render_beside_wasm`
 - [ ] `deno_host_queries_configuration_layouts_recordings_and_cross_session_warp`
-- [ ] `deno_lua_and_wasm_share_a_session_through_permissions_events_reload_and_close`
 - [ ] `deno_native_compilation_failure_keeps_the_session_alive`
 - [ ] `deno_observes_real_buffered_http_and_ordered_stream_bytes`
 - [ ] `deno_pane_exit_observes_a_held_cli_pane`
@@ -8684,7 +8450,7 @@ Run: `cargo x integration-test`
 
 - [ ] `a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end`
 - [ ] `hocus_registers_calls_and_reloads_a_typescript_extension`
-- [ ] `hocus_writes_a_lua_plugin_and_loads_it`
+- [ ] `hocus_writes_a_typescript_plugin_and_loads_it`
 - [ ] `wasm_hocus_checks_writes_edits_and_loads_typescript_with_literal_grants`
 
 ## zellij-integration-tests (test/hocus_store)
@@ -8784,12 +8550,6 @@ Run: `cargo x integration-test`
 - [ ] `locked_escape_second_ctrl_g_relocks_before_following_input`
 - [ ] `locked_escape_sends_ctrl_g_and_preserves_free_typing`
 - [ ] `locked_escape_timeout_unlocks_without_sending_bytes`
-
-## zellij-integration-tests (test/lua_agent_harness)
-
-Run: `cargo x integration-test`
-
-- [ ] `a_lua_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit`
 
 ## zellij-integration-tests (test/misc)
 
@@ -9030,7 +8790,7 @@ Run: `cargo x integration-test`
 
 Run: `cargo x integration-test`
 
-- [ ] `a_relatively_named_lua_plugin_is_launched_from_the_user_plugin_dir`
+- [ ] `a_relatively_named_script_plugin_is_launched_from_the_user_plugin_dir`
 - [ ] `load_plugins_in_background_on_startup`
 
 ## zellij-integration-tests (test/resize)
@@ -9055,6 +8815,12 @@ Run: `cargo x integration-test`
 
 - [ ] `quit_and_resurrect_session`
 - [ ] `quit_and_resurrect_session_with_viewport_serialization`
+
+## zellij-integration-tests (test/script_agent_harness)
+
+Run: `cargo x integration-test`
+
+- [ ] `a_typescript_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit`
 
 ## zellij-integration-tests (test/scroll)
 
@@ -9408,7 +9174,7 @@ Hand-maintained; these are the tests that are not Rust test functions.
   `zellij-server/tests/firecracker_vm.rs`, so `cargo x firecracker-test`
   covers it there; the standalone run is separate.
 
-`zellij-integration-tests/tests/swamp_exit_fixture.ts` and the Lua agent
+`zellij-integration-tests/tests/swamp_exit_fixture.ts` and the TypeScript agent
 harness are *not* listed here: they are driven by Rust integration tests,
 which appear under `cargo x integration-test` above.
 
@@ -9416,5 +9182,5 @@ which appear under `cargo x integration-test` above.
 
 None: every `#[test]` function in the sources appears in the listing above.
 
-Scanned 8546 source test functions; 0 unmatched.
+Scanned 8312 source test functions; 0 unmatched.
 

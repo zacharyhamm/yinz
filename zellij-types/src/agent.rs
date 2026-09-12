@@ -119,10 +119,10 @@ impl AgentSource {
 }
 
 /// Everything it takes to start a coding agent, in terms every caller has: hocus's
-/// `agent_spawn` tool, the `hocus-new-agent` modal, and a Lua plugin's `zellij.agent.spawn`.
+/// `agent_spawn` tool, the `hocus-new-agent` modal, and a TypeScript plugin's `zellij.agent.spawn`.
 ///
 /// Every field is optional because every caller has partial inputs - a form with blank
-/// fields, a tool call with omitted keys, a Lua table naming two of them - and the defaults
+/// fields, a tool call with omitted keys, a TypeScript object naming two of them - and the defaults
 /// belong in `agent::launch::plan`, where all of them get the same ones.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

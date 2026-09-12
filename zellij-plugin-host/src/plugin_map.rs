@@ -1,6 +1,5 @@
 #![allow(clippy::type_complexity)]
 use crate::deno::DenoPlugin;
-use crate::lua::LuaPlugin;
 use crate::plugin_limits::PluginResourceLimits;
 use crate::plugin_worker::MessageToWorker;
 use crate::zellij_exports::{wasi_read_string, wasi_write_object};
@@ -266,7 +265,7 @@ impl PluginMap {
                 let running_plugin_location = &plugin_config.location;
                 let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
                 let location_matches = running_plugin_location == plugin_location
-                    // A plugin declared `file:keys.lua` keeps `<cwd>/keys.lua` as its identity -
+                    // A plugin declared `file:keys.ts` keeps `<cwd>/keys.ts` as its identity -
                     // that is what a dumped layout has to say - but its source was read from the
                     // user's plugin folder. A reload naming that file in full is the same plugin,
                     // and must reload it rather than be told it does not exist and started again
@@ -442,7 +441,7 @@ pub type Subscriptions = HashSet<EventType>;
 /// Where a host command's reply goes.
 ///
 /// A wasm plugin reads replies off its WASI stdin pipe: the host writes the response there
-/// during the host call, and the guest reads it the moment the call returns. A Lua plugin has no
+/// during the host call, and the guest reads it the moment the call returns. A TypeScript plugin has no
 /// such pipe - it gets the value back as the return of the function it called - so its dispatcher
 /// swaps in `Capture` for the duration of one command and takes the bytes afterwards.
 ///
@@ -451,7 +450,7 @@ pub type Subscriptions = HashSet<EventType>;
 pub enum ResponseSink {
     /// Write into the plugin's WASI stdin pipe (wasm).
     WasiStdin,
-    /// Collect the reply for the caller to take (Lua).
+    /// Collect the reply for the caller to take (TypeScript).
     Capture(Option<String>),
 }
 
@@ -475,16 +474,15 @@ pub type DenoWatchGenerations = Arc<Mutex<HashMap<zellij_types::internal_ids::Da
 pub struct PluginEnv {
     pub plugin_id: PluginId,
     /// Set by the host to stop this instance: an unload, or session shutdown. Wasm checks it at
-    /// every crossing of the host boundary (`Store::call_hook`), Lua every few thousand VM
-    /// instructions, and either traps the running entrypoint with `CANCELLED_BY_HOST`. Shared by
+    /// every crossing of the host boundary (`Store::call_hook`); Deno uses V8 termination. Shared by
     /// every instance of the plugin (one per client); see `WasmBridge::cancel_tokens` for why
     /// the host keeps its own handle rather than reaching in here.
     pub cancel: Arc<AtomicBool>,
-    /// Set by whichever hook actually stopped this instance with `CANCELLED_BY_HOST`. Unlike
+    /// Set when the runtime interrupts guest execution. Unlike
     /// `cancel`, which is shared and is set for idle instances too, this says the guest was
     /// interrupted mid-call — after which a wasm instance is not safe to call again (a trap does
     /// not unwind guest frames, so `zellij-tile`'s state cell stays borrowed and the next export
-    /// panics), and a Lua one would only run away again. Per instance, unlike `cancel`.
+    /// panics), and a Deno isolate is disposed. Per instance, unlike `cancel`.
     pub cancel_tripped: Arc<AtomicBool>,
     /// Identifies the Deno instance that emitted a failure, including host ReportPanic.
     pub deno_generation: Option<u64>,
@@ -499,7 +497,7 @@ pub struct PluginEnv {
     pub permissions_requested: Arc<AtomicBool>,
     pub senders: ThreadSenders,
     /// The WASI context backing a wasm plugin's filesystem and stdio. `None` for runtimes that
-    /// have no WASI layer at all, such as Lua.
+    /// have no WASI layer at all, such as Deno.
     pub wasi_ctx: Option<WasiCtx>,
     pub tab_index: Option<TabId>,
     /// The client this instance is currently acting on behalf of. For a shared plugin (one
@@ -526,11 +524,11 @@ pub struct PluginEnv {
     pub path_to_default_shell: PathBuf,
     pub default_shell: Option<TerminalAction>,
     pub layout_dir: Option<PathBuf>,
-    /// Where the user's own plugins live. Read by `GetUserPluginDir`, and by the Lua
+    /// Where the user's own plugins live. Read by `GetUserPluginDir`, and by the Deno
     /// loader as the folder to search when a plugin is named rather than pathed.
     pub user_plugin_dir: Option<PathBuf>,
     /// The file a script plugin's source was actually read from, which is not always
-    /// `plugin.location`: a plugin declared `file:keys.lua` keeps `<cwd>/keys.lua` as its
+    /// `plugin.location`: a plugin declared `file:keys.ts` keeps `<cwd>/keys.ts` as its
     /// identity but is found in `user_plugin_dir`. A reload names the file in full, so this
     /// is what `all_plugin_ids_for_plugin_location` matches it against. `None` for wasm
     /// plugins, which are not reloadable by authoring and have their own lookup.
@@ -640,7 +638,6 @@ pub enum PluginBackend {
         store: Store<PluginEnv>,
         instance: Instance,
     },
-    Lua(LuaPlugin),
     Deno(DenoPlugin),
 }
 
@@ -704,19 +701,6 @@ impl RunningPlugin {
             denied_events_logged: HashSet::new(),
         }
     }
-    /// The plugin's environment - the per-instance state every host command acts on. Reached
-    /// through here rather than through the wasm `Store` so that call sites don't need to know
-    /// which runtime is backing this plugin.
-    pub fn new_lua(lua_plugin: LuaPlugin, rows: usize, columns: usize) -> Self {
-        RunningPlugin {
-            backend: PluginBackend::Lua(lua_plugin),
-            rows,
-            columns,
-            next_event_ids: HashMap::new(),
-            last_applied_event_ids: HashMap::new(),
-            denied_events_logged: HashSet::new(),
-        }
-    }
     /// Record that an event of this type was denied to this plugin, returning whether it is the
     /// first of its type - which is the only one worth logging.
     pub fn note_denied_event(&mut self, event_type: EventType) -> bool {
@@ -726,14 +710,12 @@ impl RunningPlugin {
     pub fn env(&self) -> &PluginEnv {
         match &self.backend {
             PluginBackend::Wasm { store, .. } => store.data(),
-            PluginBackend::Lua(lua) => lua.env(),
             PluginBackend::Deno(deno) => deno.env(),
         }
     }
     pub fn env_mut(&mut self) -> &mut PluginEnv {
         match &mut self.backend {
             PluginBackend::Wasm { store, .. } => store.data_mut(),
-            PluginBackend::Lua(lua) => lua.env_mut(),
             PluginBackend::Deno(deno) => deno.env_mut(),
         }
     }
@@ -751,9 +733,6 @@ impl RunningPlugin {
                 start.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
                 Ok(())
             },
-            // A Lua plugin's source has already run by the time it gets here; running it is how
-            // we obtained the table holding its entrypoints.
-            PluginBackend::Lua(_) => Ok(()),
             PluginBackend::Deno(_) => Ok(()),
         }
     }
@@ -777,7 +756,6 @@ impl RunningPlugin {
                 load.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
                 Ok(())
             },
-            PluginBackend::Lua(lua) => lua.load(configuration.inner()),
             PluginBackend::Deno(deno) => deno.load(configuration.inner()),
         }
     }
@@ -812,7 +790,6 @@ impl RunningPlugin {
                 let should_render = update.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
                 Ok(should_render == 1)
             },
-            PluginBackend::Lua(lua) => lua.update(event),
             PluginBackend::Deno(deno) => deno.update(event),
         }
     }
@@ -833,7 +810,6 @@ impl RunningPlugin {
                 let should_render = pipe.call(&mut *store, ()).map_err(|e| anyhow!(e))?;
                 Ok(Some(should_render == 1))
             },
-            PluginBackend::Lua(lua) => lua.pipe(message).map(Some),
             PluginBackend::Deno(deno) => deno.pipe(message).map(Some),
         }
     }
@@ -851,7 +827,6 @@ impl RunningPlugin {
                     .map_err(|e| anyhow!(e))?;
                 Ok(wasi_read_string(store.data())?.into_bytes())
             },
-            PluginBackend::Lua(lua) => lua.render(rows, columns),
             PluginBackend::Deno(deno) => deno.render(rows, columns),
         }
     }
@@ -904,7 +879,7 @@ mod tests {
     fn reload_metadata_lookup_needs_no_guest_and_deduplicates_clients() {
         use super::{ClientId, PluginConfig, PluginId, PluginMap, RunPluginLocation};
         let mut map = PluginMap::default();
-        for (id, extension) in [(7, "ts"), (8, "lua"), (9, "wasm")] {
+        for (id, extension) in [(7, "ts"), (8, "js"), (9, "wasm")] {
             let run = zellij_runtime::plugin_location::run_plugin_from_url(&format!(
                 "file:/cwd/plugin.{extension}"
             ))

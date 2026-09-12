@@ -1,19 +1,13 @@
 use super::*;
 
 fn discovered() -> BTreeMap<String, String> {
-    BTreeMap::from([(
-        "weather".to_owned(),
-        "/plugins/hocus/weather.lua".to_owned(),
-    )])
+    BTreeMap::from([("weather".to_owned(), "/plugins/hocus/weather.ts".to_owned())])
 }
 
 fn instances() -> BTreeMap<zellij_tile::prelude::PluginId, (String, String)> {
     BTreeMap::from([(
         zellij_tile::prelude::PluginId::new(7),
-        (
-            "weather".to_owned(),
-            "/plugins/hocus/weather.lua".to_owned(),
-        ),
+        ("weather".to_owned(), "/plugins/hocus/weather.ts".to_owned()),
     )])
 }
 
@@ -34,7 +28,7 @@ fn registration(safety: &str, consequence: Option<&str>) -> String {
     json!({
         "version": VERSION,
         "namespace": "weather",
-        "path": "/plugins/hocus/weather.lua",
+        "path": "/plugins/hocus/weather.ts",
         "tools": [tool],
     })
     .to_string()
@@ -44,8 +38,8 @@ fn registration(safety: &str, consequence: Option<&str>) -> String {
 fn discovery_keeps_only_direct_lower_snake_case_extension_files() {
     let files = extension_files(
         "/plugins",
-        "/plugins/clock.lua\n/plugins/hocus/weather.lua\n/plugins/hocus/bad-name.lua\n\
-         /plugins/hocus/nested/mod.lua\n",
+        "/plugins/clock.ts\n/plugins/hocus/weather.ts\n/plugins/hocus/bad-name.ts\n\
+         /plugins/hocus/nested/mod.ts\n",
     );
     assert_eq!(files, (discovered(), vec![]));
 }
@@ -158,7 +152,7 @@ fn reregistering_replaces_an_owners_complete_tool_set() {
     let empty = json!({
         "version": VERSION,
         "namespace": "weather",
-        "path": "/plugins/hocus/weather.lua",
+        "path": "/plugins/hocus/weather.ts",
         "tools": [],
     })
     .to_string();
@@ -173,22 +167,22 @@ fn reregistering_replaces_an_owners_complete_tool_set() {
         .unwrap();
     assert!(registry.names().is_empty());
     assert_eq!(
-        registry.owner_for_path("/plugins/hocus/weather.lua"),
+        registry.owner_for_path("/plugins/hocus/weather.ts"),
         Some(zellij_tile::prelude::PluginId::new(7))
     );
 }
 
 #[test]
 fn script_suffixes_share_a_namespace_and_conflicts_register_neither() {
-    for suffix in ["lua", "js", "mjs", "ts", "mts"] {
+    for suffix in ["js", "mjs", "ts", "mts"] {
         let path = format!("/plugins/hocus/weather.{suffix}");
         assert_eq!(namespace_for_path("/plugins", &path), Some("weather"));
         assert_eq!(extension_files("/plugins", &path).0["weather"], path);
     }
-    let (files, errors) = extension_files("/plugins", "/plugins/hocus/weather.lua\n/plugins/hocus/weather.ts\n/plugins/hocus/weather.mts\n/plugins/hocus/weather.bak.ts");
+    let (files, errors) = extension_files("/plugins", "/plugins/hocus/weather.js\n/plugins/hocus/weather.ts\n/plugins/hocus/weather.mts\n/plugins/hocus/weather.bak.ts");
     assert!(files.is_empty());
     assert_eq!(errors.len(), 1);
-    for suffix in ["lua", "ts", "mts"] {
+    for suffix in ["js", "ts", "mts"] {
         assert!(errors[0].contains(&format!("weather.{suffix}")));
     }
 }

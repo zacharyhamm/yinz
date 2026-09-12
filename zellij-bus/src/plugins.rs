@@ -315,7 +315,7 @@ pub enum PluginInstruction {
 
 impl PluginInstruction {
     /// Async completions belong to the Deno instance that started the operation.
-    /// Wasm and Lua retain their existing event delivery protocol.
+    /// Wasm retain their existing event delivery protocol.
     pub fn for_plugin_event(
         plugin_id: PluginId,
         client_id: ClientId,

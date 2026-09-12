@@ -42,7 +42,6 @@ use {
     zellij_plugin_api::plugin_command::ProtobufBreakPanesToNewTabResponse,
     zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIdResponse,
     zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIndexResponse,
-    zellij_plugin_api::plugin_command::ProtobufCheckLuaPluginResponse,
     zellij_plugin_api::plugin_command::ProtobufCurrentSessionLastSavedTimeResponse,
     zellij_plugin_api::plugin_command::ProtobufDataApplyResponse,
     zellij_plugin_api::plugin_command::ProtobufDataCatalogResponse,
@@ -2642,7 +2641,7 @@ pub fn get_local_utc_offset(epoch_ms: SignedUnixMillis) -> Result<i32, String> {
     Ok(response.offset_seconds)
 }
 
-/// Check proposed Lua/JS/TS source without executing it. Semantic checks read local imports.
+/// Check proposed JS/TS source without executing it. Semantic checks read local imports.
 pub fn check_plugin(
     name: &str,
     source: &str,
@@ -2663,26 +2662,6 @@ pub fn check_plugin(
         },
         Some(check_plugin_response::Result::Error(error)) => Err(error),
         None => Err("zellij answered with nothing".into()),
-    }
-}
-
-/// Compiles `source` as a Lua plugin without loading it. `Err` carries the compile error, which
-/// names `name` the way a load error would (`keys.lua:3: ...`). A plugin that compiles can still
-/// fail at load, so this is the check to run *before* a write, not a promise about the reload.
-pub fn check_lua_plugin(name: &str, source: &str) -> Result<(), String> {
-    let plugin_command = PluginCommand::CheckLuaPlugin {
-        name: name.to_string(),
-        source: source.to_string(),
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response_bytes = bytes_from_stdin().map_err(|e| e.to_string())?;
-    let response = ProtobufCheckLuaPluginResponse::decode(response_bytes.as_slice())
-        .map_err(|e| e.to_string())?;
-    match response.error {
-        Some(error) => Err(error),
-        None => Ok(()),
     }
 }
 

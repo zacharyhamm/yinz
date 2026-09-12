@@ -96,7 +96,7 @@ const COMPLETE_ID: &str = "complete_id";
 ///
 /// Twenty-four ticks is two minutes — longer than [`SUMMARY_TICKS`] because a caller
 /// driving its own tool loop may be asking a reasoning model something slow, and shorter
-/// than any caller's patience. Anyone who wants less has their own timeout: the Lua helper
+/// than any caller's patience. Anyone who wants less has their own timeout: the TypeScript helper
 /// arms one, and a `zellij pipe` can be interrupted.
 const COMPLETE_TICKS: u32 = 24;
 /// How many completions one caller may have in flight.

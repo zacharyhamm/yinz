@@ -10,21 +10,16 @@ use crate::tools::ToolCall;
 /// A registry holding one `weather_forecast` tool, the same fixture shape
 /// `extensions_tests` builds, so the two files describe the same extension.
 fn extension_registry(safety: &str) -> Registry {
-    let discovered = BTreeMap::from([(
-        "weather".to_owned(),
-        "/plugins/hocus/weather.lua".to_owned(),
-    )]);
+    let discovered =
+        BTreeMap::from([("weather".to_owned(), "/plugins/hocus/weather.ts".to_owned())]);
     let instances = BTreeMap::from([(
         zellij_tile::prelude::PluginId::new(7),
-        (
-            "weather".to_owned(),
-            "/plugins/hocus/weather.lua".to_owned(),
-        ),
+        ("weather".to_owned(), "/plugins/hocus/weather.ts".to_owned()),
     )]);
     let registration = json!({
         "version": crate::extensions::VERSION,
         "namespace": "weather",
-        "path": "/plugins/hocus/weather.lua",
+        "path": "/plugins/hocus/weather.ts",
         "tools": [{
             "name": "forecast",
             "description": "Read the forecast.",

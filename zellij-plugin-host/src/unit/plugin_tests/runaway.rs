@@ -6,7 +6,7 @@
 //! with every hook client that connected afterwards piling up behind the join. Now an unload
 //! whose cleanup the guest keeps from running sets the plugin's cancel token after a grace
 //! period (shutdown sets it at once), the guest is trapped at its next host call (wasm) or
-//! within a few thousand instructions (Lua), and the unload proceeds.
+//! within a few thousand instructions (Deno), and the unload proceeds.
 //!
 //! The assertion in each test is partly the test finishing: `teardown` joins the plugin thread,
 //! which without the token would never return.
@@ -65,8 +65,8 @@ fn observe_screen(
     (log, handle)
 }
 
-fn lua_runaway_plugin() -> RunPluginOrAlias {
-    let path = lua_plugin_fixture_path().with_file_name("fixture_runaway.lua");
+fn deno_runaway_plugin() -> RunPluginOrAlias {
+    let path = script_plugin_fixture_path().with_file_name("fixture_runaway.ts");
     RunPluginOrAlias::RunPlugin(RunPlugin {
         _allow_exec_host_cmd: false,
         location: RunPluginLocation::File(path),
@@ -264,13 +264,6 @@ fn session_shutdown_stops_a_runaway_plugin_inside_its_budget(run_plugin: RunPlug
     );
 }
 
-/// Lua: the loop never touches the host, and the instruction-count hook stops it anyway.
-#[test]
-#[serial(plugin_tests)]
-pub fn a_runaway_lua_plugin_is_stopped_by_its_unload() {
-    a_runaway_plugin_is_stopped_by_its_unload(lua_runaway_plugin());
-}
-
 /// Wasm: the loop calls the host every iteration, which is where the call hook stops it. (A
 /// wasm loop that never calls the host is not stopped; that would take fuel metering.)
 #[test]
@@ -281,48 +274,12 @@ pub fn a_runaway_wasm_plugin_is_stopped_by_its_unload() {
 
 #[test]
 #[serial(plugin_tests)]
-pub fn session_shutdown_stops_a_runaway_lua_plugin_inside_its_budget() {
-    session_shutdown_stops_a_runaway_plugin_inside_its_budget(lua_runaway_plugin());
+pub fn session_shutdown_stops_a_runaway_deno_plugin_inside_its_budget() {
+    session_shutdown_stops_a_runaway_plugin_inside_its_budget(deno_runaway_plugin());
 }
 
 #[test]
 #[serial(plugin_tests)]
 pub fn session_shutdown_stops_a_runaway_wasm_plugin_inside_its_budget() {
     session_shutdown_stops_a_runaway_plugin_inside_its_budget(wasm_runaway_plugin());
-}
-
-/// A plugin that never returns from `load`. Its loader holds the plugin map across that call,
-/// and an unload takes the plugin map — so the unload must set the plugin's token *before*
-/// waiting for the lock, or it waits forever, with nothing left that could set the token.
-#[test]
-#[serial(plugin_tests)]
-pub fn a_lua_plugin_stuck_in_load_is_stopped_by_its_unload() {
-    let path = lua_plugin_fixture_path().with_file_name("fixture_runaway_load.lua");
-    let harness = RunawayHarness::load(RunPluginOrAlias::RunPlugin(RunPlugin {
-        _allow_exec_host_cmd: false,
-        location: RunPluginLocation::File(path),
-        ..Default::default()
-    }));
-    // The plugin's `load` reaches the screen before it starts looping: once this is seen, the
-    // loader is inside `load`, holding the plugin map.
-    harness.log.wait_until(
-        "the plugin's load to be running",
-        zellij_test_support::default_timeout(),
-        |instructions| {
-            instructions
-                .iter()
-                .any(|i| {
-                    matches!(
-                        i,
-                        ScreenInstruction::SetSelectable(PaneId::Plugin(PLUGIN_0), false)
-                    )
-                })
-                .then_some(())
-        },
-    );
-    let _ = harness
-        .plugin_thread_sender
-        .send(PluginInstruction::Unload(crate::PluginId::new(0)));
-    harness.wait_for_cancel_report();
-    harness.finish();
 }

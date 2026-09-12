@@ -279,7 +279,7 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 | `zellij-panes/` | the `Pane` trait and its implementations, pane managers, frames, `Tab` and its layout applier |
 | `zellij-bus/` | the server's thread bus: instruction enums and senders, `ServerOsApi`, warps, background jobs, session recorder |
 | `zellij-routing/` | synchronous action dispatch and completion waits shared by server and plugin host |
-| `zellij-plugin-host/` | plugin host: wasm and Lua plugin loading, the plugin thread, host functions, pipes, job queues |
+| `zellij-plugin-host/` | plugin host: Wasm and Deno plugin loading, the plugin thread, host functions, pipes, job queues |
 | `zellij-process/` | pane supervisors, local/remote protocols, SSH broker, Firecracker provider |
 | `zellij-terminal/` | terminal emulation, graphics, output serialization, host queries, component parsing |
 | `zellij-client/` | input handling and terminal I/O |
@@ -354,7 +354,7 @@ at Postgres, one database serves every machine. Two rules follow, and both bite 
 
 Not handled: a watch is only re-evaluated by writes from its own server process, so on a shared
 Postgres another machine's write does not wake it. See `docs/ARCHITECTURE.md` ("Sharing a store
-between servers") and `docs/LUA_PLUGINS.md` ("Writing without losing somebody else's write").
+between servers") and `docs/DENO_PLUGINS.md` ("Persistent data").
 
 ## Agent state from coding-agent hooks
 
@@ -364,14 +364,12 @@ being guessed at from its screen — `zellij hocus hooks install` wires both age
 reader of the manifest and broadcasts the event itself to the plugins. See `docs/AGENT_HOOKS.md`. Unrelated to the `hooks { … }` config block
 (`zellij-types/src/input/hooks.rs`), which binds a plugin to a moment in the session.
 
-## Script plugins (Lua and Deno)
+## Script plugins (Deno)
 
-Plugins support Wasm, Lua, and Deno (JavaScript/TypeScript). All script builtins use embedded
-TypeScript. Lua plugins and configuration remain supported. See
-`zellij-plugin-host/src/deno/CLAUDE.md` before changing the Deno runtime or its SDK, and
-`zellij-plugin-host/src/lua/CLAUDE.md` before changing the Lua runtime; `docs/DENO_PLUGINS.md`
-and `docs/LUA_PLUGINS.md` are the user-facing guides, and `docs/DENO_PARITY.md` records what the
-Deno path has been verified to do.
+Plugins support Wasm and Deno (JavaScript/TypeScript). All script builtins use embedded TypeScript.
+Configuration uses KDL. Read `zellij-plugin-host/src/deno/CLAUDE.md` before changing the runtime or SDK.
+`docs/DENO_PLUGINS.md` is the user-facing guide. `docs/DENO_PARITY.md` records historical verification,
+and `docs/LUA_REMOVAL.md` explains manual migration from the removed Lua runtime and configuration.
 
 ## Hocus skills
 

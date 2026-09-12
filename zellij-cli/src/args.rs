@@ -168,8 +168,8 @@ pub enum Recordings {
     },
 }
 
-/// Authoring Lua and JS/TS plugins in the user's plugin folder from a shell.
-/// Extensionless names select Lua; explicit .js, .mjs, .ts and .mts names select Deno.
+/// Authoring JS/TS plugins in the user's plugin folder from a shell.
+/// Extensionless names select TypeScript; explicit .js, .mjs, .ts and .mts names select Deno.
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Plugins {
     /// Write a plugin from a file or stdin, after compiling it. Refuses to replace one that
@@ -185,7 +185,7 @@ pub enum Plugins {
         #[clap(long)]
         no_check: bool,
     },
-    /// Check a plugin in the folder, or --file: compile Lua or semantically check JS/TS.
+    /// Check a plugin in the folder, or --file: semantically check JS/TS.
     Check {
         name: Option<String>,
         #[clap(short, long, value_parser, conflicts_with = "name")]
@@ -383,7 +383,7 @@ pub enum Command {
     #[clap(subcommand)]
     Recordings(Recordings),
 
-    /// Write, check, reload and read logs of Lua and JS/TS plugins.
+    /// Write, check, reload and read logs of JS/TS plugins.
     #[clap(subcommand)]
     Plugins(Plugins),
 
@@ -1680,7 +1680,7 @@ pub enum CliAction {
     },
     /// Bind a hook point (agent_exit, agent_start, agent_waiting, pane_exit, session_start,
     /// context_menu) to a plugin, or unbind it with an empty url.
-    /// The plugin is a url as the config spells it: file:my-hook.ts, file:my-hook.lua, zellij:agent-exit.
+    /// The plugin is a url as the config spells it: file:my-hook.ts, zellij:agent-exit.
     SetHook {
         /// The hook point, eg. agent_exit
         #[clap(value_parser)]
@@ -2361,7 +2361,7 @@ mod tests {
             "write",
             "keys",
             "--file",
-            "/tmp/keys.lua",
+            "/tmp/keys.ts",
             "--overwrite",
         ])
         .unwrap();
@@ -2373,7 +2373,7 @@ mod tests {
                 no_check,
             })) => {
                 assert_eq!(name, "keys");
-                assert_eq!(file, Some(PathBuf::from("/tmp/keys.lua")));
+                assert_eq!(file, Some(PathBuf::from("/tmp/keys.ts")));
                 assert!(overwrite && !no_check);
             },
             other => panic!("expected plugins write, got {other:?}"),

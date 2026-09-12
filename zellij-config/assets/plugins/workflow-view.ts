@@ -25,7 +25,7 @@ const answered = new Map<string, number>();
 let generation = 0;
 type Stream = {operation: string; source: string; raw: Uint8Array; value: string; omitted: boolean};
 let streams: Stream[] = [], latestStream: Stream | undefined, launch: string | undefined;
-let followLive = true;
+let followLive = true, scrollLimit = 0;
 function watch(value?: string) {
   if (value !== launch) { streams = []; latestStream = undefined; followLive = true; }
   launch = value;
@@ -147,11 +147,11 @@ function update(event: Event): boolean {
   }
   if ('Key' in event && event.Key.bare_key === 'End' && form!.focusedId() !== 'answer') { followLive = true; view.scroll = Infinity; return true; }
   if ('Key' in event && event.Key.bare_key === 'PageUp') { followLive = false; view.scroll = Math.max(0, view.scroll - contentHeight); return true; }
-  if ('Key' in event && event.Key.bare_key === 'PageDown') { view.scroll += contentHeight; return true; }
+  if ('Key' in event && event.Key.bare_key === 'PageDown') { view.scroll += contentHeight; followLive = view.scroll >= scrollLimit; return true; }
   if ('Mouse' in event) {
     const mouse = event.Mouse;
     if ('ScrollUp' in mouse) { followLive = false; view.scroll = Math.max(0, view.scroll - Math.min(Number(mouse.ScrollUp), contentHeight)); return true; }
-    if ('ScrollDown' in mouse) { view.scroll += Math.min(Number(mouse.ScrollDown), contentHeight); return true; }
+    if ('ScrollDown' in mouse) { view.scroll += Math.min(Number(mouse.ScrollDown), contentHeight); followLive = view.scroll >= scrollLimit; return true; }
     if ('LeftClick' in mouse) view.selecting = Number(mouse.LeftClick[0]) < view.formY;
     if (view.selecting) {
       if ('Release' in mouse) { view.selecting = false; if (view.dirty) { view.dirty = false; repaint(); } }
@@ -265,14 +265,16 @@ function render(rows: number, cols: number): string {
   const footerHeight = question ? Math.min(question.count, Math.floor((rows - height) / 2)) : 0;
   if (question && question.count > footerHeight) blocks.unshift({...question, count: question.count - footerHeight, scroll: footerHeight});
   const separator = footerHeight > 0 && rows - height - footerHeight >= 2 ? 1 : 0;
-  const page = Math.max(0, rows - height - footerHeight - separator); contentHeight = page; view.formY = rows - height;
+  let page = Math.max(0, rows - height - footerHeight - separator); view.formY = rows - height;
   const total = blocks.reduce((sum, block) => sum + block.count, 0);
-  if (streams.length && followLive) {
-    let liveEnd = 0;
-    for (const block of blocks) { liveEnd += block.count; if (block.live) break; }
-    view.scroll = Math.max(0, liveEnd - page);
+  const indicatorHeight = total > page && page >= 2 && cols > 0 ? 1 : 0;
+  page -= indicatorHeight; contentHeight = page; scrollLimit = Math.max(0, total - page);
+  if (followLive) {
+    let end = 0;
+    for (const block of blocks) { end += block.count; if (block.live) break; }
+    view.scroll = Math.max(0, end - page);
   }
-  view.scroll = Math.max(0, Math.min(view.scroll, Math.max(0, total - page)));
+  view.scroll = Math.max(0, Math.min(view.scroll, scrollLimit));
   const frame: string[] = [];
   function draw(block: Block, y: number, skip: number, count: number) {
     if (block.widget) frame.push(block.widget.render({x: 0, y, width: cols, height: count, scroll: block.scroll + skip}).text);
@@ -287,6 +289,12 @@ function render(rows: number, cols: number): string {
     if (count > 0) { draw(block, y, skip, count); y += count; }
     skip = Math.max(0, skip - block.count);
   }
-  if (question && footerHeight > 0) draw(question, page + separator, 0, footerHeight);
+  if (indicatorHeight) {
+    const above = view.scroll > 0 ? `↑ ${view.scroll} more` : '';
+    const below = total - view.scroll - page;
+    const label = [above, below > 0 ? `↓ ${below} more` : ''].filter(Boolean).join('  ');
+    frame.push(z.ui.text(z.text.truncate(label, cols)).dim().render({x: 0, y: page, width: cols, height: 1}));
+  }
+  if (question && footerHeight > 0) draw(question, page + indicatorHeight + separator, 0, footerHeight);
   return frame.join('') + form!.render({x: 0, y: view.formY, width: cols, height});
 }

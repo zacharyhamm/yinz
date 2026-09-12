@@ -10,7 +10,7 @@ fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
 
 fn extension_state(safety: &str, consequence: Option<&str>) -> State {
     let mut state = State::default();
-    let path = "/plugins/hocus/weather.lua";
+    let path = "/plugins/hocus/weather.ts";
     state.user_plugin_dir = "/plugins".to_owned();
     state
         .extension_files
@@ -249,7 +249,7 @@ fn an_extension_going_away_answers_the_call_it_was_asked() {
 
 #[test]
 fn extension_registration_is_bound_to_the_running_plugin_instance() {
-    let path = "/plugins/hocus/weather.lua";
+    let path = "/plugins/hocus/weather.ts";
     let mut state = State::default();
     state
         .extension_files
@@ -367,11 +367,11 @@ fn a_scan_waits_before_loading_files_that_did_not_reregister() {
     };
     state.on_extension_scan_result(
         Some(0),
-        b"/plugins/hocus/weather.lua\n/plugins/ordinary.lua\n",
+        b"/plugins/hocus/weather.ts\n/plugins/ordinary.ts\n",
     );
     assert_eq!(
         state.extension_files.get("weather").map(String::as_str),
-        Some("/plugins/hocus/weather.lua")
+        Some("/plugins/hocus/weather.ts")
     );
     assert!(state.extension_scan_due_ms.is_some());
     state.timer_armed = false;
@@ -384,7 +384,7 @@ fn a_scan_waits_before_loading_files_that_did_not_reregister() {
 /// the line has to ask for them to be called.
 #[test]
 fn a_registration_report_names_the_tools_and_asks_for_them_to_be_called() {
-    let path = "/plugins/hocus/weather.lua";
+    let path = "/plugins/hocus/weather.ts";
     let mut state = State {
         user_plugin_dir: "/plugins".to_owned(),
         ..State::default()
@@ -441,14 +441,14 @@ fn a_duplicate_scan_revokes_registration_and_finishes_pending_calls() {
     state.user_plugin_dir = "/plugins".into();
     state.extension_instances.insert(
         zellij_tile::prelude::PluginId::new(7),
-        ("weather".into(), "/plugins/hocus/weather.lua".into()),
+        ("weather".into(), "/plugins/hocus/weather.ts".into()),
     );
     let request = call("pending", "weather_forecast", "{}");
     state.pending.push_back(request.clone());
     assert!(!state.run_head(&request));
     state.on_extension_scan_result(
         Some(0),
-        b"/plugins/hocus/weather.lua\n/plugins/hocus/weather.ts\n",
+        b"/plugins/hocus/weather.js\n/plugins/hocus/weather.ts\n",
     );
     assert!(state.extensions.tool("weather_forecast").is_none());
     assert!(state.extension_files.is_empty());

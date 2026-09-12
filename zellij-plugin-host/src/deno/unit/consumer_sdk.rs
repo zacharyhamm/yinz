@@ -353,6 +353,8 @@ fn deno_workflow_view_keeps_restart_explicit_and_all_details_reachable() {
       M.submitting=true;key('Enter');check(restarted===0);M.submitting=false;key('Enter');check(restarted===1);
       M.pending=[{model:'m',version:1,attributes:{run:'r',question:'q',kind:'text',state:'pending',answers:[],prompt:'long '.repeat(100)+'QUESTION-END'}}];
       M.snapshot={root:'/work',history:{status:'failed'},logs:'history '.repeat(100)+'HISTORY-END'};
+      M.render(8,24);
+      while(M.scroll>0){key('PageUp');M.render(8,24);}
       let rendered='';
       for(let i=0;i<100;i++){rendered+=plain(M.render(8,24));key('PageDown');}
       check(rendered.includes('QUESTION-END') && rendered.includes('HISTORY-END'));

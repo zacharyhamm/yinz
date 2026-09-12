@@ -228,17 +228,8 @@ fn every_client_leaves_when_the_last_pane_closes() {
 
 /// A background plugin that asks for the quit to be confirmed, the way hocus does mid-reply.
 const GUARD_PLUGIN: &str = r#"
-local z = require('zellij')
-local M = {}
-function M.load()
-  z.task(function()
-    z.await(z.async.permissions { 'change_application_state' })
-    z.set_quit_notice { notice = 'the fixture is still working', guard = true }
-  end)
-end
-function M.update() return false end
-function M.render() end
-return M
+import z from 'zellij:plugin';
+export default {async load() {await z.waitForPermissions(['ChangeApplicationState']); z.host.setQuitNotice({notice:'the fixture is still working',guard:true});}, update() {return false;}, render() {return '';}};
 "#;
 
 /// Write the fixture to disk with its one permission already granted, so no prompt has to be
@@ -247,7 +238,7 @@ return M
 fn write_guard_plugin(name: &str) -> String {
     let root = zellij_integration_tests::test_env::init().join(name);
     fs::create_dir_all(&root).unwrap();
-    let path = root.join("guard.lua");
+    let path = root.join("guard.ts");
     fs::write(&path, GUARD_PLUGIN).unwrap();
     let url = format!("file:{}", path.display());
     let key = zellij_runtime::plugin_location::parse_plugin_location(&url, None)

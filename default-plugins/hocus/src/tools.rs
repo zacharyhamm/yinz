@@ -355,20 +355,6 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
     Some(sentence)
 }
 
-/// The permissions a plugin's source asks for in `zellij.request_permission { ... }`, so that
-/// approving the write can grant them and the plugin never prompts in its own pane - where the
-/// model, driving the write-reload-fix loop, cannot see or answer it.
-///
-/// Read lexically by `zellij_plugin_api::authoring`, which `zellij plugins write` reads them
-/// with too: one parser, so a permission granted here and one granted from a shell cannot come
-/// out differently. A name zellij does not know is dropped rather than refused - the plugin's
-/// own call reports it - but [`lint`] says so before the write, since a dropped name is a
-/// denial nobody sees until the plugin runs.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn requested_permissions(source: &str) -> Vec<PermissionType> {
-    plugin_authoring::requested_permissions(source).known
-}
-
 /// Apply a plugin edit and return only the permissions it adds to the complete source.
 pub fn edit_source_and_permissions(
     source: &str,
@@ -403,21 +389,11 @@ pub fn permission_names(permissions: &[PermissionType]) -> Vec<String> {
     plugin_authoring::permission_names(permissions)
 }
 
-/// What a source is about to do wrong, as lines to hand back with the compile result.
-///
-/// Never a refusal: see `plugin_authoring::lint`.
+/// The Deno analyzer's warnings for the complete source.
 pub fn lint(name: &str, source: &str) -> Vec<String> {
-    if plugin_authoring::is_deno_plugin(std::path::Path::new(name)) {
-        check_report(
-            name,
-            source,
-            zellij_tile::plugin_authoring::PluginCheckMode::Syntax,
-        )
+    check_report(name, source, plugin_authoring::PluginCheckMode::Syntax)
         .map(|report| report.warnings)
         .unwrap_or_else(|error| vec![error])
-    } else {
-        plugin_authoring::lint(name, source)
-    }
 }
 
 /// A compile result with the lint's findings under it, which is what `plugin_check` and
@@ -1816,10 +1792,10 @@ pub fn specs() -> Value {
         ),
         // Property descriptions are folded into the tool descriptions throughout: guidance
         // costs one copy per tool there, against one copy per property here. `name` is a bare
-        // Shared authoring names select Lua by default or JS/TS by extension.
+        // Shared authoring names select TypeScript by default.
         tool(
             "plugin_docs",
-            "Zellij plugin authoring, TypeScript first (lua_* sections for Lua). Read before writing. Default section=index lists sections and sizes. query searches all sections or the named section with a regex, returning section:LINE:text. Use start_line/line_count to read a section range.",
+            "Zellij plugin authoring, TypeScript and JavaScript. Read before writing. Default section=index lists sections and sizes. query searches all sections or the named section with a regex, returning section:LINE:text. Use start_line/line_count to read a section range.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1834,7 +1810,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_list",
-            "List the user's Lua and JS/TS plugins with their length, and which have a .bak from an \
+            "List the user's JS/TS plugins with their length, and which have a .bak from an \
              earlier edit.",
             json!({ "type": "object", "properties": {} }),
         ),
@@ -1853,7 +1829,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_search",
-            "Regex search over the user's Lua and JS/TS plugins, or only `name`. Answers file:LINE:text \
+            "Regex search over the user's JS/TS plugins, or only `name`. Answers file:LINE:text \
              per hit, file-LINE-text for `context` lines (default 0), `--` between groups. The \
              text after the second separator is the line verbatim: copy that, never the prefix, \
              into plugin_edit old_string. `max_results` defaults to 40. Search or outline before \
@@ -1874,7 +1850,7 @@ pub fn specs() -> Value {
         tool("project_config_write", "Confirm and write .zellij/swamp-workflows.kdl. expected is the exact previous source, null if absent. Does not execute CI.", json!({"type":"object","properties":{"source":{"type":"string"},"expected":{"type":["string","null"]}},"required":["source","expected"]})),
         tool(
             "plugin_read",
-            "Read Lua or JS/TS plugin source: 300 lines from start_line=1 unless line_count is set. Use .js, .mjs, .ts or .mts for Deno; extensionless names select Lua. Use plugin_outline or plugin_search before you edit.",
+            "Read JS/TS plugin source: 300 lines from start_line=1 unless line_count is set. Use .js, .mjs, .ts or .mts for Deno; extensionless names select TypeScript. Use plugin_outline or plugin_search before you edit.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1887,7 +1863,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_check",
-            "Check proposed Lua or JS/TS without execution; JS/TS includes types and local imports. Report diagnostics, literal permissions and warnings. Writes/edits check syntax before confirmation.",
+            "Check proposed JS/TS without execution; JS/TS includes types and local imports. Report diagnostics, literal permissions and warnings. Writes/edits check syntax before confirmation.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1899,7 +1875,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_write",
-            "Write Lua or JS/TS after syntax checking and confirmation. Show literal SDK permission requests before approval; grant after writing. Computed requests use runtime approval. Prefer explicit .ts filenames for new plugins. Extensionless names retain Lua compatibility. Existing files need overwrite. name accepts folder/module. Use plugin_edit for edits, then plugin_reload.",
+            "Write JS/TS after syntax checking and confirmation. Show literal SDK permission requests before approval; grant after writing. Computed requests use runtime approval. Prefer explicit .ts filenames for new plugins. Extensionless names select TypeScript. Existing files need overwrite. name accepts folder/module. Use plugin_edit for edits, then plugin_reload.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1938,7 +1914,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_reload",
-            "Load or reload one of the user's Lua and JS/TS plugins, opening it in a pane if it is not \
+            "Load or reload one of the user's JS/TS plugins, opening it in a pane if it is not \
              running. Answers with the pane id and what it shows - the first render, or the \
              load error. plugin_log has what it logged. With `headless` the plugin runs \
              without a pane, as one shared instance for the session - for a plugin that \
@@ -2122,7 +2098,7 @@ pub const READ_ONLY: &[&str] = &[
 /// which is why a decade of "trim the descriptions" never moved the ceiling. The
 /// only way to stop paying for a tool is not to send it, so most of them are
 /// withheld until the conversation reaches for them. Same bargain `plugin_docs`
-/// strikes with the Lua guide, one level up: ask for what you need.
+/// strikes with the TypeScript guide, one level up: ask for what you need.
 pub struct Family {
     pub name: &'static str,
     /// The one line the loader's index gives this family. Deliberately short:
@@ -2258,7 +2234,7 @@ pub const FAMILIES: &[Family] = &[
     },
     Family {
         name: "plugin",
-        summary: "write, edit, search, check, reload and read Zellij Lua and JS/TS plugins",
+        summary: "write, edit, search, check, reload and read Zellij JS/TS plugins",
         deferred: true,
         tools: &[
             "project_config_read",
@@ -3359,22 +3335,28 @@ pub fn check_report(
     zellij_tile::shim::check_plugin(name, source, mode)
 }
 
-// Native formatting tests have no interpreter. JS/TS checks must use the actual host path.
-#[cfg(not(target_arch = "wasm32"))]
+// Native tests use the same parser as the host; native plugins cannot make host calls.
+#[cfg(all(not(target_arch = "wasm32"), test))]
 pub fn check_report(
     name: &str,
     source: &str,
-    _mode: zellij_tile::plugin_authoring::PluginCheckMode,
-) -> Result<zellij_tile::plugin_authoring::PluginCheckReport, String> {
-    if plugin_authoring::is_deno_plugin(std::path::Path::new(name)) {
-        return Err("JS/TS analysis requires the plugin host".into());
-    }
-    Ok(zellij_tile::plugin_authoring::PluginCheckReport {
-        diagnostics: vec![],
-        outline: plugin_authoring::outline(source),
-        permissions: requested_permissions(source),
-        warnings: plugin_authoring::lint(name, source),
-    })
+    mode: plugin_authoring::PluginCheckMode,
+) -> Result<plugin_authoring::PluginCheckReport, String> {
+    let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let path = plugin_authoring::resolve_plugin_file(dir.path(), name)?;
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|error| error.to_string())?;
+    Ok(zellij_plugin_host::plugin_authoring::check_source(
+        &path, source, mode,
+    ))
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
+pub fn check_report(
+    _name: &str,
+    _source: &str,
+    _mode: plugin_authoring::PluginCheckMode,
+) -> Result<plugin_authoring::PluginCheckReport, String> {
+    Err("plugin analysis requires the plugin host".into())
 }
 
 pub fn compile_check(name: &str, source: &str) -> Result<(), String> {
@@ -3526,7 +3508,7 @@ pub fn plugin_fs_path(name: Option<&str>) -> Result<String, String> {
 /// containment check at the end can never actually fire — it is kept as the second wall, so
 /// that relaxing the character rule later cannot silently become a traversal.
 ///
-/// Extensionless names resolve to Lua; explicit supported extensions select their runtime:
+/// Extensionless names resolve to TypeScript; explicit supported extensions select their runtime:
 /// `plugin_reload` resolves through here too, so the URL it loads and the file that was written
 /// cannot disagree.
 ///
@@ -3618,15 +3600,12 @@ pub fn lines_in_range(contents: &str, start: usize, end: usize) -> String {
 }
 
 /// The plugin names a listing answers with: supported sources under `root`, one folder deep, as the
-/// name the tools take back (`keys.lua`, `app/ui.lua`) rather than as a path.
+/// name the tools take back (`keys.ts`, `app/ui.ts`) rather than as a path.
 pub fn listing_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) -> Vec<String> {
     let prefix = format!("{}/", root.trim_end_matches('/'));
     let mut names: Vec<String> = entries
         .iter()
-        .filter(|entry| {
-            entry.path.ends_with(".lua")
-                || plugin_authoring::is_deno_plugin(std::path::Path::new(&entry.path))
-        })
+        .filter(|entry| plugin_authoring::is_deno_plugin(std::path::Path::new(&entry.path)))
         // A backup is a copy of a plugin, not a plugin: listing it would offer the model a
         // second file to edit and a name that reloads the version it just replaced.
         .filter(|entry| !plugin_authoring::is_backup_name(&entry.path))
@@ -3775,8 +3754,8 @@ pub const FOLDER_FILES_CAP: usize = 64;
 /// The most of one plugin such a read takes. A plugin is kilobytes; the host's own cap is 8 MB.
 pub const FOLDER_READ_BYTES: usize = 1 << 20;
 
-/// The plugins that have a backup, by the name a listing prints: `keys.bak.lua` under `root`
-/// says `keys.lua` does.
+/// The plugins that have a backup, by the name a listing prints: `keys.bak.ts` under `root`
+/// says `keys.ts` does.
 pub fn backed_up_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) -> Vec<String> {
     let prefix = format!("{}/", root.trim_end_matches('/'));
     entries
@@ -4817,7 +4796,7 @@ mod host {
 
     /// Start the agent: the host plans the argv, cuts the branch or worktree `spec` names,
     /// opens the pane and records it as an agent's - `PluginCommand::SpawnAgent`, which is
-    /// also what the New agent modal's button and a Lua plugin's `zellij.agent.spawn` call, the
+    /// also what the New agent modal's button and a TypeScript plugin's `zellij.agent.spawn` call, the
     /// point being that there is one answer to "what does starting an agent do".
     ///
     /// `source` is the repository a checkout is made in; `cwd` is where the pane runs when
@@ -5143,7 +5122,7 @@ pub struct PluginObservation {
 const PLUGIN_RENDER_CHARS: usize = 1_500;
 
 /// How much of a *failed* load reaches the model. The error text is the only thing here the
-/// model can act on, and a Lua traceback through a few `require`d modules is not short, so it
+/// model can act on, and a TypeScript traceback through imported modules is not short, so it
 /// keeps most of the old allowance.
 const PLUGIN_ERROR_CHARS: usize = 8_000;
 
@@ -5179,10 +5158,7 @@ pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> St
     // land near the top today, so truncating first worked by luck rather than by design - and
     // the success cap below is small enough that the luck would have run out.
     let whole = observed.contents.trim_end();
-    // A Lua load error names the Lua plugin; a Deno one is wrapped by the loader as a script
-    // plugin failure, so that arm covers both runtimes' load paths.
-    let failed = whole.contains("failed to load the Lua plugin")
-        || whole.contains("failed to start the script plugin")
+    let failed = whole.contains("failed to start the script plugin")
         || whole.contains("failed to run the plugin's")
         || whole.contains("Panic!");
     let verdict = if failed { "FAILED to load" } else { "loaded" };

@@ -161,7 +161,7 @@ fn helpers_encode_writes_spell_pane_keys_and_normalize_keys_mouse_and_bytes() {
 }
 
 #[test]
-fn default_keybindings_emit_lua_identical_kdl_and_dispatch_reserved_pipes() {
+fn default_keybindings_emit_stable_kdl_and_dispatch_reserved_pipes() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
       globalThis.check = (ok, label = '') => { if (!ok) throw new Error('SDK assertion failed ' + label); };
@@ -212,7 +212,7 @@ fn default_keybindings_emit_lua_identical_kdl_and_dispatch_reserved_pipes() {
       // A refused registration keeps the previous handlers.
       bridge('pipe', keybind('__zellij_default_keybinding:1'), 5);
       check(runs.length === 3 && runs[2][1] === 5);
-      // Escaping follows the Lua prelude: backslash, quote, newline, return and tab only.
+      // Escaping follows the Deno SDK: backslash, quote, newline, return and tab only.
       bind({load() { zellij.registerDefaultKeybindings([{mode: 'normal', key: 'a "b"', actions: [
         zellij.action('Run', {args: ['sh', 'new\nline\t\\'], props: {'odd key': true, n: 2}, children: {floating: true, name: 'a "b"'}}),
         zellij.action('X', {direction: 'Left'}),
@@ -397,7 +397,7 @@ fn on_event_handlers_receive_decoded_events_after_update_and_pipe_waiters() {
     "#);
 }
 
-/// The small conveniences the Lua prelude and the Wasm shim have: the revision guard that
+/// The small conveniences the Deno SDK and the Wasm shim have: the revision guard that
 /// means "must not exist", the focused tab and pane of an update payload, a fire-and-forget
 /// command in a pane, and a named form of the raw web request that fills the required slots.
 #[test]

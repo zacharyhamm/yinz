@@ -2,7 +2,7 @@
 //!
 //! Three callers ask for the same thing by three different routes — the `hocus-new-agent`
 //! modal, where a person fills in a form; hocus's `agent_spawn` tool, where a model fills in
-//! a JSON object; and a Lua plugin's `zellij.agent.spawn { … }`, which the server answers
+//! a JSON object; and a TypeScript plugin's `zellij.agent.spawn { … }`, which the server answers
 //! through `PluginCommand::SpawnAgent`. All of them mean "start `claude` on a fresh worktree
 //! off `main`", and none has any business deciding separately what that means: a default
 //! base branch that drifted, or a `cursor` that ran `cursor` on one path and `cursor-agent`

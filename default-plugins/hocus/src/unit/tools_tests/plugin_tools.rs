@@ -18,11 +18,11 @@ const DIR: &str = "/home/someone/.config/zellij/plugins";
 #[test]
 fn the_chunk_name_is_the_file_the_loader_would_name() {
     for (name, chunk) in [
-        ("keys", "keys.lua"),
-        ("keys.lua", "keys.lua"),
-        (" keys ", "keys.lua"),
-        ("app/ui", "ui.lua"),
-        ("hocus/weather", "weather.lua"),
+        ("keys", "keys.ts"),
+        ("keys.ts", "keys.ts"),
+        (" keys ", "keys.ts"),
+        ("app/ui", "ui.ts"),
+        ("hocus/weather", "weather.ts"),
     ] {
         assert_eq!(chunk_name(name), chunk, "{name}");
     }
@@ -40,7 +40,7 @@ fn only_a_complete_plugin_write_is_candidate_for_a_compile_refusal() {
     assert_eq!(
         uncompilable_write(&call(
             "plugin_write",
-            r#"{"name":"keys","source":"return {}"}"#
+            r#"{"name":"keys","source":"export default {};"}"#
         )),
         None
     );
@@ -54,8 +54,8 @@ fn only_a_complete_plugin_write_is_candidate_for_a_compile_refusal() {
         None
     );
     assert_eq!(
-        compile_report("keys", "return {}").unwrap(),
-        "keys.lua compiles"
+        compile_report("keys", "export default {};").unwrap(),
+        "keys.ts compiles"
     );
 }
 
@@ -65,17 +65,17 @@ fn args(arguments: &str) -> Args {
 
 #[test]
 fn a_name_resolves_with_or_without_its_extension() {
-    for named in ["keys", "keys.lua"] {
+    for named in ["keys", "keys.ts"] {
         assert_eq!(
             resolve_plugin_file(DIR, Some(named)).unwrap(),
-            format!("{DIR}/keys.lua"),
+            format!("{DIR}/keys.ts"),
             "'{named}' should land on the same file"
         );
     }
     // Trimmed, because a model that pads a value should not thereby name a different file.
     assert_eq!(
         resolve_plugin_file(DIR, Some("  keys  ")).unwrap(),
-        format!("{DIR}/keys.lua")
+        format!("{DIR}/keys.ts")
     );
 }
 
@@ -87,14 +87,14 @@ fn a_name_resolves_with_or_without_its_extension() {
 /// only at load time, in a pane, which is exactly where nobody is looking.
 #[test]
 fn a_resolved_plugin_path_is_always_absolute() {
-    for named in ["keys", "keys.lua", "a-b_c.1"] {
+    for named in ["keys", "keys.ts", "a-b_c.1"] {
         let path = resolve_plugin_file(DIR, Some(named)).unwrap();
         assert!(
             std::path::Path::new(&path).is_absolute(),
             "{named:?} resolved to the relative {path:?}"
         );
         assert!(path.starts_with(DIR), "{path:?} escaped {DIR}");
-        assert!(path.ends_with(".lua"), "{path:?} is not a Lua file");
+        assert!(path.ends_with(".ts"), "{path:?} is not a TypeScript file");
     }
 }
 
@@ -119,16 +119,16 @@ fn a_name_that_is_a_path_is_refused() {
 }
 
 /// One folder is allowed, for the modules a plugin `require`s: `app/ui` is
-/// `<dir>/app/ui.lua`, which `require("app.ui")` finds beside `app.lua`.
+/// `<dir>/app/ui.ts`, imported with an explicit relative path.
 #[test]
 fn a_module_name_resolves_one_folder_down() {
     assert_eq!(
         resolve_plugin_file(DIR, Some("app/ui")).unwrap(),
-        format!("{DIR}/app/ui.lua")
+        format!("{DIR}/app/ui.ts")
     );
     assert_eq!(
-        resolve_plugin_file(DIR, Some("app/init.lua")).unwrap(),
-        format!("{DIR}/app/init.lua")
+        resolve_plugin_file(DIR, Some("app/init.ts")).unwrap(),
+        format!("{DIR}/app/init.ts")
     );
 }
 
@@ -136,10 +136,10 @@ fn a_module_name_resolves_one_folder_down() {
 /// so the file that is written and the file that is reloaded cannot be different files.
 #[test]
 fn a_plugin_fs_path_is_the_same_name_under_the_plugins_root() {
-    assert_eq!(plugin_fs_path(Some("keys")).unwrap(), "/plugins/keys.lua");
+    assert_eq!(plugin_fs_path(Some("keys")).unwrap(), "/plugins/keys.ts");
     assert_eq!(
         plugin_fs_path(Some("app/ui")).unwrap(),
-        "/plugins/app/ui.lua"
+        "/plugins/app/ui.ts"
     );
     assert!(plugin_fs_path(Some("../keys")).is_err());
     assert!(plugin_fs_path(None).unwrap_err().contains("name"));
@@ -187,12 +187,12 @@ fn a_missing_name_or_folder_says_which_is_missing() {
 #[test]
 fn the_log_tool_passes_lines_on_and_explains_an_empty_log() {
     assert_eq!(
-        plugin_log_answer("keys", Ok("INFO [lua:keys.lua] pressed t\n".to_owned())),
-        "INFO [lua:keys.lua] pressed t"
+        plugin_log_answer("keys", Ok("INFO [deno:keys.ts] pressed t\n".to_owned())),
+        "INFO [deno:keys.ts] pressed t"
     );
-    let empty = plugin_log_answer("keys.lua", Ok(String::new()));
+    let empty = plugin_log_answer("keys.ts", Ok(String::new()));
     assert!(
-        empty.starts_with("no log lines from keys.lua yet") && empty.contains("zellij.log"),
+        empty.starts_with("no log lines from keys.ts yet") && empty.contains("zellij.log"),
         "{empty}"
     );
     assert_eq!(
@@ -205,7 +205,7 @@ fn the_log_tool_passes_lines_on_and_explains_an_empty_log() {
 /// showing the loader's error text is named as a failure up front.
 #[test]
 fn a_load_report_names_the_outcome_before_the_pane_text() {
-    let path = format!("{DIR}/keys.lua");
+    let path = format!("{DIR}/keys.ts");
     let missing = plugin_load_report(&path, None);
     assert!(missing.contains("no pane is running it yet"), "{missing}");
     assert!(!missing.contains("loaded in"), "{missing}");
@@ -229,8 +229,8 @@ fn a_load_report_names_the_outcome_before_the_pane_text() {
     for error in [
         "failed to start the script plugin at '/x/main.ts': resolve module /x/missing.ts: No such file or directory (os error 2)",
         "failed to start the script plugin at '/x/main.ts': TypeError: plugin must default-export a lifecycle object",
-        "failed to load the Lua plugin at '/x/keys.lua'. A plugin must return a table",
-        "Panic!\nfailed to run the plugin's `update`: keys.lua:12: attempt to index nil",
+        "failed to start the script plugin at '/x/keys.ts'. A plugin must export its lifecycle",
+        "Panic!\nfailed to run the plugin's `update`: keys.ts:12: attempt to index nil",
     ] {
         let failed = plugin_load_report(
             &path,
@@ -252,7 +252,7 @@ fn a_load_report_names_the_outcome_before_the_pane_text() {
 #[test]
 fn a_successful_reload_report_keeps_only_a_screenful() {
     let report = plugin_load_report(
-        &format!("{DIR}/dash.lua"),
+        &format!("{DIR}/dash.ts"),
         Some(PluginObservation {
             pane_id: 7,
             contents: "row of a very wide dashboard\n".repeat(1_000),
@@ -269,12 +269,12 @@ fn a_successful_reload_report_keeps_only_a_screenful() {
 #[test]
 fn a_failed_reload_keeps_its_error_text() {
     let traceback = format!(
-        "failed to load the Lua plugin at '/x/keys.lua'\n{}",
+        "failed to start the script plugin at '/x/keys.ts'\n{}",
         "  stack traceback line\n".repeat(300)
     );
 
     let report = plugin_load_report(
-        &format!("{DIR}/keys.lua"),
+        &format!("{DIR}/keys.ts"),
         Some(PluginObservation {
             pane_id: 7,
             contents: traceback.clone(),
@@ -295,12 +295,12 @@ fn a_failed_reload_keeps_its_error_text() {
 #[test]
 fn the_verdict_is_read_from_the_whole_pane_not_the_truncated_one() {
     let late = format!(
-        "{}failed to run the plugin's `update`: keys.lua:12: attempt to index nil",
+        "{}failed to run the plugin's `update`: keys.ts:12: attempt to index nil",
         "harmless earlier output\n".repeat(400)
     );
 
     let report = plugin_load_report(
-        &format!("{DIR}/keys.lua"),
+        &format!("{DIR}/keys.ts"),
         Some(PluginObservation {
             pane_id: 7,
             contents: late,
@@ -314,13 +314,13 @@ fn the_verdict_is_read_from_the_whole_pane_not_the_truncated_one() {
 #[test]
 fn a_source_ends_in_exactly_one_newline_however_it_arrived() {
     for sent in [
-        r#""local M = {}""#,
-        r#""local M = {}\n""#,
-        r#""local M = {}\n\n\n""#,
+        r#""const M = {};""#,
+        r#""const M = {};\n""#,
+        r#""const M = {};\n\n\n""#,
     ] {
         let source =
             plugin_source(&args(&format!(r#"{{"name":"keys","source":{sent}}}"#))).unwrap();
-        assert_eq!(source, "local M = {}\n");
+        assert_eq!(source, "const M = {};\n");
     }
 }
 
@@ -362,7 +362,7 @@ fn a_read_is_a_page_of_lines() {
 
 /// A listing answers in names, because a name is what every plugin tool takes back — handing
 /// over paths would invite the model to send one and be refused. One folder deep, for modules,
-/// and only Lua files, excluding backups.
+/// and only TypeScript files, excluding backups.
 #[test]
 fn a_listing_is_names_one_folder_deep() {
     let entry = |path: &str, is_dir: bool| FsEntry {
@@ -374,20 +374,20 @@ fn a_listing_is_names_one_folder_deep() {
         }),
     };
     let entries = vec![
-        entry("/plugins/probe.lua", false),
-        entry("/plugins/probe.bak.lua", false),
+        entry("/plugins/probe.ts", false),
+        entry("/plugins/probe.bak.ts", false),
         entry("/plugins/notes.md", false),
         entry("/plugins/app", true),
-        entry("/plugins/app/ui.lua", false),
-        entry("/plugins/app/ui.bak.lua", false),
+        entry("/plugins/app/ui.ts", false),
+        entry("/plugins/app/ui.bak.ts", false),
         FsEntry {
-            path: "/plugins/keys.lua".to_owned(),
+            path: "/plugins/keys.ts".to_owned(),
             metadata: None,
         },
     ];
     assert_eq!(
         listing_names("/plugins", &entries),
-        vec!["app/ui.lua", "keys.lua", "probe.lua"]
+        vec!["app/ui.ts", "keys.ts", "probe.ts"]
     );
     assert!(listing_names("/plugins", &[]).is_empty());
 }
@@ -400,8 +400,8 @@ fn a_write_report_names_the_next_step_and_what_it_granted() {
     assert!(plain.contains("plugin_reload"), "{plain}");
     assert!(!plain.contains("granted"), "{plain}");
     assert!(!plain.contains("backup"), "{plain}");
-    let granted = write_report("probe.lua", &[PermissionType::ReadFiles], &Kept::Nothing);
-    assert!(granted.contains("wrote probe.lua"), "{granted}");
+    let granted = write_report("probe.ts", &[PermissionType::ReadFiles], &Kept::Nothing);
+    assert!(granted.contains("wrote probe.ts"), "{granted}");
     assert!(granted.contains("granted it read_files"), "{granted}");
     assert!(exists_report("probe").contains("overwrite=true"));
     // A rewrite that lost something is recoverable, and only a report that names the copy
@@ -409,11 +409,11 @@ fn a_write_report_names_the_next_step_and_what_it_granted() {
     let replaced = write_report("probe", &[], &Kept::At(backup_name("probe")));
     assert!(replaced.contains("probe.bak"), "{replaced}");
     let changed = Edited {
-        source: "return {}\n".to_owned(),
+        source: "export default {};\n".to_owned(),
         changed: vec![LineSpan { first: 1, last: 1 }],
     };
     let edited = edit_report("probe", &[], &Kept::At(backup_name("probe")), &changed);
-    assert!(edited.contains("edited probe.lua"), "{edited}");
+    assert!(edited.contains("edited probe.ts"), "{edited}");
     assert!(edited.contains("probe.bak"), "{edited}");
     // And a backup that could not be written is said out loud: everything else in this report
     // tells the model the old version is one read away.
@@ -425,7 +425,7 @@ fn a_write_report_names_the_next_step_and_what_it_granted() {
 /// a rewrite of the file with what it already says must leave the copy alone.
 #[test]
 fn a_write_that_changes_nothing_keeps_nothing() {
-    let same = "return {}\n";
+    let same = "export default {};\n";
     assert_eq!(keep_replaced("probe", Some(same), same), Kept::Nothing);
     assert_eq!(keep_replaced("probe", None, same), Kept::Nothing);
     assert_eq!(keep_replaced("probe", Some("   "), same), Kept::Nothing);
@@ -449,9 +449,12 @@ fn pair(old: &str, new: &str) -> EditPair {
 /// each one is, so the next old_string can carry the lines around the one that was meant.
 #[test]
 fn an_edit_applies_once_or_says_why_it_cannot() {
-    let source = "local M = {}\nM.tick = 1\nreturn M\n";
+    let source = "const M = {};\nM.tick = 1\nexport default M;\n";
     let edited = apply_edits(source, &[pair("M.tick = 1", "M.tick = 5")]).unwrap();
-    assert_eq!(edited.source, "local M = {}\nM.tick = 5\nreturn M\n");
+    assert_eq!(
+        edited.source,
+        "const M = {};\nM.tick = 5\nexport default M;\n"
+    );
     assert_eq!(edited.changed, vec![LineSpan { first: 2, last: 2 }]);
     let missing = apply_edits(source, &[pair("M.tock = 1", "x")]).unwrap_err();
     assert!(missing.contains("plugin_read"), "{missing}");
@@ -479,21 +482,25 @@ fn an_edit_applies_once_or_says_why_it_cannot() {
 /// adds nothing to the answer.
 #[test]
 fn the_lint_qualifies_a_report_without_displacing_it() {
-    let clean = with_lint("probe.lua compiles".to_owned(), "probe", "return {}\n");
-    assert_eq!(clean, "probe.lua compiles");
+    let clean = with_lint(
+        "probe.ts compiles".to_owned(),
+        "probe",
+        "export default {};\n",
+    );
+    assert_eq!(clean, "probe.ts compiles");
     let trap = r#"
-zellij.request_permission { "plugin_data" }
-zellij.on("permission_request_result", function()
-  zellij.data.define { name = "todo", version = 1, namespace = "todo", attrs = { { "title", "text" } } }
-end)
+import zellij from 'zellij:plugin';
+zellij.on('PermissionRequestResult', () => {
+  zellij.data.define('todo', {title:'text'}, {namespace:'todo'});
+});
 "#;
-    let warned = with_lint("probe.lua compiles".to_owned(), "probe", trap);
-    assert!(warned.starts_with("probe.lua compiles"), "{warned}");
+    let warned = with_lint("probe.ts compiles".to_owned(), "probe", trap);
+    assert!(warned.starts_with("probe.ts compiles"), "{warned}");
     assert!(warned.contains("shared:"), "{warned}");
     assert!(warned.contains("not blocked"), "{warned}");
 }
 
-/// `summarize` is what the transcript shows, and a whole Lua file on that line would bury the
+/// `summarize` is what the transcript shows, and a whole TypeScript file on that line would bury the
 /// conversation it is part of.
 #[test]
 fn a_write_is_summarized_without_its_source() {
@@ -511,12 +518,12 @@ fn a_write_is_summarized_without_its_source() {
 fn a_write_confirmation_shows_the_source() {
     let detail = confirmation_detail(&call(
         "plugin_write",
-        r#"{"name":"keys","source":"local M = {}\nreturn M"}"#,
+        r#"{"name":"keys","source":"const M = {};\nexport default M;"}"#,
     ))
     .join("\n");
-    assert!(detail.contains("writes keys.lua"), "{detail}");
-    assert!(detail.contains("local M = {}"), "{detail}");
-    assert!(detail.contains("return M"), "{detail}");
+    assert!(detail.contains("writes keys.ts"), "{detail}");
+    assert!(detail.contains("const M = {};"), "{detail}");
+    assert!(detail.contains("export default M;"), "{detail}");
 }
 
 #[test]
@@ -547,28 +554,28 @@ fn a_long_source_is_cut_short_in_the_toast() {
 #[test]
 fn the_permissions_a_source_asks_for_are_read_off_it() {
     let source = r#"
-        local zellij = require("zellij")
-        function M.load()
-          zellij.subscribe { "key" }
-          zellij.request_permission {
-            "read_files", "WriteFiles",
-            'run_commands',   -- single quotes too
-            "not_a_permission",
-          }
-          zellij.request_permission({ "read_files" })   -- a repeat, and the other call shape
-        end
-    "#;
+import zellij from 'zellij:plugin';
+export default {load() {
+  zellij.requestPermission(['ReadFiles','WriteFiles','RunCommands','not_a_permission']);
+  zellij.requestPermission(['ReadFiles']); // duplicate
+}};
+"#;
     assert_eq!(
-        requested_permissions(source),
+        source_permissions("keys", source).unwrap(),
         vec![
             PermissionType::ReadFiles,
             PermissionType::WriteFiles,
-            PermissionType::RunCommands,
+            PermissionType::RunCommands
         ]
     );
-    assert!(requested_permissions("local M = {}\nreturn M").is_empty());
-    // A list built at runtime is not read: the plugin gets its prompt.
-    assert!(requested_permissions("zellij.request_permission(perms)").is_empty());
+    assert!(source_permissions("keys", "export default {};")
+        .unwrap()
+        .is_empty());
+    assert!(
+        source_permissions("keys", "zellij.requestPermission(perms);")
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         permission_names(&[PermissionType::ReadFiles, PermissionType::FullHdAccess]),
         vec!["read_files", "full_hd_access"]
@@ -581,7 +588,7 @@ fn the_permissions_a_source_asks_for_are_read_off_it() {
 fn a_write_confirmation_names_the_permissions_it_grants() {
     let with = consequence(&call(
         "plugin_write",
-        r#"{"name":"keys","source":"zellij.request_permission { \"read_files\", \"run_commands\" }"}"#,
+        r#"{"name":"keys","source":"zellij.requestPermission([ \"ReadFiles\", \"RunCommands\" ]);"}"#,
     ))
     .unwrap();
     assert!(
@@ -597,11 +604,11 @@ fn a_write_confirmation_names_the_permissions_it_grants() {
 #[test]
 fn an_edit_grants_only_permissions_added_to_the_complete_source() {
     let args = Args::parse(
-        r#"{"old_string":"\"read_files\"","new_string":"\"read_files\", \"write_files\""}"#,
+        r#"{"name":"keys","old_string":"\"ReadFiles\"","new_string":"\"ReadFiles\", \"WriteFiles\""}"#,
     )
     .unwrap();
     let (_, granted) =
-        edit_source_and_permissions(r#"zellij.request_permission { "read_files" }"#, &args)
+        edit_source_and_permissions(r#"zellij.requestPermission([ "ReadFiles" ]);"#, &args)
             .unwrap();
     assert_eq!(
         granted,
@@ -609,18 +616,20 @@ fn an_edit_grants_only_permissions_added_to_the_complete_source() {
         "read_files was already present"
     );
 
-    let unchanged = Args::parse(r#"{"old_string":"old","new_string":"new"}"#).unwrap();
+    let unchanged =
+        Args::parse(r#"{"name":"keys","old_string":"old","new_string":"new"}"#).unwrap();
     assert!(edit_source_and_permissions(
-        "zellij.request_permission { \"read_files\" }\n-- old",
+        "zellij.requestPermission([ \"ReadFiles\" ]);\n// old",
         &unchanged,
     )
     .unwrap()
     .1
     .is_empty());
 
-    let removed = Args::parse(r#"{"old_string":", \"write_files\"","new_string":""}"#).unwrap();
+    let removed =
+        Args::parse(r#"{"name":"keys","old_string":", \"WriteFiles\"","new_string":""}"#).unwrap();
     assert!(edit_source_and_permissions(
-        r#"zellij.request_permission { "read_files", "write_files" }"#,
+        r#"zellij.requestPermission([ "ReadFiles", "WriteFiles" ]);"#,
         &removed,
     )
     .unwrap()
@@ -658,7 +667,7 @@ fn replacing_a_plugin_says_so_rather_than_saying_it_writes_one() {
         r#"{"name":"keys","source":"x","overwrite":true}"#,
     ))
     .unwrap();
-    assert!(replacing.contains("replaces keys.lua"), "{replacing}");
+    assert!(replacing.contains("replaces keys.ts"), "{replacing}");
 
     // Malformed arguments must still produce a sentence: that is when the user most needs one.
     let malformed = consequence(&call("plugin_write", "not json at all")).unwrap();
@@ -729,12 +738,12 @@ fn a_read_past_the_end_says_how_long_the_file_actually_is() {
 /// exactly, so text handed to the model with prefixes on it would never match.
 #[test]
 fn the_lines_are_returned_verbatim_so_an_edit_can_match_them() {
-    let file = "local M = {}\nreturn M\n";
+    let file = "const M = {};\nexport default M;\n";
 
     let answer = read_answer(file, 1, 300, "plugin_read name=keys");
 
     let body = answer.split_once('\n').expect("a header").1;
-    assert_eq!(body, "local M = {}\nreturn M");
+    assert_eq!(body, "const M = {};\nexport default M;");
 }
 
 /// A failed edit must say the file is untouched: the compile gate runs before anything is
@@ -743,7 +752,7 @@ fn the_lines_are_returned_verbatim_so_an_edit_can_match_them() {
 /// the whole file, which is how a missed edit used to turn into a full rewrite.
 #[test]
 fn a_failed_edit_says_the_file_is_unchanged_and_asks_for_another_edit() {
-    let report = edit_compile_report("keys.lua", "unexpected symbol near '{'");
+    let report = edit_compile_report("keys.ts", "unexpected symbol near '{'");
 
     assert!(report.contains("NOT applied"), "{report}");
     assert!(report.contains("unchanged"), "{report}");
@@ -778,26 +787,25 @@ fn search_with(query: &str, context: usize) -> Search<'_> {
 /// apart - so a hit can be told from its surroundings, and its text copied as it is.
 #[test]
 fn a_search_answers_in_the_shape_search_files_does() {
-    let keys = "local M = {}\nfunction M.load()\n  zellij.subscribe { \"key\" }\nend\nreturn M\n";
-    let clock = "local M = {}\nfunction M.render()\n  return os.date()\nend\nreturn M\n";
-    let files = [("keys.lua", keys), ("clock.lua", clock)];
+    let keys = "const M = {};\nM.load = function() {\n  zellij.subscribe([\"Key\"]);\n};\nexport default M;\n";
+    let clock = "const M = {};\nM.render = function() {\n  return new Date().toISOString();\n};\nexport default M;\n";
+    let files = [("keys.ts", keys), ("clock.ts", clock)];
 
-    let hits = search(&files, &search_with("^function", 0))
+    let hits = search(&files, &search_with("function", 0))
         .unwrap()
         .unwrap();
     assert_eq!(
         hits,
-        "keys.lua:2:function M.load()\nclock.lua:2:function M.render()"
+        "keys.ts:2:M.load = function() {\nclock.ts:2:M.render = function() {"
     );
 
-    let with_context = search(&files, &search_with("^function", 1))
+    let with_context = search(&files, &search_with("function", 1))
         .unwrap()
         .unwrap();
     assert_eq!(
         with_context,
-        "keys.lua-1-local M = {}\nkeys.lua:2:function M.load()\nkeys.lua-3-  zellij.subscribe { \
-         \"key\" }\n--\nclock.lua-1-local M = {}\nclock.lua:2:function M.render()\nclock.lua-3-  \
-         return os.date()"
+        "keys.ts-1-const M = {};\nkeys.ts:2:M.load = function() {\nkeys.ts-3-  zellij.subscribe([\"Key\"]);\n--\nclock.ts-1-const M = {};\nclock.ts:2:M.render = function() {\nclock.ts-3-  \
+         return new Date().toISOString();"
     );
 }
 
@@ -805,11 +813,11 @@ fn a_search_answers_in_the_shape_search_files_does() {
 /// that is what makes a hit something a `plugin_edit` can be built from without a read.
 #[test]
 fn a_search_hit_is_verbatim_after_the_second_separator() {
-    let source = "function M.load()\n\t  zellij.subscribe { \"key\" }  \nend\n";
-    let hits = search(&[("keys.lua", source)], &search_with("subscribe", 0))
+    let source = "M.load = function() {\n\t  zellij.subscribe([\"Key\"]);  \n};\n";
+    let hits = search(&[("keys.ts", source)], &search_with("subscribe", 0))
         .unwrap()
         .unwrap();
-    assert_eq!(hits, "keys.lua:2:\t  zellij.subscribe { \"key\" }  ");
+    assert_eq!(hits, "keys.ts:2:\t  zellij.subscribe([\"Key\"]);  ");
 }
 
 /// Two hits whose context windows overlap or touch print once, as one group with no separator
@@ -817,12 +825,12 @@ fn a_search_hit_is_verbatim_after_the_second_separator() {
 #[test]
 fn context_lines_never_repeat_a_hit_and_touching_groups_merge() {
     let source = "a\nb\nhit one\nc\nhit two\nd\ne\nf\nhit three\n";
-    let hits = search(&[("x.lua", source)], &search_with("^hit", 1))
+    let hits = search(&[("x.ts", source)], &search_with("^hit", 1))
         .unwrap()
         .unwrap();
     assert_eq!(
         hits,
-        "x.lua-2-b\nx.lua:3:hit one\nx.lua-4-c\nx.lua:5:hit two\nx.lua-6-d\n--\nx.lua-8-f\nx.lua:9:hit three"
+        "x.ts-2-b\nx.ts:3:hit one\nx.ts-4-c\nx.ts:5:hit two\nx.ts-6-d\n--\nx.ts-8-f\nx.ts:9:hit three"
     );
 }
 
@@ -831,12 +839,12 @@ fn context_lines_never_repeat_a_hit_and_touching_groups_merge() {
 #[test]
 fn a_search_is_capped_and_says_how_many_it_left_out() {
     let source = "x\n".repeat(100);
-    let hits = search(&[("x.lua", &source)], &search_with("x", 0))
+    let hits = search(&[("x.ts", &source)], &search_with("x", 0))
         .unwrap()
         .unwrap();
     assert_eq!(
         hits.lines()
-            .filter(|line| line.starts_with("x.lua:"))
+            .filter(|line| line.starts_with("x.ts:"))
             .count(),
         SEARCH_HITS
     );
@@ -853,10 +861,10 @@ fn a_search_is_capped_and_says_how_many_it_left_out() {
 #[test]
 fn a_search_with_no_hits_is_none_so_the_caller_can_say_what_it_searched() {
     assert_eq!(
-        search(&[("x.lua", "return {}\n")], &search_with("zzz", 0)).unwrap(),
+        search(&[("x.ts", "export default {};\n")], &search_with("zzz", 0)).unwrap(),
         None
     );
-    assert_eq!(no_matches(Some("keys"), 1), "no matches in keys.lua");
+    assert_eq!(no_matches(Some("keys"), 1), "no matches in keys.ts");
     assert_eq!(no_matches(None, 7), "no matches in 7 plugins");
 }
 
@@ -864,19 +872,19 @@ fn a_search_with_no_hits_is_none_so_the_caller_can_say_what_it_searched() {
 /// with "no matches", which would send the model looking for a plugin that is not there.
 #[test]
 fn an_invalid_regex_is_answered_with_the_regex_error() {
-    let error = search(&[("x.lua", "return {}\n")], &search_with("(", 0)).unwrap_err();
+    let error = search(&[("x.ts", "export default {};\n")], &search_with("(", 0)).unwrap_err();
     assert!(error.contains("regex parse error"), "{error}");
 }
 
 #[test]
 fn a_case_insensitive_search_finds_either_case() {
-    let files = [("x.lua", "Render\nrender\n")];
+    let files = [("x.ts", "Render\nrender\n")];
     let mut options = search_with("render", 0);
-    assert_eq!(search(&files, &options).unwrap().unwrap(), "x.lua:2:render");
+    assert_eq!(search(&files, &options).unwrap().unwrap(), "x.ts:2:render");
     options.case_insensitive = true;
     assert_eq!(
         search(&files, &options).unwrap().unwrap(),
-        "x.lua:1:Render\nx.lua:2:render"
+        "x.ts:1:Render\nx.ts:2:render"
     );
 }
 
@@ -909,25 +917,20 @@ fn search_options_clamp_context_and_max_results_and_refuse_an_empty_query() {
 /// the page that follows can be a range. Numbers align so the column reads.
 #[test]
 fn an_outline_answer_numbers_every_entry_and_states_the_length() {
-    let source = "local zellij = require(\"zellij\")\nlocal M = {}\n\nfunction M.load(config)\n  \
-                  zellij.request_permission { \"read_files\" }\nend\n\nzellij.on(\"key\", \
-                  function(event)\n  return true\nend)\n\nM.render = function(rows, cols)\n  \
-                  return \"hi\"\nend\nreturn M\n";
+    let source = "import zellij from 'zellij:plugin';\nexport function render() {return 'hi';}\nzellij.requestPermission(['ReadFiles']);\n";
     let answer = outline_answer("keys", source);
-    assert_eq!(
-        answer,
-        "keys.lua: 15 lines\n 1: require \"zellij\"\n 4: function M.load(config)\n 5: \
-         request_permission { \"read_files\" }\n 8: on \"key\"\n12: M.render = function(rows, cols)"
+    assert!(answer.starts_with("keys.ts: 3 lines\n"), "{answer}");
+    assert!(
+        answer.contains("2: function render") && answer.contains("3: permissions: ReadFiles"),
+        "{answer}"
     );
 }
 
-/// A plugin with nothing in it to outline still says how long it is, and an empty file says it
-/// is empty - the two are different things to be told.
 #[test]
 fn an_outline_of_a_plugin_with_nothing_in_it_still_states_its_length() {
-    let answer = outline_answer("probe.lua", "-- just a note\nreturn {}\n");
+    let answer = outline_answer("probe.ts", "// just a note\nexport default {};\n");
     assert!(
-        answer.starts_with("probe.lua: 2 lines; nothing to outline"),
+        answer.starts_with("probe.ts: 2 lines; nothing to outline"),
         "{answer}"
     );
     assert_eq!(outline_answer("probe", ""), "the file is empty");
@@ -941,25 +944,25 @@ fn an_outline_of_a_plugin_with_nothing_in_it_still_states_its_length() {
 fn a_listing_states_each_plugins_length_and_whether_a_backup_exists() {
     let listed = [
         Listed {
-            name: "keys.lua",
+            name: "keys.ts",
             lines: Ok(412),
             backup: true,
         },
         Listed {
-            name: "app/ui.lua",
+            name: "app/ui.ts",
             lines: Ok(1),
             backup: false,
         },
         Listed {
-            name: "broken.lua",
+            name: "broken.ts",
             lines: Err("too big".to_owned()),
             backup: false,
         },
     ];
     assert_eq!(
         listing(&listed),
-        "keys.lua  412 lines  (keys.bak kept from an earlier edit)\napp/ui.lua  1 line\n\
-         broken.lua  unreadable: too big"
+        "keys.ts  412 lines  (keys.bak.ts kept from an earlier edit)\napp/ui.ts  1 line\n\
+         broken.ts  unreadable: too big"
     );
     assert_eq!(listing(&[]), "no plugins yet");
 }
@@ -971,13 +974,13 @@ fn backed_up_names_reads_the_bak_suffix_back_to_the_plugin() {
         metadata: None,
     };
     let entries = [
-        entry("/plugins/keys.bak.lua"),
-        entry("/plugins/keys.lua"),
-        entry("/plugins/app/ui.bak.lua"),
+        entry("/plugins/keys.bak.ts"),
+        entry("/plugins/keys.ts"),
+        entry("/plugins/app/ui.bak.ts"),
     ];
     assert_eq!(
         backed_up_names("/plugins", &entries),
-        vec!["keys.lua", "app/ui.lua"]
+        vec!["keys.ts", "app/ui.ts"]
     );
 }
 
@@ -993,7 +996,7 @@ fn an_edit_report_says_where_the_file_changed() {
     };
     assert_eq!(
         edit_report("keys", &[], &Kept::Nothing, &edited),
-        "edited keys.lua at lines 2-4 (now 12 lines); call plugin_reload to load it"
+        "edited keys.ts at lines 2-4 (now 12 lines); call plugin_reload to load it"
     );
     let two = Edited {
         source: "a\n".repeat(12),
@@ -1005,7 +1008,7 @@ fn an_edit_report_says_where_the_file_changed() {
     let report = edit_report("keys", &[PermissionType::ReadFiles], &Kept::Nothing, &two);
     assert!(
         report.starts_with(
-            "edited keys.lua at line 2, lines 9-10 (now 12 lines) and granted it read_files;"
+            "edited keys.ts at line 2, lines 9-10 (now 12 lines) and granted it read_files;"
         ),
         "{report}"
     );
@@ -1036,10 +1039,10 @@ fn span_list_names_a_deletion_by_its_line_and_caps_at_five() {
 #[test]
 fn a_missing_old_string_that_differs_only_in_whitespace_is_located_and_quoted() {
     let source =
-        "local M = {}\nfunction M.load()\n\tzellij.subscribe { \"key\" }\n\treturn true\nend\n";
+        "const M = {};\nM.load = function() {\n\tzellij.subscribe([\"Key\"]);\n\treturn true\n};\n";
     let report = missing_report(
         source,
-        "function M.load()\n  zellij.subscribe { \"key\" }\n  return true",
+        "M.load = function() {\n  zellij.subscribe([\"Key\"]);\n  return true",
     );
     assert!(
         report.starts_with(
@@ -1048,12 +1051,12 @@ fn a_missing_old_string_that_differs_only_in_whitespace_is_located_and_quoted() 
         "{report}"
     );
     assert!(
-        report.ends_with("function M.load()\n\tzellij.subscribe { \"key\" }\n\treturn true"),
+        report.ends_with("M.load = function() {\n\tzellij.subscribe([\"Key\"]);\n\treturn true"),
         "{report}"
     );
     assert!(!report.contains("plugin_read"), "{report}");
     // A one-line old_string is found anywhere in its line.
-    let one = missing_report(source, "subscribe  {  \"key\"  }");
+    let one = missing_report(source, "subscribe([\"Key\"]);  ");
     assert!(
         one.starts_with(
             "old_string is not in the file exactly, but line 3 matches it apart from whitespace."
@@ -1066,21 +1069,24 @@ fn a_missing_old_string_that_differs_only_in_whitespace_is_located_and_quoted() 
 /// own text from that point is quoted, so the next old_string can be copied rather than guessed.
 #[test]
 fn a_missing_old_string_whose_first_line_exists_is_anchored_there() {
-    let source = "local M = {}\nfunction M.load()\n  zellij.subscribe { \"key\" }\nend\nreturn M\n";
+    let source = "const M = {};\nM.load = function() {\n  zellij.subscribe([\"Key\"]);\n};\nexport default M;\n";
     let report = missing_report(
         source,
-        "function M.load()\n  zellij.subscribe { \"timer\" }",
+        "M.load = function() {\n  zellij.subscribe([\"Timer\"]);",
     );
     assert_eq!(
         report,
         "old_string is not in the file. Its first line is at line 2; the file reads from line \
-         2:\nfunction M.load()\n  zellij.subscribe { \"key\" }\nend\nreturn M"
+         2:\nM.load = function() {\n  zellij.subscribe([\"Key\"]);\n};\nexport default M;"
     );
 }
 
 #[test]
 fn a_missing_old_string_with_no_anchor_falls_back_to_the_read_advice() {
-    let report = missing_report("local M = {}\nreturn M\n", "nothing like this\nat all");
+    let report = missing_report(
+        "const M = {};\nexport default M;\n",
+        "nothing like this\nat all",
+    );
     assert!(report.contains("plugin_read"), "{report}");
 }
 
@@ -1207,7 +1213,7 @@ fn a_batch_edit_renders_each_pair_as_its_own_block() {
     );
     let detail = confirmation_detail(&edit).join("\n");
     assert!(
-        detail.contains("changes keys.lua in your Zellij plugin folder in 5 places"),
+        detail.contains("changes keys.ts in your Zellij plugin folder in 5 places"),
         "{detail}"
     );
     assert!(
@@ -1228,7 +1234,7 @@ fn a_batch_edit_renders_each_pair_as_its_own_block() {
 #[test]
 fn edit_strings_are_required_but_explicit_deletions_are_valid() {
     for (arguments, missing) in [
-        (r#"{"old_string":"a"}"#, "new_string"),
+        (r#"{"name":"keys","old_string":"a"}"#, "new_string"),
         (r#"{"new_string":""}"#, "old_string"),
     ] {
         assert!(args(arguments).edit_batch().unwrap_err().contains(missing));
@@ -1236,7 +1242,7 @@ fn edit_strings_are_required_but_explicit_deletions_are_valid() {
         assert!(Args::parse(&batch).unwrap_err().contains(missing));
     }
     for arguments in [
-        r#"{"old_string":"a","new_string":""}"#,
+        r#"{"name":"keys","old_string":"a","new_string":""}"#,
         r#"{"edits":[{"old_string":"a","new_string":""}]}"#,
     ] {
         let edits = args(arguments).edit_batch().unwrap();
@@ -1244,7 +1250,7 @@ fn edit_strings_are_required_but_explicit_deletions_are_valid() {
         assert_eq!(apply_edits("ab", &edits).unwrap().source, "b");
     }
     for arguments in [
-        r#"{"old_string":"a","edits":[{"old_string":"a","new_string":""}]}"#,
+        r#"{"name":"keys","old_string":"a","edits":[{"old_string":"a","new_string":""}]}"#,
         r#"{"new_string":"","edits":[{"old_string":"a","new_string":""}]}"#,
     ] {
         assert!(args(arguments)

@@ -4,7 +4,7 @@
 //! job, its own wasm `render()` per attached client and its own full re-parse on the screen
 //! thread. The plugin thread now merges the `Update`s waiting on its bus and the wasm bridge
 //! delivers a plugin its whole share of the batch in one job, rendering once at the end. Every
-//! event is still delivered, in order, with its count - the tests here read them back off a Lua
+//! event is still delivered, in order, with its count - the tests here read them back off a TypeScript
 //! plugin that logs each one and renders the log.
 
 #[cfg(test)]
@@ -39,54 +39,27 @@ fn logger_source(permissions: &[&str]) -> String {
         .join(", ");
     format!(
         r#"
-    local zellij = require("zellij")
-    local M = {{}}
-    local lines = {{}}
-    local function log(s) lines[#lines + 1] = s end
-    function M.load()
-      zellij.subscribe {{ "mouse", "key", "permission_request_result" }}
-      if #{{{permissions}}} > 0 then zellij.request_permission {{{permissions}}} end
-      log("ready")
-    end
-    function M.update(event)
-      local client = zellij.get_plugin_ids().client_id
-      if event.name == "permission_request_result" then
-        log("granted")
-        return true
-      elseif event.name == "mouse" then
-        local at = event.lines and tostring(event.lines) or (event.line .. "," .. event.col)
-        log(event.kind .. " " .. at .. " client=" .. client)
-        return true
-      elseif event.name == "key" then
-        log("key " .. event.key .. " client=" .. client)
-        if event.key == "u" then
-          zellij.unblock_cli_pipe_input("batch_pipe")
-          return false
-        elseif event.key == "b" then
-          zellij.block_cli_pipe_input("batch_pipe")
-          return false
-        elseif event.key == "e" then
-          error("boom")
-        end
-        return true
-      end
-      return false
-    end
-    function M.pipe(message)
-      log("pipe " .. message.name)
-      zellij.block_cli_pipe_input("batch_pipe")
-      return true
-    end
-    -- The size and the acting client head every frame, before the log, so that
-    -- `logged_after_ready` never sees them. A shared plugin is rendered once per
-    -- client off one instance, and the head is how a test reads back the size
-    -- each of those passes was given.
-    function M.render(rows, cols)
-      local head = "size " .. rows .. "x" .. cols
-        .. " client=" .. zellij.get_plugin_ids().client_id
-      return head .. "\n" .. table.concat(lines, "\n")
-    end
-    return M
+import zellij from 'zellij:plugin';
+const lines=[];
+const log=s => lines.push(s);
+export default {{
+  load() {{zellij.subscribe(['Mouse','Key','PermissionRequestResult']); if ([{permissions}].length) zellij.requestPermission([{permissions}]); log('ready');}},
+  update(raw) {{
+    const event=zellij.event(raw), client=zellij.getPluginIds().client_id;
+    if (event.type === 'PermissionRequestResult') {{log('granted'); return true;}}
+    if (event.type === 'Mouse') {{const at=event.lines ?? (event.line+','+event.col); log(event.kind+' '+at+' client='+client); return true;}}
+    if (event.type === 'Key') {{
+      log('key '+event.key+' client='+client);
+      if (event.key === 'u') {{zellij.host.unblockCliPipeInput('batch_pipe'); return false;}}
+      if (event.key === 'b') {{zellij.host.blockCliPipeInput('batch_pipe'); return false;}}
+      if (event.key === 'e') throw Error('boom');
+      return true;
+    }}
+    return false;
+  }},
+  pipe(message) {{log('pipe '+message.name); zellij.host.blockCliPipeInput('batch_pipe'); return true;}},
+  render(rows,cols) {{return `size ${{rows}}x${{cols}} client=${{zellij.getPluginIds().client_id}}\n`+lines.join('\n');}}
+}};
 "#
     )
 }
@@ -164,7 +137,7 @@ impl Harness {
     }
 
     fn load_logger(&self, configuration: &[(&str, &str)], permissions: &[&str]) {
-        let path = self.dir.path().join("logger.lua");
+        let path = self.dir.path().join("logger.ts");
         std::fs::write(&path, logger_source(permissions)).unwrap();
         let url = format!("file:{}", path.display());
         let mut run_plugin =
@@ -310,10 +283,10 @@ pub fn a_batch_of_scrolls_renders_once() {
 
     harness.update((0..20).map(|_| (ClientId::new(1), scroll_up(3))).collect());
 
-    let frame = harness.wait_for(&format!("{}", "scroll_up 3 client=1\n".repeat(19)));
+    let frame = harness.wait_for(&format!("{}", "ScrollUp 3 client=1\n".repeat(19)));
     assert_eq!(
         logged_after_ready(&frame),
-        vec!["scroll_up 3 client=1"; 20],
+        vec!["ScrollUp 3 client=1"; 20],
         "every notch was delivered, in order, with its count"
     );
     // Counting renders is the point here, and the count is a property of the code rather than of
@@ -329,7 +302,7 @@ pub fn a_batch_of_scrolls_renders_once() {
     let renders_of_the_batch = harness
         .plugin_bytes()
         .into_iter()
-        .filter(|assets| assets.iter().any(|(_, frame)| frame.contains("scroll_up")))
+        .filter(|assets| assets.iter().any(|(_, frame)| frame.contains("ScrollUp")))
         .count();
     assert_eq!(
         renders_of_the_batch, 1,
@@ -350,13 +323,13 @@ pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
         (crate::ClientId::new(1), scroll_up(3)),
     ]);
 
-    let frame = harness.wait_for("key x client=2\nscroll_up 3 client=1");
+    let frame = harness.wait_for("key x client=2\nScrollUp 3 client=1");
     assert_eq!(
         logged_after_ready(&frame),
         vec![
-            "scroll_up 3 client=1",
+            "ScrollUp 3 client=1",
             "key x client=2",
-            "scroll_up 3 client=1"
+            "ScrollUp 3 client=1"
         ],
         "each event ran as the client it was directed at"
     );
@@ -364,7 +337,7 @@ pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
     let renders_of_the_batch: Vec<_> = harness
         .plugin_bytes()
         .into_iter()
-        .filter(|assets| assets.iter().any(|(_, frame)| frame.contains("scroll_up")))
+        .filter(|assets| assets.iter().any(|(_, frame)| frame.contains("ScrollUp")))
         .collect();
     assert_eq!(renders_of_the_batch.len(), 1, "one render for the batch");
     let mut clients: Vec<_> = renders_of_the_batch[0]
@@ -397,11 +370,11 @@ pub fn a_shared_plugin_renders_every_client_at_one_size() {
 
     harness.update(vec![(crate::ClientId::new(1), scroll_up(3))]);
 
-    harness.wait_for("scroll_up 3 client=1");
+    harness.wait_for("ScrollUp 3 client=1");
     let batch = harness
         .plugin_bytes()
         .into_iter()
-        .find(|assets| assets.iter().any(|(_, frame)| frame.contains("scroll_up")))
+        .find(|assets| assets.iter().any(|(_, frame)| frame.contains("ScrollUp")))
         .expect("the batch rendered");
 
     let mut heads: Vec<(&str, &str)> = batch
@@ -426,7 +399,7 @@ pub fn a_shared_plugin_renders_every_client_at_one_size() {
 #[serial(plugin_tests)]
 pub fn a_batch_that_renders_nothing_still_unblocks_cli_pipes() {
     let harness = Harness::new();
-    harness.load_logger(&[], &["read_cli_pipes"]);
+    harness.load_logger(&[], &["ReadCliPipes"]);
 
     harness.cli_pipe("hold");
     harness.wait_for("pipe hold");
@@ -461,7 +434,7 @@ pub fn a_batch_that_renders_nothing_still_unblocks_cli_pipes() {
 #[serial(plugin_tests)]
 pub fn an_error_mid_batch_still_delivers_the_unblocks_before_it() {
     let harness = Harness::new();
-    harness.load_logger(&[], &["read_cli_pipes"]);
+    harness.load_logger(&[], &["ReadCliPipes"]);
 
     harness.cli_pipe("hold");
     harness.wait_for("pipe hold");
@@ -486,7 +459,7 @@ pub fn an_error_mid_batch_still_delivers_the_unblocks_before_it() {
 #[serial(plugin_tests)]
 pub fn the_last_change_to_a_pipe_in_a_batch_wins() {
     let harness = Harness::new();
-    harness.load_logger(&[], &["read_cli_pipes"]);
+    harness.load_logger(&[], &["ReadCliPipes"]);
 
     harness.cli_pipe("hold");
     harness.wait_for("pipe hold");
@@ -532,10 +505,10 @@ pub fn hovers_in_a_batch_keep_only_the_last() {
     batch.push((crate::ClientId::new(1), scroll_up(3)));
     harness.update(batch);
 
-    let frame = harness.wait_for("scroll_up 3 client=1");
+    let frame = harness.wait_for("ScrollUp 3 client=1");
     assert_eq!(
         logged_after_ready(&frame),
-        vec!["hover 5,5 client=1", "scroll_up 3 client=1"],
+        vec!["Hover 5,5 client=1", "ScrollUp 3 client=1"],
         "the stale samples were dropped, the newest and the scroll kept"
     );
 }
@@ -673,14 +646,14 @@ fn reload_by_url_of(url: &str) -> PluginInstruction {
 #[test]
 pub fn adjacent_reloads_of_one_plugin_collapse_to_one() {
     let bus = bus_with(vec![
-        reload_of("file:/plugins/keys.lua"),
-        reload_of("file:/plugins/keys.lua"),
+        reload_of("file:/plugins/keys.ts"),
+        reload_of("file:/plugins/keys.ts"),
         update_of(&[scroll_up(1)]),
-        reload_of("file:/plugins/keys.lua"),
+        reload_of("file:/plugins/keys.ts"),
     ]);
     let mut queued = None;
 
-    let (taken, _) = drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+    let (taken, _) = drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
 
     assert!(matches!(taken, PluginInstruction::Reload(..)));
     assert!(
@@ -698,14 +671,14 @@ pub fn adjacent_reloads_of_one_plugin_collapse_to_one() {
 #[test]
 pub fn a_reload_of_another_plugin_or_kind_stops_the_drain() {
     let bus = bus_with(vec![
-        reload_of("file:/plugins/other.lua"),
-        reload_of("file:/plugins/keys.lua"),
+        reload_of("file:/plugins/other.ts"),
+        reload_of("file:/plugins/keys.ts"),
     ]);
     let mut queued = None;
-    drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+    drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
     assert!(
         matches!(&queued, Some((PluginInstruction::Reload(_, _, run, _, _, _), _))
-            if run.location_string().ends_with("other.lua")),
+            if run.location_string().ends_with("other.ts")),
         "got {queued:?}"
     );
     assert!(
@@ -713,9 +686,9 @@ pub fn a_reload_of_another_plugin_or_kind_stops_the_drain() {
         "nothing past the stop was touched"
     );
 
-    let bus = bus_with(vec![reload_by_url_of("file:/plugins/keys.lua")]);
+    let bus = bus_with(vec![reload_by_url_of("file:/plugins/keys.ts")]);
     let mut queued = None;
-    drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+    drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
     assert!(
         matches!(queued, Some((PluginInstruction::ReloadPluginByUrl(_), _))),
         "a by-url reload is not the same instruction as a pane reload"
@@ -731,7 +704,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
             Some(true), // floating rather than tiled
             None,
             zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
-                "file:/plugins/keys.lua",
+                "file:/plugins/keys.ts",
                 &None,
                 None,
                 None,
@@ -745,7 +718,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
             Some(false),
             Some("titled".to_owned()),
             zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
-                "file:/plugins/keys.lua",
+                "file:/plugins/keys.ts",
                 &None,
                 None,
                 None,
@@ -759,7 +732,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
             Some(false),
             None,
             zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
-                "file:/plugins/keys.lua",
+                "file:/plugins/keys.ts",
                 &None,
                 None,
                 None,
@@ -773,7 +746,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
     for other in differing {
         let bus = bus_with(vec![other]);
         let mut queued = None;
-        drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+        drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
         assert!(
             matches!(queued, Some((PluginInstruction::Reload(..), _))),
             "a reload with other pane arguments is left for its own turn, got {queued:?}"
@@ -788,7 +761,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
 pub fn collapsed_reloads_hand_their_completion_handles_to_the_caller() {
     let run = || {
         zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
-            "file:/plugins/keys.lua",
+            "file:/plugins/keys.ts",
             &None,
             None,
             None,
@@ -808,7 +781,7 @@ pub fn collapsed_reloads_hand_their_completion_handles_to_the_caller() {
     let mut queued = None;
 
     let (_first, completions) =
-        drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+        drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
 
     assert_eq!(
         completions.len(),
@@ -888,7 +861,7 @@ pub fn collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin() 
     let run_plugin = || {
         RunPluginOrAlias::RunPlugin(RunPlugin {
             _allow_exec_host_cmd: false,
-            location: RunPluginLocation::File(PathBuf::from(&*LUA_PLUGIN_FIXTURE)),
+            location: RunPluginLocation::File(PathBuf::from(&*SCRIPT_PLUGIN_FIXTURE)),
             configuration: PluginUserConfiguration::new(BTreeMap::new()),
             ..Default::default()
         })

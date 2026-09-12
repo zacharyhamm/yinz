@@ -1895,7 +1895,7 @@ use crate::command::{CommandToRun, PaneTarget};
 
 /// What a headless hook point hands the plugin bound to it, typed per point.
 ///
-/// Untagged on the wire a plugin reads (`zellij events`, a Lua plugin's `event.payload`), so a
+/// Untagged on the wire a plugin reads (`zellij events`, a TypeScript plugin's `event.payload`), so a
 /// hook reads `payload.pane_id` and `payload.agent.state` rather than a variant name; the
 /// variants are told apart by the fields only one of them has. The `agent_exit` point is the
 /// exception to all of this: its plugin is opened *in place of* the pane, and its payload is
@@ -2616,8 +2616,8 @@ type Context = BTreeMap<String, String>;
 
 /// Bytes that may be written as a string.
 ///
-/// `PluginCommand`'s serde representation exists for exactly one caller - the Lua runtime, which
-/// builds commands with `from_value` (the wasm side uses protobuf and never touches this). Lua
+/// `PluginCommand`'s serde representation exists for exactly one caller - the TypeScript runtime, which
+/// builds commands with `from_value` (the wasm side uses protobuf and never touches this). TypeScript
 /// has no byte-array type: text and bytes are both the one string type. So a plugin writing
 /// `zellij.fs.write(path, "hello")` hands over a string, and the default `Vec<u8>` deserializer,
 /// which wants a sequence of numbers, would refuse it.
@@ -2821,7 +2821,7 @@ pub enum PluginCommand {
     ///
     /// This and its `Fs*` siblings are the deliberate counterpart to the wasm runtime's WASI
     /// preopens: a wasm plugin reaches `/host`, `/data`, `/cache` and `/tmp` through `std::fs`,
-    /// and a plugin with no filesystem of its own (Lua) reaches the same four roots through
+    /// and a plugin with no filesystem of its own (TypeScript) reaches the same four roots through
     /// these. Paths are resolved and confined by `resolve_plugin_fs_path` on the server, which,
     /// unlike `translate_plugin_path`, refuses a path that escapes its root. Reaching outside the
     /// four roots needs `FullHdAccess` on top of the read/write permission.
@@ -3234,19 +3234,15 @@ pub enum PluginCommand {
         success: bool,
         payload: Option<String>,
     },
-    /// Compile `source` as a Lua plugin without running it, and answer with the compile error if
+    /// Compile `source` as a TypeScript plugin without running it, and answer with the compile error if
     /// there is one. `name` is what the error names, as the loader's own error would
-    /// (`keys.lua:3: ...`). Nothing is written or loaded: this is the check a writer runs before
+    /// (`keys.ts:3: ...`). Nothing is written or loaded: this is the check a writer runs before
     /// a reload, so a plugin that cannot parse is refused where the writer can see it rather than
     /// reported in a pane nobody is looking at.
     CheckPlugin {
         name: String,
         source: String,
         mode: crate::authoring::PluginCheckMode,
-    },
-    CheckLuaPlugin {
-        name: String,
-        source: String,
     },
     /// Set what agent runs in `pane_id` and what it is doing, or clear it with `None`. The
     /// record replaces the pane's whole one; every reader of the manifest sees it next report.
@@ -3332,7 +3328,7 @@ pub enum PluginCommand {
     /// a pane. Fires `BeforeClose` on the old instance first, for state worth keeping.
     ReloadPluginByUrl(String),
     /// The last `lines` lines of zellij's own log about the plugin `name`: what its
-    /// `zellij.log`/`print` wrote, tagged `[lua:<file>]`, and any loader error naming its file.
+    /// `zellij.log`/`console` wrote, tagged `[deno:<file>]`, and any loader error naming its file.
     /// `name` is a plugin name as `plugin_write` spells it (`keys`, `hocus/weather`), resolved in
     /// the user's plugin folder the way `zellij plugins log` resolves it, or a builtin's tag.
     ///

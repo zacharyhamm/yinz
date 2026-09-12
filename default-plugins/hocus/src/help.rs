@@ -371,37 +371,37 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_list",
-        "Show the TypeScript and Lua plugins of the user, with the length of each one, and which of them have a .bak file from an earlier edit.",
+        "Show the TypeScript and JavaScript plugins of the user, with the length of each one, and which of them have a .bak file from an earlier edit.",
     ),
     (
         "plugin_outline",
-        "Show the shape of one TypeScript or Lua plugin without its code: every function, every zellij.on handler, every require, every permission request, every data.define and every hocus tool, each with its line number. Use these line numbers to read only the part you need.",
+        "Show the shape of one TypeScript or JavaScript plugin without its code: every function, every zellij.on handler, every import, every permission request, every data.define and every hocus tool, each with its line number. Use these line numbers to read only the part you need.",
     ),
     (
         "plugin_search",
-        "Search the TypeScript and Lua plugins of the user with a regular expression. Each hit gives file:LINE:text, and each context line gives file-LINE-text, with two hyphens between the groups. The text after the second separator is the line exactly as it is in the file: copy that text, and not the prefix, into the old_string of plugin_edit. The answer gives 40 hits, and 200 with max_results; context is 0 lines, and 10 at the most. A search of every plugin stops after a number of files, and says how many files it left out.",
+        "Search the TypeScript and JavaScript plugins of the user with a regular expression. Each hit gives file:LINE:text, and each context line gives file-LINE-text, with two hyphens between the groups. The text after the second separator is the line exactly as it is in the file: copy that text, and not the prefix, into the old_string of plugin_edit. The answer gives 40 hits, and 200 with max_results; context is 0 lines, and 10 at the most. A search of every plugin stops after a number of files, and says how many files it left out.",
     ),
     ("project_config_read", "Read the active project workflow settings and their exact source. Missing configuration has a null source. Invalid configuration returns an error."),
     ("project_config_write", "Validate and write .zellij/swamp-workflows.kdl after confirmation. Supply the complete source and the exact previous source as expected, or null for an absent file. Stale changes are refused. This does not execute CI or grant permissions."),
     (
         "plugin_read",
-        "Read one TypeScript or Lua plugin of the user. Use explicit .ts filenames for new plugins. Extensionless names select Lua. The tool reads 300 lines from start_line. Use plugin_outline or plugin_search first, then read only the range that you must change.",
+        "Read one TypeScript or JavaScript plugin of the user. Use explicit .ts filenames for new plugins. Extensionless names select TypeScript. The tool reads 300 lines from start_line. Use plugin_outline or plugin_search first, then read only the range that you must change.",
     ),
     (
         "plugin_check",
-        "Check a TypeScript, JavaScript or Lua source, but write nothing and load nothing; JS/TS also checks types and local imports. Use this to try a correction before you write it. Hocus makes this check for the model, and refuses a source that fails; a plugin_write that you type is not checked, thus check it yourself. A source that checks can still fail at load; plugin_reload shows that.",
+        "Check a TypeScript or JavaScript source, but write nothing and load nothing; JS/TS also checks types and local imports. Use this to try a correction before you write it. Hocus makes this check for the model, and refuses a source that fails; a plugin_write that you type is not checked, thus check it yourself. A source that checks can still fail at load; plugin_reload shows that.",
     ),
     (
         "plugin_write",
-        "Write a complete TypeScript plugin with an explicit .ts filename. Lua remains supported. The source is the whole file, not a patch. Overwrite is necessary to replace a file that exists, and the earlier version stays as <name>.bak. The name can be folder/module, for a file that a plugin loads with require. Approval of the write also grants the permissions that the source asks for. Hocus compiles the source of the model first, and refuses a source that fails; a write that you type goes to disk uncompiled, thus use plugin_check first. Use plugin_reload after this, and plugin_edit to change a plugin that works.",
+        "Write a complete TypeScript plugin with an explicit .ts filename. The source is the whole file, not a patch. Overwrite is necessary to replace a file that exists, and the earlier version stays as <name>.bak. The name can be folder/module, for a file that a plugin imports. Approval of the write also grants the permissions that the source asks for. Hocus compiles the source of the model first, and refuses a source that fails; a write that you type goes to disk uncompiled, thus use plugin_check first. Use plugin_reload after this, and plugin_edit to change a plugin that works.",
     ),
     (
         "plugin_edit",
-        "Change a part of a TypeScript or Lua plugin. The old_string becomes the new_string, and the old_string must match the file exactly and one time only, unless you set replace_all. Give edits for more than one change under one approval. Hocus compiles the result, and writes nothing if any change misses or the result does not compile. The earlier version stays as <name>.bak, unless the new file is the same as the old one.",
+        "Change a part of a TypeScript or JavaScript plugin. The old_string becomes the new_string, and the old_string must match the file exactly and one time only, unless you set replace_all. Give edits for more than one change under one approval. Hocus compiles the result, and writes nothing if any change misses or the result does not compile. The earlier version stays as <name>.bak, unless the new file is the same as the old one.",
     ),
     (
         "plugin_reload",
-        "Load one TypeScript or Lua plugin of the user again. A plugin that does not run opens in a pane, and the answer gives the pane ID and the first thing the plugin shows. A plugin in an extension namespace loads without a pane, and the answer says whether it registered its hocus tools. A name with no file is an error. Use plugin_log to see what the plugin wrote.",
+        "Load one TypeScript or JavaScript plugin of the user again. A plugin that does not run opens in a pane, and the answer gives the pane ID and the first thing the plugin shows. A plugin in an extension namespace loads without a pane, and the answer says whether it registered its hocus tools. A name with no file is an error. Use plugin_log to see what the plugin wrote.",
     ),
     (
         "plugin_log",

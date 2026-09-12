@@ -1,7 +1,7 @@
 # Notes and todos from the command line
 
 Coding agents and shell scripts can use `zellij action` to read and update the
-same notes and todo trees as Hocus and the Lua notes/todo panes. The selected
+same notes and todo trees as Hocus and the TypeScript notes/todo panes. The selected
 session must have `hocus-store` loaded. Data persists in the shared plugin store
 and survives plugin reloads.
 

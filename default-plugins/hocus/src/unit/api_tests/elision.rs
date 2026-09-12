@@ -64,8 +64,8 @@ fn wire_tool_results(body: &serde_json::Value) -> Vec<String> {
 /// about is the 4-12 KB file a real plugin is.
 fn draft(marker: &str) -> String {
     format!(
-        "-- {marker}\nlocal M = {{}}\n{}return M\n",
-        "local function helper() return 1 end\n".repeat(60)
+        "// {marker}\nconst M = {{}};\n{}export default M;\n",
+        "function helper() { return 1; }\n".repeat(60)
     )
 }
 
@@ -73,7 +73,7 @@ const DRAFT: &str = "draft one";
 const FINAL: &str = "draft two, with the feature";
 
 /// The single largest thing in a plugin-authoring transcript: a `plugin_write` carries the
-/// complete Lua source in its arguments, and those arguments are echoed back on every later
+/// complete TypeScript source in its arguments, and those arguments are echoed back on every later
 /// request for the rest of the conversation. Five rounds of write-reload-fix used to re-upload
 /// four drafts nobody would read again.
 #[test]
@@ -81,10 +81,10 @@ fn a_superseded_write_sends_a_placeholder_instead_of_the_source() {
     let cfg = test_config();
     let transcript = vec![
         Message::user("write me a plugin"),
-        write("c1", "todo.lua", &draft(DRAFT)),
-        result("c1", "wrote todo.lua"),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c1", "todo.ts", &draft(DRAFT)),
+        result("c1", "wrote todo.ts"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
@@ -108,10 +108,10 @@ fn a_superseded_write_sends_a_placeholder_instead_of_the_source() {
 fn a_write_is_only_superseded_by_a_write_of_the_same_file() {
     let cfg = test_config();
     let transcript = vec![
-        write("c1", "todo.lua", &draft(DRAFT)),
-        result("c1", "wrote todo.lua"),
-        write("c2", "clock.lua", &draft("the clock")),
-        result("c2", "wrote clock.lua"),
+        write("c1", "todo.ts", &draft(DRAFT)),
+        result("c1", "wrote todo.ts"),
+        write("c2", "clock.ts", &draft("the clock")),
+        result("c2", "wrote clock.ts"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
@@ -120,16 +120,16 @@ fn a_write_is_only_superseded_by_a_write_of_the_same_file() {
     assert!(arguments[1].contains("the clock"), "{}", arguments[1]);
 }
 
-/// `.lua` is optional everywhere the tools take a name, so the two spellings have to be the
+/// `.ts` is optional everywhere the tools take a name, so the two spellings have to be the
 /// same file here or half the supersessions would be missed.
 #[test]
-fn the_lua_suffix_does_not_make_it_a_different_file() {
+fn the_typescript_suffix_does_not_make_it_a_different_file() {
     let cfg = test_config();
     let transcript = vec![
         write("c1", "todo", &draft(DRAFT)),
-        result("c1", "wrote todo.lua"),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        result("c1", "wrote todo.ts"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
@@ -138,10 +138,10 @@ fn the_lua_suffix_does_not_make_it_a_different_file() {
 }
 
 /// A TypeScript name is the file's whole identity, extension included, and the note that
-/// stands in for its earlier version has to spell it as it is on disk - not `clock.ts.lua`,
+/// stands in for its earlier version has to spell it as it is on disk - not `clock.ts.ts`,
 /// which is a file that does not exist and a `plugin_read` that would fail.
 #[test]
-fn a_typescript_write_is_superseded_without_growing_a_lua_suffix() {
+fn a_typescript_write_is_superseded_without_growing_an_extra_suffix() {
     let cfg = test_config();
     let transcript = vec![
         write("c1", "clock.ts", &draft(DRAFT)),
@@ -158,19 +158,19 @@ fn a_typescript_write_is_superseded_without_growing_a_lua_suffix() {
         "{}",
         arguments[0]
     );
-    assert!(!arguments[0].contains("clock.ts.lua"), "{}", arguments[0]);
+    assert!(!arguments[0].contains("clock.ts.ts"), "{}", arguments[0]);
 }
 
-/// The `.lua` suffix is the one that is optional. `todo` is `todo.lua`; `todo.ts` is another
+/// The `.ts` suffix is the one that is optional. `todo` is `todo.ts`; `todo.js` is another
 /// file, and a write of one says nothing about the other.
 #[test]
-fn a_ts_file_and_the_extensionless_lua_name_are_different_subjects() {
+fn a_js_file_and_an_extensionless_typescript_name_are_different_subjects() {
     let cfg = test_config();
     let transcript = vec![
         write("c1", "todo", &draft(DRAFT)),
-        result("c1", "wrote todo.lua"),
-        write("c2", "todo.ts", &draft(FINAL)),
-        result("c2", "wrote todo.ts"),
+        result("c1", "wrote todo.ts"),
+        write("c2", "todo.js", &draft(FINAL)),
+        result("c2", "wrote todo.js"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
@@ -189,24 +189,24 @@ fn an_edit_is_superseded_by_a_later_write_of_the_same_file() {
             "c1",
             "plugin_edit",
             serde_json::json!({
-                "name": "todo.lua",
-                "old_string": "return M",
+                "name": "todo.ts",
+                "old_string": "export default M;",
                 // An edit that inserts a block, which is the shape of edit big enough to be
                 // worth eliding. A one-line edit is smaller than the placeholder and is left
                 // exactly as it is - see `stale_arguments`.
-                "new_string": draft("setmetatable"),
+                "new_string": draft("Object.assign"),
             }),
         ),
-        result("c1", "edited todo.lua"),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        result("c1", "edited todo.ts"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
 
-    assert!(!arguments[0].contains("setmetatable"), "{}", arguments[0]);
+    assert!(!arguments[0].contains("Object.assign"), "{}", arguments[0]);
     assert!(
-        arguments[0].contains("todo.lua"),
+        arguments[0].contains("todo.ts"),
         "the name survives, so the call still says which file it was about: {}",
         arguments[0]
     );
@@ -221,15 +221,15 @@ fn a_read_is_superseded_by_a_later_read_or_change_of_the_same_file() {
         plugin_call(
             "c1",
             "plugin_read",
-            serde_json::json!({ "name": "todo.lua" }),
+            serde_json::json!({ "name": "todo.ts" }),
         ),
         result("c1", &bulky("the old file")),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
         plugin_call(
             "c3",
             "plugin_read",
-            serde_json::json!({ "name": "todo.lua" }),
+            serde_json::json!({ "name": "todo.ts" }),
         ),
         result("c3", &bulky("the new file")),
     ];
@@ -242,7 +242,7 @@ fn a_read_is_superseded_by_a_later_read_or_change_of_the_same_file() {
         "{}",
         results[0]
     );
-    assert_eq!(results[1], "wrote todo.lua", "reports are small; they stay");
+    assert_eq!(results[1], "wrote todo.ts", "reports are small; they stay");
     assert!(results[2].contains("the new file"), "{}", results[2]);
 }
 
@@ -256,19 +256,19 @@ fn paging_through_a_file_keeps_every_page() {
         plugin_call(
             "c1",
             "plugin_read",
-            serde_json::json!({ "name": "todo.lua" }),
+            serde_json::json!({ "name": "todo.ts" }),
         ),
         result("c1", &bulky("page one")),
         plugin_call(
             "c2",
             "plugin_read",
-            serde_json::json!({ "name": "todo.lua", "start_line": 301 }),
+            serde_json::json!({ "name": "todo.ts", "start_line": 301 }),
         ),
         result("c2", &bulky("page two")),
         plugin_call(
             "c3",
             "plugin_read",
-            serde_json::json!({ "name": "todo.lua", "start_line": 601 }),
+            serde_json::json!({ "name": "todo.ts", "start_line": 601 }),
         ),
         result("c3", &bulky("page three")),
     ];
@@ -285,7 +285,7 @@ fn paging_through_a_file_keeps_every_page() {
 #[test]
 fn the_same_page_read_twice_is_sent_once() {
     let cfg = test_config();
-    let page = serde_json::json!({ "name": "todo.lua", "start_line": 301, "line_count": 300 });
+    let page = serde_json::json!({ "name": "todo.ts", "start_line": 301, "line_count": 300 });
     let transcript = vec![
         plugin_call("c1", "plugin_read", page.clone()),
         result("c1", &bulky("the first look")),
@@ -310,18 +310,18 @@ fn a_page_a_write_invalidated_is_recovered_at_its_own_line() {
         plugin_call(
             "c1",
             "plugin_read",
-            serde_json::json!({ "name": "todo.lua", "start_line": 301 }),
+            serde_json::json!({ "name": "todo.ts", "start_line": 301 }),
         ),
         result("c1", &bulky("the old page")),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let results = wire_tool_results(&body_value(&cfg, &transcript));
 
     assert!(!results[0].contains("the old page"), "{}", results[0]);
     assert!(
-        results[0].contains("plugin_read name=todo start_line=301"),
+        results[0].contains("plugin_read name=todo.ts start_line=301"),
         "{}",
         results[0]
     );
@@ -334,14 +334,14 @@ fn a_page_a_write_invalidated_is_recovered_at_its_own_line() {
 fn a_check_does_not_supersede_the_write_it_is_checking() {
     let cfg = test_config();
     let transcript = vec![
-        write("c1", "todo.lua", &draft(FINAL)),
-        result("c1", "wrote todo.lua"),
+        write("c1", "todo.ts", &draft(FINAL)),
+        result("c1", "wrote todo.ts"),
         plugin_call(
             "c2",
             "plugin_check",
-            serde_json::json!({ "name": "todo.lua" }),
+            serde_json::json!({ "name": "todo.ts" }),
         ),
-        result("c2", "todo.lua compiles"),
+        result("c2", "todo.ts compiles"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
@@ -360,16 +360,16 @@ fn the_last_call_of_a_batch_is_the_one_that_stands() {
             call(
                 "c1",
                 "plugin_write",
-                &serde_json::json!({ "name": "todo.lua", "source": draft(DRAFT) }).to_string(),
+                &serde_json::json!({ "name": "todo.ts", "source": draft(DRAFT) }).to_string(),
             ),
             call(
                 "c2",
                 "plugin_write",
-                &serde_json::json!({ "name": "todo.lua", "source": draft(FINAL) }).to_string(),
+                &serde_json::json!({ "name": "todo.ts", "source": draft(FINAL) }).to_string(),
             ),
         ]),
-        result("c1", "wrote todo.lua"),
-        result("c2", "wrote todo.lua"),
+        result("c1", "wrote todo.ts"),
+        result("c2", "wrote todo.ts"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
@@ -387,13 +387,13 @@ fn a_reload_dump_is_superseded_by_a_later_reload_of_the_same_plugin() {
         plugin_call(
             "c1",
             "plugin_reload",
-            serde_json::json!({ "name": "todo.lua" }),
+            serde_json::json!({ "name": "todo.ts" }),
         ),
         result("c1", &bulky("first render")),
         plugin_call(
             "c2",
             "plugin_reload",
-            serde_json::json!({ "name": "todo.lua" }),
+            serde_json::json!({ "name": "todo.ts" }),
         ),
         result("c2", &bulky("second render")),
     ];
@@ -446,10 +446,10 @@ fn a_repeated_docs_section_is_sent_once() {
 fn an_elided_body_is_still_a_well_formed_request() {
     let cfg = test_config();
     let transcript = vec![
-        write("c1", "todo.lua", &draft(DRAFT)),
-        result("c1", "wrote todo.lua"),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c1", "todo.ts", &draft(DRAFT)),
+        result("c1", "wrote todo.ts"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let body = body_value(&cfg, &transcript);
@@ -476,10 +476,10 @@ fn an_elided_body_is_still_a_well_formed_request() {
 fn elision_never_touches_the_transcript() {
     let cfg = test_config();
     let transcript = vec![
-        write("c1", "todo.lua", &draft(DRAFT)),
-        result("c1", "wrote todo.lua"),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c1", "todo.ts", &draft(DRAFT)),
+        result("c1", "wrote todo.ts"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
     let before = transcript.clone();
 
@@ -496,10 +496,10 @@ fn elision_leaves_the_responses_item_order_alone() {
     let mut cfg = test_config();
     cfg.api = Api::Responses;
     let transcript = vec![
-        write("c1", "todo.lua", &draft(DRAFT)),
-        result("c1", "wrote todo.lua"),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c1", "todo.ts", &draft(DRAFT)),
+        result("c1", "wrote todo.ts"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let body: serde_json::Value = serde_json::from_slice(&request_body(&cfg, &transcript)).unwrap();
@@ -534,24 +534,28 @@ fn elision_leaves_the_responses_item_order_alone() {
 fn something_smaller_than_the_placeholder_is_left_alone() {
     let cfg = test_config();
     let transcript = vec![
-        write("c1", "todo.lua", "return {}\n"),
-        result("c1", "wrote todo.lua"),
-        write("c2", "todo.lua", "return { 1 }\n"),
-        result("c2", "wrote todo.lua"),
+        write("c1", "todo.ts", "export default {};\n"),
+        result("c1", "wrote todo.ts"),
+        write("c2", "todo.ts", "export default [1];\n"),
+        result("c2", "wrote todo.ts"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
 
-    assert!(arguments[0].contains("return {}"), "{}", arguments[0]);
+    assert!(
+        arguments[0].contains("export default {};"),
+        "{}",
+        arguments[0]
+    );
     assert_eq!(
         request_body(&cfg, &transcript).len(),
         {
             // The same body the un-elided builder would produce, since nothing was elided.
             let plain = vec![
-                write("c1", "todo.lua", "return {}\n"),
-                result("c1", "wrote todo.lua"),
-                write("c2", "todo.lua", "return { 1 }\n"),
-                result("c2", "wrote todo.lua"),
+                write("c1", "todo.ts", "export default {};\n"),
+                result("c1", "wrote todo.ts"),
+                write("c2", "todo.ts", "export default [1];\n"),
+                result("c2", "wrote todo.ts"),
             ];
             request_body(&cfg, &plain).len()
         },
@@ -568,11 +572,11 @@ fn a_call_with_unparseable_arguments_is_left_alone() {
         Message::tool_calls(vec![call(
             "c1",
             "plugin_write",
-            "{\"name\": \"todo.lua\", \"sou",
+            "{\"name\": \"todo.ts\", \"sou",
         )]),
         result("c1", "arguments were not valid JSON"),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
@@ -595,8 +599,8 @@ fn the_breakdown_names_the_biggest_contributors() {
             serde_json::json!({ "section": "data" }),
         ),
         result("c1", &bulky("the data section")),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c2", "todo.ts", &draft(FINAL).repeat(2)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let rows = wire_breakdown(&transcript, 3);
@@ -615,10 +619,10 @@ fn the_breakdown_names_the_biggest_contributors() {
 #[test]
 fn the_breakdown_reports_the_elided_sizes() {
     let transcript = vec![
-        write("c1", "todo.lua", &draft(DRAFT)),
-        result("c1", "wrote todo.lua"),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c1", "todo.ts", &draft(DRAFT)),
+        result("c1", "wrote todo.ts"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let rows = wire_breakdown(&transcript, 4);
@@ -639,8 +643,8 @@ fn a_realistic_authoring_transcript_is_a_fraction_of_what_it_was() {
     cfg.tools = true;
     let source = |marker: &str| {
         format!(
-            "-- {marker}\nlocal M = {{}}\n{}return M\n",
-            "local function helper(a, b) return a + b end\n".repeat(140)
+            "// {marker}\nconst M = {{}};\n{}export default M;\n",
+            "function helper(a, b) { return a + b; }\n".repeat(140)
         )
     };
     let pane = |marker: &str| format!("{marker}\n{}", "│ a row of the dashboard │\n".repeat(120));
@@ -660,15 +664,15 @@ fn a_realistic_authoring_transcript_is_a_fraction_of_what_it_was() {
         let write_id = format!("w{round}");
         transcript.push(write(
             &write_id,
-            "todo.lua",
+            "todo.ts",
             &source(&format!("draft {round}")),
         ));
-        transcript.push(result(&write_id, "wrote todo.lua"));
+        transcript.push(result(&write_id, "wrote todo.ts"));
         let reload_id = format!("r{round}");
         transcript.push(plugin_call(
             &reload_id,
             "plugin_reload",
-            serde_json::json!({ "name": "todo.lua" }),
+            serde_json::json!({ "name": "todo.ts" }),
         ));
         transcript.push(result(&reload_id, &pane(&format!("render {round}"))));
     }
@@ -709,16 +713,16 @@ fn a_search_is_superseded_by_a_later_edit_of_the_plugin_it_searched() {
         plugin_call(
             "c1",
             "plugin_search",
-            serde_json::json!({ "name": "todo.lua", "query": "render" }),
+            serde_json::json!({ "name": "todo.ts", "query": "render" }),
         ),
-        result("c1", &bulky("todo.lua:12:function M.render()")),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        result("c1", &bulky("todo.ts:12:function render()")),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let results = wire_tool_results(&body_value(&cfg, &transcript));
 
-    assert!(!results[0].contains("function M.render"), "{}", results[0]);
+    assert!(!results[0].contains("function render"), "{}", results[0]);
     assert!(results[0].contains("out of date"), "{}", results[0]);
 }
 
@@ -740,8 +744,8 @@ fn a_folder_wide_search_is_superseded_by_any_later_write_but_a_named_one_only_by
             serde_json::json!({ "name": "todo", "query": "render" }),
         ),
         result("c2", &bulky("todo's render")),
-        write("c3", "clock.lua", &draft("the clock")),
-        result("c3", "wrote clock.lua"),
+        write("c3", "clock.ts", &draft("the clock")),
+        result("c3", "wrote clock.ts"),
     ];
 
     let results = wire_tool_results(&body_value(&cfg, &transcript));
@@ -793,7 +797,7 @@ fn an_outline_is_superseded_by_a_later_edit_of_the_same_plugin() {
         plugin_call(
             "c1",
             "plugin_outline",
-            serde_json::json!({ "name": "todo.lua" }),
+            serde_json::json!({ "name": "todo.ts" }),
         ),
         result("c1", &bulky("the old map")),
         plugin_call(
@@ -801,13 +805,13 @@ fn an_outline_is_superseded_by_a_later_edit_of_the_same_plugin() {
             "plugin_edit",
             serde_json::json!({
                 "name": "todo",
-                "old_string": "return M",
-                "new_string": draft("setmetatable"),
+                "old_string": "export default M;",
+                "new_string": draft("Object.assign"),
             }),
         ),
         result(
             "c2",
-            "edited todo.lua at line 60 (now 64 lines); call plugin_reload to load it",
+            "edited todo.ts at line 60 (now 64 lines); call plugin_reload to load it",
         ),
         plugin_call(
             "c3",
@@ -838,8 +842,8 @@ fn a_listing_is_superseded_by_a_later_write_or_listing() {
     let transcript = vec![
         plugin_call("c1", "plugin_list", serde_json::json!({})),
         result("c1", &bulky("the old folder")),
-        write("c2", "clock.lua", &draft("the clock")),
-        result("c2", "wrote clock.lua"),
+        write("c2", "clock.ts", &draft("the clock")),
+        result("c2", "wrote clock.ts"),
         plugin_call("c3", "plugin_list", serde_json::json!({})),
         result("c3", &bulky("the new folder")),
     ];
@@ -906,7 +910,7 @@ fn a_repeated_docs_query_is_sent_once_and_pages_of_a_section_are_kept() {
     );
 }
 
-/// `data.lua` is a plugin and `data` is a section, and a page of one is not a page of the other.
+/// `data.ts` is a plugin and `data` is a section, and a page of one is not a page of the other.
 #[test]
 fn a_docs_page_and_a_plugin_page_of_the_same_name_are_different_subjects() {
     let cfg = test_config();
@@ -914,7 +918,7 @@ fn a_docs_page_and_a_plugin_page_of_the_same_name_are_different_subjects() {
         plugin_call(
             "c1",
             "plugin_read",
-            serde_json::json!({ "name": "data.lua", "start_line": 1, "line_count": 100 }),
+            serde_json::json!({ "name": "data.ts", "start_line": 1, "line_count": 100 }),
         ),
         result("c1", &bulky("the plugin")),
         plugin_call(
@@ -942,26 +946,26 @@ fn a_superseded_batch_edit_sends_a_placeholder_instead_of_its_edits() {
             "c1",
             "plugin_edit",
             serde_json::json!({
-                "name": "todo.lua",
+                "name": "todo.ts",
                 "edits": [
-                    { "old_string": "return M", "new_string": draft("setmetatable") },
-                    { "old_string": "local M = {}", "new_string": "local M = { tick = 0 }" },
+                    { "old_string": "export default M;", "new_string": draft("Object.assign") },
+                    { "old_string": "const M = {};", "new_string": "const M = { tick: 0 };" },
                 ],
             }),
         ),
         result(
             "c1",
-            "edited todo.lua at lines 2-64, line 70 (now 130 lines); call plugin_reload to load it",
+            "edited todo.ts at lines 2-64, line 70 (now 130 lines); call plugin_reload to load it",
         ),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "wrote todo.lua"),
+        write("c2", "todo.ts", &draft(FINAL)),
+        result("c2", "wrote todo.ts"),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
 
-    assert!(!arguments[0].contains("setmetatable"), "{}", arguments[0]);
+    assert!(!arguments[0].contains("Object.assign"), "{}", arguments[0]);
     let elided: serde_json::Value = serde_json::from_str(&arguments[0]).unwrap();
-    assert_eq!(elided["name"], "todo.lua");
+    assert_eq!(elided["name"], "todo.ts");
     assert!(
         elided["edits"].is_string(),
         "the array became the placeholder: {}",
@@ -975,26 +979,26 @@ fn a_superseded_batch_edit_sends_a_placeholder_instead_of_its_edits() {
 fn a_batch_edit_is_the_newest_statement_about_a_file() {
     let cfg = test_config();
     let transcript = vec![
-        write("c1", "todo.lua", &draft(DRAFT)),
-        result("c1", "wrote todo.lua"),
+        write("c1", "todo.ts", &draft(DRAFT)),
+        result("c1", "wrote todo.ts"),
         plugin_call(
             "c2",
             "plugin_edit",
             serde_json::json!({
-                "name": "todo.lua",
-                "edits": [{ "old_string": "return M", "new_string": draft("setmetatable") }],
+                "name": "todo.ts",
+                "edits": [{ "old_string": "export default M;", "new_string": draft("Object.assign") }],
             }),
         ),
         result(
             "c2",
-            "edited todo.lua at lines 2-64 (now 130 lines); call plugin_reload to load it",
+            "edited todo.ts at lines 2-64 (now 130 lines); call plugin_reload to load it",
         ),
     ];
 
     let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
 
     assert!(!arguments[0].contains(DRAFT), "{}", arguments[0]);
-    assert!(arguments[1].contains("setmetatable"), "{}", arguments[1]);
+    assert!(arguments[1].contains("Object.assign"), "{}", arguments[1]);
 }
 
 #[test]

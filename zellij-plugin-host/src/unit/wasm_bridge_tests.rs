@@ -487,7 +487,7 @@ export default {
 }
 
 fn run_plugin() -> RunPlugin {
-    zellij_runtime::plugin_location::run_plugin_from_url("file:/plugins/job.lua")
+    zellij_runtime::plugin_location::run_plugin_from_url("file:/plugins/job.ts")
         .expect("a valid plugin url")
 }
 
@@ -499,7 +499,7 @@ fn launch_job(bridge: &mut WasmBridge, queue: &str, plugin_id: PluginId) {
         (crate::PluginId::new(1), crate::ClientId::new(1)),
         None,
         zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
-            "file:/plugins/job.lua",
+            "file:/plugins/job.ts",
             &None,
             None,
             None,

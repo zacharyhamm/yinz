@@ -108,12 +108,6 @@ pub(super) enum Widget {
     Dialog(Dialog),
 }
 impl Widget {
-    pub fn form(&self) -> &Form {
-        match self {
-            Self::Form(f) => f,
-            Self::Dialog(d) => d.form(),
-        }
-    }
     pub fn form_mut(&mut self) -> &mut Form {
         match self {
             Self::Form(f) => f,

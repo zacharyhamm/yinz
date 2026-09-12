@@ -133,7 +133,7 @@ export default definePlugin({
 "#;
 
 #[test]
-fn deno_lua_and_wasm_share_a_session_through_permissions_events_reload_and_close() {
+fn deno_and_wasm_share_a_session_through_permissions_events_reload_and_close() {
     let directory = tempfile::tempdir().unwrap();
     let plugins = directory.path().join("plugins");
     fs::create_dir(&plugins).unwrap();
@@ -141,9 +141,9 @@ fn deno_lua_and_wasm_share_a_session_through_permissions_events_reload_and_close
     let dependency = plugins.join("dependency.ts");
     fs::write(&dependency, "export const label: string = 'first';").unwrap();
     fs::write(
-        plugins.join("companion.lua"),
+        plugins.join("companion.js"),
         r#"
-return { render = function() return "Lua companion is alive" end }
+export default {render() {return "JavaScript companion is alive";}};
 "#,
     )
     .unwrap();
@@ -156,7 +156,7 @@ return { render = function() return "Lua companion is alive" end }
 layout {
   tab name="wasm companion" {
     pane size=1 borderless=true { plugin location="zellij:tab-bar"; }
-    pane size=4 { plugin location="file:companion.lua"; }
+    pane size=4 { plugin location="file:companion.js"; }
     pane focus=true { plugin location="file:acceptance.ts"; }
   }
 }
@@ -169,7 +169,7 @@ layout {
         "all runtimes loaded and TypeScript requested permission",
         |grid| {
             grid.contains("wasm companion")
-                && grid.contains("Lua companion is alive")
+                && grid.contains("JavaScript companion is alive")
                 && grid.contains("Allow? (y/n)")
         },
     );
@@ -184,7 +184,7 @@ layout {
         |grid| {
             grid.contains("first awaited key rendered")
                 && grid.contains("first host command")
-                && grid.contains("Lua companion is alive")
+                && grid.contains("JavaScript companion is alive")
         },
     );
 
@@ -201,11 +201,11 @@ layout {
     );
     zellij.send_stdin(b"b");
     let grid = zellij.wait_until(
-        "the replacement instance handles input alongside Lua and Wasm",
+        "the replacement instance handles input alongside JavaScript and Wasm",
         |grid| {
             grid.contains("second awaited key rendered")
                 && grid.contains("second host command")
-                && grid.contains("Lua companion is alive")
+                && grid.contains("JavaScript companion is alive")
         },
     );
     assert!(!grid.contains("first awaited key rendered"), "{grid}");
@@ -359,7 +359,7 @@ export default {{
 }
 
 #[test]
-fn deno_forms_and_markdown_render_beside_lua_and_wasm() {
+fn deno_forms_and_markdown_render_beside_wasm() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(
         directory.path().join("forms.ts"),
@@ -367,8 +367,8 @@ fn deno_forms_and_markdown_render_beside_lua_and_wasm() {
     )
     .unwrap();
     fs::write(
-        directory.path().join("companion.lua"),
-        "return {render=function() return 'Lua companion' end}",
+        directory.path().join("companion.js"),
+        "export default {render() {return 'JavaScript companion';}};",
     )
     .unwrap();
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
@@ -380,7 +380,7 @@ fn deno_forms_and_markdown_render_beside_lua_and_wasm() {
             r#"layout {
           tab name="Wasm companion" {
             pane size=1 borderless=true {plugin location="zellij:tab-bar";}
-            pane size=3 {plugin location="file:companion.lua";}
+            pane size=3 {plugin location="file:companion.js";}
             pane focus=true {plugin location="file:forms.ts";}
           }
         }"#
@@ -391,7 +391,7 @@ fn deno_forms_and_markdown_render_beside_lua_and_wasm() {
         "shared controls and Markdown render in the mixed session",
         |screen| {
             screen.contains("Wasm companion")
-                && screen.contains("Lua companion")
+                && screen.contains("JavaScript companion")
                 && screen.contains("Pane frames")
                 && screen.contains("Shared widgets")
         },

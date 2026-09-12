@@ -1158,7 +1158,7 @@ impl WasmBridge {
         let mut loading_indication = LoadingIndication::new(run_plugin.location.to_string());
         self.start_plugin_loading_indication(&[plugin_id], &loading_indication);
         self.loading_plugins.insert((plugin_id, run_plugin.clone()));
-        // Lua/Wasm keep their token; Deno's replacement token was installed above.
+        // Wasm keep their token; Deno's replacement token was installed above.
         self.cancel_token(plugin_id);
 
         let plugin_executor = self.plugin_executor.clone();

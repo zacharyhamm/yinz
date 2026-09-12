@@ -310,7 +310,7 @@ pub fn extension_files(dir: &str, listing: &str) -> (BTreeMap<String, String>, V
 pub fn namespace_for_path<'a>(dir: &str, path: &'a str) -> Option<&'a str> {
     let prefix = format!("{}/hocus/", dir.trim_end_matches('/'));
     let (stem, suffix) = path.strip_prefix(&prefix)?.rsplit_once('.')?;
-    (matches!(suffix, "lua" | "js" | "mjs" | "ts" | "mts") && valid_name(stem)).then_some(stem)
+    (matches!(suffix, "js" | "mjs" | "ts" | "mts") && valid_name(stem)).then_some(stem)
 }
 
 #[cfg(target_arch = "wasm32")]

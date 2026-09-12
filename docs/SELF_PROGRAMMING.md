@@ -1,5 +1,7 @@
 # Self-programming: what the workstream set out to do, and what landed
 
+This historical record includes the former Lua runtime. Current plugins use [Deno/Wasm](DENO_PLUGINS.md); see [migration](LUA_REMOVAL.md).
+
 The `self-programming-vision` branch turned this fork into a terminal workspace that can drive
 and rewrite itself: coding agents (Claude Code first; codex and cursor alongside) are spawned,
 observed and steered by the system, and the system's own behaviour - plugins, hooks, keybindings,

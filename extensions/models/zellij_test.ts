@@ -47,7 +47,7 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
         plugins: {
             "42": { location: "zellij:hocus-agentd" },
             "7": { location: "zellij:hocus" },
-            "8": { location: "file:unrelated.lua" },
+            "8": { location: "file:unrelated.ts" },
         },
     };
     const snapshot = (sessions: unknown[] = [
@@ -172,7 +172,7 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
         responses = [{ code: 0, stdout: "reply", stderr: "" }];
         await model.methods.pipe.execute({
             name: "echo",
-            plugin: "file:example.lua",
+            plugin: "file:example.ts",
             payload: "--literal",
             args: "key=value",
             configuration: "mode=test",
@@ -184,7 +184,7 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
             "--name",
             "echo",
             "--plugin",
-            "file:example.lua",
+            "file:example.ts",
             "--args",
             "key=value",
             "--plugin-configuration",

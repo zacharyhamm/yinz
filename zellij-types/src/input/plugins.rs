@@ -33,4 +33,6 @@ pub enum PluginsConfigError {
     InvalidPluginLocation(PathBuf),
     #[error("remote script plugins are not supported ('{0}'): download the file and load it with file:<path>")]
     RemoteScriptPlugin(Url),
+    #[error("Lua plugins are no longer supported ({0}); migrate to TypeScript or Wasm")]
+    UnsupportedLuaPlugin(String),
 }

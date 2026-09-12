@@ -14,7 +14,7 @@ fn enqueue(queues: &mut Queues, queue: &str, job: &str) -> JobId {
         queue,
         (crate::PluginId::new(1), crate::ClientId::new(1)),
         None,
-        run_plugin(&format!("file:/plugins/{job}.lua")),
+        run_plugin(&format!("file:/plugins/{job}.ts")),
         context,
         None,
     )
@@ -263,7 +263,7 @@ fn snapshots_cover_every_queue_or_just_one() {
     );
     let one = queues.snapshot(Some("merge"));
     assert_eq!(one.len(), 1);
-    assert_eq!(one[0].pending[0].plugin_url, "file:/plugins/a.lua");
+    assert_eq!(one[0].pending[0].plugin_url, "file:/plugins/a.ts");
     assert!(queues.snapshot(Some("nope")).is_empty());
 }
 

@@ -244,7 +244,7 @@ pub struct CommandToRun {
     pub remote_default_shell: bool,
 }
 
-/// `CommandToRun` as it arrives from serde callers (Lua plugins, JSON): either
+/// `CommandToRun` as it arrives from serde callers (TypeScript plugins, JSON): either
 /// a `target`, or the flat `remote_host`/`firecracker_*` keys the API accepted
 /// before `PaneTarget`, which still describe one.
 #[derive(Default, Deserialize)]

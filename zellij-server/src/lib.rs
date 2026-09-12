@@ -32,7 +32,6 @@ pub use zellij_bus::nested_guest;
 pub mod notifications;
 pub(crate) use zellij_panes::pane_groups;
 pub(crate) use zellij_plugin_host as plugins;
-pub use zellij_plugin_host::check_lua_plugin;
 use zellij_plugin_host::get_engine;
 #[doc(hidden)]
 pub use zellij_plugin_host::run_compilation_worker;
@@ -2787,7 +2786,7 @@ enum ConfigPersistence {
     /// Applied to the session only.
     None,
     /// The whole effective config rewrites the user's config file. Only `RebindKeys` still
-    /// does this - it has no fragment to write - and it is refused for a Lua config.
+    /// does this - it has no fragment to write.
     WholeConfig,
     /// The requested KDL fragment goes into `config.d/zellij-managed.kdl`, whatever the
     /// user's own config is written in. See `Config::write_managed_fragment`.
@@ -2888,32 +2887,6 @@ fn update_new_saved_config(
                     .unwrap();
                 return;
             };
-            if config_file_path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                == Some("lua")
-            {
-                log::error!("Refusing to rewrite executable Lua configuration");
-                session_data
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk {
-                        file_path: Some(config_file_path.clone()),
-                    })
-                    .unwrap();
-                if runtime_config_changed {
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .propagate_configuration_changes(vec![(client_id, new_config)], false);
-                }
-                return;
-            }
             match new_config
                 .write_config_to_disk(new_config.to_string(clear_defaults), config_file_path)
             {

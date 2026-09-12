@@ -3634,8 +3634,8 @@ pub(crate) mod tests {
     #[test]
     fn a_relative_plugin_path_survives_the_plugin_api_round_trip() {
         let original = RunPlugin {
-            location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.lua")),
-            relative_path: Some(PathBuf::from("keys.lua")),
+            location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.ts")),
+            relative_path: Some(PathBuf::from("keys.ts")),
             ..Default::default()
         };
         let protobuf: ProtobufRunPlugin = original.clone().try_into().expect("encode");
