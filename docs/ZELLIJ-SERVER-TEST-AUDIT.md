@@ -2,7 +2,8 @@
 
 > File citations are as of the audit, before the crate breakout: `background_jobs.rs`, `route.rs`,
 > `pty_writer.rs` and `os_input_output.rs` are `zellij-bus/src/…` now, and the tests they name run
-> under `cargo x test -p zellij-bus`; line numbers are historical.
+> under `cargo x test -p zellij-bus`, except dispatch tests, now in `zellij-routing`.
+> The per-client router is `zellij-server/src/client_router.rs`; line numbers are historical.
 
 Companion to `docs/ZELLIJ-SERVER-TESTS.md`. Two conventions:
 

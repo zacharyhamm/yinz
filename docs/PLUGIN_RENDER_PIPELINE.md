@@ -1,8 +1,8 @@
 # The plugin render pipeline, and why input lags behind it
 
-File citations below are as of writing. `route.rs`, `thread_bus.rs` and `background_jobs.rs` have
-since moved from `zellij-server/src/` to `zellij-bus/src/`, and `plugins/` to
-`zellij-plugin-host/src/`; the line numbers are historical.
+File citations below are as of writing. The dispatcher in `route.rs` now lives in
+`zellij-routing/src/lib.rs`; `thread_bus.rs` and `background_jobs.rs` moved to `zellij-bus/src/`,
+and `plugins/` to `zellij-plugin-host/src/`. The line numbers are historical.
 
 This is a write-up of structural problems in how Zellij delivers events to plugins and gets
 their output back on screen. Of the candidate fixes at the end, 1, 2 and 4 (batching on the

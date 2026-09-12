@@ -2,7 +2,7 @@
 //!
 //! Every server thread owns one instruction enum and sends the others' through
 //! [`thread_bus::ThreadSenders`]. This crate holds those enums, the payload types they carry, the
-//! bus itself, and the code that only ever talks over it: action routing, warps, background jobs,
+//! bus itself, and the code that only ever talks over it: warps, background jobs,
 //! the session recorder and the OS boundary. Nothing here names a tab, a pane, a screen, or the
 //! plugin runtime.
 

@@ -4,7 +4,9 @@
 > `route`, `warp`, `session_recorder`, `session_layout_metadata`, `nested_guest` and `pty_writer` moved to
 > `zellij-bus`; `panes`, `tab`, `ui` and `pane_groups` to `zellij-panes`; `plugins` and `logging_pipe` to
 > `zellij-plugin-host` (where `plugins::plugin_tests::…` is now `plugin_tests::…`). The names below are the
-> pre-move ones; `cargo x test -p zellij-server` no longer runs most of them. `docs/TEST_INVENTORY.md` is the
+> pre-move ones; dispatch now lives in `zellij-routing`, completion payload tests stay in
+> `zellij-bus::route`, and queue tests live in `zellij-plugin-host::queues`.
+> `cargo x test -p zellij-server` no longer runs most of them. `docs/TEST_INVENTORY.md` is the
 > current per-crate listing.
 
 Run: `cargo x test`

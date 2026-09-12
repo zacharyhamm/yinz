@@ -7,7 +7,7 @@
 #![allow(clippy::redundant_pattern_matching)]
 //! The plugin host: loads wasm and Lua plugins, runs them on the plugin thread, and turns their
 //! commands into instructions for the other server threads. It talks to the rest of the server
-//! only over [`zellij_bus`].
+//! over [`zellij_bus`], using [`zellij_routing`] to dispatch actions. It owns plugin job queues.
 mod lua;
 pub use lua::check_lua_plugin;
 pub mod logging_pipe;
@@ -18,6 +18,7 @@ mod plugin_limits;
 mod plugin_loader;
 mod plugin_map;
 mod plugin_worker;
+pub mod queues;
 mod wasm_bridge;
 mod watch_filesystem;
 mod zellij_exports;

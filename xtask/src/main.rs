@@ -175,6 +175,10 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 build: false,
             },
             WorkspaceMember {
+                crate_name: "zellij-routing",
+                build: false,
+            },
+            WorkspaceMember {
                 crate_name: "zellij-bus",
                 build: false,
             },

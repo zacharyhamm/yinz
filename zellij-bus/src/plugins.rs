@@ -1,10 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::needless_borrow)]
-#![allow(clippy::clone_on_copy)]
-#![allow(clippy::option_map_unit_fn)]
-#![allow(clippy::manual_inspect)]
-#![allow(clippy::useless_format)]
-#![allow(clippy::redundant_pattern_matching)]
 use std::str::FromStr;
 use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
@@ -14,8 +7,6 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
 };
-
-pub mod queues;
 
 use crate::route::NotificationEnd;
 use crate::session_layout_metadata::SessionLayoutMetadata;

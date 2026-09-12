@@ -13,6 +13,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+zellij-routing = { path = "../zellij-routing", version = "0.45.0" }
 zellij-cli = { workspace = true }
 zellij-config = { workspace = true }
 zellij-ipc = { workspace = true }

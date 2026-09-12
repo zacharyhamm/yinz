@@ -2876,22 +2876,6 @@ Run: `cargo x test`
 - [ ] `os_input_output_unix::tests::try_write_to_fd_propagates_an_error_that_is_not_eagain`
 - [ ] `os_input_output_unix::tests::try_write_to_fd_returns_partial_on_full_buffer`
 - [ ] `os_input_output_unix::tests::try_write_to_fd_returns_zero_on_stuck_pty`
-- [ ] `plugins::queues::queues_tests::a_failed_launch_never_takes_a_slot`
-- [ ] `plugins::queues::queues_tests::a_job_that_unloads_without_reporting_is_aborted`
-- [ ] `plugins::queues::queues_tests::a_reused_plugin_id_belongs_to_the_new_job`
-- [ ] `plugins::queues::queues_tests::an_unconfigured_queue_runs_one_job_at_a_time`
-- [ ] `plugins::queues::queues_tests::cancelling_a_pending_job_drops_it`
-- [ ] `plugins::queues::queues_tests::cancelling_a_running_job_asks_for_an_unload_and_reports_cancelled`
-- [ ] `plugins::queues::queues_tests::cancelling_an_unknown_job_is_not_found`
-- [ ] `plugins::queues::queues_tests::finishing_a_job_frees_its_slot`
-- [ ] `plugins::queues::queues_tests::job_ids_are_monotonic_and_never_reused`
-- [ ] `plugins::queues::queues_tests::lowering_concurrency_evicts_nothing_and_zero_means_one`
-- [ ] `plugins::queues::queues_tests::pop_launchable_honours_concurrency_and_fifo_order`
-- [ ] `plugins::queues::queues_tests::properties::launches_only_fill_free_slots_and_every_job_ends_once`
-- [ ] `plugins::queues::queues_tests::raising_concurrency_releases_pending_jobs`
-- [ ] `plugins::queues::queues_tests::shut_down_drops_pending_jobs_and_launches_nothing_more`
-- [ ] `plugins::queues::queues_tests::snapshots_cover_every_queue_or_just_one`
-- [ ] `plugins::queues::queues_tests::unloading_a_plugin_that_is_not_a_job_is_nothing`
 - [ ] `pty_writer::pty_writer_tests::eagain_on_one_terminal_does_not_block_another`
 - [ ] `pty_writer::pty_writer_tests::full_write_completes_immediately`
 - [ ] `pty_writer::pty_writer_tests::memory_cap_drops_buffer_when_exceeded`
@@ -2900,9 +2884,6 @@ Run: `cargo x test`
 - [ ] `pty_writer::pty_writer_tests::pty_writer_records_successful_resize`
 - [ ] `pty_writer::pty_writer_tests::write_error_clears_terminal_queue`
 - [ ] `pty_writer::pty_writer_tests::writes_to_same_terminal_preserve_order`
-- [ ] `route::tests::a_key_whose_batch_copies_leaves_the_clipboard_message_alone`
-- [ ] `route::tests::a_suppressed_action_tells_the_plugins_nothing_about_the_input`
-- [ ] `route::tests::only_keys_bound_to_something_other_than_writing_dismiss_a_context_menu`
 - [ ] `route::tests::test_action_completion_result_includes_tab_id`
 - [ ] `route::tests::test_notification_end_clone_does_not_copy_channel`
 - [ ] `route::tests::test_notification_end_default_affected_tab_id_none`
@@ -5132,6 +5113,22 @@ Run: `cargo x test`
 - [ ] `plugin_tests::tab_commands::previous_swap_layout_plugin_command`
 - [ ] `plugin_tests::tab_commands::toggle_active_tab_sync_plugin_command`
 - [ ] `plugin_tests::tab_commands::undo_rename_tab_plugin_command`
+- [ ] `queues::queues_tests::a_failed_launch_never_takes_a_slot`
+- [ ] `queues::queues_tests::a_job_that_unloads_without_reporting_is_aborted`
+- [ ] `queues::queues_tests::a_reused_plugin_id_belongs_to_the_new_job`
+- [ ] `queues::queues_tests::an_unconfigured_queue_runs_one_job_at_a_time`
+- [ ] `queues::queues_tests::cancelling_a_pending_job_drops_it`
+- [ ] `queues::queues_tests::cancelling_a_running_job_asks_for_an_unload_and_reports_cancelled`
+- [ ] `queues::queues_tests::cancelling_an_unknown_job_is_not_found`
+- [ ] `queues::queues_tests::finishing_a_job_frees_its_slot`
+- [ ] `queues::queues_tests::job_ids_are_monotonic_and_never_reused`
+- [ ] `queues::queues_tests::lowering_concurrency_evicts_nothing_and_zero_means_one`
+- [ ] `queues::queues_tests::pop_launchable_honours_concurrency_and_fifo_order`
+- [ ] `queues::queues_tests::properties::launches_only_fill_free_slots_and_every_job_ends_once`
+- [ ] `queues::queues_tests::raising_concurrency_releases_pending_jobs`
+- [ ] `queues::queues_tests::shut_down_drops_pending_jobs_and_launches_nothing_more`
+- [ ] `queues::queues_tests::snapshots_cover_every_queue_or_just_one`
+- [ ] `queues::queues_tests::unloading_a_plugin_that_is_not_a_job_is_nothing`
 - [ ] `wasm_bridge::tests::a_notification_click_names_the_raiser_only_when_that_is_what_reaches_it`
 - [ ] `wasm_bridge::tests::caller_context_does_not_hide_a_running_plugin_from_the_launch_lookup`
 - [ ] `wasm_bridge::tests::intercepted_keypress_batches_are_input_jobs`
@@ -5591,6 +5588,14 @@ Run: `cargo x test`
 - [ ] `swamp::tests::operations_and_previews_are_bounded`
 - [ ] `swamp::tests::reconnect_attaches_with_cursor_without_replaying_mutation`
 - [ ] `swamp::tests::timing_records_are_opt_in_and_correlated_on_success_and_failure`
+
+## zellij-routing (lib/zellij_routing)
+
+Run: `cargo x test`
+
+- [ ] `tests::a_key_whose_batch_copies_leaves_the_clipboard_message_alone`
+- [ ] `tests::a_suppressed_action_tells_the_plugins_nothing_about_the_input`
+- [ ] `tests::only_keys_bound_to_something_other_than_writing_dismiss_a_context_menu`
 
 ## zellij-runtime (lib/zellij_runtime)
 
