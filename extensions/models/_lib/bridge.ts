@@ -241,6 +241,7 @@ export async function observe(
     c: Context,
     args: z.infer<typeof Request>,
     timeoutSeconds: number,
+    includeOutput = true,
 ) {
     const record = timing(c, { method: "observe", ...args });
     let polls = 0, requestMs = 0, waitMs = 0;
@@ -268,7 +269,7 @@ export async function observe(
             const awaitingPicker = request?.method === "pane_action" &&
                 ["fork", "duplicate"].includes(request.action);
             if (result.outcome !== "pending" && !awaitingPicker) {
-                const final = await poll(true);
+                const final = includeOutput ? await poll(true) : result;
                 outcome = final.outcome;
                 return final;
             }

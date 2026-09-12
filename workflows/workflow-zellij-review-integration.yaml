@@ -498,37 +498,12 @@ jobs:
         - type: succeeded
         - type: skipped
     guard: ${{ !(inputs.phase in ["diff"]) }}
-  - name: commit
-    task:
-      type: model_method
-      modelType: "@swamp/git"
-      modelName: ${{ run.id + "-commit" }}
-      methodName: guarded_commit
-      globalArgs:
-        repoPath: "${{ inputs.checkout }}"
-      inputs:
-        source: "${{ inputs.checkout }}"
-        target: "${{ inputs.target }}"
-        targetBranch: "${{ inputs.targetBranch }}"
-        gate: "${{ inputs.gate }}"
-        binary: "${{ inputs.binary }}"
-        vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
-        key: commit
-        message: Complete agent work
-    dependsOn:
-    - step: diff-return
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ !(inputs.phase in ["commit"] && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing) }}
   - name: rebase
     task:
       type: model_method
       modelType: "@swamp/git"
       modelName: ${{ run.id + "-rebase" }}
-      methodName: rebase
+      methodName: commit_and_rebase
       globalArgs:
         repoPath: "${{ inputs.checkout }}"
       inputs:
@@ -538,9 +513,12 @@ jobs:
         gate: "${{ inputs.gate }}"
         binary: "${{ inputs.binary }}"
         vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
-        key: rebase
+        work: "${{ inputs.launch }}"
+        session: "${{ inputs.session }}"
+        key: ${{ run.id + "-commit-and-rebase" }}
+        message: Complete agent work
     dependsOn:
-    - step: commit
+    - step: diff-return
       condition:
         type: or
         conditions:
@@ -551,7 +529,7 @@ jobs:
     task:
       type: assert
       expr: data.latest(run.id + "-rebase", "rebaseResult-current").attributes.exitCode == 0 || data.latest(run.id + "-rebase", "rebaseResult-current").attributes.evidence.source.rebasing
-      message: Rebase failed. Inspect saved output; no automatic retry.
+      message: Commit or rebase failed. Inspect the command pane output; no automatic retry.
       severity: high
     dependsOn:
     - step: rebase

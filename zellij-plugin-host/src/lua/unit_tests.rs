@@ -8194,6 +8194,7 @@ local function unwrap_history() end -- legacy fixture replies below also cover s
 local service_runs=0
 z.async.swamp_request=function(opts)
   assert(opts.directory=='/control')
+  if opts.payload.select then assert(#opts.payload.select<=4096,'Swamp query projection exceeds the serve limit') end
   if opts.operation=='workflow.run' then
     service_runs=service_runs+1
     assert(opts.payload.noSupersede and opts.payload.runtimeTags.zellijOperation)

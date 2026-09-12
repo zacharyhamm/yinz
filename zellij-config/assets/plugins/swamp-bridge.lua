@@ -598,16 +598,28 @@ handle = function(args, manual_view)
     local predicate='specName == "question" && attributes.run in '..encode(ids)
     -- Bound every saved log copy before the host serializes the response; its byte cap would cut JSON.
     -- CEL substring uses UTF-16 offsets: back off if the cut would split a surrogate pair.
-    local function preview(path)
+    local function preview(path,field,limit)
+      field=field or 'output';limit=limit or 16384
       return ([["output":has(VALUE.output) ? (VALUE.output.size() > 16384 ? VALUE.output.substring(0,
         VALUE.output.substring(16383,16384).matches(r"[\uD800-\uDBFF]") ? 16383 : 16384) : VALUE.output) : "",
-        "previewTruncated":has(VALUE.output) && VALUE.output.size() > 16384]]):gsub('VALUE',path)
+        "previewTruncated":has(VALUE.output) && VALUE.output.size() > 16384]]):gsub('output',field):gsub('16383',tostring(limit-1)):gsub('16384',tostring(limit)):gsub('VALUE',path)
     end
     local function test_preview(path)
       return ('{"evidence":'..path..'.evidence,"outcome":'..path..'.outcome,"exitCode":'..path..'.exitCode,'..
         '"log":'..path..'.log,"passed":'..path..'.passed,"outputRef":has('..path..'.outputRef) ? '..path..'.outputRef : null,'..preview(path)..'}')
     end
     local output_projection=[[{"model":modelName,"name":name,"version":version,"attributes":
+      specName == "claim" ? {"key":attributes.key,"fingerprint":attributes.fingerprint,"outcome":attributes.outcome} :
+      specName == "commandOutput" ? {} :
+      specName == "rebaseResult" ? {"exitCode":attributes.exitCode,"evidence":attributes.evidence,
+        "outputRef":has(attributes.outputRef) ? attributes.outputRef : null,
+        "operation":has(attributes.operation) ? {
+          "key":attributes.operation.key,"work":attributes.operation.work,"outcome":attributes.operation.outcome,
+          "exitCode":has(attributes.operation.exitCode) ? attributes.operation.exitCode : null,
+          "log":has(attributes.operation.log) ? attributes.operation.log : "",
+          "pane":has(attributes.operation.pane) ? attributes.operation.pane : false} : {},
+        ]]..preview('attributes','stdout',2048):gsub('previewTruncated','stdoutTruncated')..','..
+        preview('attributes','stderr',2048):gsub('previewTruncated','stderrTruncated')..[[} :
       specName == "diff" ? {"evidence":attributes.evidence,]]..preview('attributes')..[[} :
       specName == "test" ? ]]..test_preview('attributes')..[[ :
       specName == "operation" ? {
@@ -624,6 +636,8 @@ handle = function(args, manual_view)
         "codeReview":has(attributes.codeReview) ? attributes.codeReview : "",
         "ready":has(attributes.ready) && attributes.ready}
       : attributes}]]
+    -- Share the attributes expression to stay within Swamp's 4096-character select limit.
+    output_projection='[attributes].map(a,'..output_projection:gsub('attributes%.','a.')..')[0]'
     local requests={
       {operation='workflow.history.get',payload={workflowIdOrName=run}},
       {operation='data.query',payload={predicate=predicate,select='{"model": modelName, "version": version, "attributes": attributes}'}},

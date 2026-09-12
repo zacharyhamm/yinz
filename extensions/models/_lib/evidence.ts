@@ -6,6 +6,22 @@ export const OutputRef = z.object({
     name: z.string().min(1),
     version: z.number().int().positive(),
 });
+/** At most 16 KiB of UTF-8, including the notice, without splitting characters. */
+export function outputPreview(output: string) {
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(output);
+    if (bytes.length <= 16384) return output;
+    const notice =
+        "\n[Output truncated; full output saved in Swamp at outputRef]\n";
+    const budget = 16384 - encoder.encode(notice).length;
+    let head = Math.ceil(budget / 2);
+    let tail = bytes.length - Math.floor(budget / 2);
+    while ((bytes[head] & 0xc0) === 0x80) head--;
+    while ((bytes[tail] & 0xc0) === 0x80) tail++;
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    return decoder.decode(bytes.subarray(0, head)) + notice +
+        decoder.decode(bytes.subarray(tail));
+}
 export type DataRepository = {
     findAllGlobal(): Promise<
         Array<{
@@ -37,7 +53,7 @@ export async function readEvidence(
     );
     return bytes ? JSON.parse(new TextDecoder().decode(bytes)) : null;
 }
-/** Expand only test-output references; missing content stays explicitly unavailable. */
+/** Expand saved output references; missing content stays explicitly unavailable. */
 export async function resolveEvidence(
     repo: DataRepository,
     value: unknown,

@@ -128,7 +128,9 @@ local extensions unpublished.
    Empty diffs show “No unstaged or untracked changes.” Staged-only changes are excluded. Press `q` or `Esc` to return to the Begin review preparation menu.
    Arrow keys scroll, and `/` searches. Pager settings are overridden only for this viewer.
    Temporary output and key bindings are removed on exit. Command failures appear in the workflow view.
-   Commit and rebase skips empty commits and rebases onto the configured local target.
+   Commit and rebase shows each Git command and its live output in a foreground pane.
+   It skips empty commits and rebases onto the configured local target. After success
+   or failure, press Enter to return to the workflow. A failed commit stops before rebase.
 3. If a rebase is paused, choose **Resolve with agent** or **Leave paused**.
    Only approval starts a resolver. The agent stages resolutions. The workflow
    inspects the result and continues the rebase. Further conflicts require another
@@ -399,6 +401,7 @@ deno test --allow-all extensions
 python3 extensions/tests/smoke.py
 python3 extensions/tests/smoke.py --exit-menu-only
 python3 extensions/tests/smoke.py --source-diff-only
+python3 extensions/tests/smoke.py --commit-rebase-only
 cargo x ci check
 cargo x firecracker-test --build
 cargo x firecracker-test --test
