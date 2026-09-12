@@ -7437,6 +7437,7 @@ end
 local function key(k) M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
 for _,size in ipairs{{2,8},{3,12},{8,16}} do
   local rows,cols=size[1],size[2]
+  key('PageUp')
   M.scroll=0
   local seen={}
   local page
@@ -8822,6 +8823,113 @@ assert(select(2,call{method='identity'}))
 }
 
 #[test]
+fn workflow_polled_logs_follow_and_preserve_pause_across_attachments() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.every=function() end
+z.subscribe=function() end
+z.subscribe_pane_output=function() end
+z.set_self_mouse_selection_support=function() end
+z.show_cursor=function() end
+local resolve
+z.rpc.call=function()
+  local future
+  future,resolve=z.async.future()
+  return future
+end
+local native_markdown=z.ui.markdown
+local log_rect,log_count
+z.ui.markdown=function(source,options)
+  local widget=native_markdown(source,options)
+  return {render=function(_,rect)
+    local frame,count=widget:render(rect)
+    if rect.height>0 then
+      if source==M.snapshot.logs then log_rect,log_count=rect,count end
+      if source=='Pinned question' then
+        assert(rect.y+rect.height==M.form_y,'question stays above its controls')
+      end
+    end
+    return frame,count
+  end}
+end
+local function reply(count,launch)
+  local lines={'```'}
+  for i=1,count do lines[#lines+1]='log line '..i end
+  lines[#lines+1]='```'
+  local run=M.attachment.run or 'run'
+  resolve{result={root=M.attachment.directory,run=run,launch=launch,
+    history={workflowName='exit',id=run,status='suspended'},logs=table.concat(lines,'\n'),
+    questions={results={{model='questions',version=1,attributes={run=run,question='q',
+      state='pending',prompt='Pinned question',answers={'yes'}}}}}}}
+  z.__update(M,{Timer=0})
+end
+local function render()
+  log_rect,log_count=nil,nil
+  M.render(10,24)
+  return log_rect and log_rect.scroll+log_rect.height==log_count
+end
+local function key(k) M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
+local function wheel(kind,lines) M.update{name='mouse',kind=kind,lines=lines} end
+M.load()
+M.attach{directory='/work',run='run'}
+reply(40)
+assert(render() and M.scroll>0,'polled logs follow by default without a live stream')
+local before=M.scroll
+M.refresh();reply(45)
+assert(render() and M.scroll>before,'poll growth advances the viewport')
+key('PageUp');assert(not render())
+local paused,reading=M.scroll,log_rect.scroll
+M.refresh();reply(50)
+assert(not render() and M.scroll==paused and log_rect.scroll==reading,'polling preserves the reading position')
+key('PageDown');assert(not render(),'a partial page down leaves following paused')
+key('PageDown');assert(render(),'PageDown resumes at the bottom')
+M.refresh();reply(55);assert(render())
+wheel('scroll_up',2);assert(not render())
+paused=M.scroll
+M.refresh();reply(57)
+assert(not render() and M.scroll==paused)
+wheel('scroll_down',1);assert(not render(),'partial mouse scrolling leaves following paused')
+wheel('scroll_down',100);assert(render(),'mouse scrolling resumes at the bottom')
+M.refresh();reply(60);assert(render())
+key('PageUp');assert(not render())
+key('End');assert(render(),'End resumes following')
+M.refresh();reply(65);assert(render())
+key('PageUp');render();paused=M.scroll
+M.attach(M.attachment)
+assert(not render() and M.scroll==paused,'reattaching retains the viewport while refresh is pending')
+reply(70);assert(not render() and M.scroll==paused)
+M.attach{directory='/work',run='run'}
+reply(75,'launch')
+assert(not render() and M.scroll==paused,'discovering a live subscription must not undo a manual pause')
+M.attach{directory='/work',launch='launch'}
+assert(not render() and M.scroll==paused)
+reply(80,'launch');assert(not render() and M.scroll==paused,'the same launch retains its pause')
+M.attach{directory='/work',run='run'}
+assert(M.launch=='launch','reattaching by run retains the known subscription')
+reply(85,'launch');assert(not render() and M.scroll==paused)
+for _,attachment in ipairs{
+  {directory='/work',run='second'},
+  {directory='/work',run='third'},
+  {directory='/other',run='third'},
+  {directory='/other',launch='next'},
+} do
+  M.attach(attachment)
+  reply(40,attachment.launch)
+  assert(render(),'a new attachment resets following, including runs without a launch')
+  M.refresh();reply(45,attachment.launch);assert(render())
+  key('PageUp');assert(not render())
+end
+"#).exec().unwrap();
+}
+
+#[test]
 fn workflow_scroll_indicators_track_wrapped_rows_and_stay_above_pinned_controls() {
     let plugin =
         load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
@@ -8867,6 +8975,8 @@ M.load()
 local lines={}
 for i=1,20 do lines[i]='line '..i end
 M.status=table.concat(lines,'\n')
+render(6);assert(#labels==1);label(1,'↑ 16 more',4)
+M.update{name='key',key='PageUp'};M.scroll=0
 render(6);assert(#labels==1);label(1,'↓ 16 more',4)
 M.scroll=7;render(6);assert(#labels==1)
 label(1,'↑ 7 more  ↓ 9 more',4)
@@ -8880,6 +8990,7 @@ render(3,4);assert(#labels==1 and labels[1].y==1)
 for _,rows in ipairs{2,3,6} do
   for _,key in ipairs{'PageDown','PageUp'} do
     local seen={}
+    M.update{name='key',key='PageUp'}
     M.scroll=key=='PageDown' and 0 or math.huge
     for step=1,21 do
       render(rows)
@@ -8902,6 +9013,7 @@ M.scroll=5;render(8);assert(#labels==1)
 label(1,'↑ 5 more  ↓ 13 more',3)
 assert(labels[1].y<M.form_y-2,'indicators stay above question, status and controls')
 M.pending={};M.notice=nil
+M.update{name='key',key='End'}
 M.output('command','stdout','live\noutput')
 render(6)
 M.update{name='key',key='PageUp'}
@@ -8911,6 +9023,65 @@ local before=tonumber(labels[1].value:match('↓ (%d+) more'))
 M.output('command','stdout','\nnext\nlast')
 render(6);assert(M.scroll==offset)
 label(1,'↑ '..offset..' more  ↓ '..(before+2)..' more',4)
+"#).exec().unwrap();
+}
+
+#[test]
+fn workflow_scrolling_reaches_later_streams_when_an_earlier_stream_writes_last() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.every=function() end
+z.after=function() end
+z.subscribe=function() end
+z.subscribe_pane_output=function() end
+z.set_self_mouse_selection_support=function() end
+z.show_cursor=function() end
+z.ui.text=function(value) return {dim=function(self) return self end,error=function(self) return self end,
+  render=function() return value..'\n' end} end
+local function key(k) M.update{name='key',key=k,bare_key=k,key_modifiers={}} end
+local function render() return M.render(6,80) end
+M.load()
+for _,input in ipairs{'keyboard','mouse'} do
+  M.watch(input)
+  for _,stream in ipairs{'first','second'} do
+    local lines={}
+    for i=1,32 do lines[i]=stream..' '..i end
+    M.output(stream,'stdout',table.concat(lines,'\n'))
+  end
+  M.output('first','stdout',' latest')
+  key('End');assert(render():find('first 32 latest',1,true))
+  local function scroll(down)
+    if input=='keyboard' then key(down and 'PageDown' or 'PageUp')
+    else M.update{name='mouse',kind=down and 'scroll_down' or 'scroll_up',lines=3} end
+  end
+  scroll(false);render()
+  local seen,frame={}
+  for step=1,32 do
+    scroll(true);frame=render()
+    for line in frame:gmatch('[^\n]+') do seen[line]=true end
+  end
+  for i=1,32 do assert(seen['second '..i],input..' skipped second '..i) end
+  for i=29,32 do
+    assert(frame:find('second '..i..'\n',1,true),input..' must stay at the later stream tail')
+  end
+  assert(render()==frame,'rendering must retain the later stream tail')
+  key('End');assert(render():find('first 32 latest',1,true),'End returns to latest output')
+  M.output('first','stdout',' again')
+  assert(render():find('first 32 latest again',1,true),'End resumes following')
+  M.output('second','stdout','\nsecond 33')
+  assert(render():find('second 33',1,true))
+  scroll(false);render()
+  for step=1,3 do scroll(true);render() end
+  M.output('second','stdout','\nsecond 34')
+  assert(render():find('second 34',1,true),input..' resumes following at the last stream')
+end
 "#).exec().unwrap();
 }
 
