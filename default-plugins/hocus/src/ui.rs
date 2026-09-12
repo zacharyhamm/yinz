@@ -5,6 +5,7 @@
 //! recomputed here from `State` each time and all scroll state is ours.
 
 use hocus_proto::markdown::{self, MdLine, MdStyle, StyledChar};
+use hocus_proto::tabs;
 use hocus_proto::text::{wrap, wrap_input, WrappedLine};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::*;
@@ -1065,15 +1066,7 @@ fn render_title(state: &mut State, cols: usize) {
     let note_width = note.as_ref().map_or(0, |note| note.width() + 1);
     state.chat_tab_width = cols.saturating_sub(note_width);
     for cell in chat_tabs(state, state.chat_tab_width) {
-        let text = Text::new(&cell.text).unbold_range(..);
-        let text = if cell.highlighted {
-            text.selected()
-        } else if cell.active {
-            text.color_range(2, ..)
-        } else {
-            text.dim_range(..)
-        };
-        print_text_with_coordinates(text, cell.x, 0, Some(cell.width), None);
+        print_text_with_coordinates(cell.styled(), cell.x, 0, Some(cell.width), None);
     }
     if let Some(note) = note {
         let x = cols.saturating_sub(note.width());
@@ -1156,24 +1149,13 @@ pub(crate) fn format_tokens(tokens: u64) -> String {
 /// opening question, short enough that several fit in a narrow overlay.
 const TAB_TITLE_COLS: usize = 18;
 
-/// One cell of the tab bar, ready to print at `x` on the top row.
-#[derive(Debug, PartialEq)]
-pub(crate) struct TabCell {
-    pub(crate) x: usize,
-    pub(crate) width: usize,
-    pub(crate) text: String,
-    /// The chat on screen.
-    pub(crate) active: bool,
-    /// Under the bar's highlight, while Shift+Tab has it focused.
-    pub(crate) highlighted: bool,
-    pub(crate) target: TabTarget,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum TabTarget {
     Tab(usize),
     Reveal(usize),
 }
+
+pub(crate) type TabCell = tabs::TabCell<TabTarget>;
 
 /// What one tab says: a glyph for what the chat is doing, then its title.
 fn tab_label(messages: &[crate::Message], live: bool, confirming: bool) -> String {
@@ -1192,7 +1174,7 @@ fn tab_label(messages: &[crate::Message], live: bool, confirming: bool) -> Strin
     if clipped.len() < title.len() {
         clipped.push('…');
     }
-    format!(" {glyph}{clipped} │")
+    tabs::label(&format!("{glyph}{clipped}"))
 }
 
 /// The tab bar, laid out in `width` columns. Every open chat gets a cell in
@@ -1267,7 +1249,7 @@ fn lay_out(
     let mut full = false;
     // Stops at the first cell that does not fit, rather than skipping it: a
     // later, narrower one would otherwise be drawn in its place.
-    let mut push = |text: String, active: bool, highlighted: bool, target: TabTarget| {
+    let mut push = |text: String, active: bool, focused: bool, target: TabTarget| {
         let w = text.width();
         if full || x + w > width {
             full = true;
@@ -1278,7 +1260,7 @@ fn lay_out(
             width: w,
             text,
             active,
-            highlighted,
+            focused,
             target,
         });
         x += w;
@@ -3480,7 +3462,7 @@ mod tests {
         let cells = chat_tabs(&state, 40);
         assert_eq!(texts(&cells), [" new chat │"], "an empty chat is named");
         assert!(cells[0].active);
-        assert!(!cells[0].highlighted);
+        assert!(!cells[0].focused);
         assert_eq!(cells[0].x, 0);
     }
 
@@ -3549,7 +3531,7 @@ mod tests {
         let cells = chat_tabs(&state, 20);
         assert_eq!(texts(&cells), ["←│", " chat 3 │", " chat 4 │"]);
         assert_eq!(cells[0].target, TabTarget::Reveal(2));
-        assert!(cells[2].highlighted);
+        assert!(cells[2].focused);
         assert!(!cells[1].active);
 
         state.chat_tab_focus = Some(2);
@@ -3572,8 +3554,8 @@ mod tests {
         let mut state = tabs_state(3);
         state.chat_tab_focus = Some(2);
         let cells = chat_tabs(&state, 60);
-        assert!(cells[0].active && !cells[0].highlighted);
-        assert!(!cells[2].active && cells[2].highlighted);
+        assert!(cells[0].active && !cells[0].focused);
+        assert!(!cells[2].active && cells[2].focused);
     }
 
     #[test]
