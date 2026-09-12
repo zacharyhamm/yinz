@@ -69,7 +69,7 @@ pub fn configure_logger() {
 
     // Set the default logging level to "info" and log it to zellij.log file
     // Decrease verbosity for `wasmtime_wasi` module because it has a lot of useless info logs
-    // For `zellij_server::logging_pipe`, we use custom format as we use logging macros to forward stderr output from plugins
+    // For `zellij_plugin_host::logging_pipe`, we use custom format as we use logging macros to forward stderr output from plugins
     let config = Config::builder()
         .appender(Appender::builder().build("logFile", Box::new(log_file)))
         .appender(Appender::builder().build("logPlugin", Box::new(log_plugin)))
@@ -88,7 +88,7 @@ pub fn configure_logger() {
             Logger::builder()
                 .appender("logPlugin")
                 .additive(false)
-                .build("zellij_server::logging_pipe", LevelFilter::Trace),
+                .build("zellij_plugin_host::logging_pipe", LevelFilter::Trace),
         )
         .build(Root::builder().appender("logFile").build(LevelFilter::Info))
         .unwrap();

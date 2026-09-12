@@ -108,6 +108,50 @@ mod logging_pipe_test {
     use super::*;
 
     #[test]
+    fn plugin_stderr_reaches_configured_log_once() {
+        const CHILD: &str = "ZELLIJ_TEST_LOGGING_PIPE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // The logger and log paths are process-global, so initialize them in isolation.
+            let temp = tempfile::tempdir().expect("create isolated log directory");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "logging_pipe::logging_pipe_test::plugin_stderr_reaches_configured_log_once",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("TMPDIR", temp.path())
+                .output()
+                .expect("run logger check in child process");
+            assert!(
+                output.status.success(),
+                "logger check failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        zellij_runtime::logging::configure_logger();
+        let mut pipe = LoggingPipe::new("StderrTest", crate::PluginId::new(42));
+        writeln!(pipe, "plugin stderr regression diagnostic").expect("write plugin stderr");
+        log::logger().flush();
+
+        let log = std::fs::read_to_string(&*zellij_runtime::consts::ZELLIJ_TMP_LOG_FILE)
+            .expect("read configured log");
+        assert_eq!(
+            log.matches("plugin stderr regression diagnostic").count(),
+            1
+        );
+        let line = log
+            .lines()
+            .find(|line| line.contains("plugin stderr regression diagnostic"))
+            .unwrap();
+        assert!(line.contains("|StderrTest               |"), "{line}");
+        assert!(line.contains("[id: 42    ]"), "{line}");
+    }
+
+    #[test]
     fn write_without_endl_does_not_consume_buffer_after_flush() {
         let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId::new(0));
 
