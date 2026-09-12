@@ -5,7 +5,7 @@ use crate::panes::terminal_character::AnsiCode;
 use crate::panes::PaneId;
 use crate::tab::Pane;
 use crate::ui::boundaries::Boundaries;
-use crate::ui::pane_boundaries_frame::{FrameParams, StackListEntry};
+use crate::ui::pane_boundaries_frame::{FrameParams, OpeningRipple, StackListEntry};
 use crate::ClientId;
 use std::collections::{HashMap, HashSet};
 use zellij_runtime::errors::prelude::*;
@@ -48,6 +48,7 @@ pub struct PaneContentsAndUi<'a> {
     blank_title: bool,
     mouse_scroll_resize: bool,
     dimmed_for_clients: HashSet<ClientId>,
+    opening_ripple: Option<OpeningRipple>,
 }
 
 impl<'a> PaneContentsAndUi<'a> {
@@ -105,10 +106,14 @@ impl<'a> PaneContentsAndUi<'a> {
             blank_title: false,
             mouse_scroll_resize,
             dimmed_for_clients,
+            opening_ripple: None,
         }
     }
     fn frame_is_dimmed_for_client(&self, client_id: ClientId) -> bool {
         self.dimmed_for_clients.contains(&client_id) && !self.focused_clients.contains(&client_id)
+    }
+    pub fn set_opening_ripple(&mut self, ripple: Option<OpeningRipple>) {
+        self.opening_ripple = ripple;
     }
     pub fn set_frame_geom_override(&mut self, frame_geom_override: Option<PaneGeom>) {
         self.frame_geom_override = frame_geom_override;
@@ -398,6 +403,7 @@ impl<'a> PaneContentsAndUi<'a> {
                 mouse_scroll_resize: self.mouse_scroll_resize,
                 dimmed: frame_is_dimmed,
                 guest_choice_indicator,
+                opening_ripple: self.opening_ripple,
             }
         } else {
             FrameParams {
@@ -428,6 +434,7 @@ impl<'a> PaneContentsAndUi<'a> {
                 mouse_scroll_resize: self.mouse_scroll_resize,
                 dimmed: frame_is_dimmed,
                 guest_choice_indicator,
+                opening_ripple: self.opening_ripple,
             }
         };
 

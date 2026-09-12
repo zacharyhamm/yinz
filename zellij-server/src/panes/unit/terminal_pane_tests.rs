@@ -1645,6 +1645,7 @@ fn frame_params(is_main_client: bool) -> FrameParams {
         mouse_scroll_resize: false,
         dimmed: false,
         guest_choice_indicator: None,
+        opening_ripple: None,
     }
 }
 

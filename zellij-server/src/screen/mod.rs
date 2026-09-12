@@ -914,6 +914,7 @@ pub(crate) struct Screen {
     mouse_scroll_resize: bool,
     mouse_hover_effects: bool,
     visual_bell: bool,
+    pane_animations: bool,
     focus_follows_mouse: bool,
     mouse_click_through: bool,
     context_menu_on_right_click: bool,
@@ -999,6 +1000,15 @@ pub(crate) struct Screen {
 /// Split out so a test can pin it: production always answers `Instant::now()`, and a test that
 /// wants to step an animation frame by frame sets `pinned_now` instead of sleeping.
 impl Screen {
+    pub(crate) fn set_pane_animations(&mut self, enabled: bool) {
+        self.pane_animations = enabled;
+        if !enabled {
+            for tab in self.tabs.values_mut() {
+                tab.settle_overlay_ripples();
+            }
+        }
+    }
+
     pub(crate) fn frame_now(&self) -> Instant {
         #[cfg(test)]
         if let Some(pinned) = self.pinned_now {
@@ -1026,7 +1036,10 @@ impl Screen {
     /// load starting while a toast is mid-slide must not be able to drop the clock to the dot
     /// period underneath it.
     pub(crate) fn animation_clock_period(&self, now: Instant) -> Option<Duration> {
-        if self.notifications_are_animating(now) || !self.fading_frame_panes.is_empty() {
+        if self.notifications_are_animating(now)
+            || !self.fading_frame_panes.is_empty()
+            || self.tabs.values().any(|tab| tab.overlay_ripple_is_live())
+        {
             Some(FRAME_PERIOD)
         } else if !self.blinking_agent_panes.is_empty() {
             Some(BLINK_TICK)
@@ -1473,6 +1486,7 @@ impl Screen {
             mouse_scroll_resize,
             mouse_hover_effects,
             visual_bell,
+            pane_animations: true,
             focus_follows_mouse,
             mouse_click_through,
             context_menu_on_right_click,

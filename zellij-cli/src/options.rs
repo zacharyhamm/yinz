@@ -406,6 +406,7 @@ impl From<CliOptions> for Options {
                 .firecracker_provider_timeout_secs
                 .map(zellij_types::units::ElapsedSeconds::new),
             pane_frames: value.pane_frames,
+            pane_animations: None,
             pane_frame_style: value.pane_frame_style,
             notification_position: value.notification_position,
             notification_timeout: value
@@ -688,6 +689,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         firecracker_provider,
         firecracker_provider_timeout_secs,
         pane_frames,
+        pane_animations: other.pane_animations.or(base.pane_animations),
         pane_frame_style,
         notification_position,
         notification_timeout,

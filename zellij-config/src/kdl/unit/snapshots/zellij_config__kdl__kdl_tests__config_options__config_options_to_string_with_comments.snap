@@ -104,6 +104,10 @@ user_plugin_dir "/tmp/plugins"
 // 
 mouse_mode false
  
+// Whether to animate pane opening effects
+// default is true
+// pane_animations false
+ 
 // Toggle having pane frames around the panes
 // Options:
 //   - true (default, enabled)

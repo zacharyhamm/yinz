@@ -187,9 +187,11 @@
 //! (`crate::panes::nested_session_modal`), which shares the word and nothing else: it is a dialog
 //! drawn onto an existing terminal pane's cells rather than a pane in its own right.
 
+use crate::ui::pane_boundaries_frame::OpeningRipple;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Instant;
 
 use zellij_runtime::errors::prelude::*;
 use zellij_types::position::Position;
@@ -230,6 +232,7 @@ pub struct OverlayPane {
     /// The in-memory half of this wrapper - see [`OverlayCarry`], which is how it survives an
     /// extraction.
     carry: OverlayCarry,
+    ripple: Option<OpeningRipple>,
 }
 
 /// The half of an overlay's wrapper that is *not* placement: whether it is set aside, and whether
@@ -286,6 +289,11 @@ pub struct OverlayCarry {
     /// overlay whose owner never places it becomes visible at the default on the next resize
     /// rather than being invisible for as long as it lives.
     pub awaiting_placement: bool,
+    /// Opening is consumed once per reveal, including when effects are disabled.
+    pub opening_seen: bool,
+    /// Permission/error UI can release visibility before the owner supplies its geometry.
+    pub opening_awaits_placement: bool,
+    pub opening_started: Option<Instant>,
 }
 
 impl PaneLookup for BTreeMap<PaneId, OverlayPane> {
@@ -456,8 +464,9 @@ impl OverlayPanes {
         mut pane: Box<dyn Pane>,
         kind: OverlayKind,
         coordinates: FloatingPaneCoordinates,
-        carry: OverlayCarry,
+        mut carry: OverlayCarry,
     ) {
+        carry.opening_awaits_placement |= carry.awaiting_placement;
         let surface = self.surface();
         // `adjust_coordinates` resolves the geometry and nothing else, so a coordinate that is
         // not geometry has to be applied by hand - as `change_pane_coordinates` does.
@@ -474,6 +483,7 @@ impl OverlayPanes {
                 kind,
                 coordinates,
                 carry,
+                ripple: None,
             },
         );
         self.raise_within_class(pane_id);
@@ -494,7 +504,12 @@ impl OverlayPanes {
     /// Returns whether anything changed, so a caller can skip a render it does not need.
     pub fn hide_pane(&mut self, pane_id: PaneId) -> bool {
         match self.panes.get_mut(&pane_id) {
-            Some(overlay) if !overlay.carry.hidden => overlay.carry.hidden = true,
+            Some(overlay) if !overlay.carry.hidden => {
+                overlay.carry.hidden = true;
+                overlay.carry.opening_seen = false;
+                overlay.carry.opening_started = None;
+                overlay.ripple = None;
+            },
             _ => return false,
         }
         if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == pane_id) {
@@ -659,6 +674,7 @@ impl OverlayPanes {
                 // is the pane the user dragged, and one swapped into a hidden slot is not
                 // suddenly on screen
                 carry: removed.carry,
+                ripple: removed.ripple,
             },
         );
         if let Some(index) = self.z_indices.iter().position(|p_id| p_id == &pane_id) {
@@ -1247,6 +1263,7 @@ impl OverlayPanes {
         // Somebody has placed it, which is the whole of what it was waiting for. See
         // `OverlayCarry::awaiting_placement`.
         overlay.carry.awaiting_placement = false;
+        overlay.carry.opening_awaits_placement = false;
 
         self.set_pane_frames().non_fatal();
         Ok(())
@@ -1428,6 +1445,7 @@ impl OverlayPanes {
             overlay.carry.position_is_user_stated = position_claimed;
             overlay.carry.size_is_user_stated = size_claimed;
             overlay.carry.awaiting_placement = false;
+            overlay.carry.opening_awaits_placement = false;
         }
         self.set_pane_frames().non_fatal();
         self.set_force_render();
@@ -1477,6 +1495,7 @@ impl OverlayPanes {
             // otherwise be invisible for as long as it lived. A resize shows it where it was born,
             // which is the behaviour it would have had without the flag at all.
             overlay.carry.awaiting_placement = false;
+            overlay.carry.opening_awaits_placement = false;
         }
         self.set_pane_frames().non_fatal();
         self.set_force_render();
@@ -2682,6 +2701,89 @@ impl OverlayPanes {
 
     // ---- render ---------------------------------------------------------------------------
 
+    /// Sample once at the server's frame timestamp. The carry survives extraction to another tab;
+    /// the sampled frame does not, and never reads a clock of its own.
+    pub fn sample_opening_ripples(&mut self, now: Instant, enabled: bool) {
+        let visible = self.stack_layer_ids();
+        for pane_id in &visible {
+            let overlay = &self.panes[pane_id];
+            if overlay.carry.opening_awaits_placement {
+                continue;
+            }
+            let eligible = enabled
+                // Regular overlays keep full borders even with title-only tiled panes.
+                && overlay.pane.get_content_offset() == Offset::frame(1)
+                && !overlay.pane.borderless()
+                && overlay
+                    .pane
+                    .invoked_with()
+                    .as_ref()
+                    .and_then(|run| run.get_run_plugin())
+                    .is_some_and(|plugin| {
+                        matches!(plugin.location,
+                        zellij_types::input::layout::RunPluginLocation::Zellij(tag)
+                        if matches!(tag.to_string().as_str(), "hocus" | "hocus-agents"))
+                    });
+            let partner_start = self
+                .linked_partner(pane_id)
+                .filter(|partner| visible.contains(partner))
+                .and_then(|partner| self.panes[&partner].carry.opening_started)
+                .filter(|start| OpeningRipple::sample(*start, now, 0, 1).is_some());
+            let Some(overlay) = self.panes.get_mut(pane_id) else {
+                continue;
+            };
+            if !eligible {
+                overlay.carry.opening_started = None;
+            } else if !overlay.carry.opening_seen {
+                overlay.carry.opening_started = Some(partner_start.unwrap_or(now));
+            }
+            overlay.carry.opening_seen = true;
+        }
+        // A pair can be linked after one half has already appeared. Both join the earlier opening.
+        for (left, right) in &self.linked {
+            if visible.contains(left) && visible.contains(right) {
+                if let (Some(a), Some(b)) = (
+                    self.panes[left].carry.opening_started,
+                    self.panes[right].carry.opening_started,
+                ) {
+                    if OpeningRipple::sample(a.min(b), now, 0, 1).is_none() {
+                        continue;
+                    }
+                    for id in [left, right] {
+                        if let Some(overlay) = self.panes.get_mut(id) {
+                            overlay.carry.opening_started = Some(a.min(b));
+                        }
+                    }
+                }
+            }
+        }
+        for pane_id in visible {
+            let geom = self.panes[&pane_id].pane.current_geom();
+            let bounds = self
+                .linked_partner(&pane_id)
+                .and_then(|partner| self.get(&partner))
+                .map(|partner| union_of(geom, partner.current_geom()))
+                .unwrap_or(geom);
+            if let Some(overlay) = self.panes.get_mut(&pane_id) {
+                overlay.ripple = overlay.carry.opening_started.and_then(|start| {
+                    OpeningRipple::sample(start, now, bounds.x, bounds.cols.as_usize())
+                });
+            }
+        }
+    }
+
+    pub fn settle_opening_ripples(&mut self) {
+        for overlay in self.panes.values_mut() {
+            overlay.carry.opening_started = None;
+        }
+        // Keep the last sample until the next frame paints straight borders. It holds the clock
+        // through a queued tick, even if effects are enabled again before that frame arrives.
+    }
+
+    pub fn opening_ripple_is_live(&self) -> bool {
+        self.panes.values().any(|overlay| overlay.ripple.is_some())
+    }
+
     /// Draw every overlay, bottom-most first.
     ///
     /// `z_index_offset` is how many layers the tab has already put into the flat
@@ -2820,6 +2922,7 @@ impl OverlayPanes {
                 mouse_scroll_resize,
                 dimmed_clients.clone(),
             );
+            pane_contents_and_ui.set_opening_ripple(overlay.ripple);
             for client_id in &connected_clients {
                 let client_mode = client_modes
                     .get(client_id)

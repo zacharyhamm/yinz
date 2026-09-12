@@ -714,6 +714,7 @@ pub enum ScreenInstruction {
         mouse_scroll_resize: bool,
         mouse_hover_effects: bool,
         visual_bell: bool,
+        pane_animations: bool,
         focus_follows_mouse: bool,
         mouse_click_through: bool,
         context_menu_on_right_click: bool,

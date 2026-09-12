@@ -328,6 +328,7 @@ pub(crate) fn screen_thread_main(
     let mouse_scroll_resize = config_options.mouse_scroll_resize.unwrap_or(true);
     let mouse_hover_effects = config_options.mouse_hover_effects.unwrap_or(true);
     let visual_bell = config_options.visual_bell.unwrap_or(true);
+    let pane_animations = config_options.pane_animations.unwrap_or(true);
     let focus_follows_mouse = config_options.focus_follows_mouse.unwrap_or(false);
     let mouse_click_through = config_options.mouse_click_through.unwrap_or(false);
     let context_menu_on_right_click = config_options.context_menu_on_right_click.unwrap_or(false);
@@ -393,6 +394,7 @@ pub(crate) fn screen_thread_main(
         notification_timeout_secs,
         agent_pane_min_size,
     );
+    screen.set_pane_animations(pane_animations);
     screen.config_file_path = config_file_path;
     screen.config_dir = config_dir;
     screen.host_theme_dark_styling = host_theme_dark_styling;
@@ -4570,6 +4572,7 @@ pub(crate) fn screen_thread_main(
                     mouse_scroll_resize,
                     mouse_hover_effects,
                     visual_bell,
+                    pane_animations,
                     focus_follows_mouse,
                     mouse_click_through,
                     context_menu_on_right_click,
@@ -4581,6 +4584,7 @@ pub(crate) fn screen_thread_main(
                     host_notification_protocol,
                     agent_pane_min_size,
                 } => {
+                    screen.set_pane_animations(pane_animations);
                     agent_double_escape = new_agent_double_escape;
                     for tab in screen.tabs.values_mut() {
                         tab.agent_double_escape = agent_double_escape;

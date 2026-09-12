@@ -675,6 +675,7 @@ fn test_client_messages() {
                 firecracker_provider: None,
                 firecracker_provider_timeout_secs: None,
                 pane_frames: Some(true),
+                pane_animations: Some(false),
                 pane_frame_style: Some(PaneFrameStyle::Full),
                 notification_position: Some(NotificationPosition::BottomLeft),
                 notification_timeout: Some(zellij_types::units::ElapsedSeconds::new(9)),
