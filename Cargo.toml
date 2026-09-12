@@ -33,12 +33,14 @@ zellij-client = { path = "zellij-client/", version = "0.45.0" }
 zellij-server = { path = "zellij-server/", version = "0.45.0" }
 anyhow = { workspace = true }
 clap = { workspace = true }
+console = { workspace = true }
 dialoguer = { workspace = true }
 humantime = { workspace = true }
 interprocess = { workspace = true }
 log = { workspace = true }
 miette = { workspace = true }
 names = { workspace = true }
+nix = { workspace = true, features = ["poll", "term"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 suggest = { workspace = true }
@@ -144,6 +146,8 @@ async-trait = { version = "0.1", default-features = false }
 chrono = { version = "0.4.19", default-features = false, features = ["std", "clock"] }
 clap = { version = "4.6", default-features = false, features = ["std", "color", "help", "usage", "error-context", "suggestions", "wrap_help", "derive", "env"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+# The version dialoguer 0.11 already builds; the session picker reads keys with it.
+console = { version = "0.15", default-features = false }
 crossterm = { version = "0.29", default-features = false }
 daemonize = { package = "daemonix", version = "0.1", default-features = false }
 dialoguer = { version = "0.11", default-features = false, features = ["password", "completion"] }

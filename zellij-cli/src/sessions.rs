@@ -14,13 +14,8 @@ pub fn unresponsive_session_message(name: &str) -> String {
          before reusing the name."
     )
 }
-pub fn print_sessions(
-    mut sessions: Vec<(SessionName, Duration, SessionListing)>,
-    no_formatting: bool,
-    short: bool,
-    reverse: bool,
-) {
-    let curr_session = envs::get_session_name().unwrap_or_else(|_| "".into());
+/// Orders a listing by age: oldest first, or newest first with `reverse`.
+pub fn sort_sessions(sessions: &mut [(SessionName, Duration, SessionListing)], reverse: bool) {
     sessions.sort_by(|a, b| {
         if reverse {
             // sort by `Duration` ascending (newest would be first)
@@ -29,48 +24,74 @@ pub fn print_sessions(
             b.1.cmp(&a.1)
         }
     });
+}
+/// One line of `list-sessions` output, shared with the session picker.
+/// `formatted` selects the coloured form.
+pub fn format_session_line(
+    session_name: &str,
+    age: Duration,
+    kind: SessionListing,
+    current: bool,
+    formatted: bool,
+) -> String {
+    if !formatted {
+        let suffix = if current {
+            "(current)".to_string()
+        } else {
+            match kind {
+                SessionListing::Exited => "(EXITED - attach to resurrect)".to_string(),
+                SessionListing::Unresponsive => format!(
+                    "(UNRESPONSIVE - run `zellij kill-session {}`)",
+                    session_name
+                ),
+                SessionListing::Running => String::new(),
+            }
+        };
+        let timestamp = format!("[Created {} ago]", format_duration(age));
+        format!("{} {} {}", session_name, timestamp, suffix)
+    } else {
+        let formatted_session_name = format!("\u{1b}[32;1m{}\u{1b}[m", session_name);
+        let suffix = if current {
+            "(current)".to_string()
+        } else {
+            match kind {
+                SessionListing::Exited => {
+                    "(\u{1b}[31;1mEXITED\u{1b}[m - attach to resurrect)".to_string()
+                },
+                SessionListing::Unresponsive => format!(
+                    "(\u{1b}[31;1mUNRESPONSIVE\u{1b}[m - run `zellij kill-session {}`)",
+                    session_name
+                ),
+                SessionListing::Running => String::new(),
+            }
+        };
+        let timestamp = format!("[Created \u{1b}[35;1m{}\u{1b}[m ago]", format_duration(age));
+        format!("{} {} {}", formatted_session_name, timestamp, suffix)
+    }
+}
+pub fn print_sessions(
+    mut sessions: Vec<(SessionName, Duration, SessionListing)>,
+    no_formatting: bool,
+    short: bool,
+    reverse: bool,
+) {
+    let curr_session = envs::get_session_name().unwrap_or_else(|_| "".into());
+    sort_sessions(&mut sessions, reverse);
     sessions.iter().for_each(|(session_name, timestamp, kind)| {
         if short {
             println!("{}", session_name);
             return;
         }
-        if no_formatting {
-            let suffix = if curr_session == *session_name {
-                "(current)".to_string()
-            } else {
-                match kind {
-                    SessionListing::Exited => "(EXITED - attach to resurrect)".to_string(),
-                    SessionListing::Unresponsive => format!(
-                        "(UNRESPONSIVE - run `zellij kill-session {}`)",
-                        session_name
-                    ),
-                    SessionListing::Running => String::new(),
-                }
-            };
-            let timestamp = format!("[Created {} ago]", format_duration(*timestamp));
-            println!("{} {} {}", session_name, timestamp, suffix);
-        } else {
-            let formatted_session_name = format!("\u{1b}[32;1m{}\u{1b}[m", session_name);
-            let suffix = if curr_session == *session_name {
-                "(current)".to_string()
-            } else {
-                match kind {
-                    SessionListing::Exited => {
-                        "(\u{1b}[31;1mEXITED\u{1b}[m - attach to resurrect)".to_string()
-                    },
-                    SessionListing::Unresponsive => format!(
-                        "(\u{1b}[31;1mUNRESPONSIVE\u{1b}[m - run `zellij kill-session {}`)",
-                        session_name
-                    ),
-                    SessionListing::Running => String::new(),
-                }
-            };
-            let timestamp = format!(
-                "[Created \u{1b}[35;1m{}\u{1b}[m ago]",
-                format_duration(*timestamp)
-            );
-            println!("{} {} {}", formatted_session_name, timestamp, suffix);
-        }
+        println!(
+            "{}",
+            format_session_line(
+                session_name.as_str(),
+                *timestamp,
+                *kind,
+                curr_session == *session_name,
+                !no_formatting,
+            )
+        );
     })
 }
 pub fn print_sessions_with_index(sessions: Vec<SessionName>) {
@@ -121,43 +142,54 @@ fn kill_from_outside_remedy(name: &str) -> String {
          to clear the name."
     )
 }
+/// Every session `list-sessions` would show: the live sockets, plus the
+/// resurrectable sessions when `exited` is set.
+pub fn collect_sessions(
+    exited: bool,
+) -> Result<Vec<(SessionName, Duration, SessionListing)>, io::ErrorKind> {
+    let live = get_sessions_with_status()?;
+    let resurrectable = if exited {
+        get_resurrectable_sessions()
+    } else {
+        Vec::new()
+    };
+    Ok(merge_listings(live, resurrectable))
+}
+/// Merges probed sockets with resurrectable sessions into one listing.
+pub fn merge_listings(
+    live: Vec<(SessionName, Duration, SessionProbe)>,
+    resurrectable: Vec<(SessionName, Duration)>,
+) -> Vec<(SessionName, Duration, SessionListing)> {
+    let mut all_sessions: HashMap<SessionName, (Duration, SessionListing)> = resurrectable
+        .into_iter()
+        .map(|(name, timestamp)| (name, (timestamp, SessionListing::Exited)))
+        .collect();
+    // A session with a socket overrides a resurrectable one of the same
+    // name either way: it is the live thing, answering or not.
+    for (session_name, duration, status) in live {
+        let listing = match status {
+            SessionProbe::Alive => SessionListing::Running,
+            SessionProbe::Unresponsive => SessionListing::Unresponsive,
+            // Nothing behind the socket by the time it was probed —
+            // `assert_socket` has already unlinked it, so there is no
+            // session here to list.
+            SessionProbe::Absent => continue,
+        };
+        all_sessions.insert(session_name, (duration, listing));
+    }
+    all_sessions
+        .into_iter()
+        .map(|(name, (timestamp, listing))| (name, timestamp, listing))
+        .collect()
+}
 pub fn list_sessions(no_formatting: bool, short: bool, reverse: bool, exited: bool) {
-    let exit_code = match get_sessions_with_status() {
-        Ok(sessions_with_status) => {
-            let mut all_sessions: HashMap<SessionName, (Duration, SessionListing)> = if exited {
-                get_resurrectable_sessions()
-                    .into_iter()
-                    .map(|(name, timestamp)| (name, (timestamp, SessionListing::Exited)))
-                    .collect()
-            } else {
-                HashMap::new()
-            };
-            // A session with a socket overrides a resurrectable one of the same
-            // name either way: it is the live thing, answering or not.
-            for (session_name, duration, status) in sessions_with_status {
-                let listing = match status {
-                    SessionProbe::Alive => SessionListing::Running,
-                    SessionProbe::Unresponsive => SessionListing::Unresponsive,
-                    // Nothing behind the socket by the time it was probed —
-                    // `assert_socket` has already unlinked it, so there is no
-                    // session here to list.
-                    SessionProbe::Absent => continue,
-                };
-                all_sessions.insert(session_name.clone(), (duration, listing));
-            }
+    let exit_code = match collect_sessions(exited) {
+        Ok(all_sessions) => {
             if all_sessions.is_empty() {
                 eprintln!("No active zellij sessions found.");
                 1
             } else {
-                print_sessions(
-                    all_sessions
-                        .iter()
-                        .map(|(name, (timestamp, listing))| (name.clone(), *timestamp, *listing))
-                        .collect(),
-                    no_formatting,
-                    short,
-                    reverse,
-                );
+                print_sessions(all_sessions, no_formatting, short, reverse);
                 0
             }
         },

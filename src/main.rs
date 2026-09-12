@@ -2,6 +2,7 @@ mod agent_report;
 mod commands;
 mod hocus_hooks;
 mod hocus_skills;
+mod session_menu;
 #[cfg(test)]
 mod tests;
 mod workflow;

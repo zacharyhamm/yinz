@@ -26,6 +26,7 @@ uuid = { workspace = true }
 kdl = { workspace = true }
 humantime = { workspace = true }
 suggest = { workspace = true }
+unicode-width = { workspace = true }
 clap_complete = { version = "4.6", default-features = false }
 [dev-dependencies]
 tempfile = { workspace = true }
