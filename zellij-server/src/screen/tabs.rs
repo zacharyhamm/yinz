@@ -897,6 +897,18 @@ impl Screen {
     }
 
     pub(super) fn close_tab_by_id(&mut self, tab_id: TabId) -> Result<()> {
+        // Keep clients and preserved panes attached until relocation has a loaded destination.
+        // Pending sources still close immediately so failed layouts cannot block settlement.
+        if self.tabs.get(&tab_id).is_some_and(|tab| !tab.is_pending())
+            && self.tabs.len() > 1
+            && self
+                .tabs
+                .values()
+                .all(|tab| tab.id == tab_id || tab.is_pending())
+        {
+            self.deferred_tab_closes.insert(tab_id);
+            return Ok(());
+        }
         self.teardown_tab(tab_id, false)
     }
 

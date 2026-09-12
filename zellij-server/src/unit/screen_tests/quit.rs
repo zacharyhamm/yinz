@@ -1012,6 +1012,118 @@ fn pending_tabs_are_not_relocation_destinations_and_cancel_obsolete_confirmation
 }
 
 #[test]
+fn internal_tab_closure_waits_for_a_loaded_destination() {
+    for empty_first in [true, false] {
+        let source = TabId::new(1);
+        let destination = TabId::new(2);
+        let client = crate::ClientId::new(1);
+        let hidden = PaneId::Terminal(crate::TerminalId::new(8));
+        let overlay = PaneId::Plugin(HOCUS_PLUGIN_ID);
+        let respawn = (RunCommand::default(), true);
+        let (mut screen, receiver, server, plugins) =
+            screen_with_plugin_senders_and_clients(&[source], &[client, CLIENT_2]);
+        let (to_pty, pty_receiver) = channels::unbounded();
+        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        let tab = screen.tabs.get_mut(&source).unwrap();
+        for (id, placement) in [
+            (hidden, NewPanePlacement::default()),
+            (
+                overlay,
+                NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            ),
+        ] {
+            tab.new_pane(id, None, None, false, true, placement, Some(client), None)
+                .unwrap();
+        }
+        tab.suppress_pane(hidden, None);
+        tab.restore_pending_respawn(hidden, respawn.clone());
+        screen.set_quit_notice(HOCUS_PLUGIN_ID, Some("working".into()), true);
+        screen
+            .new_tab(destination, (vec![], vec![]), None, Some(client))
+            .unwrap();
+
+        if empty_first {
+            screen.empty_and_close_tab(source);
+        } else {
+            screen.close_tab_by_id(source).unwrap();
+        }
+        screen.settle_tabs().unwrap();
+        assert!(screen.deferred_tab_closes.contains(&source));
+        assert_eq!(screen.active_tab_ids[&client], source);
+        assert_eq!(screen.active_tab_ids[&CLIENT_2], source);
+        assert_every_client_has_a_tab(&screen);
+        let tab = screen.tabs.get_mut(&source).unwrap();
+        assert!(tab.has_pane_with_pid(&hidden));
+        assert!(tab.pane_is_overlay(overlay));
+        assert_eq!(tab.take_pending_respawn(hidden), Some(respawn.clone()));
+        tab.restore_pending_respawn(hidden, respawn.clone());
+        assert_eq!(launches(&receiver), 0);
+        assert!(requested_tabs(&plugins).is_empty());
+        assert!(pty_receiver.try_recv().is_err());
+        assert!(!session_ended(&server));
+
+        // ApplyLayout must leave focus alone: settlement owns the client relocation.
+        load_replacement_tab(&mut screen, destination, 2);
+        assert_eq!(screen.active_tab_ids[&client], source);
+        screen.settle_tabs().unwrap();
+        assert!(!screen.tabs.contains_key(&source));
+        assert!(screen.deferred_tab_closes.is_empty());
+        assert_eq!(screen.active_tab_ids[&client], destination);
+        assert_eq!(screen.active_tab_ids[&CLIENT_2], destination);
+        assert_every_client_has_a_tab(&screen);
+        let tab = screen.tabs.get_mut(&destination).unwrap();
+        assert_eq!(tab.position.get(), 0);
+        assert!(tab.has_pane_with_pid(&hidden));
+        assert!(tab.pane_is_overlay(overlay));
+        assert_eq!(tab.take_pending_respawn(hidden), Some(respawn.clone()));
+        assert!(screen.quit_is_guarded());
+        assert_eq!(launches(&receiver), 0);
+        assert!(!session_ended(&server));
+        let closed: Vec<_> = pty_receiver
+            .try_iter()
+            .flat_map(|(instruction, _)| match instruction {
+                PtyInstruction::CloseTab(ids) => ids,
+                PtyInstruction::ClosePane(id, _) => vec![id],
+                _ => vec![],
+            })
+            .collect();
+        assert_eq!(
+            closed,
+            if empty_first {
+                vec![]
+            } else {
+                vec![PaneId::Terminal(crate::TerminalId::new(1))]
+            }
+        );
+    }
+}
+
+#[test]
+fn failed_pending_destination_does_not_block_internal_tab_closure() {
+    let source = TabId::new(1);
+    let failed = TabId::new(2);
+    let (mut screen, receiver, server, plugins) =
+        screen_with_plugin_senders_and_clients(&[source], &[crate::ClientId::new(1)]);
+    screen
+        .new_tab(failed, (vec![], vec![]), None, None)
+        .unwrap();
+    screen.empty_and_close_tab(source);
+    screen.settle_tabs().unwrap();
+    assert!(screen.tabs.contains_key(&source));
+
+    screen.close_tab_by_id(failed).unwrap();
+    assert!(!screen.has_pending_tabs());
+    assert_eq!(screen.tabs[&source].position.get(), 0);
+    screen.settle_tabs().unwrap();
+    assert!(screen.tabs.is_empty());
+    assert!(screen.deferred_tab_closes.is_empty());
+    assert!(screen.active_tab_ids.is_empty());
+    assert!(session_ended(&server));
+    assert_eq!(launches(&receiver), 0);
+    assert!(requested_tabs(&plugins).is_empty());
+}
+
+#[test]
 fn hidden_only_non_last_tab_keeps_its_identity_and_terminal() {
     let (mut screen, _, _, plugins) = screen_with_plugin_senders_and_clients(
         &[TabId::new(1), TabId::new(2)],
