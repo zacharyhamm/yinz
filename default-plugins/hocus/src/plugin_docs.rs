@@ -1,24 +1,13 @@
 //! The plugin reference, served to the model as a tool.
 //!
-//! TypeScript first: the unprefixed sections are the Deno guide, the SDK declarations and the
-//! worked examples, and the `lua_*` sections are the Lua guide for a `.lua` file or an
-//! extensionless name. Everything here is compiled in: the guides, the declarations and the
-//! examples are checked-in files, and `include_str!` means the tool cannot go stale against
-//! them or fail because a doc was moved.
+//! The Deno guide, SDK declarations, and worked examples are compiled into this tool.
+//! Each section names its source heading, so changes to the guide cannot leave stale references.
 //!
 //! It is sectioned for cost rather than for size. Every section fits inside `MAX_TOOL_OUTPUT`
 //! several times over, but a tool result stays in the transcript and is re-sent on every later
 //! turn of the conversation — so handing a guide over whole would tax every message that
 //! followed it. Asking for a section is how the model pays only for what it needs.
 //!
-//! No number is quoted here, because the last one rotted: the guide had doubled since. The rule
-//! lives in `no_section_is_anywhere_near_the_tool_output_cap` instead, which fails when a
-//! section grows past what a tool call should cost. The `##` sections that outgrew it - the
-//! Lua guide's `Commands` and `Hooks`, the TypeScript guide's `Async helpers` - are served as
-//! their `###` children, so a model that wants the permission table does not also buy the
-//! pane-workflow guide. Both guides go through the same table, so a new `##` heading in either
-//! fails a test here until it is given a name.
-
 use crate::plugin_source::{self, Search};
 use crate::tools;
 
@@ -30,9 +19,8 @@ use crate::tools;
 /// transcript that then re-sends it on every later turn.
 pub const MAX_DOCS_OUTPUT: usize = 16_000;
 
-/// The two guides, verbatim.
+/// The TypeScript guide, verbatim.
 const TS_GUIDE: &str = include_str!("../../../docs/DENO_PLUGINS.md");
-const LUA_GUIDE: &str = include_str!("../../../docs/LUA_PLUGINS.md");
 const EXAMPLE_CLOCK: &str = include_str!("../../../example-plugins/clock.ts");
 const EXAMPLE_PLAYGROUND: &str = include_str!("../../../example-plugins/playground.ts");
 const EXAMPLE_AGENT_COMMIT: &str = include_str!("../../../example-plugins/agent-commit.ts");
@@ -81,56 +69,11 @@ fn sdk_part(name: &str) -> Option<&'static str> {
     Some(&SDK[start..end])
 }
 
-/// The Lua half of the API, verbatim: the argument sugar and the named wrappers live here, so
-/// a model that has read it does not have to guess how a command is spelled. Served in nine
-/// parts, cut at its own section markers, so that none is more than a tool call should cost.
-const PRELUDE: &str = include_str!("../../../zellij-plugin-host/src/lua/prelude.lua");
-const PRELUDE_CUTS: [&str; 8] = [
-    "\n-- Host commands ",
-    "\n-- Tasks ",
-    "\n-- The awaitables.",
-    "\n-- Agents ",
-    "\n-- Plugin-to-plugin calls ",
-    "\n-- Data ",
-    "\n-- Rendering ",
-    "\n-- Pane workflows ",
-];
-
-/// Part `index` of the prelude: before the first cut, between the two, or after the second.
-fn prelude_part(index: usize) -> &'static str {
-    let starts: Vec<usize> = PRELUDE_CUTS
-        .iter()
-        .filter_map(|cut| PRELUDE.find(cut).map(|at| at + 1))
-        .collect();
-    let start = index
-        .checked_sub(1)
-        .and_then(|i| starts.get(i).copied())
-        .unwrap_or(0);
-    let end = starts.get(index).copied().unwrap_or(PRELUDE.len());
-    &PRELUDE[start..end]
-}
-
-/// Which guide a section is cut from.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Guide {
-    TypeScript,
-    Lua,
-}
-
-impl Guide {
-    fn text(self) -> &'static str {
-        match self {
-            Guide::TypeScript => TS_GUIDE,
-            Guide::Lua => LUA_GUIDE,
-        }
-    }
-}
-
 /// The section names the schema advertises, and the only ones `section` accepts.
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing a guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 89] = [
+pub const SECTIONS: [&str; 56] = [
     "index",
     "quickstart",
     "overview",
@@ -187,101 +130,41 @@ pub const SECTIONS: [&str; 89] = [
     "example_hocus_todos",
     "example_hocus_notes",
     "hocus_data",
-    "lua_quickstart",
-    "lua_contract",
-    "lua_events",
-    "lua_commands",
-    "lua_commands_workflows",
-    "lua_permissions",
-    "lua_tasks",
-    "lua_agents",
-    "lua_plugin_calls",
-    "lua_hocus_completions",
-    "lua_rendering",
-    "lua_modules",
-    "lua_data",
-    "lua_queues",
-    "lua_hocus_extensions",
-    "lua_hooks",
-    "lua_hooks_workflow",
-    "lua_hooks_headless",
-    "lua_hooks_context_menu",
-    "lua_files",
-    "lua_errors",
-    "lua_restrictions",
-    "lua_limits",
-    "prelude_widgets",
-    "prelude",
-    "prelude_commands",
-    "prelude_tasks",
-    "prelude_awaitables",
-    "prelude_agents",
-    "prelude_rpc",
-    "prelude_data",
-    "prelude_ui",
-    "prelude_workflows",
 ];
 
-/// The guide and the `##` heading each guide section is cut at. Examples, the declarations and
-/// the prelude are not in a guide and are absent.
-fn heading(section: &str) -> Option<(Guide, &'static str)> {
-    let ts = |heading| Some((Guide::TypeScript, heading));
-    let lua = |heading| Some((Guide::Lua, heading));
+/// The `##` heading each guide section is cut at. Examples and declarations are separate.
+fn heading(section: &str) -> Option<&'static str> {
     match section {
-        "lifecycle" => ts("Lifecycle"),
-        "events" => ts("Events"),
-        "commands" | "permissions" => ts("Host commands and permissions"),
-        "helpers" => ts("Host command helpers"),
-        "limits" => ts("Numbers and allocation limits"),
-        "async" | "async_panes" | "async_waits" | "async_timers" => ts("Async helpers"),
-        "files" => ts("Files and project configuration"),
-        "data" => ts("Persistent data"),
-        "queues" => ts("Work queues"),
-        "rpc" => ts("Plugin RPC"),
-        "builtins" => ts("Embedded builtins and server identity"),
-        "agents" => ts("Agent helpers"),
-        "hocus_completions" => ts("Hocus completions"),
-        "hocus_extensions" => ts("Hocus extensions"),
-        "rendering" | "ui" => ts("Rendering"),
-        "hooks" | "hooks_workflow" | "hooks_headless" | "hooks_context_menu" => ts("Hooks"),
-        "modules" => ts("Modules and checking"),
-        "errors" => ts("Errors"),
-        "restrictions" => ts("What TypeScript plugins may not do"),
-        "porting" => ts("Porting a Lua plugin"),
-        "authoring" => ts("Authoring loop"),
-        "build" => ts("Build inputs"),
-        "lua_quickstart" => lua("A plugin"),
-        "lua_contract" => lua("The contract"),
-        "lua_events" => lua("Events"),
-        "lua_commands" | "lua_commands_workflows" | "lua_permissions" => lua("Commands"),
-        "lua_tasks" => lua("Tasks"),
-        "lua_agents" => lua("Agents"),
-        "lua_plugin_calls" => lua("Plugin-to-plugin calls"),
-        "lua_hocus_completions" => lua("Hocus completions"),
-        "lua_rendering" => lua("Rendering"),
-        "lua_modules" => lua("Modules"),
-        "lua_data" => lua("Data"),
-        "hocus_data" => lua("Hocus data"),
-        "lua_queues" => lua("Work queues"),
-        "lua_hocus_extensions" => lua("Hocus extensions"),
-        "lua_hooks" | "lua_hooks_workflow" | "lua_hooks_headless" | "lua_hooks_context_menu" => {
-            lua("Hooks")
-        },
-        "lua_files" => lua("Files"),
-        "lua_errors" => lua("Errors"),
-        "lua_restrictions" => lua("What Lua plugins may not do"),
-        "lua_limits" => lua("Current limits"),
+        "lifecycle" => Some("Lifecycle"),
+        "events" => Some("Events"),
+        "commands" | "permissions" => Some("Host commands and permissions"),
+        "helpers" => Some("Host command helpers"),
+        "limits" => Some("Numbers and allocation limits"),
+        "async" | "async_panes" | "async_waits" | "async_timers" => Some("Async helpers"),
+        "files" => Some("Files and project configuration"),
+        "data" => Some("Persistent data"),
+        "hocus_data" => Some("Hocus data"),
+        "queues" => Some("Work queues"),
+        "rpc" => Some("Plugin RPC"),
+        "builtins" => Some("Embedded builtins and server identity"),
+        "agents" => Some("Agent helpers"),
+        "hocus_completions" => Some("Hocus completions"),
+        "hocus_extensions" => Some("Hocus extensions"),
+        "rendering" | "ui" => Some("Rendering"),
+        "hooks" | "hooks_workflow" | "hooks_headless" | "hooks_context_menu" => Some("Hooks"),
+        "modules" => Some("Modules and checking"),
+        "errors" => Some("Errors"),
+        "restrictions" => Some("What TypeScript plugins may not do"),
+        "porting" => Some("Porting a Lua plugin"),
+        "authoring" => Some("Authoring loop"),
+        "build" => Some("Build inputs"),
         _ => None,
     }
 }
 
 /// How much of its `##` section a name resolves to.
 ///
-/// A few of the guides' sections are far larger than the rest - the Lua `Commands` at ~16 KB
-/// and `Hooks` at ~12 KB, the TypeScript `Async helpers` at ~12 KB - and a model that wanted
-/// one paragraph of any paid for all of it, permanently. So those are served as their `###`
-/// children, and the short names keep the part everyone needs rather than becoming aliases for
-/// the whole thing again.
+/// Large sections are served through their named subheadings.
 #[derive(Clone, Copy)]
 enum Cut {
     /// The whole `##` section, `###` children and all. What every other section is.
@@ -309,13 +192,6 @@ fn cut(section: &str) -> Cut {
         "async_timers" => Cut::Only("Timers"),
         // The preamble, the keybinding rules and the short "commands that answer" - what a
         // plugin that runs a command needs, and nothing about workflows or permissions.
-        "lua_commands" => Cut::Until("Pane workflows"),
-        "lua_commands_workflows" => Cut::Only("Pane workflows"),
-        "lua_permissions" => Cut::Only("Permissions"),
-        "lua_hooks" => Cut::Until("Project-owned Swamp workflows"),
-        "lua_hooks_workflow" => Cut::Only("Project-owned Swamp workflows"),
-        "lua_hooks_headless" => Cut::Only("Headless hooks"),
-        "lua_hooks_context_menu" => Cut::Only("The `context_menu` hook"),
         _ => Cut::Whole,
     }
 }
@@ -326,9 +202,8 @@ fn cut(section: &str) -> Cut {
 /// and it means the guide is the single source of truth for where a section begins and ends.
 /// The `###` split is the same trick one level down, which is why renaming a subheading fails a
 /// test rather than silently returning the wrong text.
-fn guide_section(guide: Guide, heading: &str, cut: Cut) -> Option<String> {
-    let chunk = guide
-        .text()
+fn guide_section(heading: &str, cut: Cut) -> Option<String> {
+    let chunk = TS_GUIDE
         .split("\n## ")
         .skip(1)
         .find(|chunk| chunk.starts_with(heading))?;
@@ -340,7 +215,7 @@ fn guide_section(guide: Guide, heading: &str, cut: Cut) -> Option<String> {
             // guess that `async_panes` exists and simply does without what is in it.
             let rest: Vec<String> = subheadings(chunk)
                 .iter()
-                .filter_map(|name| section_for_sub(guide, heading, name).map(|s| (s, *name)))
+                .filter_map(|name| section_for_sub(heading, name).map(|s| (s, *name)))
                 .map(|(name, sub)| format!("- {name}: \"{sub}\""))
                 .collect();
             format!(
@@ -373,10 +248,11 @@ fn subheadings(chunk: &str) -> Vec<&str> {
 }
 
 /// The section name that serves one `###` child, if any does on its own.
-fn section_for_sub(guide: Guide, parent: &str, sub: &str) -> Option<&'static str> {
-    SECTIONS.iter().copied().find(|name| {
-        heading(name) == Some((guide, parent)) && matches!(cut(name), Cut::Only(s) if s == sub)
-    })
+fn section_for_sub(parent: &str, sub: &str) -> Option<&'static str> {
+    SECTIONS
+        .iter()
+        .copied()
+        .find(|name| heading(name) == Some(parent) && matches!(cut(name), Cut::Only(s) if s == sub))
 }
 
 /// The TypeScript guide's preamble: what a plugin is, how it is named and loaded, before any
@@ -397,14 +273,13 @@ fn overview() -> String {
 /// piece of the guide worth having without asking.
 fn index() -> String {
     let mut out = String::from(
-        "Zellij TypeScript plugin reference, with Lua compatibility sections. Never ask another agent to write a plugin. \
+        "Zellij TypeScript plugin reference, reference. Never ask another agent to write a plugin. \
          `plugin_write` checks syntax, asks approval and writes the source, then grants its literal permissions. \
          `plugin_check` also checks JS/TS types and local imports. To edit, use `plugin_outline` or \
          `plugin_search`, then `plugin_read` and `plugin_edit`. `plugin_reload` reports the first render \
          or load error; `plugin_log` reads logs. `plugin_docs query=<regex>` searches sections \
          (section:LINE:text); `section=` reads one, narrowed by `start_line`/`line_count`:\n\n",
     );
-    let mut lua = Vec::new();
     for section in SECTIONS {
         let description = match section {
             "index" => continue,
@@ -437,7 +312,7 @@ fn index() -> String {
             "modules" => "imports, the checker, tracing",
             "errors" => "exceptions, the log, console",
             "restrictions" => "what a TypeScript plugin may not do",
-            "porting" => "Lua to TypeScript: every spelling and unit that differs",
+            "porting" => "migration from the removed Lua runtime",
             "authoring" => "the write/check/reload loop and inferred grants",
             "build" => "build inputs and binary size",
             "sdk_core" => "declarations: events, Plugin, the Zellij interface",
@@ -465,20 +340,6 @@ fn index() -> String {
             },
             "example_hocus_notes" => "example: hocus's notes, tags and todo links",
             "hocus_data" => "hocus's shared entities and attributes, for any runtime",
-            "prelude_widgets" => "Lua: shared widget constructors and event wrappers",
-            "prelude" => "Lua: the prelude itself: events, commands, files, every wrapper",
-            "prelude_commands" => "Lua: host-command wrappers and keybinding helpers",
-            "prelude_tasks" => "Lua: zellij.task/await and the timers",
-            "prelude_awaitables" => "Lua: the zellij.async awaitables",
-            "prelude_agents" => "Lua: zellij.agent",
-            "prelude_rpc" => "Lua: zellij.rpc",
-            "prelude_data" => "Lua: zellij.data, with every helper",
-            "prelude_ui" => "Lua: zellij.text and zellij.ui",
-            "prelude_workflows" => "Lua: pane_workflow and run_command_in_pane",
-            other if other.starts_with("lua_") => {
-                lua.push(other);
-                continue;
-            },
             _ => continue,
         };
         // The size, so the choice can be made on what it costs. Every one of these lands in the
@@ -488,15 +349,9 @@ fn index() -> String {
         let size = self::section(section).map_or(0, |text| text.len());
         out.push_str(&format!("- {section} (~{}k): {description}\n", size / 1000));
     }
-    // The Lua guide is the same ground with Lua examples, for a `.lua` file or an extensionless
-    // name; one line names every part of it rather than paying a line each.
-    out.push_str(&format!(
-        "- Lua (the same guide with Lua examples; ~1-6k each): {}\n",
-        lua.join(", ")
-    ));
     // The quickstart used to be appended here in full - 3.8 KB nobody asked for, on the first
     // call of every plugin conversation and on every round after it. It is one line above.
-    out.push_str("\nStart with `quickstart` for TypeScript. Use explicit `.ts` filenames. Extensionless names retain Lua compatibility.\n");
+    out.push_str("\nStart with `quickstart` for TypeScript. Use explicit `.ts` filenames. Extensionless names select TypeScript.\n");
     out
 }
 
@@ -504,7 +359,7 @@ fn index() -> String {
 pub fn section(name: &str) -> Option<String> {
     match name {
         "index" => Some(index()),
-        "quickstart" => Some(format!("Write `clock.ts` with `plugin_write`, check it with `plugin_check`, then call `plugin_reload name=clock.ts`. Use explicit `.ts` filenames. Extensionless names still select Lua.\n\n```ts\n{EXAMPLE_CLOCK}\n```\n\nRead `overview` and `lifecycle` for the SDK and module rules.")),
+        "quickstart" => Some(format!("Write `clock.ts` with `plugin_write`, check it with `plugin_check`, then call `plugin_reload name=clock.ts`. Use explicit `.ts` filenames. Extensionless names select TypeScript.\n\n```ts\n{EXAMPLE_CLOCK}\n```\n\nRead `overview` and `lifecycle` for the SDK and module rules.")),
         "overview" => Some(overview()),
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),
         "example_capabilities" => Some(fenced(EXAMPLE_CAPABILITIES)),
@@ -521,30 +376,13 @@ pub fn section(name: &str) -> Option<String> {
         "example_todo_pane" => Some(fenced(EXAMPLE_TODO_PANE)),
         "example_hocus_todos" => Some(fenced(EXAMPLE_HOCUS_TODOS)),
         "example_hocus_notes" => Some(fenced(EXAMPLE_HOCUS_NOTES)),
-        "prelude_widgets" => Some(fenced(include_str!(
-            "../../../zellij-plugin-host/src/lua/ui.lua"
-        ))),
-        "prelude" => Some(fenced(prelude_part(0))),
-        "prelude_commands" => Some(fenced(prelude_part(1))),
-        "prelude_tasks" => Some(fenced(prelude_part(2))),
-        "prelude_awaitables" => Some(fenced(prelude_part(3))),
-        "prelude_agents" => Some(fenced(prelude_part(4))),
-        "prelude_rpc" => Some(fenced(prelude_part(5))),
-        "prelude_data" => Some(fenced(prelude_part(6))),
-        "prelude_ui" => Some(fenced(prelude_part(7))),
-        "prelude_workflows" => Some(fenced(prelude_part(8))),
         sdk if SDK_SECTIONS.contains(&sdk) => sdk_part(sdk).map(fenced),
-        other => heading(other).and_then(|(guide, heading)| guide_section(guide, heading, cut(other))),
+        other => heading(other).and_then(|heading| guide_section(heading, cut(other))),
     }
 }
 
 fn fenced(source: &str) -> String {
-    let language = if source.trim_start().starts_with("--") {
-        "lua"
-    } else {
-        "ts"
-    };
-    format!("```{language}\n{}\n```", source.trim_end())
+    format!("```ts\n{}\n```", source.trim_end())
 }
 
 /// Answer a `plugin_docs` call.
@@ -616,13 +454,10 @@ pub fn page(section: Option<&str>, start: usize, end: usize) -> String {
 mod tests {
     use super::*;
 
-    const GUIDES: [Guide; 2] = [Guide::TypeScript, Guide::Lua];
-
     /// Every `## ` heading in a guide, in order. Only the tests need this: it is how they
     /// check the section table against the file it names headings in.
-    fn headings(guide: Guide) -> Vec<&'static str> {
-        guide
-            .text()
+    fn headings() -> Vec<&'static str> {
+        TS_GUIDE
             .split("\n## ")
             .skip(1)
             .filter_map(|chunk| chunk.lines().next())
@@ -644,42 +479,34 @@ mod tests {
     #[test]
     fn every_section_heading_still_exists_in_its_guide() {
         for name in SECTIONS {
-            let Some((guide, heading)) = heading(name) else {
-                continue; // an example, a declaration part or the prelude, which is not in a guide
+            let Some(heading) = heading(name) else {
+                continue; // an example or declaration part, which is not in the guide
             };
-            let headings = headings(guide);
+            let headings = headings();
             assert!(
                 headings.contains(&heading),
-                "the {guide:?} guide has no '## {heading}' for section '{name}'; its headings are {headings:?}"
+                "the guide has no '## {heading}' for section '{name}'; its headings are {headings:?}"
             );
         }
     }
 
     /// The other half of the same coupling: a section of a guide nothing can ask for is a
-    /// section the model will never see. This is what makes a new `##` heading in either guide
+    /// section the model will never see. This is what makes a new `##` heading in the guide
     /// a test failure until it is named here.
     #[test]
     fn every_guide_heading_is_reachable_as_a_section() {
-        for guide in GUIDES {
-            for heading in headings(guide) {
-                assert!(
-                    SECTIONS
-                        .iter()
-                        .any(|name| super::heading(name) == Some((guide, heading))),
-                    "the {guide:?} guide's '## {heading}' is not reachable through any section name"
-                );
-            }
+        for heading in headings() {
+            assert!(
+                SECTIONS
+                    .iter()
+                    .any(|name| super::heading(name) == Some(heading)),
+                "the guide's '## {heading}' is not reachable through any section name"
+            );
         }
     }
 
     #[test]
     fn a_section_is_cut_at_the_next_heading() {
-        let events = section("lua_events").unwrap();
-        assert!(events.starts_with("## Events"), "{events}");
-        assert!(
-            !events.contains("\n## Commands"),
-            "a section must stop at the next heading"
-        );
         let lifecycle = section("lifecycle").unwrap();
         assert!(lifecycle.starts_with("## Lifecycle"), "{lifecycle}");
         assert!(!lifecycle.contains("\n## Events"), "{lifecycle}");
@@ -692,12 +519,6 @@ mod tests {
         assert!(section("permissions").unwrap().contains("| `ReadFiles` |"));
         // The `###` subsections belong to the `##` they sit under and travel with it, unless
         // the `##` was too big to send whole - see `cut`.
-        let commands = section("lua_commands").unwrap();
-        assert!(commands.contains("### Commands that answer"), "{commands}");
-        assert!(
-            !commands.contains("### Permissions"),
-            "the permission table is its own section now: {commands}"
-        );
         let helpers = section("helpers").unwrap();
         assert!(helpers.contains("### Default keybindings"), "{helpers}");
     }
@@ -708,29 +529,28 @@ mod tests {
     /// parent and need no name of their own.
     #[test]
     fn every_subheading_of_a_split_section_is_reachable() {
-        let split: Vec<(Guide, &str)> = SECTIONS
+        let split: Vec<&str> = SECTIONS
             .iter()
             .filter(|name| matches!(cut(name), Cut::Until(_)))
             .filter_map(|name| heading(name))
             .collect();
         assert!(split.len() >= 3, "{split:?}");
-        for (guide, parent) in split {
-            let chunk = guide
-                .text()
+        for parent in split {
+            let chunk = TS_GUIDE
                 .split("\n## ")
                 .skip(1)
                 .find(|chunk| chunk.starts_with(parent))
-                .unwrap_or_else(|| panic!("the {guide:?} guide has no '## {parent}'"));
+                .unwrap_or_else(|| panic!("the guide has no '## {parent}'"));
             let served = SECTIONS
                 .iter()
-                .filter(|name| heading(name) == Some((guide, parent)))
+                .filter(|name| heading(name) == Some(parent))
                 .filter_map(|name| section(name))
                 .collect::<Vec<_>>()
                 .join("\n");
             for sub in subheadings(chunk) {
                 assert!(
                     served.contains(&format!("### {sub}")),
-                    "'### {sub}' is in the {guide:?} guide's '## {parent}' but no section serves it"
+                    "'### {sub}' is in the guide's '## {parent}' but no section serves it"
                 );
             }
         }
@@ -741,14 +561,6 @@ mod tests {
     #[test]
     fn a_split_section_names_the_parts_it_no_longer_carries() {
         for (head, parts) in [
-            (
-                "lua_commands",
-                &["lua_commands_workflows", "lua_permissions"][..],
-            ),
-            (
-                "lua_hooks",
-                &["lua_hooks_headless", "lua_hooks_context_menu"][..],
-            ),
             ("async", &["async_panes", "async_waits", "async_timers"][..]),
             ("commands", &["permissions"][..]),
             ("rendering", &["ui"][..]),
@@ -774,7 +586,6 @@ mod tests {
         assert!(!index.contains("## A plugin"), "{index}");
         assert!(index.contains("quickstart"), "but it still points at it");
         // The budget grew with the TypeScript guide's sections and the declaration parts; the
-        // Lua guide is one line. It is still one short listing.
         assert!(
             index.len() < 5_400,
             "the index is {} bytes and is paid for on every later turn",
@@ -783,13 +594,12 @@ mod tests {
     }
 
     /// "Read only the relevant sections" is not advice a model can act on without knowing which
-    /// ones are cheap: the range is under a kilobyte to thirteen. The Lua sections are listed
-    /// on one line with one range, being the same ground as their TypeScript twins.
+    /// ones are cheap: the range is under a kilobyte to thirteen.
     #[test]
     fn the_index_states_a_size_for_every_section() {
         let index = docs(None);
         for name in SECTIONS {
-            if name == "index" || name.starts_with("lua_") {
+            if name == "index" {
                 continue;
             }
             let line = index
@@ -848,14 +658,7 @@ mod tests {
     /// If any grows back past a few kilobytes the split has stopped working.
     #[test]
     fn the_split_sections_are_a_fraction_of_what_they_were() {
-        for name in [
-            "lua_commands",
-            "lua_hooks",
-            "async",
-            "commands",
-            "hooks",
-            "rendering",
-        ] {
+        for name in ["async", "commands", "hooks", "rendering"] {
             let len = section(name).unwrap().len();
             assert!(
                 len < 6_000,
@@ -961,13 +764,8 @@ mod tests {
     /// and a permission added later must fail here rather than be undocumented.
     #[test]
     fn the_guides_name_every_permission_a_plugin_can_ask_for() {
-        let lua = section("lua_permissions").expect("the Lua permission table's own section");
         let ts = section("permissions").expect("the TypeScript permission table's own section");
         for name in zellij_tile::plugin_authoring::all_permission_names() {
-            assert!(
-                lua.contains(&format!("`{name}`")),
-                "the Lua guide's permission table has no `{name}`"
-            );
             // The TypeScript spelling is the Rust one: PascalCase.
             let pascal: String = name
                 .split('_')
@@ -1004,7 +802,7 @@ mod tests {
     /// are enforced in `zellij_types::plugin_data`, and both have to be sayable from the guide.
     #[test]
     fn the_guides_state_the_data_store_rules_they_cannot_enforce() {
-        for name in ["data", "lua_data"] {
+        for name in ["data"] {
             let data = section(name).expect("the data section");
             assert!(
                 data.contains(zellij_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX),
@@ -1033,9 +831,9 @@ mod tests {
     /// hit has to name the line a page of its section would read, or the two grains disagree.
     #[test]
     fn a_docs_query_answers_section_line_hits_and_stays_far_under_the_cap() {
-        let hits = search(None, &query("run_command"));
-        assert!(hits.contains("lua_events:"), "{hits}");
-        // A third of the cap: the spelling is in both guides and the porting table now.
+        let hits = search(None, &query("RunCommandResult"));
+        assert!(hits.contains("events:"), "{hits}");
+        // Keep repeated matches well below the output cap.
         assert!(
             hits.len() < MAX_DOCS_OUTPUT / 3,
             "{} bytes is not a cheap grain",
@@ -1063,9 +861,9 @@ mod tests {
 
     #[test]
     fn a_docs_query_confined_to_a_section_searches_only_it() {
-        let hits = search(Some("lua_events"), &query("event"));
+        let hits = search(Some("events"), &query("event"));
         assert!(
-            hits.lines().all(|line| line.starts_with("lua_events:")
+            hits.lines().all(|line| line.starts_with("events:")
                 || line.is_empty()
                 || line.starts_with('…')),
             "{hits}"

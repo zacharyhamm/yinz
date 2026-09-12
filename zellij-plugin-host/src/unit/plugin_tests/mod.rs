@@ -1005,26 +1005,26 @@ fn plugin_fixture_path() -> PathBuf {
         })
 }
 
-/// Locates the Lua fixture plugin.
+/// Locates the TypeScript fixture plugin.
 ///
 /// Unlike the wasm fixture there is nothing to build - it is a source file checked in next to
 /// these tests - so this always resolves and needs no prior `cargo x build`.
-fn lua_plugin_fixture_path() -> PathBuf {
+fn script_plugin_fixture_path() -> PathBuf {
     PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
     )
-    .join("src/unit/plugin_tests/fixtures/fixture.lua")
+    .join("src/unit/plugin_tests/fixtures/fixture.ts")
 }
 
 lazy_static! {
     static ref PLUGIN_FIXTURE: String = plugin_fixture_path().display().to_string();
-    static ref LUA_PLUGIN_FIXTURE: String = lua_plugin_fixture_path().display().to_string();
-    static ref LUA_PLUGIN_FIXTURE_WITH_PERMISSIONS: String = lua_plugin_fixture_path()
-        .with_file_name("fixture_with_permissions.lua")
+    static ref SCRIPT_PLUGIN_FIXTURE: String = script_plugin_fixture_path().display().to_string();
+    static ref SCRIPT_PLUGIN_FIXTURE_WITH_PERMISSIONS: String = script_plugin_fixture_path()
+        .with_file_name("fixture_with_permissions.ts")
         .display()
         .to_string();
-    static ref LUA_PLUGIN_FIXTURE_SPAWN_AGENT: String = lua_plugin_fixture_path()
-        .with_file_name("fixture_spawn_agent.lua")
+    static ref SCRIPT_PLUGIN_FIXTURE_SPAWN_AGENT: String = script_plugin_fixture_path()
+        .with_file_name("fixture_spawn_agent.ts")
         .display()
         .to_string();
 }
@@ -1046,7 +1046,6 @@ mod host_theme;
 mod keybinds;
 mod layout_api;
 mod loading;
-mod lua_plugins;
 mod mode_and_tab_commands;
 mod open_and_session_commands;
 mod pane_id_commands;
@@ -1055,5 +1054,6 @@ mod plugin_lifecycle_commands;
 mod queues;
 mod run_and_pipe_commands;
 mod runaway;
+mod script_plugins;
 mod self_and_pane_commands;
 mod tab_commands;

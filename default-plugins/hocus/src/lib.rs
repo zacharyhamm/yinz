@@ -364,7 +364,7 @@ pub struct State {
     pub plugin_load: Option<PluginLoadWatch>,
     /// Live extension-provided tools, shared by every conversation in this Hocus instance.
     extensions: extensions::Registry,
-    /// Valid `hocus/*.{ts,js,mjs,mts,lua}` files from the latest scan, keyed by their namespace.
+    /// Valid `hocus/*.{ts,js,mjs,mts}` files from the latest scan, keyed by their namespace.
     extension_files: BTreeMap<String, String>,
     /// Running plugin ids whose resolved file location agrees with their Hocus launch config.
     extension_instances: BTreeMap<zellij_tile::prelude::PluginId, (String, String)>,

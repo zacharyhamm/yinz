@@ -1270,7 +1270,7 @@ fn hooks_from_kdl(kdl_hooks: &KdlNode, config_hooks: &mut Hooks) -> Result<Hooks
             let string_url = kdl_first_entry_as_string!(hook_node).ok_or_else(|| {
                 ConfigError::new_kdl_error(
                     format!(
-                        "hook '{}' needs a plugin url, eg. `{} \"file:~/hook.lua\"`",
+                        "hook '{}' needs a plugin url, eg. `{} \"file:~/hook.ts\"`",
                         hook_point, hook_point
                     ),
                     name_node.span().offset(),

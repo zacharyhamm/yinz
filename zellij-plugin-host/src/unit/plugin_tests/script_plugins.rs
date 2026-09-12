@@ -1,7 +1,7 @@
-//! End-to-end tests for Lua plugins: a `.lua` file on disk, through the real plugin thread, to
+//! End-to-end tests for TypeScript plugins: a `.ts` file on disk, through the real plugin thread, to
 //! the bytes the screen would draw.
 //!
-//! These use the same harness as the wasm plugin tests, which is the point - a Lua plugin is
+//! These use the same harness as the wasm plugin tests, which is the point - a TypeScript plugin is
 //! loaded, subscribed, updated and rendered by exactly the same code.
 
 #[cfg(test)]
@@ -20,7 +20,7 @@ use zellij_types::input::command::TerminalAction;
 use zellij_types::input::hooks::HookPoint;
 use zellij_types::internal_ids::TabId;
 
-/// Load the Lua fixture and return everything the screen was told to draw for it.
+/// Load the TypeScript fixture and return everything the screen was told to draw for it.
 pub(super) fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String> {
     instructions
         .iter()
@@ -34,11 +34,11 @@ pub(super) fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String>
         .collect()
 }
 
-fn lua_run_plugin(configuration: BTreeMap<String, String>) -> RunPluginOrAlias {
-    lua_run_plugin_at(&LUA_PLUGIN_FIXTURE, configuration)
+fn script_run_plugin(configuration: BTreeMap<String, String>) -> RunPluginOrAlias {
+    script_run_plugin_at(&SCRIPT_PLUGIN_FIXTURE, configuration)
 }
 
-fn lua_run_plugin_at(path: &str, configuration: BTreeMap<String, String>) -> RunPluginOrAlias {
+fn script_run_plugin_at(path: &str, configuration: BTreeMap<String, String>) -> RunPluginOrAlias {
     RunPluginOrAlias::RunPlugin(RunPlugin {
         _allow_exec_host_cmd: false,
         location: RunPluginLocation::File(PathBuf::from(path)),
@@ -49,7 +49,7 @@ fn lua_run_plugin_at(path: &str, configuration: BTreeMap<String, String>) -> Run
 
 #[test]
 #[serial(plugin_tests)]
-pub fn lua_plugin_loads_and_renders() {
+pub fn script_plugin_loads_and_renders() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
@@ -60,20 +60,30 @@ pub fn lua_plugin_loads_and_renders() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
-        screen_receiver,
-        2
-    );
+    let screen_thread = std::thread::spawn({
+        let log = received_screen_instructions.clone();
+        move || {
+            while let Ok((event, _)) =
+                screen_receiver.recv_timeout(zellij_test_support::default_timeout())
+            {
+                log.lock().push(event);
+                if rendered_output(&log.lock())
+                    .iter()
+                    .any(|frame| frame.contains("presses 1"))
+                {
+                    break;
+                }
+            }
+        }
+    });
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
         Some(false),
         false,
         false,
-        Some("lua_test_plugin".to_owned()),
-        lua_run_plugin(BTreeMap::new()),
+        Some("script_test_plugin".to_owned()),
+        script_run_plugin(BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -86,19 +96,38 @@ pub fn lua_plugin_loads_and_renders() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    received_screen_instructions.wait_until(
+        "the plugin is ready",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            rendered_output(instructions)
+                .iter()
+                .any(|frame| frame.contains("presses 0"))
+                .then_some(())
+        },
+    );
     // The fixture subscribes to Key, so this reaches `update` and asks for a re-render.
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
     )]));
-    screen_thread.join().unwrap();
+    received_screen_instructions.wait_until(
+        "the key reached update",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            rendered_output(instructions)
+                .iter()
+                .any(|frame| frame.contains("presses 1"))
+                .then_some(())
+        },
+    );
     teardown();
+    screen_thread.join().unwrap();
 
     let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
-        rendered.iter().any(|r| r.contains("hello from lua")),
+        rendered.iter().any(|r| r.contains("hello from typescript")),
         "expected the plugin's render output, got: {:?}",
         rendered
     );
@@ -116,22 +145,20 @@ pub fn lua_plugin_loads_and_renders() {
 
 /// A plugin named rather than pathed is found in the user's plugin folder.
 ///
-/// This is what makes `plugin location="file:probe.lua"` in a layout - and the same URL from a
+/// This is what makes `plugin location="file:probe.ts"` in a layout - and the same URL from a
 /// plugin asking for a reload - mean the obvious thing without anyone spelling out an absolute
 /// path. The resolution chain itself is unit-tested in `zellij-config`; what this covers is that
 /// the folder actually reaches the loader through the whole plugin thread.
 #[test]
 #[serial(plugin_tests)]
-pub fn a_lua_plugin_is_found_in_the_user_plugin_dir_by_name() {
+pub fn a_script_plugin_is_found_in_the_user_plugin_dir_by_name() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let user_plugin_dir = tempdir().unwrap();
     std::fs::write(
-        user_plugin_dir.path().join("probe.lua"),
+        user_plugin_dir.path().join("probe.ts"),
         r#"
-        local M = {}
-        function M.render() return "found by name" end
-        return M
+        export default {render() {return "found by name";}};
         "#,
     )
     .unwrap();
@@ -158,8 +185,8 @@ pub fn a_lua_plugin_is_found_in_the_user_plugin_dir_by_name() {
         Some(false),
         false,
         false,
-        Some("lua_test_plugin".to_owned()),
-        lua_run_plugin_at("probe.lua", BTreeMap::new()),
+        Some("script_test_plugin".to_owned()),
+        script_run_plugin_at("probe.ts", BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -185,7 +212,7 @@ pub fn a_lua_plugin_is_found_in_the_user_plugin_dir_by_name() {
 
 /// A reload naming the file in full finds the plugin that was started by bare name.
 ///
-/// The two spellings do not look alike to the plugin map: `file:probe.lua` keeps the cwd-joined
+/// The two spellings do not look alike to the plugin map: `file:probe.ts` keeps the cwd-joined
 /// path as its `location` - that is its identity, and what a dumped layout has to say - while its
 /// source is read from the user's plugin folder. A reload can only name the file it wrote, so
 /// without `resolved_source_path` the lookup misses, the reload is answered with
@@ -197,13 +224,11 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let user_plugin_dir = tempdir().unwrap();
-    let plugin_file = user_plugin_dir.path().join("probe.lua");
+    let plugin_file = user_plugin_dir.path().join("probe.ts");
     let source = |version: &str| {
         format!(
             r#"
-            local M = {{}}
-            function M.render() return "{version}" end
-            return M
+            export default {{render() {{return "{version}";}}}};
             "#
         )
     };
@@ -232,8 +257,8 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
         Some(false),
         false,
         false,
-        Some("lua_test_plugin".to_owned()),
-        lua_run_plugin_at("probe.lua", BTreeMap::new()),
+        Some("script_test_plugin".to_owned()),
+        script_run_plugin_at("probe.ts", BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -263,9 +288,9 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
     std::fs::write(&plugin_file, source("second version")).unwrap();
     let _ = plugin_thread_sender.send(PluginInstruction::Reload(
         Some(false),
-        Some("lua_test_plugin".to_owned()),
+        Some("script_test_plugin".to_owned()),
         // The absolute path, which is all a plugin that just wrote the file can name.
-        lua_run_plugin_at(&plugin_file.display().to_string(), BTreeMap::new()),
+        script_run_plugin_at(&plugin_file.display().to_string(), BTreeMap::new()),
         TabId::new(1),
         size,
         None,
@@ -295,7 +320,7 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
 
 #[test]
 #[serial(plugin_tests)]
-pub fn lua_plugin_receives_its_configuration() {
+pub fn script_plugin_receives_its_configuration() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
@@ -319,8 +344,8 @@ pub fn lua_plugin_receives_its_configuration() {
         Some(false),
         false,
         false,
-        Some("lua_test_plugin".to_owned()),
-        lua_run_plugin(configuration),
+        Some("script_test_plugin".to_owned()),
+        script_run_plugin(configuration),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -344,7 +369,9 @@ pub fn lua_plugin_receives_its_configuration() {
 
     let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
-        rendered.iter().any(|r| r.contains("configured from lua")),
+        rendered
+            .iter()
+            .any(|r| r.contains("configured from typescript")),
         "expected the merged configuration to reach `load`, got: {:?}",
         rendered
     );
@@ -352,7 +379,7 @@ pub fn lua_plugin_receives_its_configuration() {
 
 #[test]
 #[serial(plugin_tests)]
-pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
+pub fn script_plugin_is_not_sent_events_it_did_not_subscribe_to() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
@@ -360,20 +387,30 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
     let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
-        screen_receiver,
-        2
-    );
+    let screen_thread = std::thread::spawn({
+        let log = received_screen_instructions.clone();
+        move || {
+            while let Ok((event, _)) =
+                screen_receiver.recv_timeout(zellij_test_support::default_timeout())
+            {
+                log.lock().push(event);
+                if rendered_output(&log.lock())
+                    .iter()
+                    .any(|frame| frame.contains("presses 1"))
+                {
+                    break;
+                }
+            }
+        }
+    });
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
         Some(false),
         false,
         false,
-        Some("lua_test_plugin".to_owned()),
-        lua_run_plugin(BTreeMap::new()),
+        Some("script_test_plugin".to_owned()),
+        script_run_plugin(BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -386,7 +423,16 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    received_screen_instructions.wait_until(
+        "the plugin is ready",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            rendered_output(instructions)
+                .iter()
+                .any(|frame| frame.contains("presses 0"))
+                .then_some(())
+        },
+    );
     // The fixture subscribes to Key and TabUpdate but not Timer, so this must not increment the
     // press counter or produce a render of its own.
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -399,8 +445,18 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
     )]));
-    screen_thread.join().unwrap();
+    received_screen_instructions.wait_until(
+        "the key reached update",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            rendered_output(instructions)
+                .iter()
+                .any(|frame| frame.contains("presses 1"))
+                .then_some(())
+        },
+    );
     teardown();
+    screen_thread.join().unwrap();
 
     let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
@@ -452,8 +508,8 @@ fn spawned_agent_command(key: char) -> zellij_types::input::command::RunCommand 
         Some(false),
         false,
         false,
-        Some("lua_spawn_plugin".to_owned()),
-        lua_run_plugin_at(&LUA_PLUGIN_FIXTURE_SPAWN_AGENT, BTreeMap::new()),
+        Some("script_spawn_plugin".to_owned()),
+        script_run_plugin_at(&SCRIPT_PLUGIN_FIXTURE_SPAWN_AGENT, BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -517,7 +573,7 @@ fn spawned_agent_command(key: char) -> zellij_types::input::command::RunCommand 
 
 #[test]
 #[serial(plugin_tests)]
-pub fn a_lua_plugin_spawns_an_agent_pane_with_the_planned_argv_and_an_agent_marker() {
+pub fn a_script_plugin_spawns_an_agent_pane_with_the_planned_argv_and_an_agent_marker() {
     use zellij_types::data::HOCUS_AGENT_PANE_CONTEXT;
     let run = spawned_agent_command('s');
     assert_eq!(run.command, PathBuf::from("claude"));
@@ -550,9 +606,9 @@ pub fn a_spawned_agent_is_handed_its_hooks_inline_unless_told_not_to() {
 
 #[test]
 #[serial(plugin_tests)]
-pub fn lua_plugin_host_command_reaches_the_pty_thread() {
-    // The whole point of the design is that a Lua plugin's commands go through the same handlers
-    // wasm plugins use, so this checks one all the way through: `zellij.open_terminal` in Lua
+pub fn script_plugin_host_command_reaches_the_pty_thread() {
+    // The whole point of the design is that a TypeScript plugin's commands go through the same handlers
+    // wasm plugins use, so this checks one all the way through: `zellij.open_terminal` in TypeScript
     // should arrive at the pty thread as a `SpawnTerminal`, permission-gated like any other.
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -586,8 +642,8 @@ pub fn lua_plugin_host_command_reaches_the_pty_thread() {
         Some(false),
         false,
         false,
-        Some("lua_test_plugin".to_owned()),
-        lua_run_plugin_at(&LUA_PLUGIN_FIXTURE_WITH_PERMISSIONS, BTreeMap::new()),
+        Some("script_test_plugin".to_owned()),
+        script_run_plugin_at(&SCRIPT_PLUGIN_FIXTURE_WITH_PERMISSIONS, BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -639,7 +695,7 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
     configuration.insert("payload", "carried");
     let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
         _allow_exec_host_cmd: false,
-        location: RunPluginLocation::File(PathBuf::from(&*LUA_PLUGIN_FIXTURE)),
+        location: RunPluginLocation::File(PathBuf::from(&*SCRIPT_PLUGIN_FIXTURE)),
         configuration,
         ..Default::default()
     });
@@ -657,7 +713,7 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
         Some(false),
         false,
         false,
-        Some("lua_test_plugin".to_owned()),
+        Some("script_test_plugin".to_owned()),
         run_plugin,
         Some(TabId::new(1)),
         None,
@@ -691,7 +747,7 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
 #[test]
 #[serial(plugin_tests)]
 pub fn a_newly_reachable_command_works_end_to_end() {
-    // `open_command_pane` was one of the ~220 commands a Lua plugin could not call: its payload is
+    // `open_command_pane` was one of the ~220 commands a TypeScript plugin could not call: its payload is
     // a `CommandToRun`, a struct nested inside a tuple variant, and nothing hand-marshalled it.
     // This runs the shipped playground plugin through the real plugin thread and presses the key
     // that calls it, so the whole path is covered - the metatable that manufactures the wrapper,
@@ -724,7 +780,7 @@ pub fn a_newly_reachable_command_works_end_to_end() {
     );
 
     let playground = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../zellij-plugin-host/src/lua/fixtures/playground.lua")
+        .join("../example-plugins/playground.ts")
         .display()
         .to_string();
 
@@ -733,8 +789,8 @@ pub fn a_newly_reachable_command_works_end_to_end() {
         Some(false),
         false,
         false,
-        Some("lua_playground".to_owned()),
-        lua_run_plugin_at(&playground, BTreeMap::new()),
+        Some("script_playground".to_owned()),
+        script_run_plugin_at(&playground, BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -1180,27 +1236,13 @@ pub fn the_agent_exit_hook_closes_the_pane_on_delete() {
 /// and delivered the moment it completes, while the grant round-trips through the screen. So the
 /// plugin queues until `permission_request_result` and then speaks; the second firing, after the
 /// grant, speaks at once. Either way the count is exact.
-const HEADLESS_HOOK_LUA: &str = r#"
-local zellij = require("zellij")
-local M = { granted = false, queued = {} }
-local function say(e)
-  local subject = e.payload.pane_id or e.payload.session_name or ""
-  zellij.rename_tab_with_id { 1, e.point .. ":" .. subject }
-end
-function M.load(config)
-  zellij.subscribe { "hook", "permission_request_result" }
-  zellij.request_permission { "change_application_state" }
-end
-zellij.on("permission_request_result", function()
-  M.granted = true
-  for _, e in ipairs(M.queued) do say(e) end
-  M.queued = {}
-end)
-zellij.on("hook", function(e)
-  if M.granted then say(e) else table.insert(M.queued, e) end
-end)
-function M.render() return "" end
-return M
+const HEADLESS_HOOK_TS: &str = r#"
+import zellij from 'zellij:plugin';
+let granted=false, queued=[];
+function say(e) { zellij.command('RenameTabWithId', [1, e.point + ':' + (e.payload.pane_id ?? e.payload.session_name ?? '')]); }
+export default {load() { zellij.subscribe(['Hook', 'PermissionRequestResult']); zellij.requestPermission(['ChangeApplicationState']); }, render() {return '';}};
+zellij.on('PermissionRequestResult', () => {granted=true; for (const e of queued) say(e); queued=[];});
+zellij.on('Hook', e => {if (granted) say(e); else queued.push(e);});
 "#;
 
 /// Every tab rename the hook asked for, as the name it gave.
@@ -1230,11 +1272,11 @@ fn suppressed_plugins_loaded(instructions: &[ScreenInstruction]) -> Vec<PluginId
 }
 
 fn headless_hook_plugin(user_plugin_dir: &std::path::Path) -> RunPluginOrAlias {
-    std::fs::write(user_plugin_dir.join("hook.lua"), HEADLESS_HOOK_LUA).unwrap();
+    std::fs::write(user_plugin_dir.join("hook.ts"), HEADLESS_HOOK_TS).unwrap();
     RunPluginOrAlias::RunPlugin(
         zellij_runtime::plugin_location::run_plugin_from_url(&format!(
             "file:{}",
-            user_plugin_dir.join("hook.lua").display()
+            user_plugin_dir.join("hook.ts").display()
         ))
         .unwrap(),
     )
@@ -1605,7 +1647,7 @@ pub fn a_firing_during_the_headless_hooks_load_reaches_the_loading_instance() {
         false,
         false,
         Some("some_other_plugin".to_owned()),
-        lua_run_plugin(BTreeMap::new()),
+        script_run_plugin(BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,

@@ -328,7 +328,7 @@ export interface CommandArgs {
   SetPaneTitlePrefix: {pane_id: PaneId; prefix: string | null};
   EnqueueQueueJob: {queue: string; plugin_url: string; config: StringMap; context: StringMap};
   ConfigureQueue: {queue: string; concurrency: Integer}; CancelQueueJob: {job_id: Integer}; QueueStatus: {queue: string | null};
-  FinishQueueJob: {success: boolean; payload: string | null}; CheckLuaPlugin: {name: string; source: string};
+  FinishQueueJob: {success: boolean; payload: string | null};
   SetPaneAgent: {pane_id: PaneId; agent: AgentInfo | null}; SetPaneAgentRun: {pane_id: PaneId; run_id: string | null};
   ProjectConfigRead: {directory: string}; ProjectConfigWrite: {directory: string; source: string; expected: string | null};
   SpawnAgent: {spec: AgentSpawnSpec; source_directory?: string | null; cwd?: string | null; name?: string | null; context?: StringMap; automatic_firecracker_vm?: boolean; start_suppressed?: boolean};
@@ -350,7 +350,7 @@ export interface CommandReplies {
   GetPaneCwd: string | null; GetPanePid: number | null; GetPaneRunningCommand: string[] | null; GetPaneGitProbe: PaneGitProbe | null;
   GetPaneScrollback: PaneContents; GetSessionList: SessionListSnapshot; CurrentSessionLastSavedTime: Integer | null;
   SaveSession: boolean; DumpLayout: string; DumpSessionLayout: {layout: string; metadata: LayoutMetadata | null};
-  CheckLuaPlugin: string | null; ParseLayout: LayoutMetadata; SaveLayout: boolean; DeleteLayout: boolean; RenameLayout: boolean; EditLayout: boolean;
+  ParseLayout: LayoutMetadata; SaveLayout: boolean; DeleteLayout: boolean; RenameLayout: boolean; EditLayout: boolean;
   ShowFloatingPanes: boolean; HideFloatingPanes: boolean; DeleteDeadSessionAndReply: boolean; DeleteAllDeadSessionsAndReply: boolean; KillSessionsAndReply: boolean;
   WarpPaneToSession: string; WarpPaneFromSession: string; WarpTabToSession: string; WarpTabFromSession: string; AdoptOrphanedPane: string;
   ListOrphanedPanes: OrphanedPane[]; DataDefineEntity: DataSchemaInfo; DataApply: ApplyReport; DataFetch: DataRows; DataCount: Integer;

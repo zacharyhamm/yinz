@@ -149,7 +149,6 @@ use {
     zellij_plugin_api::plugin_command::ProtobufBreakPanesToNewTabResponse,
     zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIdResponse,
     zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIndexResponse,
-    zellij_plugin_api::plugin_command::ProtobufCheckLuaPluginResponse,
     zellij_plugin_api::plugin_command::ProtobufDataApplyResponse,
     zellij_plugin_api::plugin_command::ProtobufDataCatalogResponse,
     zellij_plugin_api::plugin_command::ProtobufDataCountResponse,
@@ -386,7 +385,7 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
 ///
 /// This is the whole plugin capability surface, and it is deliberately independent of how the
 /// plugin was written: the wasm host decodes a protobuf command off a WASI pipe and calls this,
-/// and the Lua host builds the same `PluginCommand` from a Lua call and calls this. Neither the
+/// and the TypeScript host builds the same `PluginCommand` from a TypeScript call and calls this. Neither the
 /// permission check nor any individual handler knows which runtime it is serving.
 pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result<()> {
     let plugin_command = env.name();
@@ -430,7 +429,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::CheckPlugin { name, source, mode } => {
                 check_plugin(env, name, source, mode)
             },
-            PluginCommand::CheckLuaPlugin { name, source } => check_lua_plugin(env, name, source),
             PluginCommand::SetPaneAgent { pane_id, agent } => set_pane_agent(env, pane_id, agent),
             PluginCommand::SetPaneAgentRun { pane_id, run_id } => {
                 set_pane_agent_run(env, pane_id, run_id)
@@ -1791,20 +1789,6 @@ fn check_plugin(
         .non_fatal();
 }
 
-fn check_lua_plugin(env: &mut PluginEnv, name: String, source: String) {
-    let response = ProtobufCheckLuaPluginResponse {
-        error: crate::lua::check_lua_plugin(&source, &name).err(),
-    };
-    wasi_write_object(env, &response.encode_to_vec())
-        .with_context(|| {
-            format!(
-                "failed to send check lua plugin response to plugin {}",
-                env.name()
-            )
-        })
-        .non_fatal();
-}
-
 /// Seconds east of UTC here, at the instant `epoch_ms`.
 ///
 /// The server answers this because it is the only side that can: a plugin is wasm, WASI hands it
@@ -2779,7 +2763,7 @@ fn open_command_pane_in_git_checkout_near_plugin(
 
 /// Start a coding agent near this plugin: the launch planner every hocus launcher uses, the
 /// checkout the spec asks for, the pane, and the agent record - one road for hocus's
-/// `agent_spawn`, the `hocus-new-agent` modal and a Lua plugin's `zellij.agent.spawn`.
+/// `agent_spawn`, the `hocus-new-agent` modal and a TypeScript plugin's `zellij.agent.spawn`.
 fn spawn_agent(
     env: &mut PluginEnv,
     mut spec: AgentSpawnSpec,
@@ -2900,7 +2884,7 @@ fn spawn_agent(
 /// Where a spawned agent's pane runs. A branch means git work in `source`, the repository, and
 /// the pane lands in the checkout that makes. Without one there is no git work at all: the
 /// pane runs in `cwd` when the caller named one, and otherwise in `source` as it stands -
-/// hocus sends the focused pane's folder, a Lua plugin's default is its own - never the
+/// hocus sends the focused pane's folder, a TypeScript plugin's default is its own - never the
 /// repository root, which `command=zsh` in a subfolder of a checkout does not want and which
 /// costs a `git rev-parse` to find.
 fn agent_folder(
@@ -6238,7 +6222,7 @@ fn resolve_plugin_fs_path(env: &PluginEnv, path: &Path) -> Result<ResolvedPath> 
     };
 
     if !resolved.starts_with(&canonical_root) {
-        // Name the link when there is one: a plugin that wrote `link.lua` and is refused
+        // Name the link when there is one: a plugin that wrote `link.ts` and is refused
         // should hear that it is a link, not merely that it points somewhere.
         let through_a_symlink = joined
             .ancestors()
@@ -7915,7 +7899,7 @@ pub fn wasi_read_bytes(plugin_env: &PluginEnv) -> Result<Vec<u8>> {
 /// permission was granted. A denial made in that window has a different fix from one made after
 /// (wait for the answer, rather than ask), and a different fix again from the one a plugin that
 /// never asked at all needs, which is why the request is tracked separately from its answer.
-/// Only the script runtimes, Lua and Deno, can pass the difference on: a wasm guest is mid-call
+/// Only the Deno runtime can pass the difference on: a wasm guest is mid-call
 /// and cannot be handed a refusal at all.
 pub(crate) fn permission_answer_pending(plugin_env: &PluginEnv) -> bool {
     !plugin_env.plugin.is_builtin()
@@ -7928,9 +7912,9 @@ pub(crate) fn permission_answer_pending(plugin_env: &PluginEnv) -> bool {
 // TODO: move to permissions?
 /// Whether `plugin_env` may run `command`, and which permission it is short of if not.
 ///
-/// `pub(crate)` for the Lua runtime, which asks before dispatching. A wasm plugin cannot be told
+/// `pub(crate)` for the TypeScript runtime, which asks before dispatching. A wasm plugin cannot be told
 /// no - the denied branch of [`run_plugin_command`] logs and returns, because the guest is
-/// mid-call and has no way to receive a refusal - but a Lua plugin's command is an ordinary
+/// mid-call and has no way to receive a refusal - but a TypeScript plugin's command is an ordinary
 /// function call that can raise.
 pub(crate) fn check_command_permission(
     plugin_env: &PluginEnv,
@@ -7945,7 +7929,7 @@ pub(crate) fn check_command_permission(
         return (PermissionStatus::Granted, None);
     }
     // A syntax check of an inline source reads no file - the handler follows imports only in
-    // `Semantic` mode - so it needs nothing, as `CheckLuaPlugin` needs nothing.
+    // `Semantic` mode - so it needs no permission.
     if let PluginCommand::CheckPlugin {
         mode: zellij_types::authoring::PluginCheckMode::Syntax,
         ..
@@ -8239,8 +8223,6 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         // A job reporting on itself needs nothing, like `CloseSelf`: it runs headless, and a
         // permission prompt it raised would have no pane for anyone to answer it in.
         CommandType::FinishQueueJob => return None,
-        // Compiling a string of Lua touches nothing: no file is read or written and nothing runs.
-        CommandType::CheckLuaPlugin => return None,
         // A clock. It says the machine's offset from UTC and nothing about the session,
         // which is less than `GetZellijVersion` already says, and a permission prompt in
         // front of drawing a timestamp would be answered blind every time.
@@ -8334,7 +8316,6 @@ mod permission_tests {
             CommandType::ScanHostFolder,
             CommandType::WatchFilesystem,
             CommandType::FinishQueueJob,
-            CommandType::CheckLuaPlugin,
             CommandType::GetLocalUtcOffset,
         ];
         for kind in CommandType::iter() {
@@ -8361,7 +8342,7 @@ mod permission_tests {
     fn a_syntax_check_needs_no_permission_but_a_semantic_check_reads_files() {
         use std::sync::{Arc, Mutex};
         use zellij_types::authoring::PluginCheckMode;
-        let mut env = crate::lua::unit_tests::test_env();
+        let mut env = crate::test_env::test_env();
         env.permissions = Arc::new(Mutex::new(Some(HashSet::new())));
         let check = |mode| PluginCommand::CheckPlugin {
             name: "check.ts".into(),

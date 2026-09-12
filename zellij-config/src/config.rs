@@ -25,7 +25,6 @@ use {
 };
 
 pub const DEFAULT_CONFIG_FILE_NAME: &str = "config.kdl";
-pub const DEFAULT_LUA_CONFIG_FILE_NAME: &str = "config.lua";
 
 type ConfigResult = Result<Config, ConfigError>;
 
@@ -171,8 +170,8 @@ pub enum ConfigError {
     DownloadError(String),
     #[error("failed to block on async task")]
     Async(#[from] std::io::Error),
-    #[error("Lua configuration error: {0}")]
-    Lua(String),
+    #[error("unsupported configuration format: {0}; use config.kdl")]
+    UnsupportedFormat(String),
 }
 
 impl ConfigError {
@@ -201,7 +200,7 @@ impl ConfigError {
 /// Merge `fragment`'s top-level nodes into `managed`: a node replaces the one of the same
 /// name, unless both have children, in which case the children are merged one level deep. A
 /// child replaces the one with the same name - `agent_exit ""` replaces `agent_exit
-/// "file:a.lua"` - except under `keybinds`, where the positional arguments are part of a
+/// "file:a.ts"` - except under `keybinds`, where the positional arguments are part of a
 /// block's identity: `shared_except "locked"` and `shared_except "normal" "locked"` are
 /// different blocks, and one `keybinds` holds several of each, while `normal
 /// clear-defaults=true` replaces `normal`. The loaders read children in document
@@ -280,12 +279,7 @@ impl Config {
         }
 
         let config = if let Some(ref config) = config_dir {
-            let lua_path = config.join(DEFAULT_LUA_CONFIG_FILE_NAME);
-            let path = if lua_path.exists() {
-                lua_path
-            } else {
-                config.join(DEFAULT_CONFIG_FILE_NAME)
-            };
+            let path = config.join(DEFAULT_CONFIG_FILE_NAME);
             if path.exists() {
                 let default_config = Config::from_default_assets()?;
                 Config::from_path(&path, Some(default_config))?
@@ -303,7 +297,7 @@ impl Config {
 use zellij_runtime::consts::CONFIG_OVERLAY_DIR_NAME;
 /// The drop-in zellij writes itself, for anything it is asked to persist: `zellij action
 /// reconfigure --write`, `zellij action set-hook --write`, a plugin's `reconfigure(kdl, true)`.
-/// A person's own config file - KDL or Lua - is never rewritten for those.
+/// A person's own config file is never rewritten for those.
 pub const MANAGED_CONFIG_FILE_NAME: &str = "zellij-managed.kdl";
 
 impl Config {
@@ -407,9 +401,10 @@ impl Config {
     }
     #[allow(clippy::result_large_err)]
     pub fn from_path(path: &PathBuf, default_config: Option<Config>) -> ConfigResult {
-        #[cfg(not(target_family = "wasm"))]
         if path.extension().and_then(|extension| extension.to_str()) == Some("lua") {
-            return super::lua_config::from_path(path, default_config);
+            return Err(ConfigError::UnsupportedFormat(
+                "Lua configuration is no longer supported".into(),
+            ));
         }
         match File::open(path) {
             Ok(mut file) => {
@@ -476,25 +471,11 @@ impl Config {
                     home::try_create_home_config_dir();
                     home::find_default_config_dir()
                 })
-                .map(|config_dir| {
-                    let lua_path = config_dir.join(DEFAULT_LUA_CONFIG_FILE_NAME);
-                    if lua_path.exists() {
-                        lua_path
-                    } else {
-                        config_dir.join(DEFAULT_CONFIG_FILE_NAME)
-                    }
-                })
+                .map(|config_dir| config_dir.join(DEFAULT_CONFIG_FILE_NAME))
         })
     }
     pub fn default_config_file_path() -> Option<PathBuf> {
-        home::find_default_config_dir().map(|config_dir| {
-            let lua_path = config_dir.join(DEFAULT_LUA_CONFIG_FILE_NAME);
-            if lua_path.exists() {
-                lua_path
-            } else {
-                config_dir.join(DEFAULT_CONFIG_FILE_NAME)
-            }
-        })
+        home::find_default_config_dir().map(|config_dir| config_dir.join(DEFAULT_CONFIG_FILE_NAME))
     }
     pub fn write_config_to_disk(
         &self,
@@ -1963,13 +1944,13 @@ mod config_test {
     #[test]
     fn hooks_bind_a_point_to_a_plugin() {
         let config =
-            Config::from_kdl("hooks {\n agent_exit \"file:/tmp/mine.lua\"\n}", None).unwrap();
+            Config::from_kdl("hooks {\n agent_exit \"file:/tmp/mine.ts\"\n}", None).unwrap();
         assert_eq!(
             config
                 .hooks
                 .get(HookPoint::AgentExit)
                 .map(|p| p.location_string()),
-            Some("file:/tmp/mine.lua".to_owned())
+            Some("file:/tmp/mine.ts".to_owned())
         );
     }
 
@@ -1996,7 +1977,7 @@ mod config_test {
 
     #[test]
     fn an_unknown_hook_point_is_a_config_error() {
-        assert!(Config::from_kdl("hooks {\n agent_started \"file:/tmp/x.lua\"\n}", None).is_err());
+        assert!(Config::from_kdl("hooks {\n agent_started \"file:/tmp/x.ts\"\n}", None).is_err());
     }
 
     #[test]
@@ -2004,11 +1985,11 @@ mod config_test {
         // The KDL surface is generic over `HookPoint::ALL`, and this is what keeps it so: a
         // point that can be named can be bound, and comes back bound.
         for point in HookPoint::ALL {
-            let kdl = format!("hooks {{\n {point} \"file:/tmp/{point}.lua\"\n}}");
+            let kdl = format!("hooks {{\n {point} \"file:/tmp/{point}.ts\"\n}}");
             let config = Config::from_kdl(&kdl, None).unwrap_or_else(|e| panic!("{point}: {e:?}"));
             assert_eq!(
                 config.hooks.get(*point).map(|p| p.location_string()),
-                Some(format!("file:/tmp/{point}.lua")),
+                Some(format!("file:/tmp/{point}.ts")),
                 "{point}"
             );
             let round_tripped = Config::from_kdl(&config.to_string(false), None).unwrap();
@@ -2021,7 +2002,7 @@ mod config_test {
         // Both directions matter: a bound point must come back bound, and an unbound one must
         // stay unbound rather than falling back to the default.
         let bound =
-            Config::from_kdl("hooks {\n agent_exit \"file:/tmp/mine.lua\"\n}", None).unwrap();
+            Config::from_kdl("hooks {\n agent_exit \"file:/tmp/mine.ts\"\n}", None).unwrap();
         let round_tripped = Config::from_kdl(&bound.to_string(false), None).unwrap();
         assert_eq!(round_tripped.hooks, bound.hooks);
 
@@ -2034,7 +2015,7 @@ mod config_test {
         let configured = Config::from_kdl(
             r#"
             hooks {
-                agent_exit "file:/tmp/mine.lua" {
+                agent_exit "file:/tmp/mine.ts" {
                     cwd "/tmp/hook-cwd"
                     greeting "hello"
                     loud true
@@ -2122,10 +2103,10 @@ mod overlay_tests {
     #[test]
     fn a_fragment_merges_by_block_and_then_by_child_name() {
         let mut managed =
-            doc("mouse_mode true\ncopy_command \"x\"\nhooks {\n    agent_exit \"file:a.lua\"\n}\n");
+            doc("mouse_mode true\ncopy_command \"x\"\nhooks {\n    agent_exit \"file:a.ts\"\n}\n");
         merge_kdl_fragment(
             &mut managed,
-            &doc("mouse_mode false\nhooks {\n    context_menu \"\"\n}\nload_plugins {\n    \"file:x.lua\"\n}\n"),
+            &doc("mouse_mode false\nhooks {\n    context_menu \"\"\n}\nload_plugins {\n    \"file:x.ts\"\n}\n"),
         );
         let text = managed.to_string();
         assert!(text.contains("mouse_mode false"), "{text}");
@@ -2134,7 +2115,7 @@ mod overlay_tests {
             text.contains("copy_command \"x\""),
             "an untouched option stays: {text}"
         );
-        assert!(text.contains("agent_exit \"file:a.lua\""), "{text}");
+        assert!(text.contains("agent_exit \"file:a.ts\""), "{text}");
         assert!(text.contains("context_menu \"\""), "{text}");
         assert!(
             text.contains("load_plugins"),
@@ -2147,11 +2128,11 @@ mod overlay_tests {
         Config::from_kdl(&managed.to_string(), Some(defaults)).unwrap()
     }
 
-    /// A hook point is keyed by its name: writing `agent_exit ""` over `agent_exit "file:a.lua"`
+    /// A hook point is keyed by its name: writing `agent_exit ""` over `agent_exit "file:a.ts"`
     /// replaces the binding rather than leaving both for the loader to reconcile.
     #[test]
     fn a_child_with_new_arguments_replaces_its_namesake() {
-        let mut managed = doc("hooks {\n    agent_exit \"file:a.lua\"\n}\n");
+        let mut managed = doc("hooks {\n    agent_exit \"file:a.ts\"\n}\n");
         merge_kdl_fragment(&mut managed, &doc("hooks {\n    agent_exit \"\"\n}\n"));
         let text = managed.to_string();
         assert_eq!(text.matches("agent_exit").count(), 1, "{text}");
@@ -2294,6 +2275,61 @@ mod overlay_tests {
                 .clone()
                 .with_overlay_dir(Some(&dir.path().join("missing"))),
             untouched
+        );
+    }
+}
+
+#[cfg(test)]
+mod kdl_discovery_tests {
+    use super::*;
+    #[test]
+    fn discovery_ignores_lua_and_reloads_kdl_and_overlays() {
+        let dir = tempfile::tempdir().unwrap();
+        let lua = dir.path().join("config.lua");
+        std::fs::write(&lua, "error('must never execute')").unwrap();
+        let defaults = Config::from_default_assets().unwrap();
+        assert_eq!(
+            Config::load(None, Some(dir.path()), false).unwrap(),
+            defaults
+        );
+        let kdl = dir.path().join("config.kdl");
+        assert_eq!(
+            Config::config_file_path(None, Some(dir.path())),
+            Some(kdl.clone())
+        );
+        std::fs::write(&kdl, "mouse_mode false\n").unwrap();
+        assert_eq!(
+            Config::load(None, Some(dir.path()), false)
+                .unwrap()
+                .options
+                .mouse_mode,
+            Some(false)
+        );
+        let overlays = dir.path().join(CONFIG_OVERLAY_DIR_NAME);
+        std::fs::create_dir(&overlays).unwrap();
+        std::fs::write(overlays.join("10-override.kdl"), "mouse_mode true\n").unwrap();
+        assert_eq!(
+            Config::load(None, Some(dir.path()), false)
+                .unwrap()
+                .options
+                .mouse_mode,
+            Some(true)
+        );
+        std::fs::write(overlays.join("10-override.kdl"), "mouse_mode false\n").unwrap();
+        assert_eq!(
+            Config::load(None, Some(dir.path()), false)
+                .unwrap()
+                .options
+                .mouse_mode,
+            Some(false)
+        );
+        assert!(Config::load(Some(&lua), Some(dir.path()), false)
+            .unwrap_err()
+            .to_string()
+            .contains("Lua configuration is no longer supported"));
+        assert_eq!(
+            std::fs::read_to_string(&lua).unwrap(),
+            "error('must never execute')"
         );
     }
 }

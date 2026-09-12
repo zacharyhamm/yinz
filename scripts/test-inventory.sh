@@ -202,7 +202,7 @@ rev="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "  \`zellij-server/tests/firecracker_vm.rs\`, so \`cargo x firecracker-test\`"
   echo "  covers it there; the standalone run is separate."
   echo
-  echo "\`zellij-integration-tests/tests/swamp_exit_fixture.ts\` and the Lua agent"
+  echo "\`zellij-integration-tests/tests/swamp_exit_fixture.ts\` and the TypeScript agent"
   echo "harness are *not* listed here: they are driven by Rust integration tests,"
   echo "which appear under \`cargo x integration-test\` above."
   echo

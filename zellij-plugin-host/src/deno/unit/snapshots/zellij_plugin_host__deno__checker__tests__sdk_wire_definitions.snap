@@ -250,7 +250,8 @@ FsRename = 268;
 GrantPluginPermissions = 269;
 SetContextMenu = 270;
 RegisterDefaultKeybindings = 271;
-CheckLuaPlugin = 272;
+reserved 272;
+reserved "CheckLuaPlugin";
 SetPaneAgent = 273;
 ReloadPluginByUrl = 274;
 ReadPluginLog = 275;
@@ -269,6 +270,8 @@ SwampRequest = 287;
 CheckPlugin = 288;
 }
 message PluginCommand {
+reserved 213;
+reserved "check_lua_plugin_payload";
 reserved 108, 109, 110, 164, 165, 167, 173, 187;
 CommandName name = 1;
 oneof payload {
@@ -461,7 +464,6 @@ FsRenamePayload fs_rename_payload = 209;
 GrantPluginPermissionsPayload grant_plugin_permissions_payload = 210;
 SetContextMenuPayload set_context_menu_payload = 211;
 string register_default_keybindings_payload = 212;
-CheckLuaPluginPayload check_lua_plugin_payload = 213;
 CheckPluginPayload check_plugin_payload = 229;
 SetPaneAgentPayload set_pane_agent_payload = 214;
 string reload_plugin_by_url_payload = 215;
@@ -1342,10 +1344,6 @@ message GetUserPluginDirPayload {}
 message GetUserPluginDirResponse {
 string user_plugin_dir = 1;
 }
-message CheckLuaPluginPayload {
-string name = 1;
-string source = 2;
-}
 message SetPaneAgentRunPayload {
 PaneId pane_id = 1;
 optional string run_id = 2;
@@ -1357,9 +1355,6 @@ optional api.event.AgentInfo agent = 2;
 message SetQuitNoticePayload {
 optional string notice = 1;
 bool guard = 2;
-}
-message CheckLuaPluginResponse {
-optional string error = 1;
 }
 message GetFocusedPaneInfoPayload {}
 message GetFocusedPaneInfoResponse {

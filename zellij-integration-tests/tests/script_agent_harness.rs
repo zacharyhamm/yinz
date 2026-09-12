@@ -1,5 +1,5 @@
 #![cfg(unix)]
-//! A Lua plugin that harnesses an agent, end to end: it spawns the agent through the launch
+//! A TypeScript plugin that harnesses an agent, end to end: it spawns the agent through the launch
 //! planner (`zellij.agent.spawn`), waits for the agent's record to move (`zellij.async.agent_state`),
 //! prompts it (`zellij.agent.send`) and awaits its exit (`zellij.async.pane_exit`) - as one task,
 //! in straight-line code, with the fake pty standing in for `claude` and `zellij action
@@ -13,37 +13,30 @@ use zellij_cli::args::CliAction;
 use zellij_integration_tests::{default_timeout, LayoutInfo, TestRunner, TERMINAL_SIZE};
 
 const HARNESS: &str = r#"
-local zellij = require("zellij")
-local M = {}
-
-function M.load(config)
-  zellij.request_permission { "run_commands", "read_application_state", "write_to_stdin" }
-  -- Already answered: in force at once. The first time: not until the user says so.
-  local in_force = pcall(zellij.list_clients)
-  zellij.log("in force at load: " .. tostring(in_force))
-  zellij.task(function()
-    local answer = zellij.await(zellij.async.permissions { "run_commands", "read_application_state", "write_to_stdin" })
-    zellij.log("permissions " .. answer)
-    -- No branch, and the test's cwd is a plain folder rather than a linked worktree, so
-    -- the spawn says out loud that it means to run there.
-    local pane = zellij.agent.spawn { kind = "claude", hooks = false, cwd = "/host", allow_outside_worktree = true }
-    zellij.log("spawned pane=" .. pane.Terminal)
-    zellij.await(zellij.async.agent_state(pane, "waiting"))
-    zellij.log("waiting pane=" .. pane.Terminal)
-    zellij.agent.send(pane, "go")
-    local exit = zellij.await(zellij.async.pane_exit(pane))
-    zellij.log("exited pane=" .. pane.Terminal .. " " .. tostring(exit.exit_code))
-  end)
-end
-
-function M.render() return "harness is up" end
-
-return M
+import zellij from 'zellij:plugin';
+export default {
+  async load() {
+    zellij.requestPermission(['RunCommands','ReadApplicationState','WriteToStdin']);
+    let inForce=false;
+    try {zellij.host.listClients(); inForce=true;} catch (_) {}
+    zellij.log('in force at load: '+inForce);
+    await zellij.waitForPermissions(['RunCommands','ReadApplicationState','WriteToStdin']);
+    zellij.log('permissions Granted');
+    const pane=zellij.agent.spawn({kind:'claude',hooks:false,cwd:'/host',allow_outside_worktree:true});
+    zellij.log('spawned pane='+pane.Terminal);
+    await zellij.agent.waitForState(pane,'waiting');
+    zellij.log('waiting pane='+pane.Terminal);
+    zellij.agent.send(pane,'go');
+    const exit=await zellij.waitForPaneExit(pane);
+    zellij.log('exited pane='+pane.Terminal+' '+exit.exitCode);
+  },
+  render() {return 'harness is up';}
+};
 "#;
 
 const HARNESS_LAYOUT: &str = r#"layout {
     pane {
-        plugin location="file:harness.lua"
+        plugin location="file:harness.ts"
     }
 }
 "#;
@@ -52,9 +45,9 @@ const HARNESS_LAYOUT: &str = r#"layout {
 fn harness_log() -> Vec<String> {
     zellij_integration_tests::test_env::log_tail(400)
         .lines()
-        .filter(|line| line.contains("[lua:harness.lua]"))
+        .filter(|line| line.contains("[deno:") && line.contains("harness.ts]"))
         .map(|line| {
-            line.split("[lua:harness.lua] ")
+            line.split("harness.ts] ")
                 .nth(1)
                 .unwrap_or(line)
                 .trim()
@@ -101,10 +94,10 @@ fn agent_in(
 }
 
 #[test]
-fn a_lua_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit() {
+fn a_typescript_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit() {
     let config_dir = zellij_integration_tests::test_env::init()
         .join("config")
-        .join("lua-agent-harness");
+        .join("typescript-agent-harness");
     fs::create_dir_all(&config_dir).unwrap();
     let plugin_dir = config_dir.join("plugins");
     zellij_server::plugin_authoring::write(&plugin_dir, "harness", HARNESS, false, true)
@@ -206,7 +199,7 @@ fn a_lua_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit() {
     // Reloaded, the plugin's `load` runs again with its permissions already granted - and a
     // gated call made right after asking is not refused.
     let (exit_code, reported) = zellij.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
-        url: format!("file:{}", plugin_dir.join("harness.lua").display()),
+        url: format!("file:{}", plugin_dir.join("harness.ts").display()),
         configuration: None,
     });
     assert_eq!(exit_code, 0, "{reported}");

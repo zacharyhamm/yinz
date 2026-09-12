@@ -32,8 +32,7 @@ pub use super::generated_api::api::{
         BreakPanesToTabWithIndexPayload,
         BreakPanesToTabWithIndexResponse as ProtobufBreakPanesToTabWithIndexResponse,
         CancelQueueJobPayload, CancelWebRequestPayload, ChangeFloatingPanesCoordinatesPayload,
-        ChangeHostFolderPayload, ChangeOverlayCoordinatesPayload, CheckLuaPluginPayload,
-        CheckLuaPluginResponse as ProtobufCheckLuaPluginResponse, CheckPluginPayload,
+        ChangeHostFolderPayload, ChangeOverlayCoordinatesPayload, CheckPluginPayload,
         CheckPluginResponse as ProtobufCheckPluginResponse, ClearPaneHighlightsPayload,
         ClearScreenForPaneIdPayload, CliPipeOutputPayload, CloseMultiplePanesPayload,
         CloseTabWithIdPayload, CloseTabWithIndexPayload, CommandName, ConfigureQueuePayload,
@@ -3007,15 +3006,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }),
                 _ => Err("Mismatched payload for CheckPlugin"),
             },
-            Some(CommandName::CheckLuaPlugin) => match protobuf_plugin_command.payload {
-                Some(Payload::CheckLuaPluginPayload(payload)) => {
-                    Ok(PluginCommand::CheckLuaPlugin {
-                        name: payload.name,
-                        source: payload.source,
-                    })
-                },
-                _ => Err("Mismatched payload for CheckLuaPlugin"),
-            },
             Some(CommandName::GetLayoutDir) => Ok(PluginCommand::GetLayoutDir),
             Some(CommandName::GetUserPluginDir) => Ok(PluginCommand::GetUserPluginDir),
             Some(CommandName::GetFocusedPaneInfo) => Ok(PluginCommand::GetFocusedPaneInfo),
@@ -5393,13 +5383,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                             check_plugin_payload::Mode::Semantic as i32
                         },
                     },
-                })),
-            }),
-            PluginCommand::CheckLuaPlugin { name, source } => Ok(ProtobufPluginCommand {
-                name: CommandName::CheckLuaPlugin as i32,
-                payload: Some(Payload::CheckLuaPluginPayload(CheckLuaPluginPayload {
-                    name,
-                    source,
                 })),
             }),
             PluginCommand::GetLocalUtcOffset { epoch_ms } => Ok(ProtobufPluginCommand {
@@ -7875,7 +7858,6 @@ mod tests {
         fn as_the_plugin_wire_carries_it(command: PluginCommand) -> Option<PluginCommand> {
             Some(match command {
                 carried @ (PluginCommand::Subscribe(_)
-                | PluginCommand::CheckLuaPlugin { .. }
                 | PluginCommand::CheckPlugin { .. }
                 | PluginCommand::SetPaneAgent { .. }
                 | PluginCommand::SetPaneAgentRun { .. }

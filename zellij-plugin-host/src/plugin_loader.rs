@@ -1,4 +1,3 @@
-use crate::lua::load_lua_plugin;
 use crate::plugin_limits::PluginResourceLimits;
 use crate::plugin_map::{
     PluginEnv, PluginMap, ResponseSink, RunningPlugin, VecDequeInputStream, WriteOutputStream,
@@ -180,10 +179,16 @@ impl<'a> PluginLoader<'a> {
         self
     }
     pub fn start_plugin(&mut self) -> Result<()> {
-        if matches!(
-            self.plugin_config.runtime(),
-            PluginRuntime::Lua | PluginRuntime::Deno
-        ) {
+        if self
+            .plugin_config
+            .path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            == Some("lua")
+        {
+            anyhow::bail!("Lua plugins are no longer supported; migrate to TypeScript or Wasm");
+        }
+        if matches!(self.plugin_config.runtime(), PluginRuntime::Deno) {
             return self.start_script_plugin();
         }
         let module = if self.skip_cache {
@@ -234,8 +239,7 @@ impl<'a> PluginLoader<'a> {
             Some(resolved_path.clone())
         };
         let subscriptions = plugin_env.subscriptions.clone();
-        let chunk_name = self.plugin_config.path.display().to_string();
-        let running = if self.plugin_config.runtime() == PluginRuntime::Deno {
+        let running = {
             let path = resolved_path;
             let client_cancel = if self.plugin_config.is_shared() {
                 Arc::default()
@@ -252,10 +256,6 @@ impl<'a> PluginLoader<'a> {
                 };
             deno.env_mut().deno_generation = Some(deno.generation());
             RunningPlugin::new_deno(deno, self.size.rows, self.size.cols)
-        } else {
-            let lua =
-                load_lua_plugin(&source, &chunk_name, plugin_env).with_context(err_context)?;
-            RunningPlugin::new_lua(lua, self.size.rows, self.size.cols)
         };
         let plugin = Arc::new(Mutex::new(running));
         // Inserted before `load` runs, so that host commands issued from `load` can find it.

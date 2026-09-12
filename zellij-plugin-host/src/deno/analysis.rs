@@ -105,7 +105,7 @@ pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
     report
 }
 
-/// The traps the Lua lint reads lexically (`zellij_plugin_api::authoring::lint`), read here
+/// Common authoring mistakes, detected here
 /// from the AST with bindings resolved: a `shared:` namespace without the permission it needs,
 /// a reserved column declared, the store used without `PluginData`, and a data call made in
 /// `load` before the permission answer can have arrived. Each names the fix; none refuses.

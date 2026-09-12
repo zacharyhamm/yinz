@@ -1,3 +1,3 @@
 # Configuration assets
 
-Default configuration, layouts, themes, and builtin Lua plugins are loaded by `zellij-config`.
+Default configuration, layouts, themes, and builtin TypeScript plugins are loaded by `zellij-config`.

@@ -1606,10 +1606,6 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 zellij_types::authoring::PluginCheckMode::Semantic
             },
         },
-        CommandType::CheckLuaPlugin => PluginCommand::CheckLuaPlugin {
-            name: strings(tc),
-            source: strings(tc),
-        },
         CommandType::GetLocalUtcOffset => PluginCommand::GetLocalUtcOffset {
             epoch_ms: zellij_types::units::SignedUnixMillis::new(
                 tc.draw(generators::integers::<i64>()),

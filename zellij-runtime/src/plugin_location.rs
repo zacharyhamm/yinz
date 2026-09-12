@@ -55,10 +55,22 @@ pub fn parse_plugin_location_with_relative(
     location: &str,
     cwd: Option<PathBuf>,
 ) -> Result<(RunPluginLocation, Option<PathBuf>), PluginsConfigError> {
-    let url = Url::parse(location)?;
+    let url = Url::parse(location);
+    let path = url.as_ref().map(|url| url.path()).unwrap_or(location);
+    let decoded_path = percent_encoding::percent_decode_str(path)
+        .decode_utf8_lossy()
+        .into_owned();
 
-    let decoded_path = percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy();
-
+    if std::path::Path::new(decoded_path.as_str())
+        .extension()
+        .and_then(|ext| ext.to_str())
+        == Some("lua")
+    {
+        return Err(PluginsConfigError::UnsupportedLuaPlugin(
+            location.to_owned(),
+        ));
+    }
+    let url = url?;
     match url.scheme() {
         "zellij" => Ok((
             RunPluginLocation::Zellij(PluginTag::new(decoded_path)),
@@ -72,7 +84,7 @@ pub fn parse_plugin_location_with_relative(
                 // Path is absolute, its safe to use URL path.
                 //
                 // This is the case if the scheme and : delimiter are followed by a / slash
-                PathBuf::from(decoded_path.as_ref())
+                PathBuf::from(decoded_path.as_str())
             } else if location.starts_with("file:~") {
                 // Unwrap is safe here since location is a valid URL
                 PathBuf::from(location.strip_prefix("file:").unwrap())
@@ -113,14 +125,14 @@ fn expand_plugin_path(path: PathBuf) -> PathBuf {
     }
 }
 
-/// Whether a url path names a Lua or Deno plugin by extension, as `PluginConfig::runtime` reads
+/// Whether a url path names a Deno plugin by extension, as `PluginConfig::runtime` reads
 /// a local one. The query is not part of the path, so `plugin.ts?v=1` is a script too.
 fn is_script_plugin_path(path: &str) -> bool {
     matches!(
         std::path::Path::new(path)
             .extension()
             .and_then(|extension| extension.to_str()),
-        Some("lua" | "js" | "mjs" | "ts" | "mts")
+        Some("js" | "mjs" | "ts" | "mts")
     )
 }
 
@@ -133,7 +145,6 @@ mod remote_script_tests {
         for url in [
             "https://example.com/plugin.ts",
             "https://example.com/dir/plugin.mjs",
-            "http://example.com/plugin.lua",
             "https://example.com/plugin.ts?v=1",
         ] {
             let error = parse_plugin_location_with_relative(url, None).unwrap_err();
@@ -163,5 +174,27 @@ mod remote_script_tests {
                 .0,
             RunPluginLocation::File(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod retired_script_tests {
+    use super::*;
+    #[test]
+    fn lua_urls_fail_before_aliases_or_downloads() {
+        for url in [
+            "old.lua",
+            "/tmp/old.lua",
+            "file:old.lua",
+            "file:/tmp/old.lua",
+            "https://example.com/old.lua",
+            "https://example.com/old%2Elua",
+        ] {
+            assert!(parse_plugin_location(url, None)
+                .unwrap_err()
+                .to_string()
+                .contains("Lua plugins are no longer supported"));
+            assert!(run_plugin_or_alias_from_url(url, &None, None, None).is_err());
+        }
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::lua::unit_tests::test_env;
+use crate::test_env::test_env;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use strum::IntoEnumIterator;
@@ -316,11 +316,7 @@ fn embedded_loading_imports_diagnostics_and_compiler_recovery() {
 }
 
 #[test]
-fn lua_and_deno_share_server_identity_but_reload_replaces_instance_identity() {
-    let mut lua = crate::lua::load_lua_plugin(
-        "local z=require('zellij'); return {render=function() return z.json.encode({z.server_binary,z.server_session,z.server_incarnation}) end}",
-        "identity.lua", test_env()).unwrap();
-    let lua: Value = serde_json::from_slice(&lua.render(1, 1000).unwrap()).unwrap();
+fn deno_preserves_server_identity_but_reload_replaces_instance_identity() {
     let source = r#"
 const identity = [zellij.serverBinary, zellij.serverSession, zellij.serverIncarnation, zellij.instanceId];
 if (!Object.isFrozen(zellij) || 'workflowRemotePanes' in zellij) throw Error('SDK exposure');
@@ -338,7 +334,6 @@ export default {render() {return JSON.stringify(identity);}};
     let mut reloaded = load_builtin("identity", source, test_env()).unwrap();
     let second: Value = serde_json::from_slice(&reloaded.render(1, 1000).unwrap()).unwrap();
     for i in 0..3 {
-        assert_eq!(first[i], lua[i]);
         assert_eq!(first[i], second[i]);
     }
     assert_ne!(first[3], second[3]);
@@ -453,6 +448,29 @@ fn workflow_query_reports_transport_disconnect_and_timeout() {
     .unwrap();
     assert!(format!("{:#}", plugin.render(1, 80).unwrap_err())
         .contains("request remote workflow pane identities"));
+}
+
+#[test]
+fn every_embedded_typescript_builtin_loads_and_renders() {
+    for (name, source) in zellij_config::consts::BUILTIN_DENO_PLUGINS {
+        let directory = tempfile::tempdir().unwrap();
+        let mut env = test_env();
+        env.data_access = Arc::new(zellij_storage::data_access::DataAccess::sqlite(
+            directory.path(),
+        ));
+        env.plugin_own_data_dir = directory.path().to_owned();
+        env.plugin_own_cache_dir = directory.path().to_owned();
+        *env.permissions.lock().unwrap() = Some(PermissionType::iter().collect());
+        let mut plugin =
+            load_builtin(name, source, env).unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        plugin.load(&BTreeMap::new()).unwrap();
+        plugin
+            .update(&Event::PermissionRequestResult(PermissionStatus::Granted))
+            .unwrap();
+        plugin
+            .render(24, 80)
+            .unwrap_or_else(|error| panic!("{name}: {error:#}"));
+    }
 }
 
 #[test]
@@ -588,7 +606,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
 }
 
 #[test]
-fn shipped_bridge_reads_lua_delivery_rows_after_reload_without_dispatching_again() {
+fn shipped_bridge_reads_legacy_delivery_rows_after_reload_without_dispatching_again() {
     use crate::ServerInstruction;
     use zellij_runtime::channels::SenderWithContext;
     use zellij_types::data::{PipeMessage, PipeSource};
@@ -608,16 +626,16 @@ fn shipped_bridge_reads_lua_delivery_rows_after_reload_without_dispatching_again
         env.senders.to_pty = Some(SenderWithContext::new(pty_tx.clone()));
         env
     };
-    // The former runtime creates the row in the actual URL-owned SQLite namespace.
-    let mut legacy = crate::lua::load_lua_plugin(r#"
-local z=require('zellij')
-return {load=function()
-  z.data.define{name='delivery',version=1,attrs={{'value','text',required=true}}}
-  local request={method='agent_spawn',work='legacy',key='agent',spec={kind='codex',cwd='/work'},inputs={empty={},ratio=1.0}}
-  local uid=z.json.encode{z.get_plugin_ids().host_id,z.server_session,'legacy','agent'}
-  z.data.apply(z.data.put('delivery',{value=z.json.encode{request=z.json.encode(request),outcome='pending',dispatcher='old-lua-instance',pane=7}},uid,z.data.REV_ABSENT))
-end}
-"#, "old-bridge.lua", env()).unwrap();
+    // Recreate persisted pre-migration JSON in the actual URL-owned SQLite namespace.
+    let mut legacy = load_builtin("swamp-bridge", r#"
+import z from 'zellij:plugin';
+export default {load() {
+  z.data.define('delivery',{value:{kind:'Text',required:true}});
+  const request='{"method":"agent_spawn","work":"legacy","key":"agent","spec":{"kind":"codex","cwd":"/work"},"inputs":{"empty":{},"ratio":1.0}}';
+  const uid=JSON.stringify([z.getPluginIds().host_id,z.serverSession,'legacy','agent']);
+  z.data.apply([z.data.put('delivery',{value:JSON.stringify({request,outcome:'pending',dispatcher:'old-instance',pane:7})},{uid,expectRev:z.data.REV_ABSENT})]);
+}};
+"#, env()).unwrap();
     legacy.load(&BTreeMap::new()).unwrap();
     drop(legacy);
     let source = zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap();
@@ -682,8 +700,7 @@ fn typescript_reference_examples_load_and_render_in_deno() {
     }
 }
 
-// The reference examples, driven the way `lua/unit_tests.rs` drives their Lua ancestors: every
-// key an example advertises is pressed, so a command shape the file gets wrong fails here.
+// Press every key an example advertises, so incorrect command payloads fail here.
 
 fn example(name: &str) -> String {
     std::fs::read_to_string(

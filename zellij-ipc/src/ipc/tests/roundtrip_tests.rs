@@ -122,9 +122,9 @@ fn server_client_contract() {
         .expect("roundtrip test thread panicked");
 }
 
-/// `zellij plugin -- file:keys.lua` is parsed in the client and loaded in the server, so the name
+/// `zellij plugin -- file:keys.ts` is parsed in the client and loaded in the server, so the name
 /// as the user wrote it has to survive this hop - without it the server can only look for
-/// `$cwd/keys.lua`, and the user's plugin folder is never searched.
+/// `$cwd/keys.ts`, and the user's plugin folder is never searched.
 ///
 /// Asserted on the field rather than through `test_client_roundtrip!`, because `RunPlugin`'s
 /// `PartialEq` deliberately ignores `relative_path`: a whole-message comparison would pass just
@@ -134,8 +134,8 @@ fn a_relative_plugin_path_survives_the_client_server_contract() {
     use crate::client_server_contract::client_server_contract::RunPlugin as ProtoRunPlugin;
 
     let original = RunPlugin {
-        location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.lua")),
-        relative_path: Some(PathBuf::from("keys.lua")),
+        location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.ts")),
+        relative_path: Some(PathBuf::from("keys.ts")),
         ..Default::default()
     };
     let protobuf: ProtoRunPlugin = original.clone().into();

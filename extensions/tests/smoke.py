@@ -474,22 +474,22 @@ if args.source_diff_only:
     print('PASS: exact viewer argv isolates checkout and index, quotes nested repositories, excludes its own TMPDIR, and fails for a missing checkout', flush=True)
 (root / 'config/zellij').mkdir(exist_ok=True)
 (root / 'config/zellij/config.kdl').write_text('show_release_notes false\nshow_startup_tips false\nbuiltin_plugins_dir ' + json.dumps(str(builtins)) + '\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/zellij-firecracker')) + '\n')
-observer = root / 'snapshot.lua'
-observer.write_text('''local z=require('zellij')
-return {
-  load=function() z.request_permission{'message_and_launch_other_plugins','read_cli_pipes'} end,
-  pipe=function(message)
-    if message.name~='snapshot' then return end
-    local cli=message.source.Cli
-    z.block_cli_pipe_input(cli)
-    z.task(function()
-      local snapshot=z.async.pipe('agent_snapshot')
-      z.message_to_plugin{plugin_url='zellij:hocus-agentd',message_name='agent_subscribe'}
-      z.cli_pipe_output(cli,z.await(snapshot).payload)
-      z.unblock_cli_pipe_input(cli)
-    end)
-  end,
-}
+observer = root / 'snapshot.ts'
+observer.write_text('''import z, {definePlugin} from 'zellij:plugin';
+export default definePlugin({
+  load() { z.requestPermission(['MessageAndLaunchOtherPlugins','ReadCliPipes']); },
+  async pipe(message) {
+    if (message.name !== 'snapshot' || typeof message.source !== 'object' || !('Cli' in message.source)) return;
+    const cli=message.source.Cli;
+    z.host.blockCliPipeInput(cli);
+    try {
+      const snapshot=z.waitForPipe('agent_snapshot');
+      z.command('MessageToPlugin',{plugin_url:'zellij:hocus-agentd',message_name:'agent_subscribe',
+        destination_plugin_id:null,plugin_config:{},message_payload:null,message_args:{},new_plugin_args:null,floating_pane_coordinates:null});
+      z.host.cliPipeOutput(cli,(await snapshot).payload ?? '');
+    } finally {z.host.unblockCliPipeInput(cli);}
+  }
+});
 ''')
 (root / 'cache/zellij').mkdir(exist_ok=True)
 (root / 'cache/zellij/permissions.kdl').write_text(json.dumps(str(observer)) + ' {\n MessageAndLaunchOtherPlugins\n ReadCliPipes\n}\n')

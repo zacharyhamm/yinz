@@ -42,7 +42,7 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree named after the branch; an agent outside a linked worktree needs `allow_outside_worktree`. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij TypeScript plugins with explicit `.ts` filenames yourself, never by spawning an agent: `plugin_docs section=quickstart` starts TypeScript authoring; extensionless names retain Lua compatibility. `plugin_docs` is authoritative - `query=` it for a spelling before fetching a section. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_outline`/`plugin_search` find the lines, `plugin_read` reads that range, `plugin_edit` changes it (`edits` batches several) - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error (`headless` for a plugin with no pane, answered from its log), `plugin_log` for what it logged; a plugin that runs agents uses TypeScript async functions and `zellij.agent` - section `deno`, example `example_agent_harness`; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree named after the branch; an agent outside a linked worktree needs `allow_outside_worktree`. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij TypeScript plugins with explicit `.ts` filenames yourself, never by spawning an agent: `plugin_docs section=quickstart` starts TypeScript authoring; extensionless names select TypeScript. `plugin_docs` is authoritative - `query=` it for a spelling before fetching a section. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_outline`/`plugin_search` find the lines, `plugin_read` reads that range, `plugin_edit` changes it (`edits` batches several) - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error (`headless` for a plugin with no pane, answered from its log), `plugin_log` for what it logged; a plugin that runs agents uses TypeScript async functions and `zellij.agent` - section `agents`, example `example_agent_harness`; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
 the tools array: the rest are loaded on demand, and calling one by name loads its family and \
 runs it, so call the tool you want rather than asking for it. `tools_load` is there for when \
 you do not know the name. Make independent calls together.";
@@ -949,7 +949,7 @@ fn enum_setting(
 ///
 /// hocus sends the whole transcript every turn, so the cost of a round is the cost of every
 /// round before it. Plugin authoring is where that bites hardest: a `plugin_write` carries the
-/// complete Lua source in its arguments, those arguments are echoed back verbatim on every
+/// complete TypeScript source in its arguments, those arguments are echoed back verbatim on every
 /// later request (`wire_arguments`), and a write-reload-fix loop makes four or five of them. By
 /// the fifth round the request is re-uploading four drafts nobody will ever read again, four
 /// pane screenshots of a plugin that has since changed, and every file it read on the way.
@@ -979,8 +979,7 @@ pub(crate) struct Elision {
 /// target, gets no `Subject` and is left alone.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Subject {
-    /// A plugin file, by the name the tools take back - `.lua` stripped, so `keys` and
-    /// `keys.lua` are the same file.
+    /// A plugin file, by its canonical filename, so `keys` and `keys.ts` share a subject.
     File(String),
     /// One page of a plugin file: the name, and the 1-based inclusive line range the read
     /// actually answered with.
@@ -1003,7 +1002,7 @@ enum Subject {
     /// A `plugin_docs query=`: the section it was confined to, and the pattern.
     DocsSearch(Option<String>, String, bool),
     /// One page of one docs section. Its own variant rather than `Page`: a plugin can be called
-    /// `data.lua` and a section `data`.
+    /// `data.ts` and a section `data`.
     SectionPage(String, usize, usize),
 }
 
@@ -1130,22 +1129,14 @@ fn subject_of(name: &str, arguments: &str) -> Option<Subject> {
     }
 }
 
-/// The plugin a call names, as the tools take it back: trimmed, `.lua` stripped, so `keys` and
-/// `keys.lua` are the same file. `None` when it names nothing. A JavaScript or TypeScript name
-/// keeps its extension, which is its identity: `keys.ts` and `keys` are two files.
+/// Canonical authoring filename, so an extensionless name and its `.ts` spelling share a subject.
 fn plugin_file(name: Option<&str>) -> Option<String> {
-    let name = name?.trim().trim_end_matches(".lua");
-    (!name.is_empty()).then(|| name.to_owned())
+    let name = name?.trim();
+    (!name.is_empty()).then(|| crate::plugin_source::file_name(name))
 }
 
-/// The file name a note shows for a plugin, as it exists on disk: an extensionless name is a
-/// Lua file, and a JavaScript or TypeScript name is spelled as it was given.
 fn plugin_display_name(file: &str) -> String {
-    if zellij_tile::plugin_authoring::is_deno_plugin(std::path::Path::new(file)) {
-        file.to_owned()
-    } else {
-        format!("{file}.lua")
-    }
+    crate::plugin_source::file_name(file)
 }
 
 /// A query as the search tools take it: trimmed, and `None` when there is nothing left.

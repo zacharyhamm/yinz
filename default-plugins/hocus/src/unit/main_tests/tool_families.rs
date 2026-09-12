@@ -99,7 +99,7 @@ fn a_reloaded_transcript_keeps_the_families_it_had_loaded() {
             name: "plugin_write".into(),
             arguments: r#"{"name":"clock","source":"return {}"}"#.into(),
         }]),
-        Message::tool_result("call_1", "wrote clock.lua"),
+        Message::tool_result("call_1", "wrote clock.ts"),
     ];
     assert!(advertised(&state).iter().any(|n| n == "plugin_reload"));
 }

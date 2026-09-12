@@ -9,7 +9,7 @@ Consumers import shared code from its owning crate. The workspace has fourteen s
 | `zellij-types` | Shared models, identities, units, geometry, actions, options, layouts, manifests, plugin commands and events | None |
 | `zellij-runtime` | Errors, channels, logging, paths, environment access, host identity, downloads, checkpoint locks, agent launch support | Types |
 | `zellij-storage` | Recording storage and plugin-data engines for SQLite and Postgres | Types, Runtime |
-| `zellij-config` | Config and layout loading, KDL/Lua parsing, precedence, overlays, themes, plugin resolution, permissions, embedded assets including the TypeScript builtins | Types, Runtime |
+| `zellij-config` | Config and layout loading, KDL parsing, precedence, overlays, themes, plugin resolution, permissions, embedded assets including the TypeScript builtins | Types, Runtime |
 | `zellij-plugin-api` | Plugin protobuf schemas, generated code, conversions, protocol validation, authoring helpers | Types, Runtime |
 | `zellij-ipc` | Client/server and nested-session protocols, framing, sockets, connection retries | Types, Runtime, Plugin API |
 | `zellij-session` | Discovery, lifecycle, resurrection, session metadata and layout serialization, warped tabs | Types, Runtime, Config, IPC |
@@ -19,13 +19,13 @@ Consumers import shared code from its owning crate. The workspace has fourteen s
 | `zellij-bus` | The server's thread bus: `ThreadSenders`/`Bus`, the six instruction enums and their payload types, `ServerOsApi`, warps, background jobs, the session recorder and layout metadata | Types, Runtime, Storage, Config, IPC, Session, Terminal, Process |
 | `zellij-routing` | Synchronous action dispatch, dispatch helpers and completion waits | Bus, Types, Runtime, IPC |
 | `zellij-panes` | The `Pane` trait, `TerminalPane` and `PluginPane`, the tiled, floating and overlay pane managers, frames and boundaries, `Tab` and its layout applier, pane groups | Types, Runtime, Config, IPC, Terminal, Bus, Tile Utils |
-| `zellij-plugin-host` | The plugin host: Wasm, Lua, and Deno plugin loading, the plugin thread, host functions, pipes, job queues, workers, the plugin log pipe, plugin authoring helpers | Types, Runtime, Storage, Config, Plugin API, IPC, Session, Process, Bus, Routing, Tile, Tile Markdown |
+| `zellij-plugin-host` | The plugin host: Wasm and Deno plugin loading, the plugin thread, host functions, pipes, job queues, workers, the plugin log pipe, plugin authoring helpers | Types, Runtime, Storage, Config, Plugin API, IPC, Session, Process, Bus, Routing, Tile, Tile Markdown |
 
 These lists permit dependencies. They do not require every listed dependency.
 `cargo x ci check` enforces them for normal, optional, target-specific, build, and development dependencies.
 The root binary dispatches commands that start the client or server. The CLI library does not depend on these applications.
 
-Models keep pure operations. Parser-owned free functions read or serialize KDL and Lua.
+Models keep pure operations. Parser-owned free functions read or serialize KDL.
 `CliAssets` contains serializable input fields. `zellij_config::cli_assets::load_config_and_layout` loads their configuration.
 Config loading receives explicit paths and options. Clap arguments and CLI-specific merging stay in CLI.
 
@@ -53,7 +53,7 @@ Run `cargo x ci check` before a branch or PR handoff.
 
 ## Plugin runtimes
 
-The server supports Wasm, Lua, and embedded Deno Core. They share permission checks,
+The server supports Wasm and embedded Deno Core. They share permission checks,
 host command dispatch, subscriptions, and the plugin render path.
 Deno isolates stay in an executor-thread-local registry. The shared plugin map holds
 only their handles and environments. Each invocation temporarily moves its environment
@@ -263,14 +263,14 @@ stays in the server (`zellij-server/src/client_router.rs`) because it holds `Ses
 
 ## The plugin host (zellij-plugin-host/)
 
-`zellij-plugin-host` runs the plugin thread: it loads wasm modules and Lua scripts, keeps the
+`zellij-plugin-host` runs the plugin thread: it loads Wasm modules and TypeScript scripts, keeps the
 plugin map, runs plugins on the pinned executor, answers their host functions
 (`zellij_exports.rs`), owns the `queues` job state machine, and turns every `PluginCommand` into
 an instruction for another thread.
 It depends on `zellij-bus` and `zellij-routing`: it never names a tab, a pane, or the screen,
 and everything it asks of them goes out as a `ScreenInstruction`, `PtyInstruction` or
 `Action` through `route_action`. The server keeps the old `crate::plugins::…` paths as an alias
-of the crate, plus `check_lua_plugin`, `get_engine` and `plugin_authoring` at its root.
+of the crate, plus `get_engine` and `plugin_authoring` at its root.
 `PluginPane`, the pane that displays a plugin, stays with the other panes; its only tie to the
 host is the `PluginInstruction::Update` it sends.
 

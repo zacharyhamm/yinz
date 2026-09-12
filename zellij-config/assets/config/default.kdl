@@ -538,7 +538,7 @@ load_plugins {
     "zellij:link"
     // "file:/path/to/my-plugin.wasm"
     // "file:/path/to/my-plugin.ts"     // a TypeScript plugin; see docs/DENO_PLUGINS.md
-    // "file:/path/to/my-plugin.lua"    // a Lua plugin; see docs/LUA_PLUGINS.md
+    // "file:/path/to/my-plugin.ts"     // a TypeScript plugin; see docs/DENO_PLUGINS.md
     // "https://example.com/my-plugin.wasm"   // remote urls load wasm plugins only
 }
 

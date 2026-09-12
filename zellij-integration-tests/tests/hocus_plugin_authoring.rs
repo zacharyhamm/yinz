@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
-//! Authoring a Lua plugin end to end: a real session, host filesystem operations, a real file
-//! on disk, and a real Lua plugin loaded from it.
+//! Authoring a TypeScript plugin end to end: a real session, host filesystem operations, a real file
+//! on disk, and a real TypeScript plugin loaded from it.
 //!
 //! The unit tests cover path resolution and tool results separately. This test checks that
 //! hocus reaches the host's `/plugins` filesystem root and loads the file it wrote there.
@@ -70,7 +70,7 @@ fn clear(zellij: &TestSession, gone: &str) {
 }
 
 #[test]
-fn hocus_writes_a_lua_plugin_and_loads_it() {
+fn hocus_writes_a_typescript_plugin_and_loads_it() {
     // The folder hocus will be told about, empty to begin with: the write is what creates it,
     // which is the behaviour worth proving as much as the write itself.
     let plugins = tempfile::tempdir().expect("a temp dir");
@@ -112,7 +112,7 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     // A name that climbs out of the folder is refused before anything runs.
     submit(
         &zellij,
-        r#"/plugin_write {"name": "../escape", "source": "return {}"}"#,
+        r#"/plugin_write {"name": "../escape", "source": "export default {};"}"#,
     );
     zellij.wait_until("a name that is a path is refused", |grid_snapshot| {
         grid_snapshot.contains("not a plugin name") || grid_snapshot.contains("single file name")
@@ -124,19 +124,18 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     // No confirmation appears here even though `plugin_write` is in the confirmation table:
     // typing a slash command *is* the confirmation, so `run_manual` goes straight to
     // `run_head`. The prompt the model would get is covered by the unit tests instead.
-    let source =
-        "local M = {}\\nfunction M.render() return \\\"probe is running\\\" end\\nreturn M";
+    let source = "export default {render() {return \\\"probe is running\\\";}};";
     submit_awaiting(
         &zellij,
         &format!(r#"/plugin_write {{"name": "probe", "source": "{source}"}}"#),
-        "M.render",
+        "render()",
     );
     zellij.wait_until("the plugin is written", |grid_snapshot| {
         grid_snapshot.contains("call plugin_reload")
     });
 
     // On disk, in the folder the write had to create.
-    let written = plugin_dir.join("probe.lua");
+    let written = plugin_dir.join("probe.ts");
     assert!(
         written.exists(),
         "expected the plugin at {}",
@@ -151,9 +150,9 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     // Listed by name rather than by path, since a name is what the tools take back.
     submit(&zellij, "/plugin_list");
     zellij.wait_until("the plugin is listed", |grid_snapshot| {
-        grid_snapshot.contains("probe.lua")
+        grid_snapshot.contains("probe.ts")
     });
-    clear(&zellij, "probe.lua");
+    clear(&zellij, "probe.ts");
 
     // Read back through the host, into a plugin that cannot open the file itself.
     submit(&zellij, r#"/plugin_read {"name": "probe"}"#);
@@ -165,7 +164,7 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     // Writing it again without `overwrite` is refused after checking the host's file metadata.
     submit(
         &zellij,
-        r#"/plugin_write {"name": "probe", "source": "return {}"}"#,
+        r#"/plugin_write {"name": "probe", "source": "export default {};"}"#,
     );
     zellij.wait_until("the existing plugin is not clobbered", |grid_snapshot| {
         grid_snapshot.contains("already exists")
@@ -183,9 +182,9 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     // The write is the one that matters — `overwrite=true` would truncate whatever the link
     // points at, and the confirmation the user saw named only "link" — but the read is refused
     // for the same reason and by the same guard.
-    let outside = plugins.path().join("outside.lua");
-    fs::write(&outside, "-- outside the plugin folder\n").expect("a file outside the folder");
-    std::os::unix::fs::symlink(&outside, plugin_dir.join("link.lua")).expect("a symlink");
+    let outside = plugins.path().join("outside.ts");
+    fs::write(&outside, "// outside the plugin folder\n").expect("a file outside the folder");
+    std::os::unix::fs::symlink(&outside, plugin_dir.join("link.ts")).expect("a symlink");
 
     submit(&zellij, r#"/plugin_read {"name": "link"}"#);
     zellij.wait_until("reading through a symlink is refused", |grid_snapshot| {
@@ -195,7 +194,7 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
 
     submit_awaiting(
         &zellij,
-        r#"/plugin_write {"name": "link", "source": "return {}", "overwrite": true}"#,
+        r#"/plugin_write {"name": "link", "source": "export default {};", "overwrite": true}"#,
         "overwrite",
     );
     zellij.wait_until("writing through a symlink is refused", |grid_snapshot| {
@@ -203,7 +202,7 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     });
     let untouched = fs::read_to_string(&outside).expect("the outside file is still there");
     assert_eq!(
-        untouched, "-- outside the plugin folder\n",
+        untouched, "// outside the plugin folder\n",
         "an overwrite must not reach through a link out of the folder"
     );
     clear(&zellij, "is a symlink");
@@ -216,16 +215,16 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
         "probe is edited",
     );
     zellij.wait_until("the plugin is edited", |grid_snapshot| {
-        grid_snapshot.contains("edited probe.lua")
+        grid_snapshot.contains("edited probe.ts")
     });
     let edited = fs::read_to_string(&written).expect("the plugin is readable");
     assert!(edited.contains("probe is edited"), "{edited}");
-    let backup = fs::read_to_string(plugin_dir.join("probe.bak.lua")).expect("the backup is kept");
+    let backup = fs::read_to_string(plugin_dir.join("probe.bak.ts")).expect("the backup is kept");
     assert!(
         backup.contains("probe is running"),
         "the backup holds the version that was replaced, got: {backup}"
     );
-    clear(&zellij, "edited probe.lua");
+    clear(&zellij, "edited probe.ts");
 
     // An edit that matches nothing changes nothing, and says so rather than guessing.
     submit_awaiting(
@@ -241,14 +240,15 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     // The listing annotates the original with its backup, without listing the backup separately.
     submit(&zellij, "/plugin_list");
     let listing = zellij.wait_until("the plugin is listed with its backup", |grid_snapshot| {
-        grid_snapshot.contains("probe.lua")
-            && grid_snapshot.contains("probe.bak kept from an earlier edit")
+        grid_snapshot.contains("probe.ts")
+            && grid_snapshot.contains("probe.bak.ts kept from an earlier edit")
     });
-    assert!(
-        !listing.contains("probe.bak.lua"),
-        "a backup must not be listed as a separate plugin: {listing}"
+    assert_eq!(
+        listing.text.matches("probe.bak.ts").count(),
+        1,
+        "a backup appears only in the annotation: {listing}"
     );
-    clear(&zellij, "probe.lua");
+    clear(&zellij, "probe.ts");
 
     // And finally the whole point: the file becomes a running plugin. `plugin_reload` starts one
     // that is not already running, so this opens it in a pane of its own.
@@ -265,32 +265,17 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
 /// pane for `agent_exit`, it logs from `load`, where that point's payload arrives as the
 /// configuration.
 const AGENT_LOOP_HOOK: &str = r#"
-local zellij = require("zellij")
-local M = {}
-
-local function log_firing(point, payload)
-  -- A headless point's payload is typed (`pane_id`, `agent.state`, `exit_code`); `agent_exit`
-  -- arrives as the plugin's configuration, a string map with `agent_` keys.
-  local pane = payload.pane_id or payload.agent_pane_id or "?"
-  local detail = (payload.agent and string.lower(payload.agent.state))
-    or payload.exit_code or payload.agent_exit_code or ""
-  zellij.log("fired " .. point .. " pane=" .. tostring(pane) .. " " .. tostring(detail))
-end
-
-function M.load(config)
-  zellij.subscribe { "hook" }
-  if config.agent_pane_id then
-    log_firing("agent_exit", config)
-  else
-    zellij.log("loaded headless")
-  end
-end
-
-zellij.on("hook", function(e) log_firing(e.point, e.payload) end)
-
-function M.render() return "agent-loop hook is up" end
-
-return M
+import zellij from 'zellij:plugin';
+function logFiring(point,payload) {
+  const pane=payload.pane_id ?? payload.agent_pane_id ?? '?';
+  const detail=payload.agent?.state.toLowerCase() ?? payload.exit_code ?? payload.agent_exit_code ?? '';
+  zellij.log(`fired ${point} pane=${pane} ${detail}`);
+}
+zellij.on('Hook', e => logFiring(e.point,e.payload));
+export default {
+  load(config) {zellij.subscribe(['Hook']); if (config.agent_pane_id) logFiring('agent_exit',config); else zellij.log('loaded headless');},
+  render() {return 'agent-loop hook is up';}
+};
 "#;
 
 /// The agent's state as one `pane_update` event reports it for `terminal_id`, or `None` when
@@ -348,7 +333,7 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
         .start();
     claim_first_terminal_and_wait_for_prompt(&zellij);
 
-    // 1. `zellij plugins write agent-loop < hook.lua`: the same function the command calls,
+    // 1. `zellij plugins write agent-loop < hook.ts`: the same function the command calls,
     //    compiling the source before anything touches the disk.
     let written = zellij_server::plugin_authoring::write(
         &plugin_dir,
@@ -358,15 +343,15 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
         true,
     )
     .expect("the hook is written");
-    assert_eq!(written.path, plugin_dir.join("agent-loop.lua"));
+    assert_eq!(written.path, plugin_dir.join("agent-loop.ts"));
 
-    // 2. `zellij action set-hook <point> file:agent-loop.lua --write`, for every point the loop
+    // 2. `zellij action set-hook <point> file:agent-loop.ts --write`, for every point the loop
     //    passes through. A bare `file:` name is looked up in the plugin folder.
     let points = ["agent_start", "agent_waiting", "pane_exit", "agent_exit"];
     for point in points {
         let (exit_code, reported) = zellij.run_cli_action_reporting(CliAction::SetHook {
             point: point.to_owned(),
-            url: "file:agent-loop.lua".to_owned(),
+            url: "file:agent-loop.ts".to_owned(),
             write: true,
         });
         assert_eq!(exit_code, 0, "set-hook {point} failed: {reported}");
@@ -376,7 +361,7 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
         .unwrap_or_else(|e| panic!("{} was not written: {e}", managed.display()));
     for point in points {
         assert!(
-            persisted.contains(&format!("{point} \"file:agent-loop.lua\"")),
+            persisted.contains(&format!("{point} \"file:agent-loop.ts\"")),
             "{point} is not in the drop-in:\n{persisted}"
         );
     }
@@ -429,7 +414,7 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
     let deadline = std::time::Instant::now() + default_timeout();
     let log = loop {
         let log = zellij_integration_tests::test_env::log_tail(2000);
-        if log.contains("[lua:agent-loop.lua] fired agent_exit") {
+        if log.contains("[deno:agent-loop.ts] fired agent_exit") {
             break log;
         }
         assert!(
@@ -440,7 +425,7 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
     let firing = |line: &str| {
-        log.find(&format!("[lua:agent-loop.lua] fired {line}"))
+        log.find(&format!("[deno:agent-loop.ts] fired {line}"))
             .unwrap_or_else(|| panic!("no firing logged as {line:?}; the log:\n{log}"))
     };
     let order = [
@@ -456,7 +441,7 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
     // `agent_waiting` fired while the load `agent_start` began was still in flight, and
     // reached that instance rather than loading a second one.
     assert_eq!(
-        log.matches("[lua:agent-loop.lua] loaded headless").count(),
+        log.matches("[deno:agent-loop.ts] loaded headless").count(),
         1,
         "one headless instance serves every firing:\n{log}"
     );
@@ -519,7 +504,7 @@ fn wasm_hocus_checks_writes_edits_and_loads_typescript_with_literal_grants() {
         fs::read_to_string(plugins.path().join("probe.ts")).unwrap(),
         format!("{source}\n")
     );
-    assert!(!plugins.path().join("probe.ts.lua").exists());
+    assert!(!plugins.path().join("probe.ts.ts").exists());
     tool(
         "plugin_write",
         serde_json::json!({"name":"title.ts","source":"export const title: string = 'typed plugin running';"}),

@@ -378,7 +378,7 @@ pub struct RunPlugin {
     pub initial_cwd: Option<PathBuf>,
     /// The path as the user wrote it, when the URL this was built from was a relative `file:`
     /// one - see `zellij_runtime::plugin_location::parse_plugin_location_with_relative`. Not part of the plugin's identity:
-    /// `$cwd/keys.lua` is the same plugin however it was named.
+    /// `$cwd/keys.ts` is the same plugin however it was named.
     #[serde(default)]
     pub relative_path: Option<PathBuf>,
 }

@@ -500,7 +500,7 @@ pub struct CompletionRequest {
 /// One message, in the one shape all four roles fit through.
 ///
 /// Flat where hocus's own `api::WireMessage` is an untagged enum, because this crosses a
-/// JSON boundary a Lua table has to be able to write by hand.
+/// JSON boundary a TypeScript object has to be able to write by hand.
 /// `completion::completion_request_body` is what re-nests it into the shapes the endpoint
 /// expects.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -546,7 +546,7 @@ pub struct CompletionUsage {
 ///
 /// One shape for every outcome with `error` empty on success, the stance [`AskAck::detail`]
 /// and [`ResumeResult::detail`] already take. An enum would read better in Rust and worse in
-/// the Lua table this becomes, and a caller has to branch on failure either way.
+/// the TypeScript object this becomes, and a caller has to branch on failure either way.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CompletionReply {
     pub request_id: String,
@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn a_completion_request_round_trips_a_tool_round() {
         let request = CompletionRequest {
-            request_id: "lua:hc1".to_owned(),
+            request_id: "ts:hc1".to_owned(),
             messages: vec![
                 CompletionMessage {
                     role: "assistant".to_owned(),
@@ -673,7 +673,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&request).unwrap(), fixtures["request"]);
         let json = serde_json::to_string(&request).expect("encoded");
         let back: CompletionRequest = serde_json::from_str(&json).expect("parsed");
-        assert_eq!(back.request_id, "lua:hc1");
+        assert_eq!(back.request_id, "ts:hc1");
         assert_eq!(
             back.messages[0].tool_calls[0].arguments,
             r#"{"city":"Oslo"}"#
@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn a_completion_reply_round_trips_with_tool_calls_and_usage() {
         let reply = CompletionReply {
-            request_id: "lua:hc1".to_owned(),
+            request_id: "ts:hc1".to_owned(),
             content: "here".to_owned(),
             tool_calls: vec![CompletionToolCall {
                 id: "call_1".to_owned(),
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&reply).unwrap(), fixtures["reply"]);
         let json = serde_json::to_string(&reply).expect("encoded");
         let back: CompletionReply = serde_json::from_str(&json).expect("parsed");
-        assert_eq!(back.request_id, "lua:hc1");
+        assert_eq!(back.request_id, "ts:hc1");
         assert_eq!(back.tool_calls, reply.tool_calls);
         assert_eq!(back.finish_reason, "tool_calls");
         assert_eq!(back.usage.unwrap().total_tokens, 62);

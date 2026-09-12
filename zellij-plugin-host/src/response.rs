@@ -3,7 +3,7 @@
 //! Responses use protobuf and have no serde representation. Each arm follows the conversion
 //! in `zellij-tile/src/shim.rs`, then returns JSON or binary file contents. Missing optional
 //! payloads become JSON null; errors remain errors. Unrecognized commands return `None` so
-//! the caller can retain its raw-byte fallback. Lua's reply coverage test pins the command list.
+//! the caller can retain its raw-byte fallback. Deno's reply coverage test pins the command list.
 
 use prost::Message;
 use serde::Serialize;
@@ -43,7 +43,6 @@ use {
     zellij_plugin_api::plugin_command::ProtobufBreakPanesToNewTabResponse,
     zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIdResponse,
     zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIndexResponse,
-    zellij_plugin_api::plugin_command::ProtobufCheckLuaPluginResponse,
     zellij_plugin_api::plugin_command::ProtobufCurrentSessionLastSavedTimeResponse,
     zellij_plugin_api::plugin_command::ProtobufDataApplyResponse,
     zellij_plugin_api::plugin_command::ProtobufDataCatalogResponse,
@@ -159,7 +158,7 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
         CommandType::GetUserPluginDir => {
             decode(bytes).and_then(|r: ProtobufGetUserPluginDirResponse| value(r.user_plugin_dir))
         },
-        // Seconds, as a number. Lua has `os.date` and does not need this to draw a
+        // Seconds, as a number. JavaScript has `Date` and does not need this to draw a
         // calendar - the command is for wasm, which has no timezone at all - but a
         // reply the shim reads is a reply every runtime should get decoded.
         CommandType::GetLocalUtcOffset => {
@@ -316,9 +315,6 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 None => Err(anyhow!("zellij answered with nothing")),
             })
         },
-        CommandType::CheckLuaPlugin => {
-            decode(bytes).and_then(|r: ProtobufCheckLuaPluginResponse| value(r.error))
-        },
         CommandType::ParseLayout => {
             decode(bytes).and_then(|r: ProtobufParseLayoutResponse| match r.result {
                 Some(parse_layout_response::Result::Metadata(metadata)) => {
@@ -414,10 +410,7 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                     .map_err(|e| anyhow!("{}", e))?
                 {
                     DataApplyResponse::Ok(report) => value(report),
-                    // Both are Lua errors, which `pcall` catches, but they are not the same
-                    // question: a conflict is worth re-reading and trying again, and everything
-                    // else will fail the same way however often it is sent. A Lua error carries
-                    // nothing but its message, so that is where the difference is carried.
+                    // The SDK recognizes revision conflicts by their message prefix.
                     DataApplyResponse::Conflict(e) => Err(anyhow!("{}{}", DATA_CONFLICT_MARKER, e)),
                     DataApplyResponse::Err(e) => Err(anyhow!("{}", e)),
                 },
@@ -738,15 +731,7 @@ fn pane_id(id: Option<ProtobufPaneId>) -> Result<DecodedResponse> {
     }
 }
 
-/// The front of the message a `DataApply` conflict raises. A Lua error is a string and nothing
-/// else, so this is how a plugin tells "somebody wrote it first" - a race worth re-reading for -
-/// from a request that will fail the same way however often it is sent. `zellij.data.is_conflict`
-/// in `prelude.lua` looks for it, and the two are pinned together by a test that provokes a real
-/// conflict through the store.
-///
-/// It rides in the message rather than in a raised table because mlua renders a table error as
-/// `<table 0x...>` and ignores its `__tostring`, so an uncaught conflict would reach the log with
-/// its message gone.
+/// Prefix recognized by the SDK to distinguish a revision conflict from other data errors.
 pub(crate) const DATA_CONFLICT_MARKER: &str = "data conflict: ";
 
 /// The replies whose only field is an optional error: absent means it worked.
@@ -757,7 +742,7 @@ fn error_or_true(error: Option<String>) -> Result<DecodedResponse> {
     }
 }
 
-/// The shim hands `LayoutParsingError` back as a value; Lua gets it as a raised message, so the
+/// The shim hands `LayoutParsingError` back as a value; Deno gets it as a raised message, so the
 /// parts a plugin would show - where, what, and the parser's hint - are folded into one line.
 fn layout_parsing_error(error: LayoutParsingError) -> anyhow::Error {
     match error {

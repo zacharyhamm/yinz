@@ -485,7 +485,10 @@ fn orphans(value: &Value) -> Option<String> {
             ]
         })
         .collect();
-    Some(heading("orphaned panes") + &table(&["host_id", "command", "was in", "age", ""], &rows))
+    Some(
+        heading("orphaned panes")
+            + table(&["host_id", "command", "was in", "age", ""], &rows).as_str(),
+    )
 }
 
 /// A duration a person reads, not a second count. Minutes are the finest label
@@ -1206,10 +1209,10 @@ fn slack(name: &str, result: &str) -> Option<String> {
     // renders whatever JSON it produced rather than naming fields.
     match serde_json::from_str::<Value>(stdout) {
         Ok(value) if value.is_object() || value.is_array() => {
-            Some(heading(name) + &generic(&value)?)
+            Some(heading(name) + generic(&value)?.as_str())
         },
         // Not JSON: dobbs printed prose, which is already what we want.
-        _ => Some(heading(name) + &fence(stdout)),
+        _ => Some(heading(name) + fence(stdout).as_str()),
     }
 }
 

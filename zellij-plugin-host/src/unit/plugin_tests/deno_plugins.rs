@@ -25,7 +25,7 @@ export default {load() {zellij.subscribe(['Hook']); ready = zellij.waitForPermis
 "#,
         PermissionStatus::Granted,
     );
-    super::lua_plugins::bind_hook(
+    super::script_plugins::bind_hook(
         &harness.sender,
         HookPoint::PaneExit,
         run_plugin(&harness.path),
@@ -36,7 +36,7 @@ export default {load() {zellij.subscribe(['Hook']); ready = zellij.waitForPermis
             .send(PluginInstruction::RunHook {
                 point: HookPoint::PaneExit,
                 pane_id: Some(PaneId::Terminal(crate::TerminalId::new(id))),
-                payload: super::lua_plugins::pane_exit_payload(id),
+                payload: super::script_plugins::pane_exit_payload(id),
                 client_id: CLIENT,
             })
             .unwrap()
@@ -244,29 +244,26 @@ export default {async load() {
     .unwrap();
     load(&harness.sender, run_plugin(&other));
     harness.rendered("different URL namespace verified");
-    let lua = harness.directory.path().join("shared_reader.lua");
+    let reader = harness.directory.path().join("shared_reader.ts");
     std::fs::write(
-        &lua,
+        &reader,
         r#"
-local z = require('zellij')
-local state = 'waiting'
-local M = {}
-function M.load()
-  z.subscribe {'permission_request_result'}
-  z.request_permission {'plugin_data', 'shared_plugin_data'}
-end
-z.on('permission_request_result', function()
-  local rows = z.data.fetch {entity='shared_item', namespace='shared:deno_sdk'}
-  assert(rows[1].text == 'shared from Deno')
-  state = 'Lua reads Deno shared data'
-end)
-function M.render() return state end
-return M
+import z from 'zellij:plugin';
+let state = 'waiting';
+export default {
+  async load() {
+    await z.waitForPermissions(['PluginData', 'SharedPluginData']);
+    const rows = z.data.fetch({entity:'shared_item', namespace:'shared:deno_sdk'});
+    if (rows.records[0].text !== 'shared from Deno') throw Error('shared data mismatch');
+    state = 'TypeScript reads Deno shared data';
+  },
+  render() {return state;}
+};
 "#,
     )
     .unwrap();
-    load(&harness.sender, run_plugin(&lua));
-    harness.rendered("Lua reads Deno shared data");
+    load(&harness.sender, run_plugin(&reader));
+    harness.rendered("TypeScript reads Deno shared data");
 }
 
 #[test]
@@ -1507,28 +1504,18 @@ fn deno_removed_client_reattaches_with_fresh_state_and_without_its_old_awaits() 
 
 #[test]
 #[serial(plugin_tests)]
-fn lua_detach_retains_state_and_output_subscriptions() {
-    retained_client_reattaches(true);
-}
-
-#[test]
-#[serial(plugin_tests)]
 fn wasm_detach_retains_state_and_output_subscriptions() {
-    retained_client_reattaches(false);
+    retained_client_reattaches();
 }
 
-fn retained_client_reattaches(lua: bool) {
-    let harness = Harness::new("lua", "return {}", PermissionStatus::Granted);
-    let path = if lua {
-        lua_plugin_fixture_path()
-    } else {
-        plugin_fixture_path()
-    };
+fn retained_client_reattaches() {
+    let harness = Harness::new("ts", "export default {};", PermissionStatus::Granted);
+    let path = plugin_fixture_path();
     load(&harness.sender, run_plugin(&path));
     let first = Event::Key(KeyWithModifier::new(BareKey::Char('1')));
     let second = Event::Key(KeyWithModifier::new(BareKey::Char('2')));
     harness.event(first);
-    harness.rendered(if lua { "presses 1" } else { "Char('1')" });
+    harness.rendered("Char('1')");
     harness
         .sender
         .send(PluginInstruction::RemoveClient(CLIENT))
@@ -1538,8 +1525,8 @@ fn retained_client_reattaches(lua: bool) {
         .send(PluginInstruction::AddClient(CLIENT))
         .unwrap();
     harness.event(second);
-    let frame = harness.rendered(if lua { "presses 2" } else { "Char('2')" });
-    if !lua {
+    let frame = harness.rendered("Char('2')");
+    {
         assert!(
             frame.contains("Char('1')"),
             "the Wasm instance lost its event history: {frame}"
@@ -2697,8 +2684,8 @@ export default {
 }
 
 #[test]
-fn deno_rpc_calls_deno_and_lua_peers_by_url_and_id() {
-    for extension in ["ts", "lua"] {
+fn deno_rpc_calls_peers_by_url_and_id() {
+    for extension in ["ts", "js"] {
         let harness = Harness::new(
             "ts",
             r#"
@@ -2723,7 +2710,7 @@ export default {
             PermissionStatus::Granted,
         );
         let peer = harness.directory.path().join(format!("peer.{extension}"));
-        std::fs::write(&peer, if extension == "ts" { r#"
+        std::fs::write(&peer, r#"
 let ready, greeting;
 zellij.rpc.handle('echo', async (payload, call) => {
   await ready;
@@ -2732,23 +2719,7 @@ zellij.rpc.handle('echo', async (payload, call) => {
 });
 zellij.rpc.handle('failure', () => {throw Error('peer failed');});
 export default {load(config) {greeting=config.greeting; ready=zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']); return ready;}};
-"# } else { r#"
-local zellij = require('zellij')
-local ready, greeting
-local M = {}
-function M.load(config)
-  greeting = config.greeting
-  ready = zellij.async.permissions({'message_and_launch_other_plugins'})
-end
-zellij.rpc.handle('echo', function(payload, call)
-  zellij.await(ready)
-  local back = zellij.await(zellij.rpc.call {plugin_id=call.source.Plugin,name='back',payload=payload,timeout=10})
-  if back.error then error(back.error) end
-  return {id=zellij.get_plugin_ids().plugin_id,greeting=greeting,back=back.result}
-end)
-zellij.rpc.handle('failure', function() error('peer failed') end)
-return M
-"# }).unwrap();
+"#).unwrap();
         load(
             &harness.sender,
             RunPluginOrAlias::RunPlugin(RunPlugin {
@@ -3312,7 +3283,7 @@ export default {
 
 // Filesystem roots ---------------------------------------------------------------------------
 //
-// The `Fs*` handlers are shared with Lua and Wasm, and `lua/unit_tests.rs` covers them in
+// The `Fs*` handlers are shared with Wasm. These tests cover them in
 // depth; what these establish is that a Deno plugin reaches the same four roots through the
 // same environment, with the same refusals, and that `/host` follows `ChangeHostFolder`.
 
@@ -3345,7 +3316,7 @@ fn deno_render_with_dirs(
     let source = format!(
         "export default {{ render() {{ try {{ {body} }} catch (error) {{ return 'error: ' + error.message; }} }} }};"
     );
-    let mut env = crate::lua::unit_tests::test_env();
+    let mut env = crate::test_env::test_env();
     env.plugin_cwd = dirs.host.path().to_path_buf();
     env.plugin_own_data_dir = dirs.data.path().to_path_buf();
     env.plugin_own_cache_dir = dirs.cache.path().to_path_buf();
@@ -3659,7 +3630,7 @@ fn deno_run_plugin_at(path: &str) -> RunPluginOrAlias {
 }
 
 /// A plugin named rather than pathed is found in the user's plugin folder - `file:probe.ts` in
-/// a layout means the obvious thing. See `a_lua_plugin_is_found_in_the_user_plugin_dir_by_name`.
+/// a layout means the obvious thing. See `a_script_plugin_is_found_in_the_user_plugin_dir_by_name`.
 #[test]
 #[serial(plugin_tests)]
 fn deno_plugin_is_found_in_the_user_plugin_dir_by_name() {
@@ -3689,7 +3660,7 @@ fn deno_plugin_is_found_in_the_user_plugin_dir_by_name() {
     load(&plugin_thread_sender, deno_run_plugin_at("probe.ts"));
     screen_thread.join().unwrap();
     teardown();
-    let rendered = super::lua_plugins::rendered_output(&received_screen_instructions.lock());
+    let rendered = super::script_plugins::rendered_output(&received_screen_instructions.lock());
     assert!(
         rendered.iter().any(|r| r.contains("found by name")),
         "expected the plugin from the user plugin dir to render, got: {rendered:?}"
@@ -3729,7 +3700,7 @@ fn deno_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
         "the plugin to render its first version",
         default_timeout(),
         |instructions| {
-            super::lua_plugins::rendered_output(instructions)
+            super::script_plugins::rendered_output(instructions)
                 .iter()
                 .any(|rendered| rendered.contains("first version"))
                 .then_some(())
@@ -3749,7 +3720,7 @@ fn deno_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
     screen_thread.join().unwrap();
     teardown();
     let logged = received_screen_instructions.lock();
-    let rendered = super::lua_plugins::rendered_output(&logged);
+    let rendered = super::script_plugins::rendered_output(&logged);
     assert!(
         rendered.iter().any(|r| r.contains("second version")),
         "the reload should have re-read the file, got: {rendered:?}"

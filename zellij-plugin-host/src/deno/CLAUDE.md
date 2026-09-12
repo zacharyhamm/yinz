@@ -1,12 +1,10 @@
 # Deno plugins
 
-Plugins come in three kinds: wasm modules, Lua scripts and Deno (JavaScript/TypeScript) scripts.
+Plugins use Wasm or Deno (JavaScript/TypeScript).
 The Deno runtime lives here; `docs/DENO_PLUGINS.md` is the user-facing guide,
-`docs/DENO_PARITY.md` the record of what it has been verified to do, and `../lua/CLAUDE.md` the
-rules the two script runtimes share - read that first. What follows is what is specific to this
-one.
+`docs/DENO_PARITY.md` records what it has been verified to do.
 
-The runtime shares everything above `RunningPlugin` with Lua and wasm: event routing,
+The runtime shares everything above `RunningPlugin` with Wasm: event routing,
 subscriptions, rendering, and the whole command surface through the one dispatcher
 `zellij_exports::run_plugin_command`. `mod.rs` holds the isolate and its lifecycle, `sdk.js` is
 the guest-side SDK (every convenience lives there, never in Rust), `sdk.d.ts` is the contract the
@@ -56,7 +54,7 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   then pipe waiters, then the timer sweep, then the `on` handlers; the reserved pipes the SDK
   consumes (RPC, completions, Hocus extensions, default keybindings) never reach `pipe`.
 - **Permissions are pre-flighted in `dispatch`** so a refused command throws in the guest with
-  the fix named - and, as in Lua, a plugin whose request is unanswered is told to wait for
+  the fix named - and a plugin whose request is unanswered is told to wait for
   `PermissionRequestResult` while one that never asked is told to ask. The SDK serializes
   requests through one FIFO queue; only its head listens for the answer, and later requests carry
   earlier grants because the host replaces the set. Hocus pre-grants the literal requests
@@ -76,3 +74,13 @@ example; `../unit/plugin_tests/deno_plugins.rs` drives a real plugin thread; and
 `zellij-integration-tests/tests/deno_plugins.rs` runs whole sessions. Hocus serves the guide and
 `sdk.d.ts` through `hocus/src/plugin_docs.rs`, whose tests hold every `##` heading of the guide
 to a section name and every section under 16 KB.
+
+## Shared host boundary
+
+Keep host authority in `zellij_exports::run_plugin_command`. Wasm and Deno use this dispatcher
+for commands, permissions, subscriptions, and lifecycle operations. SDK conveniences belong in
+`sdk.js`. Widget bindings only manage isolate-local state and rendering.
+
+Do not expose filesystem, process, or network access around the dispatcher. Imports stay confined
+after symlink resolution. Reply decoding lives in `response.rs`; `zellij-tile/src/shim.rs` defines
+the corresponding Wasm contract. Keep command and reply coverage tests when adding a command.

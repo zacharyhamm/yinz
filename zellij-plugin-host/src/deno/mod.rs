@@ -1959,7 +1959,7 @@ mod sdk_tests {
             check(refused && typeof Deno === 'undefined');
             check(typeof globalThis.__bootstrap === 'undefined');
             // Core's console would write to the host's stdout; the familiar names go to the
-            // plugin's log instead, and are available before `load`, like the Lua `print`.
+            // plugin's log instead, and are available before `load`.
             console.log('from console', 1);
             console.error('from error', {toString() { return 'stringified'; }});
             zellij.log('from zellij', 2);

@@ -1,5 +1,7 @@
 # Deno capability and verification status
 
+Historical verification record from 2026-09-11. Lua support was subsequently removed; see [migration](LUA_REMOVAL.md).
+
 Updated 2026-09-11. An independent three-layer audit (host, guest SDK, tooling and docs)
 found capability parity complete and closed the gaps below; see "Parity closure" first.
 The earlier sections record the state before it. The seven requested changes are implemented in this checkout:

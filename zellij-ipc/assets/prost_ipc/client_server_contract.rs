@@ -2059,7 +2059,7 @@ pub struct RunPlugin {
     pub initial_cwd: ::core::option::Option<::prost::alloc::string::String>,
     /// The path as written, when the plugin was named by a relative `file:` URL. The location is
     /// already absolute by the time it gets here, so this is the only thing that can tell the
-    /// server to look in the user's plugin folder for `zellij plugin -- file:keys.lua`.
+    /// server to look in the user's plugin folder for `zellij plugin -- file:keys.ts`.
     #[prost(string, optional, tag="5")]
     pub relative_path: ::core::option::Option<::prost::alloc::string::String>,
 }

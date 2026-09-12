@@ -24,7 +24,6 @@ thiserror = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-mlua = { workspace = true }
 notify = { workspace = true }
 tokio = { workspace = true }
 [dev-dependencies]

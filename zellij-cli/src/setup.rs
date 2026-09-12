@@ -328,7 +328,7 @@ impl Setup {
             message.push_str("[CONFIG FILE]: Not Found\n");
             writeln!(
                 &mut message,
-                " By default zellij looks for [config.lua], then [{}], in the configuration directory",
+                " By default zellij looks for [{}], in the configuration directory",
                 CONFIG_NAME,
             )
             .unwrap();

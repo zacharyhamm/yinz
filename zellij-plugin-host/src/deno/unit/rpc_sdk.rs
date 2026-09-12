@@ -74,7 +74,7 @@ fn rpc_calls_correlate_validate_cancel_timeout_and_release_timers() {
       receive(ids[0], {error:'remote'});
       requests[2].cancel(); requests[2].cancel();
       receive(ids[2], {result:'cancelled'});
-      receive(ids[3], {}); // Lua nil result
+      receive(ids[3], {}); // legacy absent result
       receive(ids[5], {result:'url'}, {Plugin:123});
       now = 1100; bridge('update', {Timer:0}, 9);
     "#);

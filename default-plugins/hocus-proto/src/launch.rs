@@ -1,7 +1,7 @@
 //! Starting a coding agent from a hocus plugin.
 //!
 //! The planner — what to run, and what Git setup to do first — lives in
-//! `zellij_runtime::agent::launch` so the server can answer a Lua plugin's `zellij.agent.spawn`
+//! `zellij_runtime::agent::launch` so the server can answer a TypeScript plugin's `zellij.agent.spawn`
 //! with the very same code; it is re-exported here whole, so every caller in this crate and
 //! its plugins reads `launch::plan`, `launch::Spec` and the permission-mode tables as before.
 //! What stays here is what only a wasm plugin can do or need: the host call, the VM naming,

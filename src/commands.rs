@@ -1570,10 +1570,9 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             // warning is for the person watching. Never a refusal - see `plugin_authoring::lint`.
             // The write already checked syntax, so only the warnings are wanted here.
             print_plugin_findings(
-                &zellij_server::plugin_authoring::check_source_named(
+                &zellij_server::plugin_authoring::check_source(
                     &written.path,
                     &source,
-                    &name,
                     zellij_types::authoring::PluginCheckMode::Syntax,
                 )
                 .warnings,
@@ -1581,26 +1580,16 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             Ok(())
         },
         PluginsCli::Check { name, file } => {
-            let (path, lint_name) = match (name, file) {
-                (_, Some(file)) => {
-                    let lint_name = plugin_name_of(&plugin_dir, &file);
-                    (file, lint_name)
-                },
+            let path = match (name, file) {
+                (_, Some(file)) => file,
                 (Some(name), None) => {
-                    let path =
-                        zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
-                            .map_err(|e| anyhow::anyhow!(e))?;
-                    (path, name)
+                    zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
+                        .map_err(|e| anyhow::anyhow!(e))?
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
             };
-            let report = zellij_server::plugin_authoring::check_plugin_report(&path, &lint_name)?;
-            if zellij_plugin_api::authoring::is_deno_plugin(&path) {
-                println!("{} checks successfully", path.display());
-            } else {
-                let chunk = path.file_name().unwrap_or_default().to_string_lossy();
-                println!("{chunk} compiles");
-            }
+            let report = zellij_server::plugin_authoring::check_plugin_report(&path)?;
+            println!("{} checks successfully", path.display());
             print_plugin_findings(&report.warnings);
             Ok(())
         },
@@ -1630,36 +1619,6 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             );
             Ok(())
         },
-    }
-}
-
-/// The plugin name a file would be written under, for a file given by path: its place in the
-/// plugin folder when it is in one (`hocus/todo`), and its bare stem when it is not.
-///
-/// A `--file` check is usually of a file that is not in the folder yet, so the fallback is the
-/// common case rather than the odd one; what it must not do is answer `todo.lua` for a file
-/// sitting in `<plugin dir>/hocus/`, which is what makes the extension rule invisible.
-fn plugin_name_of(plugin_dir: &std::path::Path, file: &std::path::Path) -> String {
-    let stem = |path: &std::path::Path| {
-        path.file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.display().to_string())
-    };
-    let Some(relative) = file.canonicalize().ok().and_then(|file| {
-        Some(
-            file.strip_prefix(plugin_dir.canonicalize().ok()?)
-                .ok()?
-                .to_owned(),
-        )
-    }) else {
-        return stem(file);
-    };
-    match relative
-        .parent()
-        .map(|parent| parent.to_string_lossy().to_string())
-    {
-        Some(folder) if !folder.is_empty() => format!("{folder}/{}", stem(&relative)),
-        _ => stem(&relative),
     }
 }
 

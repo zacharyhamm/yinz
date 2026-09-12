@@ -15,12 +15,12 @@ fn plugin_state() -> State {
 #[test]
 fn a_plugin_edit_discloses_and_grants_only_the_permission_it_adds() {
     crate::tools::test_seams::reset();
-    crate::tools::test_seams::set_plugin_source(r#"zellij.request_permission { "read_files" }"#);
+    crate::tools::test_seams::set_plugin_source(r#"zellij.requestPermission([ "ReadFiles" ]);"#);
     let mut state = plugin_state();
     state.pending = vec![ToolCall {
         id: "edit".into(),
         name: "plugin_edit".into(),
-        arguments: r#"{"name":"keys","old_string":"\"read_files\"","new_string":"\"read_files\", \"write_files\""}"#.into(),
+        arguments: r#"{"name":"keys","old_string":"\"ReadFiles\"","new_string":"\"ReadFiles\", \"WriteFiles\""}"#.into(),
     }]
     .into();
 
@@ -105,11 +105,11 @@ fn a_compile_check_answers_at_once_and_needs_no_folder() {
     assert!(run_file_tool(
         &mut state,
         "plugin_check",
-        r#"{"name":"keys","source":"return {}"}"#
+        r#"{"name":"keys","source":"export default {};"}"#
     ));
     let results = tool_results(&state);
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].content, "keys.lua compiles");
+    assert_eq!(results[0].content, "keys.ts compiles");
     assert!(!matches!(state.status, Status::AwaitingCommand));
 
     let mut state = ready_state();
@@ -129,7 +129,7 @@ fn a_named_section_of_the_docs_is_served() {
     assert!(run_file_tool(
         &mut state,
         "plugin_docs",
-        r#"{"section":"lua_events"}"#
+        r#"{"section":"events"}"#
     ));
     let results = tool_results(&state);
     assert!(
@@ -188,7 +188,10 @@ fn the_file_tools_and_the_log_answer_at_once() {
         ("plugin_outline", r#"{"name":"keys"}"#),
         ("plugin_search", r#"{"query":"x"}"#),
         ("plugin_search", r#"{"name":"keys","query":"x"}"#),
-        ("plugin_write", r#"{"name":"keys","source":"local M = {}"}"#),
+        (
+            "plugin_write",
+            r#"{"name":"keys","source":"const M = {};"}"#,
+        ),
         ("plugin_reload", r#"{"name":"keys"}"#),
         ("plugin_log", r#"{"name":"keys"}"#),
     ] {
@@ -253,7 +256,7 @@ fn a_cleared_reload_asks_the_host_once_and_stops_the_pump() {
             .plugin_load
             .as_ref()
             .map(|watch| watch.target.as_str()),
-        Some("/home/someone/.config/zellij/plugins/keys.lua")
+        Some("/home/someone/.config/zellij/plugins/keys.ts")
     );
     crate::tools::test_seams::reset();
 }
@@ -335,7 +338,7 @@ fn a_cleared_reload_waits_to_look_at_the_pane_before_answering() {
             .plugin_load
             .as_ref()
             .map(|watch| watch.target.as_str()),
-        Some("/home/someone/.config/zellij/plugins/keys.lua")
+        Some("/home/someone/.config/zellij/plugins/keys.ts")
     );
     assert!(state.timer_armed, "nothing would ever go and look");
 
@@ -393,7 +396,7 @@ fn session_running(path: &str, id: u32, pane: bool) -> SessionInfo {
 #[test]
 fn a_headless_reload_names_the_headless_instance_and_never_a_panes() {
     crate::tools::test_seams::reset();
-    let path = "/home/someone/.config/zellij/plugins/harness.lua";
+    let path = "/home/someone/.config/zellij/plugins/harness.ts";
 
     let mut state = plugin_state();
     state.on_sessions(vec![session_running(path, 9, true)]);
@@ -500,7 +503,7 @@ fn an_awaited_plugin_load_can_be_aborted() {
 fn a_batch_edit_asks_once_and_grants_before_versus_final() {
     crate::tools::test_seams::reset();
     crate::tools::test_seams::set_plugin_source(
-        "zellij.request_permission { \"read_files\" }\nreturn {}\n",
+        "zellij.requestPermission([ \"ReadFiles\" ]);\nexport default {};\n",
     );
     let mut state = plugin_state();
     state.pending = vec![ToolCall {
@@ -509,8 +512,8 @@ fn a_batch_edit_asks_once_and_grants_before_versus_final() {
         arguments: serde_json::json!({
             "name": "keys",
             "edits": [
-                { "old_string": "\"read_files\"", "new_string": "\"read_files\", \"write_files\"" },
-                { "old_string": "\"write_files\"", "new_string": "\"write_files\", \"run_commands\"" },
+                { "old_string": "\"ReadFiles\"", "new_string": "\"ReadFiles\", \"WriteFiles\"" },
+                { "old_string": "\"WriteFiles\"", "new_string": "\"WriteFiles\", \"RunCommands\"" },
             ],
         })
         .to_string(),
@@ -537,7 +540,7 @@ fn a_batch_edit_asks_once_and_grants_before_versus_final() {
     let report = &results[0].content;
     assert!(
         report.starts_with(
-            "edited keys.lua at line 1 (now 2 lines) and granted it write_files, run_commands;"
+            "edited keys.ts at line 1 (now 2 lines) and granted it write_files, run_commands;"
         ),
         "{report}"
     );
@@ -550,7 +553,7 @@ fn a_batch_edit_asks_once_and_grants_before_versus_final() {
 fn a_batch_whose_second_edit_misses_is_refused_before_the_prompt() {
     crate::tools::test_seams::reset();
     crate::tools::test_seams::set_plugin_source(
-        "zellij.request_permission { \"read_files\" }\nreturn {}\n",
+        "zellij.requestPermission([ \"ReadFiles\" ]);\nexport default {};\n",
     );
     let mut state = plugin_state();
     state.pending = vec![ToolCall {
@@ -559,7 +562,7 @@ fn a_batch_whose_second_edit_misses_is_refused_before_the_prompt() {
         arguments: serde_json::json!({
             "name": "keys",
             "edits": [
-                { "old_string": "\"read_files\"", "new_string": "\"read_files\", \"write_files\"" },
+                { "old_string": "\"ReadFiles\"", "new_string": "\"ReadFiles\", \"WriteFiles\"" },
                 { "old_string": "nothing like this", "new_string": "x" },
             ],
         })
@@ -592,7 +595,7 @@ fn a_batch_whose_second_edit_misses_is_refused_before_the_prompt() {
 fn an_outline_and_a_named_search_are_answered_from_the_plugin_source() {
     crate::tools::test_seams::reset();
     crate::tools::test_seams::set_plugin_source(
-        "local M = {}\nfunction M.render()\n  return \"hi\"\nend\nreturn M\n",
+        "const label = 'hi';\nexport function render() {\n  return label;\n}\nexport default {render};\n",
     );
     let mut state = plugin_state();
     assert!(run_file_tool(
@@ -602,18 +605,18 @@ fn an_outline_and_a_named_search_are_answered_from_the_plugin_source() {
     ));
     assert_eq!(
         tool_results(&state)[0].content,
-        "keys.lua: 5 lines\n2: function M.render()"
+        "keys.ts: 5 lines\n2: function render"
     );
 
     let mut state = plugin_state();
     assert!(run_file_tool(
         &mut state,
         "plugin_search",
-        r#"{"name":"keys","query":"render"}"#
+        r#"{"name":"keys","query":"function render"}"#
     ));
     assert_eq!(
         tool_results(&state)[0].content,
-        "keys.lua:2:function M.render()"
+        "keys.ts:2:export function render() {"
     );
 
     let mut state = plugin_state();
@@ -622,7 +625,7 @@ fn an_outline_and_a_named_search_are_answered_from_the_plugin_source() {
         "plugin_search",
         r#"{"name":"keys","query":"zzz"}"#
     ));
-    assert_eq!(tool_results(&state)[0].content, "no matches in keys.lua");
+    assert_eq!(tool_results(&state)[0].content, "no matches in keys.ts");
     crate::tools::test_seams::reset();
 }
 
@@ -633,7 +636,7 @@ fn a_docs_query_and_a_docs_page_need_no_plugin_folder() {
     assert!(run_file_tool(
         &mut state,
         "plugin_docs",
-        r#"{"query":"run_command"}"#
+        r#"{"query":"RunCommandResult"}"#
     ));
     let hits = &tool_results(&state)[0].content;
     assert!(hits.contains("events:"), "{hits}");
@@ -642,12 +645,12 @@ fn a_docs_query_and_a_docs_page_need_no_plugin_folder() {
     assert!(run_file_tool(
         &mut state,
         "plugin_docs",
-        r#"{"section":"lua_events","start_line":1,"line_count":3}"#
+        r#"{"section":"events","start_line":1,"line_count":3}"#
     ));
     let page = &tool_results(&state)[0].content;
     assert!(page.starts_with("lines 1-3 of "), "{page}");
     assert!(
-        page.contains("(plugin_docs section=lua_events start_line=4)"),
+        page.contains("(plugin_docs section=events start_line=4)"),
         "{page}"
     );
 }
@@ -660,7 +663,7 @@ fn folder_search_reports_caps_failed_reads_and_oversize_files() {
         *entries = Some(
             (0..FOLDER_FILES_CAP + 2)
                 .map(|n| FsEntry {
-                    path: format!("/plugins/p{n:03}.lua"),
+                    path: format!("/plugins/p{n:03}.ts"),
                     metadata: None,
                 })
                 .collect(),
@@ -668,14 +671,14 @@ fn folder_search_reports_caps_failed_reads_and_oversize_files() {
     });
     test_seams::set_plugin_source("needle\n");
     test_seams::PLUGIN_READS.with_borrow_mut(|reads| {
-        reads.insert("/plugins/p000.lua".into(), Err("permission denied".into()));
+        reads.insert("/plugins/p000.ts".into(), Err("permission denied".into()));
         reads.insert(
-            "/plugins/p001.lua".into(),
+            "/plugins/p001.ts".into(),
             Ok("x".repeat(FOLDER_READ_BYTES + 1)),
         );
         // These files are beyond the cap: their hits must not appear.
-        reads.insert("/plugins/p064.lua".into(), Ok("outside".into()));
-        reads.insert("/plugins/p065.lua".into(), Ok("outside".into()));
+        reads.insert("/plugins/p064.ts".into(), Ok("outside".into()));
+        reads.insert("/plugins/p065.ts".into(), Ok("outside".into()));
     });
     let warning = "Warning: incomplete search; 4 files skipped (file cap or failed reads).\n\n";
     for query in ["needle", "outside"] {
@@ -725,16 +728,16 @@ fn folder_search_skips_invalid_names_but_named_search_rejects_them() {
     use crate::tools::test_seams;
     test_seams::reset();
     let invalid = [
-        "has spaces.lua".to_owned(),
-        "café.lua".to_owned(),
-        format!("{}.lua", "a".repeat(65)),
+        "has spaces.ts".to_owned(),
+        "café.ts".to_owned(),
+        format!("{}.ts", "a".repeat(65)),
     ];
     test_seams::PLUGIN_ENTRIES.with_borrow_mut(|entries| {
         *entries = Some(
             invalid
                 .iter()
                 .map(String::as_str)
-                .chain(["keys.lua"])
+                .chain(["keys.ts"])
                 .map(|name| FsEntry {
                     path: format!("/plugins/{name}"),
                     metadata: None,
@@ -753,7 +756,7 @@ fn folder_search_skips_invalid_names_but_named_search_rejects_them() {
     assert!(results[0]
         .content
         .starts_with("Warning: incomplete search; 3 files skipped"));
-    assert!(results[0].content.contains("keys.lua:1:needle"));
+    assert!(results[0].content.contains("keys.ts:1:needle"));
     for name in invalid {
         let mut state = plugin_state();
         assert!(run_file_tool(
@@ -824,7 +827,7 @@ fn extension_reload_refuses_duplicate_namespaces_across_languages() {
     test_seams::PLUGIN_FS_EXISTS.set(Some(true));
     test_seams::PLUGIN_ENTRIES.with_borrow_mut(|entries| {
         *entries = Some(
-            ["lua", "ts"]
+            ["js", "ts"]
                 .map(|suffix| zellij_tile::prelude::FsEntry {
                     path: format!("/plugins/hocus/keys.{suffix}"),
                     metadata: None,
@@ -849,7 +852,7 @@ fn extension_reload_refuses_duplicate_namespaces_across_languages() {
         results.contains("duplicate extension namespace"),
         "{results}"
     );
-    assert!(results.contains("keys.lua") && results.contains("keys.ts"));
+    assert!(results.contains("keys.js") && results.contains("keys.ts"));
     assert!(state.extension_files.is_empty());
     test_seams::reset();
 }

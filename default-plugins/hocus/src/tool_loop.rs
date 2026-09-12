@@ -1100,7 +1100,7 @@ impl State {
     }
 
     /// The plugin `only`, or every plugin in the folder with the backups left out (as a listing
-    /// leaves them out), as `(name.lua, contents)`. Reads answer inline on the plugin thread, so
+    /// leaves them out), as `(name.ts, contents)`. Reads answer inline on the plugin thread, so
     /// a folder is read up to `FOLDER_FILES_CAP` files and each up to `FOLDER_READ_BYTES`; one
     /// of many that cannot be read is skipped, since a search is about the ones that can.
     fn plugin_corpus(&self, only: Option<&str>) -> Result<(Vec<(String, String)>, usize), String> {
@@ -1275,7 +1275,7 @@ impl State {
         match call.name.as_str() {
             "plugin_read" => {
                 let (start, end) = tools::read_range(&args);
-                let fetch = format!("plugin_read name={}", name.trim().trim_end_matches(".lua"));
+                let fetch = format!("plugin_read name={}", name.trim());
                 let result = match tools::plugin_fs_read(&fs_path) {
                     Ok(contents) => log::truncate_str(
                         &tools::read_answer(&contents, start, end, &fetch),
@@ -2820,7 +2820,7 @@ impl State {
     /// Start an agent, and register the kind the caller gave against the pane id.
     ///
     /// One route: `tools::spawn_agent`, the host command the New agent modal's button and a
-    /// Lua plugin's `zellij.agent.spawn` also call, so `agent=cursor model=x prompt=y` means
+    /// TypeScript plugin's `zellij.agent.spawn` also call, so `agent=cursor model=x prompt=y` means
     /// the same argv and the same worktree defaults everywhere. `launch::plan` is run here
     /// first only to say what the host will refuse before anything is opened - and to know
     /// whether a checkout is being made, which decides what `cwd` means: with one, the

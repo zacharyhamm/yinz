@@ -248,7 +248,8 @@ enum CommandName {
   GrantPluginPermissions = 269;
   SetContextMenu = 270;
   RegisterDefaultKeybindings = 271;
-  CheckLuaPlugin = 272;
+  reserved 272;
+  reserved "CheckLuaPlugin";
   SetPaneAgent = 273;
   ReloadPluginByUrl = 274;
   ReadPluginLog = 275;
@@ -269,6 +270,8 @@ enum CommandName {
 }
 
 message PluginCommand {
+  reserved 213;
+  reserved "check_lua_plugin_payload";
   reserved 108, 109, 110, 164, 165, 167, 173, 187;
   CommandName name = 1;
   oneof payload {
@@ -461,7 +464,6 @@ message PluginCommand {
     GrantPluginPermissionsPayload grant_plugin_permissions_payload = 210;
     SetContextMenuPayload set_context_menu_payload = 211;
     string register_default_keybindings_payload = 212;
-    CheckLuaPluginPayload check_lua_plugin_payload = 213;
     CheckPluginPayload check_plugin_payload = 230;
     SetPaneAgentPayload set_pane_agent_payload = 214;
     string reload_plugin_by_url_payload = 215;
@@ -1599,11 +1601,6 @@ message GetUserPluginDirResponse {
   string user_plugin_dir = 1;
 }
 
-message CheckLuaPluginPayload {
-  string name = 1;
-  string source = 2;
-}
-
 message SetPaneAgentRunPayload {
   PaneId pane_id = 1;
   // Absent clears the run id, leaving the rest of the record alone.
@@ -1621,11 +1618,6 @@ message SetQuitNoticePayload {
   optional string notice = 1;
   // Whether closing the session's last pane should confirm rather than exit.
   bool guard = 2;
-}
-
-message CheckLuaPluginResponse {
-  // Absent when the source compiled.
-  optional string error = 1;
 }
 
 message GetFocusedPaneInfoPayload {}

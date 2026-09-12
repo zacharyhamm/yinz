@@ -1,6 +1,6 @@
 {
   "request": {
-    "request_id": "lua:hc1",
+    "request_id": "ts:hc1",
     "messages": [
       {
         "role": "assistant",
@@ -33,7 +33,7 @@
     "model": null
   },
   "reply": {
-    "request_id": "lua:hc1",
+    "request_id": "ts:hc1",
     "content": "here",
     "tool_calls": [
       {
