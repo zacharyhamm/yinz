@@ -7630,26 +7630,32 @@ z.message_to_plugin=function(opts)
   launches=launches+1
 end
 local function tick(seconds) now=now+seconds;z.__update(M,{Timer=0}) end
-local function progress(status,submission)
-  M.pipe{name='workflow-progress',payload=z.json.encode{status=status,submission=submission}}
+local function progress(operation,status,submission)
+  M.pipe{name='workflow-progress',payload=z.json.encode{operation=operation,status=status,submission=submission}}
 end
 M.load{agent_pane_id='7',agent_cwd='/work',agent_exit_token='exit-token'}
 assert(M.busy and launches==1)
-for _=1,12 do tick(10);progress('waiting') end
-assert(M.busy,'queued launch survives longer than 90 seconds')
+for _=1,12 do tick(10);progress('workflow.validate','waiting') end
+assert(M.busy,'queued validation survives longer than 90 seconds')
+progress('workflow.validate','ready')
+progress('workflow.run','ready','unrelated-submission')
+for _=1,12 do tick(10);progress('workflow.run','waiting') end
+assert(M.busy and launches==1,'dispatch queue survives longer than 90 seconds after validation is ready')
 if ending=='completed' then
   z.__pipe(M,{name='zellij_rpc_reply',payload=z.json.encode{version=1,call_id=call.call_id,result={}},source={Plugin=9}})
 else
-  if ending=='ready' then progress('ready') end
+  if ending=='ready' then progress('workflow.run','ready') end
   tick(89)
   assert(M.busy)
-  if ending=='ready' then progress('waiting') else progress('waiting','unrelated-submission') end
+  if ending=='ready' then
+    progress('workflow.run','waiting');progress('workflow.validate','ready')
+  else progress('workflow.run','waiting','unrelated-submission') end
   tick(1)
 end
 assert(not M.busy and launches==1,'completion or silence releases busy without redispatch')
 assert(view.attachment.launch=='exit-token' and not view.attachment.run)
 assert(refreshes>=2,'the original launch is reconciled after the RPC settles')
-progress('waiting');tick(100)
+progress('workflow.run','waiting');progress('workflow.run','ready');tick(100)
 assert(not M.busy and launches==1,'late progress cannot revive a completed RPC')
 "#).exec().unwrap();
     }
@@ -8317,16 +8323,25 @@ local clock=1000
 os.time=function() return clock end
 local old_message=z.message_to_plugin
 local progress_messages=0
+local expected_operation,last_progress
 z.message_to_plugin=function(opts)
-  if opts.message_name=='workflow-progress' then progress_messages=progress_messages+1
+  if opts.message_name=='workflow-progress' then
+    progress_messages=progress_messages+1
+    last_progress=z.json.decode(opts.message_payload)
+    assert(last_progress.operation==expected_operation,'progress and heartbeats name their admission operation')
   elseif opts.message_name~='workflow-changed' then old_message(opts) end
 end
+for _,operation in ipairs{'workflow.validate','workflow.run'} do
+expected_operation=operation
 for _,ending in ipairs{'ready','failure'} do
-local work='refresh-'..ending
+local work='refresh-'..operation..'-'..ending
 progress_messages=0
 rows[z.json.encode{'host','session',work,'view'}]={rev=1,value=z.json.encode{view=1,incarnation='incarnation'}}
 z.async.swamp_request=function(opts)
-  if opts.operation=='workflow.validate' then
+  if operation=='workflow.run' and opts.operation=='workflow.validate' then
+    local a,r=z.async.future();r{passed=true};return a
+  end
+  if opts.operation==operation then
     opts.on_progress('waiting')
     local uid=z.json.encode{'host','session',work,'launch'}
     local rev=rows[uid].rev
@@ -8348,12 +8363,16 @@ z.async.swamp_request=function(opts)
   end
   error('Refresh failure dispatched a workflow')
 end
-local waiting=launch(work)
+local waiting=launch(work,expected_checkout)
 assert(tostring(select(2,call(waiting))):find('Cannot load updated Swamp extensions',1,true))
-assert(call(waiting).outcome=='failed' and service_runs==2)
-assert(call{method='workflow_show',launch=waiting.work,directory='/control'}.history.status=='failed')
+assert(call(launch(work,expected_checkout)).outcome=='failed' and service_runs==2)
+assert(last_progress.status=='ready','readiness or cleanup ends progress with its operation label')
+local failed_snapshot,show_error=call{method='workflow_show',launch=waiting.work,directory='/control'}
+assert(failed_snapshot,show_error)
+assert(failed_snapshot.history.status=='failed')
 local count=progress_messages;clock=clock+100;z.__update(M,{Timer=0})
 assert(progress_messages==count,'completion stops the heartbeat')
+end
 end
 z.message_to_plugin=old_message
 z.async.swamp_request=function(opts)

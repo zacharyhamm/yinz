@@ -208,7 +208,7 @@ local function swamp(request,root)
   return encode(reply)
 end
 local launch_waiting={}
-local function launch_progress(work,status)
+local function launch_progress(work,status,operation)
   if not read(scope(work,'launch')) then return end
   local waiting=launch_waiting[work]
   if waiting then waiting.timer:cancel() end
@@ -216,10 +216,10 @@ local function launch_progress(work,status)
   local function send()
     local view=read(scope(work,'view'))
     if view and view.incarnation==identity.incarnation then
-      z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-progress',message_payload=encode{status=status}}
+      z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-progress',message_payload=encode{status=status,operation=operation}}
     end
   end
-  if status~='ready' then launch_waiting[work]={status=status,timer=z.every(10,send)} end
+  if status~='ready' then launch_waiting[work]={status=status,operation=operation,timer=z.every(10,send)} end
   changed(work)
   send()
 end
@@ -249,9 +249,9 @@ local function dispatch(uid,root,operation,payload,callback)
   -- its callback would prevent its parent from finishing and the server draining.
   if callback then payload._zellij_active_callback=true end
   local reply=decode(swamp({operation=operation,payload=payload,id=value.requestId,started=true,
-    on_progress=function(status) launch_progress(value.work,status) end,
+    on_progress=function(status) launch_progress(value.work,status,operation) end,
     on_not_dispatched=function(err)
-      launch_progress(value.work,'ready')
+      launch_progress(value.work,'ready',operation)
       save_event(uid,'failed',{error=err.message})
     end},root))
   value,row=read(uid)
@@ -682,7 +682,7 @@ handle = function(args, manual_view)
     local name = args.workflow or config.config.workflow
     assert(name and name ~= '', 'No exit workflow configured. Use Hocus /project-setup.')
     local validation=swamp({operation='workflow.validate',payload={workflowIdOrName=name},
-      on_progress=function(status) launch_progress(args.work,status) end},config.root)
+      on_progress=function(status) launch_progress(args.work,status,'workflow.validate') end},config.root)
     assert(decode(validation).passed==true,'Workflow validation failed: '..validation)
     local inputs = args.inputs or {}
     inputs.launch, inputs.session = args.work, identity.session
@@ -851,7 +851,7 @@ local timing_attempt=0
 local function invoke_inner(args, manual_view)
   local new_launch=type(args)=='table' and args.method=='workflow_run' and not read(scope(args.work,args.key))
   local ok,response=pcall(handle,args,manual_view)
-  if new_launch and launch_waiting[args.work] then launch_progress(args.work,'ready') end
+  if new_launch and launch_waiting[args.work] then launch_progress(args.work,'ready',launch_waiting[args.work].operation) end
   if ok then return response end
   if new_launch then
     -- A validation/configuration failure before a runner claim is safe to restart.
