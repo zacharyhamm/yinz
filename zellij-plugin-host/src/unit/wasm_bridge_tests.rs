@@ -309,6 +309,183 @@ export default {
     test.settle(id);
 }
 
+#[test]
+fn deno_cli_pipe_render_releases_its_registration_owner_after_a_queued_rekey() {
+    cli_pipe_after_queued_rekey("render");
+}
+
+#[test]
+fn deno_cli_pipe_without_render_releases_its_registration_owner_after_a_queued_rekey() {
+    cli_pipe_after_queued_rekey("no_render");
+}
+
+#[test]
+fn deno_cli_pipe_error_releases_its_registration_owner_after_a_queued_rekey() {
+    cli_pipe_after_queued_rekey("error");
+}
+
+fn cli_pipe_after_queued_rekey(outcome: &str) {
+    let mut test = TestBridge::new();
+    let owner = ClientId::new(1);
+    let new_owner = ClientId::new(2);
+    let acting_client = ClientId::new(3);
+    for client in [owner, new_owner, acting_client] {
+        test.bridge.add_client(client).unwrap();
+    }
+    let path = test._dirs[0].path().join("pipe.js");
+    std::fs::write(
+        &path,
+        r#"
+export default {
+  pipe(message) {
+    if (zellij.getPluginIds().client_id !== 3) throw Error('wrong acting client');
+    if (message.name === 'error') throw Error('pipe callback failed');
+    return message.name === 'render';
+  },
+  render() { return `rendered for ${zellij.getPluginIds().client_id}`; }
+};
+"#,
+    )
+    .unwrap();
+    let mut run =
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", path.display()))
+            .unwrap();
+    run.configuration.insert("shared", "true");
+    let (id, _) = test
+        .bridge
+        .load_plugin(
+            &Some(run),
+            None,
+            Size { rows: 10, cols: 80 },
+            None,
+            false,
+            Some(owner),
+        )
+        .unwrap();
+    test.settle(id);
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .apply_cached_events(vec![id], false, shutdown.clone())
+        .unwrap();
+    test.settle(id);
+    let screen = test.receiver::<ScreenInstruction>();
+    let plugin = test.receiver::<PluginInstruction>();
+    screen.try_iter().for_each(drop);
+    plugin.try_iter().for_each(drop);
+
+    // Hold the executor so registration must happen after removal queues the rekey,
+    // but before the rekey changes the instance's owner.
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    test.bridge
+        .plugin_executor
+        .execute_for_plugin(id, move |_, _, _, _, _| {
+            entered.send(()).unwrap();
+            gate.recv_timeout(zellij_test_support::default_timeout())
+                .unwrap();
+        });
+    started
+        .recv_timeout(zellij_test_support::default_timeout())
+        .unwrap();
+    test.bridge.remove_client(owner);
+    let pipe_id = "rekeyed_cli_pipe";
+    test.bridge
+        .pipe_messages(
+            vec![(
+                Some(id),
+                Some(acting_client),
+                PipeMessage {
+                    source: PipeSource::Cli(pipe_id.into()),
+                    name: outcome.into(),
+                    payload: None,
+                    args: BTreeMap::new(),
+                    is_private: true,
+                    pane_id: None,
+                },
+            )],
+            shutdown,
+            None,
+        )
+        .unwrap();
+    let mut pending = test.bridge.pending_pipes.clone();
+    assert!(pending
+        .update_pipe_state_change(pipe_id, PipeStateChange::NoChange, &id, &new_owner)
+        .is_empty());
+    assert_eq!(
+        pending.update_pipe_state_change(pipe_id, PipeStateChange::NoChange, &id, &owner),
+        [pipe_id],
+        "the pipe must be registered under the old owner"
+    );
+    release.send(()).unwrap();
+    test.settle(id);
+    assert_eq!(
+        test.bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .owner_client_ids_of_plugin_id(id),
+        [new_owner],
+        "the same loaded instance must finish under its new owner"
+    );
+    let mut completions = vec![];
+    let mut errors = vec![];
+    for (instruction, _) in plugin.try_iter() {
+        match instruction {
+            PluginInstruction::UnblockCliPipes(assets) => completions.extend(assets),
+            PluginInstruction::PluginFailed { error, .. } => errors.push(error),
+            _ => {},
+        }
+    }
+    if outcome == "error" {
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("pipe callback failed"), "{errors:?}");
+    } else {
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    let mut frames: Vec<_> = screen
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            ScreenInstruction::PluginBytes(assets) => assets,
+            _ => vec![],
+        })
+        .collect();
+    if outcome == "render" {
+        assert!(
+            completions.is_empty(),
+            "release must wait for the screen acknowledgement"
+        );
+        frames.sort_by_key(|asset| asset.client_id);
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[0].client_id, owner);
+        assert!(
+            frames[0].bytes.is_empty(),
+            "the departed owner needs only pipe state"
+        );
+        for (frame, client) in frames[1..].iter().zip([new_owner, acting_client]) {
+            assert_eq!(frame.client_id, client);
+            assert!(
+                String::from_utf8_lossy(&frame.bytes).contains(&format!("rendered for {client}"))
+            );
+            assert!(frame.cli_pipes.is_empty());
+        }
+        // The screen returns these assets in UnblockCliPipes after consuming the bytes.
+        completions = frames;
+    } else {
+        assert!(frames.is_empty());
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].client_id, owner);
+    }
+    assert_eq!(test.bridge.update_cli_pipe_state(completions), [pipe_id]);
+    assert!(test
+        .bridge
+        .pending_pipes
+        .clone()
+        .unload_plugin(&id)
+        .is_empty());
+    test.bridge.unload_plugin(id).unwrap();
+    test.settle(id);
+}
+
 fn run_plugin() -> RunPlugin {
     zellij_runtime::plugin_location::run_plugin_from_url("file:/plugins/job.lua")
         .expect("a valid plugin url")

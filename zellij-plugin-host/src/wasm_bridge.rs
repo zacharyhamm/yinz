@@ -2133,6 +2133,7 @@ impl WasmBridge {
                             let running_plugin = running_plugin.clone();
                             let pipe_message = pipe_message.clone();
                             let plugin_id = *plugin_id;
+                            let pipe_owner_client_id = *client_id;
                             let render_clients = if plugin_is_shared {
                                 self.connected_clients.lock().unwrap().clone()
                             } else {
@@ -2156,6 +2157,7 @@ impl WasmBridge {
                                 let apply_result = apply_pipe_message_to_plugin(
                                     plugin_id,
                                     client_id,
+                                    pipe_owner_client_id,
                                     &render_clients,
                                     &mut running_plugin,
                                     &pipe_message,
@@ -2270,13 +2272,20 @@ impl WasmBridge {
     /// it. If that client is gone, hand the instance over to `new_owner` so that it keeps
     /// receiving events.
     fn rekey_shared_plugin_if_owner_gone(&mut self, plugin_id: PluginId, new_owner: ClientId) {
-        let mut plugin_map = self.plugin_map.lock().unwrap();
-        let connected_clients = self.connected_clients.lock().unwrap();
-        for owner in plugin_map.owner_client_ids_of_plugin_id(plugin_id) {
-            if !connected_clients.contains(&owner) {
-                plugin_map.rekey_client(plugin_id, owner, new_owner);
-            }
-        }
+        self.plugin_executor.execute_for_plugin_tagged(
+            plugin_id,
+            "client_rekey",
+            false,
+            move |_, plugin_map, connected_clients, _, _| {
+                let mut plugin_map = plugin_map.lock().unwrap();
+                let connected_clients = connected_clients.lock().unwrap();
+                for owner in plugin_map.owner_client_ids_of_plugin_id(plugin_id) {
+                    if !connected_clients.contains(&owner) {
+                        plugin_map.rekey_client(plugin_id, owner, new_owner);
+                    }
+                }
+            },
+        );
     }
     pub fn deno_dispose(&self, plugin_id: PluginId, generation: u64) {
         self.plugin_executor.execute_for_plugin_tagged(
@@ -2822,6 +2831,7 @@ impl WasmBridge {
 
                                             match apply_pipe_message_to_plugin(
                                                 plugin_id,
+                                                client_id,
                                                 client_id,
                                                 &render_clients,
                                                 &mut running_plugin,

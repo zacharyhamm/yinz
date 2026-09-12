@@ -1745,6 +1745,77 @@ export default {
 
 #[test]
 #[serial(plugin_tests)]
+fn deno_shared_infinite_load_can_unload_after_its_last_client_disconnects() {
+    disconnect_shared_runaway(false);
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_shared_infinite_load_can_unload_after_its_owner_disconnects() {
+    disconnect_shared_runaway(true);
+}
+
+fn disconnect_shared_runaway(another_client: bool) {
+    let (finished, completion) = std::sync::mpsc::channel();
+    let test = std::thread::spawn(move || {
+        let harness = Harness::new(
+            "js",
+            r#"
+export default {
+  load() {
+    zellij.command('SetSelectable', false);
+    for (;;) {}
+  }
+};
+"#,
+            PermissionStatus::Granted,
+        );
+        if another_client {
+            harness
+                .sender
+                .send(PluginInstruction::AddClient(ClientId::new(2)))
+                .unwrap();
+        }
+        harness.load_shared();
+        harness.log.wait_until(
+            "the shared loader entered guest code while holding the plugin map",
+            default_timeout(),
+            |log| {
+                log.iter()
+                    .any(|i| matches!(i, ScreenInstruction::SetSelectable(_, false)))
+                    .then_some(())
+            },
+        );
+        // Shared instances ignore client cancellation. Removal must return so the
+        // next instruction can cancel the load and release its map lock.
+        harness
+            .sender
+            .send(PluginInstruction::RemoveClient(CLIENT))
+            .unwrap();
+        harness
+            .sender
+            .send(PluginInstruction::Unload(PLUGIN))
+            .unwrap();
+        harness.log.wait_until(
+            "the queued unload reached subscription cleanup",
+            default_timeout(),
+            |log| {
+                log.iter()
+                    .any(|i| matches!(i, ScreenInstruction::UnsubscribePaneOutput(id) if *id == PLUGIN))
+                    .then_some(())
+            },
+        );
+        harness.finish(); // Queues Exit and joins the plugin thread and its executors.
+        finished.send(()).unwrap();
+    });
+    completion
+        .recv_timeout(default_timeout() * 3)
+        .expect("disconnect, queued Unload and Exit must complete during a shared infinite load");
+    test.join().unwrap();
+}
+
+#[test]
+#[serial(plugin_tests)]
 fn deno_shared_instance_survives_its_owners_disconnect() {
     let harness = Harness::new(
         "js",

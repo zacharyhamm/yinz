@@ -572,7 +572,7 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
     assert(Array.isArray(args.argv) && args.argv.length > 0 && args.argv.every(arg => typeof arg === 'string'), 'Missing literal argv');
     const owner = {...identity, work: args.work, agent: args.key};
     value.owner = owner; value.outcome = 'pending'; put(uid!, value, row);
-    const pane = z.command('OpenCommandPaneBackground', [{path: args.argv[0], args: args.argv.slice(1), cwd: args.cwd},
+    const pane = z.command('OpenCommandPaneBackground', [{path: args.argv[0], args: args.argv.slice(1), cwd: args.cwd ?? null},
       {swamp_owner: encode(owner), swamp_operation: args.key, swamp_work: read<Attachment>(scope(args.work, 'attachment'))[0]?.work ?? args.work}]);
     [value, row] = read(uid!); assert(value, 'No operation with that identity');
     assert(pane && 'Terminal' in pane, 'Command dispatch was not acknowledged; reconcile the saved operation before any further action');

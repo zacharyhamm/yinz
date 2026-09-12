@@ -875,6 +875,7 @@ mod sdk_tests {
             Ok(json!({"json":host.pane_info}))
         } else if command.get("OpenCommandPane").is_some()
             || command.get("OpenCommandPaneFloating").is_some()
+            || command.get("OpenCommandPaneBackground").is_some()
         {
             Ok(json!({"json":{"Terminal":7}}))
         } else if command.get("SpawnAgent").is_some() {
