@@ -3059,6 +3059,16 @@ impl Tab {
             client_id,
             mode_info.unwrap_or_else(|| self.default_mode_info.clone()),
         );
+        self.ensure_selectable_focus(client_id)?;
+        self.set_force_render();
+        Ok(())
+    }
+
+    /// Keep valid focus, or reveal a selectable destination in a retained tab.
+    pub fn ensure_selectable_focus(&mut self, client_id: ClientId) -> Result<()> {
+        if self.is_pending {
+            return Ok(());
+        }
         let focused_is_selectable = self.get_active_pane_id(client_id).is_some_and(|id| {
             self.get_pane_with_id(id)
                 .is_some_and(|pane| pane.selectable())
@@ -3085,8 +3095,16 @@ impl Tab {
                 self.focus_pane_with_id(id, false, false, client_id)?;
             }
         }
-        self.set_force_render();
         Ok(())
+    }
+
+    fn repair_focus_after_pane_removal(&mut self) {
+        let clients: Vec<_> = self.connected_clients.borrow().iter().copied().collect();
+        for client in clients {
+            self.ensure_selectable_focus(client)
+                .context("failed to repair focus after pane removal")
+                .non_fatal();
+        }
     }
 
     pub fn change_mode_info(&mut self, mode_info: ModeInfo, client_id: ClientId) {
@@ -6020,8 +6038,7 @@ impl Tab {
             self.link_handler.clone(),
             floating_panes_stack,
         );
-        // a tab with no active tiled pane can still be alive and hold floating panes - skip only
-        // the tiled-specific work in that case
+        // Floating-only tabs can still have tiled chrome, even without tiled focus.
         let has_active_tiled_panes = self.tiled_panes.has_active_panes();
         if has_active_tiled_panes && self.stacked_pane_list_is_active() {
             self.groupify_all();
@@ -6031,7 +6048,7 @@ impl Tab {
 
         let current_pane_group: HashMap<ClientId, Vec<PaneId>> =
             { self.current_pane_group.borrow().clone_inner() };
-        if has_active_tiled_panes {
+        if self.tiled_panes.has_panes() {
             self.tiled_panes
                 .render(
                     output,
@@ -6049,7 +6066,7 @@ impl Tab {
         // the floating panes are *not* rendered here - they draw over the tiled ones, see
         // `render_floating_panes_and_overlays`
 
-        if output.has_rendered_assets() {
+        if output.has_rendered_assets() || self.should_clear_display_before_rendering {
             self.hide_cursor_and_clear_display_as_needed(output);
         }
 
@@ -7440,16 +7457,8 @@ impl Tab {
             && self.pane_is_stack_list_member(&id)
         {
             if self.close_stack_list_member(id, exit_status) {
-                let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    None,
-                    None,
-                    Event::PaneClosed(id),
-                )]));
-                let _ =
-                    self.senders
-                        .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers {
-                            pane_id: id,
-                        });
+                self.announce_pane_closed(id);
+                self.repair_focus_after_pane_removal();
                 return;
             }
         }
@@ -7461,7 +7470,11 @@ impl Tab {
                 // The stand-in has left the layout even though the tab did not shrink, so it is
                 // as closed as any other pane and the same things have to hear about it.
                 // `close_pane_and_replace_with_other_pane` has always said so for its own swap.
-                Ok(_pane) => self.announce_pane_closed(id),
+                Ok(Some(_pane)) => {
+                    self.announce_pane_closed(id);
+                    self.repair_focus_after_pane_removal();
+                },
+                Ok(None) => {},
                 Err(e) => {
                     Err::<(), _>(e)
                         .with_context(|| format!("failed to close pane {:?}", id))
@@ -7470,11 +7483,27 @@ impl Tab {
             }
             return;
         }
-        // The pane is itself suppressed: it holds no place in any layout, so there
-        // is nothing to swap in behind it and nothing to relayout - it just goes.
-        if !ignore_suppressed_panes && self.suppressed_panes.remove(&id).is_some() {
-            self.announce_pane_closed(id);
-            return;
+        // A suppressed intermediate owns no layout slot. Its predecessors inherit the
+        // complete surviving restoration link, or stay parked if it had no successor.
+        if !ignore_suppressed_panes {
+            if let Some(mut removed) = self.suppressed_panes.remove(&id) {
+                let successor = removed
+                    .restored_by
+                    .filter(|stand_in| self.has_pane_with_pid(&stand_in.pane_id));
+                for predecessor in self.suppressed_panes.values_mut() {
+                    if predecessor
+                        .restored_by
+                        .is_some_and(|stand_in| stand_in.pane_id == id)
+                    {
+                        predecessor.restored_by = successor;
+                    }
+                }
+                if let Some(exit_status) = exit_status {
+                    removed.pane.update_exit_status(exit_status);
+                }
+                self.announce_pane_closed(id);
+                return;
+            }
         }
         let closed_pane = if self.overlay_panes.panes_contain(&id) {
             // nothing to unset, hide or relayout: an overlay is not on a layer and does not tile
@@ -7510,6 +7539,10 @@ impl Tab {
                 self.tiled_panes.unset_fullscreen();
             }
             let closed_pane = self.tiled_panes.remove_pane(id);
+            // With only floating panes left, no tiled pane repaints the vacated area.
+            if self.tiled_panes.first_selectable_pane_id().is_none() {
+                self.set_should_clear_display_before_rendering();
+            }
             self.set_force_render();
             self.tiled_panes.set_force_render();
             if self.auto_layout && !self.swap_layouts.is_tiled_damaged() {
@@ -7521,20 +7554,16 @@ impl Tab {
             self.resize_all_stack_list_hidden_members();
             closed_pane
         };
-        if let Some(exit_status) = exit_status {
-            if let Some(mut closed_pane) = closed_pane {
+        if let Some(mut closed_pane) = closed_pane {
+            if let Some(exit_status) = exit_status {
                 // in case we need to update on Drop
                 closed_pane.update_exit_status(exit_status);
             }
+            if !ignore_suppressed_panes {
+                self.announce_pane_closed(id);
+            }
+            self.repair_focus_after_pane_removal();
         }
-        let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
-            None,
-            None,
-            Event::PaneClosed(id),
-        )]));
-        let _ = self
-            .senders
-            .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id: id });
     }
     pub fn extract_pane(
         &mut self,

@@ -3,6 +3,249 @@ use zellij_bus::plugins::PluginInstruction;
 use zellij_types::data::Event;
 
 #[test]
+fn middle_replacement_exit_preserves_restoration_and_explicit_chain_destruction() {
+    for (stacked, hidden_member) in [(false, false), (true, false), (true, true)] {
+        for scrollback_editor in [false, true] {
+            for explicit in [false, true] {
+                let mut tab = create_new_tab(
+                    Size {
+                        cols: 121,
+                        rows: 40,
+                    },
+                    true,
+                );
+                let (sender, receiver) = unbounded();
+                tab.senders
+                    .replace_to_plugin(SenderWithContext::new(sender));
+                let client = ClientId::new(1);
+                let source = PaneId::Terminal(TerminalId::new(1));
+                let middle = PaneId::Plugin(crate::PluginId::new(2));
+                let successor = PaneId::Terminal(TerminalId::new(3));
+                let neighbor = PaneId::Terminal(TerminalId::new(4));
+                if stacked {
+                    *tab.stacked_pane_list.borrow_mut() = true;
+                    tab.new_pane(
+                        neighbor,
+                        None,
+                        None,
+                        false,
+                        true,
+                        NewPanePlacement::Stacked {
+                            pane_id_to_stack_under: Some(source),
+                            borderless: None,
+                        },
+                        Some(client),
+                        None,
+                    )
+                    .unwrap();
+                    tab.focus_pane_with_id(source, false, false, client)
+                        .unwrap();
+                    assert!(tab.pane_is_stack_list_member(&source));
+                }
+                tab.suppress_pane_and_replace_with_pid(source, middle, false, None, None, None)
+                    .unwrap();
+                if scrollback_editor {
+                    tab.replace_pane_with_editor_pane(successor, middle)
+                        .unwrap();
+                } else {
+                    tab.suppress_pane_and_replace_with_pid(
+                        middle, successor, false, None, None, None,
+                    )
+                    .unwrap();
+                }
+                let restoration = tab.suppressed_panes[&middle].restored_by;
+                if hidden_member {
+                    tab.focus_pane_with_id(neighbor, false, false, client)
+                        .unwrap();
+                }
+                tab.close_pane(middle, false, Some(0));
+                assert!(!tab.has_pane_with_pid(&middle));
+                assert_eq!(tab.suppressed_panes[&source].restored_by, restoration);
+                assert_eq!(
+                    tab.tiled_panes.get_pane(successor).is_some(),
+                    !hidden_member
+                );
+                assert_eq!(
+                    tab.scrollback_editor_subject(successor).is_some(),
+                    scrollback_editor
+                );
+                if explicit {
+                    let closed = tab.close_pane_explicitly(successor, None);
+                    assert_eq!(closed.len(), 2);
+                    assert!(!tab.has_pane_with_pid(&source));
+                } else {
+                    tab.close_pane(successor, false, Some(0));
+                    assert_eq!(tab.tiled_panes.get_pane(source).is_some(), !hidden_member);
+                    if stacked {
+                        assert!(tab.pane_is_stack_list_member(&source));
+                    }
+                    if hidden_member {
+                        assert!(tab.suppressed_panes[&source].restored_by.is_none());
+                        tab.focus_pane_with_id(source, false, false, client)
+                            .unwrap();
+                        assert!(tab.tiled_panes.get_pane(source).is_some());
+                    }
+                }
+                assert!(!tab.has_pane_with_pid(&successor));
+                assert_eq!(
+                    tab.get_all_pane_ids().len(),
+                    usize::from(stacked) + usize::from(!explicit)
+                );
+                // A duplicate exit must not announce a pane that no longer exists.
+                tab.close_pane(middle, false, None);
+                let closed: Vec<_> = receiver
+                    .try_iter()
+                    .flat_map(|(instruction, _)| match instruction {
+                        PluginInstruction::Update(events) => events
+                            .into_iter()
+                            .filter_map(|(_, _, event)| match event {
+                                Event::PaneClosed(id) => Some(id),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>(),
+                        _ => vec![],
+                    })
+                    .collect();
+                for id in [middle, successor] {
+                    assert_eq!(closed.iter().filter(|closed| **closed == id).count(), 1);
+                }
+                assert_eq!(
+                    closed.iter().filter(|closed| **closed == source).count(),
+                    usize::from(explicit)
+                );
+                assert_eq!(closed.len(), 2 + usize::from(explicit));
+                tab.assert_invariants();
+            }
+        }
+    }
+}
+
+#[test]
+fn exiting_parked_replacement_parks_every_predecessor_without_dangling_links() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        true,
+    );
+    let source = PaneId::Terminal(TerminalId::new(1));
+    let other = PaneId::Terminal(TerminalId::new(2));
+    let replacement = PaneId::Terminal(TerminalId::new(3));
+    tab.vertical_split(other, None, ClientId::new(1), None, None)
+        .unwrap();
+    tab.suppress_pane_and_replace_with_pid(source, replacement, false, None, None, None)
+        .unwrap();
+    tab.suppress_pane(other, None);
+    tab.suppressed_panes.get_mut(&other).unwrap().restored_by =
+        tab.suppressed_panes[&source].restored_by;
+    tab.suppress_pane(replacement, None);
+    tab.close_pane(replacement, false, None);
+    for id in [source, other] {
+        assert!(tab.suppressed_panes[&id].restored_by.is_none());
+    }
+    assert_eq!(tab.get_all_pane_ids().len(), 2);
+    tab.assert_invariants();
+}
+
+#[test]
+fn exiting_last_tiled_pane_reveals_and_focuses_hidden_floating_panes() {
+    let mut tab = create_tab_with_two_floating_panes();
+    let clients = [ClientId::new(1), ClientId::new(2)];
+    tab.add_client(clients[1], None).unwrap();
+    tab.hide_floating_panes();
+    tab.close_pane(PaneId::Terminal(TerminalId::new(1)), false, None);
+    assert!(tab.has_selectable_panes());
+    assert!(tab.are_floating_panes_visible());
+    for client in clients {
+        let focused = tab
+            .get_active_pane_id(client)
+            .expect("retained tab has usable focus");
+        assert!(tab.floating_panes.get_pane(focused).unwrap().selectable());
+    }
+}
+
+#[test]
+fn focus_repair_preserves_a_modal_until_it_closes() {
+    let mut tab = create_tab_with_two_floating_panes();
+    let client = ClientId::new(1);
+    let modal = PaneId::Terminal(TerminalId::new(4));
+    tab.hide_floating_panes();
+    tab.new_pane(
+        modal,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(zellij_types::data::OverlayPlacement {
+            kind: zellij_types::data::OverlayKind::Modal,
+            ..Default::default()
+        }),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.close_pane(PaneId::Terminal(TerminalId::new(1)), false, None);
+    tab.ensure_selectable_focus(client).unwrap();
+    assert_eq!(tab.get_active_pane_id(client), Some(modal));
+    assert!(!tab.are_floating_panes_visible());
+    tab.close_pane(modal, false, None);
+    assert!(tab.are_floating_panes_visible());
+    let focused = tab.get_active_pane_id(client).unwrap();
+    assert!(tab.floating_panes.get_pane(focused).unwrap().selectable());
+}
+
+#[test]
+fn fullscreen_hidden_replacement_survives_natural_exit_and_explicit_close() {
+    for close_owner in [false, true] {
+        for explicit in [false, true] {
+            let mut tab = create_new_tab(
+                Size {
+                    cols: 121,
+                    rows: 20,
+                },
+                true,
+            );
+            let (sender, _receiver) = unbounded();
+            tab.senders
+                .replace_to_plugin(SenderWithContext::new(sender));
+            let owner = PaneId::Terminal(TerminalId::new(1));
+            let hidden = PaneId::Terminal(TerminalId::new(2));
+            let replacement = PaneId::Plugin(crate::PluginId::new(3));
+            tab.vertical_split(hidden, None, ClientId::new(1), None, None)
+                .unwrap();
+            tab.tiled_panes.toggle_pane_fullscreen(owner);
+            tab.suppress_pane_and_replace_with_pid(hidden, replacement, false, None, None, None)
+                .unwrap();
+            assert!(!tab.tiled_panes.panes_to_hide_contains(hidden));
+            assert!(tab.tiled_panes.panes_to_hide_contains(replacement));
+            assert_eq!(tab.tiled_panes.fullscreen_pane_id(), Some(owner));
+            let closing = if close_owner { owner } else { replacement };
+            if explicit {
+                tab.close_pane_explicitly(closing, None);
+            } else {
+                tab.close_pane(closing, false, None);
+            }
+            assert!(tab.has_selectable_panes());
+            if close_owner {
+                assert!(tab.tiled_panes.get_pane(replacement).is_some());
+                tab.close_pane(replacement, false, None);
+                assert!(tab.tiled_panes.get_pane(hidden).is_some());
+            } else if !explicit {
+                assert!(tab.tiled_panes.panes_to_hide_contains(hidden));
+                assert!(!tab.tiled_panes.panes_to_hide_contains(replacement));
+            } else {
+                assert_eq!(tab.get_all_pane_ids(), vec![owner]);
+            }
+            tab.tiled_panes.unset_fullscreen();
+            assert_eq!(tab.panes_to_hide_count(), 0);
+            assert!(!tab.tiled_panes.fullscreen_is_active());
+            tab.assert_invariants();
+        }
+    }
+}
+
+#[test]
 fn explicit_close_destroys_the_entire_live_replacement_chain() {
     for targeted in [None, Some(0), Some(1), Some(2)] {
         let mut tab = create_new_tab(

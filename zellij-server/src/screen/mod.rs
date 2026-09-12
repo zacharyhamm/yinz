@@ -828,6 +828,9 @@ pub(crate) struct Screen {
     host_theme_light_styling: Option<Styling>,
     nested_session_handling: NestedSessionHandling,
     pane_output_activity: HashMap<PaneId, Instant>,
+    /// Session-lifetime tombstones, relying on terminal and plugin IDs not being reused.
+    /// Absent panes with these IDs are already closed; unknown IDs may be awaiting creation.
+    destroyed_panes: HashSet<PaneId>,
     pane_output_subscriptions: HashMap<(PluginId, ClientId), BTreeMap<String, String>>,
     /// Whether each client's host terminal currently has keyboard focus, as reported through
     /// DECSET 1004. A client that never reported counts as focused.
@@ -1368,6 +1371,7 @@ impl Screen {
             host_theme_light_styling: None,
             nested_session_handling,
             pane_output_activity: HashMap::new(),
+            destroyed_panes: HashSet::new(),
             pane_output_subscriptions: HashMap::new(),
             client_host_focused: HashMap::new(),
             client_notification_protocols: HashMap::new(),
@@ -2955,6 +2959,7 @@ impl Screen {
     }
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
+        self.destroyed_panes.insert(id);
         self.close_context_menus_for_pane(id);
         if let PaneId::Plugin(plugin_id) = id {
             self.drop_quit_notice(plugin_id);
@@ -3509,9 +3514,7 @@ impl Screen {
     /// thread is asked to close it; otherwise its process, transport and reader
     /// would run until the session ends.
     pub fn forget_unplaced_pane(&mut self, pane_id: PaneId, why: String) {
-        if let PaneId::Plugin(plugin_id) = pane_id {
-            self.drop_quit_notice(plugin_id);
-        }
+        self.cleanup_closed_pane(pane_id);
         log::error!("dropping pane {pane_id:?}: {why}");
         self.bus
             .senders
@@ -5018,6 +5021,8 @@ fn replay_pending_plugin_events(
                     log::error!(
                         "Could not replay pending close for missing plugin pane {pane_id:?}"
                     );
+                } else if screen.tab_containing_pane(pane_id).is_none() {
+                    screen.cleanup_closed_pane(pane_id);
                 }
                 screen.clear_nested_guest(pane_id);
                 screen

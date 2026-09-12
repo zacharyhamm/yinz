@@ -232,6 +232,77 @@ fn pane_closes_when_its_process_exits() {
 }
 
 #[test]
+fn last_tiled_exit_reveals_hidden_floating_pane_and_delivers_keyboard_input() {
+    use zellij_types::input::actions::Action;
+    use zellij_types::internal_ids::TabNumber;
+
+    for another_tab in [false, true] {
+        let mut zellij = start_zellij();
+        let tiled = claim_first_terminal_and_wait_for_prompt(&zellij);
+        tiled.output(b"EXITING-TILED");
+        let other = if another_tab {
+            zellij.send_stdin(&keys::ctrl('t'));
+            zellij.send_stdin(&keys::key('n'));
+            let other = zellij.expect_pty_spawn();
+            other.output(b"OTHER-TAB");
+            zellij.wait_until("second tab focused", |grid| grid.contains("OTHER-TAB"));
+            assert_eq!(
+                zellij
+                    .run_actions_reporting(vec![Action::GoToTab {
+                        index: TabNumber::new(1)
+                    }])
+                    .0,
+                0
+            );
+            Some(other)
+        } else {
+            None
+        };
+        zellij.wait_until("source tab focused", |grid| grid.contains("EXITING-TILED"));
+        assert_eq!(
+            zellij
+                .run_actions_reporting(vec![Action::ToggleFloatingPanes])
+                .0,
+            0
+        );
+        let floating = zellij.expect_pty_spawn();
+        floating.output(b"SURVIVING-FLOAT");
+        zellij.wait_until("floating pane visible", |grid| {
+            grid.contains("SURVIVING-FLOAT")
+        });
+        assert_eq!(
+            zellij
+                .run_actions_reporting(vec![Action::ToggleFloatingPanes])
+                .0,
+            0
+        );
+        zellij.wait_until("floating pane hidden", |grid| {
+            grid.contains("EXITING-TILED") && !grid.contains("SURVIVING-FLOAT")
+        });
+
+        tiled.exit(Some(0));
+        zellij.wait_until("surviving floating pane revealed and focused", |grid| {
+            grid.contains("SURVIVING-FLOAT")
+                && !grid.contains("EXITING-TILED")
+                && grid.cursor.is_some()
+        });
+        zellij.send_stdin(b"focus-survived");
+        floating.wait_for_stdin("keyboard reaches the surviving pane", |bytes| {
+            bytes
+                .windows(b"focus-survived".len())
+                .any(|window| window == b"focus-survived")
+        });
+        if let Some(other) = other {
+            assert!(!other
+                .stdin_bytes()
+                .windows(b"focus-survived".len())
+                .any(|window| window == b"focus-survived"));
+        }
+        zellij.quit();
+    }
+}
+
+#[test]
 fn toggle_floating_panes() {
     let mut zellij = start_zellij();
     claim_first_terminal_and_wait_for_prompt(&zellij);

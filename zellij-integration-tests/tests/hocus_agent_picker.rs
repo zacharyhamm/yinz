@@ -637,9 +637,10 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
     });
     zellij.send_stdin(&keys::key('f'));
 
-    zellij.wait_until("the panel is back in its corner", |grid_snapshot| {
-        list_corner(grid_snapshot) == Some(home)
-    });
+    zellij.wait_until(
+        &format!("the panel is back in its corner {home:?}"),
+        |grid_snapshot| list_corner(grid_snapshot) == Some(home),
+    );
 }
 
 /// The other keystroke, which covers the chrome as well - the difference between the two being
