@@ -5084,6 +5084,7 @@ dependencies = [
  "zellij-ipc",
  "zellij-plugin-api",
  "zellij-process",
+ "zellij-routing",
  "zellij-runtime",
  "zellij-session",
  "zellij-storage",
@@ -5123,6 +5124,21 @@ dependencies = [
  "zellij-runtime",
  "zellij-session",
  "zellij-test-support",
+ "zellij-types",
+]
+
+[[package]]
+name = "zellij-routing"
+version = "0.45.0"
+dependencies = [
+ "crossbeam",
+ "log",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "zellij-bus",
+ "zellij-ipc",
+ "zellij-runtime",
  "zellij-types",
 ]
 
@@ -5192,6 +5208,7 @@ dependencies = [
  "zellij-panes",
  "zellij-plugin-host",
  "zellij-process",
+ "zellij-routing",
  "zellij-runtime",
  "zellij-session",
  "zellij-storage",

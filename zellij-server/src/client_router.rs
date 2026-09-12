@@ -1,12 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::needless_borrow)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::unnecessary_fallible_conversions)]
-#![allow(clippy::clone_on_copy)]
-#![allow(clippy::needless_borrows_for_generic_args)]
-#![allow(clippy::borrowed_box)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::option_as_ref_deref)]
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
@@ -29,14 +20,19 @@ use {
 
 use crate::route::{
     actions_dismiss_context_menu, actions_leave_clipboard_message, route_action,
-    wait_for_action_completion, NotificationEnd, MALFORMED_MESSAGE_BACKOFF,
-    MAX_CONSECUTIVE_MALFORMED_MESSAGES,
+    wait_for_action_completion, NotificationEnd,
 };
 use crate::ClientId;
 
 /// How many unreadable messages in a row we tolerate from one client before
 /// concluding the stream has desynchronised. Malformed frames only — a hangup
 /// is terminal and handled separately, so it never reaches this counter.
+const MAX_CONSECUTIVE_MALFORMED_MESSAGES: usize = 1000;
+
+/// Between malformed frames, so a stream that produces them without ever
+/// blocking cannot spin a core on the way to giving up.
+const MALFORMED_MESSAGE_BACKOFF: Duration = Duration::from_millis(1);
+
 macro_rules! send_to_screen_or_retry_queue {
     ($senders:expr, $message:expr, $instruction: expr, $retry_queue:expr) => {{
         match $senders.as_ref() {

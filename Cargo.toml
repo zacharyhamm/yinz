@@ -89,6 +89,7 @@ members = [
     "zellij-client",
     "zellij-integration-tests",
     "zellij-bus",
+    "zellij-routing",
     "zellij-panes",
     "zellij-plugin-host",
     "zellij-process",

@@ -2,7 +2,7 @@ This document details the different components of the code base in plain English
 
 ## Shared libraries
 
-Consumers import shared code from its owning crate. The workspace has thirteen shared libraries:
+Consumers import shared code from its owning crate. The workspace has fourteen shared libraries:
 
 | Crate | Ownership | Allowed Zellij dependencies |
 |---|---|---|
@@ -16,9 +16,10 @@ Consumers import shared code from its owning crate. The workspace has thirteen s
 | `zellij-cli` | Clap arguments, completions, setup, CLI option merging, action conversion, session listings and diagnostics | All preceding libraries |
 | `zellij-terminal` | Grid and rows, terminal characters, selection, hyperlinks, Sixel and Kitty graphics, output serialization, host queries, damage geometry | Types, Runtime, IPC |
 | `zellij-process` | Pane supervisors, local and remote protocols, SSH transport, the broker, the Firecracker provider | Types, Runtime, Config, IPC, Session |
-| `zellij-bus` | The server's thread bus: `ThreadSenders`/`Bus`, the six instruction enums and their payload types, `ServerOsApi`, action routing, warps, background jobs, the session recorder and layout metadata | Types, Runtime, Storage, Config, IPC, Session, Terminal, Process |
+| `zellij-bus` | The server's thread bus: `ThreadSenders`/`Bus`, the six instruction enums and their payload types, `ServerOsApi`, warps, background jobs, the session recorder and layout metadata | Types, Runtime, Storage, Config, IPC, Session, Terminal, Process |
+| `zellij-routing` | Synchronous action dispatch, dispatch helpers and completion waits | Bus, Types, Runtime, IPC |
 | `zellij-panes` | The `Pane` trait, `TerminalPane` and `PluginPane`, the tiled, floating and overlay pane managers, frames and boundaries, `Tab` and its layout applier, pane groups | Types, Runtime, Config, IPC, Terminal, Bus, Tile Utils |
-| `zellij-plugin-host` | The plugin host: wasm and Lua plugin loading, the plugin thread, host functions, pipes, workers, the plugin log pipe, plugin authoring helpers | Types, Runtime, Storage, Config, Plugin API, IPC, Session, Process, Bus, Tile, Tile Markdown |
+| `zellij-plugin-host` | The plugin host: wasm and Lua plugin loading, the plugin thread, host functions, pipes, job queues, workers, the plugin log pipe, plugin authoring helpers | Types, Runtime, Storage, Config, Plugin API, IPC, Session, Process, Bus, Routing, Tile, Tile Markdown |
 
 These lists permit dependencies. They do not require every listed dependency.
 `cargo x ci check` enforces them for normal, optional, target-specific, build, and development dependencies.
@@ -232,11 +233,19 @@ Every server thread owns one instruction enum (`ScreenInstruction`, `PtyInstruct
 others' through `ThreadSenders`. `zellij-bus` holds those enums, the payload types they carry
 (`NotificationEnd`, `SessionLayoutMetadata`, `PluginRenderAsset`, the spawn and adoption records,
 `LoadingIndication`, `FrameColorOverride`), `Bus` itself, and the code that only ever talks over
-it: `route_action` (the `Action` dispatcher), warps, background jobs, the session recorder, and
+it: warps, background jobs, the session recorder, and
 the `ServerOsApi` trait with its Unix implementation. Its rule of admission is that nothing in it
 names a tab, a pane, a screen, or the plugin runtime; a type that needs one of those belongs above
 the bus. The server keeps every old path as a re-export (`zellij_server::os_input_output`,
 `zellij_server::background_jobs`, `crate::thread_bus`, ...), so consumers did not change.
+
+## Action dispatch (zellij-routing/)
+
+`zellij-routing` owns `route_action`, its dispatch helpers and synchronous completion waits.
+The server and plugin host call it; bus and panes never depend on it. Dispatcher edits therefore
+rebuild routing and its host/server consumers without rebuilding bus or panes.
+`NotificationEnd` and `ActionCompletionResult` remain at `zellij_bus::route`, since instruction
+payloads carry them. The server's `crate::route` re-exports both the dispatcher and payloads.
 
 `route_thread_main`, the per-client router that reads a client's socket and calls `route_action`,
 stays in the server (`zellij-server/src/client_router.rs`) because it holds `SessionMetaData`.
@@ -245,8 +254,9 @@ stays in the server (`zellij-server/src/client_router.rs`) because it holds `Ses
 
 `zellij-plugin-host` runs the plugin thread: it loads wasm modules and Lua scripts, keeps the
 plugin map, runs plugins on the pinned executor, answers their host functions
-(`zellij_exports.rs`), and turns every `PluginCommand` into an instruction for another thread.
-It depends on `zellij-bus` and nothing above it: it never names a tab, a pane, or the screen,
+(`zellij_exports.rs`), owns the `queues` job state machine, and turns every `PluginCommand` into
+an instruction for another thread.
+It depends on `zellij-bus` and `zellij-routing`: it never names a tab, a pane, or the screen,
 and everything it asks of them goes out as a `ScreenInstruction`, `PtyInstruction` or
 `Action` through `route_action`. The server keeps the old `crate::plugins::…` paths as an alias
 of the crate, plus `check_lua_plugin`, `get_engine` and `plugin_authoring` at its root.
@@ -265,16 +275,19 @@ as `zellij_server::panes::TerminalPane` and `zellij_server::tab::Pane` are uncha
 `test-support` feature exposes the handful of test helpers on `Tab`, `CopyOptions` and
 `ContextMenuLayout` that the server's screen tests drive; the server's dev-dependency enables it.
 
-Layering after the three extractions:
+Layering (arrows point from dependency to consumer):
 
-```
-zellij-terminal   zellij-process
-        \            /
-         zellij-bus
-            |    \
-   zellij-panes   zellij-plugin-host
-            \      /
-          zellij-server
+```mermaid
+graph TD
+    terminal[zellij-terminal] --> bus[zellij-bus]
+    process[zellij-process] --> bus
+    bus --> panes[zellij-panes]
+    bus --> routing[zellij-routing]
+    bus --> host[zellij-plugin-host]
+    routing --> host
+    routing --> server[zellij-server]
+    panes --> server
+    host --> server
 ```
 
 ## Terminal Pane (zellij-panes/src/panes/terminal_pane.rs)

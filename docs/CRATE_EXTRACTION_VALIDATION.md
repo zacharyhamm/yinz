@@ -186,7 +186,7 @@ state and carry a banner saying so; `docs/TEST_INVENTORY.md` is the current per-
 - **Crate-root `crate::` aliases.** `zellij-bus/src/lib.rs`, `zellij-panes/src/lib.rs` and
   `zellij-plugin-host/src/lib.rs` keep `pub use` aliases (`ClientId`, `channels`, `pty_host`, the
   bus module names) so moved files compile with their old `crate::` paths, and
-  `zellij-server/src/route.rs` is a 4-line forwarding module. Roughly 3,600 sites, most of them in
+  `zellij-server/src/route.rs` is a forwarding module. Roughly 3,600 sites, most of them in
   `zellij-panes` tests, still say `crate::TerminalId`. A mechanical follow-up can rewrite them to
   direct paths and delete the alias blocks; nothing depends on the order.
 - **25 orphan snapshots**, all present on main before the breakout and carried across unchanged:
@@ -201,3 +201,30 @@ state and carry a banner saying so; `docs/TEST_INVENTORY.md` is the current per-
   unaffected. Harmless today; worth knowing if a test-only helper ever changes behaviour.
 - The optional plugin-thread inversion and moving the bench into `zellij-panes`, as noted in the
   original plan, are not started.
+
+## Dispatch and queue ownership (2026-09-12)
+
+`zellij-routing` now owns the synchronous `route_action` dispatcher, its helpers, completion
+waits and routing tests. It depends on Bus, Types, Runtime and IPC. The server and plugin host
+call it directly; the server keeps its internal `crate::route` re-exports. Completion payloads
+and their tests remain at `zellij_bus::route`. The malformed-frame limits live in the server's
+client router. Plugin job queues and their tests now live in `zellij-plugin-host::queues`.
+
+The moved dispatcher and completion-wait bodies are unchanged apart from bus import paths;
+the queue implementation and tests are byte-for-byte moves. Clippy passes without the copied
+allowance headers in bus `plugins.rs`, bus `pty.rs` and server `client_router.rs`.
+
+Cargo's resolved dependency graph has no path from bus or panes to routing. The dependency
+boundary test checks prohibited bus/panes → routing and routing → host/server/panes edges for
+normal, build, dev, optional, target-specific and renamed dependencies, while permitting host → routing.
+
+Validation on Linux:
+
+- Focused routing, completion, queue, batching and xtask checks: 71 passed.
+- First full gate: format, lint, dependency boundaries, doctests and all 390 integration tests
+  passed. Of 7,945 unit tests, the notes/todos CLI test initially reported no running
+  `hocus-store` immediately after session creation. It passed alone and in the next full unit
+  run, without code changes.
+- Second `cargo x ci check`: all checks passed, including 7,945 unit tests, doctests and
+  390 integration tests at 16 workers.
+- Test inventory regenerated with its existing `--fast` scope; test count unchanged.

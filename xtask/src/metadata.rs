@@ -80,6 +80,10 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "zellij-routing",
+        &["zellij-bus", "zellij-types", "zellij-runtime", "zellij-ipc"],
+    ),
+    (
         "zellij-panes",
         &[
             "zellij-types",
@@ -104,6 +108,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-session",
             "zellij-process",
             "zellij-bus",
+            "zellij-routing",
             "zellij-tile",
             "zellij-tile-markdown",
             "zellij-test-support",
@@ -166,17 +171,41 @@ mod tests {
             "workspace_members": LIBRARY_DEPENDENCIES.iter().map(|(name, _)| name).collect::<Vec<_>>()
         });
         validate_dependency_boundaries(&metadata).unwrap();
-        for kind in [json!(null), json!("build"), json!("dev")] {
-            for target in [json!(null), json!("cfg(target_family = \"wasm\")")] {
-                metadata["packages"][0]["dependencies"] = json!([{
-                    "name": "zellij-cli", "rename": "innocent_alias", "optional": true,
-                    "kind": kind, "target": target
-                }]);
-                assert!(validate_dependency_boundaries(&metadata)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("zellij-types may not depend on zellij-cli"));
+        metadata["packages"].as_array_mut().unwrap().push(json!({
+            "id": "zellij-server", "name": "zellij-server", "dependencies": []
+        }));
+        metadata["workspace_members"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("zellij-server"));
+        for (source, destination) in [
+            ("zellij-types", "zellij-cli"),
+            ("zellij-bus", "zellij-routing"),
+            ("zellij-panes", "zellij-routing"),
+            ("zellij-routing", "zellij-plugin-host"),
+            ("zellij-routing", "zellij-server"),
+            ("zellij-routing", "zellij-panes"),
+        ] {
+            let index = metadata["packages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|p| p["name"] == source)
+                .unwrap();
+            let original = metadata["packages"][index]["dependencies"].clone();
+            for kind in [json!(null), json!("build"), json!("dev")] {
+                for target in [json!(null), json!("cfg(target_family = \"wasm\")")] {
+                    metadata["packages"][index]["dependencies"] = json!([{
+                        "name": destination, "rename": "innocent_alias", "optional": true,
+                        "kind": kind, "target": target
+                    }]);
+                    assert!(validate_dependency_boundaries(&metadata)
+                        .unwrap_err()
+                        .to_string()
+                        .contains(&format!("{source} may not depend on {destination}")));
+                }
             }
+            metadata["packages"][index]["dependencies"] = original;
         }
     }
 }

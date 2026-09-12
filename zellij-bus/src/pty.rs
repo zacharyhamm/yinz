@@ -1,11 +1,3 @@
-// Clippy allows kept as debt — see REVIEW_CHECKLIST.md.
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::clone_on_copy)]
-#![allow(clippy::useless_format)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::collapsible_match)]
-#![allow(clippy::needless_borrow)]
 use crate::os_input_output::AsyncReader;
 use crate::route::NotificationEnd;
 use crate::{

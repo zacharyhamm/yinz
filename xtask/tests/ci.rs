@@ -37,6 +37,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-terminal",
         "zellij-process",
         "zellij-bus",
+        "zellij-routing",
         "zellij-plugin-host",
         "zellij-panes",
     ];

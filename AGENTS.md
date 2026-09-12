@@ -148,7 +148,7 @@ Escalate to the full `cargo x test` (and `cargo x integration-test`) when the ch
 past one crate:
 
 - The shared libraries (`zellij-types`, `zellij-runtime`, `zellij-config`, `zellij-plugin-api`,
-  `zellij-ipc`, `zellij-session`, `zellij-cli`, `zellij-storage`, `zellij-bus`) — changes can reach
+  `zellij-ipc`, `zellij-session`, `zellij-cli`, `zellij-storage`, `zellij-bus`, `zellij-routing`) — changes can reach
   every consumer; the bus in particular carries every thread's instruction enum
 - `zellij-storage/src/plugin_data_store/` — also run `cargo x postgres-test`: the same test files
   run against SQLite and Postgres, and only the Postgres half needs a server
@@ -274,8 +274,9 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 |---|---|
 | `zellij-server/` | screen, client routing, pty scheduling, the server thread |
 | `zellij-panes/` | the `Pane` trait and its implementations, pane managers, frames, `Tab` and its layout applier |
-| `zellij-bus/` | the server's thread bus: instruction enums and senders, `ServerOsApi`, action routing, warps, background jobs, session recorder |
-| `zellij-plugin-host/` | plugin host: wasm and Lua plugin loading, the plugin thread, host functions, pipes |
+| `zellij-bus/` | the server's thread bus: instruction enums and senders, `ServerOsApi`, warps, background jobs, session recorder |
+| `zellij-routing/` | synchronous action dispatch and completion waits shared by server and plugin host |
+| `zellij-plugin-host/` | plugin host: wasm and Lua plugin loading, the plugin thread, host functions, pipes, job queues |
 | `zellij-process/` | pane supervisors, local/remote protocols, SSH broker, Firecracker provider |
 | `zellij-terminal/` | terminal emulation, graphics, output serialization, host queries, component parsing |
 | `zellij-client/` | input handling and terminal I/O |
