@@ -86,9 +86,24 @@ file. Endpoint credentials are stored with owner-only permissions under
 The supervisor rotates the seven-day credential daily through Swamp. A renewal
 failure is reported without terminating active work.
 
-Workflow YAML loads on each invocation. After changing local extensions, wait for
-active executions to finish and restart the managed service. There is no workflow
-cache or automatic extension reload. Keep the local extensions unpublished.
+Workflow YAML loads on each invocation. Before validating, launching or resuming
+a workflow, Zellij compares extension contents with the running service's startup
+fingerprint. Changed local extensions, imported helpers, pulled extensions and
+configured extension sources trigger an automatic service refresh.
+
+New launches wait while existing executions finish or suspend. The view shows
+“Waiting for active workflows before loading updated extensions,” then “Loading
+updated extensions.” History, cancellation and callbacks for existing executions
+remain available. Continuations belonging to an active execution can finish on
+that service. Suspended runs survive refresh and use the updated extensions when
+resumed. Waiting does not consume the request's execution timeout.
+
+Concurrent requests share one refresh per control checkout. Invalid extensions
+produce a loading diagnostic before new work is dispatched. Run
+`swamp doctor extensions --json` in the control checkout to inspect the problem.
+`zellij workflow server status` reports extension freshness as `current`, `stale`
+or `unavailable`. A crashed service still requires explicit recovery. Keep the
+local extensions unpublished.
 
 ## Exit and review choices
 
@@ -360,6 +375,20 @@ refusal, persisted suspension, and explicit crash recovery:
 ```sh
 deno run -A extensions/tests/managed_server.ts "$PWD/target/debug/zellij"
 ```
+
+The automatic-refresh regression uses the real service through Zellij's request
+layer. Build Zellij first and put a compatible Swamp binary on `PATH`:
+
+```sh
+ZELLIJ_TEST_BINARY="$PWD/target/debug/zellij" cargo x test -p zellij-process \
+  -E 'test(refreshes_local_extensions_once)' --run-ignored all
+```
+
+It changes a local imported helper and its workflow while the service is active.
+It checks waiting beyond the dispatch timeout, one execution after concurrent
+refresh, resuming a persisted suspension and invalid extension diagnostics. Fixture
+repositories and services are separate from the control checkout. Failures leave
+the fixture directory available at the path shown in the test output.
 
 ### Existing workflow suites
 

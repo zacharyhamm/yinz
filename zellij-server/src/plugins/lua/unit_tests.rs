@@ -6921,6 +6921,150 @@ fn swamp_workflow_answer_requires_the_submit_button() {
 }
 
 #[test]
+fn swamp_answer_bridge_heartbeats_target_the_requester_and_stop_on_ready_or_failure() {
+    let plugin = load(zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+local z=require('zellij')
+local now=1000
+os.time=function() return now end
+z.server_session='session';z.server_incarnation='incarnation'
+z.get_plugin_ids=function() return {host_id='host'} end
+z.data.define=function() end
+z.subscribe=function() end
+z.set_timeout=function() end
+z.get_pane_info=function() return {plugin_url='zellij:swamp-workflow'} end
+local handler,request,resolve,result,failure
+z.rpc.handle=function(_,fn) handler=fn end
+z.async.swamp_request=function(args)
+  request=args
+  local aw,r=z.async.future();resolve=r
+  return aw
+end
+local messages={}
+z.message_to_plugin=function(opts)
+  assert(opts.destination_plugin_id==42)
+  assert(opts.message_name=='workflow-progress')
+  local p=z.json.decode(opts.message_payload)
+  assert(p.submission=='submission')
+  messages[#messages+1]=p.status
+end
+local function tick(seconds) now=now+seconds;z.__update(M,{Timer=0}) end
+M.load()
+for _,ending in ipairs{'ready','failure','success'} do
+  messages={};result=nil;failure=nil
+  z.task(function()
+    local ok,value=pcall(handler,{method='workflow_answer',directory='/work',model='questions',
+      inputs={run='unattached-child-run',submission='submission'}},{source={Plugin=42}})
+    if ok then result=value else failure=value end
+  end)
+  request.on_progress('waiting')
+  assert(#messages==1 and messages[1]=='waiting','progress is immediate without an attachment row')
+  for _=1,12 do tick(10) end
+  assert(#messages==13 and not result and not failure)
+  if ending=='ready' then
+    request.on_progress('ready')
+    local count=#messages;tick(100);assert(#messages==count)
+    resolve{run={status='succeeded'}}
+  elseif ending=='failure' then resolve{error={code='not_dispatched',message='broken import'}}
+  else resolve{run={status='succeeded'}} end
+  tick(0)
+  assert((ending=='failure' and failure) or result)
+  local count=#messages;tick(100);assert(#messages==count,'completion cancels heartbeat')
+end
+"#,
+        )
+        .exec()
+        .unwrap();
+}
+
+#[test]
+fn swamp_answer_deadline_renews_only_for_current_submission_and_reconciles_on_loss() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+local now=1000
+os.time=function() return now end
+z.subscribe=function() end
+z.subscribe_pane_output=function() end
+z.set_timeout=function() end
+z.set_self_mouse_selection_support=function() end
+local calls={}
+z.message_to_plugin=function(opts)
+  calls[#calls+1]=z.json.decode(opts.message_payload)
+end
+local function tick(seconds) now=now+seconds;z.__update(M,{Timer=0}) end
+local function reply(call,result)
+  z.__pipe(M,{name='zellij_rpc_reply',payload=z.json.encode{version=1,call_id=call.call_id,result=result},source={Plugin=9}})
+end
+local q={model='questions',version=1,attributes={run='run',question='q',kind='choice',answers={'yes'},prompt='Continue?',state='pending'}}
+local function history(pending)
+  return {root='/work',run='run',history={status='suspended'},questions={results=pending and {q} or {}}}
+end
+local function attach()
+  M.attach{directory='/work',run='run'}
+  reply(calls[#calls],history(true))
+end
+local function submit()
+  M.update{name='key',key='Enter',bare_key='Enter',key_modifiers={}}
+  assert(M.submitting)
+  local call=calls[#calls]
+  assert(call.payload.method=='workflow_answer')
+  return call
+end
+local function progress(call,status)
+  M.pipe{name='workflow-progress',payload=z.json.encode{status=status,submission=call.payload.inputs.submission}}
+end
+attach()
+local first=submit()
+for _=1,12 do tick(10);progress(first,'waiting') end
+assert(M.submitting,'live progress must allow waiting longer than 90 seconds')
+tick(89);assert(M.submitting)
+tick(1);assert(not M.submitting and M.notice_error)
+assert(calls[#calls].payload.method=='workflow_show','loss must reconcile history')
+reply(calls[#calls],history(false))
+assert(#M.pending==0,'authoritative answer survives a lost response')
+local notice=M.notice
+progress(first,'waiting');reply(first,{})
+assert(M.notice==notice and not M.submitting,'late messages cannot revive the answer')
+attach()
+local second=submit()
+tick(80);progress(second,'waiting');tick(80);progress(second,'ready')
+tick(80);progress(second,'waiting') -- delayed waiting cannot extend execution
+assert(M.submitting)
+tick(10);assert(not M.submitting and M.notice_error,'loss after ready has a fresh 90-second deadline')
+reply(calls[#calls],history(true))
+local third=submit()
+M.attach(M.attachment) -- reattaching the same table still invalidates old work
+reply(calls[#calls],history(true))
+local fourth=submit()
+tick(80);progress(third,'waiting');reply(third,{})
+assert(M.submitting,'old replies cannot complete the new attachment')
+tick(10);assert(not M.submitting,'old progress cannot renew the new submission')
+reply(calls[#calls],history(true))
+local fifth=submit()
+progress(fifth,'waiting');progress(fifth,'ready');reply(fifth,{})
+assert(not M.submitting and not M.notice_error)
+reply(calls[#calls],history(false))
+tick(100)
+assert(not M.submitting and not M.notice_error,'completed RPC timer is cancelled')
+"#).exec().unwrap();
+}
+
+#[test]
 fn swamp_workflow_question_transitions_survive_polling_and_submission_races() {
     let plugin =
         load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
@@ -8110,6 +8254,25 @@ assert(call{method='observe',work='workflow',key='launch'}.outcome=='completed' 
 z.async.swamp_request=service
 -- A normal validation response must explicitly pass before dispatch.
 local validation_service=z.async.swamp_request
+-- Refresh progress must keep the same launch observable without dispatching it.
+z.async.swamp_request=function(opts)
+  if opts.operation=='workflow.validate' then
+    opts.on_progress('waiting')
+    local snapshot=call{method='workflow_show',launch='refresh-wait',directory='/control'}
+    assert(snapshot.history.status=='queued' and snapshot.active and snapshot.logs:find('Waiting for active workflows',1,true))
+    assert(service_runs==2,'Waiting must not dispatch a workflow')
+    opts.on_progress('reloading')
+    snapshot=call{method='workflow_show',launch='refresh-wait',directory='/control'}
+    assert(snapshot.logs=='Loading updated extensions.')
+    opts.on_progress('ready')
+    local a,r=z.async.future();r{error={code='not_dispatched',message='Cannot load updated Swamp extensions'}};return a
+  end
+  error('Refresh failure dispatched a workflow')
+end
+local waiting=launch('refresh-wait')
+assert(tostring(select(2,call(waiting))):find('Cannot load updated Swamp extensions',1,true))
+assert(call(waiting).outcome=='failed' and service_runs==2)
+assert(call{method='workflow_show',launch=waiting.work,directory='/control'}.history.status=='failed')
 z.async.swamp_request=function(opts)
   assert(opts.operation=='workflow.validate')
   local a,r=z.async.future();r{passed=false,diagnostics={'invalid workflow'}};return a

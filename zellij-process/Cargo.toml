@@ -22,6 +22,7 @@ highway = { version = "=1.2.0", default-features = false, features = ["std"] }
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde-saphyr = { version = "0.0.28", default-features = false, features = ["deserialize"] }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }

@@ -193,8 +193,11 @@ local function changed(work)
 end
 local function swamp(request,root)
   local reply=z.await(z.async.swamp_request{directory=root,operation=request.operation,payload=request.payload,
-    id=request.id,started=request.started})
-  if reply.error then error(encode(reply.error)) end
+    id=request.id,started=request.started,on_progress=request.on_progress})
+  if reply.error then
+    if reply.error.code=='not_dispatched' and request.on_not_dispatched then request.on_not_dispatched(reply.error) end
+    error(encode(reply.error))
+  end
   if request.operation=='data.query' and reply.limited then error('Swamp data query reached its result limit; narrow the saved-data query') end
   if request.operation=='data.query' and reply.projected then
     reply.results=reply.projected.rows or reply.projected.values or {}
@@ -203,6 +206,18 @@ local function swamp(request,root)
     return table.concat(reply.log.lines or {},'\n')
   end
   return encode(reply)
+end
+local function launch_progress(work,status)
+  local uid=scope(work,'launch')
+  local launch,row=read(uid)
+  if not launch then return end
+  launch.waiting=status~='ready' and status or nil
+  put(uid,launch,row)
+  changed(work)
+  local view=read(scope(work,'view'))
+  if view and view.incarnation==identity.incarnation then
+    z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-progress',message_payload=encode{status=status}}
+  end
 end
 local function watch_run(run,work,root)
   if watching[run] then return end
@@ -213,7 +228,8 @@ local function watch_run(run,work,root)
     watching[run]=nil;watch_ids[id]=nil
   end)
 end
-local function dispatch(uid,root,operation,payload)
+local function dispatch(uid,root,operation,payload,callback)
+  payload=z.json.decode(encode(payload),true)
   local value,row=read(uid)
   value.transport,value.requestId,value.checkout='serve',z.instance_id..uid,root
   value.correlation=uid
@@ -225,7 +241,15 @@ local function dispatch(uid,root,operation,payload)
     payload.runtimeTags=payload.runtimeTags or {}
     payload.runtimeTags.zellijOperation=uid
   end
-  local reply=decode(swamp({operation=operation,payload=payload,id=value.requestId,started=true},root))
+  -- A continuation is part of an execution already admitted by Swamp. Holding
+  -- its callback would prevent its parent from finishing and the server draining.
+  if callback then payload._zellij_active_callback=true end
+  local reply=decode(swamp({operation=operation,payload=payload,id=value.requestId,started=true,
+    on_progress=function(status) launch_progress(value.work,status) end,
+    on_not_dispatched=function(err)
+      launch_progress(value.work,'ready')
+      save_event(uid,'failed',{error=err.message})
+    end},root))
   value,row=read(uid)
   if reply.runId then value.run=reply.runId end
   if value.outcome=='unknown' and tracked[value.requestId] then value.outcome='pending' end
@@ -431,7 +455,23 @@ handle = function(args, manual_view)
     return decode(swamp({operation=args.operation,payload=args.payload},args.directory))
   end
   if args.method=='workflow_answer' then
-    local reply=decode(swamp({operation='model.method.run',payload={modelIdOrName=args.model,methodName='submit',inputs=args.inputs}},args.directory))
+    local heartbeat
+    local function progress(status)
+      if heartbeat then heartbeat:cancel();heartbeat=nil end
+      if not manual_view then return end
+      local function send()
+        z.message_to_plugin{destination_plugin_id=manual_view,message_name='workflow-progress',
+          message_payload=encode{status=status,submission=args.inputs.submission}}
+      end
+      send()
+      if status~='ready' then heartbeat=z.every(10,send) end
+    end
+    local ok,reply=pcall(function()
+      return decode(swamp({operation='model.method.run',payload={modelIdOrName=args.model,methodName='submit',inputs=args.inputs},
+        on_progress=progress},args.directory))
+    end)
+    if heartbeat then heartbeat:cancel() end
+    if not ok then error(reply) end
     if reply.run and (reply.run.status=='failed' or reply.run.status=='cancelled') then error(encode(reply.run)) end
     return reply.run or reply
   end
@@ -451,6 +491,10 @@ handle = function(args, manual_view)
     local failed=args.launch and args.launch~=z.null and read(scope(args.launch,'launch'))
     if failed and failed.outcome=='failed' and failed.error then
       return launch_failure(args.launch,failed,failed.error,args.directory)
+    end
+    if failed and failed.waiting then
+      return {launch=args.launch,root=failed.checkout or args.directory,history={id=args.launch,workflowName=failed.workflow or 'Workflow launch',status='queued'},
+        children={},active=true,logs=failed.waiting=='waiting' and 'Waiting for active workflows before loading updated extensions.' or 'Loading updated extensions.'}
     end
     local config = z.project_config.read(assert(args.directory, 'Missing control checkout'))
     assert(not config.error, config.error)
@@ -633,7 +677,8 @@ handle = function(args, manual_view)
     assert(not config.error, config.error)
     local name = args.workflow or config.config.workflow
     assert(name and name ~= '', 'No exit workflow configured. Use Hocus /project-setup.')
-    local validation=swamp({operation='workflow.validate',payload={workflowIdOrName=name}},config.root)
+    local validation=swamp({operation='workflow.validate',payload={workflowIdOrName=name},
+      on_progress=function(status) launch_progress(args.work,status) end},config.root)
     assert(decode(validation).passed==true,'Workflow validation failed: '..validation)
     local inputs = args.inputs or {}
     inputs.launch, inputs.session = args.work, identity.session
@@ -660,11 +705,12 @@ handle = function(args, manual_view)
     inputs.target = inputs.target or config.root
     inputs.gate = inputs.gate or config.config.ci or {'cargo','x','ci','check'}
     inputs.targetBranch = inputs.targetBranch or config.config.default_branch or 'main'
+    value,row=read(uid) -- progress notifications may have advanced this claim's revision
     value.workflow,value.checkout,value.launch=name,config.root,args.work
     put(uid,value,row)
     return dispatch(uid,config.root,'workflow.run',{workflowIdOrName=name,inputs=inputs})
   elseif args.method=='swamp_dispatch' then
-    return dispatch(uid,args.directory,args.operation,args.payload)
+    return dispatch(uid,args.directory,args.operation,args.payload,true)
   elseif args.method == 'pane_action' then
     local source
     if args.action~='leave' or fetch(scope(args.work,'source')) then
@@ -860,7 +906,7 @@ function M.load()
         placements[args.work]={view=from,queue={}}
       end
     end
-    return invoke(args, args.method=='workflow_show' and pane.plugin_url=='zellij:swamp-workflow' and from or nil)
+    return invoke(args, (args.method=='workflow_answer' or (args.method=='workflow_show' and pane.plugin_url=='zellij:swamp-workflow')) and from or nil)
   end)
 end
 function M.pipe(message)

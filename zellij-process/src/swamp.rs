@@ -163,6 +163,221 @@ struct Endpoint {
     child_started: u64,
     url: String,
     token: String,
+    #[serde(default)]
+    extensions: Option<String>,
+}
+
+fn extension_directories(
+    root: &Path,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<PathBuf>> {
+    let marker: Value = match std::fs::read_to_string(root.join(".swamp.yaml")) {
+        Ok(marker) => {
+            serde_saphyr::from_str(&marker).context("cannot parse Swamp repository settings")?
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(e) => return Err(e).context("cannot read Swamp repository settings"),
+    };
+    Ok(["models", "vaults", "datastores", "reports"]
+        .into_iter()
+        .map(|kind| {
+            let directory = env(&format!("SWAMP_{}_DIR", kind.to_uppercase()))
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    marker[format!("{kind}Dir")]
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| format!("extensions/{kind}"));
+            root.join(directory)
+        })
+        .collect())
+}
+
+// Hash source contents, not the mutable bundle catalog or Git revision. Helpers,
+// new/deleted files and symlink targets all participate in the same generation.
+fn extension_fingerprint(root: &Path) -> Result<String> {
+    fn hash_path(path: &Path, hash: &mut Sha256, ancestors: &mut Vec<PathBuf>) -> Result<()> {
+        let name = path.as_os_str().as_encoded_bytes();
+        hash.update(name.len().to_le_bytes());
+        hash.update(name);
+        let meta = match std::fs::metadata(path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                hash.update(b"missing");
+                return Ok(());
+            },
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("cannot inspect extension {}", path.display()))
+            },
+        };
+        if meta.is_dir() {
+            let canonical = path
+                .canonicalize()
+                .context("cannot resolve extension directory")?;
+            if ancestors.contains(&canonical) {
+                return Err(anyhow!(
+                    "extension directory symlink cycle: {}",
+                    path.display()
+                ));
+            }
+            ancestors.push(canonical);
+            let mut entries = std::fs::read_dir(path)
+                .context("cannot list extension sources")?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort();
+            for entry in entries {
+                if matches!(
+                    entry.file_name().and_then(|n| n.to_str()),
+                    Some(".git" | ".swamp" | "node_modules" | "target" | "tests")
+                ) {
+                    continue;
+                }
+                hash_path(&entry, hash, ancestors)?;
+            }
+            ancestors.pop();
+        } else if meta.is_file() {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("cannot read extension {}", path.display()))?;
+            hash.update(bytes.len().to_le_bytes());
+            hash.update(bytes);
+        } else {
+            return Err(anyhow!(
+                "extension source is not a regular file: {}",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+    let mut hash = Sha256::new();
+    let mut paths = vec![
+        root.join("extensions"),
+        root.join(".swamp/pulled-extensions"),
+        root.join(".swamp/config/pulled-extensions"),
+        root.join(".swamp/upstream_extensions.json"),
+        root.join(".swamp/config/upstream_extensions.json"),
+        root.join(".swamp-sources.yaml"),
+        root.join(".swamp.yaml"),
+    ];
+    if root.join(".swamp-sources.yaml").exists() {
+        let sources = cli(root, &["extension", "source", "list"])?;
+        for source in sources["sources"]
+            .as_array()
+            .context("invalid extension source list")?
+        {
+            for path in source["expandedPaths"]
+                .as_array()
+                .context("missing expanded extension paths")?
+            {
+                let path = root.join(path.as_str().context("invalid extension source path")?);
+                paths.push(if path.join("extensions").is_dir() {
+                    path.join("extensions")
+                } else {
+                    path
+                });
+            }
+        }
+    }
+    paths.extend(extension_directories(root, |name| {
+        std::env::var(name).ok()
+    })?);
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        hash_path(&path, &mut hash, &mut Vec::new())?;
+    }
+    Ok(hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn check_extensions(root: &Path) -> Result<()> {
+    let output = Command::new("swamp")
+        .current_dir(root)
+        .args(["doctor", "extensions", "--json", "--no-telemetry"])
+        .env_remove("SWAMP_REPO_DIR")
+        .env_remove("SWAMP_SERVER_URL")
+        .env_remove("SWAMP_SERVE_URL")
+        .stdin(Stdio::null())
+        .output()
+        .context("cannot check Swamp extensions")?;
+    let report: Value =
+        serde_json::from_slice(&output.stdout).context("invalid Swamp extension health report")?;
+    if !output.status.success() || report["overallStatus"] != "pass" {
+        let errors = report["aggregateState"]["sourceDetails"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|source| source["lastError"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "Cannot load updated Swamp extensions. Run swamp doctor extensions in {}. {}",
+            root.display(),
+            errors
+        ));
+    }
+    check_extension_sources(root, &report)
+}
+
+fn check_extension_sources(root: &Path, report: &Value) -> Result<()> {
+    // Swamp may retain an old bundle after a broken edit and still report a
+    // healthy catalog. Check the actual import graphs with its bundled Deno.
+    for source in report["aggregateState"]["sourceDetails"]
+        .as_array()
+        .context("missing Swamp extension sources")?
+    {
+        if matches!(
+            source["stateTag"].as_str(),
+            Some("OrphanedBundleOnly" | "Tombstoned")
+        ) {
+            continue;
+        }
+        let path = root.join(
+            source["sourcePath"]
+                .as_str()
+                .context("missing extension source path")?,
+        );
+        match File::open(&path) {
+            Ok(_) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(e).with_context(|| format!("cannot read extension {}", path.display()))
+            },
+        }
+        let output = Command::new(
+            report["denoPath"]
+                .as_str()
+                .context("missing bundled Deno path")?,
+        )
+        .current_dir(root)
+        .args([
+            "bundle",
+            "--no-lock",
+            "--node-modules-dir=none",
+            "--platform",
+            "deno",
+        ])
+        .arg(&path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .context("cannot verify extension import graph")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "Cannot load updated Swamp extensions: {}\n{}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn private_dir(path: &Path) -> Result<()> {
@@ -193,6 +408,10 @@ fn directory(root: &Path) -> Result<PathBuf> {
 }
 
 fn lock(root: &Path) -> Result<File> {
+    named_lock(root, "lock")
+}
+
+fn named_lock(root: &Path, name: &str) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -200,7 +419,7 @@ fn lock(root: &Path) -> Result<File> {
         .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(directory(root)?.join("lock"))
+        .open(directory(root)?.join(name))
         .context("cannot open managed Swamp lock")?;
     file.lock().context("cannot lock managed Swamp checkout")?;
     Ok(file)
@@ -451,7 +670,7 @@ pub fn supervise(root: PathBuf) -> Result<()> {
     let root = root
         .canonicalize()
         .context("cannot resolve Swamp control checkout")?;
-    let startup_lock = lock(&root)?;
+    let startup_lock = named_lock(&root, "startup-lock")?;
     if let Some(state) = endpoint(&root)? {
         if alive(&state) {
             return Ok(());
@@ -467,6 +686,8 @@ pub fn supervise(root: PathBuf) -> Result<()> {
     {
         return Err(anyhow!("installed Swamp cannot resume inline model types; use a compatible build and run extensions/tests/serve_compatibility.ts"));
     }
+    let extensions = extension_fingerprint(&root)?;
+    check_extensions(&root)?;
     let token = credential(&root)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -508,7 +729,7 @@ pub fn supervise(root: PathBuf) -> Result<()> {
         }
         let child_pid = child.id().context("Swamp exited during startup")?;
         let mut state = Endpoint { root, pid: std::process::id(), started: process_started(std::process::id()).context("cannot identify Swamp supervisor")?, child_pid,
-            child_started: process_started(child_pid).context("cannot identify Swamp process")?, url, token };
+            child_started: process_started(child_pid).context("cannot identify Swamp process")?, url, token, extensions: Some(extensions) };
         let check = state.clone();
         tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + STARTUP;
@@ -518,6 +739,9 @@ pub fn supervise(root: PathBuf) -> Result<()> {
             }
             Err(anyhow!("Swamp did not become ready"))
         }).await.context("Swamp readiness task failed")??;
+        if state.extensions.as_deref() != Some(&extension_fingerprint(&state.root)?) {
+            state.extensions = None;
+        }
         publish(&state)?;
         drop(startup_lock);
         let mut renewal = tokio::time::interval(Duration::from_secs(24 * 3600));
@@ -562,6 +786,10 @@ fn ensure_locked(root: &Path) -> Result<Endpoint> {
         ));
     }
     let binary = std::env::current_exe().context("cannot locate Zellij supervisor binary")?;
+    #[cfg(test)]
+    let binary = std::env::var_os("ZELLIJ_TEST_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or(binary);
     let mut command = Command::new(binary);
     command
         .args([std::ffi::OsStr::new(SUPERVISOR_FLAG), root.as_os_str()])
@@ -628,6 +856,7 @@ pub fn prewarm_request(root: &Path, id: &str) -> Result<()> {
     let root = root
         .canonicalize()
         .context("cannot resolve Swamp checkout")?;
+    let _guard = lock(&root)?;
     ensure_locked(&root)?;
     timing.ok();
     Ok(())
@@ -669,7 +898,8 @@ struct Request {
     run: Option<String>,
     cursor: u64,
     guard: Option<File>,
-    sent_at: Instant,
+    sent_at: Option<Instant>,
+    server_pid: u32,
     timing: Timing,
     first_response: bool,
 }
@@ -709,40 +939,173 @@ pub async fn request(
             })
             .clone()
     };
-    let mut lock_timing = Timing::new("dispatch_lock", &id, &operation, timing_enabled());
-    let guard = if read_request(&operation) || operation == "run.attach" {
-        None
-    } else {
-        let root = root.clone();
-        Some(
-            tokio::task::spawn_blocking(move || lock(&root))
+    // Return the stream before admission: waiting for an idle server is progress,
+    // not an execution timeout, and must not block callbacks or observation.
+    tokio::spawn(async move {
+        let result: Result<()> = async {
+            let mut payload = payload;
+            let callback = payload
+                .as_object_mut()
+                .and_then(|p| p.remove("_zellij_active_callback"))
+                == Some(json!(true));
+            let fresh = !callback
+                && matches!(
+                    operation.as_str(),
+                    "workflow.validate" | "workflow.run" | "workflow.resume" | "model.method.run"
+                );
+            let guard = if fresh {
+                Some(admit(&root, &id, &events).await?)
+            } else if read_request(&operation) || operation == "run.attach" {
+                None
+            } else {
+                let root = root.clone();
+                Some(
+                    tokio::task::spawn_blocking(move || lock(&root))
+                        .await
+                        .context("Swamp dispatch lock task failed")??,
+                )
+            };
+            if events.is_closed() {
+                return Ok(());
+            }
+            let run = (operation == "run.attach")
+                .then(|| payload["runId"].as_str().map(str::to_owned))
+                .flatten();
+            let cursor = payload["afterSeq"].as_u64().unwrap_or(0);
+            let timing = Timing::new("total", &id, &operation, timing_enabled());
+            let server_pid = endpoint(&root)?
+                .context("managed Swamp has no endpoint")?
+                .child_pid;
+            sender
+                .send(Request {
+                    id: id.clone(),
+                    operation,
+                    payload,
+                    events: events.clone(),
+                    run,
+                    cursor,
+                    guard,
+                    sent_at: None,
+                    server_pid,
+                    timing,
+                    first_response: false,
+                })
                 .await
-                .context("Swamp dispatch lock task failed")??,
-        )
-    };
-    lock_timing.ok();
-    drop(lock_timing);
-    let timing = Timing::new("total", &id, &operation, timing_enabled());
-    let run = (operation == "run.attach")
-        .then(|| payload["runId"].as_str().map(str::to_owned))
-        .flatten();
-    let cursor = payload["afterSeq"].as_u64().unwrap_or(0);
-    sender
-        .send(Request {
-            id,
-            operation,
-            payload,
-            events,
-            run,
-            cursor,
-            guard,
-            sent_at: Instant::now(),
-            timing,
-            first_response: false,
+                .context("managed Swamp connection is unavailable")?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            let _ = events.send(json!({"type":"error", "id":id, "error":{"code":"not_dispatched", "message":format!("{error:#}")}}));
+        }
+    });
+    Ok(receiver)
+}
+
+fn running(
+    root: &Path,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send + '_>> {
+    // Reuse the shared socket: repeated handshakes hit Swamp's IP rate limit.
+    // Reads bypass admission, so this is safe while holding the dispatch lock.
+    // Boxing breaks the request -> admit -> running -> request future type cycle.
+    Box::pin(async move {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut events = request(
+                root.to_owned(),
+                uuid::Uuid::new_v4().to_string(),
+                "run.history".into(),
+                json!({"active":true}),
+            )
+            .await?;
+            while let Some(frame) = events.recv().await {
+                if frame["type"] == "error" {
+                    return Err(anyhow!("cannot verify Swamp activity: {}", frame["error"]));
+                }
+                if let Some(payload) = frame.get("payload") {
+                    return Ok(payload.get("data").unwrap_or(payload)["runs"]
+                        .as_array()
+                        .context("cannot verify active Swamp executions")?
+                        .iter()
+                        .any(|run| run["status"] == "running"));
+                }
+            }
+            Err(anyhow!("missing Swamp activity response"))
         })
         .await
-        .context("managed Swamp connection is unavailable")?;
-    Ok(receiver)
+        .context("Swamp activity check timed out")?
+    })
+}
+
+async fn admit(root: &Path, id: &str, events: &mpsc::UnboundedSender<Value>) -> Result<File> {
+    let mut last = "";
+    loop {
+        if events.is_closed() {
+            return Err(anyhow!("queued Swamp request was abandoned"));
+        }
+        let path = root.to_owned();
+        let (guard, state, fingerprint) = tokio::task::spawn_blocking(move || {
+            let guard = lock(&path)?;
+            let state = endpoint(&path)?.context("managed Swamp has no endpoint")?;
+            if !alive(&state) { return Err(anyhow!("managed Swamp server exited; inspect runs, then use zellij workflow server restart")); }
+            Ok::<_, anyhow::Error>((guard, state, extension_fingerprint(&path)?))
+        }).await.context("Swamp admission task failed")??;
+        if state.extensions.as_ref() == Some(&fingerprint) {
+            if !last.is_empty() {
+                let _ = events
+                    .send(json!({"id":id,"type":"managed.progress","payload":{"status":"ready"}}));
+            }
+            return Ok(guard);
+        }
+        let busy = running(root).await?;
+        let status = if busy { "waiting" } else { "reloading" };
+        if last != status {
+            let _ =
+                events.send(json!({"id":id,"type":"managed.progress","payload":{"status":status}}));
+            last = status;
+        }
+        if busy {
+            drop(guard);
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        let path = root.to_owned();
+        tokio::task::spawn_blocking(move || check_extensions(&path))
+            .await
+            .context("Swamp extension check failed")??;
+        stop_locked(root, &state).await?;
+        // Keep dispatch excluded until publication; supervisor startup uses its
+        // own lock so simultaneous startup contenders still share one process.
+        let path = root.to_owned();
+        tokio::task::spawn_blocking(move || ensure_locked(&path))
+            .await
+            .context("Swamp refresh failed")??;
+        drop(guard);
+    }
+}
+
+async fn stop_locked(root: &Path, state: &Endpoint) -> Result<()> {
+    if alive(state) {
+        let pid = if process_started(state.pid) == Some(state.started) {
+            state.pid
+        } else {
+            state.child_pid
+        };
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(pid).context("invalid supervisor PID")?),
+            nix::sys::signal::Signal::SIGTERM,
+        )
+        .context("cannot stop Swamp supervisor")?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while alive(state) {
+            if Instant::now() > deadline {
+                return Err(anyhow!("Swamp supervisor did not stop"));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    std::fs::remove_file(directory(root)?.join("endpoint.json"))
+        .context("cannot remove stopped Swamp endpoint")?;
+    Ok(())
 }
 
 fn failure(id: &str, message: &str) -> Value {
@@ -780,9 +1143,10 @@ fn bound_frame(mut frame: Value) -> Value {
 
 async fn socket(
     root: &Path,
-) -> Result<
+) -> Result<(
+    Endpoint,
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-> {
+)> {
     let root = root.to_owned();
     // Startup has its own lock. Dispatchers acquire their mutation lock only after prewarming.
     let state = tokio::task::spawn_blocking(move || {
@@ -792,6 +1156,7 @@ async fn socket(
     .context("Swamp endpoint task failed")??;
     let mut request = state
         .url
+        .clone()
         .into_client_request()
         .map_err(|_| anyhow!("invalid managed Swamp endpoint"))?;
     request.headers_mut().insert(
@@ -809,7 +1174,7 @@ async fn socket(
     .await
     .context("Swamp connection timed out")?
     .map_err(|_| anyhow!("managed Swamp WebSocket connection failed"))?;
-    Ok(socket)
+    Ok((state, socket))
 }
 
 async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
@@ -839,7 +1204,7 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
             );
             record.record = None;
         }
-        let mut ws = match result {
+        let (connected_state, mut ws) = match result {
             Ok(socket) => socket,
             Err(error) => {
                 for (_, request) in pending.drain() {
@@ -859,6 +1224,7 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
                 json!({"type":request.operation,"id":request.id,"payload":request.payload})
             };
             let mut send = request.timing.phase("send");
+            request.sent_at = Some(Instant::now());
             if ws
                 .send(Message::Text(frame.to_string().into()))
                 .await
@@ -873,21 +1239,27 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
             tokio::select! {
                 _ = deadlines.tick() => {
                     pending.retain(|id, request| {
-                        if request.run.is_none() && request.sent_at.elapsed() > STARTUP {
+                        if request.run.is_none() && request.sent_at.is_some_and(|sent| sent.elapsed() > STARTUP) {
                             let _ = request.events.send(failure(id,"Swamp request timed out; reconcile before dispatching a mutation again"));
                             false
                         } else { true }
                     });
                 },
                 request = incoming.recv() => {
-                    let Some(request) = request else { return; };
+                    let Some(mut request) = request else { return; };
                     if pending.contains_key(&request.id) {
                         let _ = request.events.send(failure(&request.id, "request identity already in flight; reconcile the existing operation"));
                         continue;
                     }
                     request.timing.emit("queue_wait", "ok", request.run.as_deref());
+                    if request.server_pid != connected_state.child_pid {
+                        pending.insert(request.id.clone(), request);
+                        broken = true;
+                        continue;
+                    }
                     let mut send = request.timing.phase("send");
                     let frame = json!({"type":request.operation,"id":request.id,"payload":request.payload});
+                    request.sent_at = Some(Instant::now());
                     pending.insert(request.id.clone(), request);
                     broken = ws.send(Message::Text(frame.to_string().into())).await.is_err();
                     if !broken { send.ok(); }
@@ -927,8 +1299,8 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
         pending.retain(|id, request| {
             request.timing.emit("disconnect", "error", request.run.as_deref());
             if let Some(record) = request.timing.record.as_mut() { record["attempt"] = json!(uuid::Uuid::new_v4().to_string()); }
-            request.guard.take();
-            if request.run.is_some() || read_request(&request.operation) { true } else {
+            if request.sent_at.is_some() { request.guard.take(); }
+            if request.sent_at.is_none() || request.run.is_some() || read_request(&request.operation) { true } else {
                 let _ = request.events.send(failure(id, "delivery is uncertain; reconcile persisted run/submission state before dispatch"));
                 false
             }
@@ -946,6 +1318,9 @@ pub async fn call(root: PathBuf, operation: &str, payload: Value) -> Result<Valu
         .context("Swamp startup task failed")??;
     let mut events = request(root, id, operation.to_owned(), payload).await?;
     while let Some(frame) = events.recv().await {
+        if frame["type"] == "managed.progress" {
+            continue;
+        }
         if frame["type"] == "error" {
             return Err(anyhow!("{}", frame["error"]));
         }
@@ -976,7 +1351,12 @@ pub async fn lifecycle(root: PathBuf, action: &str) -> Result<Value> {
     if action == "status" {
         return Ok(match endpoint(&root)? {
             Some(state) => {
-                json!({"status":if alive(&state) {"running"} else {"exited"},"pid":state.pid,"checkout":root})
+                let freshness = match extension_fingerprint(&root) {
+                    Ok(current) if state.extensions.as_ref() == Some(&current) => "current",
+                    Ok(_) => "stale",
+                    Err(_) => "unavailable",
+                };
+                json!({"status":if alive(&state) {"running"} else {"exited"},"pid":state.pid,"checkout":root,"extensions":freshness})
             },
             None => json!({"status":"stopped","checkout":root}),
         });
@@ -989,54 +1369,23 @@ pub async fn lifecycle(root: PathBuf, action: &str) -> Result<Value> {
         .await
         .context("Swamp lifecycle lock failed")??;
     if let Some(state) = endpoint(&root)? {
-        if alive(&state) {
-            // No startup here: the lifecycle lock already excludes new dispatch.
-            let mut frames = request(
-                root.clone(),
-                uuid::Uuid::new_v4().to_string(),
-                "run.history".into(),
-                json!({"active":true}),
-            )
-            .await?;
-            let frame = tokio::time::timeout(Duration::from_secs(10), frames.recv())
-                .await
-                .context("cannot verify active Swamp executions")?
-                .context("missing Swamp activity response")?;
-            let runs = frame["payload"]["runs"]
-                .as_array()
-                .context("cannot verify active Swamp executions")?;
-            if runs.iter().any(|run| run["status"] == "running") {
-                return Err(anyhow!("Swamp has active executions; stop/restart refused"));
-            }
-            let pid = if process_started(state.pid) == Some(state.started) {
-                state.pid
-            } else {
-                state.child_pid
-            };
-            nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(i32::try_from(pid).context("invalid supervisor PID")?),
-                nix::sys::signal::Signal::SIGTERM,
-            )
-            .context("cannot stop Swamp supervisor")?;
-            let deadline = Instant::now() + Duration::from_secs(15);
-            while alive(&state) {
-                if Instant::now() > deadline {
-                    return Err(anyhow!("Swamp supervisor did not stop"));
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+        if alive(&state) && running(&root).await? {
+            return Err(anyhow!("Swamp has active executions; stop/restart refused"));
         }
-        std::fs::remove_file(directory(&root)?.join("endpoint.json"))
-            .context("cannot remove stopped Swamp endpoint")?;
+        stop_locked(&root, &state).await?;
     }
     if action == "restart" {
-        drop(guard);
         tokio::task::spawn_blocking(move || ensure_locked(&root))
             .await
             .context("Swamp restart task failed")??;
     }
+    drop(guard);
     Ok(json!({"status":if action == "restart" {"running"} else {"stopped"}}))
 }
+
+#[cfg(test)]
+#[path = "unit/swamp_refresh_tests.rs"]
+mod refresh_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1135,6 +1484,7 @@ mod tests {
             child_started: started,
             url: format!("ws://{}", listener.local_addr().unwrap()),
             token: "test.secret".into(),
+            extensions: Some(extension_fingerprint(&root).unwrap()),
         })
         .unwrap();
         (dir, root, listener)
@@ -1145,6 +1495,217 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn extension_generation_tracks_contents_helpers_and_membership_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let sources = root.join("extensions/models/_lib");
+        std::fs::create_dir_all(&sources).unwrap();
+        let helper = sources.join("helper.ts");
+        std::fs::write(&helper, "first").unwrap();
+        let original = extension_fingerprint(root).unwrap();
+        std::fs::write(root.join("README.md"), "unrelated").unwrap();
+        std::fs::create_dir_all(root.join(".swamp/bundles")).unwrap();
+        std::fs::write(root.join(".swamp/bundles/generated.js"), "cache").unwrap();
+        assert_eq!(extension_fingerprint(root).unwrap(), original);
+        let modified = std::fs::metadata(&helper).unwrap().modified().unwrap();
+        std::fs::write(&helper, "other").unwrap();
+        File::options()
+            .write(true)
+            .open(&helper)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_ne!(
+            extension_fingerprint(root).unwrap(),
+            original,
+            "same size and timestamp still detects changed bytes"
+        );
+        std::fs::write(&helper, "first").unwrap();
+        assert_eq!(extension_fingerprint(root).unwrap(), original);
+        std::fs::rename(&helper, sources.join("renamed.ts")).unwrap();
+        assert_ne!(extension_fingerprint(root).unwrap(), original);
+        std::fs::remove_file(sources.join("renamed.ts")).unwrap();
+        assert_ne!(extension_fingerprint(root).unwrap(), original);
+        std::fs::write(&helper, "first").unwrap();
+        let external = tempfile::tempdir().unwrap();
+        std::fs::write(external.path().join("model.ts"), "one").unwrap();
+        std::os::unix::fs::symlink(external.path(), root.join("extensions/external")).unwrap();
+        let linked = extension_fingerprint(root).unwrap();
+        std::fs::write(external.path().join("model.ts"), "two").unwrap();
+        assert_ne!(extension_fingerprint(root).unwrap(), linked);
+        std::os::unix::fs::symlink(root.join("extensions"), root.join("extensions/cycle")).unwrap();
+        assert!(extension_fingerprint(root)
+            .unwrap_err()
+            .to_string()
+            .contains("cycle"));
+    }
+
+    #[test]
+    fn configured_extension_directories_track_all_kinds_and_environment_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let marker = format!("modelsDir: custom/models\nvaultsDir: 'custom/vaults'\ndatastoresDir: \"{}\" # absolute\nreportsDir: custom/reports\n", external.path().display());
+        std::fs::write(root.join(".swamp.yaml"), marker).unwrap();
+        let paths = extension_directories(root, |_| None).unwrap();
+        assert_eq!(
+            paths,
+            vec![
+                root.join("custom/models"),
+                root.join("custom/vaults"),
+                external.path().to_owned(),
+                root.join("custom/reports")
+            ]
+        );
+        assert_eq!(
+            extension_directories(root, |_| Some(String::new())).unwrap(),
+            paths
+        );
+        let overridden = extension_directories(root, |_| Some("override".into())).unwrap();
+        assert!(overridden.iter().all(|path| path == &root.join("override")));
+        assert!(
+            extension_directories(root, |_| Some(external.path().to_str().unwrap().into()))
+                .unwrap()
+                .iter()
+                .all(|path| path == external.path())
+        );
+        for path in paths {
+            std::fs::create_dir_all(&path).unwrap();
+            let before = extension_fingerprint(root).unwrap();
+            let file = path.join("helper.ts");
+            std::fs::write(&file, "one").unwrap();
+            let added = extension_fingerprint(root).unwrap();
+            assert_ne!(before, added);
+            std::fs::write(&file, "two").unwrap();
+            assert_ne!(added, extension_fingerprint(root).unwrap());
+            std::fs::remove_file(file).unwrap();
+            assert_eq!(before, extension_fingerprint(root).unwrap());
+        }
+    }
+
+    #[test]
+    fn extension_directory_settings_accept_yaml_strings_aliases_and_flow_maps() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for marker in [
+            "modelsDir: &path 'custom/models'\nvaultsDir: *path\nreportsDir: >-\n  custom/reports\ndatastoresDir: \"null\"\n",
+            "{modelsDir: custom/models, vaultsDir: custom/models, reportsDir: custom/reports, datastoresDir: 'null'}",
+        ] {
+            std::fs::write(root.join(".swamp.yaml"), marker).unwrap();
+            assert_eq!(extension_directories(root, |_| None).unwrap(), vec![
+                root.join("custom/models"), root.join("custom/models"), root.join("null"), root.join("custom/reports")
+            ]);
+        }
+        std::fs::write(root.join(".swamp.yaml"), "modelsDir: null\nvaultsDir: ''\n").unwrap();
+        assert_eq!(
+            extension_directories(root, |_| None).unwrap()[0],
+            root.join("extensions/models")
+        );
+        assert_eq!(
+            extension_directories(root, |_| None).unwrap()[1],
+            root.join("extensions/vaults")
+        );
+        std::fs::write(root.join(".swamp.yaml"), "modelsDir: [").unwrap();
+        assert!(extension_directories(root, |_| None).is_err());
+    }
+
+    #[test]
+    fn extension_checker_skips_deleted_and_orphaned_sources_but_checks_live_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let deno = root.join("deno");
+        zellij_test_support::write_warm_script(&deno,
+            "#!/bin/sh\n[ \"$1\" = bundle ] || exit 0\nfor source do :; done\n[ \"$(cat \"$source\")\" = valid ]\n");
+        let live = root.join("source.ts");
+        std::fs::write(&live, "valid").unwrap();
+        let mut report = json!({"denoPath":deno,"aggregateState":{"sourceDetails":[
+            {"sourcePath":"deleted.ts","stateTag":"Indexed"},
+            {"sourcePath":"source.ts","stateTag":"Indexed"},
+            {"sourcePath":"retained.js","stateTag":"OrphanedBundleOnly"},
+            {"sourcePath":"tombstone.ts","stateTag":"Tombstoned"}
+        ]}});
+        std::fs::write(root.join("retained.js"), "retained bundle").unwrap();
+        std::fs::write(root.join("tombstone.ts"), "obsolete source").unwrap();
+        check_extension_sources(root, &report).unwrap();
+        std::fs::rename(&live, root.join("renamed.ts")).unwrap();
+        check_extension_sources(root, &report).unwrap();
+        report["aggregateState"]["sourceDetails"][1]["sourcePath"] = json!("renamed.ts");
+        check_extension_sources(root, &report).unwrap();
+        std::fs::write(root.join("renamed.ts"), "broken import").unwrap();
+        assert!(check_extension_sources(root, &report).is_err());
+        report["aggregateState"]["sourceDetails"][1]["sourcePath"] = json!(root.join("renamed.ts"));
+        assert!(check_extension_sources(root, &report).is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_admission_waits_without_blocking_callbacks_or_consuming_a_dispatch_deadline() {
+        let (_dir, root, listener) = fixture().await;
+        let mut state = endpoint(&root).unwrap().unwrap();
+        state.extensions = None; // an endpoint written by an older Zellij
+        publish(&state).unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_hdr_async(stream, |request: &tokio_tungstenite::tungstenite::handshake::server::Request, mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                        response.headers_mut().insert("Sec-WebSocket-Protocol", request.headers()["Sec-WebSocket-Protocol"].clone()); Ok(response)
+                    }).await.unwrap();
+                    while let Some(Ok(Message::Text(text))) = ws.next().await {
+                        let request: Value = serde_json::from_str(&text).unwrap();
+                        let payload = if request["type"] == "run.history" {
+                            json!({"runs":[{"status":"running"}]})
+                        } else {
+                            json!({"passed":true})
+                        };
+                        if ws.send(Message::Text(json!({"id":request["id"],"type":request["type"],"payload":payload}).to_string().into())).await.is_err() { break; }
+                    }
+                });
+            }
+        });
+        let mut queued = request(
+            root.clone(),
+            "queued".into(),
+            "workflow.validate".into(),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(next(&mut queued).await["payload"]["status"], "waiting");
+        let mut callback = request(
+            root.clone(),
+            "callback".into(),
+            "model.method.run".into(),
+            json!({"_zellij_active_callback":true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(next(&mut callback).await["payload"]["passed"], true);
+        let mut history = request(
+            root.clone(),
+            "history".into(),
+            "run.history".into(),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            next(&mut history).await["payload"]["runs"][0]["status"],
+            "running"
+        );
+        assert!(queued.try_recv().is_err());
+        // Model an independently completed refresh. Waiting requests must re-read
+        // endpoint state rather than restart again using their earlier observation.
+        let guard = lock(&root).unwrap();
+        state.extensions = Some(extension_fingerprint(&root).unwrap());
+        publish(&state).unwrap();
+        drop(guard);
+        assert_eq!(next(&mut queued).await["payload"]["status"], "ready");
+        assert_eq!(next(&mut queued).await["payload"]["passed"], true);
+        server.abort();
+        std::fs::remove_dir_all(directory(&root).unwrap()).unwrap();
     }
 
     #[tokio::test]
