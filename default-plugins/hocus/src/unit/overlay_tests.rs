@@ -684,9 +684,7 @@ fn placed_state() -> State {
 }
 
 /// The config every state-level test runs under: a 60-column panel on the standard 50x200
-/// surface. Narrower than the default so that a panel can be clear of a pane that has half the
-/// screen, which is what the Ctrl-o fixtures below are about; two 30-column halves when the list
-/// is open, which is above the floor.
+/// surface. Two 30-column halves when the list is open, which is above the floor.
 fn state_config() -> BTreeMap<String, String> {
     config(&[("width", "60")])
 }
@@ -937,10 +935,10 @@ fn a_configured_size_below_the_minimum_is_raised() {
     );
 }
 
-/// The two placements must never disagree about the size, at any surface - it is the same
+/// Every corner placement must resolve to the same size at any surface - it is the same
 /// arithmetic, and this is what says so.
 #[test]
-fn the_clear_placement_is_the_same_size_as_the_corner_one() {
+fn every_corner_placement_has_the_same_size() {
     for (rows, cols) in [
         (50, 200),
         (24, 80),
@@ -954,25 +952,15 @@ fn the_clear_placement_is_the_same_size_as_the_corner_one() {
             let (chat, agents) = home_geometry(&BTreeMap::new(), rows, cols, shown)
                 .unwrap_or_else(|| panic!("some geometry at {rows}x{cols}"));
             let (_, _, w, h) = panel_of(&chat, &agents);
-            for alone in [true, false] {
-                for step in 0..4 {
-                    let clear = panel_placement(
-                        &BTreeMap::new(),
-                        rows,
-                        cols,
-                        shown,
-                        Some(at(0, 0, cols, rows / 2)),
-                        alone,
-                        step,
-                    )
+            for corner in CORNERS {
+                let placed = rect_in_corner(&BTreeMap::new(), rows, cols, shown, corner, None)
                     .expect("some geometry");
-                    assert_eq!(
-                        (clear.cols, clear.rows),
-                        (w, h),
-                        "{rows}x{cols} {shown:?} alone={alone} step={step}"
-                    );
-                    assert!(clear.x + clear.cols <= cols && clear.y + clear.rows <= rows);
-                }
+                assert_eq!(
+                    (placed.cols, placed.rows),
+                    (w, h),
+                    "{rows}x{cols} {shown:?} {corner:?}"
+                );
+                assert!(placed.x + placed.cols <= cols && placed.y + placed.rows <= rows);
             }
         }
     }
@@ -1475,10 +1463,10 @@ fn a_pair_that_is_already_together_asks_for_nothing() {
 // decision is the part worth pinning, and it is the part that can be.
 
 // ---------------------------------------------------------------------------------------------
-// Ctrl-o: the conversation jumps over a different tiled pane.
+// Ctrl-o: the panel steps one corner clockwise.
 //
-// `pick_anchor` and `anchored_geometry` are pure functions of the manifest and are tested as
-// such; the state-level tests below pin what a press does to the placement over time.
+// The step is a pure function of the corner it is in, and the state-level tests below pin what a
+// press does to the placement over time.
 
 /// A tiled pane as the manifest reports one: selectable, on the tiled layer, with a rect.
 fn tiled(id: u32, x: usize, y: usize, cols: usize, rows: usize, focused: bool) -> PaneInfo {
@@ -1513,308 +1501,12 @@ impl WithPlugin for PaneInfo {
     }
 }
 
-fn at(x: usize, y: usize, cols: usize, rows: usize) -> Rect {
-    Rect { x, y, cols, rows }
-}
-
-#[test]
-fn pick_anchor_skips_the_focused_pane() {
-    // the focused pane is the biggest by far, and still not a candidate
-    let panes = vec![
-        tiled(1, 0, 0, 150, 50, true),
-        tiled(2, 150, 0, 50, 50, false),
-    ];
-    assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)))
-    );
-}
-
-#[test]
-fn pick_anchor_prefers_the_pane_hocus_is_covering() {
-    // pane 2 is untouched, but pane 1 is the one the conversation is sitting on top of - and
-    // getting off it is the whole of what the key is for
-    let panes = vec![
-        tiled(1, 0, 0, 100, 50, false),
-        tiled(2, 100, 0, 100, 25, false),
-        tiled(3, 100, 25, 100, 25, true),
-    ];
-    assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)))
-    );
-}
-
-#[test]
-fn pick_anchor_breaks_ties_by_the_larger_pane() {
-    // nothing overlaps: the conversation is over the focused pane
-    let panes = vec![
-        tiled(1, 0, 0, 100, 50, true),
-        tiled(2, 100, 0, 100, 20, false),
-        tiled(3, 100, 20, 100, 30, false),
-    ];
-    assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3)))
-    );
-}
-
-#[test]
-fn pick_anchor_ignores_floating_suppressed_and_unselectable_panes() {
-    let floating = PaneInfo {
-        is_floating: true,
-        ..tiled(2, 100, 0, 100, 50, false)
-    };
-    let suppressed = PaneInfo {
-        is_suppressed: true,
-        ..tiled(3, 100, 0, 100, 50, false)
-    };
-    let chrome = PaneInfo {
-        is_selectable: false,
-        ..tiled(4, 0, 49, 200, 1, false)
-    };
-    let panes = vec![
-        tiled(1, 0, 0, 100, 50, true),
-        floating,
-        suppressed,
-        chrome,
-        tiled(5, 100, 0, 100, 10, false),
-    ];
-    assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(5)))
-    );
-}
-
-/// The tour is what makes a repeat press walk: a pane already visited is out of the running even
-/// when the ranking still says it is the best place to be.
-#[test]
-fn pick_anchor_skips_panes_already_visited() {
-    let panes = vec![
-        tiled(1, 0, 0, 100, 25, false),
-        tiled(2, 0, 25, 100, 25, false),
-        tiled(3, 100, 0, 100, 50, true),
-    ];
-    assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))),
-        "the pane the conversation is covering most"
-    );
-    assert_eq!(
-        pick_anchor(
-            at(3, 14, 60, 33),
-            &panes,
-            &[PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))]
-        ),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))),
-        "and then the next one, rather than the same one again"
-    );
-    assert_eq!(
-        pick_anchor(
-            at(3, 14, 60, 33),
-            &panes,
-            &[
-                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)),
-                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))
-            ]
-        ),
-        None,
-        "every candidate toured: there is no pane left to be sent clear of"
-    );
-}
-
-#[test]
-fn pick_anchor_falls_back_to_the_only_tiled_pane() {
-    // focused, and still the answer: it is the only thing on the tab to be clear of, and the
-    // overlay beside it is floating and so is not a pane the layout is made of
-    let panes = vec![
-        tiled(1, 0, 0, 200, 50, true),
-        overlay_pane(7, 3, 14, 60, 33),
-    ];
-    assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)))
-    );
-    assert_eq!(
-        pick_anchor(
-            at(3, 14, 60, 33),
-            &panes,
-            &[PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))]
-        ),
-        None,
-        "and nowhere left once it has been toured - the press walks the corners instead"
-    );
-    assert_eq!(pick_anchor(at(3, 14, 60, 33), &[], &[]), None);
-}
-
-#[test]
-fn sole_tiled_pane_counts_only_the_layout() {
-    assert!(sole_tiled_pane(&[
-        tiled(1, 0, 0, 200, 50, true),
-        overlay_pane(7, 3, 14, 60, 33),
-        PaneInfo {
-            is_selectable: false,
-            ..tiled(4, 0, 49, 200, 1, false)
-        },
-    ]));
-    assert!(!sole_tiled_pane(&two_panes()));
-    assert!(!sole_tiled_pane(&[]));
-}
-
-/// The clear placement on the standard 50x200 surface under `state_config`, with the conversation
-/// alone on screen: the first corner of the order the anchor implies.
-fn clear_of(anchor: Rect, alone: bool) -> (usize, usize, usize, usize) {
-    let placed = panel_placement(
-        &state_config(),
-        50,
-        200,
-        only_chat(),
-        Some(anchor),
-        alone,
-        0,
-    )
-    .expect("some geometry");
-    (placed.x, placed.y, placed.cols, placed.rows)
-}
-
-/// The corner placement's `(width, height)` under `state_config`, which the clear placement must
-/// never depart from.
+/// The corner placement's `(width, height)` under `state_config`, which every press must never
+/// depart from.
 fn corner_size() -> (usize, usize) {
     let (corner, _) = home_geometry(&state_config(), 50, 200, only_chat()).expect("some geometry");
     let (_, _, w, h) = rect(&corner);
     (w, h)
-}
-
-#[test]
-fn the_clear_placement_goes_right_of_a_pane_on_the_left() {
-    let (w, h) = corner_size();
-    assert_eq!(
-        clear_of(at(0, 0, 100, 50), false),
-        (200 - DEFAULT_PAD - w, 50 - DEFAULT_PAD - h, w, h),
-        "the right-hand slot, still along the bottom"
-    );
-}
-
-#[test]
-fn the_clear_placement_goes_left_of_a_pane_on_the_right() {
-    let (w, h) = corner_size();
-    assert_eq!(
-        clear_of(at(100, 0, 100, 50), false),
-        (DEFAULT_PAD, 50 - DEFAULT_PAD - h, w, h),
-        "the default corner, which is already clear of that pane"
-    );
-}
-
-#[test]
-fn the_clear_placement_goes_top_right_when_the_pane_is_the_only_one() {
-    let (w, h) = corner_size();
-    assert_eq!(
-        clear_of(at(0, 0, 200, 50), true),
-        (200 - DEFAULT_PAD - w, DEFAULT_PAD, w, h),
-        "there is no other side of the screen, so the far corner from the default"
-    );
-}
-
-#[test]
-fn the_clear_placement_picks_the_vertical_slot_that_hides_the_least() {
-    let (w, h) = corner_size();
-    // a full-width band, so neither horizontal slot helps and only the row is left to choose
-    let (_, low_band_y, _, _) = clear_of(at(0, 30, 200, 20), false);
-    assert_eq!(
-        low_band_y, DEFAULT_PAD,
-        "a band along the bottom pushes it up"
-    );
-    let (_, high_band_y, _, _) = clear_of(at(0, 0, 200, 20), false);
-    assert_eq!(
-        high_band_y,
-        50 - DEFAULT_PAD - h,
-        "and a band along the top leaves it where it was"
-    );
-    assert_eq!(
-        clear_of(at(0, 30, 200, 20), false).2,
-        w,
-        "same size either way"
-    );
-}
-
-#[test]
-fn the_clear_placement_still_chooses_a_row_when_the_column_was_forced() {
-    let (w, h) = corner_size();
-    // centred left, so the conversation is sent right - and wide enough that the right-hand slot
-    // is still on top of it, which leaves the row to make up the difference
-    assert_eq!(
-        clear_of(at(0, 30, 170, 20), false),
-        (200 - DEFAULT_PAD - w, DEFAULT_PAD, w, h),
-        "as far off it as the forced column allows"
-    );
-}
-
-#[test]
-fn the_clear_placement_leaves_a_centred_pane_in_the_default_corner() {
-    let (w, h) = corner_size();
-    assert_eq!(
-        clear_of(at(0, 0, 200, 50), false),
-        (DEFAULT_PAD, 50 - DEFAULT_PAD - h, w, h),
-        "every slot ties against a pane that fills the screen, and ties go to the corner"
-    );
-}
-
-#[test]
-fn the_clear_placement_is_never_clamped_to_the_pane() {
-    let (w, h) = corner_size();
-    assert_eq!(
-        clear_of(at(0, 46, 10, 4), false),
-        (200 - DEFAULT_PAD - w, 50 - DEFAULT_PAD - h, w, h),
-        "a tiny pane moves the conversation, it does not shrink it to fit"
-    );
-}
-
-#[test]
-fn the_clear_placement_has_nothing_to_say_without_a_surface() {
-    assert_eq!(
-        panel_placement(
-            &BTreeMap::new(),
-            0,
-            200,
-            only_chat(),
-            Some(at(0, 0, 100, 50)),
-            false,
-            0
-        ),
-        None
-    );
-    let (w, h) = corner_size();
-    assert_eq!(
-        clear_of(at(0, 0, 0, 6), false),
-        (DEFAULT_PAD, 50 - DEFAULT_PAD - h, w, h),
-        "a pane with no size is no anchor at all, and the corner is where that leaves us"
-    );
-}
-
-/// The refactor's regression net: the corner the cycle starts at is the one the placement has
-/// always chosen, for every fixture above.
-#[test]
-fn the_first_corner_of_the_order_is_where_the_placement_goes() {
-    let pad = DEFAULT_PAD;
-    let size = corner_size();
-    for (anchor, alone) in [
-        (at(0, 0, 100, 50), false),
-        (at(100, 0, 100, 50), false),
-        (at(0, 0, 200, 50), true),
-        (at(0, 30, 200, 20), false),
-        (at(0, 0, 200, 20), false),
-        (at(0, 30, 170, 20), false),
-        (at(0, 0, 200, 50), false),
-        (at(0, 46, 10, 4), false),
-    ] {
-        let order = corner_order(Some(anchor), alone, 50, 200, pad, size);
-        let first = corner_rect(order[0], 50, 200, pad, size);
-        assert_eq!(
-            (first.x, first.y, first.cols, first.rows),
-            clear_of(anchor, alone),
-            "{anchor:?} alone={alone}"
-        );
-    }
 }
 
 /// A hocus over a two-pane tab: the focused pane on the left, where the corner is, and another
@@ -1849,78 +1541,26 @@ fn placed_chat(state: &State) -> (usize, usize, usize, usize) {
 }
 
 #[test]
-fn ctrl_o_moves_the_conversation_clear_of_the_largest_unfocused_pane() {
+fn ctrl_o_moves_the_conversation_one_corner_clockwise() {
     let mut state = two_pane_state();
 
     assert!(!state.on_key(ctrl_o()));
 
-    assert_eq!(
-        state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)))
-    );
     let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
     assert!(
         is_the_users,
         "sent as the user's own placement, over any drag"
     );
     let (corner_w, corner_h) = corner_size();
-    let (x, y, w, h) = placed_chat(&state);
-    assert!(
-        x + w <= 100,
-        "clear of pane 2, which starts at 100: {x} {w}"
-    );
-    // The best corner for pane 2 is the bottom-left one, which is where the conversation already
-    // was - so the press takes the next corner of that pane's ordering rather than restating
-    // where it is. A press moves; see `State::reposition`.
     assert_eq!(
-        (x, y, w, h),
+        placed_chat(&state),
         (DEFAULT_PAD, DEFAULT_PAD, corner_w, corner_h),
-        "the left-hand column pane 2 leaves free, one corner along"
+        "from home, the next corner clockwise is the top left, whatever the tab"
     );
 }
 
 #[test]
-fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
-    let mut state = placed_state();
-    // the user's pane along the top, and two below it: one under the conversation's corner, one
-    // on the right
-    let panes = vec![
-        overlay_pane(7, 3, 14, 60, 33),
-        tiled(1, 0, 0, 200, 12, true),
-        tiled(2, 0, 12, 100, 38, false),
-        tiled(3, 100, 12, 100, 38, false),
-    ];
-    state.on_panes(manifest(0, panes.clone()));
-
-    state.on_key(ctrl_o());
-    assert_eq!(
-        state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))),
-        "the pane it is on"
-    );
-    let (x, _, w, _) = placed_chat(&state);
-    assert!(x >= 100, "moved off pane 2, onto pane 3: {x} {w}");
-
-    // the manifest catches up with where the server drew us
-    state.on_panes(manifest(
-        0,
-        std::iter::once(overlay_pane(7, x, 14, w, 33))
-            .chain(panes.into_iter().skip(1))
-            .collect(),
-    ));
-
-    state.on_key(ctrl_o());
-    assert_eq!(
-        state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3))),
-        "now it is on pane 3"
-    );
-    let (x, _, w, _) = placed_chat(&state);
-    assert!(x + w <= 100, "and back off it again: {x} {w}");
-}
-
-#[test]
-fn ctrl_o_with_one_tiled_pane_moves_to_the_top_right() {
+fn ctrl_o_with_one_tiled_pane_moves_to_the_top_left() {
     let mut state = placed_state();
     state.on_panes(manifest(
         0,
@@ -1933,15 +1573,11 @@ fn ctrl_o_with_one_tiled_pane_moves_to_the_top_right() {
 
     state.on_key(ctrl_o());
 
-    assert_eq!(
-        state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))),
-        "the focused pane is admitted when it is the only one"
-    );
     let (w, h) = corner_size();
     assert_eq!(
         placed_chat(&state),
-        (200 - DEFAULT_PAD - w, DEFAULT_PAD, w, h)
+        (DEFAULT_PAD, DEFAULT_PAD, w, h),
+        "home plus one clockwise, whatever the pane under it"
     );
 }
 
@@ -1968,11 +1604,10 @@ fn ctrl_o_keeps_the_conversations_current_size() {
     assert!(x + width <= 200 && y + height <= 50);
 }
 
-/// The bug this whole cycle exists for: two tiled panes with the other one focused is the
-/// commonest layout there is, and it offers exactly one candidate - so every press after the first
-/// used to re-pick that same pane and do nothing at all.
+/// Two presses from home, and the second is a corner further on than the first: a press always
+/// steps, so a layout that offers nothing new is no reason to stand still.
 #[test]
-fn ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner() {
+fn ctrl_o_twice_moves_to_the_next_corner() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
     let first = placed_chat(&state);
@@ -1980,11 +1615,6 @@ fn ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner() {
 
     state.on_key(ctrl_o());
 
-    assert_eq!(
-        state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))),
-        "the same anchor"
-    );
     let second = placed_chat(&state);
     assert_ne!(second, first, "and a different place to be");
     assert_eq!(
@@ -1992,9 +1622,11 @@ fn ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner() {
         (first.2, first.3),
         "the same size - a press moves the conversation, it does not resize it"
     );
-    assert!(
-        second.0 + second.2 <= 100 || second.1 + second.3 <= 50,
-        "still on the screen: {second:?}"
+    let (w, h) = corner_size();
+    assert_eq!(
+        second,
+        (200 - DEFAULT_PAD - w, DEFAULT_PAD, w, h),
+        "home, top left, top right"
     );
 }
 
@@ -2002,7 +1634,7 @@ fn ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner() {
 // The cycle: every press moves the conversation somewhere else.
 
 /// Drive `presses` Ctrl-o presses without feeding a fresh manifest between them - which is what
-/// the user does, and what the ranking alone cannot answer - and collect where each one landed.
+/// the user does - and collect where each one landed.
 fn walk(state: &mut State, presses: usize) -> Vec<(usize, usize, usize, usize)> {
     (0..presses)
         .map(|press| {
@@ -2053,45 +1685,7 @@ fn ctrl_o_always_moves_the_conversation() {
     }
 }
 
-/// Panes first, corners second: the walk is still "show me the next pane" for as long as there is
-/// a pane it has not shown.
-#[test]
-fn ctrl_o_tours_every_pane_before_it_cycles_corners() {
-    let mut state = placed_state();
-    state.on_panes(manifest(
-        0,
-        vec![
-            overlay_pane(7, 3, 14, 60, 33),
-            tiled(1, 0, 0, 100, 25, true),
-            tiled(2, 100, 0, 100, 25, false),
-            tiled(3, 0, 25, 100, 25, false),
-            tiled(4, 100, 25, 100, 25, false),
-        ],
-    ));
-
-    let mut anchored = Vec::new();
-    for _ in 0..3 {
-        state.on_key(ctrl_o());
-        anchored.push(state.panel.anchor.expect("an anchor"));
-    }
-
-    assert_eq!(anchored.len(), 3);
-    let mut distinct = anchored.clone();
-    distinct.sort_by_key(|id| format!("{id:?}"));
-    distinct.dedup();
-    assert_eq!(
-        distinct.len(),
-        3,
-        "three presses, three panes: {anchored:?}"
-    );
-    assert!(
-        !anchored.contains(&PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))),
-        "and never the pane the user is working in: {anchored:?}"
-    );
-}
-
-/// One tiled pane: a single destination used to be the whole of the story, so the second press had
-/// nowhere to go. Now it walks the four corners and comes back round.
+/// One tiled pane: the walk still has four corners to visit, and they come in the clockwise order.
 #[test]
 fn ctrl_o_cycles_the_corners_when_there_is_one_pane() {
     let mut state = placed_state();
@@ -2103,16 +1697,71 @@ fn ctrl_o_cycles_the_corners_when_there_is_one_pane() {
         ],
     ));
 
-    let walked = walk(&mut state, 5);
+    let expected: Vec<(usize, usize, usize, usize)> = [
+        Corner::TopLeft,
+        Corner::TopRight,
+        Corner::BottomRight,
+        Corner::BottomLeft,
+        Corner::TopLeft,
+    ]
+    .iter()
+    .map(|corner| {
+        let placed =
+            rect_in_corner(&state_config(), 50, 200, only_chat(), *corner, None).expect("a corner");
+        (placed.x, placed.y, placed.cols, placed.rows)
+    })
+    .collect();
 
-    let mut corners = walked[..4].to_vec();
-    corners.sort();
-    corners.dedup();
-    assert_eq!(corners.len(), 4, "four presses, four corners: {walked:?}");
-    assert_eq!(walked[4], walked[0], "and the fifth is back at the first");
+    assert_eq!(walk(&mut state, 5), expected);
 }
 
-/// A tab of nothing but overlays: no candidate, no anchor, and today nothing happened at all.
+/// The same walk whatever is on the tab and whatever holds the focus: the corner is a step, not a
+/// search.
+#[test]
+fn ctrl_o_cycles_clockwise() {
+    let expected: Vec<(usize, usize, usize, usize)> = [
+        Corner::TopLeft,
+        Corner::TopRight,
+        Corner::BottomRight,
+        Corner::BottomLeft,
+        Corner::TopLeft,
+    ]
+    .iter()
+    .map(|corner| {
+        let placed =
+            rect_in_corner(&state_config(), 50, 200, only_chat(), *corner, None).expect("a corner");
+        (placed.x, placed.y, placed.cols, placed.rows)
+    })
+    .collect();
+
+    let layouts = [
+        vec![
+            overlay_pane(7, 3, 14, 60, 33),
+            tiled(1, 0, 0, 200, 50, true),
+        ],
+        vec![
+            overlay_pane(7, 3, 14, 60, 33),
+            tiled(1, 0, 0, 100, 50, true),
+            tiled(2, 100, 0, 100, 50, false),
+        ],
+        vec![
+            overlay_pane(7, 3, 14, 60, 33),
+            tiled(1, 0, 0, 100, 50, false),
+            tiled(2, 100, 0, 100, 50, true),
+        ],
+    ];
+    for panes in layouts {
+        let mut state = placed_state();
+        state.on_panes(manifest(0, panes));
+        assert_eq!(
+            walk(&mut state, 5),
+            expected,
+            "the same clockwise walk on every tab"
+        );
+    }
+}
+
+/// A tab of nothing but overlays: the walk is the same four corners, because it reads no pane.
 #[test]
 fn ctrl_o_moves_with_no_tiled_panes_at_all() {
     let mut state = placed_state();
@@ -2120,7 +1769,6 @@ fn ctrl_o_moves_with_no_tiled_panes_at_all() {
 
     let walked = walk(&mut state, 4);
 
-    assert_eq!(state.panel.anchor, None, "there was nothing to anchor to");
     let mut corners = walked.clone();
     corners.sort();
     corners.dedup();
@@ -2146,10 +1794,10 @@ fn ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle() {
     }]);
     state.on_panes(manifest(0, vec![overlay_pane(7, 0, 0, 1, 8)]));
     let filling =
-        panel_placement(&state.kdl, 8, 1, only_chat(), None, false, 0).expect("a rectangle");
-    for step in 0..4 {
+        rect_in_corner(&state.kdl, 8, 1, only_chat(), CORNERS[0], None).expect("a rectangle");
+    for corner in CORNERS {
         assert_eq!(
-            panel_placement(&state.kdl, 8, 1, only_chat(), None, false, step),
+            rect_in_corner(&state.kdl, 8, 1, only_chat(), corner, None),
             Some(filling),
             "every corner is the whole of the screen"
         );
@@ -2164,48 +1812,40 @@ fn ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle() {
     );
 }
 
-/// A pane the tour has visited and the user has since closed must not hold its slot: the press
-/// that came round to it would find it gone and go nowhere new.
+/// A press steps past where the panel actually is, not only past where the last press put it: a
+/// panel the user dragged onto the next corner is moved on from there rather than left sitting on
+/// it. Without reading the manifest, the first press after a drag restates the corner the drag
+/// already put the panel in and appears to do nothing.
 #[test]
-fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
-    let mut state = placed_state();
-    let panes = vec![
-        overlay_pane(7, 3, 14, 60, 33),
-        tiled(1, 0, 0, 100, 50, true),
-        tiled(2, 100, 0, 50, 50, false),
-        tiled(3, 150, 0, 50, 50, false),
-    ];
-    state.on_panes(manifest(0, panes));
-
-    state.on_key(ctrl_o());
-    state.on_key(ctrl_o());
+fn ctrl_o_moves_a_panel_the_user_dragged() {
+    let mut state = two_pane_state();
     assert_eq!(
-        state.panel.warp_visited.len(),
-        2,
-        "two panes toured: {:?}",
-        state.panel.warp_visited
+        state.panel.placed_corner,
+        Some(Corner::BottomLeft),
+        "home, as the first placement left it"
     );
 
-    // pane 2 closed, and pane 3 took its room
+    // The user dragged the panel from home up to the top-left corner. The server reports the
+    // drag, and nothing of hocus's own is in flight to confuse it with.
     state.on_panes(manifest(
         0,
         vec![
-            overlay_pane(7, 3, 14, 60, 33),
+            overlay_pane(7, DEFAULT_PAD, DEFAULT_PAD, 60, 33),
             tiled(1, 0, 0, 100, 50, true),
-            tiled(3, 100, 0, 100, 50, false),
+            tiled(2, 100, 0, 100, 50, false),
         ],
     ));
+    state.last_placement = None;
 
-    assert_eq!(
-        state.panel.warp_visited,
-        vec![PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3))],
-        "the pane that is gone is out of the tour"
-    );
     state.on_key(ctrl_o());
+
+    let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
+    assert!(is_the_users, "sent as the user's own placement");
+    let (w, h) = corner_size();
     assert_eq!(
-        state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3))),
-        "and it is not offered again"
+        placed_chat(&state),
+        (200 - DEFAULT_PAD - w, DEFAULT_PAD, w, h),
+        "top-right: one clockwise from where the drag left it, not the drag's own corner"
     );
 }
 
@@ -2242,17 +1882,16 @@ fn a_re_tile_does_not_move_the_conversation() {
     );
     assert_eq!(state.panel.placed_rect, Some(parked), "and nothing moved");
     assert_eq!(
-        state.panel.anchor_rect,
-        Some(at(150, 0, 50, 50)),
-        "the anchor is still tracked - the next press ranks against it"
+        state.panel.placed_corner,
+        Some(Corner::TopLeft),
+        "the corner the press chose is remembered - the next press steps from it"
     );
 }
 
-/// The same rule for the pane the conversation was sent clear of: it going away releases the
-/// anchor, and releases nothing else. Snapping back to the corner here was the most visible half
-/// of the old behaviour.
+/// The corner is not a pane, so the pane the conversation moved off going away releases nothing:
+/// the panel stays in the corner the last press put it in.
 #[test]
-fn closing_the_anchor_pane_leaves_the_conversation_where_it_is() {
+fn closing_the_pane_the_conversation_moved_off_leaves_it_where_it_is() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
     let parked = state.panel.placed_rect.expect("a placement");
@@ -2266,12 +1905,12 @@ fn closing_the_anchor_pane_leaves_the_conversation_where_it_is() {
         ],
     ));
 
-    assert_eq!((state.panel.anchor, state.panel.anchor_rect), (None, None));
+    assert_eq!(state.panel.placed_corner, Some(Corner::TopLeft));
     assert_eq!(state.last_placement, None, "a pane closing places nothing");
     assert_eq!(state.panel.placed_rect, Some(parked), "and moves nothing");
 }
 
-/// The corner survives the anchor that chose it, which is what makes the guarantee hold through
+/// The corner survives the press that chose it, which is what makes the guarantee hold through
 /// the one event that genuinely has to re-place: a terminal resize. Without the remembered corner
 /// this is where the delayed jump home would happen.
 #[test]
@@ -2281,7 +1920,7 @@ fn a_resize_keeps_the_corner_the_last_press_chose() {
     let corner = state.panel.placed_corner.expect("a corner");
     assert_ne!(corner, CORNERS[0], "the press left the default corner");
 
-    // the anchor closes, and then the terminal is made smaller
+    // the pane it moved off closes, and then the terminal is made smaller
     state.on_panes(manifest(
         0,
         vec![
@@ -2313,8 +1952,8 @@ fn a_pane_closing_does_not_move_the_agent_list() {
     let mut state = two_pane_state();
     state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
     state.on_panes(manifest(0, list_beside()));
-    // The press is what gives `track_anchor` an anchor to lose: with none, it returns at its
-    // first guard and the assertion below holds however the placement arms are written.
+    // A press to make the panel one the manifest did not place, so a placement on the manifest
+    // below would be visible; then nothing moves it.
     state.on_key(ctrl_o());
     state.last_placement = None;
 
@@ -2333,18 +1972,18 @@ fn a_pane_closing_does_not_move_the_agent_list() {
     );
 }
 
-/// `follow_tab` releases the anchor before its own placement (a host call with a reply, so not
-/// driven here); the manifest of the tab we landed on is the other route, and the one every
-/// cross-tab move ends in.
+/// A tab change moves the panel without re-placing it, and changes nothing about where it sits:
+/// the corner is the panel's, not the tab's.
 ///
 /// Nothing is placed on arrival, and nothing needs to be: the move carries the overlay's exact
 /// coordinates and its `OverlayCarry` across (`Tab::overlay_placement_for`), and every tab
 /// resolves against the same session surface.
 #[test]
-fn arriving_on_another_tab_drops_the_anchor() {
+fn arriving_on_another_tab_keeps_the_corner() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
     let parked = state.panel.placed_rect.expect("a placement");
+    let corner = state.panel.placed_corner.expect("a corner");
     state.last_placement = None;
 
     state.on_panes(manifest(
@@ -2356,28 +1995,23 @@ fn arriving_on_another_tab_drops_the_anchor() {
     ));
 
     assert_eq!(state.own_tab_index, Some(TabPosition::new(1)));
-    assert_eq!((state.panel.anchor, state.panel.anchor_rect), (None, None));
+    assert_eq!(state.panel.placed_corner, Some(corner));
     assert_eq!(state.last_placement, None, "the move carried the geometry");
     assert_eq!(state.panel.placed_rect, Some(parked));
 }
 
 #[test]
-fn a_hidden_panel_keeps_its_anchor() {
+fn a_hidden_panel_keeps_its_corner() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
     let anchored = placed_chat(&state);
+    let corner = state.panel.placed_corner.expect("a corner");
 
     state.hide_panel();
-    assert_eq!(
-        state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)))
-    );
+    assert_eq!(state.panel.placed_corner, Some(corner));
     state.reveal_panel();
 
-    assert_eq!(
-        state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)))
-    );
+    assert_eq!(state.panel.placed_corner, Some(corner));
     assert_eq!(placed_chat(&state), anchored, "revealed where it was");
 }
 
@@ -2706,9 +2340,8 @@ fn a_split_dragged_below_the_floor_is_kept() {
 }
 
 /// Ctrl-o in the list moves the panel only when the list is here to move: with no list, or with
-/// the list on another tab, the request does nothing. A press ranks the corners against the
-/// panes of *our* tab, and placing a parted list against those would put it clear of nothing -
-/// and mark it placed while it is still elsewhere.
+/// the list on another tab, the request does nothing - it would mark the list placed while it is
+/// still elsewhere.
 #[test]
 fn a_list_that_is_not_here_is_not_repositioned() {
     let mut state = two_pane_state();
@@ -2764,33 +2397,27 @@ fn a_manifest_without_the_halves_side_by_side_leaves_the_split_alone() {
     );
 }
 
-/// The list's own Ctrl-o, and the whole of what it is for: it walks the panel off the pane it was
-/// covering.
+/// The list's own Ctrl-o takes the same step as the conversation's, and moves both halves with it.
 #[test]
-fn ctrl_o_in_the_list_moves_the_panel_clear_of_the_largest_unfocused_pane() {
+fn ctrl_o_in_the_list_moves_the_panel_one_corner_clockwise() {
     let mut state = agents_beside_state();
 
     state.pipe(list_reposition());
 
-    assert_eq!(
-        state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))),
-        "the largest pane the user is not working in"
-    );
     let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
     assert!(
         is_the_users,
         "sent as the user's own placement, over any drag"
     );
-    let (agents_x, _, agents_w, _) =
-        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)).expect("the list is placed");
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)),
+        Some((3, 3, 30, 33)),
+        "the list at the top left"
+    );
     let (chat_x, _, chat_w, _) =
         placed_pane(&state, zellij_tile::prelude::PluginId::new(7)).expect("and the conversation");
-    assert!(
-        chat_x + chat_w <= 100 && agents_x + agents_w <= 100,
-        "clear of pane 2, which starts at 100: {agents_x} {agents_w} / {chat_x} {chat_w}"
-    );
-    assert_eq!(chat_x, agents_x + agents_w, "still one panel");
+    assert_eq!(chat_x, 3 + 30, "still one panel");
+    assert_eq!(chat_w, 30, "cut at the split");
 }
 
 /// A press in either half moves the whole panel: both ids in the placement, the split intact.
@@ -2830,7 +2457,7 @@ fn a_press_in_either_half_places_the_whole_panel() {
             placed_pane(&state, zellij_tile::prelude::PluginId::new(9))
         ),
         from_the_list,
-        "to the same place: it is one panel and one tour"
+        "to the same place: it is one panel and one corner"
     );
     let (agents_x, _, agents_w, _) =
         placed_pane(&state, zellij_tile::prelude::PluginId::new(9)).expect("the list");
@@ -2841,8 +2468,8 @@ fn a_press_in_either_half_places_the_whole_panel() {
     );
 }
 
-/// A press moves, every time - the same guarantee the conversation's has, walked pane to pane and
-/// then round the corners.
+/// A press moves, every time - the same guarantee the conversation's has, walked round the
+/// corners.
 #[test]
 fn ctrl_o_in_the_list_always_moves_it() {
     let mut state = agents_beside_state();
@@ -2858,8 +2485,8 @@ fn ctrl_o_in_the_list_always_moves_it() {
         assert_ne!(placed, was, "press {press} moved the list nowhere");
         corners.insert(placed);
         was = placed;
-        // The manifest the server would send back, so the next press ranks against where the
-        // panel actually is rather than where it started.
+        // The manifest the server would send back, so the next press steps from where the panel
+        // actually is rather than where it started.
         let (x, y, cols, rows) = placed;
         let (chat_x, chat_y, chat_cols, chat_rows) =
             placed_pane(&state, zellij_tile::prelude::PluginId::new(7)).expect("a placement");
@@ -2876,7 +2503,7 @@ fn ctrl_o_in_the_list_always_moves_it() {
     assert_eq!(
         corners.len(),
         4,
-        "the four corners and nothing outside them - the fifth press re-opens the tour"
+        "the four corners and nothing outside them - the fifth press starts the cycle again"
     );
 }
 

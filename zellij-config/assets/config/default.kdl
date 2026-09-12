@@ -481,13 +481,10 @@ plugins {
     // restores the split, and either opens the half that is missing if you
     // closed one. A click moves the keyboard between the halves too.
     //
-    // Ctrl o moves the panel somewhere else — and every press moves it. The first
-    // press jumps it clear of a different tiled pane, the largest one you are
-    // not working in, and it stays clear of that pane through resizes until the
-    // pane closes or hocus follows you to another tab, when it returns to the
-    // corner. Press it again and it goes clear of the next pane, and once there
-    // are no panes left to show you it walks the four corners of the screen
-    // instead, then starts over. It works on a panel you have dragged, too:
+    // Ctrl o moves the panel to the next corner, and every press moves it: it
+    // steps one corner clockwise around the four corners of the screen, at the
+    // size it already has, then starts over. It works on a panel you have
+    // dragged, too - the press carries on from where the drag left it, and
     // dragging either half's frame moves the whole panel, split and all.
     hocus location="zellij:hocus" {
         shared true

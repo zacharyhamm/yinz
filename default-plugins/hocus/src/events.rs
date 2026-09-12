@@ -8,9 +8,9 @@ use zellij_tile::prelude::*;
 // ---------------------------------------------------------------------------
 
 impl State {
-    /// Ctrl-o: move the conversation somewhere else - clear of a tiled pane, or on round the
-    /// corners once every pane has been offered. See `State::reposition`. The agent list takes
-    /// the same key in its own pane, and asks hocus for it over `wire::AGENT_STRIP_REPOSITION`.
+    /// Ctrl-o: move the conversation one corner clockwise. See `State::reposition`. The agent
+    /// list takes the same key in its own pane, and asks hocus for it over
+    /// `wire::AGENT_STRIP_REPOSITION`.
     pub(crate) fn is_reposition_key(key: &KeyWithModifier) -> bool {
         key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl])
     }
@@ -757,10 +757,11 @@ impl State {
             if self.last_pane_title.as_deref() != Some(own.title.as_str()) {
                 self.last_pane_title = None;
             }
-            // What Ctrl-o ranks, and what an anchored conversation follows. Read before the
-            // placement retry below, so a manifest that both places and re-anchors does so once.
+            // Every pane on our tab, which Ctrl-o no longer reads - it only cycles corners - but
+            // which `reported_panel` uses to find the rectangle our halves are actually drawn at.
+            // Read before the placement retry below, so a manifest that both places and records
+            // us does so once.
             self.tab_panes = panes.clone();
-            self.track_anchor(panes);
             // Where the user dragged the divider, if they did: the seam drag happens in the
             // server and claims nothing, so the manifest is how it reaches the next placement.
             self.read_split(panes);
@@ -775,6 +776,19 @@ impl State {
             // the manifest to look at.
             if !self.is_panel() {
                 break;
+            }
+            // A placement of ours is only believed once the manifest echoes it; until then a
+            // manifest reporting something else is a snapshot taken before the move. The first
+            // manifest that shows the rectangle we asked for proves the placement landed and
+            // clears the budget, and the budget lapses like the others so a panel the user
+            // dragged is eventually believed - see `State::placement_pending` and
+            // `overlay::State::reposition`.
+            if self.placement_pending > 0 {
+                if self.panel.placed_rect == self.reported_panel() {
+                    self.placement_pending = 0;
+                } else {
+                    self.placement_pending -= 1;
+                }
             }
             // The manifest is what makes a placement possible at all: it names the tab a pane is
             // on, which is the thing `change_overlay_coordinates` needs to find it. A pane still
@@ -915,8 +929,8 @@ impl State {
         if key.bare_key == BareKey::Char('l') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             return self.new_chat();
         }
-        // Taken ahead of the modal states below for the same reason Ctrl-l is: moving the pane
-        // out of the way is wanted whatever is on screen in it, and the input box would swallow
+        // Taken ahead of the modal states below for the same reason Ctrl-l is: cycling the panel
+        // to its next corner is wanted whatever is on screen in it, and the input box would swallow
         // the key. Nothing to redraw here - the move is the server's to paint.
         if Self::is_reposition_key(&key) {
             self.reposition();

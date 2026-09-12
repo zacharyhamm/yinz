@@ -106,13 +106,14 @@
 //! (`wire::AGENT_STRIP_HIDE`), being the only one that knows both plugin ids.
 //! `Ctrl e a` brings the whole panel back with the keyboard here, `Ctrl e c`
 //! with the keyboard in the conversation; neither ever leaves one half alone.
-//! Ctrl-o moves the panel - both halves, split intact - clear of a tiled pane;
-//! hocus does the arithmetic, since it places both overlays, so that key is a
-//! request (`wire::AGENT_STRIP_REPOSITION`) rather than a move. Enter walks you
-//! to the selected agent, and puts the panel away on the way: the panel is an
-//! overlay drawn over the pane you asked for, so leaving it up would hand you
-//! the keyboard in a pane you cannot see. Esc is the same dismissal without the
-//! walk. `say_hello_to_hocus` carries hocus's url, because this pane is a
+//! Ctrl-o cycles the panel - both halves, split intact - one corner
+//! clockwise; hocus does the arithmetic, since it places both overlays, so
+//! that key is a request (`wire::AGENT_STRIP_REPOSITION`) rather than a move.
+//! Enter walks you to the selected agent, and puts the panel away on the way:
+//! the panel is an overlay drawn over the pane you asked for, so leaving it up
+//! would hand you the keyboard in a pane you cannot see. Esc is the same
+//! dismissal without the walk. `say_hello_to_hocus` carries hocus's url,
+//! because this pane is a
 //! view over rows only hocus can compute and a list with no hocus to ask has
 //! nothing to draw; the hocus it launches appears beside us but does **not**
 //! take the focus - `wire::OPENED_BY` is what tells it so - because the user
@@ -1058,8 +1059,7 @@ impl State {
             return self.answer_resume(key);
         }
         if key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            // Move this pane out of the way of whatever it is covering - the same gesture the
-            // conversation has, and the same walk: clear of a tiled pane, then round the corners.
+            // Cycle the whole panel one corner clockwise - the same gesture the conversation has.
             // hocus owns both overlays' geometry, so this asks rather than moves. Nothing to
             // redraw: the move is the server's to paint.
             pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_REPOSITION));
