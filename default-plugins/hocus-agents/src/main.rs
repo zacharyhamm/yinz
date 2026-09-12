@@ -119,6 +119,7 @@
 //! take the focus - `wire::OPENED_BY` is what tells it so - because the user
 //! asked for a list.
 
+mod todos;
 mod vms;
 use std::collections::BTreeMap;
 
@@ -134,11 +135,12 @@ use zellij_tile::prelude::*;
 #[derive(Default)]
 struct State {
     own_plugin_id: PluginId,
-    vm_tab: bool,
+    surface: Surface,
     tabs_focused: bool,
-    tab_cells: Vec<TabCell<bool>>,
+    tab_cells: Vec<TabCell<Surface>>,
     age_minute: i64,
     vms: vms::View,
+    todos: todos::View,
     /// The strip as hocus last sent it.
     rows: Vec<StripRow>,
     /// What the daemon's model last made of each idle agent, as hocus last sent it.
@@ -381,6 +383,29 @@ enum Focus {
     History,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Surface {
+    #[default]
+    Agents,
+    Todos,
+    Vms,
+}
+
+impl Surface {
+    fn step(self, delta: isize) -> Self {
+        let index: usize = match self {
+            Self::Agents => 0,
+            Self::Todos => 1,
+            Self::Vms => 2,
+        };
+        match index.saturating_add_signed(delta).min(2) {
+            0 => Self::Agents,
+            1 => Self::Todos,
+            _ => Self::Vms,
+        }
+    }
+}
+
 /// VM polling cadence. Agent ages redraw only when their minute changes.
 const POLL_TICK_SECS: f64 = 2.0;
 
@@ -391,6 +416,7 @@ impl ZellijPlugin for State {
         subscribe(&[
             EventType::Key,
             EventType::Mouse,
+            EventType::PluginDataChanged,
             EventType::PermissionRequestResult,
             EventType::Timer,
             EventType::SessionUpdate,
@@ -398,7 +424,9 @@ impl ZellijPlugin for State {
         set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
         set_selectable(true);
         set_self_mouse_selection_support(true);
-        self.own_plugin_id = get_plugin_ids().plugin_id;
+        let ids = get_plugin_ids();
+        self.own_plugin_id = ids.plugin_id;
+        self.open_todos(ids.initial_cwd.to_string_lossy().into_owned());
         rename_plugin_pane(self.own_plugin_id, "agents");
         // Unconditional, and before there are any rows: what this first one carries
         // is the plugin id, which is how hocus tells "the agents pane is focused"
@@ -413,6 +441,9 @@ impl ZellijPlugin for State {
         let revision = self.selected_revision();
         let rendered = match event {
             Event::SessionUpdate(sessions, _) => self.vm_sessions(&sessions),
+            Event::PluginDataChanged { watch_id, rows, .. } => {
+                self.todo_rows_changed(watch_id, rows)
+            },
             Event::Key(key) => self.on_key(key),
             Event::Mouse(mouse_event) => self.on_mouse(mouse_event),
             // The ages in the history half are drawn from the clock, so nothing the pane
@@ -572,6 +603,7 @@ impl ZellijPlugin for State {
             self.last_reader_rows = 0;
             self.last_reader_max_scroll = 0;
             self.vms.clear_dimensions();
+            self.todos.clear_dimensions();
         }
         if rows == 0 || cols == 0 {
             return;
@@ -600,15 +632,21 @@ impl ZellijPlugin for State {
                 [
                     (
                         "Agents".to_owned(),
-                        !self.vm_tab,
-                        self.tabs_focused && !self.vm_tab,
-                        false,
+                        self.surface == Surface::Agents,
+                        self.tabs_focused && self.surface == Surface::Agents,
+                        Surface::Agents,
+                    ),
+                    (
+                        "Todos".to_owned(),
+                        self.surface == Surface::Todos,
+                        self.tabs_focused && self.surface == Surface::Todos,
+                        Surface::Todos,
                     ),
                     (
                         if self.vms.has_error() { "VMs!" } else { "VMs" }.to_owned(),
-                        self.vm_tab,
-                        self.tabs_focused && self.vm_tab,
-                        true,
+                        self.surface == Surface::Vms,
+                        self.tabs_focused && self.surface == Surface::Vms,
+                        Surface::Vms,
                     ),
                 ],
                 cols,
@@ -623,9 +661,16 @@ impl ZellijPlugin for State {
         if rows == 0 {
             return;
         }
-        if self.vm_tab {
-            self.render_vms(rows, cols);
-            return;
+        match self.surface {
+            Surface::Todos => {
+                self.render_todos(rows, cols);
+                return;
+            },
+            Surface::Vms => {
+                self.render_vms(rows, cols);
+                return;
+            },
+            Surface::Agents => {},
         }
         // The reader is the whole pane rather than a third region: an event long enough to
         // need it is long enough to want the room, and the list it covers is still exactly
@@ -953,6 +998,16 @@ const MIN_LIST_ROWS: usize = 3;
 const MIN_HISTORY_ROWS: usize = 2;
 
 impl State {
+    fn switch_surface(&mut self, surface: Surface) {
+        if self.surface == surface {
+            return;
+        }
+        self.surface = surface;
+        if surface == Surface::Vms {
+            self.poll_vms();
+        }
+    }
+
     /// Whether the cursor has left the row `was` named, dropping everything that belonged to
     /// it if so.
     ///
@@ -998,9 +1053,9 @@ impl State {
                     self.yield_to_chat(wire::STOP_INPUT);
                 } else {
                     self.tabs_focused = false;
-                    if self.vm_tab {
+                    if self.surface == Surface::Vms {
                         self.vms.details = false;
-                    } else {
+                    } else if self.surface == Surface::Agents {
                         self.focus = Focus::List;
                     }
                 }
@@ -1008,8 +1063,12 @@ impl State {
             }
             if key.has_no_modifiers() {
                 match key.bare_key {
-                    BareKey::Left | BareKey::Right => {
-                        self.switch_vm_tab(!self.vm_tab);
+                    BareKey::Left => {
+                        self.switch_surface(self.surface.step(-1));
+                        return true;
+                    },
+                    BareKey::Right => {
+                        self.switch_surface(self.surface.step(1));
                         return true;
                     },
                     BareKey::Enter | BareKey::Down => {
@@ -1024,8 +1083,10 @@ impl State {
             }
             return false;
         }
-        if self.vm_tab {
-            return self.vm_key(key);
+        match self.surface {
+            Surface::Todos => return self.todo_key(key),
+            Surface::Vms => return self.vm_key(key),
+            Surface::Agents => {},
         }
         if self.reading.is_some() && key.bare_key == BareKey::Tab {
             if key.has_modifiers(&[KeyModifier::Shift]) {
@@ -1354,7 +1415,7 @@ impl State {
                 .map(|cell| cell.target)
             {
                 self.tabs_focused = true;
-                self.switch_vm_tab(target);
+                self.switch_surface(target);
                 return true;
             }
         }
@@ -1368,8 +1429,10 @@ impl State {
             },
             other => other,
         };
-        if self.vm_tab {
-            return self.vm_mouse(mouse_event);
+        match self.surface {
+            Surface::Todos => return self.todo_mouse(mouse_event),
+            Surface::Vms => return self.vm_mouse(mouse_event),
+            Surface::Agents => {},
         }
         // With the reader up there is one thing on screen and the wheel is its. A click is
         // ignored rather than closing it: nothing under the pointer is a target, and a stray
@@ -2584,8 +2647,11 @@ impl State {
         let tabs_focused = stop == Some(hocus_proto::vms::STOP_TABS);
         let tabs_changed = self.tabs_focused != tabs_focused;
         self.tabs_focused = tabs_focused;
-        if self.vm_tab {
+        if self.surface == Surface::Vms {
             self.vms.details = stop == Some(wire::STOP_HISTORY) && self.vms.last_details_rows > 0;
+            return true;
+        }
+        if self.surface == Surface::Todos {
             return true;
         }
         let focus = match stop {
@@ -4103,7 +4169,7 @@ mod tests {
         state.set_rows(unfocused(strip()));
         state.selected = 3;
         state.history_scroll = 2;
-        state.render(12, 20);
+        state.render(12, 40);
         let agents_state = (state.selected, state.history_scroll);
         assert_eq!(
             state
@@ -4111,19 +4177,23 @@ mod tests {
                 .iter()
                 .map(|cell| (cell.text.as_str(), cell.target))
                 .collect::<Vec<_>>(),
-            [(" Agents │", false), (" VMs │", true)]
+            [
+                (" Agents │", Surface::Agents),
+                (" Todos │", Surface::Todos),
+                (" VMs │", Surface::Vms),
+            ]
         );
 
-        let vm_x = state.tab_cells[1].x;
+        let vm_x = state.tab_cells[2].x;
         assert!(state.on_mouse(Mouse::LeftClick(0, vm_x)));
-        assert!(state.vm_tab);
+        assert_eq!(state.surface, Surface::Vms);
         assert_eq!((state.selected, state.history_scroll), agents_state);
 
         let agents_x = state.tab_cells[0].x;
         assert!(state.on_mouse(Mouse::LeftClick(0, agents_x)));
-        assert!(!state.vm_tab);
+        assert_eq!(state.surface, Surface::Agents);
         assert_eq!((state.selected, state.history_scroll), agents_state);
-        assert!(!state.on_mouse(Mouse::LeftClick(0, 19)));
+        assert!(!state.on_mouse(Mouse::LeftClick(0, 39)));
     }
 
     #[test]
@@ -4272,10 +4342,11 @@ mod tests {
                 assert_eq!(position(&state), before);
 
                 let header_visible = rows > 0 && cols > 0;
-                assert_eq!(state.on_mouse(Mouse::LeftClick(0, 10)), header_visible);
-                assert_eq!(state.vm_tab, header_visible);
+                let vm_x = state.tab_cells.last().map(|cell| cell.x).unwrap_or(10);
+                assert_eq!(state.on_mouse(Mouse::LeftClick(0, vm_x)), header_visible);
+                assert_eq!(state.surface == Surface::Vms, header_visible);
                 assert_eq!(state.on_mouse(Mouse::LeftClick(0, 0)), header_visible);
-                assert!(!state.vm_tab);
+                assert_eq!(state.surface, Surface::Agents);
 
                 state.render(12, 50);
                 assert_eq!(position(&state), before);
@@ -5371,8 +5442,11 @@ mod tests {
         state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier());
         assert!(state.tabs_focused);
         state.on_key(KeyWithModifier::new(BareKey::Right));
-        assert!(state.vm_tab);
+        assert_eq!(state.surface, Surface::Todos);
+        state.on_key(KeyWithModifier::new(BareKey::Right));
+        assert_eq!(state.surface, Surface::Vms);
         state.render(8, 20);
+        state.on_key(KeyWithModifier::new(BareKey::Left));
         state.on_key(KeyWithModifier::new(BareKey::Left));
         state.on_key(KeyWithModifier::new(BareKey::Tab));
         assert!(!state.tabs_focused);

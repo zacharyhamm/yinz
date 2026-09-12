@@ -710,7 +710,7 @@ fn vm_tab_focuses_a_pane_in_another_session_and_dismisses_the_panel() {
     source.expect_pty_spawn().output(b"$ ");
     open_sidebar(&source);
     source.send_stdin(&keys::SHIFT_TAB);
-    source.send_stdin(b"\x1b[C");
+    source.send_stdin(b"\x1b[C\x1b[C");
     source.wait_until(
         "the VM tab has the remote VM and associated pane",
         |screen| screen.contains(" VMs │") && screen.contains("vm-focus-target"),

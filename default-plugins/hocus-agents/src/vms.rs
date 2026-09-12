@@ -60,17 +60,9 @@ impl State {
         true
     }
 
-    pub(super) fn switch_vm_tab(&mut self, vm: bool) {
-        if self.vm_tab != vm {
-            self.vm_tab = vm;
-            if vm {
-                self.poll_vms();
-            }
-        }
-    }
     pub(super) fn poll_vms(&mut self) -> bool {
         let expired = self.expire_vm_request(now_ms());
-        if self.vm_tab
+        if self.surface == Surface::Vms
             && self.vms.visible
             && self.vms.pending.is_none()
             && self.vms.confirming.is_none()
@@ -747,7 +739,7 @@ mod tests {
     use super::*;
     fn state() -> State {
         let mut state = State {
-            vm_tab: true,
+            surface: Surface::Vms,
             ..Default::default()
         };
         state.vms.owner = Some(PluginId::new(1));
@@ -903,10 +895,10 @@ mod tests {
         state.poll_vms();
         assert!(state.vms.pending.is_none());
         state.vms.visible = true;
-        state.vm_tab = false;
+        state.surface = Surface::Agents;
         state.poll_vms();
         assert!(state.vms.pending.is_none());
-        state.switch_vm_tab(true);
+        state.switch_surface(Surface::Vms);
         assert!(state.vms.pending.is_some());
     }
     #[test]
@@ -951,7 +943,7 @@ mod tests {
                 request.request_id
             );
             state.vms.visible = false;
-            state.vm_tab = false;
+            state.surface = Surface::Agents;
             assert!(state.expire_vm_request(deadline));
             assert!(state.vms.pending.is_none());
             assert!(!state.expire_vm_request(deadline));
@@ -963,7 +955,7 @@ mod tests {
                 assert!(state.vms.error.contains("outcome unknown"));
             }
             state.vms.visible = true;
-            state.switch_vm_tab(true);
+            state.switch_surface(Surface::Vms);
             let fresh = state.vms.pending.clone().unwrap();
             assert_eq!(fresh.operation, Operation::List);
             assert!(fresh.request_id > request.request_id);
@@ -1040,7 +1032,7 @@ mod tests {
         assert!(state.vms.pending.as_ref().unwrap().request_id > id);
         state.vms.pending_deadline_ms = 0;
         state.vms.visible = false;
-        state.vm_tab = false;
+        state.surface = Surface::Agents;
         assert!(state.update(Event::Timer(FractionalSeconds::new(0.0))));
         assert!(state.vms.pending.is_none());
     }
@@ -1078,7 +1070,7 @@ mod tests {
     #[test]
     fn vm_tabs_preserve_agent_reader_selection_and_both_scroll_positions() {
         let mut state = state();
-        state.vm_tab = false;
+        state.surface = Surface::Agents;
         assert!(
             state.take_ring_stop(Some(vms::STOP_TABS)),
             "the tab focus needs a redraw"
@@ -1089,11 +1081,13 @@ mod tests {
         state.vms.selected = 2;
         state.tabs_focused = true;
         state.on_key(KeyWithModifier::new(BareKey::Right));
-        assert!(state.vm_tab);
+        assert_eq!(state.surface, Surface::Todos);
+        state.on_key(KeyWithModifier::new(BareKey::Right));
+        assert_eq!(state.surface, Surface::Vms);
         assert_eq!(state.selected, 7);
         assert_eq!(state.history_scroll, 9);
         state.on_key(KeyWithModifier::new(BareKey::Left));
-        assert!(!state.vm_tab);
+        assert_eq!(state.surface, Surface::Todos);
         assert_eq!(state.vms.selected, 2);
         assert_eq!(state.vms.scroll, 4);
     }
@@ -1101,7 +1095,8 @@ mod tests {
     fn vm_ring_mouse_offset_and_small_sizes_keep_tabs_reachable() {
         let mut state = state();
         state.render(20, 40);
-        state.on_mouse(Mouse::LeftClick(0, 10));
+        let vm_x = state.tab_cells[2].x;
+        state.on_mouse(Mouse::LeftClick(0, vm_x));
         assert!(state.tabs_focused);
         state.on_key(KeyWithModifier::new(BareKey::Tab));
         assert!(!state.tabs_focused);
@@ -1182,9 +1177,10 @@ mod tests {
 
             let header_visible = rows > 0 && cols > 0;
             assert_eq!(state.on_mouse(Mouse::LeftClick(0, 0)), header_visible);
-            assert_eq!(state.vm_tab, !header_visible);
-            assert_eq!(state.on_mouse(Mouse::LeftClick(0, 10)), header_visible);
-            assert!(state.vm_tab);
+            assert_eq!(state.surface == Surface::Vms, !header_visible);
+            let vm_x = state.tab_cells.last().map(|cell| cell.x).unwrap_or(10);
+            assert_eq!(state.on_mouse(Mouse::LeftClick(0, vm_x)), header_visible);
+            assert_eq!(state.surface, Surface::Vms);
 
             state.render(20, 40);
             assert_eq!(dimensions(&state), visible);
