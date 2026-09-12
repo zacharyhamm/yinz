@@ -13,6 +13,7 @@ local latest_stream
 local output_render_pending=false
 local follow_live=true
 local generation=0
+local submission,submission_rpc,submission_ready
 local function identity(entry)
   return entry and z.json.encode{entry.attributes.run,entry.model,entry.attributes.question}
 end
@@ -111,6 +112,7 @@ function M.attach(attachment)
   generation=generation+1
   M.attachment=attachment
   M.submitting=false
+  submission,submission_rpc,submission_ready=nil,nil,nil
   M.started=nil
   M.snapshot=nil
   M.pending={}
@@ -133,6 +135,21 @@ function M.load(options)
   z.every(1,function() if M.started and (M.submitting or M.active) then repaint() end end)
 end
 function M.pipe(message)
+  if message.name=='workflow-progress' and message.payload then
+    local progress=z.json.decode(message.payload)
+    if progress.submission then
+      if progress.submission~=submission or not M.submitting or not submission_rpc or submission_ready then return end
+      submission_ready=progress.status=='ready'
+      submission_rpc:reset_timeout(90)
+    elseif M.submitting then return end
+    local status=progress.status
+    if status~='ready' then
+      M.notice=status=='waiting' and 'Waiting for active workflows before loading updated extensions.' or 'Loading updated extensions.'
+      M.notice_error=false
+    else M.notice=nil end
+    repaint()
+    return
+  end
   if message.name=='workflow-changed' then M.refresh();return end
   if message.name ~= 'show' or not message.payload then return end
   M.attach(z.json.decode(message.payload))
@@ -194,13 +211,18 @@ function M.update(event)
   M.started=os.time()
   M.action=choice and entry.attributes.answers[choice] or action.id
   M.notice=success=='Answer recorded' and 'Submitting answer...' or 'Requesting cancellation...'
-  local attachment=M.attachment
+  local revision=generation
   local operation=(entry and identity(entry) or request.run)..': '..M.action
   repaint()
   z.task(function()
-    local ok,result=pcall(function() return z.await(z.rpc.call{plugin_url='zellij:swamp-bridge',name='swamp',payload=request,timeout=90}) end)
+    local ok,result=pcall(function()
+      submission=request.inputs and request.inputs.submission
+      submission_rpc=z.rpc.call{plugin_url='zellij:swamp-bridge',name='swamp',payload=request,timeout=90}
+      return z.await(submission_rpc)
+    end)
     local accepted=ok and not result.error
-    if M.attachment~=attachment then return end
+    if revision~=generation then return end
+    submission,submission_rpc,submission_ready=nil,nil,nil
     M.notice_error=not accepted
     M.notice=accepted and success or (ok and tostring(result.error) or tostring(result))
     if not accepted then M.output(operation,'submission error',M.notice) end

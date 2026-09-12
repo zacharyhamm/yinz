@@ -203,6 +203,13 @@ def exercise_exit_menus():
         answer(q, 'leave', 'leave-' + q['attributes']['run'])
         until(token + ': completed', lambda: all(r['status'] == 'succeeded' for r in histories(token)))
 
+    def exited_source():
+        # Leave closes its source. Each later launch needs a fresh exited pane.
+        pane = int(zellij('run', '--cwd', str(checkout), '--', '/usr/bin/true').strip().split('_')[-1])
+        until('exit-menu source exited', lambda: any(p['id'] == pane and not p['is_plugin'] and p['exited']
+                                                    for p in json.loads(zellij('action', 'list-panes', '--json'))))
+        return pane
+
     first = menu(token, reduced)
     for hidden in ('begin-review',):
         refused = run(binary, '--session', session, 'workflow', 'answer', first['attributes']['run'],
@@ -235,7 +242,7 @@ def exercise_exit_menus():
         ('vm-image', full, {'firecrackerImage': 'uninspected-image'}),
     ):
         token = 'exit-menu-' + name
-        inputs = dict(checkout=str(checkout), sourcePane=pane, kind='claude')
+        inputs = dict(checkout=str(checkout), sourcePane=exited_source() if name != 'manual' else -1, kind='claude')
         inputs.update(overrides)
         if name.startswith('vm-'):
             # Test the workflow's VM fallback without a guest. The public launch
@@ -250,10 +257,10 @@ def exercise_exit_menus():
         assert bridge(method='lookup', work=token, key=q['attributes']['run'] + '-sync') is None
         leave(token, q)
     run('git', 'commit', '--allow-empty', '-m', 'ahead without content changes', cwd=checkout)
-    launch('exit-menu-ahead', checkout=str(checkout), sourcePane=pane)
+    launch('exit-menu-ahead', checkout=str(checkout), sourcePane=exited_source())
     leave('exit-menu-ahead', menu('exit-menu-ahead', full))
     run('git', 'branch', 'exit-target', cwd=checkout)
-    launch('exit-menu-target', checkout=str(checkout), sourcePane=pane, targetBranch='exit-target')
+    launch('exit-menu-target', checkout=str(checkout), sourcePane=exited_source(), targetBranch='exit-target')
     leave('exit-menu-target', menu('exit-menu-target', reduced))
     print('PASS: exact exit answers and approval prompts; hidden choices refused; Fork cancellation rechecks; behind/ignored/target, manual, errors and VM context covered', flush=True)
 

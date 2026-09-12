@@ -1018,6 +1018,10 @@ function zellij.async.swamp_request(args)
     if event.message~='swamp-response' then return false end
     local frame=zellij.json.decode(event.payload)
     if frame.id~=id then return false end
+    if frame.type=='managed.progress' then
+      if args.on_progress then args.on_progress(frame.payload.status) end
+      return false
+    end
     if frame.type=='error' then return true,{error=frame.error} end
     if frame.type=='event' then
       last=frame.event
@@ -1583,6 +1587,8 @@ end
 --- Call `name` on another plugin - by `plugin_url` (launched if it is not running, with
 --- `plugin_config`) or by `plugin_id` - with a JSON-encodable `payload`. Resolves with
 --- `{ result = ... }` or `{ error = "..." }`; `timeout` (seconds) is the latter too.
+--- `awaitable:reset_timeout(seconds)` restarts that deadline (defaults to the original timeout).
+--- Resetting a settled call does nothing.
 function zellij.rpc.call(opts)
   rpc_count = rpc_count + 1
   local call_id = interpreter_id .. ":rpc" .. rpc_count
@@ -1600,14 +1606,20 @@ function zellij.rpc.call(opts)
       payload = opts.payload,
     },
   }
-  if opts.timeout then
-    table.insert(at(opts.timeout).on_settle, function()
-      if rpc_calls[call_id] then
-        rpc_calls[call_id] = nil
-        resolve { error = "no answer to " .. tostring(opts.name) .. " in " .. opts.timeout .. "s" }
-      end
-    end)
+  local timer
+  function aw:reset_timeout(seconds)
+    if timer then timer:cancel();timer=nil end
+    if self.done then return end
+    seconds=seconds or opts.timeout
+    if seconds then
+      timer=zellij.after(seconds,function()
+        rpc_calls[call_id]=nil
+        resolve { error = "no answer to " .. tostring(opts.name) .. " in " .. seconds .. "s" }
+      end)
+    end
   end
+  table.insert(aw.on_settle,function() if timer then timer:cancel() end end)
+  aw:reset_timeout()
   return aw
 end
 
