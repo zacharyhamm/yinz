@@ -1366,6 +1366,24 @@ export default {
     harness.rendered("new chunks=0 fences=1");
     harness.sender.send(chunk(current)).unwrap();
     harness.rendered("new chunks=1 fences=1");
+    harness
+        .sender
+        .send(PluginInstruction::RemoveClient(CLIENT))
+        .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(CLIENT))
+        .unwrap();
+    let reattached = subscription(2);
+    assert_ne!(current.2, reattached.2);
+    assert!(harness.log.lock().iter().any(|instruction| matches!(instruction,
+        ScreenInstruction::SubscribePaneOutput(plugin, client, None, _) if *plugin == current.0 && *client == CLIENT)));
+    harness.sender.send(chunk(current)).unwrap();
+    harness.sender.send(chunk(reattached)).unwrap();
+    harness.event(release_event());
+    harness.rendered("new chunks=1 fences=1");
+    harness.event(release_event());
+    harness.rendered("new chunks=1 fences=2");
     harness.finish();
 }
 
@@ -1683,17 +1701,28 @@ fn deno_shared_instance_survives_its_owners_disconnect() {
     let harness = Harness::new(
         "js",
         r#"
-let keys = 0;
+let keys = 0, chunks = 0;
 export default {
-  load() { zellij.subscribe(['Key']); },
-  update(event) { if (event.Key) { keys++; return true; } },
-  render() { return `shared keys=${keys}`; }
+  async load() { zellij.subscribe(['Key', 'PaneOutput']); await zellij.waitForPermissions(['ReadPaneContents']); zellij.command('SubscribePaneOutput', {work:'one'}); },
+  update(event) { if (event.Key) keys++; if (event.PaneOutput) chunks++; return true; },
+  render() { return `shared keys=${keys} chunks=${chunks}`; }
 };
 "#,
         PermissionStatus::Granted,
     );
     harness.load_shared();
     harness.rendered("shared keys=0");
+    let subscription =
+        harness
+            .log
+            .wait_until("shared output subscription", default_timeout(), |log| {
+                log.iter().find_map(|instruction| match instruction {
+                    ScreenInstruction::SubscribePaneOutput(plugin, client, Some(_), generation) => {
+                        Some((*plugin, *client, *generation))
+                    },
+                    _ => None,
+                })
+            });
     let other = ClientId::new(2);
     harness
         .sender
@@ -1712,6 +1741,37 @@ export default {
         )]))
         .unwrap();
     harness.rendered("shared keys=1");
+    let output = || {
+        PluginInstruction::for_plugin_event(
+            subscription.0,
+            subscription.1,
+            subscription.2,
+            Event::PaneOutput {
+                pane_id: 7,
+                data: vec![255],
+                context: BTreeMap::new(),
+            },
+        )
+    };
+    harness.sender.send(output()).unwrap();
+    harness.rendered("shared keys=1 chunks=1");
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(CLIENT))
+        .unwrap();
+    harness.sender.send(output()).unwrap();
+    harness.rendered("shared keys=1 chunks=2");
+    let log = harness.log.lock();
+    assert_eq!(
+        log.iter()
+            .filter(|instruction| matches!(instruction, ScreenInstruction::SubscribePaneOutput(..)))
+            .count(),
+        1
+    );
+    assert!(!log
+        .iter()
+        .any(|instruction| matches!(instruction, ScreenInstruction::UnsubscribePaneOutput(..))));
+    drop(log);
     harness.finish();
 }
 
