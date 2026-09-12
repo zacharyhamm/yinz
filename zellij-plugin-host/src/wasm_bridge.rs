@@ -32,14 +32,12 @@ use url::Url;
 use wasmi::{Engine, Module};
 use zellij_config::permission::PermissionCache;
 use zellij_runtime::downloader::Downloader;
+use zellij_runtime::owned_dir::OwnedDir;
 use zellij_storage::data_access::DataAccess;
 use zellij_types::geometry::FloatingPaneCoordinates;
 use zellij_types::input::keybinds::Keybinds;
 use zellij_types::style::HostTerminalThemeMode;
-use {
-    zellij_runtime::consts::ZELLIJ_CACHE_DIR, zellij_runtime::consts::ZELLIJ_SESSION_CACHE_DIR,
-    zellij_runtime::consts::ZELLIJ_TMP_DIR,
-};
+use {zellij_runtime::consts::ZELLIJ_CACHE_DIR, zellij_runtime::consts::ZELLIJ_TMP_DIR};
 use {
     zellij_types::data::InputMode, zellij_types::data::KeybindsVec, zellij_types::data::LayoutInfo,
     zellij_types::data::LayoutWithError, zellij_types::data::PaneContents,
@@ -80,6 +78,7 @@ pub struct LoadingContext {
     pub client_id: ClientId,
     pub plugin_cwd: PathBuf,
     pub plugin_own_data_dir: PathBuf,
+    pub temporary_data_dir: Arc<OwnedDir>,
     pub plugin_own_cache_dir: PathBuf,
     pub plugin_config: PluginConfig,
     pub tab_index: Option<TabId>,
@@ -108,12 +107,12 @@ impl LoadingContext {
         client_id: ClientId,
         tab_index: Option<TabId>,
         size: Size,
-    ) -> Self {
-        let plugin_own_data_dir = ZELLIJ_SESSION_CACHE_DIR
-            .join(make_plugin_url_path_safe(
-                Url::from(&plugin_config.location).to_string(),
-            ))
-            .join(format!("{}-{}", plugin_id, client_id));
+    ) -> Result<Self> {
+        let temporary_data_dir = wasm_bridge
+            .temporary_root
+            .child()
+            .context("failed to create plugin /data")?;
+        let plugin_own_data_dir = temporary_data_dir.path().to_path_buf();
         let plugin_own_cache_dir = ZELLIJ_CACHE_DIR
             .join(make_plugin_url_path_safe(
                 Url::from(&plugin_config.location).to_string(),
@@ -130,7 +129,7 @@ impl LoadingContext {
             .cloned()
             .unwrap_or_else(|| wasm_bridge.default_keybinds.clone());
 
-        LoadingContext {
+        Ok(LoadingContext {
             client_id,
             plugin_id,
             path_to_default_shell: wasm_bridge.path_to_default_shell.clone(),
@@ -144,6 +143,7 @@ impl LoadingContext {
             keybinds,
             default_mode,
             plugin_own_data_dir,
+            temporary_data_dir,
             plugin_own_cache_dir,
             plugin_config,
             tab_index,
@@ -158,7 +158,7 @@ impl LoadingContext {
                 .get(&plugin_id)
                 .cloned()
                 .unwrap_or_default(),
-        }
+        })
     }
     pub fn update_plugin_path(&mut self, new_path: PathBuf) {
         self.plugin_config.path = new_path;
@@ -169,6 +169,8 @@ pub type PluginCacheKey = (PathBuf, Option<PathBuf>);
 pub type PluginCache = Arc<Mutex<HashMap<PluginCacheKey, Module>>>;
 
 pub struct WasmBridge {
+    temporary_root: Arc<OwnedDir>,
+    temporary_cleanup_done: Option<std::sync::mpsc::Receiver<()>>,
     connected_clients: Arc<Mutex<Vec<ClientId>>>,
     senders: ThreadSenders,
     zellij_data_dir: PathBuf,
@@ -243,6 +245,74 @@ pub struct WasmBridge {
     pub plugin_aliases: Arc<Mutex<PluginAliases>>,
 }
 
+fn close_plugin_instance(
+    plugin_id: PluginId,
+    client_id: ClientId,
+    running_plugin: Arc<Mutex<RunningPlugin>>,
+    subscriptions: Arc<Mutex<Subscriptions>>,
+    senders: ThreadSenders,
+) {
+    let subscriptions_guard = subscriptions.lock().unwrap();
+    let needs_before_close = subscriptions_guard.contains(&EventType::BeforeClose);
+    drop(subscriptions_guard); // Release lock before calling plugin
+
+    if needs_before_close {
+        let mut rp = running_plugin.lock().unwrap();
+        // Holding the lock means the guest is not running. If the token was set but
+        // never tripped, the guest was idle and `BeforeClose` gets a normal call. If
+        // it tripped, the guest was stopped mid-call, and is not called again: see
+        // `PluginEnv::cancel_tripped`.
+        let was_stopped_mid_call = rp.env().cancel_tripped.load(Ordering::Relaxed);
+        rp.env().cancel.store(false, Ordering::Relaxed);
+        if was_stopped_mid_call {
+            log::warn!(
+                "plugin {plugin_id} was cancelled mid-call, so its BeforeClose is \
+                             skipped"
+            );
+        } else {
+            match apply_before_close_event_to_plugin(plugin_id, client_id, &mut rp, senders.clone())
+            {
+                Ok(()) => {},
+                Err(e) => {
+                    log::error!("{:?}", e);
+                    let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
+                    handle_plugin_crash(plugin_id, stringified_error, senders.clone());
+                },
+            }
+        }
+    }
+
+    drop(running_plugin);
+    drop(subscriptions);
+}
+
+fn cleanup_disconnected_instances(
+    plugin_id: PluginId,
+    connected_clients: &Arc<Mutex<Vec<ClientId>>>,
+    plugin_map: &Arc<Mutex<PluginMap>>,
+    senders: ThreadSenders,
+) {
+    let removed = {
+        // Match the loader's lock order. Registration happens before instance lookup,
+        // so a reconnect either keeps its instance or sees it removed and loads one.
+        let mut plugin_map = plugin_map.lock().unwrap();
+        let connected = connected_clients.lock().unwrap();
+        plugin_map.remove_disconnected_instances(plugin_id, &connected)
+    };
+    for (client_id, (plugin, subscriptions, workers)) in removed {
+        for sender in workers.into_values() {
+            let _ = sender.send(MessageToWorker::Exit);
+        }
+        close_plugin_instance(plugin_id, client_id, plugin, subscriptions, senders.clone());
+    }
+}
+
+impl Drop for WasmBridge {
+    fn drop(&mut self) {
+        self.cancel_all_plugins();
+    }
+}
+
 impl WasmBridge {
     pub fn new(
         senders: ThreadSenders,
@@ -261,7 +331,14 @@ impl WasmBridge {
         default_mode: InputMode,
         default_keybinds: Keybinds,
         plugin_aliases: PluginAliases,
-    ) -> Self {
+    ) -> Result<Self> {
+        let mut temporary_root = OwnedDir::new(&ZELLIJ_CACHE_DIR.join("plugin-tmp"))
+            .context("failed to create plugin host temporary directory")?;
+        let temporary_cleanup_done = Some(
+            temporary_root
+                .drop_notification()
+                .context("failed to observe plugin host cleanup")?,
+        );
         let plugin_map = Arc::new(Mutex::new(PluginMap::default()));
         let connected_clients: Arc<Mutex<Vec<ClientId>>> = Arc::new(Mutex::new(vec![]));
         let plugin_cache: Arc<Mutex<HashMap<PluginCacheKey, Module>>> =
@@ -277,7 +354,9 @@ impl WasmBridge {
             &plugin_cache,
             &engine,
         ));
-        WasmBridge {
+        Ok(WasmBridge {
+            temporary_root,
+            temporary_cleanup_done,
             connected_clients,
             senders,
             zellij_data_dir,
@@ -317,7 +396,7 @@ impl WasmBridge {
             last_host_terminal_theme_mode: None,
             last_session_save_time: Arc::new(Mutex::new(None)),
             plugin_aliases: Arc::new(Mutex::new(plugin_aliases)),
-        }
+        })
     }
     pub fn load_plugin(
         &mut self,
@@ -408,7 +487,7 @@ impl WasmBridge {
                     client_id,
                     tab_index,
                     size,
-                );
+                )?;
 
                 if needs_download {
                     let downloader = self.downloader.clone();
@@ -697,57 +776,7 @@ impl WasmBridge {
                                 _connected_clients: Arc<Mutex<Vec<ClientId>>>,
                                 _plugin_cache: PluginCache,
                                 _engine: Engine| {
-                let subscriptions_guard = subscriptions.lock().unwrap();
-                let needs_before_close = subscriptions_guard.contains(&EventType::BeforeClose);
-                drop(subscriptions_guard); // Release lock before calling plugin
-
-                if needs_before_close {
-                    let mut rp = running_plugin.lock().unwrap();
-                    // Holding the lock means the guest is not running. If the token was set but
-                    // never tripped, the guest was idle and `BeforeClose` gets a normal call. If
-                    // it tripped, the guest was stopped mid-call, and is not called again: see
-                    // `PluginEnv::cancel_tripped`.
-                    let was_stopped_mid_call = rp.env().cancel_tripped.load(Ordering::Relaxed);
-                    rp.env().cancel.store(false, Ordering::Relaxed);
-                    if was_stopped_mid_call {
-                        log::warn!(
-                            "plugin {plugin_id} was cancelled mid-call, so its BeforeClose is \
-                             skipped"
-                        );
-                    } else {
-                        match apply_before_close_event_to_plugin(
-                            plugin_id,
-                            client_id,
-                            &mut rp,
-                            senders.clone(),
-                        ) {
-                            Ok(()) => {},
-                            Err(e) => {
-                                log::error!("{:?}", e);
-                                let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
-                                handle_plugin_crash(plugin_id, stringified_error, senders.clone());
-                            },
-                        }
-                    }
-                    let cache_dir = rp.env().plugin_own_data_dir.clone();
-                    drop(rp); // Release lock before filesystem operation
-                    if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                        log::error!("Failed to remove cache dir for plugin: {:?}", e);
-                    }
-                } else {
-                    let cache_dir = running_plugin
-                        .lock()
-                        .unwrap()
-                        .env()
-                        .plugin_own_data_dir
-                        .clone();
-                    if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                        log::error!("Failed to remove cache dir for plugin: {:?}", e);
-                    }
-                }
-
-                drop(running_plugin);
-                drop(subscriptions);
+                close_plugin_instance(plugin_id, client_id, running_plugin, subscriptions, senders);
             };
             if index == last_cleanup {
                 self.plugin_executor
@@ -1062,7 +1091,7 @@ impl WasmBridge {
 
         let cwd = self.cwd_of_plugin_id(plugin_id);
 
-        let loading_context = LoadingContext::new(
+        let mut loading_context = LoadingContext::new(
             &self,
             cwd,
             plugin_config,
@@ -1070,7 +1099,7 @@ impl WasmBridge {
             first_client_id,
             tab_index,
             size,
-        );
+        )?;
 
         plugin_executor.execute_for_plugin_tagged(
             plugin_id,
@@ -1079,6 +1108,10 @@ impl WasmBridge {
             move |senders, plugin_map, connected_clients, plugin_cache, engine| {
                 let skip_cache = true; // we want to explicitly reload the plugin
                 let mut plugin_map = plugin_map.lock().unwrap();
+                // An unload can remove the instance while this job is still queued.
+                if !plugin_map.plugin_ids().contains(&plugin_id) {
+                    return;
+                }
                 // The instance about to be replaced gets the same last word an unloaded one
                 // does, so a plugin that persists in `BeforeClose` survives its own reload.
                 if let Some((running_plugin, subscriptions)) =
@@ -1088,8 +1121,14 @@ impl WasmBridge {
                         .lock()
                         .unwrap()
                         .contains(&EventType::BeforeClose);
+                    let mut running_plugin = running_plugin.lock().unwrap();
+                    if let Some(directory) = &running_plugin.env().temporary_data_dir {
+                        // Transfer ownership on the executor, before replacing the old instance.
+                        // The plugin thread must not wait for a loader just to create a context.
+                        loading_context.plugin_own_data_dir = directory.path().to_path_buf();
+                        loading_context.temporary_data_dir = directory.clone();
+                    }
                     if wants_before_close {
-                        let mut running_plugin = running_plugin.lock().unwrap();
                         // As in the unload job: holding the lock means the guest is not
                         // running, and the new instance shares this token, so a set one
                         // would trap `BeforeClose` here and the new `load()` after it.
@@ -1174,6 +1213,7 @@ impl WasmBridge {
             return Ok(());
         }
 
+        self.connected_clients.lock().unwrap().push(client_id);
         let mut new_plugins = HashSet::new();
         log::info!(
             "attach trace: WasmBridge::add_client client_id={client_id} waiting for plugin_map lock"
@@ -1264,7 +1304,7 @@ impl WasmBridge {
                 client_id,
                 tab_index,
                 size,
-            );
+            )?;
 
             log::info!(
                 "attach trace: WasmBridge::add_client client_id={client_id} plugin_id={plugin_id} executor enqueue begin"
@@ -1279,7 +1319,9 @@ impl WasmBridge {
                     log::info!(
                         "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} waiting for plugin_map lock"
                     );
+                    let plugin_map_for_cleanup = plugin_map.clone();
                     let mut plugin_map = plugin_map.lock().unwrap();
+                    if !plugin_map.plugin_ids().contains(&plugin_id) { return; }
                     log::info!(
                         "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} acquired plugin_map lock after {:?}; plugin load begin",
                         load_started_at.elapsed()
@@ -1319,6 +1361,9 @@ impl WasmBridge {
                             log::error!("Failed to load plugin for new client: {}", e);
                         },
                     }
+                    drop(plugin_map);
+                    cleanup_disconnected_instances(plugin_id, &connected_clients, &plugin_map_for_cleanup, senders);
+
                 },
             );
             log::info!(
@@ -1326,10 +1371,6 @@ impl WasmBridge {
                 started_at.elapsed()
             );
         }
-        log::info!(
-            "attach trace: WasmBridge::add_client client_id={client_id} connected_clients lock begin"
-        );
-        self.connected_clients.lock().unwrap().push(client_id);
         log::info!(
             "attach trace: WasmBridge::add_client client_id={client_id} complete after {:?}",
             started_at.elapsed()
@@ -1982,10 +2023,12 @@ impl WasmBridge {
         }
     }
     pub fn remove_client(&mut self, client_id: ClientId) {
-        self.connected_clients
-            .lock()
-            .unwrap()
-            .retain(|c| c != &client_id);
+        let was_connected = {
+            let mut clients = self.connected_clients.lock().unwrap();
+            let previous_len = clients.len();
+            clients.retain(|client| *client != client_id);
+            clients.len() != previous_len
+        };
         if self.cli_event_subscribers.remove(&client_id).is_some()
             && self.cli_event_subscribers.is_empty()
         {
@@ -1996,6 +2039,30 @@ impl WasmBridge {
         if let Some(new_owner) = self.get_first_client_id() {
             for plugin_id in self.shared_plugin_ids.clone() {
                 self.rekey_shared_plugin_if_owner_gone(plugin_id, new_owner);
+            }
+        }
+
+        // CLI connections never owned instances. Do not enqueue work for every plugin
+        // on each CLI disconnect (agent hooks and session probes are frequent).
+        if was_connected {
+            let plugin_ids: Vec<_> = self.cancel_tokens.keys().copied().collect();
+            for plugin_id in plugin_ids {
+                if self.shared_plugin_ids.contains(&plugin_id) {
+                    continue;
+                }
+                self.plugin_executor.execute_for_plugin_tagged(
+                    plugin_id,
+                    "remove client",
+                    false,
+                    move |senders, plugin_map, connected_clients, _, _| {
+                        cleanup_disconnected_instances(
+                            plugin_id,
+                            &connected_clients,
+                            &plugin_map,
+                            senders,
+                        );
+                    },
+                );
             }
         }
 
@@ -2201,6 +2268,20 @@ impl WasmBridge {
             watcher.stop_nonblocking();
         }
     }
+    /// Drop the host and let all loaders, environments and workers release /data within
+    /// the original shutdown deadline. A runaway is recovered on the next startup.
+    pub fn wait_for_cleanup(mut self, deadline: Instant) {
+        let done = self.temporary_cleanup_done.take();
+        drop(self);
+        if let Some(done) = done {
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                done.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                log::warn!("plugin temporary data still in use at the shutdown deadline");
+            }
+        }
+    }
+
     pub fn run_plugin_of_loading_plugin_id(&self, plugin_id: PluginId) -> Option<&RunPlugin> {
         self.loading_plugins
             .iter()

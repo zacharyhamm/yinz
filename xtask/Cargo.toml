@@ -5,6 +5,8 @@ edition.workspace = true
 
 
 [dependencies]
+libc = { workspace = true }
+tempfile = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 prost-build = { version = "0.12.6", default-features = false }
@@ -18,6 +20,3 @@ xshell = { version = "= 0.2.2", default-features = false }
 [lints.rust]
 # Only required because we need to fix `xshell` to `=0.2.2`
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
-
-[dev-dependencies]
-tempfile = { workspace = true }

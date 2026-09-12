@@ -30,6 +30,10 @@ mod pipelines;
 mod postgres_test;
 mod remote_test;
 mod test;
+mod test_run;
+// Keep the build driver independent of the host runtime's dependency graph.
+#[path = "../../zellij-runtime/src/owned_dir.rs"]
+mod owned_dir;
 
 use anyhow::Context;
 use std::{

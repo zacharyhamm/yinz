@@ -44,6 +44,7 @@ fn test_env() -> PluginEnv {
         senders: ThreadSenders::default().silently_fail_on_send(),
         wasi_ctx: None,
         plugin_own_data_dir: PathBuf::from("."),
+        temporary_data_dir: None,
         data_access: Arc::new(DataAccess::sqlite(&PathBuf::from("."))),
         queues: Default::default(),
         plugin_own_cache_dir: PathBuf::from("."),

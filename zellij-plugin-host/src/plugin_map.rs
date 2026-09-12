@@ -47,15 +47,14 @@ use {
 pub struct PluginMap {
     // Immutable launch identity, readable without locking a busy plugin runtime.
     plugin_metadata: BTreeMap<PluginId, RunPlugin>,
-    plugin_assets: HashMap<
-        (PluginId, ClientId),
-        (
-            Arc<Mutex<RunningPlugin>>,
-            Arc<Mutex<Subscriptions>>,
-            HashMap<String, UnboundedSender<MessageToWorker>>,
-        ),
-    >,
+    plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
 }
+
+pub type PluginAssets = (
+    Arc<Mutex<RunningPlugin>>,
+    Arc<Mutex<Subscriptions>>,
+    HashMap<String, UnboundedSender<MessageToWorker>>,
+);
 
 /// Configuration match used when looking up running plugins to reload.
 ///
@@ -85,17 +84,7 @@ fn configuration_matches_for_reload(
 }
 
 impl PluginMap {
-    pub fn remove_plugins(
-        &mut self,
-        pid: PluginId,
-    ) -> HashMap<
-        (PluginId, ClientId),
-        (
-            Arc<Mutex<RunningPlugin>>,
-            Arc<Mutex<Subscriptions>>,
-            HashMap<String, UnboundedSender<MessageToWorker>>,
-        ),
-    > {
+    pub fn remove_plugins(&mut self, pid: PluginId) -> HashMap<(PluginId, ClientId), PluginAssets> {
         self.plugin_metadata.remove(&pid);
         let mut removed = HashMap::new();
         let ids_in_plugin_map: Vec<(PluginId, ClientId)> =
@@ -109,6 +98,34 @@ impl PluginMap {
         }
         removed
     }
+    pub fn remove_instance(
+        &mut self,
+        plugin_id: PluginId,
+        client_id: ClientId,
+    ) -> Option<PluginAssets> {
+        self.plugin_assets.remove(&(plugin_id, client_id))
+    }
+
+    /// Keep an instance while detached so reconnect can still find and clone the plugin.
+    pub fn remove_disconnected_instances(
+        &mut self,
+        plugin_id: PluginId,
+        connected: &[ClientId],
+    ) -> Vec<(ClientId, PluginAssets)> {
+        let owners = self.owner_client_ids_of_plugin_id(plugin_id);
+        if !owners.iter().any(|owner| connected.contains(owner)) {
+            return vec![];
+        }
+        owners
+            .into_iter()
+            .filter(|owner| !connected.contains(owner))
+            .filter_map(|owner| {
+                self.remove_instance(plugin_id, owner)
+                    .map(|assets| (owner, assets))
+            })
+            .collect()
+    }
+
     pub fn plugin_ids(&self) -> Vec<PluginId> {
         let mut unique_plugins: HashSet<PluginId> = self
             .plugin_assets
@@ -404,6 +421,8 @@ pub struct PluginEnv {
     pub owner_client_id: ClientId,
     #[allow(dead_code)]
     pub plugin_own_data_dir: PathBuf,
+    /// Production environments own /data; standalone interpreter tests supply their own fixtures.
+    pub temporary_data_dir: Option<Arc<zellij_runtime::owned_dir::OwnedDir>>,
     /// The process-wide provider shared by recording and plugin data.
     pub data_access: Arc<DataAccess>,
     /// The work queues, shared with the plugin thread. A plugin enqueues and reads status

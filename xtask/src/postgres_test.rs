@@ -69,6 +69,8 @@ fn build(sh: &Shell) -> anyhow::Result<()> {
 }
 
 fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
+    let run = crate::test_run::TestRun::new()?;
+    let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
     // Fail here, with an explanation, rather than inside every test as a connection error.
     wait_for_postgres(sh).context(
         "nothing is answering on the test's Postgres port. Is the container up? \

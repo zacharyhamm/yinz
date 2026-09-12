@@ -4,7 +4,6 @@ use crate::home::find_default_config_dir;
 use directories::ProjectDirs;
 use lazy_static::lazy_static;
 use std::{path::PathBuf, sync::OnceLock};
-use uuid::Uuid;
 use zellij_types::internal_ids::SessionName;
 
 pub const ZELLIJ_CONFIG_FILE_ENV: &str = "ZELLIJ_CONFIG_FILE";
@@ -90,11 +89,11 @@ lazy_static! {
         format!("cv{}", CLIENT_SERVER_CONTRACT_VERSION);
     pub static ref ZELLIJ_PROJ_DIR: ProjectDirs =
         ProjectDirs::from("org", "Zellij Contributors", "Zellij").unwrap();
-    pub static ref ZELLIJ_CACHE_DIR: PathBuf = ZELLIJ_PROJ_DIR.cache_dir().to_path_buf();
-    pub static ref ZELLIJ_SESSION_CACHE_DIR: PathBuf = ZELLIJ_PROJ_DIR
-        .cache_dir()
-        .to_path_buf()
-        .join(format!("{}", Uuid::new_v4()));
+    pub static ref ZELLIJ_CACHE_DIR: PathBuf = std::env::var_os("ZELLIJ_TEST_CACHE_ROOT")
+        .map(|root| PathBuf::from(root)
+            .join(std::process::id().to_string())
+            .join("cache"))
+        .unwrap_or_else(|| ZELLIJ_PROJ_DIR.cache_dir().to_path_buf());
     pub static ref ZELLIJ_PLUGIN_PERMISSIONS_CACHE: PathBuf =
         ZELLIJ_CACHE_DIR.join("permissions.kdl");
     pub static ref ZELLIJ_SESSION_INFO_CACHE_DIR: PathBuf = ZELLIJ_CACHE_DIR
@@ -182,3 +181,7 @@ mod not_unix {
 }
 
 pub const CONFIG_OVERLAY_DIR_NAME: &str = "config.d";
+
+#[cfg(test)]
+#[path = "unit/cache_dir_tests.rs"]
+mod tests;
