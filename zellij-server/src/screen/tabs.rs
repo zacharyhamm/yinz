@@ -247,10 +247,12 @@ impl Screen {
 
             return Ok(());
         }
-        let first_tab_index = *self
+        let first_tab_index = self
             .tabs
-            .keys()
-            .next()
+            .values()
+            .find(|tab| !tab.is_pending() && tab.has_selectable_panes())
+            .or_else(|| self.tabs.values().find(|tab| !tab.is_pending()))
+            .map(|tab| tab.id)
             .context("screen contained no tabs")
             .with_context(err_context)?;
         let mut destination_tab_ids = HashSet::new();
@@ -259,7 +261,11 @@ impl Screen {
             // only once a tab has actually taken the client: the two have to agree, and a client
             // pointed at a tab that did not take it receives no frames and reaches nothing.
             let client_tab_history = self.tab_history.entry(client_id).or_default();
-            let previous_tab = client_tab_history.pop();
+            let previous_tab = client_tab_history.pop().filter(|id| {
+                self.tabs
+                    .get(id)
+                    .is_some_and(|tab| !tab.is_pending() && tab.has_selectable_panes())
+            });
             let candidates = previous_tab
                 .into_iter()
                 .chain(std::iter::once(first_tab_index));
@@ -269,6 +275,9 @@ impl Screen {
                 let Some(tab) = self.tabs.get_mut(&candidate) else {
                     continue;
                 };
+                if tab.is_pending() {
+                    continue;
+                }
                 match tab.add_client(client_id, mode_info.clone()) {
                     Ok(()) => {
                         self.active_tab_ids.insert(client_id, candidate);
@@ -314,10 +323,12 @@ impl Screen {
         // scrollback is being edited - in this case we need to close it or to move it to the
         // appropriate tab
         let err_context = || "Failed to move suppressed panes from closed tab";
-        let first_tab_index = *self
+        let first_tab_index = self
             .tabs
-            .keys()
-            .next()
+            .values()
+            .find(|tab| !tab.is_pending() && tab.has_selectable_panes())
+            .or_else(|| self.tabs.values().find(|tab| !tab.is_pending()))
+            .map(|tab| tab.id)
             .context("screen contains no tabs")
             .with_context(err_context)?;
         let destination = self
@@ -368,8 +379,19 @@ impl Screen {
         }
         let destination_tab_id = client
             .and_then(|client_id| self.active_tab_ids.get(&client_id).copied())
-            .filter(|tab_id| self.tabs.contains_key(tab_id))
-            .or_else(|| self.tabs.keys().next().copied());
+            .filter(|tab_id| self.tabs.get(tab_id).is_some_and(|tab| !tab.is_pending()))
+            .or_else(|| {
+                self.tabs
+                    .values()
+                    .find(|tab| !tab.is_pending() && tab.has_selectable_panes())
+                    .map(|tab| tab.id)
+            })
+            .or_else(|| {
+                self.tabs
+                    .values()
+                    .find(|tab| !tab.is_pending())
+                    .map(|tab| tab.id)
+            });
 
         // Collected rather than closed in place: `close_homeless_pane` needs `&mut self` and the
         // destination tab is borrowed from `self` for the length of the loop. The same ordering
@@ -705,7 +727,180 @@ impl Screen {
         self.switch_active_tab_name(name, client_id)
     }
 
+    /// Settle tab lifetime after each instruction. Pending layouts are never destinations.
+    /// Hidden-only tabs survive beside a usable tab; otherwise their work gets a replacement.
+    /// Keep replacement identity after loading so natural exits hold instead of respawning.
+    pub(crate) fn settle_tabs(&mut self) -> Result<()> {
+        let err_context = "failed to settle tabs";
+        let usable: Vec<TabId> = self
+            .tabs
+            .values()
+            .filter(|tab| {
+                !tab.is_pending()
+                    && tab.has_selectable_panes()
+                    && !self.deferred_tab_closes.contains(&tab.id)
+            })
+            .map(|tab| tab.id)
+            .collect();
+        let another_destination = usable.iter().any(|id| Some(*id) != self.replacement_tab);
+        let doomed: Vec<TabId> = self
+            .tabs
+            .values()
+            .filter(|tab| {
+                !tab.is_pending()
+                    && !self.pending_arrangement.as_ref().is_some_and(|pending| {
+                        pending.destinations.values().any(|id| *id == tab.id)
+                    })
+                    && (self.deferred_tab_closes.contains(&tab.id)
+                        || (!tab.has_selectable_panes()
+                            && (!tab.has_live_terminal()
+                                || usable.is_empty()
+                                || (self.replacement_pending && !another_destination))))
+            })
+            .map(|tab| tab.id)
+            .collect();
+        if doomed.is_empty() {
+            self.replacement_pending = false;
+            return Ok(());
+        }
+        if usable.is_empty() {
+            // A pending user, plugin, adopted or replacement tab is not a destination yet.
+            if self.has_pending_tabs() {
+                return Ok(());
+            }
+            if self.replacement_pending && self.replacement_tab.is_some() {
+                // A layout with no usable pane must not cause an endless spawn loop.
+                self.replacement_pending = false;
+            } else if self.session_must_survive(&doomed) {
+                if let Some(client_id) = self.active_tab_ids.keys().copied().min() {
+                    self.open_replacement_tab(client_id).context(err_context)?;
+                }
+                return Ok(());
+            }
+        }
+        let confirm = self.replacement_pending && !another_destination;
+        self.replacement_pending = false;
+        for tab_id in doomed {
+            self.teardown_tab(tab_id, !usable.is_empty())
+                .context(err_context)?;
+        }
+        if confirm && self.quit_is_guarded() {
+            if let Some(client_id) = self.active_tab_ids.keys().copied().min() {
+                self.confirm_quit(client_id, true, None)
+                    .context(err_context)
+                    .non_fatal();
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the session has a reason to outlive its last usable pane: a plugin asked for a
+    /// quit to be confirmed, or a terminal is still running hidden in one of the tabs about to
+    /// close (a pane a plugin parked, whose process would die with the session).
+    fn session_must_survive(&self, doomed: &[TabId]) -> bool {
+        self.quit_is_guarded()
+            || doomed
+                .iter()
+                .filter_map(|id| self.tabs.get(id))
+                .any(Tab::has_live_terminal)
+    }
+
+    /// Open the tab that stands in for the session's emptied last tab: the default layout with
+    /// the configured shell, built for `client_id` the way a `NewTab` action's would be. The
+    /// emptied tabs are closed by `settle_tabs` once this one has applied its layout.
+    fn open_replacement_tab(&mut self, client_id: ClientId) -> Result<()> {
+        let err_context = || format!("failed to open a replacement tab for client {client_id}");
+        let tab_id = self.get_new_tab_id();
+        let swap_layouts = (
+            self.default_layout.swap_tiled_layouts.clone(),
+            self.default_layout.swap_floating_layouts.clone(),
+        );
+        self.new_tab(tab_id, swap_layouts, None, Some(client_id))
+            .with_context(err_context)?;
+        self.replacement_tab = Some(tab_id);
+        self.replacement_pending = true;
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::NewTab(
+                None,
+                self.default_shell_action.clone(),
+                None,
+                None,
+                tab_id,
+                None,
+                false,
+                false, // settlement moves clients only if this replacement is still needed
+                client_id,
+                None,
+            ))
+            .with_context(err_context)
+    }
+
+    pub(super) fn apply_deferred_tab_switches(
+        &mut self,
+        switches: &mut HashSet<(TabId, ClientId)>,
+    ) -> Result<()> {
+        for (tab_id, client_id) in switches.drain() {
+            if let Some(position) = self.get_tab_position_by_id(tab_id) {
+                self.switch_active_tab(position, None, true, client_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn replacement_exit_command(&self, pane_id: PaneId) -> Option<RunCommand> {
+        let tab = self.tabs.get(&self.replacement_tab?)?;
+        if !matches!(pane_id, PaneId::Terminal(_)) || !tab.has_pane_with_pid(&pane_id) {
+            return None;
+        }
+        tab.pane_run_command(pane_id)
+            .or_else(|| match &self.default_shell_action {
+                Some(TerminalAction::RunCommand(command)) => Some(command.clone()),
+                _ => Some(RunCommand {
+                    command: crate::pty::get_default_shell(),
+                    ..Default::default()
+                }),
+            })
+    }
+
+    pub(super) fn request_close_tab(
+        &mut self,
+        tab_id: TabId,
+        client_id: Option<ClientId>,
+    ) -> Result<()> {
+        let Some(tab) = self.tabs.get(&tab_id) else {
+            return Ok(());
+        };
+        let client_id = client_id.or_else(|| self.get_first_client_id());
+        let has_destination = self
+            .tabs
+            .values()
+            .any(|other| other.id != tab_id && !other.is_pending() && other.has_selectable_panes());
+        if !has_destination {
+            if self.quit_is_guarded() {
+                if let Some(client_id) = client_id {
+                    self.confirm_quit(client_id, true, None)?;
+                }
+                return Ok(());
+            }
+            if tab.has_hidden_live_terminal() || self.has_pending_tabs() {
+                self.deferred_tab_closes.insert(tab_id);
+                if !self.has_pending_tabs() {
+                    if let Some(client_id) = client_id {
+                        self.open_replacement_tab(client_id)?;
+                    }
+                }
+                return Ok(());
+            }
+        }
+        self.close_tab_by_id(tab_id)
+    }
+
     pub(super) fn close_tab_by_id(&mut self, tab_id: TabId) -> Result<()> {
+        self.teardown_tab(tab_id, false)
+    }
+
+    fn teardown_tab(&mut self, tab_id: TabId, preserve_guards: bool) -> Result<()> {
         let err_context = || format!("failed to close tab at index {tab_id:?}");
 
         if self
@@ -719,6 +914,29 @@ impl Screen {
             );
         }
         let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
+        self.deferred_tab_closes.remove(&tab_id);
+        // Overlays keep their placement through the existing overlay relocation path.
+        if preserve_guards {
+            for (&plugin_id, notice) in &self.quit_notices {
+                let id = PaneId::Plugin(plugin_id);
+                if notice.guard && tab_to_close.overlay_placement_for(id).is_none() {
+                    tab_to_close.suppress_pane(id, None);
+                }
+            }
+        }
+        let hidden_live: Vec<_> = tab_to_close
+            .get_all_pane_ids()
+            .into_iter()
+            .filter(|id| {
+                matches!(id, PaneId::Terminal(_))
+                    && tab_to_close
+                        .get_pane_with_id(*id)
+                        .is_some_and(|pane| !pane.selectable() && !pane.exited())
+            })
+            .collect();
+        for id in hidden_live {
+            tab_to_close.suppress_pane(id, None);
+        }
         let mut pane_ids = tab_to_close.get_all_pane_ids();
 
         // here we extract the suppressed panes (these are background panes that don't care which
@@ -746,10 +964,21 @@ impl Screen {
         // Only when a tab survives: with none left the session is ending anyway (see the
         // `Render(None)` below), and an overlay extracted with nowhere to go would be a plugin
         // left running with no pane and nothing told about it.
-        let overlay_panes = match self.tabs.is_empty() {
+        let mut overlay_panes = match self.tabs.is_empty() {
             true => vec![],
             false => tab_to_close.extract_overlay_panes(),
         };
+        if preserve_guards {
+            for (&plugin_id, notice) in &self.quit_notices {
+                let id = PaneId::Plugin(plugin_id);
+                if notice.guard && tab_to_close.pane_is_overlay(id) {
+                    let placement = tab_to_close.placement_for_extraction(id);
+                    if let Some(pane) = tab_to_close.extract_pane(id, true) {
+                        overlay_panes.push((placement, pane));
+                    }
+                }
+            }
+        }
         let overlay_respawns = overlay_panes
             .iter()
             .filter_map(|(_, pane)| {
@@ -762,6 +991,24 @@ impl Screen {
         for (_, overlay_pane) in &overlay_panes {
             let overlay_pane_id = overlay_pane.pid();
             pane_ids.retain(|p| p != &overlay_pane_id);
+        }
+
+        // The plugins going down with the tab take what they had to say about a quit with them,
+        // as they do when closed one at a time (`ScreenInstruction::ClosePane`). Left behind, a
+        // guard nothing could lift would keep the session from ever ending.
+        for p_id in &pane_ids {
+            if let PaneId::Plugin(plugin_id) = p_id {
+                self.drop_quit_notice(*plugin_id);
+            }
+        }
+        // Nothing should be able to aim at this tab again: `toggle_tab` reads the history, and
+        // an arrangement's memory of the project here would otherwise outlive the tab.
+        for history in self.tab_history.values_mut() {
+            history.retain(|id| *id != tab_id);
+        }
+        self.arrangement_projects.remove(&tab_id);
+        if self.replacement_tab == Some(tab_id) {
+            self.replacement_tab = None;
         }
 
         let _ = self.bus.senders.send_to_plugin(PluginInstruction::Update(
@@ -791,7 +1038,8 @@ impl Screen {
         self.bus
             .senders
             .send_to_pty(PtyInstruction::CloseTab(pane_ids))
-            .with_context(err_context)?;
+            .with_context(err_context)
+            .non_fatal();
         if self.tabs.is_empty() {
             self.active_tab_ids.clear();
             self.bus
@@ -908,7 +1156,7 @@ impl Screen {
                     .active_tab_ids
                     .get(&client_id)
                     .with_context(err_context)?;
-                self.close_tab_by_id(active_tab_index)
+                self.request_close_tab(active_tab_index, Some(client_id))
                     .with_context(err_context)
             },
             None => Ok(()),

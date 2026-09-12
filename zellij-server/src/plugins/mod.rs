@@ -576,6 +576,11 @@ pub(crate) fn plugin_thread_main(
                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
             PluginInstruction::Unload(pid) => {
+                // Eventual cleanup for runtime unloads. Screen destruction paths drop notices
+                // synchronously, before tab settlement can consult them.
+                bus.senders
+                    .send_to_screen(ScreenInstruction::SetQuitNotice(pid, None, false))
+                    .non_fatal();
                 wasm_bridge.unload_plugin(pid)?;
             },
             PluginInstruction::Reload(

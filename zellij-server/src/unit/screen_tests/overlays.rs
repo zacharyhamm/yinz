@@ -6106,7 +6106,7 @@ fn an_overlay_moves_to_a_surviving_tab_when_the_last_terminal_leaves() {
         .expect("TEST")
         .extract_pane(PaneId::Terminal(crate::TerminalId::new(2)), true)
         .is_some());
-    screen.render_to_clients().expect("TEST");
+    screen.settle_tabs().expect("TEST");
 
     assert!(
         !screen.tabs.contains_key(&TabId::new(1)),
@@ -6124,7 +6124,7 @@ fn an_overlay_moves_to_a_surviving_tab_when_the_last_terminal_leaves() {
 
 /// Overlays alone do not keep the session alive after all its terminals exit.
 #[test]
-fn render_reaps_all_tabs_when_only_overlays_remain() {
+fn settling_closes_every_tab_when_only_overlays_remain() {
     let size = Size { cols: 80, rows: 12 };
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
     let (server_sender, server_receiver) = channels::unbounded();
@@ -6141,7 +6141,7 @@ fn render_reaps_all_tabs_when_only_overlays_remain() {
             .extract_pane(PaneId::Terminal(crate::TerminalId::new(terminal_id)), true)
             .is_some());
     }
-    screen.render_to_clients().expect("TEST");
+    screen.settle_tabs().expect("TEST");
 
     assert!(screen.tabs.is_empty());
     assert!(std::iter::from_fn(|| server_receiver.try_recv().ok())

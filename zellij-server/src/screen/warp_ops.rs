@@ -700,7 +700,8 @@ impl Screen {
         for pane in removed {
             let id = pane.pid();
             self.notify_warp_departure(id);
-            if matches!(id, PaneId::Plugin(_)) {
+            if let PaneId::Plugin(plugin_id) = id {
+                self.drop_quit_notice(plugin_id);
                 self.bus
                     .senders
                     .send_to_pty(PtyInstruction::ClosePane(id, None))
@@ -768,6 +769,9 @@ impl Screen {
             }
         }
         for pane_id in emptied {
+            if let PaneId::Plugin(plugin_id) = pane_id {
+                self.drop_quit_notice(plugin_id);
+            }
             self.clear_nested_guest(pane_id);
         }
         self.close_tab_by_id(tab_index).non_fatal();
