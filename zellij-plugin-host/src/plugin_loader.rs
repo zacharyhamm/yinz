@@ -93,6 +93,7 @@ pub struct PluginLoader<'a> {
     client_id: ClientId,
     plugin_cwd: PathBuf,
     plugin_own_data_dir: PathBuf,
+    temporary_data_dir: Arc<zellij_runtime::owned_dir::OwnedDir>,
     plugin_own_cache_dir: PathBuf,
     plugin_config: PluginConfig,
     tab_index: Option<TabId>,
@@ -140,6 +141,7 @@ impl<'a> PluginLoader<'a> {
             client_id: loading_context.client_id,
             plugin_cwd: loading_context.plugin_cwd,
             plugin_own_data_dir: loading_context.plugin_own_data_dir,
+            temporary_data_dir: loading_context.temporary_data_dir,
             plugin_own_cache_dir: loading_context.plugin_own_cache_dir,
             plugin_config: loading_context.plugin_config,
             tab_index: loading_context.tab_index,
@@ -234,11 +236,16 @@ impl<'a> PluginLoader<'a> {
             subscriptions,
             HashMap::new(),
         );
-        plugin
+        let loaded = plugin
             .lock()
             .unwrap()
             .load(&self.plugin_config.initial_userspace_configuration)
-            .with_context(err_context)?;
+            .with_context(err_context);
+        if loaded.is_err() {
+            self.plugin_map
+                .remove_instance(self.plugin_id, self.client_id);
+        }
+        loaded?;
 
         self.clone_instance_for_other_clients()?;
         Ok(())
@@ -326,13 +333,18 @@ impl<'a> PluginLoader<'a> {
             workers,
         );
 
-        plugin.lock().unwrap().start().with_context(err_context)?;
-
-        plugin
-            .lock()
-            .unwrap()
-            .load(&self.plugin_config.initial_userspace_configuration)
-            .with_context(err_context)?;
+        let loaded = (|| {
+            let mut plugin = plugin.lock().unwrap();
+            plugin.start().with_context(err_context)?;
+            plugin
+                .load(&self.plugin_config.initial_userspace_configuration)
+                .with_context(err_context)
+        })();
+        if loaded.is_err() {
+            self.plugin_map
+                .remove_instance(self.plugin_id, self.client_id);
+        }
+        loaded?;
 
         Ok(())
     }
@@ -359,6 +371,7 @@ impl<'a> PluginLoader<'a> {
             senders: self.senders.clone(),
             wasi_ctx,
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
+            temporary_data_dir: Some(self.temporary_data_dir.clone()),
             data_access: self.data_access.clone(),
             queues: self.queues.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
@@ -526,6 +539,7 @@ impl<'a> PluginLoader<'a> {
             senders: self.senders.clone(),
             wasi_ctx: Some(wasi_ctx),
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
+            temporary_data_dir: Some(self.temporary_data_dir.clone()),
             data_access: self.data_access.clone(),
             queues: self.queues.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),

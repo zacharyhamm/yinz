@@ -184,6 +184,8 @@ fn build_release(sh: &Shell) -> anyhow::Result<()> {
 }
 
 fn e2e_test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
+    let run = crate::test_run::TestRun::new()?;
+    let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
     let err_context = "failed to run E2E tests";
 
     e2e_build(sh).context(err_context)?;

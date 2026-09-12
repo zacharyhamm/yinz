@@ -110,6 +110,8 @@ fn build(sh: &Shell) -> anyhow::Result<()> {
 }
 
 fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
+    let run = crate::test_run::TestRun::new()?;
+    let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
     let dir = remote_test_dir();
     if !dir.join("bin/ssh").exists() {
         return Err(anyhow::anyhow!(

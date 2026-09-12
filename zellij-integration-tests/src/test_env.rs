@@ -67,10 +67,16 @@ pub fn panics_so_far() -> String {
 }
 
 fn create_test_root() -> PathBuf {
-    let parent = PathBuf::from(TEMP_PARENT);
+    let run_root = std::env::var_os("ZELLIJ_TEST_CACHE_ROOT");
+    let parent = run_root
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(TEMP_PARENT));
     std::fs::create_dir_all(&parent).unwrap();
-    hold_own_process_lock(&parent);
-    remove_roots_of_dead_test_processes(&parent);
+    if run_root.is_none() {
+        hold_own_process_lock(&parent);
+        remove_roots_of_dead_test_processes(&parent);
+    }
     let test_root = parent.join(std::process::id().to_string());
     for subdir in TEST_ROOT_SUBDIRS {
         std::fs::create_dir_all(test_root.join(subdir)).unwrap();
@@ -200,7 +206,10 @@ fn slot_count() -> usize {
 
 pub fn acquire_concurrency_slot() -> ConcurrencySlot {
     let slots = slot_count();
-    let slot_dir = PathBuf::from(TEMP_PARENT).join("concurrency-slots");
+    let slot_dir = std::env::var_os("ZELLIJ_TEST_CACHE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(TEMP_PARENT))
+        .join("concurrency-slots");
     std::fs::create_dir_all(&slot_dir).unwrap();
     loop {
         for slot_index in 0..slots {

@@ -55,6 +55,8 @@ fn build(sh: &Shell) -> anyhow::Result<()> {
 }
 
 fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
+    let run = crate::test_run::TestRun::new()?;
+    let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
     let test_dir = dir();
     let config = test_dir.join("config/zellij/firecracker.json");
     if !config.exists() {

@@ -51,7 +51,6 @@ pub fn get_engine() -> Engine {
 }
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    fs,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -121,7 +120,6 @@ pub fn plugin_thread_main(
 ) -> Result<()> {
     info!("Wasm main thread starts");
     let zellij_data_dir = data_dir.clone();
-    let plugin_global_data_dir = data_dir.join("plugins").join("data");
     layout.populate_plugin_aliases_in_layout(&plugin_aliases);
 
     // use this channel to ensure that tasks spawned from this thread terminate before exiting
@@ -145,7 +143,7 @@ pub fn plugin_thread_main(
         default_mode,
         default_keybinds,
         plugin_aliases.clone(),
-    );
+    )?;
 
     for run_plugin_or_alias in background_plugins {
         load_background_plugin(
@@ -1399,17 +1397,9 @@ pub fn plugin_thread_main(
     });
 
     wasm_bridge.cleanup(deadline);
+    wasm_bridge.wait_for_cleanup(deadline);
 
-    fs::remove_dir_all(&plugin_global_data_dir)
-        .or_else(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                // I don't care...
-                Ok(())
-            } else {
-                Err(err)
-            }
-        })
-        .context("failed to cleanup plugin data directory")
+    Ok(())
 }
 
 fn populate_session_layout_metadata(

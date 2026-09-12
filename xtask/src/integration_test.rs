@@ -3,6 +3,8 @@ use anyhow::Context;
 use xshell::{cmd, Shell};
 
 pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Result<()> {
+    let run = crate::test_run::TestRun::new()?;
+    let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
     let err_context = "failed to run task 'integration-test'";
 
     let _pd = sh.push_dir(crate::project_root());

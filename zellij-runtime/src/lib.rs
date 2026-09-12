@@ -29,6 +29,8 @@ mod home_unix;
 pub mod host_identity;
 #[cfg(not(target_family = "wasm"))]
 pub mod logging;
+#[cfg(unix)]
+pub mod owned_dir;
 #[cfg(not(target_family = "wasm"))]
 pub mod session_checkpoint;
 pub mod shared;

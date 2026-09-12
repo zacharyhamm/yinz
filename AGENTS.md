@@ -87,6 +87,9 @@ Run it before handing off a branch or opening a PR. Every phase runs even if an 
 fails, so one failure does not hide the rest. The integration phase uses 16 nextest workers;
 Docker-dependent suites remain separate. See "Reading a red run" below for timeout diagnosis.
 
+Temporary plugin data and test cache ownership, direct-test overrides, and offline legacy cleanup
+are documented in [docs/TEMPORARY_DIRECTORIES.md](docs/TEMPORARY_DIRECTORIES.md).
+
 ### Passing arguments
 
 xtask's own flags come first (`--release`, …); everything else is forwarded — but

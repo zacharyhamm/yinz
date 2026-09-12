@@ -4757,6 +4757,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "prost-build",
  "serde_json",
  "sha2",
