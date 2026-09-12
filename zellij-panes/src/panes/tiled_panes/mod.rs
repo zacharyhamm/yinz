@@ -725,6 +725,7 @@ impl TiledPanes {
             self.reserved_top_rows.borrow().clone()
         };
         for pane in self.panes.values_mut() {
+            pane.set_subtitle_enabled(draws_full_frames || draws_titles);
             if no_ui_fullscreen_pane_id == Some(pane.pid()) {
                 pane.set_frame(false);
                 pane.set_content_offset(Offset::default());
@@ -783,7 +784,9 @@ impl TiledPanes {
                 let (pane_columns_offset, pane_rows_offset) =
                     pane_content_offset(&position_and_size, &boundary_viewport);
                 let reserve_title_row = if draws_titles {
-                    !pane_is_borderless && !single_selectable_tiled_pane && !is_one_liner_in_stack
+                    !pane_is_borderless
+                        && (!single_selectable_tiled_pane || pane.subtitle().is_some())
+                        && !is_one_liner_in_stack
                 } else {
                     is_stacked && is_flexible
                 };
@@ -1368,6 +1371,8 @@ impl TiledPanes {
                     None
                 };
                 let pane_has_guest_modal = pane.has_guest_modal_for_any_client();
+                let omit_pane_title = omit_pane_title && pane.subtitle().is_none();
+                let pane_has_subtitle = pane.subtitle_rows() > 0;
                 let mut pane_contents_and_ui = PaneContentsAndUi::new(
                     pane,
                     output,
@@ -1418,7 +1423,7 @@ impl TiledPanes {
                             )
                             .with_context(err_context)?;
                     } else if (self.pane_frame_style.draws_titles() || pane_is_stacked)
-                        && reserved_rows_for_pane == 0
+                        && (reserved_rows_for_pane == 0 || pane_has_subtitle)
                     {
                         pane_contents_and_ui
                             .render_pane_frame(

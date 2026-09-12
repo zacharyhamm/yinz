@@ -87,6 +87,8 @@ pub struct PluginPane {
     pub geom: PaneGeom,
     pub geom_override: Option<PaneGeom>,
     pub content_offset: Offset,
+    subtitle: Option<String>,
+    subtitle_enabled: bool,
     pub send_plugin_instructions: SenderWithContext<PluginInstruction>,
     pub active_at: Instant,
     pub pane_title: String,
@@ -159,6 +161,8 @@ impl PluginPane {
             active_at: Instant::now(),
             frame: HashMap::new(),
             content_offset: Offset::default(),
+            subtitle: None,
+            subtitle_enabled: true,
             pane_title: title,
             borderless: false,
             pane_name: pane_name.clone(),
@@ -215,7 +219,7 @@ impl Pane for PluginPane {
         self.x() + self.content_offset.left
     }
     fn get_content_y(&self) -> usize {
-        self.y() + self.content_offset.top
+        self.y() + self.content_offset.top + self.subtitle_rows()
     }
     fn get_content_columns(&self) -> usize {
         // content columns might differ from the pane's columns if the pane has a frame
@@ -226,8 +230,9 @@ impl Pane for PluginPane {
     fn get_content_rows(&self) -> usize {
         // content rows might differ from the pane's rows if the pane has a frame
         // in that case they would be 2 less
-        self.rows()
-            .saturating_sub(self.content_offset.top + self.content_offset.bottom)
+        self.rows().saturating_sub(
+            self.content_offset.top + self.content_offset.bottom + self.subtitle_rows(),
+        )
     }
     fn reset_size_and_position_override(&mut self) {
         self.geom_override = None;
@@ -331,6 +336,7 @@ impl Pane for PluginPane {
         let own_content_columns = self.get_content_columns();
         let own_content_rows = self.get_content_rows();
         let Offset { top, left, .. } = self.content_offset;
+        let top = top + self.subtitle_rows();
         if let Some((x, y)) = client_id
             .and_then(|client_id| self.grids.get(&client_id))
             .and_then(|grid| grid.text_selection_cursor())
@@ -519,6 +525,10 @@ impl Pane for PluginPane {
         if self.borderless {
             return Ok(None);
         }
+        let subtitle = (self.subtitle_rows() > 0)
+            .then(|| self.subtitle.clone())
+            .flatten()
+            .map(|text| (text, self.get_content_y() - 1));
         let frame_geom = frame_params
             .frame_geom_override
             .unwrap_or_else(|| self.current_geom());
@@ -555,6 +565,7 @@ impl Pane for PluginPane {
             frame_params,
         )
         .is_pinned(is_pinned);
+        frame.subtitle = subtitle;
         if let Some(override_) = frame_color_override {
             frame.override_color(override_.color);
         }
@@ -841,6 +852,29 @@ impl Pane for PluginPane {
     fn set_content_offset(&mut self, offset: Offset) {
         self.content_offset = offset;
         self.resize_grids();
+    }
+
+    fn set_subtitle(&mut self, subtitle: Option<String>) {
+        let subtitle = subtitle
+            .map(|text| zellij_types::text::clean_string_from_control_and_linebreak(&text))
+            .filter(|text| !text.is_empty());
+        if self.subtitle != subtitle {
+            let rows = self.subtitle_rows();
+            self.subtitle = subtitle;
+            if rows != self.subtitle_rows() {
+                self.resize_grids();
+            }
+            self.set_should_render(true);
+        }
+    }
+    fn subtitle(&self) -> Option<&str> {
+        self.subtitle.as_deref()
+    }
+    fn set_subtitle_enabled(&mut self, enabled: bool) {
+        self.subtitle_enabled = enabled;
+    }
+    fn subtitle_enabled(&self) -> bool {
+        self.subtitle_enabled
     }
 
     fn get_content_offset(&self) -> Offset {
@@ -1191,6 +1225,39 @@ mod tests {
 
     fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {
         test_plugin_pane_with_cell_size(rows, cols, content_offset, None)
+    }
+
+    #[test]
+    fn subtitle_resizes_plugin_content_and_omits_small_or_borderless_panes() {
+        for offset in [
+            Offset::frame(1),
+            Offset::shift_right_top_and_bottom(0, 1, 0),
+        ] {
+            let mut pane = test_plugin_pane(6, 20, offset);
+            let before = pane.get_content_rows();
+            pane.set_subtitle(Some("review\n · tests\t · running".into()));
+            assert_eq!(pane.subtitle(), Some("review · tests · running"));
+            assert_eq!(pane.get_content_rows(), before - 1);
+            assert_eq!(pane.get_content_y(), offset.top + 1);
+            let mut geom = pane.current_geom();
+            geom.rows = Dimension::fixed(offset.top + offset.bottom + 1);
+            pane.set_geom(geom);
+            assert_eq!(pane.get_content_rows(), 1);
+            assert_eq!(pane.subtitle_rows(), 0);
+            geom.rows = Dimension::fixed(6);
+            geom.cols = Dimension::fixed(offset.left + offset.right);
+            pane.set_geom(geom);
+            assert_eq!(pane.subtitle_rows(), 0);
+            geom.cols = Dimension::fixed(20);
+            pane.set_geom(geom);
+            assert_eq!(pane.subtitle_rows(), 1);
+            pane.set_subtitle(None);
+            assert_eq!(pane.get_content_rows(), before);
+            pane.set_subtitle(Some("again".into()));
+            pane.set_borderless(true);
+            assert_eq!(pane.subtitle_rows(), 0);
+            assert_eq!(pane.get_content_rows(), 6);
+        }
     }
 
     /// Placeholder placements are only resolved once the character cell size is known

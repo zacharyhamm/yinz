@@ -117,6 +117,8 @@ pub struct TerminalPane {
     vte_parser: vte::Parser,
     selection_scrolled_at: time::Instant,
     content_offset: Offset,
+    subtitle: Option<String>,
+    subtitle_enabled: bool,
     pane_title: String,
     pane_name: String,
     prev_pane_name: String,
@@ -215,7 +217,7 @@ impl Pane for TerminalPane {
         self.get_x() + self.content_offset.left
     }
     fn get_content_y(&self) -> usize {
-        self.get_y() + self.content_offset.top
+        self.get_y() + self.content_offset.top + self.subtitle_rows()
     }
     fn get_content_columns(&self) -> usize {
         // content columns might differ from the pane's columns if the pane has a frame
@@ -226,8 +228,9 @@ impl Pane for TerminalPane {
     fn get_content_rows(&self) -> usize {
         // content rows might differ from the pane's rows if the pane has a frame
         // in that case they would be 2 less
-        self.get_rows()
-            .saturating_sub(self.content_offset.top + self.content_offset.bottom)
+        self.get_rows().saturating_sub(
+            self.content_offset.top + self.content_offset.bottom + self.subtitle_rows(),
+        )
     }
     fn reset_size_and_position_override(&mut self) {
         self.geom_override = None;
@@ -352,6 +355,7 @@ impl Pane for TerminalPane {
             return None;
         }
         let Offset { top, left, .. } = self.content_offset;
+        let top = top + self.subtitle_rows();
         self.grid
             .cursor_coordinates()
             .map(|(x, y, is_visible)| (x + left, y + top, is_visible))
@@ -591,6 +595,10 @@ impl Pane for TerminalPane {
         mut frame_params: FrameParams,
         input_mode: InputMode,
     ) -> Result<Option<(Vec<CharacterChunk>, Option<String>)>> {
+        let subtitle = (self.subtitle_rows() > 0)
+            .then(|| self.subtitle.clone())
+            .flatten()
+            .map(|text| (text, self.get_content_y() - 1));
         let err_context = || format!("failed to render frame for client {client_id}");
         frame_params.omit_title = frame_params.omit_title
             && !(input_mode == InputMode::RenamePane && frame_params.is_main_client);
@@ -658,6 +666,7 @@ impl Pane for TerminalPane {
             frame_params,
         )
         .is_pinned(is_pinned);
+        frame.subtitle = subtitle;
         if self.suspended {
             frame.indicate_suspended();
         }
@@ -1088,6 +1097,29 @@ impl Pane for TerminalPane {
     fn set_content_offset(&mut self, offset: Offset) {
         self.content_offset = offset;
         self.reflow_lines();
+    }
+
+    fn set_subtitle(&mut self, subtitle: Option<String>) {
+        let subtitle = subtitle
+            .map(|text| zellij_types::text::clean_string_from_control_and_linebreak(&text))
+            .filter(|text| !text.is_empty());
+        if self.subtitle != subtitle {
+            let rows = self.subtitle_rows();
+            self.subtitle = subtitle;
+            if rows != self.subtitle_rows() {
+                self.reflow_lines();
+            }
+            self.set_should_render(true);
+        }
+    }
+    fn subtitle(&self) -> Option<&str> {
+        self.subtitle.as_deref()
+    }
+    fn set_subtitle_enabled(&mut self, enabled: bool) {
+        self.subtitle_enabled = enabled;
+    }
+    fn subtitle_enabled(&self) -> bool {
+        self.subtitle_enabled
     }
 
     fn get_content_offset(&self) -> Offset {
@@ -1778,6 +1810,8 @@ impl TerminalPane {
             pending_agent_escape_clients: HashSet::new(),
             frame: HashMap::new(),
             content_offset: Offset::default(),
+            subtitle: None,
+            subtitle_enabled: true,
             pid,
             grid,
             selectable: true,

@@ -230,6 +230,7 @@ pub enum ScreenInstruction {
     /// pane's name, so a rename cannot erase it and it cannot erase a rename. See
     /// `Pane::set_title_prefix`.
     SetPaneTitlePrefix(PaneId, Option<String>),
+    SetPaneSubtitle(PaneId, Option<String>),
     /// A default caption for a pane, as opposed to a name: see `WarpedPane::caption`.
     SetPaneCaption(PaneId, String),
     UndoRenamePane(ClientId, Option<NotificationEnd>),

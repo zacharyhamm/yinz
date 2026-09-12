@@ -2039,6 +2039,19 @@ pub(crate) fn screen_thread_main(
                     };
                     screen.log_and_report_session_state()?;
                 },
+                ScreenInstruction::SetPaneSubtitle(pane_id, subtitle) => {
+                    if let Some(tab) = screen
+                        .tabs
+                        .values_mut()
+                        .find(|tab| tab.get_pane_with_id(pane_id).is_some())
+                    {
+                        let resized = tab.set_pane_subtitle(pane_id, subtitle)?;
+                        screen.render(None)?;
+                        if resized {
+                            screen.log_and_report_session_state()?;
+                        }
+                    }
+                },
                 ScreenInstruction::SetPaneTitlePrefix(pane_id, prefix) => {
                     // No `log_and_report_session_state`: the prefix is a decoration on
                     // the frame and never enters `current_title`, so nothing a plugin

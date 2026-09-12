@@ -671,6 +671,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::SetPaneTitlePrefix { pane_id, prefix } => {
                 set_pane_title_prefix(env, pane_id.into(), prefix)
             },
+            PluginCommand::SetPaneSubtitle { pane_id, subtitle } => {
+                set_pane_subtitle(env, pane_id.into(), subtitle)
+            },
             PluginCommand::RenameTab(tab_index, new_name) => rename_tab(
                 env,
                 TabNumber::try_from(tab_index).map_err(anyhow::Error::msg)?,
@@ -7637,6 +7640,11 @@ fn set_pane_title_prefix(env: &PluginEnv, pane_id: PaneId, prefix: Option<String
         .senders
         .send_to_screen(ScreenInstruction::SetPaneTitlePrefix(pane_id, prefix));
 }
+fn set_pane_subtitle(env: &PluginEnv, pane_id: PaneId, subtitle: Option<String>) {
+    let _ = env
+        .senders
+        .send_to_screen(ScreenInstruction::SetPaneSubtitle(pane_id, subtitle));
+}
 
 fn close_multiple_panes(env: &PluginEnv, pane_ids: Vec<PaneId>) {
     for pane_id in pane_ids {
@@ -8012,6 +8020,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::RenameTerminalPane
         | CommandType::RenamePluginPane
         | CommandType::SetPaneTitlePrefix
+        | CommandType::SetPaneSubtitle
         | CommandType::SwitchSession
         | CommandType::DeleteDeadSession
         | CommandType::DeleteAllDeadSessions

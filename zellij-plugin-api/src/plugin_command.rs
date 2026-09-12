@@ -171,9 +171,9 @@ pub use super::generated_api::api::{
         SetFloatingPanePinnedPayload, SetPaneAgentPayload, SetPaneAgentRunPayload,
         SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
-        SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload, SetQuitNoticePayload,
-        SetRelatedPanesPayload, SetSelfMouseSelectionSupportPayload, SetTabProjectsPayload,
-        SetTimeoutPayload, ShowCursorPayload,
+        SetPaneRegexHighlightsPayload, SetPaneSubtitlePayload, SetPaneTitlePrefixPayload,
+        SetQuitNoticePayload, SetRelatedPanesPayload, SetSelfMouseSelectionSupportPayload,
+        SetTabProjectsPayload, SetTimeoutPayload, ShowCursorPayload,
         ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
         ShowFloatingPanesResponse as ProtobufShowFloatingPanesResponse, ShowPaneWithIdPayload,
         SpawnAgentPayload, SpawnAgentResponse as ProtobufSpawnAgentResponse, StackPanesPayload,
@@ -2771,6 +2771,18 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetPaneTitlePrefix"),
             },
+            Some(CommandName::SetPaneSubtitle) => match protobuf_plugin_command.payload {
+                Some(Payload::SetPaneSubtitlePayload(payload)) => {
+                    Ok(PluginCommand::SetPaneSubtitle {
+                        pane_id: payload
+                            .pane_id
+                            .ok_or("SetPaneSubtitle must have a pane id")?
+                            .try_into()?,
+                        subtitle: payload.subtitle,
+                    })
+                },
+                _ => Err("Mismatched payload for SetPaneSubtitle"),
+            },
             Some(CommandName::RevealPaneWithId) => match protobuf_plugin_command.payload {
                 Some(Payload::RevealPaneWithIdPayload(reveal_pane_with_id_payload)) => {
                     let pane_id = reveal_pane_with_id_payload
@@ -5149,6 +5161,13 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
+            PluginCommand::SetPaneSubtitle { pane_id, subtitle } => Ok(ProtobufPluginCommand {
+                name: CommandName::SetPaneSubtitle as i32,
+                payload: Some(Payload::SetPaneSubtitlePayload(SetPaneSubtitlePayload {
+                    pane_id: pane_id.try_into().ok(),
+                    subtitle,
+                })),
+            }),
             PluginCommand::RevealPaneWithId(pane_id, label) => Ok(ProtobufPluginCommand {
                 name: CommandName::RevealPaneWithId as i32,
                 payload: Some(Payload::RevealPaneWithIdPayload(RevealPaneWithIdPayload {
@@ -7405,6 +7424,41 @@ mod tests {
     }
 
     #[test]
+    fn set_pane_subtitle_protobuf_round_trip() {
+        for (pane_id, subtitle) in [
+            (
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
+                Some("zellij:topic".to_owned()),
+            ),
+            (
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
+                Some(String::new()),
+            ),
+            (
+                PaneId::Plugin(zellij_types::internal_ids::PluginId::new(3)),
+                None,
+            ),
+        ] {
+            let original = PluginCommand::SetPaneSubtitle {
+                pane_id,
+                subtitle: subtitle.clone(),
+            };
+            let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match decoded {
+                PluginCommand::SetPaneSubtitle {
+                    pane_id: decoded_pane_id,
+                    subtitle: decoded_subtitle,
+                } => {
+                    assert_eq!(decoded_pane_id, pane_id);
+                    assert_eq!(decoded_subtitle, subtitle);
+                },
+                other => panic!("expected SetPaneSubtitle, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
     fn new_pane_protobuf_round_trip() {
         let original = PluginCommand::NewPane;
         let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
@@ -8025,6 +8079,7 @@ mod tests {
                 | PluginCommand::DataUnwatch { .. }
                 | PluginCommand::DataCatalog { .. }
                 | PluginCommand::SetPaneTitlePrefix { .. }
+                | PluginCommand::SetPaneSubtitle { .. }
                 | PluginCommand::EnqueueQueueJob { .. }
                 | PluginCommand::ConfigureQueue { .. }
                 | PluginCommand::CancelQueueJob { .. }
