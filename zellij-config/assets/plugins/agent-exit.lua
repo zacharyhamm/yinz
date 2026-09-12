@@ -62,7 +62,7 @@ function M.pipe(message)
   if message.name=='workflow-progress' and message.payload and launch_rpc and not launch_ready then
     local progress=z.json.decode(message.payload)
     if not progress.submission then
-      launch_ready=progress.status=='ready'
+      launch_ready=progress.status=='ready' and progress.operation=='workflow.run'
       launch_rpc:reset_timeout(90)
     end
   end
