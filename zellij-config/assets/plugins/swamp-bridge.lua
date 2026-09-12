@@ -207,17 +207,21 @@ local function swamp(request,root)
   end
   return encode(reply)
 end
+local launch_waiting={}
 local function launch_progress(work,status)
-  local uid=scope(work,'launch')
-  local launch,row=read(uid)
-  if not launch then return end
-  launch.waiting=status~='ready' and status or nil
-  put(uid,launch,row)
-  changed(work)
-  local view=read(scope(work,'view'))
-  if view and view.incarnation==identity.incarnation then
-    z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-progress',message_payload=encode{status=status}}
+  if not read(scope(work,'launch')) then return end
+  local waiting=launch_waiting[work]
+  if waiting then waiting.timer:cancel() end
+  launch_waiting[work]=nil
+  local function send()
+    local view=read(scope(work,'view'))
+    if view and view.incarnation==identity.incarnation then
+      z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-progress',message_payload=encode{status=status}}
+    end
   end
+  if status~='ready' then launch_waiting[work]={status=status,timer=z.every(10,send)} end
+  changed(work)
+  send()
 end
 local function watch_run(run,work,root)
   if watching[run] then return end
@@ -492,9 +496,9 @@ handle = function(args, manual_view)
     if failed and failed.outcome=='failed' and failed.error then
       return launch_failure(args.launch,failed,failed.error,args.directory)
     end
-    if failed and failed.waiting then
+    if failed and launch_waiting[args.launch] then
       return {launch=args.launch,root=failed.checkout or args.directory,history={id=args.launch,workflowName=failed.workflow or 'Workflow launch',status='queued'},
-        children={},active=true,logs=failed.waiting=='waiting' and 'Waiting for active workflows before loading updated extensions.' or 'Loading updated extensions.'}
+        children={},active=true,logs=launch_waiting[args.launch].status=='waiting' and 'Waiting for active workflows before loading updated extensions.' or 'Loading updated extensions.'}
     end
     local config = z.project_config.read(assert(args.directory, 'Missing control checkout'))
     assert(not config.error, config.error)
@@ -705,7 +709,7 @@ handle = function(args, manual_view)
     inputs.target = inputs.target or config.root
     inputs.gate = inputs.gate or config.config.ci or {'cargo','x','ci','check'}
     inputs.targetBranch = inputs.targetBranch or config.config.default_branch or 'main'
-    value,row=read(uid) -- progress notifications may have advanced this claim's revision
+    value,row=read(uid)
     value.workflow,value.checkout,value.launch=name,config.root,args.work
     put(uid,value,row)
     return dispatch(uid,config.root,'workflow.run',{workflowIdOrName=name,inputs=inputs})
@@ -847,6 +851,7 @@ local timing_attempt=0
 local function invoke_inner(args, manual_view)
   local new_launch=type(args)=='table' and args.method=='workflow_run' and not read(scope(args.work,args.key))
   local ok,response=pcall(handle,args,manual_view)
+  if new_launch and launch_waiting[args.work] then launch_progress(args.work,'ready') end
   if ok then return response end
   if new_launch then
     -- A validation/configuration failure before a runner claim is safe to restart.

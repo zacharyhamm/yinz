@@ -3654,10 +3654,10 @@ fn swamp_request(
             if let Some(error) = config.error { return Err(anyhow!(error)); }
             let root = config.root;
             let payload: serde_json::Value = serde_json::from_str(&payload).context("invalid Swamp request payload")?;
-            let warm = root.clone();
-            let warm_id = id.clone();
-            tokio::task::spawn_blocking(move || zellij_process::swamp::prewarm_request(&warm, &warm_id)).await.context("Swamp startup failed")??;
             if operation == "workflow.cancel" {
+                let warm = root.clone();
+                let warm_id = id.clone();
+                tokio::task::spawn_blocking(move || zellij_process::swamp::prewarm_request(&warm, &warm_id)).await.context("Swamp startup failed")??;
                 let run = payload["runId"].as_str().context("cancellation requires a run ID")?.to_owned();
                 let value = zellij_process::swamp::cancel(root, run).await?;
                 emit(serde_json::json!({"type":"workflow.cancel", "id":id, "payload":{"data":value}}));

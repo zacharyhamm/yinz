@@ -267,3 +267,63 @@ export const model = {
     result.unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+#[ignore = "requires Swamp on PATH"]
+fn external_source_fingerprints_track_configured_directories_and_membership() {
+    let repo = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let flat = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    cli(
+        root,
+        &["repo", "init", root.to_str().unwrap(), "--tool", "none"],
+    )
+    .unwrap();
+    let marker = external.path().join(".swamp.yaml");
+    std::fs::write(&marker, "modelsDir: custom/models\n").unwrap();
+    for path in [
+        external.path().join("custom/models/_lib"),
+        external.path().join("extensions/reports"),
+        flat.path().to_owned(),
+    ] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    // Direct-content sources must declare an extension before Swamp accepts them.
+    std::fs::write(flat.path().join("model.ts"), "export const model = {};").unwrap();
+    for source in [external.path(), flat.path()] {
+        cli(
+            root,
+            &["extension", "source", "add", source.to_str().unwrap()],
+        )
+        .unwrap();
+    }
+    for directory in [
+        external.path().join("custom/models/_lib"),
+        external.path().join("extensions/reports"),
+        flat.path().to_owned(),
+    ] {
+        let before = extension_fingerprint(root).unwrap();
+        let file = directory.join("helper.ts");
+        std::fs::write(&file, "export const value = 1;").unwrap();
+        let added = extension_fingerprint(root).unwrap();
+        assert_ne!(before, added);
+        std::fs::write(&file, "export const value = 2;").unwrap();
+        assert_ne!(added, extension_fingerprint(root).unwrap());
+        std::fs::remove_file(file).unwrap();
+        assert_eq!(before, extension_fingerprint(root).unwrap());
+    }
+    let before = extension_fingerprint(root).unwrap();
+    std::fs::write(
+        &marker,
+        "modelsDir: custom/models\n# changed source settings\n",
+    )
+    .unwrap();
+    assert_ne!(before, extension_fingerprint(root).unwrap());
+    let custom = external.path().join("other/models");
+    std::fs::create_dir_all(&custom).unwrap();
+    std::fs::write(&marker, "modelsDir: other/models\n").unwrap();
+    let before = extension_fingerprint(root).unwrap();
+    std::fs::write(custom.join("added.ts"), "export const value = 3;").unwrap();
+    assert_ne!(before, extension_fingerprint(root).unwrap());
+}

@@ -273,6 +273,8 @@ fn extension_fingerprint(root: &Path) -> Result<String> {
                 .context("missing expanded extension paths")?
             {
                 let path = root.join(path.as_str().context("invalid extension source path")?);
+                paths.push(path.join(".swamp.yaml"));
+                paths.extend(extension_directories(&path, |_| None)?);
                 paths.push(if path.join("extensions").is_dir() {
                     path.join("extensions")
                 } else {
@@ -953,6 +955,20 @@ pub async fn request(
                     operation.as_str(),
                     "workflow.validate" | "workflow.run" | "workflow.resume" | "model.method.run"
                 );
+            let startup = fresh || endpoint(&root)?.is_none();
+            let queued = startup || (!read_request(&operation) && operation != "run.attach");
+            if queued {
+                let _ = events.send(
+                    json!({"id":id,"type":"managed.progress","payload":{"status":"waiting"}}),
+                );
+            }
+            if startup {
+                let warm = root.clone();
+                let warm_id = id.clone();
+                tokio::task::spawn_blocking(move || prewarm_request(&warm, &warm_id))
+                    .await
+                    .context("Swamp startup task failed")??;
+            }
             let guard = if fresh {
                 Some(admit(&root, &id, &events).await?)
             } else if read_request(&operation) || operation == "run.attach" {
@@ -967,6 +983,10 @@ pub async fn request(
             };
             if events.is_closed() {
                 return Ok(());
+            }
+            if queued {
+                let _ = events
+                    .send(json!({"id":id,"type":"managed.progress","payload":{"status":"ready"}}));
             }
             let run = (operation == "run.attach")
                 .then(|| payload["runId"].as_str().map(str::to_owned))
@@ -1018,6 +1038,9 @@ fn running(
             )
             .await?;
             while let Some(frame) = events.recv().await {
+                if frame["type"] == "managed.progress" {
+                    continue;
+                }
                 if frame["type"] == "error" {
                     return Err(anyhow!("cannot verify Swamp activity: {}", frame["error"]));
                 }
@@ -1037,7 +1060,7 @@ fn running(
 }
 
 async fn admit(root: &Path, id: &str, events: &mpsc::UnboundedSender<Value>) -> Result<File> {
-    let mut last = "";
+    let mut last = "waiting";
     loop {
         if events.is_closed() {
             return Err(anyhow!("queued Swamp request was abandoned"));
@@ -1050,10 +1073,6 @@ async fn admit(root: &Path, id: &str, events: &mpsc::UnboundedSender<Value>) -> 
             Ok::<_, anyhow::Error>((guard, state, extension_fingerprint(&path)?))
         }).await.context("Swamp admission task failed")??;
         if state.extensions.as_ref() == Some(&fingerprint) {
-            if !last.is_empty() {
-                let _ = events
-                    .send(json!({"id":id,"type":"managed.progress","payload":{"status":"ready"}}));
-            }
             return Ok(guard);
         }
         let busy = running(root).await?;
@@ -1310,12 +1329,7 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
 }
 
 pub async fn call(root: PathBuf, operation: &str, payload: Value) -> Result<Value> {
-    let warm = root.clone();
     let id = uuid::Uuid::new_v4().to_string();
-    let warm_id = id.clone();
-    tokio::task::spawn_blocking(move || prewarm_request(&warm, &warm_id))
-        .await
-        .context("Swamp startup task failed")??;
     let mut events = request(root, id, operation.to_owned(), payload).await?;
     while let Some(frame) = events.recv().await {
         if frame["type"] == "managed.progress" {
@@ -1491,6 +1505,15 @@ mod tests {
     }
 
     async fn next(events: &mut mpsc::UnboundedReceiver<Value>) -> Value {
+        loop {
+            let frame = next_frame(events).await;
+            if frame["type"] != "managed.progress" {
+                return frame;
+            }
+        }
+    }
+
+    async fn next_frame(events: &mut mpsc::UnboundedReceiver<Value>) -> Value {
         tokio::time::timeout(Duration::from_secs(10), events.recv())
             .await
             .unwrap()
@@ -1673,7 +1696,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(next(&mut queued).await["payload"]["status"], "waiting");
+        assert_eq!(
+            next_frame(&mut queued).await["payload"]["status"],
+            "waiting"
+        );
         let mut callback = request(
             root.clone(),
             "callback".into(),
@@ -1698,13 +1724,69 @@ mod tests {
         assert!(queued.try_recv().is_err());
         // Model an independently completed refresh. Waiting requests must re-read
         // endpoint state rather than restart again using their earlier observation.
-        let guard = lock(&root).unwrap();
-        state.extensions = Some(extension_fingerprint(&root).unwrap());
-        publish(&state).unwrap();
-        drop(guard);
-        assert_eq!(next(&mut queued).await["payload"]["status"], "ready");
+        let path = root.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = lock(&path).unwrap();
+            state.extensions = Some(extension_fingerprint(&path).unwrap());
+            publish(&state).unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(next_frame(&mut queued).await["payload"]["status"], "ready");
         assert_eq!(next(&mut queued).await["payload"]["passed"], true);
         server.abort();
+        std::fs::remove_dir_all(directory(&root).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_lock_wait_returns_progress_and_preserves_read_access_before_one_dispatch() {
+        let (_dir, root, listener) = fixture().await;
+        let guard = lock(&root).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_hdr_async(stream, |request: &tokio_tungstenite::tungstenite::handshake::server::Request, mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                response.headers_mut().insert("Sec-WebSocket-Protocol", request.headers()["Sec-WebSocket-Protocol"].clone()); Ok(response)
+            }).await.unwrap();
+            for operation in ["run.history", "workflow.run"] {
+                let request: Value =
+                    serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap())
+                        .unwrap();
+                assert_eq!(request["type"], operation);
+                ws.send(Message::Text(
+                    json!({"id":request["id"],"type":operation,"payload":{"passed":true}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            }
+        });
+        let mut queued = request(
+            root.clone(),
+            "queued".into(),
+            "workflow.run".into(),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            next_frame(&mut queued).await["payload"]["status"],
+            "waiting"
+        );
+        assert!(
+            queued.try_recv().is_err(),
+            "prewarm cannot complete while the lock is held"
+        );
+        // This includes the activity check used by admission while it owns the lock.
+        assert_eq!(
+            call(root.clone(), "run.history", json!({})).await.unwrap()["passed"],
+            true
+        );
+        drop(guard);
+        assert_eq!(next_frame(&mut queued).await["payload"]["status"], "ready");
+        assert_eq!(next_frame(&mut queued).await["payload"]["passed"], true);
+        assert!(queued.recv().await.is_none());
+        server.await.unwrap();
         std::fs::remove_dir_all(directory(&root).unwrap()).unwrap();
     }
 
