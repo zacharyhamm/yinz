@@ -574,14 +574,15 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
 
     /// Where the agent list's first row sits. The list is the panel's left half, so this is the
     /// panel's upper-left corner - give or take the frame it wears while it is in its corner and
-    /// loses when it is expanded, exactly as a borderless floating pane does.
+    /// loses when it is expanded, exactly as a borderless floating pane does. The tab cell's
+    /// leading space is the pane's first column.
     fn list_corner(grid_snapshot: &GridSnapshot) -> Option<(usize, usize)> {
         grid_snapshot
             .text
             .lines()
             .enumerate()
             .find_map(|(row, line)| {
-                line.find("[Agents]")
+                line.find(" Agents │")
                     .map(|byte_index| (row, line[..byte_index].chars().count()))
             })
     }
@@ -712,7 +713,7 @@ fn vm_tab_focuses_a_pane_in_another_session_and_dismisses_the_panel() {
     source.send_stdin(b"\x1b[C");
     source.wait_until(
         "the VM tab has the remote VM and associated pane",
-        |screen| screen.contains("[VMs]") && screen.contains("vm-focus-target"),
+        |screen| screen.contains(" VMs │") && screen.contains("vm-focus-target"),
     );
     source.send_stdin(&keys::TAB);
     source.send_stdin(&keys::ENTER);
