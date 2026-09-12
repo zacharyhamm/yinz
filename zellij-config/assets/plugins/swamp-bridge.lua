@@ -518,6 +518,19 @@ handle = function(args, manual_view)
     assert(args.operation=='workflow.history.get' or args.operation=='workflow.history.search' or args.operation=='data.query' or args.operation=='workflow.approve','Unsupported bridge request')
     return decode(swamp({operation=args.operation,payload=args.payload},args.directory))
   end
+  if args.method=='workflow_report' then
+    assert(type(args.offset)=='number' and args.offset>=0 and args.offset%1==0,'Invalid report offset')
+    assert(type(args.version)=='number' and args.version>0 and args.version%1==0,'Invalid report version')
+    local predicate='modelName == '..encode(args.model)..' && name == '..encode(args.name)..' && version == '..args.version
+    -- Stored lengths use substring's UTF-16 offsets; CEL size() counts code points.
+    -- JSON numbers need int() when used as substring arguments.
+    local finish=args.offset+32768
+    local ending='(attributes.summaryLength <= '..finish..' ? int(attributes.summaryLength) : (attributes.summary.substring('..(finish-1)..','..finish..').matches(r"[\\uD800-\\uDBFF]") ? '..(finish-1)..' : '..finish..'))'
+    local projection='{"text":attributes.summary.substring('..args.offset..','..ending..'),"next":'..ending..',"total":attributes.summaryLength}'
+    local response=decode(swamp({operation='data.query',payload={predicate=predicate..' && has(attributes.summary) && has(attributes.summaryLength) && attributes.summaryLength >= '..args.offset,select=projection}},args.directory))
+    assert(#response.results==1,'Saved test report unavailable at this version')
+    return response.results[1]
+  end
   if args.method=='workflow_answer' then
     local heartbeat
     local function progress(status)
@@ -606,9 +619,11 @@ handle = function(args, manual_view)
     end
     local function test_preview(path)
       return ('{"evidence":'..path..'.evidence,"outcome":'..path..'.outcome,"exitCode":'..path..'.exitCode,'..
+        '"summaryLength":has('..path..'.summaryLength) ? '..path..'.summaryLength : 0,'..
+        '"outputComplete":has('..path..'.outputComplete) && '..path..'.outputComplete,'..
         '"log":'..path..'.log,"passed":'..path..'.passed,"outputRef":has('..path..'.outputRef) ? '..path..'.outputRef : null,'..preview(path)..'}')
     end
-    local output_projection=[[{"model":modelName,"name":name,"version":version,"attributes":
+    local output_projection=[[{"model":modelName,"name":name,"version":version,"createdAt":createdAt,"attributes":
       specName == "claim" ? {"key":attributes.key,"fingerprint":attributes.fingerprint,"outcome":attributes.outcome} :
       specName == "commandOutput" ? {} :
       specName == "rebaseResult" ? {"exitCode":attributes.exitCode,"evidence":attributes.evidence,
@@ -670,7 +685,7 @@ handle = function(args, manual_view)
       operation.outcome='unknown'
       put(uid,operation,row)
     end
-    if args.includeOutput~=false and operation.log and operation.pane and operation.supervisor then
+    if args.includeOutput~=false and not operation.capture and operation.log and operation.pane and operation.supervisor then
       local ok,log=pcall(function()
         local host=supervisor(operation.pane, operation.supervisor)
         assert(host.host_id==operation.supervisor,'Log belongs to a different supervisor')
@@ -871,6 +886,7 @@ handle = function(args, manual_view)
     assert(type(args.argv) == 'table' and #args.argv > 0, 'Missing literal argv')
     local owner = {host_id=identity.host_id, session=identity.session, incarnation=identity.incarnation, work=args.work, agent=args.key}
     value.owner, value.outcome = owner, 'pending'
+    value.capture=args.capture
     put(uid, value, row)
     local argv = {}
     for i=2,#args.argv do argv[#argv+1] = args.argv[i] end

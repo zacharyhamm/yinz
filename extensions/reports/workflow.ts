@@ -112,12 +112,39 @@ export const report = {
                 outputs,
             });
         }
+        const testReports = [
+            ...new Set(
+                [...resources, ...steps.flatMap((s) => s.outputs)]
+                    .flatMap((r) => {
+                        const test = r.attributes?.test ?? r.attributes;
+                        return typeof test?.summary === "string"
+                            ? [test.summary as string]
+                            : [];
+                    }),
+            ),
+        ];
+        // Test evidence stores the raw log. Expose its readable report once, not
+        // again in each step, resource and resumed assessment (or bridge replies
+        // grow past their transport limit).
+        for (
+            const record of [
+                ...resources,
+                ...steps.flatMap((s) => s.outputs),
+            ]
+        ) {
+            const test = record.attributes?.test ?? record.attributes;
+            if (typeof test?.summary !== "string") continue;
+            test.reportIndex = testReports.indexOf(test.summary);
+            delete test.summary;
+            delete test.output;
+        }
         const json = {
             run: context.workflowRunId,
             workflow: context.workflowName,
             status: context.workflowStatus,
             steps,
             resources,
+            testReports,
             outstanding: steps.filter((s) =>
                 s.status !== "succeeded" && s.status !== "skipped"
             ).map((s) => s.step),
@@ -129,7 +156,14 @@ export const report = {
             ).replace(/[`*_\[\]]/g, "\\$&");
         const markdown = "# Workflow evidence\n\nRun: " +
             context.workflowRunId + "\n\nStatus: " + context.workflowStatus +
-            "\n\n" +
+            "\n\n" + testReports.map((summary) => {
+                let length = 3;
+                for (const match of summary.matchAll(/`+/g)) {
+                    length = Math.max(length, match[0].length + 1);
+                }
+                const fence = "`".repeat(length);
+                return fence + "text\n" + summary + "\n" + fence + "\n\n";
+            }).join("") +
             steps.map((s) =>
                 "- " + quote(s.job + "/" + s.step) + ": " + s.status + "\n" +
                 s.outputs.map((o) =>

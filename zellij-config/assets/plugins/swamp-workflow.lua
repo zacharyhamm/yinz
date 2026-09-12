@@ -18,6 +18,21 @@ local output_render_pending=false
 local following=true
 local generation=0
 local submission,submission_rpc,submission_ready
+local reports={}
+local function report_key(entry)
+  return z.json.encode{entry.model,entry.name,entry.version}
+end
+local function report_entries()
+  local entries={}
+  for _,entry in ipairs(((M.snapshot or {}).outputs or {}).results or {}) do
+    if (entry.attributes.summaryLength or 0)>0 then entries[#entries+1]=entry end
+  end
+  table.sort(entries,function(a,b)
+    if a.createdAt~=b.createdAt then return (a.createdAt or '')>(b.createdAt or '') end
+    return report_key(a)>report_key(b)
+  end)
+  return entries
+end
 local function identity(entry)
   return entry and z.json.encode{entry.attributes.run,entry.model,entry.attributes.question}
 end
@@ -57,6 +72,41 @@ local function controls()
 end
 local function repaint()
   if M.selecting then M.dirty=true else z.request_render() end
+end
+local function load_reports(revision)
+  for _,entry in ipairs(report_entries()) do
+    if (entry.attributes.summaryLength or 0)>0 then
+      local key=report_key(entry)
+      local report=reports[key]
+      if not report then
+        report={chunks={},offset=0,total=entry.attributes.summaryLength}
+        reports[key]=report
+        following=false;M.scroll=0
+      end
+      if not report.loading and report.offset<report.total then
+        report.loading=true
+        local root=M.snapshot.root
+        z.task(function()
+          local ok,err=pcall(function()
+            while report.offset<report.total and revision==generation do
+              local reply=z.await(z.rpc.call{plugin_url='zellij:swamp-bridge',name='swamp',timeout=30,
+                payload={method='workflow_report',directory=root,model=entry.model,name=entry.name,version=entry.version,offset=report.offset}})
+              if revision~=generation then return end
+              assert(not reply.error,reply.error)
+              local chunk=reply.result
+              assert(chunk.next>report.offset and chunk.total==report.total,'Invalid saved report chunk')
+              report.chunks[#report.chunks+1]=chunk.text
+              report.offset=chunk.next
+              report.error=nil
+              repaint()
+            end
+          end)
+          if not ok then report.error=tostring(err);repaint() end
+          report.loading=false
+        end)
+      end
+    end
+  end
 end
 function M.refresh()
   if not M.attachment then return end
@@ -98,6 +148,7 @@ function M.refresh()
       M.selected=math.min(M.selected,math.max(1,#M.pending))
       for i,entry in ipairs(M.pending) do if identity(entry)==selected then M.selected=i end end
       controls()
+      load_reports(revision)
     end)
     if not ok and revision==generation then M.refresh_error=tostring(err) end
     if revision==generation then
@@ -128,6 +179,7 @@ function M.attach(attachment)
     M.scroll=0
     M.snapshot=nil
     M.detached=false
+    reports={}
     M.pending={}
     M.selected=1
     M.active=true
@@ -192,6 +244,7 @@ function M.update(event)
   if event.name=='command_pane_exited' and event.context and event.context.swamp_work==M.launch then M.refresh();return false end
   controls()
   if event.name=='key' and event.key=='End' and form:focused_id()~='answer' then following=true;M.scroll=math.huge;return true end
+  if event.name=='key' and event.key=='Home' and form:focused_id()~='answer' then following=false;M.scroll=0;return true end
   if event.name=='key' and event.key=='PageUp' then following=false; M.scroll=math.max(0,M.scroll-content_height);return true end
   if event.name=='key' and event.key=='PageDown' then return scroll_down(content_height) end
   if event.name=='mouse' then
@@ -332,6 +385,20 @@ function M.render(rows,cols)
   if M.refresh_error then add(M.refresh_error,true) end
   if not entry and M.active then add('Waiting for the workflow. No question pending.') end
   if M.snapshot then
+    for _,entry in ipairs(report_entries()) do
+      local report=reports[report_key(entry)]
+      if report then
+        -- Plain text preserves failure blocks and cannot turn test output into UI markup.
+        if report.width~=cols or report.rendered~=report.offset then
+          report.lines=z.text.wrap(text(table.concat(report.chunks)),math.max(1,cols))
+          report.width,report.rendered=cols,report.offset
+        end
+        blocks[#blocks+1]={lines=report.lines,count=#report.lines,important=entry.attributes.passed==false,scroll=0}
+        if report.error then add('Report unavailable: '..report.error,true)
+        elseif report.offset<report.total then add('Loading complete test report...') end
+      end
+    end
+    add('Execution details:')
     local histories={M.snapshot.history}
     for _,child in ipairs(M.snapshot.children or {}) do histories[#histories+1]=child end
     for _,history in ipairs(histories) do

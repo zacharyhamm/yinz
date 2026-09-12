@@ -1,6 +1,7 @@
 /** Typed bridge transport. Replies describe host outcomes, not merely CLI completion. @module */
 import { z } from "npm:zod@4.3.6";
 import { checked, Context, Key, Literal } from "./workflow.ts";
+import { Capture } from "./test_report.ts";
 export const PromptText = z.string().min(1).refine(
     (s) => new TextEncoder().encode(s).length <= 262144,
     "Prompt exceeds 256 KiB (262144 UTF-8 bytes)",
@@ -85,6 +86,7 @@ export const Operation = z.object({
     output: z.string().optional(),
     outputTruncated: z.boolean().optional(),
     logError: z.string().optional(),
+    capture: Capture.optional(),
 });
 export const Session = z.object({
     session: z.string().min(1),

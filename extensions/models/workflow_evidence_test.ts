@@ -86,7 +86,7 @@ Deno.test("review and gate evidence cannot be inferred from missing findings, pr
     }
     assert(rejected);
     await methods.test_result.execute({
-        operation: { ...op, exitCode: 0, log: "terminal_7" },
+        operation: { ...op, exitCode: 0, log: "terminal_7", output: "" },
         evidence,
     }, c);
     const test = resources.test.schema.parse(saved.get("test-current"));

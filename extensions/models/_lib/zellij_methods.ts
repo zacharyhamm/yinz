@@ -11,6 +11,13 @@ import {
 } from "./bridge.ts";
 import { OutputRef, readEvidence, resolveEvidence } from "./evidence.ts";
 import { Context, digest, Key, Literal } from "./workflow.ts";
+import {
+    Capture,
+    captureCommand,
+    readCapture,
+    ReportFields,
+    testReport,
+} from "./test_report.ts";
 import { Evidence, Finding, Sync } from "../git_workflow.ts";
 const Agent = Request.extend({ agent: Key });
 const Spawn = Request.extend({ spec: AgentSpec });
@@ -25,6 +32,7 @@ const Command = Request.extend({
     argv: z.array(Literal).min(1),
     cwd: Literal.min(1),
     foreground: z.boolean().default(false),
+    captureOutput: z.boolean().default(false),
 });
 const Review = z.object({
     evidence: Evidence,
@@ -35,7 +43,7 @@ const Review = z.object({
     resolved: z.boolean(),
     problem: z.string().nullable(),
 });
-const Test = z.object({
+const Test = ReportFields.extend({
     evidence: Evidence,
     outcome: z.string(),
     exitCode: z.number().int().nullable(),
@@ -43,6 +51,7 @@ const Test = z.object({
     output: z.string().default(""),
     outputRef: OutputRef.optional(),
     passed: z.boolean(),
+    operationFingerprint: z.string().optional(),
 });
 const ReviewArgs = z.object({
     operation: Operation,
@@ -75,6 +84,10 @@ const resource = <T extends z.ZodType>(schema: T, description: string) => ({
     garbageCollection: 50,
 });
 export const resources = {
+    capture: resource(
+        Capture,
+        "Private command capture pending durable test evidence",
+    ),
     continuation: resource(
         z.object({ fingerprint: z.string(), outputRef: OutputRef }),
         "Exact test evidence chosen for a continuation retry",
@@ -134,6 +147,42 @@ function method<T extends z.ZodType>(
         },
     };
 }
+async function reportPrompt(
+    c: Context,
+    introduction: string,
+    test: z.infer<typeof Test>,
+) {
+    const ref = test.outputRef;
+    if (ref) {
+        if (!c.dataRepository) {
+            throw new Error("Saved evidence repository unavailable");
+        }
+        test = await resolveEvidence(c.dataRepository, test);
+        if (test.output === null) throw new Error("Missing saved test output");
+    }
+    const summary = test.summary ?? testReport(test).summary;
+    const full = introduction + "\n\n" + summary;
+    if (PromptText.safeParse(full).success) return full;
+    if (!ref) {
+        throw new Error(
+            "Oversized test report has no saved evidence reference",
+        );
+    }
+    const predicate = `modelType == ${
+        JSON.stringify(ref.modelType)
+    } && ownerType == "model-method" && ownerRef == ${
+        JSON.stringify(ref.modelId)
+    } && name == ${JSON.stringify(ref.name)} && version == ${ref.version}`;
+    const quote = (s: string) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
+    return PromptText.parse(
+        introduction + "\n\nTested revision: " + test.evidence.source.commit +
+            "\nCompletion: " + test.outcome + "; exit status: " +
+            test.exitCode +
+            "\nThe complete report exceeds the prompt limit. Read this exact saved version before fixing failures (summary and raw output are included):\n" +
+            "swamp data query " + quote(predicate) +
+            " --select attributes --json --repo-dir " + quote(c.repoDir),
+    );
+}
 const FlowInputs = z.object({
     flowVersion: z.literal(2),
     launch: Key,
@@ -182,9 +231,18 @@ export const methods = {
     prepare_prompt: {
         description:
             "Prepare and validate a helper prompt before spawning its agent",
-        arguments: z.object({ prompt: z.string() }),
-        execute: (input: { prompt: string }, c: Context) =>
-            save(c, "prompt", { prompt: preparePrompt(input.prompt) }),
+        arguments: z.object({
+            prompt: z.string(),
+            test: Test.nullable().optional(),
+        }),
+        execute: async (
+            input: { prompt: string; test?: z.infer<typeof Test> | null },
+            c: Context,
+        ) => save(c, "prompt", {
+            prompt: input.test
+                ? await reportPrompt(c, input.prompt, Test.parse(input.test))
+                : preparePrompt(input.prompt),
+        }),
     },
     check_status: {
         description:
@@ -226,7 +284,7 @@ export const methods = {
             }
             if (
                 test &&
-                (test.outputRef ||
+                (test.outputRef || test.summary !== undefined ||
                     new TextEncoder().encode(test.output).length > 65536)
             ) {
                 if (!c.dataRepository) {
@@ -286,10 +344,20 @@ export const methods = {
                         outputRef: test.outputRef,
                     });
                 }
-                test.output =
-                    test.output.slice(0, 8192).replace(/[\uD800-\uDBFF]$/, "") +
-                    "\n[Full output saved in Swamp; see outputRef]\n" +
-                    test.output.slice(-8192).replace(/^[\uDC00-\uDFFF]/, "");
+                if (test.output.length > 16384) {
+                    test.output = test.output.slice(0, 8192).replace(
+                        /[\uD800-\uDBFF]$/,
+                        "",
+                    ) +
+                        "\n[Full output saved in Swamp; see outputRef]\n" +
+                        test.output.slice(-8192).replace(
+                            /^[\uDC00-\uDFFF]/,
+                            "",
+                        );
+                }
+                // The authoritative summary is resolved from outputRef by readers.
+                delete test.summary;
+                delete test.failedTests;
             }
             const host = {
                 ...c,
@@ -494,11 +562,40 @@ export const methods = {
         Prompt,
         "agent_prompt",
     ),
-    command: method(
-        "Run literal argv in an independently supervised command pane",
-        Command,
-        "command",
-    ),
+    command: {
+        description:
+            "Run literal argv in a supervised pane, optionally capturing complete output",
+        arguments: Command,
+        execute: async (input: z.input<typeof Command>, c: Context) => {
+            const args = Command.parse(input);
+            let capture;
+            if (args.captureOutput) {
+                const name = "capture-" + await digest(args);
+                const previous = await c.readResource(name);
+                capture = previous ? Capture.parse(previous) : {
+                    directory: await Deno.makeTempDir({
+                        dir: "/tmp",
+                        prefix: "zellij-test-",
+                    }),
+                };
+                if (!previous) await c.writeResource("capture", name, capture);
+            }
+            return save(
+                c,
+                "operation",
+                await operation(c, {
+                    ...args,
+                    method: "command",
+                    ...(capture
+                        ? {
+                            capture,
+                            argv: captureCommand(capture.directory, args.argv),
+                        }
+                        : {}),
+                }),
+            );
+        },
+    },
     vm_inspect: method(
         "Inspect guest changes through the existing provider",
         Agent,
@@ -569,26 +666,59 @@ export const methods = {
         description:
             "Bind actual command completion and exit status to the tested revision",
         arguments: TestArgs,
-        execute: (input: z.infer<typeof TestArgs>, c: Context) => {
+        execute: async (input: z.infer<typeof TestArgs>, c: Context) => {
             const a = TestArgs.parse(input);
             c.logger.info("Recording gate evidence");
             if (!a.operation.log) {
                 throw new Error("Command result has no log identity");
             }
-            return save(
+            const operationFingerprint = await digest(a);
+            const previous = await c.readResource("test-current");
+            // A retry after cleanup must use the already-saved evidence.
+            if (previous?.operationFingerprint === operationFingerprint) {
+                return save(c, "test", previous);
+            }
+            const captured = a.operation.capture
+                ? await readCapture(
+                    a.operation.capture.directory,
+                    a.operation.exitCode ?? null,
+                )
+                : {
+                    output: a.operation.output ?? "",
+                    outputComplete: a.operation.output !== undefined &&
+                        !a.operation.outputTruncated && !a.operation.logError,
+                    captureError: a.operation.logError ??
+                        (a.operation.output === undefined
+                            ? "Output unavailable"
+                            : a.operation.outputTruncated
+                            ? "Only bounded terminal scrollback was captured"
+                            : null),
+                };
+            const test = {
+                evidence: a.evidence,
+                outcome: a.operation.outcome,
+                exitCode: a.operation.exitCode ?? null,
+                log: a.operation.log,
+                operationFingerprint,
+                ...captured,
+            };
+            const result = await save(
                 c,
                 "test",
-                Test.parse({
-                    evidence: a.evidence,
-                    outcome: a.operation.outcome,
-                    exitCode: a.operation.exitCode ?? null,
-                    log: a.operation.log,
-                    output: a.operation.output ?? a.operation.logError ??
-                        "Output unavailable",
-                    passed: a.operation.outcome === "completed" &&
-                        a.operation.exitCode === 0,
-                }),
+                Test.parse({ ...test, ...testReport(test) }),
             );
+            if (a.operation.capture && captured.outputComplete) {
+                try {
+                    await Deno.remove(a.operation.capture.directory, {
+                        recursive: true,
+                    });
+                } catch (error) {
+                    c.logger.info(
+                        "Evidence saved; capture cleanup failed: " + error,
+                    );
+                }
+            }
+            return result;
         },
     },
 };

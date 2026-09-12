@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic, interactive hook source for disposable workflow smoke tests."""
 import json
+import shlex
 import hashlib
 import os
 import subprocess
@@ -52,8 +53,15 @@ try:
                 with open(path, 'w') as output: output.write('resolved ' + path + '\n')
                 subprocess.run(['git', 'add', '--', path], check=True)
         if prompt.startswith('Fix the failed tests'):
-            assert 'failure-evidence' in prompt
-            with open('received-failure-output', 'w') as output: output.write(prompt)
+            retrieval = next((line for line in prompt.splitlines() if line.startswith('swamp data query ')), None)
+            evidence = prompt
+            if retrieval:
+                result = json.loads(subprocess.check_output(shlex.split(retrieval)))
+                assert len(result['results']) == 1
+                evidence = result['results'][0]['summary']
+            assert 'failure-evidence' in evidence and 'Test report: FAILED' in evidence
+            with open('received-failure-output', 'w') as output: output.write(evidence)
+            with open('received-failure-prompt', 'w') as output: output.write(prompt)
         if '--edit-review' in sys.argv and prompt.startswith('Review '):
             with open('reviewer-change', 'w') as output: output.write('reviewer edit\n')
         # A reviewer responds with the required structured findings. The worker leaves

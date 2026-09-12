@@ -70,6 +70,18 @@ export async function resolveEvidence(
         const ref = OutputRef.parse(result.outputRef);
         const saved = await readEvidence(repo, ref);
         result.output = saved?.output ?? null;
+        for (
+            const field of [
+                "summary",
+                "summaryLength",
+                "outputComplete",
+                "captureError",
+                "failedTests",
+            ]
+        ) {
+            if (saved && field in saved) result[field] = saved[field];
+            else delete result[field];
+        }
     }
     return result;
 }

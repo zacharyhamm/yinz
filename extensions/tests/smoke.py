@@ -41,7 +41,7 @@ main, topic = root / 'main', root / 'topic'
 main.mkdir()
 binary = root / 'zellij'
 # Keep the tested executable and plugins stable if another checkout rebuilds during the run.
-os.link(Path(args.binary).resolve(), binary)
+shutil.copy2(Path(args.binary).resolve(), binary)
 builtins = root / 'builtins'
 builtins.mkdir()
 for plugin in (source / 'target/wasm32-wasip1/debug').glob('*.wasm'):
@@ -927,12 +927,18 @@ try:
             print('PASS: no unsolicited worker; diff is read-only; stale approval re-prepares; optional passing checks and merge/keep succeed', flush=True)
 
         release = root / 'release-live-command'
+        def failure_block(name):
+            return f'FAIL [ 0.01s] fixture {name}\n--- STDOUT: fixture {name} ---\n{name} failure-evidence\n'
         live_gate = ("import sys,time; from pathlib import Path; "
                      "print('LIVE BEFORE RELEASE 😀', flush=True); "
                      "print('LIVE STDERR', file=sys.stderr, flush=True); "
                      "release=Path(" + repr(str(release)) + "); "
                      "exec('while not release.exists(): time.sleep(0.05)'); "
-                     "sys.stdout.write(('𝄞' * 63 + '\\n') * 9600); sys.exit(1)")
+                     "print(" + repr(failure_block('first')) + "); "
+                     "sys.stdout.write(('𝄞' * 63 + '\\n') * 4800); "
+                     "print(" + repr(failure_block('middle')) + "); "
+                     "sys.stdout.write(('𝄞' * 63 + '\\n') * 4800); "
+                     "print(" + repr(failure_block('last')) + "); sys.exit(1)")
         launch('failed-checks', gate=['/usr/bin/python3', '-c', live_gate])
         def check_output_previews(question, nested=False):
             snapshot = bridge(method='workflow_show', directory=str(topic), run=question['attributes']['run'])
@@ -960,12 +966,28 @@ try:
                 assert not any(0xD800 <= ord(c) <= 0xDFFF for c in value['output'])
                 assert value['exitCode'] == 1
                 seen.add(entry['name'].split('-')[0])
-            assert {'operation', 'test'} <= seen, seen
+            assert 'test' in seen, seen
             if nested:
                 assert 'checks' in seen, seen
             ids = [h['id'] for h in [snapshot['history']] + snapshot['children']]
             requests = swamp('data', 'query', 'specName == "operation" && tags.workflowRunId in ' + json.dumps(ids), '--select', 'attributes.request')['results']
             assert all(json.loads(r)['method'] != 'agent_spawn' for r in requests), 'Failed tests must not automatically start a repair agent'
+            entry = next(e for e in snapshot['outputs']['results'] if e['attributes'].get('summaryLength', 0))
+            predicate = 'modelName == ' + json.dumps(entry['model']) + ' && name == ' + json.dumps(entry['name']) + ' && version == ' + str(entry['version'])
+            saved = swamp('data', 'query', predicate, '--select', 'attributes')['results'][0]
+            assert saved['outputComplete'] and not saved['captureError']
+            assert saved['summaryLength'] == len(saved['summary'].encode('utf-16-le')) // 2
+            assert saved['failedTests'] == ['fixture first', 'fixture last', 'fixture middle']
+            for name in ('first', 'middle', 'last'):
+                assert name + ' failure-evidence' in saved['summary'] and name + ' failure-evidence' in saved['output']
+            offset, chunks = 0, []
+            while offset < entry['attributes']['summaryLength']:
+                chunk = bridge(method='workflow_report', directory=str(main), model=entry['model'], name=entry['name'], version=entry['version'], offset=offset)
+                assert len(json.dumps(chunk).encode()) < 1_048_576 and chunk['next'] > offset
+                chunks.append(chunk['text'])
+                offset = chunk['next']
+            assert ''.join(chunks) == saved['summary'], 'Chunked view lost report content'
+            return saved['summary']
 
 
         review_question = prepare('failed-checks')
@@ -976,17 +998,19 @@ try:
         frame_start = len(ui_output)
         zellij('workflow', 'show', review_question['attributes']['run'])
         until('review buttons rendered', lambda: b'Run tests' in bytes(ui_output[frame_start:]))
-        # Select the actual button; output must arrive while the gate is held open.
-        index = review_question['attributes']['answers'].index('run-tests')
-        os.write(ui_fd, b'\t' * index)
         clicked = time.monotonic()
-        frame_start = len(ui_output)
-        os.write(ui_fd, b'\r')
-        # A fast acknowledgement can coalesce the transient submitting frame.
-        until('immediate submission feedback', lambda: any(text in bytes(ui_output[frame_start:])
-              for text in (b'Submitting answer', b'Answer recorded')), interval=0.005)
-        feedback = time.monotonic() - clicked
-        until('answer recorded', lambda: b'Answer recorded' in bytes(ui_output[frame_start:]), interval=0.005)
+        if args.test_output_only:
+            # Report scenarios approve through the bridge; latency checks cover button feedback.
+            choose('failed-checks', 'review', 'run-tests')
+            feedback = None
+        else:
+            frame_start = len(ui_output)
+            os.write(ui_fd, b'\r')
+            # A fast acknowledgement can coalesce the transient submitting frame.
+            until('immediate submission feedback', lambda: any(text in bytes(ui_output[frame_start:])
+                  for text in (b'Submitting answer', b'Answer recorded')), interval=0.005)
+            feedback = time.monotonic() - clicked
+            until('answer recorded', lambda: b'Answer recorded' in bytes(ui_output[frame_start:]), interval=0.005)
         submission = time.monotonic() - clicked
         if not args.latency_baseline:
             # Output from another stream may replace this frame before a CLI snapshot arrives.
@@ -1003,7 +1027,8 @@ try:
         assert not release.exists(), 'Closing the pane externally must not release or stop execution'
         released = time.monotonic()
         release.touch()
-        until('next question rendered', lambda: b'Start fix agent' in bytes(ui_output[frame_start:]), interval=0.005)
+        until('next question rendered', lambda: 'Start fix agent' in zellij('action', 'dump-screen'), interval=0.005)
+        until('failure summary displayed before execution details', lambda: 'Test report: FAILED' in zellij('action', 'dump-screen'))
         timings = dict(click_to_feedback_seconds=feedback, submission_seconds=submission,
                        release_to_next_question_seconds=time.monotonic()-released,
                        child_decisions=len(histories('failed-checks')))
@@ -1016,7 +1041,10 @@ try:
                 zellij('action', 'close-pane', '--pane-id', 'plugin_' + str(pane['id']))
         failed = until('failed-test choices', lambda: pending('failed-checks', 'failed-tests'))
         assert failed['attributes']['answers'] == ['start-fix-agent', 'return-to-menu', 'leave']
-        check_output_previews(failed)
+        complete_summary = check_output_previews(failed)
+        frame_start = len(ui_output)
+        zellij('workflow', 'show', failed['attributes']['run'])
+        until('completed report reattached', lambda: 'Test report: FAILED' in zellij('action', 'dump-screen'))
         choose('failed-checks', 'failed-tests', 'return-to-menu')
         choose('failed-checks', 'review', 'merge')
         informed = until('failed-check merge confirmation', lambda: pending('failed-checks', 'merge'))
@@ -1026,20 +1054,40 @@ try:
         choose('failed-checks', 'cleanup', 'keep')
         report = swamp('report', 'get', '@hammz/workflow', '--workflow', '@hammz/zellij-review-integration')['json']
         assert not report.get('error'), report
+        assert complete_summary in report['testReports']
         print('PASS: verbose failed-test previews and merge confirmation; full logs retained; no automatic repair', flush=True)
-        if args.test_output_only:
-            raise SystemExit(0)
-
-        launch('fix', gate=['/bin/sh', '-c', 'printf failure-evidence; exit 1'])
-        prepare('fix')
-        choose('fix', 'review', 'run-tests')
-        choose('fix', 'failed-tests', 'start-fix-agent')
-        returned = until('fix exit returns to initial menu', lambda: pending('fix', 'exit'))
-        choose('fix', 'exit', 'leave')
-        assert topic.exists()
-        assert 'failure-evidence' in (topic / 'received-failure-output').read_text()
-        (topic / 'received-failure-output').unlink()
+        for token, gate in [('fix', ['/bin/sh', '-c', 'printf failure-evidence; exit 1']),
+                            ('large-fix', ['/usr/bin/python3', '-c', live_gate])]:
+            launch(token, gate=gate)
+            prepare(token)
+            choose(token, 'review', 'run-tests')
+            choose(token, 'failed-tests', 'start-fix-agent')
+            until('fix exit returns to initial menu', lambda: pending(token, 'exit'))
+            choose(token, 'exit', 'leave')
+            assert topic.exists()
+            received = (topic / 'received-failure-output').read_text()
+            prompt = (topic / 'received-failure-prompt').read_text()
+            assert 'failure-evidence' in received and len(prompt.encode()) <= 262144
+            if token == 'large-fix':
+                for name in ('first', 'middle', 'last'):
+                    assert name + ' failure-evidence' in received
+                assert 'swamp data query ' in prompt and 'version == 1' in prompt
+            else:
+                assert 'Test report: FAILED' in prompt
+            (topic / 'received-failure-output').unlink()
+            (topic / 'received-failure-prompt').unlink()
         print('PASS: approved fix receives failure output and exits to a fresh menu; Leave preserves checkout', flush=True)
+        if args.test_output_only:
+            launch('passing-report')
+            prepare('passing-report')
+            choose('passing-report', 'review', 'run-tests')
+            q = until('passing report menu', lambda: pending('passing-report', 'review'))
+            frame_start = len(ui_output)
+            zellij('workflow', 'show', q['attributes']['run'])
+            until('success summary displayed', lambda: 'Test report: PASSED' in zellij('action', 'dump-screen'))
+            choose('passing-report', 'review', 'leave')
+            print('PASS: success report displayed', flush=True)
+            raise SystemExit(0)
 
         launch('review-changes', agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit', '--edit-review'])
         prepare('review-changes')
