@@ -196,7 +196,9 @@ impl State {
             }
             return true;
         }
-        if key.bare_key == BareKey::Char('A') && key.has_modifiers(&[KeyModifier::Shift]) {
+        if key.bare_key == BareKey::Char('A')
+            && (key.has_no_modifiers() || key.has_modifiers(&[KeyModifier::Shift]))
+        {
             let Some(parent_id) = self.todos.selected else {
                 return false;
             };
@@ -757,7 +759,7 @@ mod tests {
         )];
         state.todos.selected = Some(1);
 
-        assert!(state.todo_key(KeyWithModifier::new(BareKey::Char('A')).with_shift_modifier()));
+        assert!(state.todo_key(KeyWithModifier::new(BareKey::Char('A'))));
         assert!(matches!(
             state.todos.mode,
             Mode::Input {
