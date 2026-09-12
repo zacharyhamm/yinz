@@ -144,7 +144,7 @@ Use `getPluginIds()` for the typed plugin identity. Async callbacks retain the c
 Events retain their JSON variant names. For example, a timer is `{ Timer: seconds }` and a unit event is a string.
 Optional tuple fields remain `null`, so later fields keep their positions.
 `PaneRenderReport` uses string keys such as `terminal_7` and `plugin_7`, as the CLI event stream does; `zellij.paneKey(paneId)` spells them.
-See [sdk.d.ts](../zellij-server/src/plugins/deno/sdk.d.ts) for the SDK declarations.
+See [sdk.d.ts](../zellij-plugin-host/src/deno/sdk.d.ts) for the SDK declarations.
 
 ### Permissions
 
@@ -1474,7 +1474,7 @@ The approval shows inferred grants; edits show newly requested grants. Grants ar
 
 The host links `deno_core` 0.405.0, `deno_ast` 0.53.3, and their pinned V8 dependency.
 The first build downloads the V8 archive unless it is already cached.
-See [compiler provenance](../zellij-server/src/plugins/deno/compiler/provenance.json) for the bundled compiler's version, source, and checksums.
+See [compiler provenance](../zellij-plugin-host/src/deno/compiler/provenance.json) for the bundled compiler's version, source, and checksums.
 The compiler license and third-party notices are stored beside it.
 
 The pinned V8 release provides prebuilt archives for Linux and for both Intel and Apple Silicon macOS.

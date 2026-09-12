@@ -1,5 +1,5 @@
 ---
-source: zellij-server/src/plugins/deno/unit/checker.rs
+source: zellij-plugin-host/src/deno/unit/checker.rs
 expression: wire
 ---
 commands

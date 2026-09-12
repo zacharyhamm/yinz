@@ -64,7 +64,7 @@ output fixtures.
 Still out of scope, by decision: `config.ts` (stated in `LUA_CONFIG.md`), guest workers, remote
 script plugins (refused), async iterators over streams, and native macOS verification.
 
-Verification: the focused suites ran after each step (`cargo x test -p zellij-server -E
+Verification: the focused suites ran after each step (`cargo x test -p zellij-plugin-host -E
 'test(/deno/) | test(/checker/) | test(/analysis/)'`, `cargo x test -p hocus`, the config, CLI
 and plugin-manager crates, `zellij-runtime` and `zellij-types` for the url refusal). The first
 complete `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo x ci check` lost one integration test to
@@ -109,7 +109,7 @@ tests including `deno_default_keybindings_register_after_the_reconfigure_grant_a
 which captures the server's `RebindKeys` with the rewritten plugin id. `example-plugins/keybindings.ts`
 is served as part of the new Hocus `deno_commands` section.
 
-Verification: the focused `cargo x test -p zellij-server -E 'test(/deno/) | test(/analysis/) | test(/checker/)'`
+Verification: the focused `cargo x test -p zellij-plugin-host -E 'test(/deno/) | test(/analysis/) | test(/checker/)'`
 run passed all 187 selected tests, and the 24 Hocus `lua_docs` tests passed. Two Hocus size
 caps moved: the `plugin_docs` index bound (4,100 to 4,300 bytes) and the fully loaded tool
 payload bound (37,000 to 37,500 bytes), each by one section name. Three complete
@@ -265,8 +265,8 @@ imports. Extensionless authoring remains Lua. See [the Deno guide][guide] for th
 ## Current verification (2026-09-09)
 
 The seven named SDK, TypeScript, and example tests above passed with
-`cargo x test -p zellij-server -E 'test(pane_sequence_)'`.
-The broader `cargo x test -p zellij-server -E 'test(deno)'` run passed all 157 selected tests.
+`cargo x test -p zellij-plugin-host -E 'test(pane_sequence_)'`.
+The broader `cargo x test -p zellij-plugin-host -E 'test(deno)'` run passed all 157 selected tests.
 `cargo x integration-test -E 'test(deno_pane_sequence_)'` passed both
 `deno_pane_sequence_reuses_one_host_pane_and_cancels_its_child` and
 `deno_pane_sequence_reload_does_not_advance_the_old_steps`. These exercise real host
@@ -367,7 +367,7 @@ The final gate uses `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000` so failed unit observati
 | Pane/session/configuration/recording/cross-session guest | Passed 20 consecutive runs, including initial keybindings. Subscription and resize metadata no longer lock the guest on the thread answering its synchronous layout query. |
 | Actual Wasm Hocus JS/TS authoring | Passed on Linux. |
 | `cargo x postgres-test --build` then `cargo x postgres-test --test` | PostgreSQL test service ready; 104 store tests passed. |
-| `ZELLIJ_PLUGIN_DATA_TEST_URL=<test-url> cargo x test -p zellij-server --run-ignored only -E 'test(deno_data_helpers_on_postgres)'` | Passed, including Lua/Deno shared data. |
+| `ZELLIJ_PLUGIN_DATA_TEST_URL=<test-url> cargo x test -p zellij-plugin-host --run-ignored only -E 'test(deno_data_helpers_on_postgres)'` | Passed, including Lua/Deno shared data. |
 | `cargo x ci check` | Passed: format check, lint, 7,825 unit tests, doctests and all 376 integration tests. |
 | Native macOS runtime and checker | Not run; no macOS host is available in this session. |
 
@@ -460,7 +460,7 @@ fn numeric_transport_audit() {
 }
 ```
 
-Run with `cargo x test -p zellij-server -E 'test(numeric_transport_audit)' --no-capture`.
+Run with `cargo x test -p zellij-plugin-host -E 'test(numeric_transport_audit)' --no-capture`.
 This is an audit diagnostic, not an acceptance test that should preserve broken behavior.
 The transport and real-store regressions now assert exact values and rejection of invalid revision guards. The tables above record the former boundary only.
 
@@ -471,33 +471,33 @@ The transport and real-store regressions now assert exact values and rejection o
 [ids]: ../zellij-types/src/internal_ids.rs
 [data-types]: ../zellij-types/src/plugin_data.rs
 [shim]: ../zellij-tile/src/shim.rs
-[runtime]: ../zellij-server/src/plugins/deno/mod.rs
-[sdk]: ../zellij-server/src/plugins/deno/sdk.js
-[sdk-types]: ../zellij-server/src/plugins/deno/sdk.d.ts
-[events]: ../zellij-server/src/plugins/deno/event.rs
-[responses]: ../zellij-server/src/plugins/response.rs
-[exports]: ../zellij-server/src/plugins/zellij_exports.rs
-[bridge]: ../zellij-server/src/plugins/wasm_bridge.rs
-[plugin-thread]: ../zellij-server/src/plugins/mod.rs
-[loader]: ../zellij-server/src/plugins/plugin_loader.rs
-[loader-tests]: ../zellij-server/src/plugins/deno/unit/loader.rs
-[checker-tests]: ../zellij-server/src/plugins/deno/unit/checker.rs
-[deno-tests]: ../zellij-server/src/plugins/unit/plugin_tests/deno_plugins.rs
+[runtime]: ../zellij-plugin-host/src/deno/mod.rs
+[sdk]: ../zellij-plugin-host/src/deno/sdk.js
+[sdk-types]: ../zellij-plugin-host/src/deno/sdk.d.ts
+[events]: ../zellij-plugin-host/src/deno/event.rs
+[responses]: ../zellij-plugin-host/src/response.rs
+[exports]: ../zellij-plugin-host/src/zellij_exports.rs
+[bridge]: ../zellij-plugin-host/src/wasm_bridge.rs
+[plugin-thread]: ../zellij-plugin-host/src/lib.rs
+[loader]: ../zellij-plugin-host/src/plugin_loader.rs
+[loader-tests]: ../zellij-plugin-host/src/deno/unit/loader.rs
+[checker-tests]: ../zellij-plugin-host/src/deno/unit/checker.rs
+[deno-tests]: ../zellij-plugin-host/src/unit/plugin_tests/deno_plugins.rs
 [mixed-test]: ../zellij-integration-tests/tests/deno_plugins.rs
-[lua-sdk]: ../zellij-server/src/plugins/lua/prelude.lua
-[lua-ui]: ../zellij-server/src/plugins/lua/ui.rs
-[lua-tests]: ../zellij-server/src/plugins/lua/unit_tests.rs
+[lua-sdk]: ../zellij-plugin-host/src/lua/prelude.lua
+[lua-ui]: ../zellij-plugin-host/src/lua/ui.rs
+[lua-tests]: ../zellij-plugin-host/src/lua/unit_tests.rs
 [store]: ../zellij-storage/src/plugin_data_store/mod.rs
-[background]: ../zellij-server/src/background_jobs.rs
-[queues]: ../zellij-server/src/plugins/queues.rs
-[queue-tests]: ../zellij-server/src/plugins/unit/plugin_tests/queues.rs
-[limits]: ../zellij-server/src/plugins/plugin_limits.rs
-[authoring]: ../zellij-server/src/plugin_authoring.rs
+[background]: ../zellij-bus/src/background_jobs.rs
+[queues]: ../zellij-plugin-host/src/queues.rs
+[queue-tests]: ../zellij-plugin-host/src/unit/plugin_tests/queues.rs
+[limits]: ../zellij-plugin-host/src/plugin_limits.rs
+[authoring]: ../zellij-plugin-host/src/plugin_authoring.rs
 [cli]: ../src/commands.rs
 [hocus-tools]: ../default-plugins/hocus/src/tools.rs
 [agent-test]: ../zellij-integration-tests/tests/lua_agent_harness.rs
 
-[transport-tests]: ../zellij-server/src/plugins/deno/unit/transport.rs
-[quota-tests]: ../zellij-server/src/plugins/deno/unit/limits.rs
-[analysis-tests]: ../zellij-server/src/plugins/deno/unit/analysis.rs
+[transport-tests]: ../zellij-plugin-host/src/deno/unit/transport.rs
+[quota-tests]: ../zellij-plugin-host/src/deno/unit/limits.rs
+[analysis-tests]: ../zellij-plugin-host/src/deno/unit/analysis.rs
 [hocus-test]: ../zellij-integration-tests/tests/hocus_plugin_authoring.rs

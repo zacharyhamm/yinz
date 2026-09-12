@@ -952,7 +952,7 @@ fn commands_cannot_be_called_outside_an_entrypoint() {
 fn example_plugin(name: &str) -> String {
     std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/plugins/lua/fixtures")
+            .join("src/lua/fixtures")
             .join(name),
     )
     .expect("the example plugin should be in the repo")
@@ -6846,8 +6846,7 @@ end
 
 #[test]
 fn swamp_answer_deadline_renews_only_for_current_submission_and_reconciles_on_loss() {
-    let plugin =
-        load(include_str!("workflow_view.lua")).unwrap();
+    let plugin = load(include_str!("workflow_view.lua")).unwrap();
     plugin
         .lua
         .globals()
@@ -7525,8 +7524,7 @@ assert(submitted and not M.submitting, M.notice)
 #[test]
 fn swamp_exit_launch_deadline_renews_until_ready_and_reconciles_without_redispatch() {
     for ending in ["lost", "ready", "completed"] {
-        let plugin =
-            load(include_str!("fixtures/agent-exit.lua")).unwrap();
+        let plugin = load(include_str!("fixtures/agent-exit.lua")).unwrap();
         plugin
             .lua
             .globals()

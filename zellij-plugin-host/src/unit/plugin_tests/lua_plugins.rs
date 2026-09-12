@@ -724,7 +724,7 @@ pub fn a_newly_reachable_command_works_end_to_end() {
     );
 
     let playground = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../zellij-server/src/plugins/lua/fixtures/playground.lua")
+        .join("../zellij-plugin-host/src/lua/fixtures/playground.lua")
         .display()
         .to_string();
 

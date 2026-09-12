@@ -1853,6 +1853,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
 name = "granit-parser"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1861,12 +1867,6 @@ dependencies = [
  "arraydeque",
  "smallvec",
 ]
-
-[[package]]
-name = "glob"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "gzip-header"
@@ -6328,8 +6328,8 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "signal-hook",
- "strum",
- "strum_macros",
+ "strum 0.28.0",
+ "strum_macros 0.28.0",
  "sysinfo",
  "tempfile",
  "tokio",
@@ -6531,6 +6531,7 @@ version = "0.45.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "close_fds",
  "crossbeam",
  "deno_ast",
  "deno_core",
@@ -6541,17 +6542,19 @@ dependencies = [
  "insta",
  "kdl",
  "lazy_static",
+ "libc",
  "log",
  "mlua",
  "nix",
  "notify-debouncer-full",
  "num_cpus",
  "prost",
+ "regex",
  "serde",
  "serde_json",
- "sha2",
  "serial_test",
- "strum",
+ "sha2",
+ "strum 0.28.0",
  "tempfile",
  "tokio",
  "unicode-width 0.2.2",

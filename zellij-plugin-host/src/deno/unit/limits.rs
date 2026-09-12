@@ -56,9 +56,14 @@ fn deno_allocation_exhaustion_is_contained_in_subprocesses() {
     }
     for resource in ["heap", "buffer", "caught", "shared", "encode", "checker"] {
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "plugins::deno::limits::tests::deno_allocation_exhaustion_is_contained_in_subprocesses", "--nocapture"])
+            .args([
+                "--exact",
+                "deno::limits::tests::deno_allocation_exhaustion_is_contained_in_subprocesses",
+                "--nocapture",
+            ])
             .env(CHILD, resource)
-            .spawn().unwrap();
+            .spawn()
+            .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             if let Some(status) = child.try_wait().unwrap() {
