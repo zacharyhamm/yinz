@@ -254,6 +254,7 @@ impl ZellijPlugin for State {
             EventType::PastedText,
             EventType::RunCommandResult,
             EventType::Visible,
+            EventType::PaneClosed,
         ]);
         // The fork dialog has no Git fields to suggest into, and its fallback when the
         // pane turns out not to be an agent is a refusal rather than the form - so there
@@ -268,6 +269,18 @@ impl ZellijPlugin for State {
 
     fn update(&mut self, event: Event) -> bool {
         match event {
+            Event::PaneClosed(pane) if self.workflow_reply.is_some() => {
+                let source = match self.job {
+                    Job::Fork { pane_id, .. } | Job::Duplicate { pane_id } => {
+                        Some(PaneId::Terminal(TerminalId::new(pane_id)))
+                    },
+                    Job::New => self.workflow_focus,
+                };
+                if source == Some(pane) {
+                    self.finish_picker(None);
+                }
+                false
+            },
             Event::TabUpdate(tabs) => {
                 if let Some(tab) = tabs.first() {
                     self.resize((tab.display_area_columns).get());
@@ -1923,65 +1936,79 @@ mod tests {
 
     #[test]
     fn cancelled_pickers_ignore_late_snapshots_and_wait_for_their_bridge_ack() {
-        for job in [
-            Job::Duplicate { pane_id: 7 },
-            Job::Fork {
-                pane_id: 7,
-                source: ForkSource::Waiting,
-            },
-        ] {
-            let mut state = State {
-                job,
-                workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
-                ..Default::default()
-            };
-            state.handle(FormEvent::Cancel);
-            assert!(state.workflow_result_pending);
-            assert!(matches!(state.job, Job::New));
-            let snapshot = PipeMessage::new(
-                PipeSource::Plugin(PluginId::new(1)),
-                wire::AGENT_SNAPSHOT,
-                &Some(
-                    serde_json::json!({"panes": [agent_pane("claude")], "activity": {}})
-                        .to_string(),
-                ),
-                &None,
-                false,
-            );
-            // Ensure this is a launch-bearing snapshot, not a malformed payload ignored by parsing.
-            let reply: PollReply =
-                serde_json::from_str(snapshot.payload.as_ref().unwrap()).unwrap();
-            assert!(duplicate_command(&reply.panes.unwrap()[0], &reply.manual_kinds).is_some());
-            assert!(!state.pipe(snapshot.clone()));
-            assert!(state.workflow_focus.is_none());
-            assert!(state.workflow_result_pending);
+        for source_closed in [false, true] {
+            for job in [
+                Job::New,
+                Job::Duplicate { pane_id: 7 },
+                Job::Fork {
+                    pane_id: 7,
+                    source: ForkSource::Waiting,
+                },
+            ] {
+                let mut state = State {
+                    job,
+                    workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
+                    workflow_focus: Some(PaneId::Terminal(TerminalId::new(7))),
+                    ..Default::default()
+                };
+                if source_closed {
+                    state.update(Event::PaneClosed(PaneId::Terminal(TerminalId::new(8))));
+                    assert!(
+                        !state.workflow_result_pending,
+                        "unrelated closure leaves the picker open"
+                    );
+                    state.update(Event::PaneClosed(PaneId::Terminal(TerminalId::new(7))));
+                } else {
+                    state.handle(FormEvent::Cancel);
+                }
+                assert!(state.workflow_result_pending);
+                assert!(!state.handle(FormEvent::ButtonPressed("create".to_owned())));
+                assert!(matches!(state.job, Job::New));
+                let snapshot = PipeMessage::new(
+                    PipeSource::Plugin(PluginId::new(1)),
+                    wire::AGENT_SNAPSHOT,
+                    &Some(
+                        serde_json::json!({"panes": [agent_pane("claude")], "activity": {}})
+                            .to_string(),
+                    ),
+                    &None,
+                    false,
+                );
+                // Ensure this is a launch-bearing snapshot, not a malformed payload ignored by parsing.
+                let reply: PollReply =
+                    serde_json::from_str(snapshot.payload.as_ref().unwrap()).unwrap();
+                assert!(duplicate_command(&reply.panes.unwrap()[0], &reply.manual_kinds).is_some());
+                assert!(!state.pipe(snapshot.clone()));
+                assert!(state.workflow_focus.is_none());
+                assert!(state.workflow_result_pending);
 
-            let mut ack = PipeMessage::new(
-                PipeSource::Plugin(PluginId::new(43)),
-                "swamp-pane-ack",
-                &None,
-                &None,
-                true,
-            );
-            state.pipe(ack.clone());
-            assert!(state.workflow_result_pending);
-            ack.source = PipeSource::Plugin(PluginId::new(42));
-            state.pipe(ack);
-            assert!(!state.workflow_result_pending);
-            assert!(state.workflow_reply.is_none());
-            assert!(!state.pipe(snapshot));
-            assert!(matches!(state.job, Job::New));
-            let empty = PipeMessage::new(
-                PipeSource::Plugin(PluginId::new(1)),
-                wire::AGENT_SNAPSHOT,
-                &Some(serde_json::json!({"panes": [], "activity": {}}).to_string()),
-                &None,
-                false,
-            );
-            assert!(
-                !state.pipe(empty),
-                "a late empty snapshot must not look up the hidden source"
-            );
+                let mut ack = PipeMessage::new(
+                    PipeSource::Plugin(PluginId::new(43)),
+                    "swamp-pane-ack",
+                    &None,
+                    &None,
+                    true,
+                );
+                state.pipe(ack.clone());
+                assert!(state.workflow_result_pending);
+                ack.source = PipeSource::Plugin(PluginId::new(42));
+                state.pipe(ack);
+                assert!(!state.workflow_result_pending);
+                assert!(state.workflow_reply.is_none());
+                assert!(!state.pipe(snapshot));
+                assert!(matches!(state.job, Job::New));
+                let empty = PipeMessage::new(
+                    PipeSource::Plugin(PluginId::new(1)),
+                    wire::AGENT_SNAPSHOT,
+                    &Some(serde_json::json!({"panes": [], "activity": {}}).to_string()),
+                    &None,
+                    false,
+                );
+                assert!(
+                    !state.pipe(empty),
+                    "a late empty snapshot must not look up the hidden source"
+                );
+            }
         }
     }
 

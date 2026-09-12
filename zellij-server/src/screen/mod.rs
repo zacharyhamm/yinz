@@ -2937,20 +2937,7 @@ impl Screen {
         self.log_and_report_session_state()?;
         Ok(())
     }
-    /// The close-pane gesture: tear down what the closing pane leaves behind, then close it.
-    ///
-    /// Screen-side rather than in the instruction arm because the teardown is the half that is
-    /// easy to forget - this path reaches `Tab::close_focused_pane` directly rather than through
-    /// `ScreenInstruction::ClosePane`, and without it a menu opened over the pane outlives it
-    /// and, worse, a plugin that guarded the quit keeps that guard forever, since nothing else
-    /// ever drops it. Returns the pane that was closed, if there was one.
-    ///
-    /// The "client, or the first one there is" fallback that
-    /// `active_tab_and_connected_client_id!` would make is resolved up front instead, because the
-    /// teardown and the close have to be talking about the same pane. Left to the macro they are
-    /// not: `get_active_pane_id` gives `None` for a client with no active tab while the macro goes
-    /// on to close *another* client's focused pane, which then keeps its menus and its quit guard
-    /// for a pane that no longer exists.
+    /// Resolve the acting client once so pane destruction and cleanup use the same identity.
     pub(crate) fn close_focused_pane(
         &mut self,
         client_id: ClientId,
@@ -2961,33 +2948,35 @@ impl Screen {
             return Ok(None);
         };
         let closing = self.get_active_pane_id(&client_id);
-        if let Some(closing) = closing {
-            self.close_context_menus_for_pane(closing);
-            if let PaneId::Plugin(plugin_id) = closing {
-                self.drop_quit_notice(plugin_id);
-            }
+        if let Some(id) = closing {
+            self.close_pane_explicitly(id, completion_tx);
         }
-        let taken_along = match self.get_active_tab_mut(client_id) {
-            Ok(tab) => tab.close_focused_pane(client_id, completion_tx)?,
-            Err(err) => {
-                Err::<(), _>(err).non_fatal();
-                None
-            },
-        };
-        if let Some(closing) = closing {
-            self.clear_nested_guest(closing);
-            self.pane_output_activity.remove(&closing);
+        Ok(closing)
+    }
+
+    pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
+        self.close_context_menus_for_pane(id);
+        if let PaneId::Plugin(plugin_id) = id {
+            self.drop_quit_notice(plugin_id);
         }
-        // The dead subject a stand-in takes with it is destroyed inside the tab, so its teardown
-        // can only run here - and it must: terminal ids are recycled, and guest state left keyed
-        // on this one becomes some later pane's passthrough and ascend keys.
-        if let Some(taken_along) = taken_along {
-            self.close_context_menus_for_pane(taken_along);
-            self.clear_nested_guest(taken_along);
-            self.pane_output_activity.remove(&taken_along);
+        self.clear_nested_guest(id);
+        self.pane_output_activity.remove(&id);
+    }
+
+    pub(crate) fn close_pane_explicitly(
+        &mut self,
+        id: PaneId,
+        completion_tx: Option<NotificationEnd>,
+    ) {
+        self.repaint_tab_of_closing_overlay(id);
+        let closed = self
+            .tab_containing_pane_mut(id)
+            .map(|tab| tab.close_pane_explicitly(id, completion_tx))
+            .unwrap_or_default();
+        for id in closed {
+            self.cleanup_closed_pane(id);
         }
         self.retain_only_existing_panes_in_pane_groups();
-        Ok(closing)
     }
     /// Record what a plugin wants said, and decided, about a quit. `None`/`false` withdraws.
     pub(crate) fn set_quit_notice(
@@ -4957,7 +4946,9 @@ fn replay_pending_plugin_events(
 ) -> Result<()> {
     for event in pending_events {
         match event {
-            event @ ScreenInstruction::AgentReport(..) => {
+            event @ ScreenInstruction::AgentReport(..)
+            | event @ ScreenInstruction::ClosePane(_, Some(_), _, _)
+            | event @ ScreenInstruction::ClosePane(_, _, Some(_), _) => {
                 thread_main::replay_pending_pane_event(screen, event)?;
             },
             ScreenInstruction::PluginBytes(plugin_render_assets) => {

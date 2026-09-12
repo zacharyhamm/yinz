@@ -37,7 +37,11 @@ function M.pipe(message)
     return
   elseif message.name=='swamp-pane-result' then
     bridge.pipe(message)
-    if z.json.decode(message.payload).choice=='cancelled' then status='suspended';require('zellij.workflow_view').refresh() end
+    local reply=z.json.decode(message.payload)
+    if reply.choice=='cancelled' then
+      local result=call{method='lookup',work=reply.work,key=reply.key}
+      if result.outcome=='completed' then status='suspended';require('zellij.workflow_view').refresh() end
+    end
     return
   end
   if message.name~='fixture' then hook.pipe(message);return end
@@ -48,6 +52,17 @@ function M.pipe(message)
       z.rerun_command_pane(source)
     elseif message.payload=='close-source' then
       z.close_terminal_pane(source)
+    elseif message.payload=='manual-close-source' then
+      -- Manual picker operations have no persisted lifecycle view.
+      local uid=z.json.encode{z.get_plugin_ids().host_id,z.server_session,token,'view'}
+      z.data.apply(z.data.delete('delivery',z.data.eq('uid',uid)))
+      z.hide_pane_with_id(z.plugin_pane(z.get_plugin_ids().plugin_id))
+      z.close_terminal_pane(source)
+    elseif message.payload=='state' then
+      local result=call{method='lookup',work=token,key='fork'}
+      local pipe=message.source.Cli
+      z.cli_pipe_output(pipe,z.json.encode(result));z.unblock_cli_pipe_input(pipe)
+      return
     elseif message.payload=='agent' then
       local agent=call{method='agent_spawn',work=token,key='worker',spec={kind='claude',cwd='/host',allow_outside_worktree=true}}
       worker=agent.pane
@@ -352,6 +367,163 @@ fn panes(zellij: &TestSession) -> Vec<zellij_types::data::PaneListEntry> {
     serde_json::from_str(&json).unwrap()
 }
 
+#[test]
+fn closing_a_workflow_helper_removes_its_source_and_restores_input_and_chrome() {
+    close_workflow("agent");
+}
+
+#[test]
+fn closing_the_exit_question_ends_the_suspended_lifecycle() {
+    close_workflow("question");
+}
+
+#[test]
+fn closing_during_workflow_launch_cancels_the_late_result() {
+    close_workflow("delay");
+}
+
+fn close_workflow(stage: &str) {
+    let root = zellij_integration_tests::test_env::init().join("swamp-close");
+    fs::create_dir_all(&root).unwrap();
+    let bridge_path = root.join("bridge.lua");
+    let exit_path = root.join("exit.lua");
+    fs::write(
+        &bridge_path,
+        format!(
+            "{}\nreturn plugin((function()\n{}\nend)())",
+            include_str!("swamp_close_fixture.lua"),
+            zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &exit_path,
+        format!(
+            r#"
+local z=require('zellij')
+z.project_config.read=function() return {{root='/control',config={{workflow='fixture'}}}} end
+local rpc=z.rpc.call
+z.rpc.call=function(args) args.plugin_url='file:{}';return rpc(args) end
+local hook=(function()
+{}
+end)()
+local load=hook.load
+hook.load=function(config)
+  z.task(function()
+    z.await(z.async.permissions{{'read_application_state','change_application_state','message_and_launch_other_plugins','read_pane_contents'}})
+    load(config)
+  end)
+end
+return hook
+"#,
+            bridge_path.display(),
+            zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap()
+        ),
+    )
+    .unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!("load_plugins clear-defaults=true {{ \"file:{}\"; }}\nhooks {{ agent_exit \"file:{}\"; }}", bridge_path.display(), exit_path.display()))
+        .with_layout(LayoutInfo::Stringified(r#"layout {
+            default_tab_template {
+                pane size=1 borderless=true { plugin location="zellij:tab-bar"; }
+                children
+                pane size=2 borderless=true { plugin location="zellij:status-bar"; }
+            }
+            tab name="agent" focus=true { pane command="claude" cwd="/control"; }
+            tab name="survivor" { pane; }
+        }"#.into()))
+        .start();
+    let original = zellij.expect_pty_spawn();
+    let survivor = zellij.expect_pty_spawn();
+    survivor.output(b"SURVIVING TERMINAL\r\n");
+    zellij.wait_until("bridge permissions", |s| s.contains("Allow? (y/n)"));
+    zellij.send_stdin(b"y");
+    zellij.wait_until("bridge ready", |s| !s.contains("Allow? (y/n)"));
+    if stage == "delay" {
+        advance(&zellij, "delay");
+    }
+    assert_eq!(
+        zellij.run_cli_action(CliAction::AgentReport {
+            pane_id: Some(format!("terminal_{}", original.terminal_id())),
+            kind: Some("claude".into()),
+            state: Some("busy".into()),
+            cwd: Some("/control".into()),
+            detail: None,
+            hook_json: false,
+            clear: false,
+            run_id: None,
+        }),
+        0
+    );
+    original.exit(Some(0));
+    zellij.wait_until("exit view permissions", |s| s.contains("Allow? (y/n)"));
+    zellij.send_stdin(b"y");
+    if stage == "delay" {
+        zellij.wait_until("launch is in flight", |_| {
+            fixture_state(&zellij)["waiting"] == true
+        });
+    } else {
+        zellij.wait_until("workflow launched", |s| s.contains("Run run: running"));
+        advance(&zellij, stage);
+        if stage == "agent" {
+            let worker = zellij.expect_pty_spawn();
+            worker.output(b"PRESENTED HELPER\r\n");
+            zellij.wait_until("helper presented", |s| s.contains("PRESENTED HELPER"));
+        } else {
+            zellij.wait_until("exit question", |s| s.contains("Agent exited. Choose"));
+        }
+    }
+    zellij.send_stdin(&keys::ctrl('p'));
+    zellij.send_stdin(b"x");
+    zellij.wait_until("surviving tab has input and chrome", |s| {
+        s.contains("SURVIVING TERMINAL") && s.tab_bar_appears() && s.status_bar_appears()
+    });
+    zellij.send_stdin(b"AFTER CLOSE");
+    survivor.wait_for_stdin("typing reaches the surviving terminal", |bytes| {
+        bytes.ends_with(b"AFTER CLOSE")
+    });
+    if stage == "delay" {
+        advance(&zellij, "release");
+    }
+    zellij.wait_until("all owned panes are gone and workflow is closed", |_| {
+        let state = fixture_state(&zellij);
+        let terminals: Vec<_> = panes(&zellij)
+            .into_iter()
+            .filter(|p| !p.pane_info.is_plugin())
+            .collect();
+        state["closed"] == true
+            && (stage == "question" || state["cancelled"] == true)
+            && terminals.len() == 1
+            && terminals[0].pane_info.is_focused
+            && terminals[0].pane_info.is_selectable
+            && !terminals[0].pane_info.is_suppressed
+            && terminals[0].pane_info.id
+                == zellij_types::pane_id::PaneId::Terminal(survivor.terminal_id())
+    });
+    let (code, tabs) = zellij.run_cli_action_reporting(CliAction::QueryTabNames);
+    assert_eq!(code, 0);
+    assert_eq!(tabs.trim(), "survivor");
+    zellij.quit();
+}
+
+fn fixture_state(zellij: &TestSession) -> serde_json::Value {
+    let (code, state) = zellij.run_cli_action_reporting(CliAction::Pipe {
+        name: Some("fixture".into()),
+        payload: Some("state".into()),
+        args: None,
+        plugin: None,
+        plugin_configuration: None,
+        force_launch_plugin: false,
+        skip_plugin_cache: false,
+        floating_plugin: None,
+        in_place_plugin: None,
+        plugin_cwd: None,
+        plugin_title: None,
+    });
+    assert_eq!(code, 0);
+    serde_json::from_str(&state).unwrap()
+}
+
 fn fork_picker() -> (
     TestSession,
     zellij_integration_tests::FakePtyHandle,
@@ -494,13 +666,45 @@ fn workflow_fork_cancellation_returns_to_the_exit_menu_without_starting_an_agent
 }
 
 #[test]
+fn manual_picker_source_closure_completes_without_a_persisted_view() {
+    let (mut zellij, _original, before) = fork_picker();
+    advance(&zellij, "manual-close-source");
+    zellij.wait_until("source closure records picker cancellation", |_| {
+        let state = fixture_state(&zellij);
+        state["outcome"] == "completed"
+            && state["choice"] == "cancelled"
+            && !panes(&zellij)
+                .iter()
+                .any(|p| p.pane_info.plugin_url.as_deref() == Some("zellij:hocus-new-agent"))
+    });
+    let after = panes(&zellij);
+    assert_eq!(
+        after.iter().filter(|p| !p.pane_info.is_plugin()).count(),
+        before.len() - 1
+    );
+    assert!(!after
+        .iter()
+        .any(|p| p.pane_info.plugin_url.as_deref() == Some("zellij:hocus-new-agent")));
+    zellij.quit();
+}
+
+#[test]
 fn workflow_fork_rechecks_a_restarted_source_before_confirmation() {
     refused_workflow_fork("restart", "source pane is no longer exited");
 }
 
 #[test]
 fn workflow_fork_rechecks_a_closed_source_before_confirmation() {
-    refused_workflow_fork("close-source", "source pane is no longer available");
+    let (mut zellij, _original, before) = fork_picker();
+    advance(&zellij, "close-source");
+    zellij.wait_until("closing the source also closes its pending picker", |_| {
+        let after = panes(&zellij);
+        after.iter().filter(|p| !p.pane_info.is_plugin()).count() == before.len() - 1
+            && !after
+                .iter()
+                .any(|p| p.pane_info.plugin_url.as_deref() == Some("zellij:hocus-new-agent"))
+    });
+    zellij.quit();
 }
 
 fn refused_workflow_fork(change: &str, error: &str) {
