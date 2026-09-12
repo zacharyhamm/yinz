@@ -271,6 +271,30 @@ impl TestBridge {
         .start_plugin()
     }
 
+    fn wait_for_executor(&self, plugin_id: PluginId) {
+        let done = zellij_test_support::Watched::new(false);
+        let observed = done.clone();
+        self.bridge.plugin_executor.execute_for_plugin_tagged(
+            plugin_id,
+            "completion barrier",
+            false,
+            move |_, _, _, _, _| *observed.lock() = true,
+        );
+        done.wait_until("executor completion", Duration::from_secs(30), |done| {
+            done.then_some(())
+        });
+    }
+
+    fn finish_reload(&mut self, plugin_id: PluginId) {
+        self.wait_for_executor(plugin_id);
+        // This harness has no plugin thread to handle the loader's ApplyCachedEvents message.
+        let (shutdown_sender, _receiver) = tokio::sync::mpsc::channel(1);
+        self.bridge
+            .apply_cached_events(vec![plugin_id], false, shutdown_sender)
+            .unwrap();
+        self.wait_for_executor(plugin_id);
+    }
+
     fn grant_files(&self, id: u32, client: u16) {
         let map = self.bridge.plugin_map.lock().unwrap();
         let (plugin, _) = map
@@ -327,17 +351,7 @@ fn reload_retains_temporary_data_and_old_users_cannot_remove_it() {
     test.load(context).unwrap();
     test.grant_files(1, 1);
     test.bridge.reload_plugin_with_id(PluginId::new(1)).unwrap();
-    let done = zellij_test_support::Watched::new(false);
-    let observed = done.clone();
-    test.bridge.plugin_executor.execute_for_plugin_tagged(
-        PluginId::new(1),
-        "observe reload",
-        false,
-        move |_, _, _, _, _| *observed.lock() = true,
-    );
-    done.wait_until("reload completion", Duration::from_secs(30), |done| {
-        done.then_some(())
-    });
+    test.finish_reload(PluginId::new(1));
     assert_eq!(
         std::fs::read_to_string(path.join("closed")).unwrap(),
         "reload state"
@@ -351,6 +365,219 @@ fn reload_retains_temporary_data_and_old_users_cannot_remove_it() {
     drop(map);
     test.bridge.unload_plugin(PluginId::new(1)).unwrap();
     events.wait("reloaded instance cleanup", || !path.exists());
+}
+
+// wasmi's existing test features accept WAT, so these fixtures need no compiler or dependency.
+const RECOVERABLE_WASM: &str = r#"(module
+    (func (export "_start"))
+    (func (export "load"))
+    (func (export "retry_worker"))
+    (func (export "update") (result i32) i32.const 0)
+    (func (export "render") (param i32 i32))
+)"#;
+
+fn assert_reload_recovers(wasm: bool, by_url: bool) {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(1);
+    let owner = ClientId::new(7);
+    let good = if wasm { RECOVERABLE_WASM } else { "return {}" };
+    let bad = if wasm {
+        RECOVERABLE_WASM.replace("(export \"load\")", "(export \"load\") unreachable")
+    } else {
+        "return { load = function() error('load failed') end }".to_owned()
+    };
+    let mut context = test.context(1, 1, good);
+    let source = context
+        .plugin_config
+        .path
+        .with_extension(if wasm { "wasm" } else { "lua" });
+    std::fs::write(&source, good).unwrap();
+    context.plugin_config.path = source.clone();
+    context.plugin_config.location = RunPluginLocation::File(source.clone());
+    if !wasm {
+        // A relative Lua URL resolves through the user's plugin folder. Recovery must also
+        // recognize the full source path after the instance that resolved it has gone.
+        let named = test._dirs[0].path().join("missing/1.lua");
+        context.plugin_config.path = named.clone();
+        context.plugin_config.location = RunPluginLocation::File(named);
+        context.plugin_config.relative_path = Some(PathBuf::from("1.lua"));
+        context.user_plugin_dir = Some(test._dirs[0].path().to_path_buf());
+        test.bridge.user_plugin_dir = context.user_plugin_dir.clone();
+    }
+    context.plugin_config.initial_userspace_configuration = PluginUserConfiguration::new(
+        BTreeMap::from([("setting".to_owned(), "preserved".to_owned())]),
+    );
+    let config = context.plugin_config.clone();
+    let cache = ZELLIJ_CACHE_DIR
+        .join(Url::from(&config.location).to_string())
+        .join("plugin_cache");
+    context.plugin_own_cache_dir = cache.clone();
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("saved"), "persistent state").unwrap();
+    let scratch = context.plugin_own_data_dir.clone();
+    let events = FileEvents::new(scratch.parent().unwrap());
+    test.load(context).unwrap();
+    let cwd = test._dirs[0].path().to_path_buf();
+    let weak = {
+        let mut map = test.bridge.plugin_map.lock().unwrap();
+        assert!(map.rekey_client(id, ClientId::new(1), owner));
+        let plugin = map.get_running_plugin(id, Some(owner)).unwrap();
+        let mut running = plugin.lock().unwrap();
+        // Live values must win over the original insertion snapshot.
+        running.rows = 13;
+        running.columns = 37;
+        running.env_mut().plugin_cwd = cwd.clone();
+        running.env_mut().tab_index = Some(TabId::new(4));
+        Arc::downgrade(&plugin)
+    };
+    assert!(test.bridge.connected_clients.lock().unwrap().is_empty());
+    for _ in 0..2 {
+        let scratch = test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin(id, None)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .env()
+            .plugin_own_data_dir
+            .clone();
+        std::fs::write(&source, &bad).unwrap();
+        test.bridge.reload_plugin_with_id(id).unwrap();
+        test.finish_reload(id);
+        assert!(weak.upgrade().is_none());
+        events.wait("failed runtime and workers release /data", || {
+            !scratch.exists()
+        });
+        assert!(test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin(id, None)
+            .is_none());
+        assert_eq!(
+            test.bridge.plugin_config_of_plugin_id(id),
+            Some(config.clone())
+        );
+        assert_eq!(test.bridge.size_of_plugin_id(id), Some((13, 37)));
+        assert_eq!(test.bridge.cwd_of_plugin_id(id), Some(cwd.clone()));
+        assert_eq!(test.bridge.tab_index_of_plugin_id(id), Some(TabId::new(4)));
+        let location = RunPluginLocation::File(source.clone());
+        assert_eq!(
+            test.bridge
+                .all_plugin_ids_for_plugin_location(&location, &PluginUserConfiguration::default())
+                .unwrap(),
+            vec![id]
+        );
+        assert!(test
+            .bridge
+            .all_plugin_ids_for_plugin_location(
+                &location,
+                &PluginUserConfiguration::new(BTreeMap::from([(
+                    "setting".to_owned(),
+                    "different".to_owned()
+                )]))
+            )
+            .is_err());
+        std::fs::write(&source, good).unwrap();
+        if by_url {
+            test.bridge
+                .reload_plugin(&RunPlugin {
+                    location,
+                    ..Default::default()
+                })
+                .unwrap();
+        } else {
+            test.bridge.reload_plugin_with_id(id).unwrap();
+        }
+        test.finish_reload(id);
+        let map = test.bridge.plugin_map.lock().unwrap();
+        assert_eq!(map.all_plugin_ids(), vec![(id, owner)]);
+        let plugin = map.get_running_plugin(id, Some(owner)).unwrap();
+        let running = plugin.lock().unwrap();
+        assert_ne!(running.env().plugin_own_data_dir, scratch);
+        assert!(running.env().plugin_own_data_dir.exists());
+        assert_eq!(running.env().plugin_own_cache_dir, cache);
+        assert_eq!(
+            std::fs::read_to_string(cache.join("saved")).unwrap(),
+            "persistent state"
+        );
+        assert_eq!(running.env().plugin, config);
+        assert_eq!((running.rows, running.columns), (13, 37));
+        assert_eq!(running.env().plugin_cwd, cwd);
+        assert_eq!(running.env().tab_index, Some(TabId::new(4)));
+    }
+    assert!(!scratch.exists());
+    test.bridge.unload_plugin(id).unwrap();
+    assert!(test.bridge.run_plugin_of_plugin_id(id).is_none());
+    assert!(test.bridge.plugin_config_of_plugin_id(id).is_none());
+    assert!(test
+        .bridge
+        .all_plugin_ids_for_plugin_location(
+            &RunPluginLocation::File(source),
+            &PluginUserConfiguration::default()
+        )
+        .is_err());
+}
+
+#[test]
+fn lua_reload_recovers_by_id_after_load_failure() {
+    assert_reload_recovers(false, false);
+}
+
+#[test]
+fn lua_reload_recovers_by_url_after_load_failure() {
+    assert_reload_recovers(false, true);
+}
+
+#[test]
+fn wasm_reload_recovers_by_id_after_load_failure() {
+    assert_reload_recovers(true, false);
+}
+
+#[test]
+fn wasm_reload_recovers_by_url_after_load_failure() {
+    assert_reload_recovers(true, true);
+}
+
+#[test]
+fn removing_an_instance_retains_latest_values_and_url_lookup_deduplicates_ids() {
+    let mut test = TestBridge::new();
+    let one = test.context(1, 1, "return {}");
+    let location = one.plugin_config.location.clone();
+    test.load(one).unwrap();
+    let two = test.context(1, 2, "return {}");
+    test.load(two).unwrap();
+    let id = PluginId::new(1);
+    let mut map = test.bridge.plugin_map.lock().unwrap();
+    assert_eq!(
+        map.all_plugin_ids_for_plugin_location(&location, &PluginUserConfiguration::default())
+            .unwrap(),
+        vec![id]
+    );
+    drop(map.remove_instance(id, ClientId::new(1)));
+    let plugin = map.get_running_plugin(id, None).unwrap();
+    let weak = Arc::downgrade(&plugin);
+    {
+        let mut running = plugin.lock().unwrap();
+        running.rows = 17;
+        running.columns = 42;
+        running.env_mut().plugin_cwd = PathBuf::from("/changed");
+        running.env_mut().tab_index = Some(TabId::new(9));
+    }
+    drop(plugin);
+    drop(map.remove_instance(id, ClientId::new(2)));
+    assert!(weak.upgrade().is_none());
+    let retained = map.reload_metadata(id).unwrap();
+    assert_eq!(retained.size, (17, 42));
+    assert_eq!(retained.cwd, PathBuf::from("/changed"));
+    assert_eq!(retained.tab_index, Some(TabId::new(9)));
+    assert_eq!(retained.owner_client_id, ClientId::new(2));
+    map.remove_plugins(id);
+    assert!(map.reload_metadata(id).is_none());
 }
 
 #[test]
@@ -446,8 +673,7 @@ fn wasm_workers_release_their_shared_temporary_data_after_unload() {
     events.wait("wasm instance and worker cleanup", || !path.exists());
 }
 
-#[test]
-fn unload_cancels_a_queued_reload_and_client_load() {
+fn assert_unload_cancels_queued_reload(failed: bool) {
     let mut test = TestBridge::new();
     test.bridge
         .connected_clients
@@ -457,7 +683,15 @@ fn unload_cancels_a_queued_reload_and_client_load() {
     let context = test.context(1, 1, "return {}");
     let path = context.plugin_own_data_dir.clone();
     let events = FileEvents::new(path.parent().unwrap());
+    let source = context.plugin_config.path.clone();
     test.load(context).unwrap();
+    if failed {
+        std::fs::write(&source, "return { load = function() error('failed') end }").unwrap();
+        test.bridge.reload_plugin_with_id(PluginId::new(1)).unwrap();
+        test.finish_reload(PluginId::new(1));
+        assert!(!path.exists());
+        std::fs::write(&source, "return {}").unwrap();
+    }
     let started = zellij_test_support::Watched::new(false);
     let release = zellij_test_support::Watched::new(false);
     let observed = started.clone();
@@ -479,7 +713,25 @@ fn unload_cancels_a_queued_reload_and_client_load() {
     test.bridge.reload_plugin_with_id(PluginId::new(1)).unwrap();
     test.bridge.add_client(ClientId::new(2)).unwrap();
     test.bridge.unload_plugin(PluginId::new(1)).unwrap();
+    assert!(test
+        .bridge
+        .run_plugin_of_plugin_id(PluginId::new(1))
+        .is_none());
+    let done = zellij_test_support::Watched::new(false);
+    let observed = done.clone();
+    // Queue before releasing the executor, while the live unload has not unregistered it.
+    test.bridge.plugin_executor.execute_for_plugin_tagged(
+        PluginId::new(1),
+        "observe unloaded reload",
+        false,
+        move |_, _, _, _, _| *observed.lock() = true,
+    );
     *release.lock() = true;
+    done.wait_until(
+        "queued reload completion",
+        Duration::from_secs(30),
+        |done| done.then_some(()),
+    );
     events.wait("unloaded instance cleanup", || !path.exists());
     assert!(test
         .bridge
@@ -494,6 +746,16 @@ fn unload_cancels_a_queued_reload_and_client_load() {
             .count(),
         0
     );
+}
+
+#[test]
+fn unload_cancels_a_queued_reload_and_client_load() {
+    assert_unload_cancels_queued_reload(false);
+}
+
+#[test]
+fn unload_cancels_a_queued_recovery_after_load_failure() {
+    assert_unload_cancels_queued_reload(true);
 }
 
 #[test]
