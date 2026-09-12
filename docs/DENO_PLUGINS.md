@@ -1003,7 +1003,8 @@ Client context survives `await`. Sender-supplied `source` and `reply_to` fields 
 ID-addressed calls accept replies only from that plugin ID. URL-addressed calls match the opaque call ID because the host does not return the destination ID.
 Each isolate uses a new UUID prefix, so replies from an old instance cannot settle replacement calls.
 
-RPC uses version-1 `zellij_rpc_call` and `zellij_rpc_reply` envelopes, with a 64,000-byte limit.
+RPC uses version-1 `zellij_rpc_call` and `zellij_rpc_reply` envelopes, with a 1 MiB (1,048,576-byte) limit.
+Hocus tool calls and replies retain their 64,000-byte limit.
 Unsupported JSON values reject instead of losing fields. Malformed, stale, and duplicate replies are ignored.
 RPC messages stay internal. Ordinary pipe messages still reach `pipe` callbacks and `waitForPipe()`.
 

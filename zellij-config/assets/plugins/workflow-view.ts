@@ -5,11 +5,12 @@ import z, {type Event, type PipeMessage, type FormWidget, type FieldDescriptor,
 type Question = {model: string; version: number; attributes: {run: string; question: string; state: string; kind: string; prompt: string; answers?: string[]}};
 type History = {id?: string; workflowName?: string; status: string; jobs?: {name: string; steps?: {name: string; status: string}[]}[]};
 type Output = {output?: string; previewTruncated?: boolean; outputTruncated?: boolean; logError?: string;
-  pane?: number; log?: string; outcome?: string; exitCode?: number | null;
+  summaryLength?: number; outputComplete?: boolean; passed?: boolean; pane?: number; log?: string; outcome?: string; exitCode?: number | null;
   findings?: {severity: string; file: string; message: string}[]; review?: Output; test?: Output;
   evidence?: {source: {commit: string}; target: {commit: string}}; source?: {commit: string}; target?: {commit: string}};
+type ReportEntry = {model: string; name: string; version: number; createdAt?: string; attributes: Output};
 type Snapshot = {run?: string; launch?: string; root: string; history: History; children?: History[]; active?: boolean;
-  questions?: {results?: Question[]}; outputs?: {results?: {model: string; name: string; version: number; attributes: Output}[]}; logs?: string;
+  questions?: {results?: Question[]}; outputs?: {results?: ReportEntry[]}; logs?: string;
   subtitle?: string};
 type Attachment = {directory: string; run?: string; launch?: string};
 type Block = {widget?: MarkdownComponent; lines?: string[]; count: number; scroll: number; important?: boolean; live?: boolean};
@@ -24,6 +25,40 @@ let form: FormWidget | undefined, onRestart: (() => void) | undefined;
 let formKey: string | undefined, questionKey: string | undefined, formHeight = 1, formHasInput = false, contentHeight = 0;
 const answered = new Map<string, number>();
 let generation = 0;
+type Report = {chunks: string[]; offset: number; total: number; loading?: boolean; error?: string;
+  width?: number; rendered?: number; lines?: string[]};
+const reports = new Map<string, Report>();
+const reportKey = (entry: ReportEntry) => JSON.stringify([entry.model, entry.name, entry.version]);
+function reportEntries() {
+  return (view.snapshot?.outputs?.results ?? []).filter(entry => (entry.attributes.summaryLength ?? 0) > 0)
+    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '') || reportKey(b).localeCompare(reportKey(a)));
+}
+function loadReports(revision: number) {
+  for (const entry of reportEntries()) {
+    const key = reportKey(entry);
+    let report = reports.get(key);
+    if (!report) {
+      report = {chunks: [], offset: 0, total: entry.attributes.summaryLength!}; reports.set(key, report);
+      followLive = false; view.scroll = 0;
+    }
+    if (!report.loading && report.offset < report.total) void loadReport(entry, report, revision, view.snapshot!.root);
+  }
+}
+async function loadReport(entry: ReportEntry, report: Report, revision: number, root: string) {
+  report.loading = true;
+  try {
+    while (report.offset < report.total && revision === generation) {
+      const chunk = await z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp', timeoutMs: 30000,
+        payload: {method: 'workflow_report', directory: root, model: entry.model, name: entry.name, version: entry.version, offset: report.offset}}) as {text: string; next: number; total: number};
+      if (revision !== generation) return;
+      if (typeof chunk.text !== 'string' || !Number.isSafeInteger(chunk.next) || chunk.next <= report.offset ||
+        chunk.next > report.total || chunk.total !== report.total || chunk.text.length !== chunk.next - report.offset)
+        throw Error('Invalid saved report chunk');
+      report.chunks.push(chunk.text); report.offset = chunk.next; report.error = undefined; repaint();
+    }
+  } catch (error) { if (revision === generation) { report.error = String(error); repaint(); } }
+  finally { report.loading = false; }
+}
 type Stream = {operation: string; source: string; raw: Uint8Array; value: string; omitted: boolean};
 let streams: Stream[] = [], latestStream: Stream | undefined, launch: string | undefined;
 let followLive = true, scrollLimit = 0, detached = false;
@@ -109,7 +144,7 @@ async function refresh() {
     view.selected = Math.min(view.selected, Math.max(0, view.pending.length - 1));
     const index = view.pending.findIndex(entry => identity(entry) === selected);
     if (index >= 0) view.selected = index;
-    controls();
+    controls(); loadReports(revision);
   } catch (error) { if (revision === generation) view.refreshError = String(error); }
   finally {
     if (revision === generation) {
@@ -126,7 +161,7 @@ async function refresh() {
   }
 }
 function attach(attachment: Attachment) {
-  generation++; view.submitting = false;
+  generation++; reports.clear(); view.submitting = false;
   view.selecting = false; view.dirty = false; formKey = undefined; questionKey = undefined;
   watch(attachment.launch); view.attachment = {...attachment}; view.snapshot = undefined; view.pending = []; view.selected = 0; view.scroll = 0;
   view.notice = undefined; view.noticeError = false; view.refreshError = undefined; view.active = true; view.status = 'Loading workflow...';
@@ -160,6 +195,7 @@ function update(event: Event): boolean {
     return false;
   }
   if ('Key' in event && event.Key.bare_key === 'End' && form!.focusedId() !== 'answer') { followLive = true; view.scroll = Infinity; return true; }
+  if ('Key' in event && event.Key.bare_key === 'Home' && form!.focusedId() !== 'answer') { followLive = false; view.scroll = 0; return true; }
   if ('Key' in event && event.Key.bare_key === 'PageUp') { followLive = false; view.scroll = Math.max(0, view.scroll - contentHeight); return true; }
   if ('Key' in event && event.Key.bare_key === 'PageDown') { view.scroll += contentHeight; followLive = view.scroll >= scrollLimit; return true; }
   if ('Mouse' in event) {
@@ -238,6 +274,19 @@ function render(rows: number, cols: number): string {
   if (!entry && view.active) add('Waiting for the workflow. No question pending.');
   const snapshot = view.snapshot;
   if (snapshot) {
+    for (const entry of reportEntries()) {
+      const report = reports.get(reportKey(entry));
+      if (!report) continue;
+      // Test output is plain text: preserve failure blocks without interpreting UI markup.
+      if (report.width !== cols || report.rendered !== report.offset) {
+        report.lines = z.text.wrap(text(report.chunks.join('')), Math.max(1, cols));
+        report.width = cols; report.rendered = report.offset;
+      }
+      blocks.push({lines: report.lines!, count: report.lines!.length, important: entry.attributes.passed === false, scroll: 0});
+      if (report.error) add('Report unavailable: ' + report.error, true);
+      else if (report.offset < report.total) add('Loading complete test report...');
+    }
+    add('Execution details:');
     for (const history of [snapshot.history, ...(snapshot.children ?? [])]) {
       add(`${text(history.workflowName)} / ${text(history.id)}: ${text(history.status)}`, failed(history.status));
       for (const job of history.jobs ?? []) for (const step of job.steps ?? []) add(`${job.name}/${step.name}: ${step.status}`, failed(step.status));

@@ -113,7 +113,7 @@ fn consumer(runtime: &mut JsRuntime, name: &str) {
       return body ? zellij.decodeUtf8(new Uint8Array(body.split(',').map(Number))) : '';
     });"#);
     let tail = if name == "workflow-view" { "globalThis.M = view;" } else { "" };
-    run(runtime, &format!("(function(z, definePlugin) {{ {source}\n{tail}\n}})(mock, p => p);"));
+    run(runtime, &format!("globalThis.reloadConsumer = () => {{ (function(z, definePlugin) {{ {source}\n{tail}\n}})(mock, p => p); }}; reloadConsumer();"));
 }
 
 #[test]
@@ -699,4 +699,101 @@ fn deno_bridge_pairs_values_with_revisions_and_retries_from_concurrent_fields() 
       }).catch(e=>failure=String(e.stack));
     "#);
     run(&mut runtime, "if(failure)throw Error(failure);check(done);");
+}
+
+#[test]
+fn deno_bridge_closure_cancellation_and_picker_races() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, include_str!("swamp_close_tests.js"));
+    run(&mut runtime, "if(failure) throw Error(failure); check(done);");
+}
+
+#[test]
+fn deno_workflow_reports_are_complete_scrollable_cached_and_attachment_scoped() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.done=false;globalThis.failure=null;
+      globalThis.summary='Test report: FAILED\nfirst failure output\n'+'diagnostic line\n'.repeat(2400)+'middle failure output 😀\n'+'diagnostic line\n'.repeat(2400)+'last failure output\n';
+      globalThis.reportCalls=[];globalThis.submissions=[];globalThis.markdowns=[];
+      globalThis.delayReport=false;globalThis.releaseReport=null;globalThis.reportVersion=3;
+      globalThis.mock={...zellij,getPluginIds:()=>({plugin_id:1}),subscribe(){},every(){},command(){},requestRender(){},
+        ui:{...zellij.ui,markdown(source,opts){markdowns.push(source);return zellij.ui.markdown(source,opts);}},
+        rpc:{async call({payload:a}){
+          if(a.method==='workflow_report'){
+            check(a.model==='test-model'&&a.name==='test-current'&&a.version===reportVersion);reportCalls.push(a);
+            const next=Math.min(summary.length,a.offset+32768),chunk={text:summary.slice(a.offset,next),next,total:summary.length};
+            return delayReport?new Promise(resolve=>{releaseReport=resolve;}):chunk;
+          }
+          if(a.method==='workflow_answer'){submissions.push(a);return {};}
+          check(a.method==='workflow_show');
+          return {run:a.run,launch:'launch',root:a.directory,history:{id:a.run,workflowName:'tests',status:'suspended'},children:[],
+            questions:{results:[{model:'question',version:1,attributes:{run:a.run,question:'failed-tests',state:'pending',kind:'choice',prompt:'Choose next action',answers:['start-fix-agent','leave']}}]},
+            outputs:{results:[{model:'test-model',name:'test-current',version:reportVersion,createdAt:'2026-09-12',attributes:{summaryLength:summary.length,passed:false,outputComplete:true}}]}};
+        }}};
+    "#);
+    consumer(&mut runtime, "workflow-view");
+    run(&mut runtime, r#"
+      (async()=>{
+        const flush=async()=>{for(let i=0;i<20;i++)await Promise.resolve();};
+        const key=bare_key=>M.update({Key:{bare_key,key_modifiers:[]}});
+        M.load();M.attach({directory:'/control',run:'run'});await flush();
+        check(reportCalls.length===3);
+        let frame=plain(M.render(24,100));check(frame.includes('Test report: FAILED')&&frame.includes('first failure output')&&!frame.includes('Execution details:'));
+        check(M.focusedControl()==='choice_1');
+        let middle=false,last=false;
+        for(let i=0;i<270;i++){key('PageDown');frame=plain(M.render(24,100));middle ||= frame.includes('middle failure output');last ||= frame.includes('last failure output');}
+        check(middle&&last);
+        key('Home');check(plain(M.render(24,100)).includes('Test report: FAILED'));
+        check(!markdowns.some(text=>text.includes('failure output')),'reports must not become Markdown');
+        await M.refresh();await flush();check(reportCalls.length===3,'completed versions are cached');
+        M.attach({directory:'/reattached',run:'run'});await flush();check(reportCalls.length===6&&reportCalls.at(-1).directory==='/reattached');
+        check(plain(M.render(24,100)).includes('Test report: FAILED')&&M.focusedControl()==='choice_1');
+        // A report response from an old attachment must not update the new one.
+        delayReport=true;M.attach({directory:'/old',run:'old'});await flush();const old=releaseReport;
+        delayReport=false;M.attach({directory:'/new',run:'new'});await flush();
+        old({text:'STALE REPORT',next:12,total:summary.length});await flush();
+        check(!plain(M.render(24,100)).includes('STALE REPORT')&&M.pending[0].attributes.run==='new');
+        // A new saved version gets new chunks while the next-action control survives.
+        reportVersion=4;await M.refresh();await flush();check(reportCalls.at(-1).version===4);
+        key('PageDown');key('Enter');await flush();
+        check(submissions.length===1&&submissions[0].inputs.answer==='start-fix-agent'&&submissions[0].inputs.run==='new');
+        done=true;
+      })().catch(error=>{failure=error.stack;});
+    "#);
+    run(&mut runtime, "if(failure) throw Error(failure);check(done);");
+}
+
+#[test]
+fn deno_bridge_report_queries_pin_versions_and_preserve_captured_output() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load();globalThis.done=false;
+      (async()=>{
+        let queries=0;
+        mock.swampRequest=async opts=>{
+          queries++;check(opts.operation==='data.query'&&opts.directory==='/control');
+          check(opts.payload.predicate==='modelName == "test-model" && name == "test-current" && version == 3 && has(attributes.summary) && has(attributes.summaryLength) && attributes.summaryLength >= 0');
+          check(opts.payload.select.includes('attributes.summary.substring(32767,32768).matches(r"[\\uD800-\\uDBFF]") ? 32767 : 32768'));
+          check(opts.payload.select.includes('int(attributes.summaryLength)'));
+          return {results:[{text:'x'.repeat(32767),next:32767,total:40000}]};
+        };
+        const args={method:'workflow_report',model:'test-model',name:'test-current',version:3,offset:0,directory:'/control'};
+        const report=await handler(args,{source:{Plugin:1}});check(report.next===32767&&report.text.length===32767);
+        for(const invalid of [{offset:-1},{offset:0.5},{offset:null},{offset:Number.MAX_SAFE_INTEGER},{version:0},{version:1.5},{version:'3'}]){
+          let rejected=false;try{await handler({...args,...invalid},{source:{Plugin:1}});}catch{rejected=true;}check(rejected);
+        }
+        check(queries===1);
+        const uid=JSON.stringify(['host','session','work','capture']);
+        rows.set(uid,{rev:1,value:JSON.stringify({work:'work',key:'capture',request:JSON.stringify({method:'command'}),outcome:'completed',pane:7,supervisor:'supervisor-7',log:'terminal_7',capture:{path:'/complete'},output:'complete captured output'})});
+        mock.runCommand=()=>{throw Error('captured output must not be replaced with a terminal tail');};
+        const observed=await handler({method:'observe',work:'work',key:'capture'},{source:{Plugin:1}});
+        check(observed.output==='complete captured output'&&!observed.logError&&!observed.outputTruncated);
+        done=true;
+      })().catch(error=>{failure=error.stack;});
+    "#);
+    run(&mut runtime, "if(failure) throw Error(failure);check(done);");
 }
