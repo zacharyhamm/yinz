@@ -573,9 +573,7 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
     open_sidebar(&zellij);
 
     /// Where the agent list's first row sits. The list is the panel's left half, so this is the
-    /// panel's upper-left corner - give or take the frame it wears while it is in its corner and
-    /// loses when it is expanded, exactly as a borderless floating pane does. The tab cell's
-    /// leading space is the pane's first column.
+    /// first content cell, one row and column inside its frame even when expanded.
     fn list_corner(grid_snapshot: &GridSnapshot) -> Option<(usize, usize)> {
         grid_snapshot
             .text
@@ -611,7 +609,7 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
     zellij.send_stdin(&keys::key('f'));
 
     let expanded = zellij.wait_until("the panel fills the viewport", |grid_snapshot| {
-        list_corner(grid_snapshot) == Some((1, 0))
+        list_corner(grid_snapshot) == Some((2, 1))
     });
     assert!(
         expanded.contains("Ask something."),

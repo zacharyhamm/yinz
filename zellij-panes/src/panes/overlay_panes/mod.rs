@@ -68,6 +68,8 @@
 //!   expansion filling the screen without knowing it exists, and none of them can leave a stale
 //!   override behind, because that one function owns every override in the collection. A linked
 //!   pair is expanded as a panel, divider at its share, as it is dragged and resized as one.
+//!   Dragging the expanded divider maps its share back into the base rectangle and refreshes
+//!   the overrides, so collapsing the panel keeps the chosen split inside its original bounds.
 //!
 //!   Unlike the floating layer's, this fullscreen does **not** filter `stack_layer_ids`: a live
 //!   modal must still draw above an expanded overlay, and the identity between that list and
@@ -203,7 +205,7 @@ use zellij_types::{
 use {
     zellij_types::data::ModeInfo, zellij_types::data::OverlayKind,
     zellij_types::data::OverlayPlacement, zellij_types::data::PaneInfo,
-    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::options::PaneFrameStyle,
+    zellij_types::input::layout::RunPluginOrAlias,
 };
 
 use crate::panes::kitty_graphics::KittyHostSupport;
@@ -342,7 +344,6 @@ pub struct OverlayPanes {
     session_is_mirrored: bool,
     default_mode_info: ModeInfo,
     senders: ThreadSenders,
-    pane_frame_style: PaneFrameStyle,
     window_title: Option<String>,
     dimmed_clients: HashSet<ClientId>,
 }
@@ -357,7 +358,6 @@ impl OverlayPanes {
         connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
-        pane_frame_style: PaneFrameStyle,
         session_is_mirrored: bool,
         default_mode_info: ModeInfo,
         style: Style,
@@ -378,7 +378,6 @@ impl OverlayPanes {
             session_is_mirrored,
             default_mode_info,
             senders,
-            pane_frame_style,
             window_title: None,
             dimmed_clients: HashSet::new(),
             pane_being_moved_with_mouse: None,
@@ -2033,10 +2032,7 @@ impl OverlayPanes {
             // asked to see in full. A live modal still outranks it - `raise_within_class` is what
             // says so, and a fullscreen keystroke does not suspend the modal lock.
             self.raise_within_class(member_id);
-            // and a gesture in flight on a pane that now fills the screen has nothing left to
-            // carry: there is nowhere to move it to and the split it would re-cut is the one the
-            // expansion exists to come back to. Released here as `hide_pane` and `remove_pane`
-            // release them, rather than refused at every step of the drag.
+            // A gesture begun before expansion holds an offset in the old geometry.
             if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == member_id)
             {
                 self.pane_being_moved_with_mouse = None;
@@ -2050,24 +2046,11 @@ impl OverlayPanes {
         self.fullscreen.is_some()
     }
 
-    /// The frame an expanded overlay wears, matching the floating layer's: none at all when it
-    /// covers the chrome, there being nothing beside it for a border to separate it from.
-    fn set_fullscreen_frame(
-        pane: &mut Box<dyn Pane>,
-        pane_frame_style: PaneFrameStyle,
-        covers_ui: bool,
-    ) {
-        if covers_ui || pane.borderless() || !pane_frame_style.draws_full_frames() {
-            pane.set_frame(false);
-            pane.set_content_offset(Offset::default());
-        } else {
-            pane.set_frame(true);
-            pane.set_content_offset(Offset::frame(1));
-        }
-    }
-
     /// Put an expanded overlay back where its coordinates say it belongs; `true` => one was.
     pub fn unset_fullscreen(&mut self) -> bool {
+        for pane_id in self.fullscreen_pane_ids() {
+            self.release_seam_drag_of(pane_id);
+        }
         if self.fullscreen.take().is_none() {
             return false;
         }
@@ -2432,24 +2415,21 @@ impl OverlayPanes {
     /// never found underneath an overlay covering it.
     pub fn seam_at(&self, position: &Position) -> Option<(PaneId, PaneId)> {
         let pane_id = self.visible_pane_id_at(position)?;
-        // An expanded panel's divider is drawn from an override, while the seam arithmetic below
-        // reads the bases: the two disagree, and a drag would write a base the user cannot see
-        // back as the user's. The panel is re-cut when it comes back, not while it is expanded.
-        if self.pane_is_fullscreen(&pane_id) {
-            return None;
-        }
         if !self.get(&pane_id)?.position_is_on_frame(position) {
             return None;
         }
         let (left, right) = self.link_of(&pane_id)?;
-        if self.is_hidden(&left)
-            || self.is_hidden(&right)
-            || !self.touch_edge_to_edge(&left, &right)
+        if self.is_hidden(&left) || self.is_hidden(&right) {
+            return None;
+        }
+        let left_geom = self.get(&left)?.current_geom();
+        let right_geom = self.get(&right)?.current_geom();
+        if left_geom.x + left_geom.cols.as_usize() != right_geom.x
+            || left_geom.y >= right_geom.y + right_geom.rows.as_usize()
+            || right_geom.y >= left_geom.y + left_geom.rows.as_usize()
         {
             return None;
         }
-        let left_geom = self.get(&left)?.position_and_size();
-        let right_geom = self.get(&right)?.position_and_size();
         let column = position.column();
         let on_seam =
             column + 1 == left_geom.x + left_geom.cols.as_usize() || column == right_geom.x;
@@ -2462,7 +2442,7 @@ impl OverlayPanes {
     /// is two frame columns wide and the press may be on either - so that every later step can
     /// put the seam back under the pointer rather than move it by the pointer's last delta.
     pub fn start_seam_drag(&mut self, left: PaneId, right: PaneId, position: Position) {
-        let Some(left_geom) = self.get(&left).map(|pane| pane.position_and_size()) else {
+        let Some(left_geom) = self.get(&left).map(|pane| pane.current_geom()) else {
             return;
         };
         let seam_column = (left_geom.x + left_geom.cols.as_usize()) as isize - 1;
@@ -2488,35 +2468,48 @@ impl OverlayPanes {
         let Some((left, right, grab_offset)) = self.seam_being_dragged else {
             return false;
         };
-        // An expanded panel's divider is drawn from an override while the arithmetic below reads
-        // the bases, so a step here would re-cut a panel the user cannot see and write it back as
-        // `Fixed`. `seam_at` refuses to *start* such a drag; this refuses to continue one that
-        // was already in flight when the expansion began.
-        if self.pane_is_fullscreen(&left) || self.pane_is_fullscreen(&right) {
-            return false;
-        }
-        let (Some(left_geom), Some(right_geom)) = (
-            self.get(&left).map(|pane| pane.position_and_size()),
-            self.get(&right).map(|pane| pane.position_and_size()),
-        ) else {
+        let (Some(left_pane), Some(right_pane)) = (self.get(&left), self.get(&right)) else {
             return false;
         };
-        let left_cols = left_geom.cols.as_usize();
-        let total = left_cols + right_geom.cols.as_usize();
+        let (left_geom, right_geom) = (
+            left_pane.position_and_size(),
+            right_pane.position_and_size(),
+        );
+        let displayed_left = left_pane.current_geom();
+        let displayed_panel = union_of(displayed_left, right_pane.current_geom());
+        let displayed_total = displayed_panel.cols.as_usize();
+        let panel = union_of(left_geom, right_geom);
+        let total = panel.cols.as_usize();
         let floor = MIN_TERMINAL_WIDTH;
-        if total < floor * 2 {
+        if total < floor * 2 || displayed_total < floor * 2 {
             return false;
         }
         // the seam column is the left half's last column, so the left half is one wider than
         // the seam's offset from its own first column
         let seam_column = position.column() as isize + grab_offset;
-        let new_left_cols = (seam_column - left_geom.x as isize + 1)
-            .clamp(floor as isize, (total - floor) as isize) as usize;
-        if new_left_cols == left_cols {
+        let displayed_cols = (seam_column - displayed_left.x as isize + 1)
+            .clamp(floor as isize, (displayed_total - floor) as isize)
+            as usize;
+        // A stationary press must not round-trip a floored fullscreen width back into the base.
+        if displayed_cols == displayed_left.cols.as_usize() {
+            return false;
+        }
+        // Keep the outer rectangle and carry the displayed split back into it. The manifest
+        // reports this base, so the owning plugin reads the new ratio just as for an ordinary drag.
+        // Fullscreen floors the scaled width; ceiling division reverses it for representable seams.
+        let new_left_cols = (displayed_cols * total)
+            .div_ceil(displayed_total)
+            .clamp(floor, total - floor);
+        if left_geom.x == panel.x
+            && new_left_cols == left_geom.cols.as_usize()
+            && right_geom.x == panel.x + new_left_cols
+            && right_geom.cols.as_usize() == total - new_left_cols
+        {
             return false;
         }
         if let Some(overlay) = self.panes.get_mut(&left) {
             let mut geom = overlay.pane.position_and_size();
+            geom.x = panel.x;
             geom.cols.set_inner(new_left_cols);
             overlay.pane.set_geom(geom);
             overlay.pane.set_should_render(true);
@@ -2525,7 +2518,7 @@ impl OverlayPanes {
         }
         if let Some(overlay) = self.panes.get_mut(&right) {
             let mut geom = overlay.pane.position_and_size();
-            geom.x = left_geom.x + new_left_cols;
+            geom.x = panel.x + new_left_cols;
             geom.cols.set_inner(total - new_left_cols);
             overlay.pane.set_geom(geom);
             overlay.pane.set_should_render(true);
@@ -2534,6 +2527,7 @@ impl OverlayPanes {
         }
         // Only the two halves changed size, so only their ptys are told - a drag is one event
         // per pointer cell, and `set_pane_frames` would resize every overlay on the tab for each.
+        self.refresh_fullscreen();
         self.resize_ptys_of(&[left, right]).non_fatal();
         self.set_force_render();
         true
@@ -2610,9 +2604,6 @@ impl OverlayPanes {
             overlay.pane.update_rounded_corners(rounded_corners);
         }
     }
-    pub fn set_pane_frame_style(&mut self, pane_frame_style: PaneFrameStyle) {
-        self.pane_frame_style = pane_frame_style;
-    }
     pub fn set_client_dimmed(&mut self, client_id: ClientId, dimmed: bool) {
         if dimmed {
             self.dimmed_clients.insert(client_id);
@@ -2656,15 +2647,15 @@ impl OverlayPanes {
         self.refresh_fullscreen();
         let fullscreen: HashSet<PaneId> = self.fullscreen_pane_ids().into_iter().collect();
         let covers_ui = self.fullscreen_covers_ui();
-        let pane_frame_style = self.pane_frame_style;
         for (pane_id, overlay) in self.panes.iter_mut() {
             let pane = &mut overlay.pane;
-            if fullscreen.contains(pane_id) {
-                Self::set_fullscreen_frame(pane, pane_frame_style, covers_ui);
-            } else if !pane.borderless() {
+            // Overlays keep complete frames regardless of the tiled frame style, including
+            // regular fullscreen. Only explicit borderlessness and no-UI fullscreen hide them.
+            if !pane.borderless() && !(fullscreen.contains(pane_id) && covers_ui) {
                 pane.set_frame(true);
                 pane.set_content_offset(Offset::frame(1));
             } else {
+                pane.set_frame(false);
                 pane.set_content_offset(Offset::default());
             }
             resize_pty!(pane, os_api, self.senders, self.character_cell_size)

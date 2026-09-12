@@ -267,11 +267,17 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
     tab.toggle_pane_fullscreen(left);
     tab.sample_overlay_ripples(later + Duration::from_millis(20), true);
     assert!(
-        !tab.overlay_ripple_is_live(),
-        "fullscreen without full borders settles the effect"
+        tab.overlay_ripple_is_live(),
+        "regular fullscreen keeps the borders and their effect under title-only settings"
     );
-    tab.toggle_pane_fullscreen(left);
+    tab.toggle_pane_no_ui_fullscreen(left);
     tab.sample_overlay_ripples(later + Duration::from_millis(30), true);
+    assert!(
+        !tab.overlay_ripple_is_live(),
+        "no-UI fullscreen removes the borders and settles the effect"
+    );
+    tab.toggle_pane_no_ui_fullscreen(left);
+    tab.sample_overlay_ripples(later + Duration::from_millis(40), true);
     assert!(
         !tab.overlay_ripple_is_live(),
         "restoring borders does not replay"

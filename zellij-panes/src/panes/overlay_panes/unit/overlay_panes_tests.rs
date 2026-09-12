@@ -183,7 +183,6 @@ fn overlay_panes_with(
         Rc::new(RefCell::new(HashSet::new())),
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(None)),
-        PaneFrameStyle::default(),
         false,
         ModeInfo::default(),
         Style::default(),
@@ -2659,6 +2658,22 @@ fn a_seam_drag_tells_exactly_the_two_halves_their_new_size() {
         vec![(TerminalId::new(1), 32, 8), (TerminalId::new(2), 24, 8)],
         "the two halves, at their content size inside the frame, and nobody else"
     );
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(TerminalId::new(1)));
+    let _ = resized_ptys(&pty);
+    panes.start_seam_drag(
+        PaneId::Terminal(TerminalId::new(1)),
+        PaneId::Terminal(TerminalId::new(2)),
+        Position::new(5, 44),
+    );
+    assert!(panes.drag_seam_to(&Position::new(5, 55)));
+    let mut resized = resized_ptys(&pty);
+    resized.sort();
+    assert_eq!(
+        resized,
+        vec![(TerminalId::new(1), 54, 18), (TerminalId::new(2), 22, 18)],
+        "fullscreen resizes both contents to the refreshed overrides"
+    );
 }
 
 /// Expanding an overlay goes through `set_pane_frames`, which tells the pty its new size.
@@ -2675,11 +2690,9 @@ fn expanding_an_overlay_tells_its_pty_the_viewport_size() {
 
     assert!(panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1))));
     assert_eq!(drawn(&panes, 1), (0, 0, 80, 20));
-    // the default frame style draws no full frame, so an expanded overlay has no frame and the
-    // content is the whole rectangle
     assert_eq!(
         resized_ptys(&pty),
-        vec![(TerminalId::new(1), 80, 20)],
+        vec![(TerminalId::new(1), 78, 18)],
         "the program inside is told the expanded content size"
     );
 
@@ -3744,7 +3757,7 @@ fn a_pane_swapped_into_an_expanded_slot_is_expanded() {
 }
 
 #[test]
-fn an_expanded_overlay_is_not_dragged_resized_or_seam_dragged() {
+fn an_expanded_overlay_cannot_move_or_resize_its_outer_rectangle() {
     let mut panes = linked_panel();
     let seam = seam_cell(&panes);
     panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
@@ -3761,7 +3774,7 @@ fn an_expanded_overlay_is_not_dragged_resized_or_seam_dragged() {
             grow(Direction::Right)
         )
         .unwrap());
-    assert_eq!(panes.seam_at(&seam), None, "and no divider to drag");
+    assert_eq!(panes.seam_at(&seam), None, "the old seam is now content");
 
     assert_eq!(
         (geom(&panes, 1), geom(&panes, 2)),
@@ -3967,10 +3980,9 @@ fn an_expanded_overlay_is_not_carried_by_a_drag_that_outlived_the_press() {
     assert_eq!(geom(&panes, 1), before);
 }
 
-/// The same for the divider: `seam_at` refuses to start one, this refuses to continue one that
-/// was in flight when the expansion began.
+/// Changing fullscreen geometry releases a drag whose grab offset belongs to the old rectangle.
 #[test]
-fn expanding_a_panel_releases_a_seam_drag_and_refuses_the_next_step() {
+fn changing_fullscreen_releases_a_seam_drag_in_flight() {
     let mut panes = linked_panel();
     let seam = seam_cell(&panes);
     let (left, right) = panes.seam_at(&seam).unwrap();
@@ -3981,13 +3993,176 @@ fn expanding_a_panel_releases_a_seam_drag_and_refuses_the_next_step() {
     assert!(!panes.seam_is_being_dragged());
 
     let before = (geom(&panes, 1), geom(&panes, 2));
-    panes.start_seam_drag(left, right, seam);
     assert!(!panes.drag_seam_to(&Position::new(5, 10)));
     assert_eq!(
         (geom(&panes, 1), geom(&panes, 2)),
         before,
         "the split underneath is untouched"
     );
+    panes.start_seam_drag(left, right, Position::new(5, 39));
+    assert!(panes.seam_is_being_dragged());
+    panes.unset_fullscreen();
+    assert!(!panes.seam_is_being_dragged());
+    assert!(!panes.drag_seam_to(&Position::new(5, 10)));
+}
+
+#[test]
+fn an_expanded_divider_drags_from_either_column_and_restores_the_new_split() {
+    for grab_column in [39, 40] {
+        let mut panes = linked_panel();
+        let left = PaneId::Terminal(TerminalId::new(1));
+        let right = PaneId::Terminal(TerminalId::new(2));
+        panes.toggle_pane_fullscreen(left);
+        let press = Position::new(5, grab_column);
+        assert_eq!(panes.seam_at(&press), Some((left, right)));
+        panes.start_seam_drag(left, right, press);
+        assert!(!panes.drag_seam_to(&press));
+
+        for (column, left_cols) in [(grab_column + 16, 42), (grab_column - 16, 18)] {
+            let position = Position::new(5, column);
+            assert!(panes.drag_seam_to(&position));
+            assert_eq!(geom(&panes, 1), (2, 2, left_cols, 10));
+            assert_eq!(geom(&panes, 2), (2 + left_cols, 2, 60 - left_cols, 10));
+            assert_eq!(drawn(&panes, 1), (0, 0, left_cols * 80 / 60, 20));
+            assert_eq!(panes.seam_at(&position), Some((left, right)));
+            assert!(!panes.drag_seam_to(&position));
+            assert_eq!(claims(&panes, 1), (false, false));
+            assert_eq!(claims(&panes, 2), (false, false));
+        }
+        panes.stop_seam_drag(Position::new(5, grab_column - 16));
+
+        // Hocus reads the base widths from the manifest and places the pair at that ratio.
+        let left_info = panes.pane_info_of(&left, &HashMap::new()).unwrap();
+        let right_info = panes.pane_info_of(&right, &HashMap::new()).unwrap();
+        assert!(left_info.is_fullscreen && right_info.is_fullscreen);
+        assert_eq!(left_info.pane_columns.get(), 18);
+        assert_eq!(right_info.pane_columns.get(), 42);
+        place(
+            &mut panes,
+            batch(&[
+                (1, left_info.pane_x.get(), left_info.pane_columns.get()),
+                (2, right_info.pane_x.get(), right_info.pane_columns.get()),
+            ]),
+            false,
+        );
+        assert_eq!((drawn(&panes, 1).2, drawn(&panes, 2).2), (24, 56));
+
+        *panes.display_area.borrow_mut() = Size {
+            cols: 120,
+            rows: 30,
+        };
+        *panes.viewport.borrow_mut() = Viewport {
+            x: 0,
+            y: 1,
+            cols: 120,
+            rows: 28,
+        };
+        panes.reapply_coordinates();
+        assert_eq!(drawn(&panes, 1), (0, 1, 36, 28));
+        assert_eq!(drawn(&panes, 2), (36, 1, 84, 28));
+        panes.unset_fullscreen();
+        assert_eq!(drawn(&panes, 1), (2, 2, 18, 10));
+        assert_eq!(drawn(&panes, 2), (20, 2, 42, 10));
+    }
+}
+
+#[test]
+fn an_expanded_divider_keeps_minimum_widths_and_returns_under_the_pointer() {
+    let mut panes = linked_panel();
+    let left = PaneId::Terminal(TerminalId::new(1));
+    let right = PaneId::Terminal(TerminalId::new(2));
+    panes.toggle_pane_fullscreen(left);
+    panes.start_seam_drag(left, right, Position::new(5, 39));
+    for (column, left_cols) in [
+        (0, MIN_TERMINAL_WIDTH),
+        (400, 60 - MIN_TERMINAL_WIDTH),
+        (39, 30),
+    ] {
+        assert!(panes.drag_seam_to(&Position::new(5, column)));
+        assert_eq!(geom(&panes, 1), (2, 2, left_cols, 10));
+        assert_eq!(geom(&panes, 2), (2 + left_cols, 2, 60 - left_cols, 10));
+        assert!(drawn(&panes, 1).2 >= MIN_TERMINAL_WIDTH);
+        assert!(drawn(&panes, 2).2 >= MIN_TERMINAL_WIDTH);
+    }
+}
+
+#[test]
+fn fullscreen_divider_after_terminal_shrink_partitions_the_base_union() {
+    let mut panes = linked_panel();
+    let left = PaneId::Terminal(TerminalId::new(1));
+    let right = PaneId::Terminal(TerminalId::new(2));
+    panes.toggle_pane_fullscreen(left);
+    panes.display_area.borrow_mut().cols = 25;
+    panes.viewport.borrow_mut().cols = 25;
+    panes.reapply_coordinates();
+    assert_eq!(geom(&panes, 1), (2, 2, 23, 10));
+    assert_eq!(geom(&panes, 2), (0, 2, 25, 10));
+
+    let press = Position::new(5, (drawn(&panes, 1).2 - 1) as u16);
+    assert_eq!(panes.seam_at(&press), Some((left, right)));
+    panes.start_seam_drag(left, right, press);
+    assert!(panes.drag_seam_to(&Position::new(5, 9)));
+    panes.stop_seam_drag(Position::new(5, 9));
+    panes.unset_fullscreen();
+
+    assert_eq!(drawn(&panes, 1), (0, 2, 10, 10));
+    assert_eq!(drawn(&panes, 2), (10, 2, 15, 10));
+    panes.reapply_coordinates();
+    assert_eq!(drawn(&panes, 1), (0, 2, 10, 10));
+    assert_eq!(drawn(&panes, 2), (10, 2, 15, 10));
+}
+
+#[test]
+fn dragging_a_rounded_fullscreen_divider_back_restores_the_split() {
+    let mut panes = linked_panel();
+    place(&mut panes, batch(&[(1, 2, 31), (2, 33, 29)]), false);
+    let left = PaneId::Terminal(TerminalId::new(1));
+    let right = PaneId::Terminal(TerminalId::new(2));
+    panes.toggle_pane_fullscreen(left);
+    assert_eq!(drawn(&panes, 1).2, 41);
+    panes.start_seam_drag(left, right, Position::new(5, 40));
+    for column in [48, 40] {
+        let position = Position::new(5, column);
+        assert!(panes.drag_seam_to(&position));
+        assert_eq!(drawn(&panes, 1).2, usize::from(column) + 1);
+        assert_eq!(panes.seam_at(&position), Some((left, right)));
+    }
+    panes.stop_seam_drag(Position::new(5, 40));
+    panes.unset_fullscreen();
+    assert_eq!(drawn(&panes, 1), (2, 2, 31, 10));
+    assert_eq!(drawn(&panes, 2), (33, 2, 29, 10));
+}
+
+#[test]
+fn pressing_a_rounded_fullscreen_divider_does_not_change_the_split() {
+    let mut panes = linked_panel();
+    place(&mut panes, batch(&[(1, 2, 31), (2, 33, 29)]), false);
+    let left = PaneId::Terminal(TerminalId::new(1));
+    let right = PaneId::Terminal(TerminalId::new(2));
+    panes.toggle_pane_fullscreen(left);
+    assert_eq!(drawn(&panes, 1).2, 41);
+    let press = Position::new(5, 40);
+    panes.start_seam_drag(left, right, press);
+    assert!(!panes.drag_seam_to(&press));
+    panes.stop_seam_drag(press);
+    panes.unset_fullscreen();
+    assert_eq!(drawn(&panes, 1), (2, 2, 31, 10));
+}
+
+#[test]
+fn fullscreen_preserves_borderless_panes_and_no_ui_has_no_divider_frame() {
+    let mut panes = linked_panel();
+    let left = PaneId::Terminal(TerminalId::new(1));
+    panes.set_borderless(&left, true);
+    panes.toggle_pane_fullscreen(left);
+    assert_eq!(panes.get(&left).unwrap().get_content_columns(), 40);
+    assert_eq!(panes.seam_at(&Position::new(5, 39)), None);
+    panes.toggle_pane_no_ui_fullscreen(left);
+    for column in [39, 40] {
+        assert_eq!(panes.seam_at(&Position::new(5, column)), None);
+    }
+    panes.unset_fullscreen();
+    assert_eq!(panes.get(&left).unwrap().get_content_columns(), 30);
 }
 
 /// Either half. The guard used to run after `unlink`, and `fullscreen_pane_ids` is derived from
