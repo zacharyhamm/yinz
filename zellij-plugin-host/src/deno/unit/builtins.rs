@@ -462,7 +462,7 @@ fn embedded_builtin_loads_without_a_working_directory() {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "plugins::deno::builtin_tests::embedded_builtin_loads_without_a_working_directory",
+                "deno::builtin_tests::embedded_builtin_loads_without_a_working_directory",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -499,11 +499,11 @@ fn shipped_context_menu_passes_the_typescript_checker() {
 /// the pane that is waiting - and that the other points it may be bound to stay quiet.
 #[test]
 fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
-    use zellij_types::pane_id::PaneId;
     use zellij_bus::screen::ScreenInstruction;
     use zellij_runtime::channels::SenderWithContext;
     use zellij_types::diagnostics::ErrorContext;
     use zellij_types::input::hooks::HookPoint;
+    use zellij_types::pane_id::PaneId;
 
     let source =
         zellij_config::consts::builtin_deno_plugin("agent-policy").expect("the hook is a builtin");

@@ -1,19 +1,19 @@
 # Test inventory
 
-Generated 2026-09-12 from `fe8fd601f` by `scripts/test-inventory.sh`.
+Generated 2026-09-12 from `d7f264e23` by `scripts/test-inventory.sh`.
 One item per automated test; the heading above each block is the gate that runs it.
 
 ## Totals
 
 | gate | tests | ignored |
 |---|---:|---:|
-| `cargo x test` | 8034 | 3 |
-| `cargo x integration-test` | 402 | 0 |
+| `cargo x test` | 8292 | 4 |
+| `cargo x integration-test` | 414 | 0 |
 | `cargo x ci e2e --test` | 5 | 5 |
 | `cargo x remote-test --build && cargo x remote-test --test` | 41 | 41 |
 | `cargo x firecracker-test --build && cargo x firecracker-test --test` | 4 | 4 |
 | `cargo x postgres-test --build && cargo x postgres-test --test` | 108 | 0 |
-| **total** | **8594** | **53** |
+| **total** | **8864** | **54** |
 
 ## configuration (bin/configuration)
 
@@ -113,6 +113,8 @@ Run: `cargo x test`
 - [ ] `api::api_tests::elision::a_search_is_superseded_by_a_later_edit_of_the_plugin_it_searched`
 - [ ] `api::api_tests::elision::a_superseded_batch_edit_sends_a_placeholder_instead_of_its_edits`
 - [ ] `api::api_tests::elision::a_superseded_write_sends_a_placeholder_instead_of_the_source`
+- [ ] `api::api_tests::elision::a_ts_file_and_the_extensionless_lua_name_are_different_subjects`
+- [ ] `api::api_tests::elision::a_typescript_write_is_superseded_without_growing_a_lua_suffix`
 - [ ] `api::api_tests::elision::a_write_is_only_superseded_by_a_write_of_the_same_file`
 - [ ] `api::api_tests::elision::an_edit_is_superseded_by_a_later_write_of_the_same_file`
 - [ ] `api::api_tests::elision::an_elided_body_is_still_a_well_formed_request`
@@ -259,6 +261,7 @@ Run: `cargo x test`
 - [ ] `extensions::tests::registration_namespaces_the_tool_and_builds_its_api_spec`
 - [ ] `extensions::tests::reregistering_replaces_an_owners_complete_tool_set`
 - [ ] `extensions::tests::safety_is_explicit_and_confirming_tools_explain_their_effect`
+- [ ] `extensions::tests::script_suffixes_share_a_namespace_and_conflicts_register_neither`
 - [ ] `help::help_tests::a_backtick_in_a_description_is_stripped`
 - [ ] `help::help_tests::a_closed_set_is_listed`
 - [ ] `help::help_tests::a_conditionally_confirming_tool_says_which_shape`
@@ -274,6 +277,7 @@ Run: `cargo x test`
 - [ ] `help::help_tests::every_tool_has_help`
 - [ ] `help::help_tests::help_is_plain_text`
 - [ ] `help::help_tests::only_a_bare_help_flag_is_a_help_request`
+- [ ] `help::help_tests::schema_property_order_does_not_change_help_order`
 - [ ] `help::help_tests::the_family_row_marks_a_deferred_family`
 - [ ] `help::help_tests::the_usage_line_marks_required_arguments`
 - [ ] `history::tests::a_chat_is_titled_by_its_opening_question`
@@ -354,28 +358,6 @@ Run: `cargo x test`
 - [ ] `log::tests::truncate_handles_unicode`
 - [ ] `log::tests::truncate_long_string_is_cut_and_marked`
 - [ ] `log::tests::truncate_short_string_is_unchanged`
-- [ ] `lua_docs::tests::a_docs_page_names_the_next_call_by_section`
-- [ ] `lua_docs::tests::a_docs_query_answers_section_line_hits_and_stays_far_under_the_cap`
-- [ ] `lua_docs::tests::a_docs_query_confined_to_a_section_searches_only_it`
-- [ ] `lua_docs::tests::a_section_is_cut_at_the_next_heading`
-- [ ] `lua_docs::tests::a_split_section_names_the_parts_it_no_longer_carries`
-- [ ] `lua_docs::tests::an_invalid_docs_regex_is_answered_with_the_regex_error`
-- [ ] `lua_docs::tests::an_unknown_section_lists_the_real_ones`
-- [ ] `lua_docs::tests::every_advertised_section_resolves_to_something`
-- [ ] `lua_docs::tests::every_guide_heading_is_reachable_as_a_section`
-- [ ] `lua_docs::tests::every_section_heading_still_exists_in_the_guide`
-- [ ] `lua_docs::tests::every_subheading_of_a_split_section_is_reachable`
-- [ ] `lua_docs::tests::no_section_is_anywhere_near_the_tool_output_cap`
-- [ ] `lua_docs::tests::no_section_is_listed_twice`
-- [ ] `lua_docs::tests::the_guide_names_every_permission_a_plugin_can_ask_for`
-- [ ] `lua_docs::tests::the_guide_states_the_data_store_rules_it_cannot_enforce`
-- [ ] `lua_docs::tests::the_hocus_data_section_invents_no_entity_names`
-- [ ] `lua_docs::tests::the_hocus_data_section_names_every_shared_entity_and_attribute`
-- [ ] `lua_docs::tests::the_index_does_not_carry_the_quickstart`
-- [ ] `lua_docs::tests::the_index_names_every_other_section`
-- [ ] `lua_docs::tests::the_index_states_a_size_for_every_section`
-- [ ] `lua_docs::tests::the_index_states_the_authoring_loop`
-- [ ] `lua_docs::tests::the_split_sections_are_a_fraction_of_what_they_were`
 - [ ] `main_tests::a_pane_renamed_from_outside_is_titled_again_on_the_next_render`
 - [ ] `main_tests::agent_history_tools::a_firecracker_run_is_listed_and_annotated_with_the_project_its_vm_mirrored`
 - [ ] `main_tests::agent_history_tools::a_listing_names_an_unknown_project_rather_than_answering_emptily`
@@ -504,6 +486,7 @@ Run: `cargo x test`
 - [ ] `main_tests::data_store::an_unknown_pipe_message_is_ignored`
 - [ ] `main_tests::data_store::opening_the_store_takes_the_projects_already_in_it`
 - [ ] `main_tests::data_store::summaries_are_mirrored_and_restored_without_their_hash`
+- [ ] `main_tests::extensions::a_duplicate_scan_revokes_registration_and_finishes_pending_calls`
 - [ ] `main_tests::extensions::a_registration_report_names_the_tools_and_asks_for_them_to_be_called`
 - [ ] `main_tests::extensions::a_scan_waits_before_loading_files_that_did_not_reregister`
 - [ ] `main_tests::extensions::an_extension_call_awaited_by_a_parked_chat_still_times_out`
@@ -670,6 +653,7 @@ Run: `cargo x test`
 - [ ] `main_tests::plugin_tools::an_outline_and_a_named_search_are_answered_from_the_plugin_source`
 - [ ] `main_tests::plugin_tools::an_unknown_docs_section_lists_the_real_ones_rather_than_failing`
 - [ ] `main_tests::plugin_tools::edit_diagnostics_are_byte_bounded_before_confirmation_and_during_execution`
+- [ ] `main_tests::plugin_tools::extension_reload_refuses_duplicate_namespaces_across_languages`
 - [ ] `main_tests::plugin_tools::folder_search_reports_caps_failed_reads_and_oversize_files`
 - [ ] `main_tests::plugin_tools::folder_search_skips_invalid_names_but_named_search_rejects_them`
 - [ ] `main_tests::plugin_tools::the_docs_answer_even_with_no_plugin_folder`
@@ -1027,6 +1011,30 @@ Run: `cargo x test`
 - [ ] `overlay::overlay_tests::the_two_halves_always_meet`
 - [ ] `overlay::overlay_tests::two_clients_on_different_tabs_leave_the_panes_alone`
 - [ ] `overlay::overlay_tests::width_and_pad_are_configurable`
+- [ ] `plugin_docs::tests::a_docs_page_names_the_next_call_by_section`
+- [ ] `plugin_docs::tests::a_docs_query_answers_section_line_hits_and_stays_far_under_the_cap`
+- [ ] `plugin_docs::tests::a_docs_query_confined_to_a_section_searches_only_it`
+- [ ] `plugin_docs::tests::a_section_is_cut_at_the_next_heading`
+- [ ] `plugin_docs::tests::a_split_section_names_the_parts_it_no_longer_carries`
+- [ ] `plugin_docs::tests::an_invalid_docs_regex_is_answered_with_the_regex_error`
+- [ ] `plugin_docs::tests::an_unknown_section_lists_the_real_ones`
+- [ ] `plugin_docs::tests::every_advertised_section_resolves_to_something`
+- [ ] `plugin_docs::tests::every_guide_heading_is_reachable_as_a_section`
+- [ ] `plugin_docs::tests::every_section_heading_still_exists_in_its_guide`
+- [ ] `plugin_docs::tests::every_subheading_of_a_split_section_is_reachable`
+- [ ] `plugin_docs::tests::no_section_is_anywhere_near_the_tool_output_cap`
+- [ ] `plugin_docs::tests::no_section_is_listed_twice`
+- [ ] `plugin_docs::tests::sdk_declarations_are_cut_at_every_marker`
+- [ ] `plugin_docs::tests::the_guides_name_every_permission_a_plugin_can_ask_for`
+- [ ] `plugin_docs::tests::the_guides_state_the_data_store_rules_they_cannot_enforce`
+- [ ] `plugin_docs::tests::the_helpers_section_names_the_keybinding_pipe_prefix`
+- [ ] `plugin_docs::tests::the_hocus_data_section_invents_no_entity_names`
+- [ ] `plugin_docs::tests::the_hocus_data_section_names_every_shared_entity_and_attribute`
+- [ ] `plugin_docs::tests::the_index_does_not_carry_the_quickstart`
+- [ ] `plugin_docs::tests::the_index_names_every_other_section`
+- [ ] `plugin_docs::tests::the_index_states_a_size_for_every_section`
+- [ ] `plugin_docs::tests::the_index_states_the_authoring_loop`
+- [ ] `plugin_docs::tests::the_split_sections_are_a_fraction_of_what_they_were`
 - [ ] `present::present_tests::commands::a_family_matches_whole_words_not_substrings`
 - [ ] `present::present_tests::commands::every_tool_is_covered`
 - [ ] `present::present_tests::commands::skills_get_a_group_of_their_own`
@@ -1279,6 +1287,7 @@ Run: `cargo x test`
 - [ ] `tools::tools_tests::plugin_tools::no_plugin_refusal_asks_for_the_whole_file_again`
 - [ ] `tools::tools_tests::plugin_tools::only_a_complete_plugin_write_is_candidate_for_a_compile_refusal`
 - [ ] `tools::tools_tests::plugin_tools::replacing_a_plugin_says_so_rather_than_saying_it_writes_one`
+- [ ] `tools::tools_tests::plugin_tools::script_load_diagnostics_beyond_the_success_allowance_survive`
 - [ ] `tools::tools_tests::plugin_tools::search_options_clamp_context_and_max_results_and_refuse_an_empty_query`
 - [ ] `tools::tools_tests::plugin_tools::span_list_names_a_deletion_by_its_line_and_caps_at_five`
 - [ ] `tools::tools_tests::plugin_tools::the_chunk_name_is_the_file_the_loader_would_name`
@@ -2762,6 +2771,7 @@ Run: `cargo x test`
 - [ ] `background_jobs::command_output_tests::bounded_command_output_honours_a_limit_smaller_than_the_marker`
 - [ ] `background_jobs::command_output_tests::bounded_command_output_is_truncated_and_drained`
 - [ ] `background_jobs::command_output_tests::chunks_arrive_before_exit_and_both_streams_drain_after_release`
+- [ ] `background_jobs::command_output_tests::real_command_streams_before_exit_with_generation_and_drains_beyond_cap`
 - [ ] `background_jobs::command_output_tests::streaming_spawn_failure_returns_one_correlated_completion`
 - [ ] `background_jobs::command_output_tests::unbounded_command_output_is_unchanged`
 - [ ] `background_jobs::tests::scan_session_list_drops_a_folder_with_metadata_but_no_layout`
@@ -2781,6 +2791,7 @@ Run: `cargo x test`
 - [ ] `background_jobs::web_request_stream_tests::buffered_web_bodies_of_exactly_the_limit_are_returned_whole`
 - [ ] `background_jobs::web_request_stream_tests::buffered_web_bodies_stop_at_the_limit`
 - [ ] `background_jobs::web_request_stream_tests::cancellation_flushes_bytes_read_before_the_coalescing_deadline`
+- [ ] `background_jobs::web_request_stream_tests::cancelled_stream_tags_synthetic_result_pending_bytes_and_terminator`
 - [ ] `background_jobs::web_request_stream_tests::cancelling_an_unknown_stream_is_a_no_op`
 - [ ] `background_jobs::web_request_stream_tests::completed_stream_terminates_without_a_second_result`
 - [ ] `background_jobs::web_request_stream_tests::finish_stream_supersede_flushes_pending_bytes_then_terminates`
@@ -2788,6 +2799,7 @@ Run: `cargo x test`
 - [ ] `background_jobs::web_request_stream_tests::redirect_status_and_verb_decide_the_rewrite`
 - [ ] `background_jobs::web_request_stream_tests::scrub_redirect_headers_drops_every_credential_header`
 - [ ] `background_jobs::web_request_stream_tests::stale_finish_does_not_cancel_replacement_stream`
+- [ ] `background_jobs::web_request_stream_tests::streamed_results_and_finish_keep_the_originating_deno_generation`
 - [ ] `background_jobs::web_request_stream_tests::streams_body_in_chunks_and_reports_finished_once`
 - [ ] `background_jobs::web_request_stream_tests::terminator_is_emitted_exactly_once_per_stream`
 - [ ] `background_jobs::web_request_stream_tests::the_web_request_arm_supersedes_and_cancels_through_the_bus`
@@ -2800,6 +2812,7 @@ Run: `cargo x test`
 - [ ] `frame_color_override::tests::a_client_scoped_override_is_seen_and_cleared_by_that_client_only`
 - [ ] `frame_color_override::tests::an_override_carries_the_text_that_replaces_the_title`
 - [ ] `frame_color_override::tests::an_override_that_does_not_fade_applies_at_full_strength_forever`
+- [ ] `instruction_context_tests::asynchronous_plugin_events_preserve_generation_and_legacy_routing`
 - [ ] `instruction_context_tests::background_job::every_context_is_reachable`
 - [ ] `instruction_context_tests::background_job::every_instruction_resolves`
 - [ ] `instruction_context_tests::background_job::special_cases_land_on_their_context`
@@ -3487,8 +3500,7 @@ Run: `cargo x test`
 - [ ] `lua_config::tests::lua_config_can_require_a_sibling_and_clear_inherited_keybindings`
 - [ ] `lua_config::tests::lua_config_uses_the_existing_config_and_keybinding_parser`
 - [ ] `plugins::tests::a_builtin_beats_a_same_named_file_in_the_user_plugin_dir`
-- [ ] `plugins::tests::a_builtin_lua_plugin_resolves_to_the_lua_runtime`
-- [ ] `plugins::tests::a_builtin_lua_plugin_serves_its_compiled_in_source`
+- [ ] `plugins::tests::a_builtin_deno_plugin_serves_its_compiled_in_source`
 - [ ] `plugins::tests::a_file_plugin_skips_the_builtin_folders`
 - [ ] `plugins::tests::a_lua_plugin_is_found_in_the_user_plugin_dir_by_name`
 - [ ] `plugins::tests::a_lua_plugin_resolves_with_no_user_plugin_dir_at_all`
@@ -3502,6 +3514,8 @@ Run: `cargo x test`
 - [ ] `plugins::tests::an_ordinary_builtin_is_still_wasm`
 - [ ] `plugins::tests::builtin_plugin_resolves_from_checkout_with_no_configuration`
 - [ ] `plugins::tests::configured_builtin_plugin_directory_takes_precedence`
+- [ ] `plugins::tests::deno_builtins_resolve_from_embedded_source`
+- [ ] `plugins::tests::deno_extensions_share_source_lookup_and_preserve_explicit_paths`
 - [ ] `plugins::tests::missing_configured_builtin_plugin_falls_back_to_the_checkout`
 - [ ] `plugins::tests::the_data_dir_plugins_folder_beats_the_installed_builtin`
 - [ ] `plugins::tests::the_data_dir_plugins_folder_takes_precedence_over_the_checkout`
@@ -4524,6 +4538,7 @@ Run: `cargo x test`
 - [ ] `authoring::tests::an_outline_reads_a_registration_in_either_spelling`
 - [ ] `authoring::tests::data_calls_during_initial_load_explain_permission_cache_semantics`
 - [ ] `authoring::tests::data_calls_in_ordinary_event_handlers_do_not_get_the_load_warning`
+- [ ] `authoring::tests::deno_names_and_backups_preserve_extensions_and_name_guards`
 - [ ] `authoring::tests::every_named_spelling_is_a_definition_and_an_anonymous_function_is_not`
 - [ ] `authoring::tests::only_a_declared_attribute_is_a_reserved_one`
 - [ ] `authoring::tests::only_a_namespace_makes_the_shared_permission_a_finding`
@@ -4628,6 +4643,159 @@ Run: `cargo x test`
 
 Run: `cargo x test`
 
+- [ ] `deno::analysis::tests::a_data_call_in_load_before_awaiting_permissions_is_a_finding`
+- [ ] `deno::analysis::tests::a_permission_typo_suggests_the_nearest_typescript_spelling`
+- [ ] `deno::analysis::tests::a_reserved_attribute_declared_in_define_is_a_finding`
+- [ ] `deno::analysis::tests::a_shared_namespace_needs_shared_plugin_data_in_every_spelling`
+- [ ] `deno::analysis::tests::hocus_tool_outlines_and_permission_warnings_respect_sdk_identity`
+- [ ] `deno::analysis::tests::literal_grants_use_sdk_bindings_and_ignore_shadowed_names_comments_and_imported_code`
+- [ ] `deno::analysis::tests::runtime_check_reports_syntax_semantics_and_confined_dependency_failures`
+- [ ] `deno::analysis::tests::the_shipped_typescript_examples_are_quiet_and_the_builtins_analyse`
+- [ ] `deno::analysis::tests::using_the_data_store_without_plugin_data_is_a_finding_in_every_spelling`
+- [ ] `deno::builtin_tests::embedded_builtin_loads_without_a_working_directory`
+- [ ] `deno::builtin_tests::embedded_loading_imports_diagnostics_and_compiler_recovery`
+- [ ] `deno::builtin_tests::lua_and_deno_share_server_identity_but_reload_replaces_instance_identity`
+- [ ] `deno::builtin_tests::shipped_bridge_reads_lua_delivery_rows_after_reload_without_dispatching_again`
+- [ ] `deno::builtin_tests::shipped_context_menu_passes_the_typescript_checker`
+- [ ] `deno::builtin_tests::the_shipped_agent_policy_hook_notifies_when_an_agent_waits`
+- [ ] `deno::builtin_tests::the_shipped_context_menu_hook_filters_the_items_it_is_given`
+- [ ] `deno::builtin_tests::the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has`
+- [ ] `deno::builtin_tests::the_typescript_dashboard_example_renders_tab_and_pane_updates_and_takes_input`
+- [ ] `deno::builtin_tests::the_typescript_forms_example_routes_keys_paste_and_mouse`
+- [ ] `deno::builtin_tests::the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace`
+- [ ] `deno::builtin_tests::the_typescript_playground_example_runs_every_key_it_advertises`
+- [ ] `deno::builtin_tests::the_typescript_workflow_example_runs_on_r`
+- [ ] `deno::builtin_tests::typescript_reference_examples_load_and_render_in_deno`
+- [ ] `deno::builtin_tests::workflow_query_is_private_and_rechecks_host_location`
+- [ ] `deno::builtin_tests::workflow_query_reports_transport_disconnect_and_timeout`
+- [ ] `deno::checker::tests::bundled_compiler_matches_its_provenance_hashes`
+- [ ] `deno::checker::tests::checker_cannot_read_through_symlinks_or_reference_paths`
+- [ ] `deno::checker::tests::checker_watchdog_interrupts_v8`
+- [ ] `deno::checker::tests::embedded_workflow_view_has_semantic_types_without_a_sibling_file`
+- [ ] `deno::checker::tests::guide_code_blocks_typecheck_offline`
+- [ ] `deno::checker::tests::host_wire_definitions_require_explicit_sdk_review`
+- [ ] `deno::checker::tests::pane_sequence_types_check_steps_options_results_and_primitives`
+- [ ] `deno::checker::tests::sdk_agent_and_completion_types_check_rust_completion_fixtures`
+- [ ] `deno::checker::tests::sdk_async_helpers_have_precise_options_results_and_cancellation_types`
+- [ ] `deno::checker::tests::sdk_checks_imported_helpers_event_types_and_render_results`
+- [ ] `deno::checker::tests::sdk_decoded_event_types_narrow_by_type_and_keep_raw_values`
+- [ ] `deno::checker::tests::sdk_host_sugar_types_derive_from_command_args`
+- [ ] `deno::checker::tests::sdk_inventories_match_rust_commands_events_permissions_and_decoded_replies`
+- [ ] `deno::checker::tests::sdk_keybinding_and_helper_types_check_modes_actions_and_pane_keys`
+- [ ] `deno::checker::tests::sdk_raw_commands_reject_unknown_names_and_wrong_payloads`
+- [ ] `deno::checker::tests::sdk_rpc_declarations_require_one_destination_and_json`
+- [ ] `deno::checker::tests::sdk_trace_accepts_only_optional_booleans`
+- [ ] `deno::checker::tests::semantic_checks_reject_external_imports_and_dependency_errors`
+- [ ] `deno::checker::tests::semantic_checks_use_es2022_without_executing_plugin_code`
+- [ ] `deno::checker::tests::serialized_rust_payloads_satisfy_the_handwritten_sdk`
+- [ ] `deno::checker::tests::shim_reply_readers_independently_require_decoder_entries`
+- [ ] `deno::checker::tests::shipped_async_example_typechecks_offline`
+- [ ] `deno::checker::tests::shipped_builtins_typecheck_offline`
+- [ ] `deno::checker::tests::syntax_accepts_unsaved_typescript_and_declarations_but_not_jsx`
+- [ ] `deno::event::tests::render_report_uses_cli_pane_keys_and_preserves_contents_and_event_tag`
+- [ ] `deno::limits::tests::a_host_built_byte_buffer_is_charged_to_the_backing_store_budget_and_released_by_v8`
+- [ ] `deno::limits::tests::deno_allocation_exhaustion_is_contained_in_subprocesses`
+- [ ] `deno::limits::tests::deno_buffer_accounting_releases_frees_and_checks_overflow`
+- [ ] `deno::limits::tests::deno_unbudgeted_memory_constructors_are_unavailable`
+- [ ] `deno::limits::tests::native_markdown_cache_is_charged_before_width_amplification`
+- [ ] `deno::limits::tests::native_widgets_release_their_budget_on_collection_and_disposal`
+- [ ] `deno::loader::tests::deno_source_and_graph_budgets_apply_before_parsing`
+- [ ] `deno::loader::tests::embedded_builtins_stay_cached_under_eviction_pressure`
+- [ ] `deno::loader::tests::embedded_source_maps_keep_the_private_module_url_and_typescript_source`
+- [ ] `deno::loader::tests::explicit_local_modules_only`
+- [ ] `deno::loader::tests::identical_source_is_transpiled_once_and_an_edit_misses`
+- [ ] `deno::loader::tests::invalid_syntax_is_rejected_without_evaluation`
+- [ ] `deno::loader::tests::registered_workflow_module_is_embedded_and_cannot_import_files`
+- [ ] `deno::loader::tests::runtime_errors_point_to_original_typescript`
+- [ ] `deno::loader::tests::runtime_loads_sdk_local_graph_and_the_supplied_buffer`
+- [ ] `deno::loader::tests::transpilation_keeps_source_maps_and_source_lines`
+- [ ] `deno::loader::tests::transpile_cache_evicts_least_recently_used_unpinned_entries_within_bounds`
+- [ ] `deno::loader::tests::traversal_and_symlink_escapes_are_rejected_at_resolve_and_load`
+- [ ] `deno::sdk_tests::a_failed_registration_keeps_the_previous_keybinding_handlers`
+- [ ] `deno::sdk_tests::agent_cache_states_turns_and_cancellation`
+- [ ] `deno::sdk_tests::agent_spawn_preserves_spec_and_host_defaults`
+- [ ] `deno::sdk_tests::agent_validation_prompt_ordering_and_dispatch_cleanup`
+- [ ] `deno::sdk_tests::async_options_copy_binary_bodies_and_keep_permissions_subscribed`
+- [ ] `deno::sdk_tests::async_render_sleep_has_one_flight_and_keeps_each_clients_frame`
+- [ ] `deno::sdk_tests::async_requests_correlate_out_of_order_replies_and_preserve_wire_payloads`
+- [ ] `deno::sdk_tests::callback_starts_are_ordered_and_await_restores_the_originating_client`
+- [ ] `deno::sdk_tests::callback_timers_keep_clients_do_not_overlap_and_rearm_stale_events`
+- [ ] `deno::sdk_tests::cancellation_removes_waiters_and_guards_all_unsubscribe_entrypoints`
+- [ ] `deno::sdk_tests::command_output_callbacks_correlate_clients_and_release_listeners`
+- [ ] `deno::sdk_tests::completion_concurrency_provenance_round_trips_deadlines_and_cleanup`
+- [ ] `deno::sdk_tests::completion_request_limit_counts_the_encoded_envelope_and_isolate_ids_change`
+- [ ] `deno::sdk_tests::completion_validates_before_dispatch_and_handles_discovery_and_dispatch_errors`
+- [ ] `deno::sdk_tests::default_keybindings_emit_lua_identical_kdl_and_dispatch_reserved_pipes`
+- [ ] `deno::sdk_tests::defaults_options_and_utf8_validate_without_mutating_inputs`
+- [ ] `deno::sdk_tests::deno_agent_exit_preserves_output_before_successful_and_rejected_launch_replies`
+- [ ] `deno::sdk_tests::deno_bridge_background_commands_correlate_parent_work`
+- [ ] `deno::sdk_tests::deno_bridge_foreground_commands_restore_manual_views_in_dispatch_order`
+- [ ] `deno::sdk_tests::deno_bridge_guards_claims_callers_turns_and_reload_recovery`
+- [ ] `deno::sdk_tests::deno_bridge_pairs_values_with_revisions_and_retries_from_concurrent_fields`
+- [ ] `deno::sdk_tests::deno_bridge_spawn_options_use_sdk_validation_and_defaults`
+- [ ] `deno::sdk_tests::deno_dialog_rendering_matches_rust_and_reports_intent`
+- [ ] `deno::sdk_tests::deno_hocus_registration_replacement_rpc_provenance_and_async_clients`
+- [ ] `deno::sdk_tests::deno_swamp_dispatch_keeps_terminal_outcomes_and_recovers_method_attachments`
+- [ ] `deno::sdk_tests::deno_swamp_requests_match_ids_and_wait_for_terminal_frames`
+- [ ] `deno::sdk_tests::deno_widget_cursors_belong_only_to_accepted_client_frames`
+- [ ] `deno::sdk_tests::deno_widgets_match_shared_rust_controls_and_markdown`
+- [ ] `deno::sdk_tests::deno_workflow_live_output_and_attachment_submissions_are_isolated`
+- [ ] `deno::sdk_tests::deno_workflow_view_keeps_restart_explicit_and_all_details_reachable`
+- [ ] `deno::sdk_tests::deno_workflow_view_preserves_question_races_focus_previews_and_scrolling`
+- [ ] `deno::sdk_tests::dispatch_failures_remove_async_listeners_and_timers`
+- [ ] `deno::sdk_tests::event_decoder_names_tuple_fields_decodes_bytes_and_leaves_raw_untouched`
+- [ ] `deno::sdk_tests::handle_is_send_without_moving_v8`
+- [ ] `deno::sdk_tests::helpers_encode_writes_spell_pane_keys_and_normalize_keys_mouse_and_bytes`
+- [ ] `deno::sdk_tests::host_sugar_builds_unit_positional_array_and_named_payloads`
+- [ ] `deno::sdk_tests::host_sugar_covers_the_rust_command_inventory_and_is_frozen`
+- [ ] `deno::sdk_tests::idle_cancellation_preserves_cleanup_but_active_client_cancellation_interrupts`
+- [ ] `deno::sdk_tests::load_merges_user_configuration_over_the_plugins_defaults`
+- [ ] `deno::sdk_tests::mixed_permission_commands_copy_inputs_keep_grants_and_report_deferred_errors`
+- [ ] `deno::sdk_tests::module_initialization_has_no_commands_console_logs_and_lifecycle_rejection_is_observed`
+- [ ] `deno::sdk_tests::on_event_handlers_receive_decoded_events_after_update_and_pipe_waiters`
+- [ ] `deno::sdk_tests::pane_commands_ignore_metadata_from_previous_exits`
+- [ ] `deno::sdk_tests::pane_exit_cancellation_query_failure_and_event_exit_release_observers`
+- [ ] `deno::sdk_tests::pane_exit_initial_query_handles_recorded_exits_missing_and_other_panes`
+- [ ] `deno::sdk_tests::pane_exit_observes_broadcast_metadata_and_cleans_up_once`
+- [ ] `deno::sdk_tests::pane_sequence_close_policies_and_exits_cancel_remaining_signals`
+- [ ] `deno::sdk_tests::pane_sequence_cwd_preserves_targets_and_resolves_only_at_dispatch`
+- [ ] `deno::sdk_tests::pane_sequence_reuses_pane_matches_fast_and_stale_events_and_appends`
+- [ ] `deno::sdk_tests::pane_sequence_timeout_cancel_grace_refusal_and_cleanup`
+- [ ] `deno::sdk_tests::pane_sequence_validation_failure_policies_and_observation_cancellation`
+- [ ] `deno::sdk_tests::parked_isolates_can_alternate_and_drop_in_creation_order`
+- [ ] `deno::sdk_tests::permission_denial_and_dispatch_failure_release_the_queue`
+- [ ] `deno::sdk_tests::permission_waits_serialize_and_resolve_only_their_own_answer`
+- [ ] `deno::sdk_tests::pipe_waits_snapshot_before_callback_and_reject_predicate_errors`
+- [ ] `deno::sdk_tests::post_message_to_is_refused_before_dispatch_in_every_form`
+- [ ] `deno::sdk_tests::raw_command_output_accepts_legacy_and_explicit_streaming_forms`
+- [ ] `deno::sdk_tests::resize_and_state_changes_discard_pending_frames_but_keep_the_last_frame`
+- [ ] `deno::sdk_tests::rpc_bounds_error_replies_even_with_a_full_size_call_id`
+- [ ] `deno::sdk_tests::rpc_calls_correlate_validate_cancel_timeout_and_release_timers`
+- [ ] `deno::sdk_tests::rpc_dispatches_general_handlers_and_keeps_pipes_public`
+- [ ] `deno::sdk_tests::rpc_replacement_isolates_have_distinct_call_ids`
+- [ ] `deno::sdk_tests::small_helpers_match_the_prelude_and_the_shim`
+- [ ] `deno::sdk_tests::stale_timer_dispatch_failure_rejects_sleep_and_cleans_up`
+- [ ] `deno::sdk_tests::streaming_requests_correlate_responses_and_cancel_only_the_wait`
+- [ ] `deno::sdk_tests::timer_callback_failures_use_lifecycle_error_reporting_and_release_subscriptions`
+- [ ] `deno::sdk_tests::trace_configuration_toggles_and_reload_are_local`
+- [ ] `deno::sdk_tests::trace_dispatch_async_and_consumed_inputs_preserve_behavior_and_privacy`
+- [ ] `deno::sdk_tests::trace_watch_disposal_and_disabled_completions`
+- [ ] `deno::sdk_tests::typescript_pane_sequence_reuses_scrollback_and_escalates_cancellation`
+- [ ] `deno::sdk_tests::update_snapshots_listeners_and_payload_before_starting_new_event_waits`
+- [ ] `deno::transport::tests::deno_byte_conversion_preserves_the_hosts_file_limit`
+- [ ] `deno::transport::tests::deno_transport_accepts_data_and_refuses_executable_objects`
+- [ ] `deno::transport::tests::deno_transport_preserves_exact_integers_and_rejects_invalid_guards`
+- [ ] `deno::worker::tests::recursive_binary_chains_are_contained`
+- [ ] `deno::worker::tests::recursive_js_arrays_are_contained`
+- [ ] `deno::worker::tests::recursive_objects_are_contained`
+- [ ] `deno::worker::tests::recursive_ts_arrays_are_contained`
+- [ ] `deno::worker::tests::recursive_types_are_contained`
+- [ ] `deno::worker::tests::recursive_unary_expressions_are_contained`
+- [ ] `deno::worker::tests::semantic_dependency_native_failure_is_a_diagnostic`
+- [ ] `deno::worker::tests::worker_drains_both_pipes_before_accepting_a_response`
+- [ ] `deno::worker::tests::worker_frame_limits_cover_requests_and_both_output_streams`
+- [ ] `deno::worker::tests::worker_timeout_reaps_the_child_even_when_input_is_blocked`
+- [ ] `deno::worker::tests::worker_transport_rejects_abnormal_exit_and_invalid_output`
 - [ ] `logging_pipe::logging_pipe_test::a_line_ahead_of_a_split_code_point_waits_for_it`
 - [ ] `logging_pipe::logging_pipe_test::a_line_that_wraps_the_ring_buffer_is_still_logged_whole`
 - [ ] `logging_pipe::logging_pipe_test::buffer_never_grows_past_the_cap_for_any_write_sequence`
@@ -4638,6 +4806,11 @@ Run: `cargo x test`
 - [ ] `logging_pipe::logging_pipe_test::write_with_many_endls_consumes_everything_after_flush`
 - [ ] `logging_pipe::logging_pipe_test::write_with_single_endl_at_the_end_consumes_whole_buffer_after_flush`
 - [ ] `logging_pipe::logging_pipe_test::write_without_endl_does_not_consume_buffer_after_flush`
+- [ ] `lua::response::tests::data_reply_preserves_large_signed_integers_and_tagged_values`
+- [ ] `lua::response::tests::file_bytes_and_json_nulls_keep_their_lua_representation`
+- [ ] `lua::response::tests::pane_reply_keeps_numeric_client_keys`
+- [ ] `lua::response::tests::session_reply_preserves_all_numeric_maps_and_string_configuration_keys`
+- [ ] `lua::response::tests::tab_reply_preserves_numeric_values_array_indices_and_missing_fields`
 - [ ] `lua::ui::tests::lua_controls_activate_explicitly_and_submit_only_through_buttons`
 - [ ] `lua::ui::tests::lua_dialog_output_matches_rust_at_every_viewport_size`
 - [ ] `lua::ui::tests::lua_forms_share_rust_editing_focus_dropdown_mouse_and_rendering`
@@ -4751,6 +4924,7 @@ Run: `cargo x test`
 - [ ] `lua::unit_tests::commands_cannot_be_called_outside_an_entrypoint`
 - [ ] `lua::unit_tests::concurrent_permission_awaitables_are_dispatched_and_resolved_in_order`
 - [ ] `lua::unit_tests::coroutines_are_available`
+- [ ] `lua::unit_tests::data_watches_keep_recipient_generations_and_disposal_unregisters_only_its_runtime`
 - [ ] `lua::unit_tests::denied_cancellation_does_not_advance_or_finish_the_workflow`
 - [ ] `lua::unit_tests::each_root_is_a_different_folder`
 - [ ] `lua::unit_tests::every_command_zellij_knows_is_a_name_serde_accepts`
@@ -4836,9 +5010,6 @@ Run: `cargo x test`
 - [ ] `lua::unit_tests::the_playground_plugin_loads_and_runs_every_key_it_advertises`
 - [ ] `lua::unit_tests::the_plugin_folder_is_a_root_that_needs_author_plugins_to_write`
 - [ ] `lua::unit_tests::the_session_list_arrives_as_the_snapshot_the_shim_builds`
-- [ ] `lua::unit_tests::the_shipped_agent_policy_hook_notifies_when_an_agent_waits`
-- [ ] `lua::unit_tests::the_shipped_context_menu_hook_filters_the_items_it_is_given`
-- [ ] `lua::unit_tests::the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has`
 - [ ] `lua::unit_tests::the_shipped_example_plugin_loads_and_renders`
 - [ ] `lua::unit_tests::the_tmp_root_is_zellijs_own_temp_folder`
 - [ ] `lua::unit_tests::the_todo_examples_load_and_the_pane_renders_its_keys`
@@ -4894,6 +5065,10 @@ Run: `cargo x test`
 - [ ] `pinned_executor::tests::test_vacant_thread_slot_is_reused_before_sharing`
 - [ ] `pinned_executor::tests::test_without_input_jobs_the_queue_stays_fifo`
 - [ ] `plugin_authoring::tests::a_write_compiles_first_and_never_clobbers_or_follows_a_link`
+- [ ] `plugin_authoring::tests::check_plugin_report_carries_deno_warnings_and_lua_lint`
+- [ ] `plugin_authoring::tests::deno_builtin_logs_match_legacy_names_and_explicit_typescript`
+- [ ] `plugin_authoring::tests::deno_logs_do_not_include_same_stem_lua_builtins`
+- [ ] `plugin_authoring::tests::deno_writes_check_syntax_and_preserve_previous_versions`
 - [ ] `plugin_authoring::tests::the_log_tail_is_the_plugins_lines_only`
 - [ ] `plugin_limits::tests::a_modules_own_maximum_still_binds_under_the_ceiling`
 - [ ] `plugin_limits::tests::a_plugin_may_grow_up_to_the_ceiling`
@@ -4901,7 +5076,9 @@ Run: `cargo x test`
 - [ ] `plugin_limits::tests::tables_grow_unbounded_unless_the_module_says_otherwise`
 - [ ] `plugin_loader::tests::builtin_plugin_cache_key_includes_only_its_configured_source_directory`
 - [ ] `plugin_loader::tests::wasi_context_does_not_inherit_the_server_environment`
+- [ ] `plugin_map::tests::deno_failure_identity_rejects_replacements_and_disconnected_clients`
 - [ ] `plugin_map::tests::reload_lookup_matches_a_configured_plugin`
+- [ ] `plugin_map::tests::reload_metadata_lookup_needs_no_guest_and_deduplicates_clients`
 - [ ] `plugin_tests::batching::a_batch_of_scrolls_renders_once`
 - [ ] `plugin_tests::batching::a_batch_that_renders_nothing_still_unblocks_cli_pipes`
 - [ ] `plugin_tests::batching::a_reload_of_another_plugin_or_kind_stops_the_drain`
@@ -4913,6 +5090,8 @@ Run: `cargo x test`
 - [ ] `plugin_tests::batching::coalescing_hovers_keeps_positions_before_wheel_events`
 - [ ] `plugin_tests::batching::collapsed_reloads_hand_their_completion_handles_to_the_caller`
 - [ ] `plugin_tests::batching::collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin`
+- [ ] `plugin_tests::batching::deno_drain_preserves_clients_order_and_each_instruction_boundary`
+- [ ] `plugin_tests::batching::deno_drain_stops_at_its_cap`
 - [ ] `plugin_tests::batching::drain_merges_adjacent_updates_and_stops_at_the_first_other_kind`
 - [ ] `plugin_tests::batching::drain_stops_at_its_cap`
 - [ ] `plugin_tests::batching::hovers_in_a_batch_keep_only_the_last`
@@ -4934,6 +5113,72 @@ Run: `cargo x test`
 - [ ] `plugin_tests::config_events::plugin_does_not_receive_event_when_config_unchanged`
 - [ ] `plugin_tests::config_events::plugin_receives_config_change_event`
 - [ ] `plugin_tests::config_events::save_layout_permission_denied`
+- [ ] `plugin_tests::deno_plugins::deno_a_denial_after_an_answer_that_left_this_permission_out_says_to_ask`
+- [ ] `plugin_tests::deno_plugins::deno_a_denial_before_any_answer_says_to_wait_for_the_answer`
+- [ ] `plugin_tests::deno_plugins::deno_a_denial_with_no_request_behind_it_says_to_ask`
+- [ ] `plugin_tests::deno_plugins::deno_a_path_cannot_climb_out_of_its_root`
+- [ ] `plugin_tests::deno_plugins::deno_a_symlink_out_of_a_root_is_followed_and_then_refused`
+- [ ] `plugin_tests::deno_plugins::deno_agent_events_use_real_permissions_and_reloaded_waits`
+- [ ] `plugin_tests::deno_plugins::deno_async_commands_reject_without_permission`
+- [ ] `plugin_tests::deno_plugins::deno_byte_replies_are_uint8array_without_copying_through_json`
+- [ ] `plugin_tests::deno_plugins::deno_change_host_folder_moves_the_host_root`
+- [ ] `plugin_tests::deno_plugins::deno_command_helper_completes_and_reload_rejects_the_old_host_reply`
+- [ ] `plugin_tests::deno_plugins::deno_completion_real_dispatch_permissions_and_reload_isolation`
+- [ ] `plugin_tests::deno_plugins::deno_data_helpers_on_postgres` `#[ignore]`
+- [ ] `plugin_tests::deno_plugins::deno_data_helpers_preserve_values_rollback_conflicts_watch_disposal_and_reload_persistence`
+- [ ] `plugin_tests::deno_plugins::deno_default_keybindings_are_refused_without_the_reconfigure_grant`
+- [ ] `plugin_tests::deno_plugins::deno_default_keybindings_register_after_the_reconfigure_grant_and_dispatch_their_reserved_pipe`
+- [ ] `plugin_tests::deno_plugins::deno_disconnect_during_pending_async_load_discards_its_continuation`
+- [ ] `plugin_tests::deno_plugins::deno_disconnect_interrupts_attached_clients_infinite_callback`
+- [ ] `plugin_tests::deno_plugins::deno_disconnect_interrupts_attached_clients_infinite_load`
+- [ ] `plugin_tests::deno_plugins::deno_disconnect_interrupts_initial_load_before_the_instance_is_published`
+- [ ] `plugin_tests::deno_plugins::deno_each_root_is_a_different_folder`
+- [ ] `plugin_tests::deno_plugins::deno_exhaustion_disposes_the_guest_and_reload_recovers_in_a_live_session`
+- [ ] `plugin_tests::deno_plugins::deno_failed_reload_disposes_every_client_and_recovers_in_the_same_pane`
+- [ ] `plugin_tests::deno_plugins::deno_filesystem_helpers_keep_binary_data_confinement_and_config_revision_checks`
+- [ ] `plugin_tests::deno_plugins::deno_filesystem_watch_events_reach_the_plugin_and_its_reloaded_replacement`
+- [ ] `plugin_tests::deno_plugins::deno_full_hd_access_reaches_absolute_paths_and_nothing_less_does`
+- [ ] `plugin_tests::deno_plugins::deno_headless_hooks_deliver_the_first_payload_after_async_permissions_and_reload`
+- [ ] `plugin_tests::deno_plugins::deno_hocus_registration_requires_the_real_message_grant`
+- [ ] `plugin_tests::deno_plugins::deno_integer_commands_keep_values_and_revision_guards_through_the_store`
+- [ ] `plugin_tests::deno_plugins::deno_native_compilation_crashes_allow_healthy_entrypoints_and_imports_afterward`
+- [ ] `plugin_tests::deno_plugins::deno_pane_output_subscriptions_reload_with_new_generations`
+- [ ] `plugin_tests::deno_plugins::deno_permission_denial_never_routes_the_protected_command`
+- [ ] `plugin_tests::deno_plugins::deno_permission_grant_resumes_async_load_and_decodes_command_replies`
+- [ ] `plugin_tests::deno_plugins::deno_plugin_is_found_in_the_user_plugin_dir_by_name`
+- [ ] `plugin_tests::deno_plugins::deno_plugin_receives_its_configuration_unnormalized`
+- [ ] `plugin_tests::deno_plugins::deno_post_message_to_never_reaches_the_host`
+- [ ] `plugin_tests::deno_plugins::deno_rejected_promise_reports_the_original_typescript_dependency_line`
+- [ ] `plugin_tests::deno_plugins::deno_reload_by_absolute_path_reloads_a_plugin_started_by_name`
+- [ ] `plugin_tests::deno_plugins::deno_reload_by_url_delivers_idle_before_close_before_loading_the_replacement`
+- [ ] `plugin_tests::deno_plugins::deno_reload_by_url_interrupts_an_infinite_update_and_runs_the_replacement`
+- [ ] `plugin_tests::deno_plugins::deno_reload_disposes_host_watches_and_rejects_their_queued_deliveries`
+- [ ] `plugin_tests::deno_plugins::deno_reload_rejects_an_old_host_timer_completion_but_accepts_the_current_one`
+- [ ] `plugin_tests::deno_plugins::deno_reload_rereads_imports_and_cancels_the_old_event_await`
+- [ ] `plugin_tests::deno_plugins::deno_removed_client_reattaches_with_fresh_state_and_without_its_old_awaits`
+- [ ] `plugin_tests::deno_plugins::deno_renaming_out_of_the_plugins_folder_is_refused`
+- [ ] `plugin_tests::deno_plugins::deno_resize_discards_an_in_flight_async_render_with_the_old_dimensions`
+- [ ] `plugin_tests::deno_plugins::deno_reused_client_id_reconnects_without_waiting_for_disposal`
+- [ ] `plugin_tests::deno_plugins::deno_rpc_calls_deno_and_lua_peers_by_url_and_id`
+- [ ] `plugin_tests::deno_plugins::deno_rpc_rejects_calls_without_message_permission`
+- [ ] `plugin_tests::deno_plugins::deno_rpc_reload_ignores_old_replies_before_settling_the_new_call`
+- [ ] `plugin_tests::deno_plugins::deno_scan_host_folder_answers_the_requesting_generation`
+- [ ] `plugin_tests::deno_plugins::deno_shared_instance_survives_its_owners_disconnect`
+- [ ] `plugin_tests::deno_plugins::deno_shared_permission_wait_survives_an_attach_and_replays_the_queued_event`
+- [ ] `plugin_tests::deno_plugins::deno_shared_promises_keep_their_origin_after_another_clients_event_and_timer`
+- [ ] `plugin_tests::deno_plugins::deno_shutdown_delivers_before_close_to_an_idle_plugin_once`
+- [ ] `plugin_tests::deno_plugins::deno_streaming_output_arrives_as_uint8array_and_a_64_kib_chunk_round_trips_byte_exact`
+- [ ] `plugin_tests::deno_plugins::deno_the_plugin_folder_is_a_root_that_needs_author_plugins_to_write`
+- [ ] `plugin_tests::deno_plugins::deno_timer_before_disconnect_interrupts_initial_load`
+- [ ] `plugin_tests::deno_plugins::deno_timer_before_shutdown_interrupts_initial_load`
+- [ ] `plugin_tests::deno_plugins::deno_timer_before_unload_interrupts_initial_load`
+- [ ] `plugin_tests::deno_plugins::deno_two_clients_share_one_transpile_and_a_reload_of_identical_source_spawns_nothing`
+- [ ] `plugin_tests::deno_plugins::deno_typescript_awaits_an_event_and_timer_then_renders_asynchronously_after_resize`
+- [ ] `plugin_tests::deno_plugins::deno_unload_disposes_pending_load_and_render_awaits`
+- [ ] `plugin_tests::deno_plugins::deno_unload_interrupts_an_infinite_load_without_host_calls`
+- [ ] `plugin_tests::deno_plugins::deno_unload_interrupts_an_infinite_update_without_host_calls`
+- [ ] `plugin_tests::deno_plugins::lua_detach_retains_state_and_output_subscriptions`
+- [ ] `plugin_tests::deno_plugins::wasm_detach_retains_state_and_output_subscriptions`
 - [ ] `plugin_tests::focused_pane_commands::clear_screen_plugin_command`
 - [ ] `plugin_tests::focused_pane_commands::close_focus_plugin_command`
 - [ ] `plugin_tests::focused_pane_commands::edit_scrollback_plugin_command`
@@ -5081,7 +5326,9 @@ Run: `cargo x test`
 - [ ] `plugin_tests::queues::cancelling_a_pending_job_reports_cancelled_and_never_starts_it`
 - [ ] `plugin_tests::queues::cancelling_a_running_job_unloads_it_and_starts_the_next`
 - [ ] `plugin_tests::queues::concurrency_one_serialises_jobs`
+- [ ] `plugin_tests::queues::deno_jobs_survive_enqueuer_reload_but_addressed_events_keep_the_original_generation`
 - [ ] `plugin_tests::queues::enqueue_is_denied_without_permission`
+- [ ] `plugin_tests::queues::first_cli_pipe_and_reload_reach_deno_without_an_attached_ui`
 - [ ] `plugin_tests::queues::first_cli_pipe_reaches_a_plugin_loaded_without_an_attached_ui`
 - [ ] `plugin_tests::queues::queue_changed_is_broadcast_to_other_subscribers`
 - [ ] `plugin_tests::queues::queue_status_answers_with_pending_and_running_jobs`
@@ -5139,13 +5386,18 @@ Run: `cargo x test`
 - [ ] `queues::queues_tests::shut_down_drops_pending_jobs_and_launches_nothing_more`
 - [ ] `queues::queues_tests::snapshots_cover_every_queue_or_just_one`
 - [ ] `queues::queues_tests::unloading_a_plugin_that_is_not_a_job_is_nothing`
+- [ ] `response::tests::shared_decoder_distinguishes_missing_unknown_invalid_and_failed_replies`
 - [ ] `wasm_bridge::tests::a_notification_click_names_the_raiser_only_when_that_is_what_reaches_it`
+- [ ] `wasm_bridge::tests::cached_deno_events_keep_generation_and_origin_across_attachment_and_reload`
 - [ ] `wasm_bridge::tests::caller_context_does_not_hide_a_running_plugin_from_the_launch_lookup`
 - [ ] `wasm_bridge::tests::intercepted_keypress_batches_are_input_jobs`
 - [ ] `wasm_bridge::tests::shared_plugins_are_opted_into_through_their_configuration`
 - [ ] `wasm_bridge::tests::shared_plugins_receive_messages_directed_at_any_client`
 - [ ] `wasm_bridge::wasm_bridge_tests::a_job_that_trapped_while_still_loading_is_cancelled`
 - [ ] `wasm_bridge::wasm_bridge_tests::a_job_whose_load_failed_leaves_no_cancellation_mark`
+- [ ] `wasm_bridge::wasm_bridge_tests::a_stale_deno_failure_neither_paints_an_error_nor_finishes_a_job`
+- [ ] `wasm_bridge::wasm_bridge_tests::deno_startup_instance_is_cancelled_and_recreated_on_reattach`
+- [ ] `wasm_bridge::wasm_bridge_tests::deno_tagged_output_batch_renders_once_per_client_and_replays_cached_identities`
 - [ ] `wasm_bridge::wasm_bridge_tests::shutting_down_after_screen_exit_cancels_a_plugin_that_is_still_loading`
 - [ ] `wasm_bridge::wasm_bridge_tests::shutting_down_cancels_a_plugin_that_is_still_loading`
 - [ ] `watch_filesystem::tests::multi_path_filesystem_events_keep_every_path`
@@ -5159,6 +5411,7 @@ Run: `cargo x test`
 - [ ] `zellij_exports::permission_tests::a_message_to_another_plugin_needs_a_permission_but_a_message_to_self_does_not`
 - [ ] `zellij_exports::permission_tests::a_path_that_is_not_a_worktree_still_fails`
 - [ ] `zellij_exports::permission_tests::a_refused_branch_leaves_the_checkout_where_it_was`
+- [ ] `zellij_exports::permission_tests::a_syntax_check_needs_no_permission_but_a_semantic_check_reads_files`
 - [ ] `zellij_exports::permission_tests::a_taken_name_is_cut_afresh_with_the_worktree_renamed_to_match`
 - [ ] `zellij_exports::permission_tests::a_worktree_request_from_inside_a_worktree_anchors_to_the_primary`
 - [ ] `zellij_exports::permission_tests::a_worktree_that_already_exists_at_the_path_is_reused_as_it_stands`
@@ -5721,6 +5974,7 @@ Run: `cargo x test`
 - [ ] `keys::compatibility_tests::escape_is_disambiguated_only_in_kitty_mode`
 - [ ] `keys::compatibility_tests::terminal_keys_preserve_bytes_and_binding_precedence`
 - [ ] `keys::tests::modified_backtab_keeps_implicit_shift`
+- [ ] `plugin_location::remote_script_tests::remote_script_urls_are_refused_before_download`
 - [ ] `session_checkpoint::tests::a_sync_failure_after_publication_keeps_both_complete_snapshots`
 - [ ] `session_checkpoint::tests::external_file_paths_cannot_escape_the_checkpoint`
 - [ ] `session_checkpoint::tests::failed_staging_and_publication_preserve_the_complete_previous_snapshot`
@@ -6551,6 +6805,7 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::subscribers::integration_scrollback_from_pre_subscription_pty_bytes`
 - [ ] `screen::screen_tests::subscribers::integration_subscriber_survives_after_regular_client_detach`
 - [ ] `screen::screen_tests::subscribers::multiple_subscribers_receive_updates`
+- [ ] `screen::screen_tests::subscribers::pane_output_uses_subscriber_generations_and_cleans_up_each_client`
 - [ ] `screen::screen_tests::subscribers::subscriber_error_for_nonexistent_pane`
 - [ ] `screen::screen_tests::subscribers::subscriber_full_close_sequence`
 - [ ] `screen::screen_tests::subscribers::subscriber_no_update_on_unchanged_viewport`
@@ -7314,6 +7569,7 @@ Run: `cargo x test`
 - [ ] `panes::grid::grid_tests::scroll_region_and_forwarding::dcs_with_intermediates_is_not_staged`
 - [ ] `panes::grid::grid_tests::scroll_region_and_forwarding::dcs_with_wrong_magic_param_is_not_staged`
 - [ ] `panes::grid::grid_tests::scroll_region_and_forwarding::decset_2031_enables_color_palette_notification`
+- [ ] `panes::grid::grid_tests::scroll_region_and_forwarding::disabled_nested_list_item_renders_italic_non_bold`
 - [ ] `panes::grid::grid_tests::scroll_region_and_forwarding::disabled_ribbon_renders_italic_non_bold_unselected`
 - [ ] `panes::grid::grid_tests::scroll_region_and_forwarding::disabled_text_renders_italic_non_bold`
 - [ ] `panes::grid::grid_tests::scroll_region_and_forwarding::disabled_text_with_opaque_flag_keeps_a_background`
@@ -8203,6 +8459,8 @@ Run: `cargo x test`
 
 Run: `cargo x test`
 
+- [ ] `/home/zacharyhamm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deno_core-0.405.0/extensions.rs - deno::checker::zellij_checker (line 483)`
+- [ ] `/home/zacharyhamm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deno_core-0.405.0/extensions.rs - deno::zellij_host (line 483)`
 - [ ] `zellij-runtime/src/common_path.rs - common_path::common_path (line 61)`
 - [ ] `zellij-runtime/src/common_path.rs - common_path::common_path_all (line 33)`
 - [ ] `zellij-runtime/src/errors.rs - errors::LoggableError::print_error (line 52)`
@@ -8212,12 +8470,12 @@ Run: `cargo x test`
 - [ ] `zellij-tile/src/shim.rs - shim::current_session_last_saved_time (line 503)`
 - [ ] `zellij-tile/src/shim.rs - shim::data_apply (line 2358)`
 - [ ] `zellij-tile/src/shim.rs - shim::data_define_entity (line 2315)`
-- [ ] `zellij-tile/src/shim.rs - shim::delete_layout (line 3311)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_cwd (line 3189)`
+- [ ] `zellij-tile/src/shim.rs - shim::delete_layout (line 3335)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_cwd (line 3213)`
 - [ ] `zellij-tile/src/shim.rs - shim::get_pane_info (line 383)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_running_command (line 3130)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_running_command (line 3154)`
 - [ ] `zellij-tile/src/shim.rs - shim::get_tab_info (line 427)`
-- [ ] `zellij-tile/src/shim.rs - shim::rename_layout (line 3371)`
+- [ ] `zellij-tile/src/shim.rs - shim::rename_layout (line 3395)`
 - [ ] `zellij-tile/src/shim.rs - shim::save_session (line 468)`
 - [ ] `zellij-tile/src/ui_components/forms/mod.rs - ui_components::forms (line 19)`
 - [ ] `zellij-types/src/internal_ids.rs - internal_ids::ClientId (line 72)`
@@ -8331,6 +8589,21 @@ Run: `cargo x integration-test`
 
 - [ ] `cold_attach_lays_out_at_the_client_reported_size_without_querying_it`
 
+## zellij-integration-tests (test/deno_plugins)
+
+Run: `cargo x integration-test`
+
+- [ ] `deno_forms_and_markdown_render_beside_lua_and_wasm`
+- [ ] `deno_host_queries_configuration_layouts_recordings_and_cross_session_warp`
+- [ ] `deno_lua_and_wasm_share_a_session_through_permissions_events_reload_and_close`
+- [ ] `deno_native_compilation_failure_keeps_the_session_alive`
+- [ ] `deno_observes_real_buffered_http_and_ordered_stream_bytes`
+- [ ] `deno_pane_exit_observes_a_held_cli_pane`
+- [ ] `deno_pane_sequence_reload_does_not_advance_the_old_steps`
+- [ ] `deno_pane_sequence_reuses_one_host_pane_and_cancels_its_child`
+- [ ] `deno_reload_reuses_stream_id_without_delivering_or_cancelling_the_old_generation`
+- [ ] `embedded_deno_context_menu_hook_filters_and_dispatches_selection`
+
 ## zellij-integration-tests (test/file_finder)
 
 Run: `cargo x integration-test`
@@ -8410,7 +8683,9 @@ Run: `cargo x integration-test`
 Run: `cargo x integration-test`
 
 - [ ] `a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end`
+- [ ] `hocus_registers_calls_and_reloads_a_typescript_extension`
 - [ ] `hocus_writes_a_lua_plugin_and_loads_it`
+- [ ] `wasm_hocus_checks_writes_edits_and_loads_typescript_with_literal_grants`
 
 ## zellij-integration-tests (test/hocus_store)
 
@@ -9133,7 +9408,7 @@ Hand-maintained; these are the tests that are not Rust test functions.
   `zellij-server/tests/firecracker_vm.rs`, so `cargo x firecracker-test`
   covers it there; the standalone run is separate.
 
-`zellij-integration-tests/tests/swamp_exit_fixture.lua` and the Lua agent
+`zellij-integration-tests/tests/swamp_exit_fixture.ts` and the Lua agent
 harness are *not* listed here: they are driven by Rust integration tests,
 which appear under `cargo x integration-test` above.
 
@@ -9141,5 +9416,5 @@ which appear under `cargo x integration-test` above.
 
 None: every `#[test]` function in the sources appears in the listing above.
 
-Scanned 8278 source test functions; 0 unmatched.
+Scanned 8546 source test functions; 0 unmatched.
 

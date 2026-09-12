@@ -38,10 +38,10 @@ use super::zellij_exports::{
     check_command_permission, permission_answer_pending, run_plugin_command,
 };
 use super::{PluginId, PluginInstruction};
-use zellij_bus::global_async_runtime::get_tokio_runtime;
-use zellij_bus::{ClientId, ThreadSenders};
 use limits::op_zellij_encode;
 use ui::{op_zellij_ui_call, op_zellij_ui_create, op_zellij_ui_pure};
+use zellij_bus::global_async_runtime::get_tokio_runtime;
+use zellij_bus::{thread_bus::ThreadSenders, ClientId};
 
 const SDK: &str = include_str!("sdk.js");
 pub(crate) const SDK_MODULE: &str = "export const zellij = globalThis.zellij; export const definePlugin = zellij.definePlugin; export default zellij;";

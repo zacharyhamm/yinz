@@ -99,7 +99,7 @@ pub enum PluginInstruction {
     DenoTick(PluginId, ClientId, u64),
     DenoEvent(PluginId, ClientId, u64, Event),
     DenoDispose(PluginId, u64),
-    Unload(PluginId),                                         // plugin_id
+    Unload(PluginId), // plugin_id
     Reload(
         Option<bool>,   // should float
         Option<String>, // pane title

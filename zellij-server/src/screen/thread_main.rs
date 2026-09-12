@@ -540,15 +540,15 @@ pub(crate) fn screen_thread_main(
                                                 {
                                                     let _ = screen.bus.senders.send_to_plugin(
                                                         PluginInstruction::for_plugin_event(
- *plugin,
- *client,
- *generation,
+                                                            *plugin,
+                                                            *client,
+                                                            *generation,
                                                             Event::PaneOutput {
                                                                 pane_id: pid.get(),
                                                                 data: bytes.clone(),
                                                                 context: origin.context.clone(),
                                                             },
-),
+                                                        ),
                                                     );
                                                 }
                                             }

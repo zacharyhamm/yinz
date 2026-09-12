@@ -31,7 +31,7 @@ pub(super) fn is_workflow_bridge(location: &RunPluginLocation) -> bool {
 
 pub(super) fn workflow_remote_panes(
     location: &RunPluginLocation,
-    senders: &zellij_bus::ThreadSenders,
+    senders: &zellij_bus::thread_bus::ThreadSenders,
 ) -> Result<Vec<serde_json::Value>> {
     anyhow::ensure!(
         is_workflow_bridge(location),

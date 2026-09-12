@@ -20,7 +20,7 @@ pub const SDK_SPECIFIER: &str = "zellij:plugin";
 pub(super) const WORKFLOW_SPECIFIER: &str = "zellij:workflow-view";
 pub(super) const WORKFLOW_PATH: &str = "/__zellij_builtin__/workflow-view.ts";
 pub(super) const WORKFLOW_SOURCE: &str =
-    include_str!("../../../../zellij-config/assets/plugins/workflow-view.ts");
+    include_str!("../../../zellij-config/assets/plugins/workflow-view.ts");
 
 pub struct PluginModuleLoader {
     root: PathBuf,

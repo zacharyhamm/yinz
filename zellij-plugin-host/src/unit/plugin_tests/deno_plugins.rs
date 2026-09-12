@@ -321,7 +321,7 @@ fn deno_exhaustion_disposes_the_guest_and_reload_recovers_in_a_live_session() {
     const CHILD: &str = "ZELLIJ_TEST_DENO_SMALL_BUDGET";
     if std::env::var_os(CHILD).is_none() {
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "plugins::plugin_tests::deno_plugins::deno_exhaustion_disposes_the_guest_and_reload_recovers_in_a_live_session", "--nocapture"])
+            .args(["--exact", "plugin_tests::deno_plugins::deno_exhaustion_disposes_the_guest_and_reload_recovers_in_a_live_session", "--nocapture"])
             .env(CHILD, "1").spawn().unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(40);
         loop {

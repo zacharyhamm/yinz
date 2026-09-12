@@ -307,7 +307,7 @@ fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
 fn shim_reply_readers_independently_require_decoder_entries() {
     use std::collections::{BTreeMap, BTreeSet};
     use zellij_types::data::CommandType;
-    let source = include_str!("../../../../../zellij-tile/src/shim.rs");
+    let source = include_str!("../../../../zellij-tile/src/shim.rs");
     let comments = regex::Regex::new(r"(?m)//[^\n]*").unwrap();
     let source = comments.replace_all(source, "");
     let functions = regex::Regex::new(r"(?m)^(?:pub )?fn (\w+)").unwrap();
@@ -642,7 +642,7 @@ fn sdk_decoded_event_types_narrow_by_type_and_keep_raw_values() {
 /// of a reader. A block preceded by `<!-- docs-check: skip -->` is a deliberate fragment.
 #[test]
 fn guide_code_blocks_typecheck_offline() {
-    const GUIDE: &str = include_str!("../../../../../docs/DENO_PLUGINS.md");
+    const GUIDE: &str = include_str!("../../../../docs/DENO_PLUGINS.md");
     let dir = tempfile::tempdir().unwrap();
     // (guide line of the opening fence, block text); a fence in another language is skipped.
     let mut blocks: Vec<(usize, String)> = Vec::new();
@@ -697,8 +697,7 @@ fn guide_code_blocks_typecheck_offline() {
 #[test]
 fn bundled_compiler_matches_its_provenance_hashes() {
     use sha2::{Digest, Sha256};
-    let compiler =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/deno/compiler");
+    let compiler = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/deno/compiler");
     let provenance: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(compiler.join("provenance.json")).unwrap())
             .unwrap();
@@ -889,19 +888,19 @@ fn host_wire_definitions_require_explicit_sdk_review() {
     for (name, source) in [
         (
             "commands",
-            include_str!("../../../../../zellij-plugin-api/src/plugin_command.proto"),
+            include_str!("../../../../zellij-plugin-api/src/plugin_command.proto"),
         ),
         (
             "events",
-            include_str!("../../../../../zellij-plugin-api/src/event.proto"),
+            include_str!("../../../../zellij-plugin-api/src/event.proto"),
         ),
         (
             "data",
-            include_str!("../../../../../zellij-plugin-api/src/plugin_data.proto"),
+            include_str!("../../../../zellij-plugin-api/src/plugin_data.proto"),
         ),
         (
             "actions",
-            include_str!("../../../../../zellij-plugin-api/src/action.proto"),
+            include_str!("../../../../zellij-plugin-api/src/action.proto"),
         ),
     ] {
         wire.push_str(&format!("{name}\n"));
@@ -948,7 +947,7 @@ fn sdk_rpc_declarations_require_one_destination_and_json() {
 fn sdk_agent_and_completion_types_check_rust_completion_fixtures() {
     // hocus-proto's wire tests compare these fixtures to serialized Rust structs.
     let fixtures: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../default-plugins/hocus-proto/src/completion-fixtures.json"
+        "../../../../default-plugins/hocus-proto/src/completion-fixtures.json"
     ))
     .unwrap();
     let source = format!(
