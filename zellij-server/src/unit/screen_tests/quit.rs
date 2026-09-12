@@ -1383,6 +1383,261 @@ fn all_tab_close_instructions_confirm_before_destroying_the_last_tab() {
 }
 
 #[test]
+fn cli_and_ctrl_c_closes_destroy_replacement_chains_and_preserve_input() {
+    for route in ["terminal_2", "plugin_42", "terminal_3", "held", "suspended"] {
+        let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+        let client = mock.main_client_id;
+        let session_metadata = mock.clone_session_metadata();
+        let screen_thread = mock.run(None, vec![]);
+        let pty_receiver = mock.pty_receiver.take().unwrap();
+        let writer_receiver = mock.pty_writer_receiver.take().unwrap();
+        let plugin_receiver = mock.plugin_receiver.take().unwrap();
+        let pty_log = Watched::new(vec![]);
+        let writer_log = Watched::new(vec![]);
+        let plugin_log = Watched::new(vec![]);
+        let pty_thread = log_actions_in_thread!(pty_log, PtyInstruction::Exit, pty_receiver);
+        let writer_thread =
+            log_actions_in_thread!(writer_log, PtyWriteInstruction::Exit, writer_receiver);
+        let plugin_thread =
+            log_actions_in_thread!(plugin_log, PluginInstruction::Exit, plugin_receiver);
+        let source = PaneId::Terminal(TerminalId::new(2));
+        let middle = PaneId::Plugin(PluginId::new(42));
+        let visible = PaneId::Terminal(TerminalId::new(3));
+        mock.to_screen
+            .send(ScreenInstruction::NewPane(
+                source,
+                None,
+                None,
+                None,
+                NewPanePlacement::default(),
+                false,
+                ClientTabIndexOrPaneId::ClientId(client),
+                None,
+                false,
+            ))
+            .unwrap();
+        for (replacement, replaced) in [(middle, source), (visible, middle)] {
+            mock.to_screen
+                .send(ScreenInstruction::ReplacePane(
+                    replacement,
+                    None,
+                    None,
+                    None,
+                    false,
+                    ClientTabIndexOrPaneId::PaneId(replaced),
+                    None,
+                ))
+                .unwrap();
+        }
+        let mut input_completion = None;
+        if matches!(route, "held" | "suspended") {
+            let stopped = if route == "held" {
+                ScreenInstruction::HoldPane(visible, Some(0), RunCommand::default())
+            } else {
+                ScreenInstruction::SetPaneSuspended(visible, true)
+            };
+            mock.to_screen.send(stopped).unwrap();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            input_completion = Some(rx);
+            mock.to_screen
+                .send(ScreenInstruction::WriteCharacter(
+                    None,
+                    vec![3],
+                    false,
+                    client,
+                    Some(crate::NotificationEnd::new(tx)),
+                ))
+                .unwrap();
+        } else {
+            send_cli_action_to_server(
+                &session_metadata,
+                CliAction::ClosePane {
+                    pane_id: Some(route.to_owned()),
+                },
+                ClientId::new(10),
+            );
+        }
+        for id in [source, middle, visible] {
+            pty_log.wait_until(
+                &format!("{route} tears down {id:?}"),
+                zellij_test_support::default_timeout(),
+                |log| {
+                    log.iter()
+                        .any(|instruction| {
+                            matches!(instruction,
+                    PtyInstruction::ClosePane(closed, _) if *closed == id)
+                        })
+                        .then_some(())
+                },
+            );
+            plugin_log.wait_until(
+                &format!("{route} removes {id:?}"),
+                zellij_test_support::default_timeout(),
+                |log| {
+                    log.iter()
+                        .any(|instruction| {
+                            matches!(instruction,
+                    PluginInstruction::Update(events) if events.iter().any(|(_, _, event)|
+                        matches!(event, Event::PaneClosed(closed) if *closed == id)))
+                        })
+                        .then_some(())
+                },
+            );
+        }
+        // Untargeted input proves that the surviving pane has keyboard focus.
+        mock.to_screen
+            .send(ScreenInstruction::WriteCharacter(
+                None,
+                b"still focused".to_vec(),
+                false,
+                client,
+                None,
+            ))
+            .unwrap();
+        writer_log.wait_until(
+            "input reaches the surviving pane",
+            zellij_test_support::default_timeout(),
+            |log| {
+                log.iter()
+                    .any(|instruction| {
+                        matches!(instruction, PtyWriteInstruction::Write(bytes, id, _)
+                if bytes == b"still focused" && *id == TerminalId::new(0))
+                    })
+                    .then_some(())
+            },
+        );
+        if let Some(mut completion) = input_completion {
+            assert!(completion.try_recv().is_ok(), "Ctrl+C completion was lost");
+        }
+        mock.teardown(vec![
+            pty_thread,
+            writer_thread,
+            plugin_thread,
+            screen_thread,
+        ]);
+        for id in [source, middle, visible] {
+            assert_eq!(
+                pty_log
+                    .lock()
+                    .iter()
+                    .filter(|instruction| matches!(instruction,
+                PtyInstruction::ClosePane(closed, _) if *closed == id))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                plugin_log
+                    .lock()
+                    .iter()
+                    .filter_map(|instruction| match instruction {
+                        PluginInstruction::Update(events) => Some(events),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter(
+                        |(_, _, event)| matches!(event, Event::PaneClosed(closed) if *closed == id)
+                    )
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn buffered_explicit_and_self_closes_keep_their_order_and_complete_once() {
+    for explicit_first in [true, false] {
+        for with_client in [true, false] {
+            let client = ClientId::new(1);
+            let (mut screen, _screen_receiver, _, plugins) =
+                screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[client]);
+            let (background_tx, background_rx) = channels::unbounded();
+            screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(background_tx));
+            let source = PaneId::Terminal(TerminalId::new(1));
+            let replacement = PaneId::Plugin(PluginId::new(42));
+            hook_pane_over_a_held_terminal(
+                &mut screen,
+                TabId::new(1),
+                TerminalId::new(1),
+                PluginId::new(42),
+            );
+            screen.set_quit_notice(PluginId::new(42), None, true);
+            screen
+                .pane_output_activity
+                .insert(source, std::time::Instant::now());
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            let mut completion = crate::NotificationEnd::new(tx);
+            completion.set_exit_status(23);
+            let explicit = ScreenInstruction::ClosePane(
+                replacement,
+                with_client.then_some(client),
+                Some(completion),
+                None,
+            );
+            let close_self = ScreenInstruction::ClosePane(replacement, None, None, None);
+            let mut events = if explicit_first {
+                vec![explicit, close_self]
+            } else {
+                vec![close_self, explicit]
+            };
+            let (duplicate_tx, mut duplicate_rx) = tokio::sync::oneshot::channel();
+            events.push(ScreenInstruction::ClosePane(
+                replacement,
+                None,
+                Some(crate::NotificationEnd::new(duplicate_tx)),
+                None,
+            ));
+            events.push(ScreenInstruction::ClosePane(replacement, None, None, None));
+
+            super::super::replay_pending_plugin_events(&mut screen, events).unwrap();
+
+            assert_eq!(rx.try_recv().unwrap().exit_status, Some(23));
+            assert!(duplicate_rx.try_recv().is_ok());
+            assert!(screen.tab_containing_pane(replacement).is_none());
+            assert_eq!(screen.tab_containing_pane(source).is_none(), explicit_first);
+            assert_eq!(
+                screen.pane_output_activity.contains_key(&source),
+                !explicit_first
+            );
+            assert!(!screen.quit_is_guarded());
+            if explicit_first {
+                assert!(
+                    background_rx.try_iter().any(|(instruction, _)| matches!(
+                        instruction,
+                        BackgroundJob::RenderToClients
+                    )),
+                    "inline explicit close must still schedule its repaint"
+                );
+            }
+            let closed: Vec<_> = plugins
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    PluginInstruction::Update(events) => Some(events),
+                    _ => None,
+                })
+                .flatten()
+                .filter_map(|(_, _, event)| match event {
+                    Event::PaneClosed(id) => Some(id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(closed.iter().filter(|id| **id == replacement).count(), 1);
+            assert_eq!(
+                closed.iter().filter(|id| **id == source).count(),
+                usize::from(explicit_first)
+            );
+            if !explicit_first {
+                assert_eq!(
+                    screen.get_active_pane_id(&client),
+                    Some(source),
+                    "close_self restores the source"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn explicit_close_before_creation_waits_for_removal_and_completion() {
     for plugin in [false, true] {
         for with_client in [false, true] {

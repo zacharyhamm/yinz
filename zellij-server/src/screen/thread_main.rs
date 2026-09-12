@@ -5454,14 +5454,10 @@ pub(crate) fn screen_thread_main(
                     screen.render(None)?;
                 },
                 ScreenInstruction::CloseFocusWithPaneId(pane_id, completion_tx) => {
-                    if let PaneId::Plugin(plugin_id) = pane_id {
-                        screen.drop_quit_notice(plugin_id);
-                    }
-                    if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                        tab.close_pane_by_pane_id(pane_id, completion_tx)
-                            .non_fatal();
-                    } else {
-                        log::error!("Pane with id {:?} not found", pane_id);
+                    screen.close_pane_explicitly(pane_id, completion_tx);
+                    let client_ids: Vec<_> = screen.active_tab_ids.keys().copied().collect();
+                    for client_id in client_ids {
+                        screen.sync_scroll_mode_on_focus(client_id)?;
                     }
                     screen.render(None)?;
                     screen.log_and_report_session_state()?;

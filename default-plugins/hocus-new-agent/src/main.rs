@@ -96,6 +96,7 @@ struct ForkContext {
 struct State {
     workflow_reply: Option<(u32, String, String)>,
     workflow_result_pending: bool,
+    workflow_source: Option<PaneId>,
     workflow_focus: Option<PaneId>,
     dialog: Dialog,
     /// The caller's cwd: the fallback source directory, and what the default
@@ -192,6 +193,7 @@ impl Default for State {
         Self {
             workflow_reply: None,
             workflow_result_pending: false,
+            workflow_source: None,
             workflow_focus: None,
             dialog: Dialog::new(Text::new("New agent").color_all(2), form)
                 .help(Text::new(help))
@@ -232,6 +234,7 @@ impl ZellijPlugin for State {
         let caller_pane_id = configuration
             .get(CALLER_TERMINAL_PANE_ID)
             .and_then(|pane_id| pane_id.parse().ok());
+        self.workflow_source = caller_pane_id.map(|id| PaneId::Terminal(TerminalId::new(id)));
         if let Some(pane_id) = caller_pane_id {
             if asked_for(DUPLICATE_FOCUSED) {
                 self.job = Job::Duplicate { pane_id };
@@ -270,13 +273,7 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PaneClosed(pane) if self.workflow_reply.is_some() => {
-                let source = match self.job {
-                    Job::Fork { pane_id, .. } | Job::Duplicate { pane_id } => {
-                        Some(PaneId::Terminal(TerminalId::new(pane_id)))
-                    },
-                    Job::New => self.workflow_focus,
-                };
-                if source == Some(pane) {
+                if self.workflow_source == Some(pane) {
                     self.finish_picker(None);
                 }
                 false
@@ -872,7 +869,7 @@ impl State {
                     .with_destination_plugin_id(zellij_tile::prelude::PluginId::new(*plugin))
                     .with_payload(
                         serde_json::json!({"work": work, "key": key,
-                    "choice": if pane.is_some() { "started" } else { "cancelled" }})
+                    "choice": if pane.is_some() { "started" } else { "cancelled" }, "pane_id": pane})
                         .to_string(),
                     ),
             );
@@ -1935,6 +1932,47 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_fallback_keeps_its_source_until_the_picker_finishes() {
+        let source = PaneId::Terminal(TerminalId::new(7));
+        let mut state = State {
+            job: Job::Duplicate { pane_id: 7 },
+            workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
+            workflow_source: Some(source),
+            ..Default::default()
+        };
+        let pane = AgentPane {
+            title: "shell".to_owned(),
+            command: Some("/bin/sh".to_owned()),
+            detected: None,
+            ..agent_pane("claude")
+        };
+        assert!(duplicate_command(&pane, &BTreeMap::new()).is_none());
+        state.pipe(PipeMessage::new(
+            PipeSource::Plugin(PluginId::new(1)),
+            wire::AGENT_SNAPSHOT,
+            &Some(serde_json::json!({"panes": [pane], "activity": {}}).to_string()),
+            &None,
+            false,
+        ));
+        assert!(matches!(state.job, Job::New));
+        assert!(state.workflow_focus.is_none());
+        state.update(Event::PaneClosed(PaneId::Terminal(TerminalId::new(8))));
+        assert!(!state.workflow_result_pending);
+        // The default form lacks a branch name: Create still reaches form validation.
+        assert!(state.handle(FormEvent::ButtonPressed("create".to_owned())));
+        assert!(state.error.take().is_some());
+
+        state.update(Event::PaneClosed(source));
+        assert!(state.workflow_result_pending);
+        assert!(!state.handle(FormEvent::ButtonPressed("create".to_owned())));
+        assert!(
+            state.error.is_none(),
+            "cancelled picker must not even submit the form"
+        );
+        assert!(state.workflow_focus.is_none());
+    }
+
+    #[test]
     fn cancelled_pickers_ignore_late_snapshots_and_wait_for_their_bridge_ack() {
         for source_closed in [false, true] {
             for job in [
@@ -1948,7 +1986,7 @@ mod tests {
                 let mut state = State {
                     job,
                     workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
-                    workflow_focus: Some(PaneId::Terminal(TerminalId::new(7))),
+                    workflow_source: Some(PaneId::Terminal(TerminalId::new(7))),
                     ..Default::default()
                 };
                 if source_closed {

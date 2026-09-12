@@ -1127,13 +1127,23 @@ function M.pipe(message)
     local from=type(message.source)=='table' and message.source.Plugin
     if not from then return end
     local pane=z.get_pane_info(z.plugin_pane(from))
+    if not pane then return end -- a repeated result after the picker was closed
     assert(pane.plugin_url=='zellij:hocus-new-agent','Pane result must come from the agent picker')
     local reply=decode(message.payload)
     assert(reply.choice=='started' or reply.choice=='cancelled','Invalid picker result')
+    if reply.choice=='started' then
+      local id=type(reply.pane_id)=='table' and reply.pane_id.Terminal
+      assert(type(id)=='number' and id>=0 and id<=4294967295 and id%1==0
+        and next(reply.pane_id)=='Terminal' and next(reply.pane_id,'Terminal')==nil,'Started picker result requires a terminal pane ID')
+    end
     local uid=scope(reply.work,reply.key)
     local current=read(uid)
     assert(current and decode(current.request).method=='pane_action','No picker operation')
-    if closed(reply.work) then z.close_plugin_pane(from);return end
+    if closed(reply.work) then
+      if reply.choice=='started' then z.close_terminal_pane(reply.pane_id.Terminal) end
+      z.close_plugin_pane(from)
+      return
+    end
     if current.outcome=='completed' then
       assert(current.choice==reply.choice,'Picker result already differs')
     else assert(current.outcome=='pending' or current.outcome=='unknown','Picker dispatch cannot accept a result') end

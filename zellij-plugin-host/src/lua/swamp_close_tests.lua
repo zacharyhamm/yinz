@@ -245,3 +245,68 @@ for _=1,2 do
 end
 local searches=history_searches();M.load()
 assert(history_searches()>searches and read('work','view').cancel_pending,'reload recovers ambiguous launches')
+
+-- A picker launches before reporting: closure can win between those two actions.
+for _,action in ipairs{'duplicate','fork'} do
+  for _,cancel_first in ipairs{true,false} do
+    for _,terminal_removed in ipairs{false,true} do
+      seed()
+      local picker=6
+      local terminal=action=='fork' and 1 or 7
+      local acks=0
+      panes.p6={plugin_url='zellij:hocus-new-agent'}
+      z.message_to_plugin=function(message)
+        if message.message_name=='swamp-pane-ack' then
+          assert(message.destination_plugin_id==picker)
+          assert(read('work',action).outcome=='completed')
+          assert(not panes.p2,'acceptance closes the view before acknowledgment')
+          acks=acks+1
+        end
+      end
+      local operation=call{method='pane_action',work='work',key=action,action=action}
+      assert(operation.ok and operation.value.outcome=='pending')
+      panes['t'..terminal]={target='Local',exited=false}
+      if cancel_first then z.close_terminal_pane(1) end
+      if terminal_removed then z.close_terminal_pane(terminal) end
+      -- Removing a reused source is itself lifecycle cancellation.
+      local interrupted=cancel_first or (action=='fork' and terminal_removed)
+      assert((read('work','view').closed==true)==interrupted)
+      assert(panes.p6,'picker stays alive until its result is handled')
+      local reply={name='swamp-pane-result',source={Plugin=picker},
+        payload=z.json.encode{work='work',key=action,choice='started',pane_id={Terminal=terminal}}}
+      local close_picker=z.close_plugin_pane
+      z.close_plugin_pane=function(id)
+        if id==picker then assert(not panes['t'..terminal],'close the produced terminal before the picker') end
+        close_picker(id)
+      end
+      M.pipe(reply)
+      z.close_plugin_pane=close_picker
+      local revision=rows[uid('work',action)].rev
+      M.pipe(reply)
+      assert(rows[uid('work',action)].rev==revision,'duplicate results do not rewrite the outcome')
+      if interrupted then
+        assert(read('work','view').closed and read('work',action).outcome=='interrupted')
+        assert(not panes.p6 and not panes['t'..terminal] and acks==0)
+      else
+        assert(not read('work','view').closed and read('work','view').transition=='fork')
+        assert(read('work',action).outcome=='completed' and acks==2)
+        assert(not panes.p2 and panes.p6,'the picker closes itself after acknowledgment')
+        assert((panes['t'..terminal]~=nil)==not terminal_removed,'accepted terminal survives view closure')
+        z.close_plugin_pane(picker)
+        M.pipe(reply)
+        assert(acks==2,'a result from an already removed picker is harmless')
+      end
+    end
+  end
+end
+-- Malformed started results cannot close any pane or settle an operation.
+seed()
+panes.p6={plugin_url='zellij:hocus-new-agent'}
+z.message_to_plugin=function() end
+assert(call{method='pane_action',work='work',key='duplicate',action='duplicate'}.ok)
+for _,pane in ipairs{z.null,7,{Plugin=2},{Terminal=-1},{Terminal=1.5},{Terminal=4294967296},{Terminal=1,Plugin=2}} do
+  local ok=pcall(M.pipe,{name='swamp-pane-result',source={Plugin=6},
+    payload=z.json.encode{work='work',key='duplicate',choice='started',pane_id=pane}})
+  assert(not ok,'invalid produced pane must be rejected')
+  assert(panes.t1 and panes.p2 and panes.p6 and read('work','duplicate').outcome=='pending')
+end

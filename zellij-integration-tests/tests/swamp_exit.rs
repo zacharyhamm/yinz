@@ -36,8 +36,14 @@ function M.pipe(message)
     z.message_to_plugin{destination_plugin_id=message.source.Plugin,message_name='agent_snapshot',message_payload='{"panes":[],"activity":{}}'}
     return
   elseif message.name=='swamp-pane-result' then
+    local reply=z.json.decode(message.payload,true)
+    if reply.choice=='started' then
+      assert(type(reply.pane_id)=='table' and reply.pane_id.Terminal==source,
+        'the fork picker must report the terminal it reused')
+    else
+      assert(reply.pane_id==z.null,'cancelled picker results must carry a null pane ID')
+    end
     bridge.pipe(message)
-    local reply=z.json.decode(message.payload)
     if reply.choice=='cancelled' then
       local result=call{method='lookup',work=reply.work,key=reply.key}
       if result.outcome=='completed' then status='suspended';require('zellij.workflow_view').refresh() end

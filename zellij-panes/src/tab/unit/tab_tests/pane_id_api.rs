@@ -522,7 +522,7 @@ pub fn undo_rename_pane_by_pane_id() {
 }
 
 #[test]
-pub fn close_pane_by_pane_id() {
+pub fn explicitly_close_pane_by_id() {
     let size = Size {
         cols: 121,
         rows: 20,
@@ -533,7 +533,10 @@ pub fn close_pane_by_pane_id() {
     tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2);
-    tab.close_pane_by_pane_id(new_pane_id, None).unwrap();
+    assert_eq!(
+        tab.close_pane_explicitly(new_pane_id, None),
+        vec![new_pane_id]
+    );
     assert_eq!(tab.tiled_panes.panes.len(), 1);
     assert!(!tab.has_pane_with_pid(&new_pane_id));
 }

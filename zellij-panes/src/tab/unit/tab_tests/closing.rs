@@ -2362,3 +2362,71 @@ pub fn a_client_joining_a_tab_with_no_panes_at_all_is_connected() {
         "an emptied tab still counts the client, so the sweep can re-home it",
     );
 }
+
+#[test]
+fn exiting_fullscreen_editor_restoring_nonselectable_plugin_keeps_usable_focus() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        true,
+    );
+    let (sender, _receiver) = unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+    let client = ClientId::new(1);
+    let survivor = PaneId::Terminal(TerminalId::new(1));
+    let plugin = PaneId::Plugin(crate::PluginId::new(2));
+    let editor = PaneId::Terminal(TerminalId::new(3));
+    tab.new_pane(
+        plugin,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.set_pane_selectable(plugin, false);
+
+    // A nonselectable plugin can open an editor in its own place and return when it exits.
+    tab.new_in_place_pane(
+        editor,
+        None,
+        None,
+        Some(plugin),
+        false,
+        Some(client),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.focus_pane_with_id(editor, false, false, client)
+        .unwrap();
+    tab.tiled_panes.toggle_pane_fullscreen(editor);
+    assert_eq!(tab.get_active_pane_id(client), Some(editor));
+    assert!(tab.tiled_panes.panes_to_hide_contains(survivor));
+
+    tab.close_pane(editor, false, Some(0));
+    tab.ensure_selectable_focus(client).unwrap();
+    assert!(
+        tab.has_selectable_panes(),
+        "the tab still has a live destination"
+    );
+    let focused = tab
+        .get_active_pane_id(client)
+        .expect("retained tab has focus");
+    assert!(
+        tab.get_pane_with_id(focused).unwrap().selectable()
+            && !tab.tiled_panes.panes_to_hide_contains(focused),
+        "editor exit left focus on {focused:?}, fullscreen {:?}, survivor hidden {}",
+        tab.tiled_panes.fullscreen_pane_id(),
+        tab.tiled_panes.panes_to_hide_contains(survivor),
+    );
+    assert!(!tab.tiled_panes.fullscreen_is_active());
+    assert_eq!(tab.get_active_pane_id(client), Some(survivor));
+    tab.assert_invariants();
+}

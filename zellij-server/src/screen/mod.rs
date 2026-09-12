@@ -4949,10 +4949,22 @@ fn replay_pending_plugin_events(
 ) -> Result<()> {
     for event in pending_events {
         match event {
-            event @ ScreenInstruction::AgentReport(..)
-            | event @ ScreenInstruction::ClosePane(_, Some(_), _, _)
-            | event @ ScreenInstruction::ClosePane(_, _, Some(_), _) => {
+            event @ ScreenInstruction::AgentReport(..) => {
                 thread_main::replay_pending_pane_event(screen, event)?;
+            },
+            ScreenInstruction::ClosePane(id, _, _, _)
+                if screen.destroyed_panes.contains(&id)
+                    && screen.tab_containing_pane(id).is_none() => {},
+            ScreenInstruction::ClosePane(id, Some(_), completion_tx, _)
+            | ScreenInstruction::ClosePane(id, _, completion_tx @ Some(_), _) => {
+                // Close before replaying later events: a queued close_self must not restore
+                // the source that this explicit close is meant to destroy.
+                screen.close_pane_explicitly(id, completion_tx);
+                let client_ids: Vec<_> = screen.active_tab_ids.keys().copied().collect();
+                for client_id in client_ids {
+                    screen.sync_scroll_mode_on_focus(client_id)?;
+                }
+                screen.render(None)?;
             },
             ScreenInstruction::PluginBytes(plugin_render_assets) => {
                 // pipes were already unblocked when these bytes first arrived
