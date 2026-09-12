@@ -9,7 +9,8 @@ type Output = {output?: string; previewTruncated?: boolean; outputTruncated?: bo
   findings?: {severity: string; file: string; message: string}[]; review?: Output; test?: Output;
   evidence?: {source: {commit: string}; target: {commit: string}}; source?: {commit: string}; target?: {commit: string}};
 type Snapshot = {run?: string; launch?: string; root: string; history: History; children?: History[]; active?: boolean;
-  questions?: {results?: Question[]}; outputs?: {results?: {model: string; name: string; version: number; attributes: Output}[]}; logs?: string};
+  questions?: {results?: Question[]}; outputs?: {results?: {model: string; name: string; version: number; attributes: Output}[]}; logs?: string;
+  subtitle?: string};
 type Attachment = {directory: string; run?: string; launch?: string};
 type Block = {widget?: MarkdownComponent; lines?: string[]; count: number; scroll: number; important?: boolean; live?: boolean};
 export const view = {
@@ -25,7 +26,10 @@ const answered = new Map<string, number>();
 let generation = 0;
 type Stream = {operation: string; source: string; raw: Uint8Array; value: string; omitted: boolean};
 let streams: Stream[] = [], latestStream: Stream | undefined, launch: string | undefined;
-let followLive = true, scrollLimit = 0;
+let followLive = true, scrollLimit = 0, detached = false;
+function setSubtitle(subtitle?: string) {
+  z.command('SetPaneSubtitle', {pane_id: {Plugin: z.getPluginIds().plugin_id}, subtitle: !detached && subtitle ? subtitle : null});
+}
 function watch(value?: string) {
   if (value !== launch) { streams = []; latestStream = undefined; followLive = true; }
   launch = value;
@@ -108,6 +112,14 @@ async function refresh() {
     controls();
   } catch (error) { if (revision === generation) view.refreshError = String(error); }
   finally {
+    if (revision === generation) {
+      if (view.refreshError) {
+        const name = view.snapshot?.history.workflowName;
+        setSubtitle(name ? `${name} · status unavailable` : 'Workflow · status unavailable');
+        z.command('MessageToPlugin', {plugin_url: 'zellij:swamp-bridge', destination_plugin_id: null, plugin_config: {},
+          message_name: 'workflow-refresh-failed', message_payload: launch ?? '', message_args: {}, new_plugin_args: null, floating_pane_coordinates: null});
+      } else if (view.snapshot) setSubtitle(view.snapshot.subtitle);
+    }
     view.refreshing = false;
     if (before !== JSON.stringify([view.snapshot ?? {}, view.status, view.refreshError ?? ''])) repaint();
     if (revision !== generation) void refresh();
@@ -118,6 +130,7 @@ function attach(attachment: Attachment) {
   view.selecting = false; view.dirty = false; formKey = undefined; questionKey = undefined;
   watch(attachment.launch); view.attachment = {...attachment}; view.snapshot = undefined; view.pending = []; view.selected = 0; view.scroll = 0;
   view.notice = undefined; view.noticeError = false; view.refreshError = undefined; view.active = true; view.status = 'Loading workflow...';
+  detached = false; setSubtitle('Workflow · loading');
   void refresh();
 }
 function load(options?: {onRestart?: () => void}) {
@@ -126,6 +139,7 @@ function load(options?: {onRestart?: () => void}) {
   controls(); z.every(2000, refresh);
 }
 function pipe(message: PipeMessage) {
+  if (message.name === 'workflow-detached') {detached = true; setSubtitle(); return;}
   if (message.name === 'workflow-changed') {void refresh(); return;}
   if (message.name !== 'show' || !message.payload) return;
   attach(JSON.parse(message.payload)); z.command('ShowSelf', true);

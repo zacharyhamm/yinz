@@ -270,7 +270,7 @@ fn deno_workflow_view_preserves_question_races_focus_previews_and_scrolling() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
       globalThis.markdowns=[]; globalThis.polls=[]; globalThis.commands=[]; globalThis.closed=0; globalThis.renders=0;
-      globalThis.mock={...zellij, ui:{...zellij.ui,markdown(source,options){markdowns.push({source,options});return zellij.ui.markdown(source,options);}}, serverBinary:'zellij', subscribe(){}, every(){}, requestRender(){renders++},
+      globalThis.mock={...zellij, getPluginIds:()=>({plugin_id:1}), ui:{...zellij.ui,markdown(source,options){markdowns.push({source,options});return zellij.ui.markdown(source,options);}}, serverBinary:'zellij', subscribe(){}, every(){}, requestRender(){renders++},
         command(name){if(name==='CloseSelf') closed++;},
         rpc:{call(options){return options.payload.method==='workflow_show' ? new Promise(resolve=>polls.push(resolve)) : new Promise((resolve,reject)=>commands.push({options,resolve,reject}));}}};
       globalThis.q=(question,version=1,answers=['return'],state='pending',run='run')=>({model:'model',version,attributes:{run,question,kind:answers.length?'choice':'text',state,answers,prompt:'Question '+question}});
@@ -340,7 +340,7 @@ fn deno_workflow_view_keeps_restart_explicit_and_all_details_reachable() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
       globalThis.restarted=0;globalThis.closed=0;
-      globalThis.mock={...zellij,subscribe(){},every(){},command(name){if(name==='CloseSelf')closed++;}};
+      globalThis.mock={...zellij, getPluginIds:()=>({plugin_id:1}),subscribe(){},every(){},command(name){if(name==='CloseSelf')closed++;}};
     "#);
     consumer(&mut runtime, "workflow-view");
     run(&mut runtime, r#"
@@ -367,7 +367,7 @@ fn deno_agent_exit_preserves_output_before_successful_and_rejected_launch_replie
         let mut runtime = sdk();
         run(&mut runtime, r#"
           globalThis.filters=[];globalThis.polls=[];
-          globalThis.mock={...zellij,subscribe(){},every(){},requestRender(){},
+          globalThis.mock={...zellij, getPluginIds:()=>({plugin_id:1}),subscribe(){},every(){},requestRender(){},
             getPluginIds:()=>({plugin_id:1}),
             projectConfig:{read:()=>({config:{workflow:'exit'}})},
             waitForEvent(){return Object.assign(new Promise(()=>{}),{cancel(){}});},
@@ -415,7 +415,7 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
       globalThis.polls=[];globalThis.commands=[];globalThis.filters=[];globalThis.renders=0;
-      globalThis.mock={...zellij,subscribe(events){check(events.includes('PaneOutput') && events.includes('CommandPaneExited'));},every(){},
+      globalThis.mock={...zellij, getPluginIds:()=>({plugin_id:1}),subscribe(events){check(events.includes('PaneOutput') && events.includes('CommandPaneExited'));},every(){},
         command(name,args){if(name==='SubscribePaneOutput')filters.push(args);},requestRender(){renders++;},
         rpc:{call(options){return options.payload.method==='workflow_show' ? new Promise(resolve=>polls.push(resolve)) : new Promise((resolve,reject)=>commands.push({options,resolve,reject}));}}};
       globalThis.key=bare_key=>M.update({Key:{bare_key,key_modifiers:[]}});

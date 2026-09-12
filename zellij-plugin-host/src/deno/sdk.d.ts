@@ -326,6 +326,7 @@ export interface CommandArgs {
   DataApply: {namespace: string | null; mutations: Mutation[]}; DataFetch: {request: FetchRequest}; DataCount: {request: FetchRequest};
   DataWatch: {request: FetchRequest; mode: WatchMode}; DataUnwatch: {watch_id: Integer}; DataCatalog: {namespace: string | null};
   SetPaneTitlePrefix: {pane_id: PaneId; prefix: string | null};
+  SetPaneSubtitle: {pane_id: PaneId; subtitle: string | null};
   EnqueueQueueJob: {queue: string; plugin_url: string; config: StringMap; context: StringMap};
   ConfigureQueue: {queue: string; concurrency: Integer}; CancelQueueJob: {job_id: Integer}; QueueStatus: {queue: string | null};
   FinishQueueJob: {success: boolean; payload: string | null};

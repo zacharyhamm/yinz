@@ -29,7 +29,10 @@ type Supervisor = {terminal_id: number; host_id: string; child_pid?: number; att
   session_name: string; child_exit_status?: number | null; owner?: string | null; remote_host?: string; pane_token?: string};
 const D = z.data;
 let identity: Identity;
-const placements = new Map<string, {view: number; queue: string[]; current?: number; detached?: boolean; manual?: boolean}>();
+type Placement = {view: number; queue: string[]; current?: number; detached?: boolean; manual?: boolean; subtitle?: string; workflow?: string};
+// Placement belongs to an authenticated builtin view, never to a caller-supplied pane.
+// It is intentionally not recovered across server/bridge reloads.
+const placements = new Map<string, Placement>();
 function assert(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 // Lua's encoder sorts object keys recursively. Preserve exact request/owner comparisons on reload.
 function encode(value: unknown): string {
@@ -72,7 +75,43 @@ function saveEvent(uid: string, outcome: string, fields: Partial<Delivery> = {})
 }
 const terminal = (id: number): PaneId => ({Terminal: id});
 const plugin = (id: number): PaneId => ({Plugin: id});
+function paneSubtitle(pane: PaneId, subtitle?: string) {
+  z.command('SetPaneSubtitle', {pane_id: pane, subtitle: subtitle ?? null});
+}
+function detach(placement: Placement) {
+  if (placement.detached) return;
+  placement.detached = true;
+  paneSubtitle(plugin(placement.view));
+  if (placement.current != null) paneSubtitle(terminal(placement.current));
+  placement.subtitle = undefined;
+  message({destination_plugin_id: placement.view, message_name: 'workflow-detached'});
+}
+// History is the authority; delivery records only decide which pane is foregrounded.
+function workflowSubtitle(snapshot: {history: History; children?: History[]}): string {
+  const main = snapshot.history;
+  const steps = (histories: History[], active: boolean) => {
+    const entries: string[] = [];
+    for (const history of histories) for (const job of history.jobs ?? []) for (const step of job.steps ?? []) {
+      const running = ['running', 'suspended'].includes(history.status) && ['running', 'waiting_approval'].includes(step.status);
+      if (active ? !running : step.status !== 'failed') continue;
+      let name = `${job.name}/${step.name}`;
+      if (history !== main) name = `${history.workflowName ?? history.id}/${name}`;
+      if (!active && main.status !== 'failed') name += ' (failed)';
+      entries.push(`${name} · ${active ? step.status : main.status}`);
+    }
+    return entries.sort();
+  };
+  let entries = steps(snapshot.children ?? [], true);
+  if (!entries.length) entries = steps([main], true);
+  if (!entries.length) {
+    entries = steps(snapshot.children ?? [], false);
+    if (!entries.length) entries = steps([main], false);
+  }
+  return `${main.workflowName ?? 'Workflow'} · ${entries.length ? entries.join(', ') : main.status}`;
+}
 function closeView(work: string, restoreSource?: number) {
+  const existing = placements.get(work);
+  if (existing) detach(existing);
   const [placement] = read(scope(work, 'view'));
   if (!placement || placement.incarnation !== identity.incarnation || placement.view == null) return;
   const pane = z.command('GetPaneInfo', plugin(placement.view));
@@ -107,28 +146,48 @@ function present(work: string) {
   const info = z.command('GetPaneInfo', view);
   const current = placement.current == null ? view : terminal(placement.current);
   const currentInfo = z.command('GetPaneInfo', current);
-  if ((info?.plugin_url !== 'zellij:agent-exit' && info?.plugin_url !== 'zellij:swamp-workflow') || !currentInfo || currentInfo.is_suppressed) { placement.detached = true; return; }
+  if ((info?.plugin_url !== 'zellij:agent-exit' && info?.plugin_url !== 'zellij:swamp-workflow') || !currentInfo || currentInfo.is_suppressed) { detach(placement); return; }
   let next: number | undefined;
   while (placement.queue.length) {
     const [operation] = read(placement.queue[0]);
     if (operation?.outcome === 'pending') { next = operation.pane; break; }
     placement.queue.shift();
   }
-  if (next === placement.current) return;
+  paneSubtitle(view, placement.subtitle);
+  if (next === placement.current) {
+    if (next != null) paneSubtitle(current, placement.subtitle);
+    return;
+  }
   const target = next == null ? view : terminal(next);
-  if (!z.command('GetPaneInfo', target)?.is_suppressed) { placement.detached = true; return; }
+  if (!z.command('GetPaneInfo', target)?.is_suppressed) { detach(placement); return; }
   if (placement.current == null && next != null) {
     const source = read(scope(work, 'source'))[0];
+    // Keep the source for pane/VM actions, without restoring it when the view closes.
     if (source?.pane != null) z.command('HidePaneWithId', terminal(source.pane));
   }
+  if (placement.current != null) paneSubtitle(current);
+  paneSubtitle(target, placement.subtitle);
   z.command('ReplacePaneWithExistingPane', [current, target, true]);
   placement.current = next;
+}
+function updateSubtitle(work: string, subtitle: string, workflow?: string) {
+  const placement = placements.get(work);
+  if (!placement || placement.detached) return;
+  placement.subtitle = subtitle;
+  placement.workflow = workflow ?? placement.workflow;
+  present(work);
+}
+function unavailable(placement: Placement, work: string) {
+  updateSubtitle(work, `${placement.workflow ?? 'Workflow'} · status unavailable`);
 }
 function attachManual(work: string, view: number) {
   if (read(scope(work, 'view'))[0]) return;
   const existing = placements.get(work);
-  if (existing && z.command('GetPaneInfo', plugin(existing.view))) return;
-  const placement = {view, queue: [] as string[], manual: true};
+  if (existing) {
+    if (z.command('GetPaneInfo', plugin(existing.view))) return;
+    detach(existing);
+  }
+  const placement: Placement = {view, queue: [], manual: true, subtitle: 'Workflow · loading'};
   placements.set(work, placement);
   let cursor: Integer | null = null;
   do {
@@ -605,16 +664,31 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
   } else throw new Error('Unknown bridge method');
   return result(uid!);
 }
-type History = {id: string; workflowName: string; status: string; inputs: {launch: string; session: string}};
-function preview(path: string): string {
+type History = {id: string; workflowName: string; status: string; inputs: {launch: string; session: string};
+  jobs?: {name: string; steps?: {name: string; status: string}[]}[]};
+// Bound every saved log copy before the host serializes the response; its byte cap would cut JSON.
+// CEL substring uses UTF-16 offsets: back off if the cut would split a surrogate pair.
+function preview(path: string, field = 'output', limit = 16384): string {
   return String.raw`"output":has(VALUE.output) ? (VALUE.output.size() > 16384 ? VALUE.output.substring(0,
     VALUE.output.substring(16383,16384).matches(r"[\uD800-\uDBFF]") ? 16383 : 16384) : VALUE.output) : "",
-    "previewTruncated":has(VALUE.output) && VALUE.output.size() > 16384`.replaceAll('VALUE', path);
+    "previewTruncated":has(VALUE.output) && VALUE.output.size() > 16384`
+    .replaceAll('output', field).replaceAll('16383', String(limit - 1)).replaceAll('16384', String(limit)).replaceAll('VALUE', path);
 }
+const streamPreview = (field: string) => preview('attributes', field, 2048).replace('previewTruncated', `${field}Truncated`);
 function testPreview(path: string): string {
   return `{"evidence":${path}.evidence,"outcome":${path}.outcome,"exitCode":${path}.exitCode,"log":${path}.log,"passed":${path}.passed,"outputRef":has(${path}.outputRef) ? ${path}.outputRef : null,${preview(path)}}`;
 }
-const outputProjection = `{"model":modelName,"name":name,"version":version,"attributes":
+const projection = `{"model":modelName,"name":name,"version":version,"attributes":
+  specName == "claim" ? {"key":attributes.key,"fingerprint":attributes.fingerprint,"outcome":attributes.outcome} :
+  specName == "commandOutput" ? {} :
+  specName == "rebaseResult" ? {"exitCode":attributes.exitCode,"evidence":attributes.evidence,
+    "outputRef":has(attributes.outputRef) ? attributes.outputRef : null,
+    "operation":has(attributes.operation) ? {
+      "key":attributes.operation.key,"work":attributes.operation.work,"outcome":attributes.operation.outcome,
+      "exitCode":has(attributes.operation.exitCode) ? attributes.operation.exitCode : null,
+      "log":has(attributes.operation.log) ? attributes.operation.log : "",
+      "pane":has(attributes.operation.pane) ? attributes.operation.pane : false} : {},
+    ${streamPreview('stdout')},${streamPreview('stderr')}} :
   specName == "diff" ? {"evidence":attributes.evidence,${preview('attributes')}} :
   specName == "test" ? ${testPreview('attributes')} :
   specName == "operation" ? {
@@ -627,6 +701,8 @@ const outputProjection = `{"model":modelName,"name":name,"version":version,"attr
     "evidence":has(attributes.evidence) ? attributes.evidence : null,
     "tests":has(attributes.tests) ? attributes.tests : "", "codeReview":has(attributes.codeReview) ? attributes.codeReview : "",
     "ready":has(attributes.ready) && attributes.ready} : attributes}`;
+// Share the attributes expression to stay within Swamp's 4096-character select limit.
+const outputProjection = `[attributes].map(a,${projection.replaceAll('attributes.', 'a.')})[0]`;
 function message(options: Partial<MessageToPlugin> & {message_name: string}) {
   z.command('MessageToPlugin', {plugin_url: null, destination_plugin_id: null, plugin_config: {}, message_payload: null,
     message_args: {}, new_plugin_args: null, floating_pane_coordinates: null, ...options});
@@ -645,7 +721,11 @@ async function invoke(args: Partial<Request>, manualView?: number): Promise<Json
 }
 async function invokeInner(args: Partial<Request>, manualView?: number): Promise<Json> {
   const newLaunch = args?.method === 'workflow_run' && !read(scope(args.work!, args.key!))[0];
-  try { return JSON.parse(encode(await handle(args, manualView))); } catch (error) {
+  let response: unknown;
+  try { response = await handle(args, manualView); } catch (error) {
+    if (args?.method === 'workflow_show') {
+      for (const [work, placement] of placements) if (placement.view === manualView) unavailable(placement, work);
+    }
     try {
       if (newLaunch && !read(scope(args.work!, 'swamp-process'))[0] && !read(scope(args.work!, args.key!))[0]?.transport) saveEvent(scope(args.work!, args.key!), 'failed', {error: String(error)});
       const [value] = read(scope(args.work!, args.key!));
@@ -655,13 +735,20 @@ async function invokeInner(args: Partial<Request>, manualView?: number): Promise
     } catch { /* Preserve the original dispatch error. */ }
     throw error;
   }
+  if (args.method === 'workflow_show') {
+    const snapshot = response as {launch: string; history: History; children?: History[]; subtitle?: string};
+    snapshot.subtitle = workflowSubtitle(snapshot);
+    const placement = placements.get(snapshot.launch);
+    if (placement && placement.view === manualView) updateSubtitle(snapshot.launch, snapshot.subtitle, snapshot.history.workflowName);
+  }
+  return JSON.parse(encode(response));
 }
 export default definePlugin({
   load() {
     identity = {host_id: z.getPluginIds().host_id, session: z.serverSession, incarnation: z.serverIncarnation};
     assert(identity.session !== '', 'Bridge requires a server session');
     D.define('delivery', {value: {kind: 'Text', required: true}}, {version: 1});
-    z.subscribe(['AgentEvent', 'CommandPaneExited']);
+    z.subscribe(['AgentEvent', 'CommandPaneExited', 'PaneUpdate']);
     z.rpc.handle('swamp', async (payload, call) => {
       const from = call.source?.Plugin;
       assert(from != null, 'Workflow RPC requires a host-authenticated plugin source');
@@ -671,12 +758,24 @@ export default definePlugin({
       if (args.method === 'workflow_run' && pane.plugin_url === 'zellij:agent-exit') {
         const uid = scope(args.work!, 'view'), [existing] = read(uid);
         if (existing) assert(existing.view === from && existing.incarnation === identity.incarnation, 'Launch already belongs to another hook instance');
-        else { put(uid, {view: from, incarnation: identity.incarnation}); placements.set(args.work!, {view: from, queue: []}); }
+        else {
+          put(uid, {view: from, incarnation: identity.incarnation});
+          placements.set(args.work!, {view: from, queue: [], subtitle: 'Workflow · loading'});
+          present(args.work!);
+        }
       }
-      return invoke(args, args.method === 'workflow_show' && pane.plugin_url === 'zellij:swamp-workflow' ? from : undefined);
+      return invoke(args, args.method === 'workflow_show' ? from : undefined);
     });
   },
   async pipe(messageIn) {
+    if (messageIn.name === 'workflow-refresh-failed') {
+      const from = typeof messageIn.source === 'object' && 'Plugin' in messageIn.source ? messageIn.source.Plugin : undefined;
+      const launch = messageIn.payload ?? '';
+      for (const [work, placement] of placements) {
+        if (placement.view === from && (launch === '' || launch === work)) unavailable(placement, work);
+      }
+      return;
+    }
     if (messageIn.name === 'swamp-pane-result' && messageIn.payload) {
       const from = typeof messageIn.source === 'object' && 'Plugin' in messageIn.source ? messageIn.source.Plugin : undefined;
       if (from == null) return;
@@ -701,6 +800,15 @@ export default definePlugin({
       z.command('CliPipeOutput', [pipe, encode(reply)]);
     } finally { z.command('UnblockCliPipeInput', pipe); }
   },
+});
+z.on('PaneUpdate', () => {
+  for (const [work, placement] of placements) {
+    if (placement.detached) continue;
+    const source = read(scope(work, 'source'))[0];
+    const original = source?.pane != null ? z.command('GetPaneInfo', terminal(source.pane)) : undefined;
+    // A rerun source means the agent restarted: the workflow no longer owns its location.
+    if (original?.exited === false) detach(placement); else present(work);
+  }
 });
 z.on('AgentEvent', event => {
   let raw: { _zellij_workflow_owner?: string; prompt_sha256?: string; turn_id?: string };

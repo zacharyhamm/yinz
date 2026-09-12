@@ -21,6 +21,7 @@ globalThis.mock={...zellij, serverSession:'session',serverIncarnation:'incarnati
   rpc:{handle(_name,callback){handler=callback}},
   command(name,args){
     if(name==='GetPaneInfo') return 'Plugin' in args ? {plugin_url:args.Plugin===99?'file:impostor.ts':'zellij:swamp-workflow'} : {target:'Local'};
+    if(name==='SetPaneSubtitle') return;
     if(name==='OpenCommandPaneBackground') {opened++;const pane=++nextPane;owners[pane]=args[1].swamp_owner;panes[pane]=true;return {Terminal:pane};}
     throw Error('unexpected command: '+name);
   },
