@@ -132,6 +132,67 @@ fn deno_bridge_spawn_options_use_sdk_validation_and_defaults() {
 }
 
 #[test]
+fn deno_bridge_commands_use_sdk_validation_with_optional_cwd() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    run(&mut runtime, r#"
+      const mockCommand=mock.command;
+      mock.command=(name,args)=>name==='OpenCommandPaneBackground' ? zellij.command(name,args) : mockCommand(name,args);
+      panes[7]=true;
+    "#);
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load(); globalThis.done=0;
+      bind({async load() {
+        try {
+          for(const [i,extra] of [{},{cwd:'/work'}].entries()) {
+            const reply=await handler({method:'command',work:'commands',key:String(i),argv:['echo','hello'],...extra},{source:{Plugin:1}});
+            check(reply.outcome==='pending' && reply.pane===7 && reply.supervisor==='supervisor-7');
+            done++;
+          }
+        } catch(e) {failure=String(e.stack);}
+      }});
+      bridge('load',{},2);
+    "#);
+    run(&mut runtime, "if(failure) throw Error(failure); check(done===2);");
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const commands=sent.map(([c])=>c.OpenCommandPaneBackground).filter(Boolean);
+      check(commands.length===2);
+      for(const [i,[command,context]] of commands.entries()) {
+        check(command.path==='echo' && JSON.stringify(command.args)==='[\"hello\"]');
+        check(command.cwd===[null,'/work'][i] && context.swamp_operation===String(i));
+      }
+    "#);
+    for (command, _) in &runtime.op_state().borrow().borrow::<TestHost>().commands {
+        serde_json::from_value::<zellij_types::data::PluginCommand>(command.clone()).unwrap();
+    }
+}
+
+#[test]
+fn deno_agent_harness_spawns_with_defaults_and_a_configured_branch() {
+    for config in [json!({}), json!({"branch":"fix-tests"})] {
+        let mut runtime = sdk();
+        run(&mut runtime, "globalThis.mock=zellij;");
+        consumer(&mut runtime, "agent-harness");
+        run(&mut runtime, &format!("bind(M); bridge('load',{config},2);"));
+        run(&mut runtime, "bridge('update',{PermissionRequestResult:'Granted'},2);");
+        let state = runtime.op_state();
+        let state = state.borrow();
+        let spawns: Vec<_> = state.borrow::<TestHost>().commands.iter()
+            .filter_map(|(command, _)| command.get("SpawnAgent"))
+            .collect();
+        assert_eq!(spawns.len(), 1, "the actual harness must reach spawning: {config}");
+        let spawn = spawns[0];
+        assert_eq!(spawn["spec"]["kind"], "claude");
+        assert_eq!(spawn["spec"]["prompt"], "make the tests pass");
+        assert_eq!(spawn["spec"]["branch"], config["branch"]);
+        assert_eq!(spawn["spec"]["allow_outside_worktree"], config.get("branch").is_none());
+        serde_json::from_value::<zellij_types::data::PluginCommand>(json!({"SpawnAgent":spawn})).unwrap();
+    }
+}
+
+#[test]
 fn deno_bridge_guards_claims_callers_turns_and_reload_recovery() {
     let mut runtime = sdk();
     run(&mut runtime, include_str!("bridge_fixture.js"));

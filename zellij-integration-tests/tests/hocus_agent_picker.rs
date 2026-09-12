@@ -597,9 +597,10 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
 
     let initial = zellij.wait_until("the agent list is on screen", |snapshot| {
         // The list can render before the asynchronous two-pane placement lands.
-        // Wait until the list is to the left of the conversation before remembering home;
-        // both titles can share a row while the initial panes still overlap.
-        list_corner(snapshot).is_some()
+        // Wait for the default three-column left padding plus the frame, with the list to the
+        // left of the conversation, before remembering home: both titles can share a row while
+        // the initial panes still overlap or the list is still centered.
+        list_corner(snapshot).is_some_and(|(_, column)| column == 4)
             && snapshot.text.lines().any(|line| {
                 line.find("agents ─")
                     .zip(line.find("hocus —"))

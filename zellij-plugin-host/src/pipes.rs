@@ -131,6 +131,7 @@ impl PendingPipeInfo {
 pub fn apply_pipe_message_to_plugin(
     plugin_id: PluginId,
     client_id: ClientId,
+    pipe_owner_client_id: ClientId,
     render_clients: &[ClientId],
     running_plugin: &mut RunningPlugin,
     pipe_message: &PipeMessage,
@@ -140,6 +141,7 @@ pub fn apply_pipe_message_to_plugin(
     let result = apply_pipe_message_to_plugin_inner(
         plugin_id,
         client_id,
+        pipe_owner_client_id,
         render_clients,
         running_plugin,
         pipe_message,
@@ -147,25 +149,22 @@ pub fn apply_pipe_message_to_plugin(
         senders,
     );
     if result.is_err() {
-        release_pipe_of_crashed_plugin(plugin_id, running_plugin, pipe_message, senders);
+        release_pipe_of_crashed_plugin(plugin_id, pipe_owner_client_id, pipe_message, senders);
     }
     result
 }
 
 fn release_pipe_of_crashed_plugin(
     plugin_id: PluginId,
-    running_plugin: &RunningPlugin,
+    pipe_owner_client_id: ClientId,
     pipe_message: &PipeMessage,
     senders: &ThreadSenders,
 ) {
     if let PipeSource::Cli(pipe_id) = &pipe_message.source {
         let mut pipe_state_changes = HashMap::new();
         pipe_state_changes.insert(pipe_id.to_owned(), PipeStateChange::NoChange);
-        // the pipe was marked pending under the instance's owner, which is also what the success
-        // paths release it under
-        let plugin_render_asset =
-            PluginRenderAsset::new(plugin_id, running_plugin.env().owner_client_id, vec![])
-                .with_pipes(pipe_state_changes);
+        let plugin_render_asset = PluginRenderAsset::new(plugin_id, pipe_owner_client_id, vec![])
+            .with_pipes(pipe_state_changes);
         senders
             .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
                 plugin_render_asset,
@@ -178,6 +177,7 @@ fn release_pipe_of_crashed_plugin(
 fn apply_pipe_message_to_plugin_inner(
     plugin_id: PluginId,
     client_id: ClientId,
+    pipe_owner_client_id: ClientId,
     render_clients: &[ClientId],
     running_plugin: &mut RunningPlugin,
     pipe_message: &PipeMessage,
@@ -197,17 +197,34 @@ fn apply_pipe_message_to_plugin_inner(
     {
         Some(should_render) => {
             if rows > 0 && columns > 0 && should_render {
-                plugin_render_assets.append(&mut render_plugin_for_clients(
+                let mut assets = render_plugin_for_clients(
                     plugin_id,
                     running_plugin,
                     render_clients,
                     Some(&pipe_message.source),
-                )?);
+                )?;
+                // A queued rekey may have changed the instance's owner since registration.
+                // Keep completion with the registered owner, after the screen consumes the renders.
+                if let Some(owner_asset) = assets.first_mut() {
+                    let pipe_changes = std::mem::take(&mut owner_asset.cli_pipes);
+                    if let Some(pipe_owner_asset) = assets
+                        .iter_mut()
+                        .find(|asset| asset.client_id == pipe_owner_client_id)
+                    {
+                        pipe_owner_asset.cli_pipes = pipe_changes;
+                    } else {
+                        assets.push(
+                            PluginRenderAsset::new(plugin_id, pipe_owner_client_id, vec![])
+                                .with_pipes(pipe_changes),
+                        );
+                    }
+                }
+                plugin_render_assets.append(&mut assets);
             } else {
                 let pipes_to_block_or_unblock =
                     pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
                 let plugin_render_asset =
-                    PluginRenderAsset::new(plugin_id, running_plugin.env().owner_client_id, vec![])
+                    PluginRenderAsset::new(plugin_id, pipe_owner_client_id, vec![])
                         .with_pipes(pipes_to_block_or_unblock);
                 let _ = senders
                     .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
@@ -223,7 +240,7 @@ fn apply_pipe_message_to_plugin_inner(
                 pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
             let plugin_render_asset = PluginRenderAsset::new(
                 plugin_id,
-                running_plugin.env().owner_client_id,
+                pipe_owner_client_id,
                 vec![], // nothing to render
             )
             .with_pipes(pipes_to_block_or_unblock);

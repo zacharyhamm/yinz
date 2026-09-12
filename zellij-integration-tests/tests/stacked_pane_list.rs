@@ -219,6 +219,7 @@ fn disabling_stacked_pane_list_restores_the_classic_stack() {
 
     let grid_snapshot = zellij.wait_until("classic stack rendered", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains(" Tab #1")
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
             && !has_selected_entry(grid_snapshot, "Pane #2")
@@ -237,6 +238,7 @@ fn up_and_down_move_the_selection_through_the_list() {
     let middle_member_selected = zellij.wait_until("middle member swapped in", |grid_snapshot| {
         grid_snapshot.contains("<g> LOCK")
             && has_selected_entry(grid_snapshot, "Pane #2")
+            && tab_bar_names_the_selected_member(grid_snapshot, "Pane #2")
             && grid_snapshot.contains("second-member")
             && !has_selected_entry(grid_snapshot, "Pane #3")
     });
@@ -296,6 +298,7 @@ fn closing_the_visible_member_promotes_its_neighbor() {
             grid_snapshot.status_bar_appears()
                 && !grid_snapshot.contains("Pane #3")
                 && has_selected_entry(grid_snapshot, "Pane #2")
+                && tab_bar_names_the_selected_member(grid_snapshot, "Pane #2")
                 && grid_snapshot.contains("second-member")
         });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -314,6 +317,7 @@ fn a_stack_list_dissolves_into_a_normal_pane_at_one_member() {
 
     let grid_snapshot = zellij.wait_until("list dissolved to a single pane", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains(&format!("[{}] Tab #1", first_member.terminal_id()))
             && !grid_snapshot.contains("Pane #2")
             && !grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("first-member")
@@ -383,6 +387,7 @@ fn floating_the_visible_member_promotes_its_neighbor() {
     let grid_snapshot = zellij.wait_until("member floated over the stack", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
             && has_selected_entry(grid_snapshot, "Pane #2")
+            && tab_bar_names_the_selected_member(grid_snapshot, "Pane #2")
             && grid_snapshot.contains("Pane #3")
             && grid_snapshot.contains("third-member")
     });
@@ -393,7 +398,7 @@ fn floating_the_visible_member_promotes_its_neighbor() {
 #[test]
 fn fullscreen_suspends_the_list_and_restores_it() {
     let mut zellij = start_zellij();
-    build_three_member_stack(&zellij);
+    let [_, _, third_member] = build_three_member_stack(&zellij);
 
     zellij.send_stdin(&keys::ctrl('p'));
     zellij.send_stdin(&keys::key('f'));
@@ -405,6 +410,7 @@ fn fullscreen_suspends_the_list_and_restores_it() {
     zellij.send_stdin(&keys::key('f'));
     let grid_snapshot = zellij.wait_until("list restored after fullscreen", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains(&format!("[{}] Tab #1", third_member.terminal_id()))
             && !grid_snapshot.contains("(FULLSCREEN)")
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
@@ -715,6 +721,7 @@ fn splitting_a_new_pane_reforms_the_list_around_it() {
 
     let grid_snapshot = zellij.wait_until("list re-formed above the new pane", |grid_snapshot| {
         grid_snapshot.contains("<g> LOCK")
+            && grid_snapshot.contains(" Tab #1")
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
             && has_selected_entry(grid_snapshot, "Pane #3")

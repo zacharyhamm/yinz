@@ -13,7 +13,7 @@ export default definePlugin({
     try {
       await z.waitForPermissions(['RunCommands', 'ReadApplicationState', 'WriteToStdin', 'ChangeApplicationState', 'PluginData']);
       if (!['claude', 'codex', 'cursor'].includes(config.agent)) throw new Error('Unsupported agent');
-      const pane = z.agent.spawn({kind: config.agent as AgentSpawnOptions['kind'], prompt: config.prompt, branch: config.branch, allow_outside_worktree: !config.branch, name: `harness: ${config.agent}`});
+      const pane = z.agent.spawn({kind: config.agent as AgentSpawnOptions['kind'], prompt: config.prompt, branch: config.branch ?? null, allow_outside_worktree: !config.branch, name: `harness: ${config.agent}`});
       if (!('Terminal' in pane)) throw new Error('Expected terminal');
       say(`spawned ${config.agent} in pane ${pane.Terminal}: ${config.prompt}`);
       const turn = await z.agent.waitForTurn(pane, {fallback: 'idle'}); say('agent: ' + tail(turn.message ?? '(no message)', 3));
