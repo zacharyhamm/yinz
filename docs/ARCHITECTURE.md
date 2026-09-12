@@ -273,7 +273,9 @@ through the `ThreadSenders` it is given. The screen, which owns the tabs, stays 
 `zellij-server`, and the server re-exports `panes` and `tab` at its root so external paths such
 as `zellij_server::panes::TerminalPane` and `zellij_server::tab::Pane` are unchanged. The
 `test-support` feature exposes the handful of test helpers on `Tab`, `CopyOptions` and
-`ContextMenuLayout` that the server's screen tests drive; the server's dev-dependency enables it.
+`ContextMenuLayout` that the server's screen tests drive. The server's normal dependency enables
+it consistently for build, run, integration tests, unit tests and lint. The helpers also compile
+in release builds, but production code does not invoke them. Their existing feature guards remain.
 
 Layering (arrows point from dependency to consumer):
 

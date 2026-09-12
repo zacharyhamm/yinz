@@ -7,7 +7,7 @@ description = "The zellij server's panes, pane managers, frames and tabs"
 
 [features]
 # Test helpers on `Tab`, `CopyOptions` and `ContextMenuLayout` that `zellij-server`'s screen
-# tests drive; enabled by its dev-dependency on this crate.
+# tests drive. Its normal dependency enables this feature for consistent build and test selection.
 test-support = []
 
 [lints]

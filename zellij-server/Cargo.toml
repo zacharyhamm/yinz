@@ -22,7 +22,7 @@ zellij-storage = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
 zellij-bus = { path = "../zellij-bus", version = "0.45.0" }
-zellij-panes = { path = "../zellij-panes", version = "0.45.0" }
+zellij-panes = { path = "../zellij-panes", version = "0.45.0", features = ["test-support"] }
 zellij-plugin-host = { path = "../zellij-plugin-host", version = "0.45.0" }
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 zellij-process = { path = "../zellij-process", version = "0.45.0" }
@@ -51,7 +51,6 @@ nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "sign
 
 [dev-dependencies]
 vte = { workspace = true }
-zellij-panes = { path = "../zellij-panes", version = "0.45.0", features = ["test-support"] }
 criterion = { workspace = true }
 hegeltest = "0.29.3"
 tokio = { workspace = true, features = ["sync", "test-util"] }
