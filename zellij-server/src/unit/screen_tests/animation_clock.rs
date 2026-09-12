@@ -213,3 +213,44 @@ fn quiet_ticks_put_nothing_but_the_frame_on_the_bus() {
         "and not one word to the clock, which is already running at the right period: {jobs:?}"
     );
 }
+
+#[test]
+fn agent_double_escape_timeout_repaints_and_stops_the_clock() {
+    let start = Instant::now();
+    let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen
+        .tabs
+        .values_mut()
+        .next()
+        .unwrap()
+        .pending_agent_escapes
+        .insert(
+            (
+                ClientId::new(1),
+                PaneId::Terminal(crate::TerminalId::new(1)),
+            ),
+            start,
+        );
+    screen.sync_animation_clock(start).unwrap();
+    assert_eq!(
+        started_clock_periods(&drain_background_jobs(&background_jobs)),
+        vec![DOT_PERIOD]
+    );
+    screen
+        .on_animation_tick(start + Duration::from_millis(999))
+        .unwrap();
+    assert!(screen.animations_are_live(start));
+    drain_background_jobs(&background_jobs);
+    screen
+        .on_animation_tick(start + Duration::from_secs(1))
+        .unwrap();
+    assert!(screen
+        .tabs
+        .values()
+        .all(|tab| tab.pending_agent_escapes.is_empty()));
+    assert!(!screen.animations_are_live(start + Duration::from_secs(1)));
+    let jobs = drain_background_jobs(&background_jobs);
+    assert!(jobs.contains(&BackgroundJob::RenderToClients));
+    assert!(jobs.contains(&BackgroundJob::StopAnimationClock));
+}

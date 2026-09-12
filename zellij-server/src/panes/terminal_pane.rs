@@ -154,6 +154,7 @@ pub struct TerminalPane {
     /// Whether this pane is kin of the focused one - see `Pane::has_related_highlight`.
     /// Written whole-session at a time by `Tab::set_related_panes`, read by `frame_color`.
     is_related: bool,
+    pending_agent_escape_clients: HashSet<ClientId>,
     frame: HashMap<ClientId, PaneFrame>,
     borderless: bool,
     exclude_from_sync: bool,
@@ -580,6 +581,10 @@ impl Pane for TerminalPane {
             Ok(None)
         }
     }
+    fn set_pending_agent_escape_clients(&mut self, clients: HashSet<ClientId>) {
+        self.pending_agent_escape_clients = clients;
+    }
+
     fn render_frame(
         &mut self,
         client_id: ClientId,
@@ -627,7 +632,7 @@ impl Pane for TerminalPane {
             .pane_frame_color_override
             .as_ref()
             .filter(|override_| override_.applies_to(client_id));
-        let pane_title = if frame_params.blank_title {
+        let mut pane_title = if frame_params.blank_title {
             String::new()
         } else if let Some(text_color_override) =
             frame_color_override.and_then(|override_| override_.text.as_ref())
@@ -636,6 +641,10 @@ impl Pane for TerminalPane {
         } else {
             self.title_with_bell_indicator(normal_title)
         };
+
+        if !frame_params.blank_title && self.pending_agent_escape_clients.contains(&client_id) {
+            pane_title = format!("Esc again {}", pane_title);
+        }
 
         let frame_geom = frame_params
             .frame_geom_override
@@ -1766,6 +1775,7 @@ impl TerminalPane {
             notification_end.set_affected_pane_id(PaneId::Terminal(pid));
         }
         TerminalPane {
+            pending_agent_escape_clients: HashSet::new(),
             frame: HashMap::new(),
             content_offset: Offset::default(),
             pid,

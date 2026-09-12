@@ -1695,3 +1695,61 @@ fn apc_b64(control: &str, payload: &[u8]) -> Vec<u8> {
     let separator = if payload.is_empty() { "" } else { ";" };
     format!("\x1b_G{control}{separator}{payload}\x1b\\").into_bytes()
 }
+
+#[test]
+fn agent_double_escape_frame_prefix_restores_title_and_respects_geometry() {
+    let client = crate::ClientId::new(1);
+    let other = crate::ClientId::new(2);
+    let mut pane = agent_pane();
+    pane.update_name("my agent");
+    let render = |pane: &mut TerminalPane, client, params| {
+        pane.render_frame(client, params, InputMode::Normal)
+            .unwrap()
+            .map(|(chunks, _)| {
+                chunks
+                    .into_iter()
+                    .filter(|chunk| chunk.y == 0)
+                    .flat_map(|chunk| chunk.terminal_characters)
+                    .map(|character| character.character)
+                    .collect::<String>()
+            })
+    };
+    let normal = render(&mut pane, client, frame_params(true)).unwrap();
+    pane.set_pending_agent_escape_clients([client].into_iter().collect());
+    let hinted = render(&mut pane, client, frame_params(true)).unwrap();
+    assert!(hinted.contains("Esc again"), "{hinted}");
+    assert!(hinted.contains("my agent"), "{hinted}");
+    assert!(!render(&mut pane, other, frame_params(true))
+        .unwrap()
+        .contains("Esc again"));
+    pane.set_pending_agent_escape_clients(Default::default());
+    assert_eq!(
+        render(&mut pane, client, frame_params(true)).unwrap(),
+        normal
+    );
+
+    pane.set_pending_agent_escape_clients([client].into_iter().collect());
+    for blank in [false, true] {
+        let mut params = frame_params(true);
+        params.omit_title = !blank;
+        params.blank_title = blank;
+        let hidden = render(&mut pane, client, params).unwrap();
+        assert!(!hidden.contains("Esc again"));
+        assert!(!hidden.contains("my agent"));
+    }
+    for cols in [5, 12, 20] {
+        let mut geom = pane.current_geom();
+        geom.cols.set_inner(cols);
+        pane.set_geom(geom);
+        let narrow = render(&mut pane, client, frame_params(true)).unwrap();
+        assert_eq!(narrow.chars().count(), cols, "{narrow}");
+        if cols > 8 {
+            assert!(
+                narrow.contains("[..]") || narrow.contains("[...]"),
+                "{narrow}"
+            );
+        }
+    }
+    pane.set_borderless(true);
+    assert!(render(&mut pane, client, frame_params(true)).is_none());
+}

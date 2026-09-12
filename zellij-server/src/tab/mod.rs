@@ -484,6 +484,9 @@ pub trait Pane {
             Vec<KittyImageChunk>,
         )>,
     >; // TODO: better
+    /// Clients whose next Esc confirms input to this pane; only their frame shows the hint.
+    fn set_pending_agent_escape_clients(&mut self, _clients: HashSet<ClientId>) {}
+
     fn render_frame(
         &mut self,
         client_id: ClientId,
@@ -5253,10 +5256,11 @@ impl Tab {
                         .is_some_and(|first| now.duration_since(first) < Duration::from_secs(1))
                     {
                         self.pending_agent_escapes.insert(target, now);
-                        return Ok(false);
+                        return Ok(true);
                     }
+                    should_update_ui = true;
                 } else {
-                    self.pending_agent_escapes.remove(&target);
+                    should_update_ui |= self.pending_agent_escapes.remove(&target).is_some();
                 }
             }
         }
@@ -5904,12 +5908,28 @@ impl Tab {
         Ok(())
     }
 
+    pub(crate) fn expire_pending_agent_escapes(&mut self, now: Instant) {
+        self.pending_agent_escapes
+            .retain(|_, first| now.duration_since(*first) < Duration::from_secs(1));
+    }
+
     /// Everything `render` draws except the cursor.
     pub fn render_panes(
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
+        self.expire_pending_agent_escapes(Instant::now());
+        for pane_id in self.get_all_pane_ids() {
+            let clients = self
+                .pending_agent_escapes
+                .keys()
+                .filter_map(|(client, pane)| (*pane == pane_id).then_some(*client))
+                .collect();
+            if let Some(pane) = self.pane_mut(pane_id) {
+                pane.set_pending_agent_escape_clients(clients);
+            }
+        }
         self.render_tiled_panes_and_chrome(output, client_id_override)?;
         self.render_floating_panes_and_overlays(output, client_id_override)?;
         Ok(())

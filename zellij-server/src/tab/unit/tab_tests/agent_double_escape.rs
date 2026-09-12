@@ -177,3 +177,49 @@ fn agent_double_escape_leaves_guest_menus_and_plugins_alone() {
     assert_eq!(keys, 2);
     assert!(tab.pending_agent_escapes.is_empty());
 }
+
+#[test]
+fn agent_double_escape_hint_tracks_pending_input_per_client() {
+    let mut tab = create_new_tab(Size { cols: 80, rows: 20 }, true);
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    tab.set_pane_agent(pane, Some(agent()));
+    tab.agent_double_escape = true;
+    let render = |tab: &mut Tab, client| {
+        let mut output = zellij_terminal::output::Output::default();
+        tab.render(&mut output, Some(client)).unwrap();
+        output
+            .serialize()
+            .unwrap()
+            .remove(&client)
+            .unwrap_or_default()
+    };
+    let esc = Some(KeyWithModifier::new(BareKey::Esc));
+    for cancel in [false, true] {
+        assert!(tab
+            .write_to_pane_id(&esc, vec![27], false, pane, Some(client), None)
+            .unwrap());
+        assert!(render(&mut tab, client).contains("Esc again"));
+        assert!(!render(&mut tab, other).contains("Esc again"));
+        let key = if cancel {
+            Some(KeyWithModifier::new(BareKey::Char('x')))
+        } else {
+            esc.clone()
+        };
+        assert!(tab
+            .write_to_pane_id(&key, vec![27], false, pane, Some(client), None)
+            .unwrap());
+        let restored = render(&mut tab, client);
+        assert!(!restored.is_empty(), "clearing the hint repaints the frame");
+        assert!(!restored.contains("Esc again"));
+    }
+    tab.write_to_pane_id(&esc, vec![27], false, pane, Some(client), None)
+        .unwrap();
+    assert!(render(&mut tab, client).contains("Esc again"));
+    let start = tab.pending_agent_escapes[&(client, pane)];
+    tab.expire_pending_agent_escapes(start + Duration::from_secs(1));
+    let restored = render(&mut tab, client);
+    assert!(!restored.is_empty());
+    assert!(!restored.contains("Esc again"));
+}

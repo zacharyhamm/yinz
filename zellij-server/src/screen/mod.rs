@@ -1031,7 +1031,12 @@ impl Screen {
             Some(FRAME_PERIOD)
         } else if !self.blinking_agent_panes.is_empty() {
             Some(BLINK_TICK)
-        } else if !self.animating_plugin_loads.is_empty() {
+        } else if !self.animating_plugin_loads.is_empty()
+            || self
+                .tabs
+                .values()
+                .any(|tab| !tab.pending_agent_escapes.is_empty())
+        {
             Some(DOT_PERIOD)
         } else {
             None
@@ -1082,6 +1087,9 @@ impl Screen {
     /// `reap_settled_notifications` only runs inside a frame - until unrelated output happens to
     /// repaint.
     pub(crate) fn on_animation_tick(&mut self, now: Instant) -> Result<()> {
+        for tab in self.tabs.values_mut() {
+            tab.expire_pending_agent_escapes(now);
+        }
         self.render(None)?;
         self.sync_animation_clock(now)
     }
