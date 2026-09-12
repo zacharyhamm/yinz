@@ -9,33 +9,25 @@ import {
     Context,
     digest,
     exec,
-    Key,
     Literal,
 } from "./_lib/workflow.ts";
 
-import { Operation, operation } from "./_lib/bridge.ts";
-const VmSync = Operation.extend({
-    outcome: z.literal("completed"),
-    clean: z.literal(true),
-});
-export const Sync = z.union([VmSync, z.object({ mode: z.literal("local") })]);
-const Ref = Literal.min(1).refine((s) => !s.startsWith("-"));
-const Revision = z.object({
-    checkout: z.string(),
-    branch: z.string(),
-    commit: z.string(),
-    contents: z.string(),
-    clean: z.boolean(),
-    conflicts: z.array(z.string()),
-    rebasing: z.boolean(),
-});
-export const Evidence = z.object({
-    source: Revision,
-    target: Revision,
-    gate: z.array(Literal).min(1),
-    vmSync: Sync,
-});
-export const Finding = z.object({
+import { observe, Operation, operation } from "./_lib/bridge.ts";
+import {
+    Args,
+    checkoutStatus,
+    CommitAndRebase,
+    Evidence,
+    evidence,
+    git,
+    locked,
+    Mutation,
+    Sync,
+} from "./_lib/git_checkout.ts";
+import { outputPreview, OutputRef } from "./_lib/evidence.ts";
+export { Evidence, Finding, Sync };
+
+const Finding = z.object({
     severity: z.enum(["error", "warning", "info"]),
     file: z.string(),
     message: z.string().min(1),
@@ -55,15 +47,6 @@ const Test = z.object({
     log: z.string().min(1),
     passed: z.boolean(),
 });
-const Args = z.object({
-    source: Literal.min(1),
-    binary: Literal.min(1).default("zellij"),
-    target: Literal.min(1),
-    targetBranch: Ref.default("main"),
-    gate: z.array(Literal).min(1).default(["cargo", "x", "ci", "check"]),
-    vmSync: Sync,
-});
-const Mutation = Args.extend({ key: Key });
 const CheckoutStatusArgs = Args.pick({ source: true, targetBranch: true });
 const Integration = Mutation.extend({
     evidence: Evidence,
@@ -71,139 +54,6 @@ const Integration = Mutation.extend({
     test: Test.nullable(),
     approved: z.literal(true),
 });
-const git = (c: Context, path: string, args: string[]) =>
-    checked(c, path, ["git", ...args]);
-
-async function checkoutStatus(c: Context, checkout: string) {
-    const status = await git(c, checkout, [
-        "--no-optional-locks",
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=all",
-        "--ignore-submodules=none",
-    ]);
-    let rebasing = false;
-    for (const name of ["rebase-merge", "rebase-apply"]) {
-        const path = await git(c, checkout, [
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            name,
-        ]);
-        try {
-            await Deno.stat(path);
-            rebasing = true;
-        } catch (e) {
-            if (!(e instanceof Deno.errors.NotFound)) throw e;
-        }
-    }
-    return { status, rebasing };
-}
-
-async function revision(c: Context, directory: string) {
-    const checkout = await Deno.realPath(directory);
-    if (
-        await Deno.realPath(
-            await git(c, checkout, ["rev-parse", "--show-toplevel"]),
-        ) !== checkout
-    ) throw new Error("Expected a checkout root");
-    const symbolic = await exec(c, checkout, [
-        "git",
-        "symbolic-ref",
-        "--short",
-        "HEAD",
-    ]);
-    let branch = symbolic.stdout.trimEnd();
-    if (symbolic.exitCode !== 0) {
-        for (
-            const name of ["rebase-merge/head-name", "rebase-apply/head-name"]
-        ) {
-            try {
-                branch = (await Deno.readTextFile(
-                    await git(c, checkout, [
-                        "rev-parse",
-                        "--path-format=absolute",
-                        "--git-path",
-                        name,
-                    ]),
-                )).trim().replace(/^refs\/heads\//, "");
-                break;
-            } catch (e) {
-                if (!(e instanceof Deno.errors.NotFound)) throw e;
-            }
-        }
-        if (!branch) throw new Error("Detached source has no rebase ownership");
-    }
-    const commit = await git(c, checkout, ["rev-parse", "HEAD"]);
-    const { status, rebasing } = await checkoutStatus(c, checkout);
-    const diff = await git(c, checkout, [
-        "diff",
-        "HEAD",
-        "--binary",
-        "--no-ext-diff",
-        "--no-textconv",
-    ]);
-    const untracked = (await git(c, checkout, [
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-        "-z",
-    ])).split("\0").filter(Boolean);
-    const files = [];
-    for (const path of untracked) {
-        const info = await Deno.lstat(`${checkout}/${path}`);
-        files.push([
-            path,
-            info.isSymlink
-                ? await Deno.readLink(`${checkout}/${path}`)
-                : await digest(
-                    Array.from(await Deno.readFile(`${checkout}/${path}`)),
-                ),
-        ]);
-    }
-    const conflicts = (await git(c, checkout, [
-        "diff",
-        "--name-only",
-        "--diff-filter=U",
-        "-z",
-    ])).split("\0").filter(Boolean);
-    return Revision.parse({
-        checkout,
-        branch,
-        commit,
-        contents: await digest([status, diff, files]),
-        clean: status === "",
-        conflicts,
-        rebasing,
-    });
-}
-async function evidence(c: Context, args: z.infer<typeof Args>) {
-    const source = await revision(c, args.source);
-    const target = await revision(c, args.target);
-    if (source.checkout === target.checkout) {
-        throw new Error("Source and target checkouts must differ");
-    }
-    if (target.branch !== args.targetBranch) {
-        throw new Error(`Target must have ${args.targetBranch} checked out`);
-    }
-    const common = (path: string) =>
-        git(c, path, [
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ]);
-    if (
-        await Deno.realPath(await common(source.checkout)) !==
-            await Deno.realPath(await common(target.checkout))
-    ) throw new Error("Checkouts belong to different repositories");
-    return Evidence.parse({
-        source,
-        target,
-        gate: args.gate,
-        vmSync: args.vmSync,
-    });
-}
 async function liveVm(c: Context, args: z.infer<typeof Args>) {
     if ("mode" in args.vmSync) return true;
     const owner = args.vmSync.owner;
@@ -222,33 +72,6 @@ async function liveVm(c: Context, args: z.infer<typeof Args>) {
     ) throw new Error("VM sync evidence belongs to a different agent");
     return (current.vm ?? null) === (args.vmSync.vm ?? null) &&
         current.clean === true;
-}
-/** Kernel locks release on process death; never unlink their inodes. */
-async function locked<T>(
-    c: Context,
-    paths: string[],
-    action: () => Promise<T>,
-) {
-    const locks: Deno.FsFile[] = [];
-    try {
-        const dirs = await Promise.all(
-            paths.map(async (p) =>
-                await git(c, p, ["rev-parse", "--absolute-git-dir"])
-            ),
-        );
-        for (const dir of [...new Set(dirs)].sort()) {
-            const file = await Deno.open(`${dir}/zellij-workflow.lock`, {
-                create: true,
-                write: true,
-            });
-            locks.push(file);
-            await file.lock();
-            c.signal.throwIfAborted();
-        }
-        return await action();
-    } finally {
-        for (const file of locks.reverse()) file.close();
-    }
 }
 const resource = <T extends z.ZodType>(schema: T, description: string) => ({
     schema,
@@ -305,6 +128,8 @@ const RebaseResult = z.object({
     stdout: z.string(),
     stderr: z.string(),
     evidence: Evidence,
+    operation: Operation.optional(),
+    outputRef: OutputRef.optional(),
 });
 /** Additional methods; the official commit and non-force cleanup remain available. */
 export const extension = {
@@ -319,6 +144,10 @@ export const extension = {
             "Saved branch, staged, unstaged and untracked changes",
         ),
         claim: claimResource,
+        commandOutput: resource(
+            z.object({ output: z.string() }),
+            "Full foreground command output",
+        ),
         evidence: resource(
             Evidence,
             "Source, target, contents, gate and VM sync identity",
@@ -388,6 +217,125 @@ export const extension = {
                     error = String(e);
                 }
                 return save(c, "checkoutStatus", { unchanged, error });
+            },
+        },
+        commit_and_rebase: {
+            description:
+                "Commit and rebase in a foreground pane, waiting for dismissal",
+            arguments: CommitAndRebase,
+            execute: async (
+                input: z.infer<typeof CommitAndRebase>,
+                c: Context,
+            ) => {
+                const args = CommitAndRebase.parse(input);
+                const result = await claimed(c, args.key, args, async () => {
+                    if (!c.modelType || !c.modelId) {
+                        throw new Error(
+                            "Saved output model identity unavailable",
+                        );
+                    }
+                    const author: string[] = [];
+                    for (
+                        const [key, config] of [["authorName", "user.name"], [
+                            "authorEmail",
+                            "user.email",
+                        ]]
+                    ) {
+                        const value = c.globalArgs[key];
+                        if (value) {
+                            author.push(
+                                "-c",
+                                `${config}=${Literal.parse(value)}`,
+                            );
+                        }
+                    }
+                    const { denoPath } = z.object({ denoPath: Literal.min(1) })
+                        .parse(
+                            JSON.parse(
+                                await checked(c, c.repoDir, [
+                                    "swamp",
+                                    "doctor",
+                                    "extensions",
+                                    "--json",
+                                ]),
+                            ),
+                        );
+                    const worker =
+                        `${c.repoDir}/extensions/models/_lib/commit_worker.ts`;
+                    await Deno.stat(worker);
+                    // Retain files on uncertain observation: the independent worker may still be writing.
+                    const directory = await Deno.makeTempDir({
+                        prefix: "zellij-commit-",
+                    });
+                    const request = {
+                        work: args.work,
+                        key: args.key,
+                        session: args.session,
+                        binary: args.binary,
+                    };
+                    await operation(c, {
+                        ...request,
+                        method: "command",
+                        foreground: true,
+                        cwd: args.source,
+                        argv: [
+                            denoPath,
+                            "run",
+                            "--no-config",
+                            "--allow-all",
+                            worker,
+                            JSON.stringify({ ...args, author, directory }),
+                        ],
+                    });
+                    const command = await observe(c, request, 3600, false);
+                    if (
+                        !["completed", "failed"].includes(command.outcome) ||
+                        command.exitCode == null || command.exitCode === 125 ||
+                        command.exitCode > 128
+                    ) {
+                        throw new Error(
+                            "Commit and rebase was interrupted or its completion is uncertain; inspect the saved operation before proceeding",
+                        );
+                    }
+                    const saved = JSON.parse(
+                        await Deno.readTextFile(`${directory}/result.json`),
+                    );
+                    if (saved.error) throw new Error(String(saved.error));
+                    const completed = z.object({
+                        exitCode: z.number().int(),
+                        evidence: Evidence,
+                    }).parse(saved);
+                    if (completed.exitCode !== command.exitCode) {
+                        throw new Error(
+                            "Worker exit status does not match its saved result",
+                        );
+                    }
+                    const output = await Deno.readTextFile(
+                        `${directory}/output.log`,
+                    );
+                    const handle = await c.writeResource(
+                        "commandOutput",
+                        `command-output-${args.key}`,
+                        { output },
+                    );
+                    const outputRef = OutputRef.parse({
+                        modelType: c.modelType.normalized,
+                        modelId: c.modelId,
+                        ...handle,
+                    });
+                    delete command.output;
+                    const result = RebaseResult.parse({
+                        ...completed,
+                        stdout: outputPreview(output),
+                        stderr: "",
+                        outputRef,
+                        operation: command,
+                    });
+                    c.signal.throwIfAborted();
+                    await Deno.remove(directory, { recursive: true });
+                    return result;
+                });
+                return save(c, "rebaseResult", RebaseResult.parse(result));
             },
         },
         guarded_commit: {

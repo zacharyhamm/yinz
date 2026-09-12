@@ -26,6 +26,7 @@ parser.add_argument('--binary', default='target/debug/zellij')
 parser.add_argument('--firecracker-only', action='store_true')
 parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
+parser.add_argument('--commit-rebase-only', action='store_true')
 parser.add_argument('--exit-only', action='store_true')
 parser.add_argument('--exit-menu-only', action='store_true')
 parser.add_argument('--timing-only', action='store_true', help='Three diagnostic diff-and-return runs on one warm disposable server')
@@ -174,6 +175,23 @@ def answer(q, value, token):
     return zellij('workflow', 'answer', a['run'], q['model'], a['question'], value, '--submission', token)
 
 
+def commit_pane(token):
+    for item in histories(token):
+        operation = bridge(method='lookup', work=token, key=item['runId'] + '-commit-and-rebase')
+        if operation and operation.get('outcome') == 'pending' and operation.get('pane') is not None:
+            return next((p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                         if not p['is_plugin'] and p['id'] == operation['pane']), None)
+    return None
+
+
+def dismiss_commit(token):
+    pane = until('commit and rebase pane', lambda: commit_pane(token))
+    pane_id = 'terminal_' + str(pane['id'])
+    until('commit and rebase dismissal prompt', lambda: 'Press Enter to return.' in
+          zellij('action', 'dump-screen', '--pane-id', pane_id))
+    zellij('action', 'write-chars', '--pane-id', pane_id, '\n')
+
+
 def exercise_exit_menus():
     checkout = root / 'exit-topic'
     run('git', 'worktree', 'add', '-b', 'exit-topic', checkout)
@@ -319,6 +337,19 @@ question_code = question_code.replace(anchor, f"""    try {{
     }}
 """ + anchor)
 question_source.write_text(question_code)
+if args.commit_rebase_only:
+    # Keep oversized legacy rows beside new results to test the actual CEL projection.
+    git_source = main / 'extensions/models/git_workflow.ts'
+    git_code = git_source.read_text()
+    marker = '                    const handle = await c.writeResource('
+    assert git_code.count(marker) == 1
+    git_code = git_code.replace(marker, """                    if (output.includes('LARGE HOOK BEGIN')) {
+                        const legacy = { ...completed, stdout: output, stderr: output, operation: { ...command, output } };
+                        await c.writeResource('rebaseResult', 'rebaseResult-legacy', legacy);
+                        await c.writeResource('claim', 'claim-legacy', { key: 'legacy', fingerprint: 'legacy', outcome: 'completed', result: JSON.stringify(legacy) });
+                    }
+""" + marker)
+    git_source.write_text(git_code)
 (main / '.zellij').mkdir()
 shutil.copy(source / '.zellij/.swamp-workflows.kdl', main / '.zellij/.swamp-workflows.kdl')
 (main / '.git/info/exclude').write_text('.swamp*\n.gitignore\nextensions/\nworkflows/\nmodels/\n.zellij/\nAGENTS.md\nCLAUDE.md\n')
@@ -496,6 +527,7 @@ try:
         assert (topic / 'guest.txt').read_text() == 'guest\n'
         assert bridge(method='lookup', work='original-vm', key='worker') is None
         answer(prepared, 'commit-and-rebase', 'vm-rebase')
+        dismiss_commit('original-vm')
         review_menu = until('host rebased review menu', lambda: pending('original-vm', 'review'))
         host_commit = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout.strip()
         assert host_commit != guest_commit
@@ -541,6 +573,8 @@ try:
             print('CHOICE:', token, question, value, flush=True)
             q = until(token + ': ' + question, lambda: pending(token, question))
             answer(q, value, 'answer-' + q['attributes']['run'])
+            if value == 'commit-and-rebase':
+                dismiss_commit(token)
             return q
 
         def prepare(token):
@@ -553,6 +587,112 @@ try:
 
         if args.exit_menu_only:
             exercise_exit_menus()
+            raise SystemExit(0)
+
+        if args.commit_rebase_only:
+            hooks = root / 'commit-hooks'
+            hooks.mkdir()
+            hook = hooks / 'pre-commit'
+            release = root / 'release-commit'
+            for scenario in ('success', 'clean', 'commit-failed', 'conflict'):
+                if scenario == 'success':
+                    (main / 'target-only').write_text('advanced target\n')
+                    run('git', 'add', 'target-only')
+                    run('git', 'commit', '-m', 'advance target')
+                    hook.write_text('#!/usr/bin/env python3\nimport time\nfrom pathlib import Path\n'
+                                    'print("LIVE COMMIT HOOK", flush=True)\n'
+                                    f'while not Path({str(release)!r}).exists(): time.sleep(0.01)\n'
+                                    'print("LARGE HOOK BEGIN\\n" + ("😀é𝄞\\n" * 65000) + "LARGE HOOK END", flush=True)\n')
+                    hook.chmod(0o700)
+                    run('git', 'config', 'core.hooksPath', hooks)
+                    original_id = int(zellij('run', '--cwd', str(topic), '--', 'claude').strip().split('_')[-1])
+                    until('source ready', lambda: 'STUB READY' in zellij('action', 'dump-screen'))
+                    zellij('action', 'write-chars', '--pane-id', str(original_id), 'exit\n')
+                    automatic = until('automatic exit run', lambda: swamp('workflow', 'history', 'search',
+                                      '--filter', 'inputs.sourcePane == ' + str(original_id))['results'])
+                    token = automatic[0]['inputs']['launch']
+                else:
+                    token = 'foreground-' + scenario
+                    if scenario == 'commit-failed':
+                        (topic / 'file').write_text('failed commit contents\n')
+                        hook.write_text('#!/bin/sh\nprintf "COMMIT REJECTED\\n" >&2\nexit 1\n')
+                    elif scenario == 'conflict':
+                        run('git', 'config', '--unset', 'core.hooksPath')
+                        (main / 'file').write_text('target conflict\n')
+                        run('git', 'commit', '-am', 'target conflict')
+                    launch(token)
+                choose(token, 'exit', 'begin-review')
+                q = until('foreground preparation', lambda: pending(token, 'prepare'))
+                if scenario != 'success':
+                    zellij('workflow', 'show', q['attributes']['run'])
+                until('preparation displayed', lambda: 'Show diff' in zellij('action', 'dump-screen'))
+                view = next(p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                            if p.get('plugin_url') in ('zellij:swamp-workflow', 'zellij:agent-exit')
+                            and not p['is_suppressed'] and p['is_focused'])
+                head = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
+                answer(q, 'commit-and-rebase', 'foreground-' + scenario)
+                pane = until('foreground commit pane', lambda: commit_pane(token))
+                pane_id = 'terminal_' + str(pane['id'])
+                until('command pane takes focus', lambda: any(p['id'] == pane['id'] and not p['is_plugin']
+                      and p['is_focused'] and not p['is_suppressed'] for p in json.loads(zellij('action', 'list-panes', '--json'))))
+                for field in ('pane_x', 'pane_y', 'pane_rows', 'pane_columns', 'is_floating'):
+                    assert pane[field] == view[field], (field, pane, view)
+                screen = lambda: zellij('action', 'dump-screen', '--pane-id', pane_id)
+                if scenario == 'success':
+                    until('live commit command and hook output', lambda: '$ git commit' in screen() and 'LIVE COMMIT HOOK' in screen())
+                    assert 'Press Enter to return.' not in screen()
+                    release.touch()
+                until('result waits for dismissal', lambda: 'Press Enter to return.' in screen())
+                output = screen()
+                assert ('No changes to commit.' in output) == (scenario == 'clean'), output
+                assert ('$ git rebase ' in output) == (scenario != 'commit-failed'), output
+                assert ('finished (exit 0)' in output) == (scenario in ('success', 'clean')), output
+                if scenario == 'commit-failed':
+                    assert 'COMMIT REJECTED' in output
+                if scenario in ('clean', 'commit-failed'):
+                    assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout == head
+                # Persistence is the behavior under test: finished commands must await input.
+                time.sleep(1)
+                assert commit_pane(token) and not pending(token, 'review') and not pending(token, 'conflict')
+                os.write(ui_fd, b'\r')
+                until('workflow view restored', lambda: any(p['id'] == view['id'] and p['is_plugin']
+                      and not p['is_suppressed'] for p in json.loads(zellij('action', 'list-panes', '--json'))))
+                if scenario == 'success':
+                    question = until('review after oversized commit output', lambda: pending(token, 'review'))
+                    snapshot = bridge(method='workflow_show', directory=str(topic), run=question['attributes']['run'])
+                    assert len(json.dumps(snapshot).encode()) < 1_048_576
+                    assert any(q['attributes']['state'] == 'pending' for q in snapshot['questions']['results'])
+                    entries = snapshot['outputs']['results']
+                    result = next(e for e in entries if e['name'] == 'rebaseResult-current')
+                    ref = result['attributes']['outputRef']
+                    model = swamp('model', 'get', ref['modelId'])['name']
+                    exact = 'modelName == ' + json.dumps(model) + ' && name == ' + json.dumps(ref['name']) + ' && version == ' + str(ref['version'])
+                    full = swamp('data', 'query', exact, '--select', 'attributes.output')['results'][0]
+                    assert len(full.encode()) >= 600_000 and 'LARGE HOOK BEGIN' in full and 'LARGE HOOK END' in full
+                    exact = 'modelName == ' + json.dumps(result['model']) + ' && name == "rebaseResult-current" && version == ' + str(result['version'])
+                    saved = swamp('data', 'query', exact, '--select', 'attributes')['results'][0]
+                    assert len(saved['stdout'].encode()) <= 16384 and not saved['operation'].get('output')
+                    assert 'LARGE HOOK BEGIN' in saved['stdout'] and 'LARGE HOOK END' in saved['stdout']
+                    claim_name = 'claim-' + saved['operation']['key']
+                    claim = swamp('data', 'query', 'modelName == ' + json.dumps(result['model']) + ' && name == ' + json.dumps(claim_name), '--select', 'attributes')['results'][0]
+                    assert claim['outcome'] == 'completed'
+                    assert json.loads(claim['result'])['stdout'] == saved['stdout']
+                    legacy = next(e for e in entries if e['name'] == 'rebaseResult-legacy')['attributes']
+                    assert len(legacy['stdout'].encode()) + len(legacy['stderr'].encode()) <= 16384
+                    assert not legacy['operation'].get('output')
+                    assert next(e for e in entries if e['name'] == 'claim-legacy')['attributes']['outcome'] == 'completed'
+                    assert all('result' not in e['attributes'] for e in entries if e['name'].startswith('claim-'))
+                    assert next(e for e in entries if e['name'] == ref['name'])['attributes'] == {}
+                if scenario == 'commit-failed':
+                    def failed_run():
+                        return next((r for r in swamp('workflow', 'history', 'search', '--input', 'launch=' + token)['results']
+                                     if r['status'] == 'failed'), None)
+                    failed = until('commit failure stops workflow', failed_run)
+                    swamp('report', 'get', '@swamp/workflow-summary', '--workflow', failed['workflowName'])
+                else:
+                    choose(token, 'conflict' if scenario == 'conflict' else 'review',
+                           'leave-paused' if scenario == 'conflict' else 'leave')
+                print('PASS:', scenario, 'shows commands/output in place, waits for Enter, and restores workflow', flush=True)
             raise SystemExit(0)
 
         def exercise_diff(token, view=None):
@@ -842,7 +982,9 @@ try:
         clicked = time.monotonic()
         frame_start = len(ui_output)
         os.write(ui_fd, b'\r')
-        until('immediate submission feedback', lambda: b'Submitting answer' in bytes(ui_output[frame_start:]), interval=0.005)
+        # A fast acknowledgement can coalesce the transient submitting frame.
+        until('immediate submission feedback', lambda: any(text in bytes(ui_output[frame_start:])
+              for text in (b'Submitting answer', b'Answer recorded')), interval=0.005)
         feedback = time.monotonic() - clicked
         until('answer recorded', lambda: b'Answer recorded' in bytes(ui_output[frame_start:]), interval=0.005)
         submission = time.monotonic() - clicked
@@ -910,17 +1052,15 @@ try:
         original = next(p for p in agents() if p.get('exited') and p['agent']['kind'] == 'claude')
         launch('fork-cancel', sourcePane=original['id'], kind='claude')
         first_menu = choose('fork-cancel', 'exit', 'fork')
-        assert first_menu['attributes']['answers'] == ['restart', 'fork', 'begin-review', 'leave']
-        assert first_menu['attributes']['prompt'] == 'Agent exited. Choose Restart, Fork, Begin review, or Leave.'
+        assert first_menu['attributes']['answers'] == ['restart', 'fork', 'leave']
+        assert first_menu['attributes']['prompt'] == 'Agent exited. Choose Restart, Fork, or Leave.'
         until('existing fork picker', lambda: any(p.get('plugin_url') == 'zellij:hocus-new-agent' and not p['is_suppressed'] for p in json.loads(zellij('action', 'list-panes', '--json'))))
         zellij('action', 'start-or-reload-plugin', 'zellij:swamp-bridge')
         until('picker dispatch becomes uncertain after reload', lambda: bridge(method='observe', work='fork-cancel', key=first_menu['attributes']['run'] + '-pane-choice')['outcome'] == 'unknown')
         os.write(ui_fd, b'\x1b')
         cancelled = until('cancelled fork returns to fresh exit menu', lambda: pending('fork-cancel', 'exit'))
         assert cancelled['attributes']['run'] != first_menu['attributes']['run']
-        choose('fork-cancel', 'exit', 'leave')
-        launch('restart-choice', sourcePane=original['id'], kind='claude')
-        choose('restart-choice', 'exit', 'restart')
+        choose('fork-cancel', 'exit', 'restart')
         until('restart uses original pane', lambda: any(p['id'] == original['id'] and not p['exited'] for p in agents()))
         print('PASS: fork cancellation returns to a fresh menu; restart reuses original pane', flush=True)
 
@@ -1031,6 +1171,7 @@ try:
     assert not [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('plugin_url') == 'zellij:agent-exit']
     print('PASS: server crash/adoption retains ownership, resumes verified work, and delivers managed process exit', flush=True)
 finally:
+    (root / 'release-live-command').touch()
     (root / 'release-server-survival').touch()
     # Runs outlive the session; stop the fixture service separately once idle.
     run(binary, 'workflow', 'server', 'stop', check=False)

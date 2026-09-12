@@ -64,6 +64,8 @@ function context(repoDir: string, repoPath: string) {
         };
     } = {
         repoDir,
+        modelType: { normalized: "@swamp/git" },
+        modelId: "test-git",
         globalArgs: {
             repoPath,
             authorName: "Test",
@@ -77,11 +79,402 @@ function context(repoDir: string, repoPath: string) {
                 .resources[spec as keyof typeof extension.resources]?.schema;
             if (schema) schema.parse(value);
             saved.set(name, structuredClone(value));
-            return Promise.resolve({ name });
+            return Promise.resolve({ name, version: 1 });
         },
     };
     return { c, saved };
 }
+Deno.test("foreground commit/rebase preserves Git results, dismissal, and dispatch guards", async () => {
+    const dir = await Deno.makeTempDir();
+    const main = dir + "/main", source = dir + "/topic ' $(touch INJECTED)";
+    const { c, saved } = context(Deno.cwd(), source);
+    const message = "Complete 'quoted' work $(touch INJECTED)\nsecond line";
+    const args = {
+        source,
+        target: main,
+        targetBranch: "main",
+        gate: ["/usr/bin/true"],
+        vmSync: { mode: "local" as const },
+        binary: "zellij",
+        work: "work",
+        session: "session",
+        key: "dirty",
+        message,
+    };
+    let controller = new AbortController();
+    let dispatches = 0;
+    let forcedOutcome = "";
+    let forcedExit = 130;
+    let fault = "";
+    let started = Promise.withResolvers<void>();
+    let dismissal = Promise.withResolvers<void>();
+    let atDismissal = Promise.withResolvers<void>();
+    let outputDirectory = "";
+    let pane: Deno.ChildProcess;
+    let current: Record<string, unknown>;
+    let completion: Promise<void>;
+    const git = (cwd: string, ...argv: string[]) =>
+        checked(c, cwd, ["git", ...argv]);
+    const gitWithFreshSignal = (cwd: string, ...argv: string[]) =>
+        checked({ signal: new AbortController().signal }, cwd, [
+            "git",
+            ...argv,
+        ]);
+    class PaneCommand extends originalCommand {
+        constructor(command: string | URL, options: Deno.CommandOptions) {
+            super(command, options);
+            if (command !== "zellij") return;
+            let input = "";
+            const reply = Promise.withResolvers<Deno.CommandOutput>();
+            this.spawn = () => ({
+                stdin: new WritableStream<Uint8Array>({
+                    write(bytes) {
+                        input += new TextDecoder().decode(bytes);
+                    },
+                    async close() {
+                        try {
+                            const request = JSON.parse(input);
+                            if (request.method === "command") {
+                                dispatches++;
+                                assert(request.foreground === true);
+                                assert(request.cwd === source);
+                                assert(request.session === args.session);
+                                current = {
+                                    work: request.work,
+                                    key: request.key,
+                                    incarnation: "test",
+                                    request: input,
+                                    outcome: "pending",
+                                    pane: 1,
+                                    log: "terminal_1",
+                                };
+                                outputDirectory =
+                                    JSON.parse(request.argv.at(-1)).directory;
+                                if (forcedOutcome) {
+                                    current.outcome = forcedOutcome;
+                                    current.exitCode =
+                                        forcedOutcome === "failed"
+                                            ? forcedExit
+                                            : null;
+                                    completion = Promise.resolve();
+                                } else {
+                                    const child = pane = new originalCommand(
+                                        request.argv[0],
+                                        {
+                                            args: request.argv.slice(1),
+                                            cwd: request.cwd,
+                                            stdin: "piped",
+                                            stdout: "piped",
+                                            stderr: "piped",
+                                            // A foreground pane inherits the server environment.
+                                            env: {
+                                                GIT_DIR: main + "/.git",
+                                                GIT_WORK_TREE: main,
+                                            },
+                                        },
+                                    ).spawn();
+                                    completion = (async () => {
+                                        let exited = false,
+                                            dismissed = false,
+                                            output = "";
+                                        const status = child.status.then(
+                                            (s) => {
+                                                exited = true;
+                                                return s;
+                                            },
+                                        );
+                                        const errors = new Response(
+                                            child.stderr,
+                                        ).text();
+                                        for await (
+                                            const text of child.stdout
+                                                .pipeThrough(
+                                                    new TextDecoderStream(),
+                                                )
+                                        ) {
+                                            output += text;
+                                            if (
+                                                output.includes("BLOCKED HOOK")
+                                            ) started.resolve();
+                                            if (
+                                                !dismissed && output.includes(
+                                                    "Press Enter to return.",
+                                                )
+                                            ) {
+                                                assert(
+                                                    !exited,
+                                                    "Pane exited before dismissal",
+                                                );
+                                                dismissed = true;
+                                                atDismissal.resolve();
+                                                if (fault) {
+                                                    await dismissal.promise;
+                                                }
+                                                const writer = child.stdin
+                                                    .getWriter();
+                                                await writer.write(
+                                                    new TextEncoder().encode(
+                                                        "\n",
+                                                    ),
+                                                );
+                                                await writer.close();
+                                            }
+                                        }
+                                        const { code } = await status;
+                                        current = {
+                                            ...current,
+                                            exitCode: code,
+                                            outcome: code === 0
+                                                ? "completed"
+                                                : "failed",
+                                            output: output + await errors,
+                                        };
+                                    })();
+                                }
+                                if (fault === "lost reply") {
+                                    await started.promise;
+                                    throw new Error(fault);
+                                }
+                            } else {
+                                assert(request.method === "observe");
+                                assert(
+                                    request.includeOutput === false,
+                                    "Worker output must not cross the bridge",
+                                );
+                                if (fault) {
+                                    await started.promise;
+                                    if (fault === "cancelled") {
+                                        controller.abort(new Error(fault));
+                                    }
+                                    throw new Error(fault);
+                                }
+                                await completion;
+                            }
+                            reply.resolve({
+                                code: 0,
+                                success: true,
+                                signal: null,
+                                stdout: new TextEncoder().encode(
+                                    JSON.stringify({ result: current }),
+                                ),
+                                stderr: new Uint8Array(),
+                            });
+                        } catch (error) {
+                            reply.reject(error);
+                        }
+                    },
+                }),
+                output: () => reply.promise,
+            } as Deno.ChildProcess);
+        }
+    }
+    Deno.Command = PaneCommand;
+    try {
+        await Deno.mkdir(main);
+        await git(main, "init", "-b", "main");
+        await git(main, "config", "user.name", "Fixture");
+        await git(main, "config", "user.email", "fixture@example.invalid");
+        await Deno.writeTextFile(main + "/file", "base\n");
+        await git(main, "add", ".");
+        await git(main, "commit", "-m", "base");
+        await git(main, "worktree", "add", "-b", "topic", source);
+        await Deno.writeTextFile(main + "/target", "advance\n");
+        await git(main, "add", ".");
+        await git(main, "commit", "-m", "advance");
+        await Deno.writeTextFile(source + "/file", "topic\n");
+        const run = (key: string) =>
+            methods.commit_and_rebase.execute({ ...args, key }, c);
+        const result = () => saved.get("rebaseResult-current")!;
+        await run("dirty");
+        assert(result().exitCode === 0);
+        assert(String(result().stdout).includes("$ git add -A"));
+        assert(String(result().stdout).includes("$ git rebase "));
+        assert(
+            await git(source, "log", "-1", "--format=%B") === message + "\n",
+        );
+        assert(
+            await git(source, "log", "-1", "--format=%an <%ae>") ===
+                "Test <test@example.invalid>",
+        );
+        assert(
+            await git(source, "rev-parse", "HEAD^") ===
+                await git(main, "rev-parse", "HEAD"),
+        );
+        assert(Evidence.parse(result().evidence).source.clean);
+        assert(
+            (result().operation as Record<string, unknown>).log ===
+                "terminal_1",
+        );
+        assert(!await Deno.stat(source + "/INJECTED").catch(() => null));
+        const head = await git(source, "rev-parse", "HEAD");
+        await run("dirty");
+        assert(dispatches === 1, "Repeated a completed mutation");
+        await run("clean");
+        assert(await git(source, "rev-parse", "HEAD") === head);
+        assert(String(result().stdout).includes("No changes to commit."));
+        await Deno.writeTextFile(source + "/file", "commit should fail\n");
+        const hooks = dir + "/hooks";
+        await Deno.mkdir(hooks);
+        await Deno.symlink("/usr/bin/false", hooks + "/pre-commit");
+        await git(main, "config", "core.hooksPath", hooks);
+        await run("commit-failed");
+        assert(result().exitCode !== 0);
+        assert(String(result().stdout).includes("Press Enter to return."));
+        assert(!String(result().stdout).includes("$ git rebase "));
+        assert(await git(source, "rev-parse", "HEAD") === head);
+        await git(main, "config", "--unset", "core.hooksPath");
+        await Deno.remove(hooks + "/pre-commit");
+        await Deno.writeTextFile(main + "/file", "target conflict\n");
+        await git(main, "commit", "-am", "conflict");
+        await run("conflict");
+        assert(result().exitCode !== 0);
+        assert(Evidence.parse(result().evidence).source.rebasing);
+        assert(
+            Evidence.parse(result().evidence).source.conflicts.includes("file"),
+        );
+        await rejects(() => run("already-rebasing"), /Resolve the rebase/);
+        await Deno.remove(outputDirectory, { recursive: true });
+        await git(source, "rebase", "--abort");
+        await Deno.writeTextFile(main + "/file", "dirty target\n");
+        await rejects(() => run("dirty-target"), /Target checkout is dirty/);
+        await Deno.remove(outputDirectory, { recursive: true });
+        await git(main, "restore", "file");
+        // A real worker keeps both kernel locks after its observer goes away.
+        for (
+            const reason of [
+                "cancelled",
+                "observation error",
+                "lost reply",
+                "Observation deadline reached",
+            ]
+        ) {
+            fault = reason;
+            started = Promise.withResolvers<void>();
+            dismissal = Promise.withResolvers<void>();
+            atDismissal = Promise.withResolvers<void>();
+            controller = new AbortController();
+            c.signal = controller.signal;
+            const release = dir + "/release";
+            await Deno.writeTextFile(
+                hooks + "/pre-commit",
+                "#!/bin/sh\necho BLOCKED HOOK\nwhile [ ! -e " + release +
+                    " ]; do sleep 0.01; done\n",
+            );
+            await Deno.chmod(hooks + "/pre-commit", 0o700);
+            await git(main, "config", "core.hooksPath", hooks);
+            await Deno.writeTextFile(source + "/new-file", reason);
+            const key = "failure-" + reason.replaceAll(" ", "-");
+            await rejects(() => run(key), new RegExp(reason));
+            const lockPaths = await Promise.all(
+                [source, main].map(async (path) =>
+                    (await gitWithFreshSignal(
+                        path,
+                        "rev-parse",
+                        "--absolute-git-dir",
+                    )) + "/zellij-workflow.lock"
+                ),
+            );
+            const checkLocks = async (held: boolean) => {
+                const check = await new originalCommand("python3", {
+                    args: [
+                        "-c",
+                        `import fcntl,sys
+for path in sys.argv[2:]:
+    with open(path, 'a') as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = False
+        except BlockingIOError:
+            locked = True
+        assert locked == (sys.argv[1] == 'true'), path
+`,
+                        String(held),
+                        ...lockPaths,
+                    ],
+                }).output();
+                assert(check.success, new TextDecoder().decode(check.stderr));
+            };
+            await checkLocks(true);
+            const count: number = dispatches;
+            c.signal = new AbortController().signal;
+            await rejects(() => run(key), /is unknown/);
+            assert(dispatches === count, "Uncertain dispatch repeated");
+            await Deno.writeTextFile(release, "");
+            await atDismissal.promise;
+            await checkLocks(true);
+            dismissal.resolve();
+            await completion!;
+            await checkLocks(false);
+            assert(saved.get("claim-" + key)?.outcome === "unknown");
+            await Deno.remove(release);
+            await Deno.remove(outputDirectory, { recursive: true });
+            if (await git(source, "diff", "--name-only", "--diff-filter=U")) {
+                await git(source, "rebase", "--abort");
+            }
+        }
+        fault = "";
+        await git(main, "config", "--unset", "core.hooksPath");
+        // Retain more than the bridge frame can safely carry, including multibyte text.
+        const full = "BEGIN\n" + "😀é𝄞\n".repeat(65000) + "END\n";
+        await Deno.writeTextFile(
+            hooks + "/pre-commit",
+            "#!/bin/sh\ncat '" + dir + "/large-output'\n",
+        );
+        await Deno.writeTextFile(dir + "/large-output", full);
+        await git(main, "config", "core.hooksPath", hooks);
+        await Deno.writeTextFile(source + "/new-file", "large");
+        await run("large-output");
+        const ref = result().outputRef as { name: string };
+        assert(String(saved.get(ref.name)?.output).includes(full));
+        const preview = String(result().stdout);
+        assert(new TextEncoder().encode(preview).length <= 16384);
+        assert(
+            preview.includes("BEGIN") && preview.includes("END") &&
+                preview.includes("truncated"),
+        );
+        assert(!preview.includes("\ufffd"));
+        assert(!(result().operation as Record<string, unknown>).output);
+        const claim = JSON.parse(
+            String(saved.get("claim-large-output")?.result),
+        );
+        assert(claim.stdout === preview && !claim.operation.output);
+        assert(new TextEncoder().encode(JSON.stringify(claim)).length < 24000);
+        forcedOutcome = "unknown";
+        await rejects(() => run("unknown"), /completion is uncertain/);
+        const count: number = dispatches;
+        await rejects(() => run("unknown"), /Operation unknown is unknown/);
+        assert(dispatches === count);
+        forcedOutcome = "failed";
+        await rejects(() => run("interrupted"), /interrupted/);
+        forcedExit = 125;
+        await rejects(() => run("input-closed"), /interrupted/);
+
+        await rejects(
+            () =>
+                methods.commit_and_rebase.execute({
+                    ...args,
+                    message: "changed",
+                }, c),
+            /Conflicting request/,
+        );
+        assert(
+            !methods.commit_and_rebase.arguments.safeParse({
+                ...args,
+                message: "bad\0message",
+            }).success,
+        );
+    } finally {
+        Deno.Command = originalCommand;
+        dismissal.resolve();
+        if (pane!) {
+            try {
+                pane.kill("SIGKILL");
+            } catch { /* Already exited. */ }
+        }
+        await completion!;
+        await Deno.remove(dir, { recursive: true });
+    }
+});
 Deno.test("checkout status only reduces the menu for clean local branches with no commits beyond the target", async () => {
     const dir = await Deno.makeTempDir();
     try {

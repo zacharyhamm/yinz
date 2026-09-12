@@ -126,6 +126,7 @@ export async function claimed(
         Claim.parse({ key, fingerprint, outcome: "unknown", result: null }),
     );
     const result = await action();
+    c.signal.throwIfAborted();
     await c.writeResource(
         "claim",
         name,
