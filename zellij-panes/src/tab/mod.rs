@@ -1304,7 +1304,6 @@ impl Tab {
             connected_clients_in_app.clone(),
             mode_info.clone(),
             character_cell_size.clone(),
-            pane_frame_style,
             session_is_mirrored,
             default_mode_info.clone(),
             style,
@@ -8644,7 +8643,6 @@ impl Tab {
     pub fn set_pane_frames(&mut self, pane_frame_style: PaneFrameStyle) {
         self.tiled_panes.set_pane_frames(pane_frame_style);
         self.floating_panes.set_pane_frame_style(pane_frame_style);
-        self.overlay_panes.set_pane_frame_style(pane_frame_style);
         self.pane_frame_style = pane_frame_style;
         self.set_should_clear_display_before_rendering();
         self.set_force_render();

@@ -1,6 +1,109 @@
 use super::*;
 
 #[test]
+fn fullscreen_overlay_divider_drags_with_complete_borders_under_title_only_frames() {
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = ClientId::new(1);
+    let left = PaneId::Terminal(TerminalId::new(2));
+    let right = PaneId::Terminal(TerminalId::new(3));
+    for ctrl in [false, true] {
+        for grab_column in [39, 40] {
+            let mut tab = create_new_tab(size, ModeInfo::default());
+            tab.set_pane_frames(PaneFrameStyle::Titles);
+            let coordinates = |x| FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(x)),
+                y: Some(PercentOrFixed::Fixed(2)),
+                width: Some(PercentOrFixed::Fixed(30)),
+                height: Some(PercentOrFixed::Fixed(10)),
+                ..Default::default()
+            };
+            for (pane_id, x) in [(left, 2), (right, 32)] {
+                tab.new_pane(
+                    pane_id,
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(coordinates(x)))),
+                    Some(client_id),
+                    None,
+                )
+                .unwrap();
+            }
+            tab.change_overlay_coordinates_batch(
+                vec![(left, coordinates(2)), (right, coordinates(32))],
+                false,
+            )
+            .unwrap();
+            tab.link_touching_overlays(&[left, right]);
+            tab.handle_pty_bytes(TerminalId::new(2), b"Agents".to_vec())
+                .unwrap();
+            tab.handle_pty_bytes(TerminalId::new(3), b"Chat".to_vec())
+                .unwrap();
+            tab.toggle_active_pane_fullscreen(client_id);
+            if !ctrl && grab_column == 39 {
+                let mut output = Output::default();
+                tab.render(&mut output, None).unwrap();
+                assert_snapshot!(take_snapshot(
+                    output.serialize().unwrap().get(&client_id).unwrap(),
+                    size.rows,
+                    size.cols,
+                    Palette::default(),
+                ));
+            }
+
+            let event = |event| MouseEvent { ctrl, ..event };
+            tab.handle_mouse_event(
+                &event(MouseEvent::new_left_press_event(Position::new(
+                    5,
+                    grab_column,
+                ))),
+                client_id,
+            )
+            .unwrap();
+            assert!(tab.overlay_panes.seam_is_being_dragged());
+            for (column, expected_cols) in [(grab_column + 16, 56), (grab_column - 16, 24)] {
+                let effect = tab
+                    .handle_mouse_event(
+                        &event(MouseEvent::new_left_motion_event(Position::new(5, column))),
+                        client_id,
+                    )
+                    .unwrap();
+                assert!(effect.state_changed);
+                assert_eq!(
+                    tab.overlay_panes
+                        .get(&left)
+                        .unwrap()
+                        .current_geom()
+                        .cols
+                        .as_usize(),
+                    expected_cols
+                );
+                assert_eq!(tab.get_active_pane_id(client_id), Some(right));
+            }
+            tab.handle_mouse_event(
+                &event(MouseEvent::new_left_release_event(Position::new(
+                    5,
+                    grab_column - 16,
+                ))),
+                client_id,
+            )
+            .unwrap();
+            assert!(!tab.overlay_panes.seam_is_being_dragged());
+            tab.toggle_active_pane_fullscreen(client_id);
+            for (pane_id, x, cols) in [(left, 2, 18), (right, 20, 42)] {
+                let pane = tab.overlay_panes.get(&pane_id).unwrap();
+                let geom = pane.current_geom();
+                assert_eq!(
+                    (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize()),
+                    (x, 2, cols, 10)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn plugin_wheel_receives_its_relative_position_before_each_scroll() {
     use zellij_types::data::{Event, Mouse};
 
