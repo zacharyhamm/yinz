@@ -38,6 +38,7 @@ end
 -- Placement belongs to an authenticated builtin view, never to a caller-supplied pane.
 -- It is intentionally not recovered across server/bridge reloads.
 local placements={}
+local manual_views={}
 local function pane_subtitle(pane, subtitle)
   z.set_pane_subtitle{pane_id=pane,subtitle=subtitle}
 end
@@ -206,6 +207,8 @@ local function unavailable(placement,work)
 end
 local function attach_manual(work, view)
   if closed(work) then return end
+  manual_views[work]=manual_views[work] or {}
+  manual_views[work][view]=true
   if read(scope(work,'view')) then return end
   local existing=placements[work]
   if existing then
@@ -272,16 +275,19 @@ local function changed(work)
   if closed(work) then return end
   if notifications[work] then return end
   notifications[work]=true
-  z.after(0.1,function()
+  z.after(0,function() -- Coalesce this event-loop turn; fractional timers round up to a second.
     notifications[work]=nil
     if closed(work) then return end
     local view=read(scope(work,'view'))
     if view and view.incarnation==identity.incarnation then
       z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-changed'}
     end
-    local placement=placements[work]
-    if placement and placement.manual and not placement.detached then
-      z.message_to_plugin{destination_plugin_id=placement.view,message_name='workflow-changed'}
+    for id in pairs(manual_views[work] or {}) do
+      local ok,pane=pcall(z.get_pane_info,z.plugin_pane(id))
+      if not ok or not pane then manual_views[work][id]=nil
+      elseif not view or view.incarnation~=identity.incarnation or id~=view.view then
+        z.message_to_plugin{destination_plugin_id=id,message_name='workflow-changed'}
+      end
     end
   end)
 end
@@ -334,6 +340,11 @@ local function launch_progress(work,status,operation)
 end
 local function watch_run(run,work,root)
   if watching[run] then return end
+  -- Dispatch already streams these events. A second attachment replays them.
+  for _,uid in pairs(tracked) do
+    local operation=read(uid)
+    if operation and operation.run==run then return end
+  end
   local id=z.instance_id..'-watch-'..run
   watching[run]=true;watch_ids[id]={run=run,work=work}
   z.task(function()
@@ -432,11 +443,19 @@ local function serve_observe(uid,operation,row)
   operation,row=read(uid)
   end
 end
+local refresh_events={started=true,step_completed=true,step_failed=true,suspended=true,
+  completed=true,cancelled=true,error=true,report_completed=true,report_failed=true}
+local function changes_snapshot(frame)
+  return frame.type=='done' or frame.type=='error' or (frame.event and refresh_events[frame.event.kind])
+end
 z.on('custom_message',function(event)
   if event.message~='swamp-response' then return end
   local frame=decode(event.payload)
   local watch=watch_ids[frame.id]
-  if watch then changed(watch.work);return end
+  if watch then
+    if changes_snapshot(frame) then changed(watch.work) end
+    return
+  end
   local uid=tracked[frame.id]
   if not uid then return end
   local operation,row=read(uid)
@@ -480,8 +499,10 @@ z.on('custom_message',function(event)
     if not method and operation.run and operation.run~=previous_run then cancel_if_closed(operation.work) end
     return
   end
-  local attached=read(scope(operation.work,'attachment'))
-  changed(attached and attached.work or operation.work)
+  if write or changes_snapshot(frame) then
+    local attached=read(scope(operation.work,'attachment'))
+    changed(attached and attached.work or operation.work)
+  end
 end)
 local function commands(requests,root)
   local results={}
@@ -570,6 +591,7 @@ local function claim(args)
   return uid
 end
 local handle
+local discovered={}
 local function discover(work, root)
   local launch=result(scope(work,'launch'))
   assert(launch.checkout==root,'Launch belongs to a different control checkout')
@@ -661,7 +683,17 @@ handle = function(args, manual_view)
       return {run=args.run,launch=work,root=config.root,history={id=args.run or work,status='cancelled'},
         children={},active=false,questions={results={}},outputs={results={}},logs='Pane workflow lifecycle is closed.'}
     end
-    local runs=work and discover(work,config.root)
+    local runs=work and read(scope(work,'runs'))
+    if work then
+      assert(result(scope(work,'launch')).checkout==config.root,'Launch belongs to a different control checkout')
+      -- Reconcile retained history once after loading the bridge. Every workflow
+      -- attaches new runs durably before opening a question; reread that registry
+      -- and the run states on each refresh. Explicit recovery still discovers.
+      if not discovered[work] or not runs then
+        runs=discover(work,config.root)
+        discovered[work]=true
+      end
+    end
     if work and manual_view then attach_manual(work,manual_view) end
     if args.run and args.run~=z.null then attachment=read(scope(args.run,'attachment'))
     elseif runs then
@@ -700,6 +732,7 @@ handle = function(args, manual_view)
         '"log":'..path..'.log,"passed":'..path..'.passed,"outputRef":has('..path..'.outputRef) ? '..path..'.outputRef : null,'..preview(path)..'}')
     end
     local output_projection=[[{"model":modelName,"name":name,"version":version,"createdAt":createdAt,"attributes":
+      has(tags.type) && tags.type == "report" ? {} :
       specName == "claim" ? {"key":attributes.key,"fingerprint":attributes.fingerprint,"outcome":attributes.outcome} :
       specName == "commandOutput" ? {} :
       specName == "rebaseResult" ? {"exitCode":attributes.exitCode,"evidence":attributes.evidence,
@@ -800,8 +833,7 @@ handle = function(args, manual_view)
       if not D.is_conflict(err) or attempt==8 then error(err) end
     end
     if cancel_if_closed(args.work) then ensure_open(args.work) end
-    local view=read(scope(args.work,'view'))
-    if not existing and view and view.incarnation==identity.incarnation then z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-changed'} end
+    if not existing then changed(args.work) end
     return {work=args.work,key=args.key,request=encode(args),incarnation=identity.incarnation,outcome='completed'}
   end
   ensure_open(args.work)

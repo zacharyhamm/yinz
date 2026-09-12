@@ -117,3 +117,72 @@ The smallest justified next action is to enable these diagnostics when the main 
 - Final `cargo x ci check` passed: format, lint, all 7,896 selected unit tests, and all 383 integration tests.
 
 The gate exposed an archive test that required five total timeline entries. An asynchronous summary could legitimately add a sixth entry. The test now counts the three controlled message entries, preserving its duplicate-message check without depending on summary timing.
+
+## Retained-history transition probe
+
+The transition probe runs three fix-agent cycles. Each cycle saves a large failing-command log, dispatches a stub helper, and checks that helper exit creates a fresh question run. It sends the measured answers through the terminal buttons and records the arrival of the first terminal bytes that contain each question. The helper records prompt delivery and exit on the same monotonic clock. Its separate startup measurement covers stub initialization after Python imports. Cold managed-server startup is also recorded separately.
+
+Use the same Swamp and Zellij binaries for both fixtures. The probe pins both executables. A binary under a `release` directory uses the release wasm plugins.
+
+```sh
+cargo x build --release
+PATH=/path/to/patched-swamp/bin:$PATH python3 extensions/tests/smoke.py \
+  --transition-timing-only --binary target/release/zellij
+PATH=/path/to/patched-swamp/bin:$PATH python3 extensions/tests/smoke.py \
+  --transition-timing-only --binary target/release/zellij \
+  --history-runs 500 --swamp-source /path/to/swamp
+python3 extensions/tests/timing_summary.py /tmp/zellij-workflow-acceptance-EMPTY \
+  /tmp/zellij-workflow-acceptance-HISTORY > /tmp/warm-transitions.json
+```
+
+The history fixture contains 500 retained runs, 1,500 automatic definitions, and 1,500 method-output metadata records before the first measured cycle. Each measured cycle then retains real failure output and report bodies. The seeder uses Swamp's persistence adapters and accepts only disposable acceptance directories. It does not change the live repository.
+
+The Swamp changes are in `extensions/tests/swamp-warm-transitions.patch`, based on Swamp revision `7b11196336e5f67c5f3a81f7938dedede26b406c`. Apply the existing `swamp-serve-resume.patch` first. Build the patched checkout with `deno task compile --output /path/to/patched-swamp/bin/swamp`.
+
+The trace separates context construction, step dependencies, definition lookup, validation, expressions, evaluated/output persistence, locks, methods, reports, and flushes. Initial context construction precedes run-ID allocation. Resume context records include the existing run ID. The view records refresh, question rendering, and the delay from a ready snapshot to rendering. Nested method and expression durations overlap their child phases. Do not add them together.
+
+The measured fixes remove repeated definition parsing, full-history reads for complete run IDs, and artifact-body reads before metadata filtering. Modern expressions use the existing lightweight context. Legacy `model` and `file` expressions retain full context construction, including references in stored definitions and bare assertions. Model and workflow identity hints are checked against current file metadata, and selected definitions are read again. This also avoids reparsing every workflow during history authorization when the supplied identifier is a run ID. Authorization still resolves against the current repository.
+
+Views discover retained runs on attachment or recovery, then read the durable run registry and current run states. They share existing dispatch streams, receive notifications in manual and agent-exit views, and coalesce changes on the next event-loop turn. A timer does not queue another full snapshot while one is pending. Evidence reports use saved model-name provenance, with the existing lookup for legacy resources.
+
+Each fixture retains `transitions.json`, exported workflow histories and logs, the terminal recording, and Zellij logs. The summary includes binary hashes, the report source hash, repeated transition measurements, and phase statistics. Raw evidence stays in the private fixture directory.
+
+## Verified warm transitions, 2026-09-12
+
+All 18 optimized transition measurements were below one second: **389–865 ms**, including the fixture's Git operations and stub execution. No method duration was subtracted to meet the target. Cold managed startup remained separate at 6.58–6.68 seconds for the optimized fixtures.
+
+The following values are medians of three cycles, in milliseconds. “Retained” starts with the history described above. Even the initially empty fixture retains the outputs and reports from each preceding cycle.
+
+| Transition | Empty baseline | Empty optimized | Retained baseline | Retained optimized |
+| --- | ---: | ---: | ---: | ---: |
+| Answer to next rendered question | 3,713 | 591 | 13,905 | 790 |
+| Answer to helper receiving its prompt | 6,442 | 618 | 26,638 | 806 |
+| Helper exit to next rendered question | 6,266 | 478 | 23,039 | 752 |
+
+The baseline reproduced the growing delay. Its third retained-history cycle took 52,749 ms to deliver the helper prompt and 64,715 ms from helper exit to the next question. The corresponding optimized values were 865 and 813 ms.
+
+Both variants used the same release Zellij binary and current evidence report. Baseline Swamp contained the resume compatibility patch and identical phase instrumentation, without the optimization patch. Thus this comparison isolates the Swamp changes with the improved Zellij event delivery held constant. The final optimized fixtures ran serially after builds and baseline measurements finished. These are disposable fixture results, not live-session measurements or a latency guarantee for real agents.
+
+The retained-history phase medians locate the removed cost:
+
+| Phase | Baseline ms | Optimized ms |
+| --- | ---: | ---: |
+| Step definition lookup | 2,690.3 | 48.8 |
+| Step dependency construction | 1.3 | 0.6 |
+| View snapshot refresh | 2,024.7 | 77.9 |
+| Workflow reports | 599.5 | 119.0 |
+| Ready question to render | 4.7 | 4.7 |
+
+The final workflow identity optimization addressed repeated authorization misses: a history request tried its run ID as a workflow name and ID, reparsing every workflow on both misses. A separate warm repository probe reduced that lookup from 14–21 ms to 0.35–0.43 ms. The hints skip only unchanged, unrelated definitions; selection and authorization still read current data.
+
+Method measurements remain separate from orchestration phases. In the optimized retained fixture, medians were 65.1 ms for helper spawning, 31.7 ms for prompt delivery, 53.7 ms for Git inspection, 68.8 ms for commit, and 106.1 ms for rebase. These include each method's own result writes. Stub initialization after imports took 5.16–5.43 ms. Continuation methods include their child workflows and observation waits, so their durations are not pure overhead.
+
+Question delivery was independent of report completion. The fresh exit questions arrived 703–759 ms before the prior failed-test run's reports completed in the retained fixture. The question-ready-to-render delay remained below 10 ms. This avoids treating report completion as the user-visible transition boundary.
+
+[SWAMP_WARM_TRANSITIONS.json](SWAMP_WARM_TRANSITIONS.json) retains every sample, per-phase and method statistics, report-completion offsets, fixture paths, and executable/report hashes. No prompts or command output are included.
+
+The final checks passed 1,058 affected Swamp tests, Swamp formatting and lint, 13 extension tests, compatibility and managed-service lifecycle probes, and the release extension acceptance scenarios. The Zellij gate passed format, lint, 7,992 unit tests, and 402 integration tests. The existing diff timing and question-latency probes also passed. Regression tests count definition/body reads, context construction, discovery, stream attachment and queued refreshes instead of asserting elapsed time.
+
+The release acceptance run covers duplicate and interrupted answers, resumed runs, concurrent executions, stale approval evidence, large failure logs, exact saved failure delivery, uncertain dispatch, server crash/adoption, and fresh question identities. The gate also exposed obsolete agent-picker labels and a test that raced asynchronous resizes; those assertions now use the current labels and a settled viewport, with the expand/restore behavior preserved.
+
+The local Swamp source checkout contains the changes, and the portable patches reproduce it. Installed binaries and the live managed service were not changed during these measurements. Activate the matching builds and extensions at an idle or suspended boundary, then verify a normal live transition.
