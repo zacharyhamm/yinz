@@ -80,6 +80,10 @@ impl Screen {
             );
         }
 
+        for tab in self.tabs.values_mut() {
+            tab.sample_overlay_ripples(now, self.pane_animations);
+        }
+
         // Separate rendering for regular clients and watchers
         let has_regular_clients = self
             .connected_clients
@@ -464,6 +468,8 @@ impl Screen {
             );
         }
 
+        // Release the clock only after the settled borders have been painted.
+        self.sync_animation_clock(now)?;
         Ok(())
     }
     /// Serialize and account only for frames that contain the followed client's stream.

@@ -2406,6 +2406,8 @@ pub struct Options {
     pub locked_escape_timeout_ms: ::core::option::Option<u64>,
     #[prost(bool, optional, tag="76")]
     pub agent_double_escape: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="77")]
+    pub pane_animations: ::core::option::Option<bool>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

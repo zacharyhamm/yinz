@@ -583,3 +583,40 @@ fn agent_double_escape_options_round_trip() {
     let invalid: KdlDocument = "agent_double_escape 1".parse().unwrap();
     assert!(crate::kdl::options::from_kdl(&invalid).is_err());
 }
+
+#[test]
+fn pane_animations_round_trip_and_merge() {
+    use crate::kdl::options::{from_kdl, to_kdl};
+    let default = Options::default();
+    assert!(default.pane_animations.unwrap_or(true));
+    for enabled in [false, true] {
+        let document: KdlDocument = format!("pane_animations {enabled}").parse().unwrap();
+        let options = from_kdl(&document).unwrap();
+        assert_eq!(options.pane_animations, Some(enabled));
+        for comments in [false, true] {
+            let mut serialized = KdlDocument::new();
+            serialized
+                .nodes_mut()
+                .append(&mut to_kdl(&options, comments));
+            assert_eq!(
+                from_kdl(&serialized.to_string().parse().unwrap()).unwrap(),
+                options
+            );
+        }
+        assert_eq!(
+            options.merge(default.clone()).pane_animations,
+            Some(enabled)
+        );
+        assert_eq!(
+            default.merge(options.clone()).pane_animations,
+            Some(enabled)
+        );
+        let opposite = Options {
+            pane_animations: Some(!enabled),
+            ..Default::default()
+        };
+        assert_eq!(options.merge(opposite).pane_animations, Some(!enabled));
+    }
+    let invalid = "pane_animations 42".parse().unwrap();
+    assert!(from_kdl(&invalid).is_err());
+}

@@ -82,6 +82,49 @@ pub struct StackListEntry {
     pub stack_is_focused: bool,
 }
 
+/// A sampled 450ms opening wave. Coordinates are the linked panel's, so its halves have
+/// the same horizontal phase. Kept in `PaneFrame` so a changed sample invalidates its cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpeningRipple {
+    elapsed_ms: u16,
+    origin: usize,
+    width: usize,
+}
+
+impl OpeningRipple {
+    pub fn sample(
+        start: std::time::Instant,
+        now: std::time::Instant,
+        origin: usize,
+        width: usize,
+    ) -> Option<Self> {
+        let elapsed = now.saturating_duration_since(start).as_millis();
+        (elapsed < 450).then_some(Self {
+            elapsed_ms: elapsed as u16,
+            origin,
+            width,
+        })
+    }
+
+    fn stroke(self, column: usize) -> &'static str {
+        let t = f32::from(self.elapsed_ms) / 450.0;
+        let x = column.saturating_sub(self.origin) as f32;
+        let front = t * (self.width.max(1) as f32 + 12.0);
+        let distance = front - x;
+        if !(0.0..12.0).contains(&distance) {
+            return boundary_type::HORIZONTAL;
+        }
+        let amplitude = (distance * std::f32::consts::PI / 12.0).sin() * (1.0 - t);
+        if amplitude > 0.45 {
+            "∿"
+        } else if amplitude > 0.025 {
+            "∽"
+        } else {
+            boundary_type::HORIZONTAL
+        }
+    }
+}
+
 pub struct FrameParams {
     pub focused_client: Option<ClientId>,
     pub is_main_client: bool, // more accurately: is_focused_for_main_client
@@ -108,6 +151,7 @@ pub struct FrameParams {
     pub mouse_scroll_resize: bool,
     pub dimmed: bool,
     pub guest_choice_indicator: Option<GuestChoiceIndicator>,
+    pub opening_ripple: Option<OpeningRipple>,
 }
 
 #[derive(Default, PartialEq)]
@@ -153,6 +197,7 @@ pub struct PaneFrame {
     mouse_scroll_resize: bool,
     dimmed: bool,
     guest_choice_indicator: Option<GuestChoiceIndicator>,
+    opening_ripple: Option<OpeningRipple>,
 }
 
 impl PaneFrame {
@@ -195,8 +240,16 @@ impl PaneFrame {
             mouse_scroll_resize: frame_params.mouse_scroll_resize,
             dimmed: frame_params.dimmed,
             guest_choice_indicator: frame_params.guest_choice_indicator,
+            opening_ripple: frame_params.opening_ripple,
         }
     }
+    fn horizontal(&self, column: usize) -> &'static str {
+        self.opening_ripple
+            .filter(|_| self.should_draw_pane_frames && self.geom.rows > 1 && self.geom.cols > 2)
+            .map(|ripple| ripple.stroke(column))
+            .unwrap_or(boundary_type::HORIZONTAL)
+    }
+
     pub fn is_pinned(mut self, is_pinned: bool) -> Self {
         self.is_pinned = is_pinned;
         self
@@ -644,7 +697,7 @@ impl PaneFrame {
                 col += right_side_len;
                 continue;
             } else {
-                title_line.append(&mut foreground_color(boundary_type::HORIZONTAL, self.color));
+                title_line.append(&mut foreground_color(self.horizontal(col), self.color));
             }
             if col == self.geom.x + self.geom.cols - 1 {
                 break;
@@ -686,7 +739,7 @@ impl PaneFrame {
                 col += *middle_len;
                 continue;
             } else {
-                title_line.append(&mut foreground_color(boundary_type::HORIZONTAL, self.color));
+                title_line.append(&mut foreground_color(self.horizontal(col), self.color));
             }
             if col == self.geom.x + self.geom.cols - 1 {
                 break;
@@ -721,7 +774,7 @@ impl PaneFrame {
                 col += *middle_len;
                 continue;
             } else {
-                title_line.append(&mut foreground_color(boundary_type::HORIZONTAL, self.color));
+                title_line.append(&mut foreground_color(self.horizontal(col), self.color));
             }
             if col == self.geom.x + self.geom.cols - 1 {
                 break;
@@ -743,8 +796,8 @@ impl PaneFrame {
             foreground_color(self.get_corner(boundary_type::TOP_RIGHT), self.color);
         let total_title_length = self.geom.cols.saturating_sub(2); // 2 for the left and right corners
         let mut middle = String::new();
-        for _ in (left_side_len + right_side_len)..total_title_length {
-            middle.push_str(boundary_type::HORIZONTAL);
+        for col in *left_side_len..total_title_length.saturating_sub(*right_side_len) {
+            middle.push_str(self.horizontal(self.geom.x + 1 + col));
         }
         let mut ret = vec![];
         ret.append(&mut left_boundary);
@@ -765,8 +818,8 @@ impl PaneFrame {
             foreground_color(self.get_corner(boundary_type::TOP_RIGHT), self.color);
         let total_title_length = self.geom.cols.saturating_sub(2); // 2 for the left and right corners
         let mut middle_padding = String::new();
-        for _ in *left_side_len..total_title_length {
-            middle_padding.push_str(boundary_type::HORIZONTAL);
+        for col in *left_side_len..total_title_length {
+            middle_padding.push_str(self.horizontal(self.geom.x + 1 + col));
         }
         let mut ret = vec![];
         ret.append(&mut left_boundary);
@@ -782,8 +835,8 @@ impl PaneFrame {
             foreground_color(self.get_corner(boundary_type::TOP_RIGHT), self.color);
         let total_title_length = self.geom.cols.saturating_sub(2); // 2 for the left and right corners
         let mut middle_padding = String::new();
-        for _ in 0..total_title_length {
-            middle_padding.push_str(boundary_type::HORIZONTAL);
+        for col in 0..total_title_length {
+            middle_padding.push_str(self.horizontal(self.geom.x + 1 + col));
         }
         let mut ret = vec![];
         ret.append(&mut left_boundary);
@@ -1177,8 +1230,8 @@ impl PaneFrame {
 
         let padding_len = max_undertitle_length.saturating_sub(text_len);
         let mut padding = String::new();
-        for _ in 0..padding_len {
-            padding.push_str(boundary_type::HORIZONTAL);
+        for col in 0..padding_len {
+            padding.push_str(self.horizontal(self.geom.x + 1 + text_len + col));
         }
 
         let mut ret = vec![];
@@ -1211,8 +1264,8 @@ impl PaneFrame {
 
         let padding_len = max_undertitle_length.saturating_sub(help_text_len);
         let mut padding = String::new();
-        for _ in 0..padding_len {
-            padding.push_str(boundary_type::HORIZONTAL);
+        for col in 0..padding_len {
+            padding.push_str(self.horizontal(self.geom.x + 1 + help_text_len + col));
         }
 
         let mut ret = vec![];
@@ -1264,8 +1317,8 @@ impl PaneFrame {
             if full_text_len <= max_undertitle_length {
                 // render exit status and tips
                 let mut padding = String::new();
-                for _ in full_text_len..max_undertitle_length {
-                    padding.push_str(boundary_type::HORIZONTAL);
+                for col in full_text_len..max_undertitle_length {
+                    padding.push_str(self.horizontal(self.geom.x + 1 + col));
                 }
                 let mut ret = vec![];
                 ret.append(&mut left_boundary);
@@ -1277,8 +1330,8 @@ impl PaneFrame {
             } else if first_part_len <= max_undertitle_length {
                 // render only exit status
                 let mut padding = String::new();
-                for _ in first_part_len..max_undertitle_length {
-                    padding.push_str(boundary_type::HORIZONTAL);
+                for col in first_part_len..max_undertitle_length {
+                    padding.push_str(self.horizontal(self.geom.x + 1 + col));
                 }
                 let mut ret = vec![];
                 ret.append(&mut left_boundary);
@@ -1294,8 +1347,8 @@ impl PaneFrame {
                 // render first part
                 let full_text_len = first_part_len;
                 let mut padding = String::new();
-                for _ in full_text_len..max_undertitle_length {
-                    padding.push_str(boundary_type::HORIZONTAL);
+                for col in full_text_len..max_undertitle_length {
+                    padding.push_str(self.horizontal(self.geom.x + 1 + col));
                 }
                 let mut ret = vec![];
                 ret.append(&mut left_boundary);
@@ -1341,8 +1394,8 @@ impl PaneFrame {
             return Ok(self.empty_undertitle(max_undertitle_length));
         };
         let mut padding = String::new();
-        for _ in len..max_undertitle_length {
-            padding.push_str(boundary_type::HORIZONTAL);
+        for col in len..max_undertitle_length {
+            padding.push_str(self.horizontal(self.geom.x + 1 + col));
         }
         let mut ret = vec![];
         ret.append(&mut left_boundary);
@@ -1364,8 +1417,8 @@ impl PaneFrame {
             if hover_shortcuts_len <= max_undertitle_length {
                 // render exit status and tips
                 let mut padding = String::new();
-                for _ in hover_shortcuts_len..max_undertitle_length {
-                    padding.push_str(boundary_type::HORIZONTAL);
+                for col in hover_shortcuts_len..max_undertitle_length {
+                    padding.push_str(self.horizontal(self.geom.x + 1 + col));
                 }
                 let mut ret = vec![];
                 ret.append(&mut left_boundary);
@@ -1499,7 +1552,7 @@ impl PaneFrame {
                                 // bottom right corner
                                 self.get_corner(boundary_type::BOTTOM_RIGHT)
                             } else {
-                                boundary_type::HORIZONTAL
+                                self.horizontal(self.geom.x + col)
                             };
 
                             let mut boundary_character = foreground_color(boundary, self.color);
@@ -1567,8 +1620,8 @@ impl PaneFrame {
             foreground_color(self.get_corner(boundary_type::BOTTOM_RIGHT), self.color);
         let mut ret = vec![];
         let mut padding = String::new();
-        for _ in 0..max_undertitle_length {
-            padding.push_str(boundary_type::HORIZONTAL);
+        for col in 0..max_undertitle_length {
+            padding.push_str(self.horizontal(self.geom.x + 1 + col));
         }
         ret.append(&mut left_boundary);
         ret.append(&mut foreground_color(&padding, self.color));
@@ -1619,6 +1672,7 @@ mod tests {
                 mouse_scroll_resize,
                 dimmed: false,
                 guest_choice_indicator: None,
+                opening_ripple: None,
             },
         )
     }
@@ -1767,5 +1821,92 @@ mod tests {
         let text = characters_to_string(&chars);
         assert!(!text.contains("MouseScroll"));
         assert!(text.contains("<drag borders>"));
+    }
+    #[test]
+    fn opening_ripple_only_changes_border_strokes_and_handles_narrow_frames() {
+        let start = std::time::Instant::now();
+        for cols in [2, 3, 5, 12, 80, 120] {
+            let mut frame = pane_frame_with(true, true, cols);
+            frame.title = "title─∿".into();
+            frame.highlight_tooltip = Some("hint─text".into());
+            let normal = frame.render().unwrap().0;
+            for ms in [0, 80, 160, 320, 449, 450, 900] {
+                frame.opening_ripple = OpeningRipple::sample(
+                    start,
+                    start + std::time::Duration::from_millis(ms),
+                    0,
+                    cols,
+                );
+                let animated = frame.render().unwrap().0;
+                assert_eq!(normal.len(), animated.len());
+                for (plain, wave) in normal.iter().zip(&animated) {
+                    assert_eq!((plain.x, plain.y), (wave.x, wave.y));
+                    assert_eq!(
+                        plain.terminal_characters.len(),
+                        wave.terminal_characters.len()
+                    );
+                    for (before, after) in plain
+                        .terminal_characters
+                        .iter()
+                        .zip(&wave.terminal_characters)
+                    {
+                        assert_eq!(before.width(), after.width());
+                        if before.character != '─'
+                            || (plain.y != 0 && plain.y != 9)
+                            || ms == 0
+                            || ms >= 450
+                        {
+                            assert_eq!(before, after);
+                        }
+                    }
+                }
+                if cols >= 80 {
+                    assert!(
+                        characters_to_string(&animated[0].terminal_characters).contains("title─∿")
+                    );
+                    assert!(animated
+                        .iter()
+                        .any(|chunk| characters_to_string(&chunk.terminal_characters)
+                            .contains("hint─text")));
+                }
+            }
+        }
+        for glyph in ['∿', '∽'] {
+            assert_eq!(glyph.width(), Some(1));
+        }
+    }
+
+    #[test]
+    fn opening_ripple_halves_sample_the_same_travelling_wave() {
+        let start = std::time::Instant::now();
+        let sample = |ms| {
+            OpeningRipple::sample(start, start + std::time::Duration::from_millis(ms), 3, 70)
+                .unwrap()
+        };
+        let first = sample(80);
+        let later = sample(300);
+        let active_columns = |ripple: OpeningRipple| {
+            (3..73)
+                .filter(|x| ripple.stroke(*x) != "─")
+                .collect::<Vec<_>>()
+        };
+        assert!(active_columns(first).last().unwrap() < active_columns(later).first().unwrap());
+        let mut left = pane_frame_with(false, true, 35);
+        left.geom.x = 3;
+        let mut right = pane_frame_with(false, true, 35);
+        right.geom.x = 38;
+        left.opening_ripple = Some(later);
+        right.opening_ripple = Some(later);
+        for x in 3..73 {
+            assert_eq!(left.horizontal(x), right.horizontal(x));
+        }
+        assert!(
+            OpeningRipple::sample(start, start + std::time::Duration::from_millis(450), 3, 70)
+                .is_none()
+        );
+        assert_eq!(
+            OpeningRipple::sample(start, start, 0, 0).unwrap().stroke(0),
+            "─"
+        );
     }
 }

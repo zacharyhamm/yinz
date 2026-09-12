@@ -19,6 +19,8 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         .map(|(string, _entry)| PathBuf::from(string));
     let default_cwd = kdl_property_first_arg_as_string_or_error!(kdl_options, "default_cwd")
         .map(|(string, _entry)| PathBuf::from(string));
+    let pane_animations =
+        kdl_property_first_arg_as_bool_or_error!(kdl_options, "pane_animations").map(|(v, _)| v);
     let pane_frames =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "pane_frames").map(|(v, _)| v);
     let pane_frame_style =
@@ -347,6 +349,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         firecracker_provider_timeout_secs: firecracker_provider_timeout_secs
             .map(zellij_types::units::ElapsedSeconds::new),
         pane_frames,
+        pane_animations,
         pane_frame_style,
         notification_position,
         notification_timeout,
@@ -940,6 +943,32 @@ fn mouse_mode_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
         None
     }
 }
+fn pane_animations_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
+    let comment_text = format!(
+        "{}\n{}\n{}",
+        " ", "// Whether to animate pane opening effects", "// default is true",
+    );
+
+    let create_node = |node_value: bool| -> KdlNode {
+        let mut node = KdlNode::new("pane_animations");
+        node.push(KdlValue::Bool(node_value));
+        node
+    };
+    if let Some(pane_animations) = value.pane_animations {
+        let mut node = create_node(pane_animations);
+        if add_comments {
+            node.set_leading(format!("{}\n", comment_text));
+        }
+        Some(node)
+    } else if add_comments {
+        let mut node = create_node(false);
+        node.set_leading(format!("{}\n// ", comment_text));
+        Some(node)
+    } else {
+        None
+    }
+}
+
 fn pane_frames_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
     let comment_text = format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
@@ -2303,6 +2332,9 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
     }
     if let Some(mouse_mode) = mouse_mode_to_kdl(value, add_comments) {
         nodes.push(mouse_mode);
+    }
+    if let Some(node) = pane_animations_to_kdl(value, add_comments) {
+        nodes.push(node);
     }
     if let Some(pane_frames) = pane_frames_to_kdl(value, add_comments) {
         nodes.push(pane_frames);

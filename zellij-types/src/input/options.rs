@@ -282,6 +282,9 @@ pub struct Options {
     #[serde(default)]
     /// Set display of the pane frames (true or false)
     pub pane_frames: Option<bool>,
+    /// Animate pane opening effects (default: true).
+    #[serde(default)]
+    pub pane_animations: Option<bool>,
     #[serde(default)]
     pub pane_frame_style: Option<PaneFrameStyle>,
     /// The corner notifications appear in
@@ -552,6 +555,7 @@ impl Options {
         let firecracker_provider_timeout_secs = other
             .firecracker_provider_timeout_secs
             .or(self.firecracker_provider_timeout_secs);
+        let pane_animations = other.pane_animations.or(self.pane_animations);
         let pane_frames = other.pane_frames.or(self.pane_frames);
         let pane_frame_style = other.pane_frame_style.or(self.pane_frame_style);
         let notification_position = other.notification_position.or(self.notification_position);
@@ -675,6 +679,7 @@ impl Options {
             firecracker_provider,
             firecracker_provider_timeout_secs,
             pane_frames,
+            pane_animations,
             pane_frame_style,
             notification_position,
             notification_timeout,

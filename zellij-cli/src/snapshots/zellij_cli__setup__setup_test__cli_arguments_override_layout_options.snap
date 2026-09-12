@@ -24,6 +24,7 @@ Options {
     pane_frames: Some(
         true,
     ),
+    pane_animations: None,
     pane_frame_style: None,
     notification_position: None,
     notification_timeout: None,

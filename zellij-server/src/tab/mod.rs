@@ -5835,6 +5835,18 @@ impl Tab {
     /// The other half of what a mover has to read before `extract_pane` - see [`OverlayCarry`].
     /// Split from `overlay_placement_for` because that one crosses the protobuf boundary and this
     /// one is in-memory state; a caller taking an overlay out of this tab wants both.
+    pub(crate) fn sample_overlay_ripples(&mut self, now: std::time::Instant, enabled: bool) {
+        self.overlay_panes.sample_opening_ripples(now, enabled);
+    }
+
+    pub(crate) fn settle_overlay_ripples(&mut self) {
+        self.overlay_panes.settle_opening_ripples();
+    }
+
+    pub(crate) fn overlay_ripple_is_live(&self) -> bool {
+        self.overlay_panes.opening_ripple_is_live()
+    }
+
     pub fn overlay_carry_for(&self, pane_id: PaneId) -> OverlayCarry {
         self.overlay_panes.carry_of(&pane_id)
     }
