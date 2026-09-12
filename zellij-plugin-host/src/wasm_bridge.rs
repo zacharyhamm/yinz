@@ -182,18 +182,18 @@ impl LoadingContext {
                 .get(&plugin_id)
                 .cloned()
                 .unwrap_or_default(),
-            client_cancel: if wasm_bridge.client_is_connected(&client_id) {
-                wasm_bridge
-                    .client_cancellations
-                    .lock()
-                    .unwrap()
-                    .entry(client_id)
-                    .or_default()
-                    .clone()
-            } else {
-                // A fresh CLI/headless load may reuse a detached UI's id. Its work
-                // has its own lifetime; the old UI token must remain cancelled.
-                Arc::default()
+            client_cancel: {
+                let connected = wasm_bridge.client_is_connected(&client_id);
+                let mut cancellations = wasm_bridge.client_cancellations.lock().unwrap();
+                let cancel = cancellations.entry(client_id).or_default();
+                if !connected && cancel.load(Ordering::Acquire) {
+                    // A fresh CLI/headless load may reuse a detached UI's id. Its work
+                    // has its own lifetime; the old UI token must remain cancelled.
+                    Arc::default()
+                } else {
+                    // Startup loads precede AddClient and must share its attachment token.
+                    cancel.clone()
+                }
             },
             client_cancellations: wasm_bridge.client_cancellations.clone(),
         })

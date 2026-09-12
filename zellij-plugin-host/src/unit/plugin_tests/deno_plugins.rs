@@ -1507,6 +1507,54 @@ fn deno_removed_client_reattaches_with_fresh_state_and_without_its_old_awaits() 
 
 #[test]
 #[serial(plugin_tests)]
+fn lua_detach_retains_state_and_output_subscriptions() {
+    retained_client_reattaches(true);
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn wasm_detach_retains_state_and_output_subscriptions() {
+    retained_client_reattaches(false);
+}
+
+fn retained_client_reattaches(lua: bool) {
+    let harness = Harness::new("lua", "return {}", PermissionStatus::Granted);
+    let path = if lua {
+        lua_plugin_fixture_path()
+    } else {
+        plugin_fixture_path()
+    };
+    load(&harness.sender, run_plugin(&path));
+    let first = Event::Key(KeyWithModifier::new(BareKey::Char('1')));
+    let second = Event::Key(KeyWithModifier::new(BareKey::Char('2')));
+    harness.event(first);
+    harness.rendered(if lua { "presses 1" } else { "Char('1')" });
+    harness
+        .sender
+        .send(PluginInstruction::RemoveClient(CLIENT))
+        .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(CLIENT))
+        .unwrap();
+    harness.event(second);
+    let frame = harness.rendered(if lua { "presses 2" } else { "Char('2')" });
+    if !lua {
+        assert!(
+            frame.contains("Char('1')"),
+            "the Wasm instance lost its event history: {frame}"
+        );
+    }
+    // The new event ran after the disposal job on the same executor, so the
+    // absence of subscription cleanup is now observable without a sleep.
+    assert!(!harness.log.lock().iter().any(|instruction| matches!(instruction,
+        ScreenInstruction::SubscribePaneOutput(plugin, client, None, _) if *plugin == PLUGIN && *client == CLIENT
+    ) || matches!(instruction, ScreenInstruction::UnsubscribePaneOutput(plugin) if *plugin == PLUGIN)));
+    harness.finish();
+}
+
+#[test]
+#[serial(plugin_tests)]
 fn deno_reused_client_id_reconnects_without_waiting_for_disposal() {
     client_reattaches(true);
 }

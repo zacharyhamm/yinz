@@ -89,6 +89,95 @@ impl TestBridge {
 }
 
 #[test]
+fn deno_startup_instance_is_cancelled_and_recreated_on_reattach() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    let path = test._dirs[0].path().join("startup.js");
+    std::fs::write(
+        &path,
+        r#"
+let keys = 0;
+export default {
+  load() { zellij.subscribe(['Key']); },
+  update(event) { if (event.Key) keys++; return true; },
+  render() { return `keys=${keys}`; }
+};
+"#,
+    )
+    .unwrap();
+    let run =
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", path.display()))
+            .unwrap();
+    let (id, _) = test
+        .bridge
+        .load_plugin(
+            &Some(run),
+            None,
+            Size { rows: 10, cols: 80 },
+            None,
+            false,
+            Some(client),
+        )
+        .unwrap();
+    test.settle(id);
+    let original = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, Some(client))
+        .unwrap();
+    let generation = original.lock().unwrap().deno_generation().unwrap();
+    test.bridge.add_client(client).unwrap();
+    let cancel = test.bridge.client_cancellations.lock().unwrap()[&client].clone();
+    assert!(test.bridge.plugin_map.lock().unwrap().contains(id, client));
+    test.bridge.remove_client(client);
+    assert!(cancel.load(Ordering::Acquire));
+    // contains reads the instance's token without waiting for executor disposal.
+    assert!(!test.bridge.plugin_map.lock().unwrap().contains(id, client));
+    test.bridge.add_client(client).unwrap();
+    test.settle(id);
+    assert!(original.lock().unwrap().is_disposed());
+    let replacement = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, Some(client))
+        .unwrap();
+    assert_ne!(
+        replacement.lock().unwrap().deno_generation().unwrap(),
+        generation
+    );
+    let fresh_cancel = test.bridge.client_cancellations.lock().unwrap()[&client].clone();
+    assert!(!Arc::ptr_eq(&cancel, &fresh_cancel));
+    assert!(!fresh_cancel.load(Ordering::Acquire));
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .apply_cached_events(vec![id], false, shutdown.clone())
+        .unwrap();
+    test.bridge
+        .update_plugins(
+            vec![(
+                Some(id),
+                Some(client),
+                Event::Key(zellij_types::keys::KeyWithModifier::new(
+                    zellij_types::keys::BareKey::Char('x'),
+                )),
+            )],
+            shutdown,
+        )
+        .unwrap();
+    test.settle(id);
+    assert!(test.receiver::<ScreenInstruction>().try_iter().any(|(instruction, _)| {
+        matches!(instruction, ScreenInstruction::PluginBytes(assets) if assets.iter().any(|asset|
+            asset.client_id == client && String::from_utf8_lossy(&asset.bytes).contains("keys=1")))
+    }), "the replacement must receive events");
+    test.bridge.unload_plugin(id).unwrap();
+    test.settle(id);
+}
+
+#[test]
 fn deno_tagged_output_batch_renders_once_per_client_and_replays_cached_identities() {
     let mut test = TestBridge::new();
     let first = ClientId::new(1);
