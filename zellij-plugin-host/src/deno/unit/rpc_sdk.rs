@@ -12,7 +12,7 @@ fn rpc_dispatches_general_handlers_and_keeps_pipes_public() {
       zellij.rpc.handle('throw', () => {throw Error('thrown');});
       zellij.rpc.handle('reject', async () => {throw Error('rejected');});
       zellij.rpc.handle('nil', () => {});
-      const invalid = [undefined, NaN, Infinity, 1n, new Uint8Array([1]), () => {}, Symbol(), new Date(), {x:undefined}, [undefined], Array(1), {get x() {throw Error('getter ran');}}, new Proxy({}, {}), Object.defineProperty({}, 'x', {value:1}), 'x'.repeat(64000)];
+      const invalid = [undefined, NaN, Infinity, 1n, new Uint8Array([1]), () => {}, Symbol(), new Date(), {x:undefined}, [undefined], Array(1), {get x() {throw Error('getter ran');}}, new Proxy({}, {}), Object.defineProperty({}, 'x', {value:1}), 'x'.repeat(1048576)];
       invalid.forEach((value, i) => zellij.rpc.handle('invalid'+i, () => ({value})));
       let reserved = false;
       try {zellij.rpc.handle('hocus_tool:x', () => null);} catch (_) {reserved = true;}
@@ -119,7 +119,7 @@ fn rpc_bounds_error_replies_even_with_a_full_size_call_id() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
       const call = {version:1,call_id:'',name:'x'};
-      call.call_id = 'x'.repeat(64000 - zellij.encodeUtf8(JSON.stringify(call)).length);
+      call.call_id = 'x'.repeat(1048576 - zellij.encodeUtf8(JSON.stringify(call)).length);
       globalThis.longId = call.call_id;
       bridge('pipe', {name:'zellij_rpc_call',source:{Plugin:7},payload:JSON.stringify(call)}, 1);
       bridge('pipe', {name:'zellij_rpc_call',source:{Plugin:7},payload:JSON.stringify({...call,call_id:call.call_id+'x'})}, 1);
@@ -131,7 +131,38 @@ fn rpc_bounds_error_replies_even_with_a_full_size_call_id() {
       const replies = sent.filter(([c]) => c.MessageToPlugin);
       check(replies.length === 1);
       const encoded = replies[0][0].MessageToPlugin.message_payload;
-      check(zellij.encodeUtf8(encoded).length <= 64000);
+      check(zellij.encodeUtf8(encoded).length <= 1048576);
       check(JSON.parse(encoded).call_id === longId && typeof JSON.parse(encoded).error === 'string');
     "#);
+}
+
+#[test]
+fn rpc_carries_report_chunks_and_large_snapshots_without_raising_hocus_limits() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.values=['😀'.repeat(16384), '\u0000'.repeat(32768), 'snapshot'.repeat(20000)];
+      globalThis.results=[];globalThis.rejected=[];
+      zellij.rpc.handle('report', payload=>payload);
+      bind({load(){
+        for(const payload of values) zellij.rpc.call({pluginId:7,name:'report',payload}).then(result=>results.push(result));
+        zellij.rpc.call({pluginId:7,name:'hocus_tool:report',payload:values[0]}).catch(error=>rejected.push(error.message));
+      }});bridge('load',{},2);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      check(rejected.length===1 && rejected[0].includes('64000'));
+      const calls=sent.filter(([c])=>c.MessageToPlugin).map(([c])=>c.MessageToPlugin);
+      check(calls.length===3);
+      for(const call of calls){
+        check(zellij.encodeUtf8(call.message_payload).length>64000);
+        bridge('pipe',{name:'zellij_rpc_call',source:{Plugin:7},payload:call.message_payload},2);
+      }
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const replies=sent.filter(([c])=>c.MessageToPlugin?.message_name==='zellij_rpc_reply').map(([c])=>c.MessageToPlugin);
+      check(replies.length===3);
+      for(const reply of replies) bridge('pipe',{name:'zellij_rpc_reply',source:{Plugin:7},payload:reply.message_payload},2);
+    "#);
+    run(&mut runtime, "check(JSON.stringify(results)===JSON.stringify(values));");
 }

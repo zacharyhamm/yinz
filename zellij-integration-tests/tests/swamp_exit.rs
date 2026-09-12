@@ -10,17 +10,25 @@ use zellij_types::pane_size::Size;
 // Run the shipped bridge, exit hook and view together. Swamp history and supervisor
 // queries are fixtures: terminal processes use this suite's fake PTYs. Pane creation,
 // replacement, input, hook delivery, rendering and the data store use the real host.
-fn fixture() -> String {
-    fn body(source: &str) -> String {
-        let mut source = source.to_owned();
-        while let Some(start) = source.find("import ") {
-            let end = start + source[start..].find(';').unwrap() + 1;
-            source.replace_range(start..end, "");
-        }
-        source
-            .replace("export default definePlugin", "return definePlugin")
-            .replace("export const view", "const view")
+fn body(source: &str) -> String {
+    let mut source = source.to_owned();
+    while let Some(start) = source.find("import ") {
+        let end = start + source[start..].find(';').unwrap() + 1;
+        source.replace_range(start..end, "");
     }
+    let source = source
+        .replace(
+            "export default definePlugin",
+            "const shipped = definePlugin",
+        )
+        .replace("export const view", "const view");
+    if source.contains("const shipped") {
+        format!("{source}\nreturn shipped;")
+    } else {
+        source
+    }
+}
+fn fixture() -> String {
     let bridge = body(zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap());
     let exit = body(zellij_config::consts::builtin_deno_plugin("agent-exit").unwrap());
     let view = body(include_str!(
@@ -46,15 +54,26 @@ export default definePlugin({
       real.command('MessageToPlugin',{plugin_url:null,destination_plugin_id:message.source.Plugin,plugin_config:{},message_name:'agent_snapshot',message_payload:'{"panes":[],"activity":{}}',message_args:{},new_plugin_args:null,floating_pane_coordinates:null}); return;
     }
     if(message.name==='swamp-pane-result') {
-      bridge.pipe(message);
-      if(JSON.parse(message.payload).choice==='cancelled') {status='suspended';await view.refresh();}
+      const reply=JSON.parse(message.payload);
+      if(reply.choice==='started') {
+        if(reply.pane_id?.Terminal!==source) throw Error('the fork picker must report the terminal it reused');
+      } else if(reply.pane_id!==null) throw Error('cancelled picker results must carry a null pane ID');
+      await bridge.pipe(message);
+      if(reply.choice==='cancelled' && (await call({method:'lookup',work:reply.work,key:reply.key})).outcome==='completed') {status='suspended';await view.refresh();}
       return;
     }
     if(message.name!=='fixture') {hook.pipe?.(message);return;}
     if(message.payload==='fork') await call({method:'pane_action',work:token,key:'fork',action:'fork'});
     else if(message.payload==='restart') real.command('RerunCommandPane',source);
     else if(message.payload==='close-source') real.command('CloseTerminalPane',source);
-    else if(message.payload==='agent') {
+    else if(message.payload==='manual-close-source') {
+      const uid=JSON.stringify([real.getPluginIds().host_id,real.serverSession,token,'view']);
+      real.data.apply([real.data.delete('delivery',real.data.eq('uid',uid))]);
+      real.command('HidePaneWithId',{Plugin:real.getPluginIds().plugin_id}); real.command('CloseTerminalPane',source);
+    } else if(message.payload==='state') {
+      const result=await call({method:'lookup',work:token,key:'fork'});
+      real.command('CliPipeOutput',[message.source.Cli,JSON.stringify(result)]);real.command('UnblockCliPipeInput',message.source.Cli);return;
+    } else if(message.payload==='agent') {
       const agent=await call({method:'agent_spawn',work:token,key:'worker',spec:{kind:'claude',cwd:'/host',allow_outside_worktree:true}});
       worker=agent.pane; emit('SessionStart');
       await call({method:'agent_prompt',work:token,key:'turn',agent:'worker',prompt:'work'});
@@ -364,14 +383,14 @@ fn closing_during_workflow_launch_cancels_the_late_result() {
 fn close_workflow(stage: &str) {
     let root = zellij_integration_tests::test_env::init().join("swamp-close");
     fs::create_dir_all(&root).unwrap();
-    let bridge_path = root.join("bridge.lua");
-    let exit_path = root.join("exit.lua");
+    let bridge_path = root.join("bridge.ts");
+    let exit_path = root.join("exit.ts");
     fs::write(
         &bridge_path,
         format!(
-            "{}\nreturn plugin((function()\n{}\nend)())",
-            include_str!("swamp_close_fixture.lua"),
-            zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap()
+            "{}\nexport default plugin((()=>{{\n{}\n}})());",
+            include_str!("swamp_close_fixture.ts"),
+            body(zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap())
         ),
     )
     .unwrap();
@@ -379,24 +398,22 @@ fn close_workflow(stage: &str) {
         &exit_path,
         format!(
             r#"
-local z=require('zellij')
-z.project_config.read=function() return {{root='/control',config={{workflow='fixture'}}}} end
-local rpc=z.rpc.call
-z.rpc.call=function(args) args.plugin_url='file:{}';return rpc(args) end
-local hook=(function()
-{}
-end)()
-local load=hook.load
-hook.load=function(config)
-  z.task(function()
-    z.await(z.async.permissions{{'read_application_state','change_application_state','message_and_launch_other_plugins','read_pane_contents'}})
-    load(config)
-  end)
-end
-return hook
+import real, {{definePlugin}} from 'zellij:plugin';
+const z: any = {{...real, projectConfig: {{read: () => ({{root: '/control', config: {{workflow: 'fixture'}}}})}},
+  rpc: {{...real.rpc, call: (args: any) => real.rpc.call({{...args, pluginUrl: 'file:{}'}})}}}};
+const view = (() => {{ {}
+return view; }})();
+const hook = (() => {{ {} }})();
+const load = hook.load!;
+hook.load = async config => {{
+  await real.waitForPermissions(['ReadApplicationState','ChangeApplicationState','MessageAndLaunchOtherPlugins','ReadPaneContents']);
+  load(config);
+}};
+export default hook;
 "#,
             bridge_path.display(),
-            zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap()
+            body(include_str!("../../zellij-config/assets/plugins/workflow-view.ts")),
+            body(zellij_config::consts::builtin_deno_plugin("agent-exit").unwrap())
         ),
     )
     .unwrap();

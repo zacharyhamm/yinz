@@ -2,7 +2,7 @@
 import z, {definePlugin, type Event} from 'zellij:plugin';
 import {view} from 'zellij:workflow-view';
 let status = 'Agent exited.', busy = false, workflow = false;
-let pane: number | undefined, directory: string | undefined;
+let pane: number | undefined, directory: string | undefined, launchToken: string | undefined;
 async function launch(config: Record<string, string>) {
   const ownPane = {Plugin: z.getPluginIds().plugin_id};
   const visible = () => {
@@ -25,6 +25,7 @@ async function launch(config: Record<string, string>) {
 }
 export default definePlugin({
   load(config) {
+    launchToken = config.agent_exit_token;
     pane = config.agent_pane_id == null ? undefined : Number(config.agent_pane_id);
     directory = config.agent_firecracker_worktree ?? config.agent_cwd;
     z.subscribe(['Key']);
@@ -37,8 +38,10 @@ export default definePlugin({
     view.active = true;
     view.load({onRestart() {
       if (!busy && !view.active && !view.submitting && !view.pending.length && pane != null) {
-        z.command('ReplacePaneWithExistingPane', [{Plugin: z.getPluginIds().plugin_id}, {Terminal: pane}, true]);
-        z.command('RerunCommandPane', pane); z.command('CloseSelf');
+        busy = true;
+        void z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp',
+          payload: {method: 'pane_action', work: launchToken!, key: 'restart', action: 'restart'}})
+          .catch(error => { view.status = String(error); z.requestRender(); }).finally(() => { busy = false; });
       }
     }});
     view.status = 'Starting workflow...'; workflow = true; busy = true;

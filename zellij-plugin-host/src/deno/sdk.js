@@ -782,7 +782,8 @@
   let rpcCount = 0n;
   const rpcHandlers = new Map();
   const rpcCalls = new Map();
-  function jsonMessage(value) {
+  const RPC_MAX_BYTES = 1048576;
+  function jsonMessage(value, maxBytes = 64000) {
     // The host rejects getters, proxies, cycles, sparse arrays and excessive depth.
     validate(value);
     function copy(value) {
@@ -795,11 +796,11 @@
       }));
     }
     const encoded = JSON.stringify(copy(value));
-    if (encodeUtf8(encoded).length > 64000) throw new RangeError("RPC/Hocus payload exceeds 64000 bytes");
+    if (encodeUtf8(encoded).length > maxBytes) throw new RangeError(`RPC/Hocus payload exceeds ${maxBytes} bytes`);
     return encoded;
   }
-  function sendPluginMessage(name, payload, destination = null, pluginUrl = null, pluginConfig = {}) {
-    const encoded = jsonMessage(payload);
+  function sendPluginMessage(name, payload, destination = null, pluginUrl = null, pluginConfig = {}, maxBytes = 64000) {
+    const encoded = jsonMessage(payload, maxBytes);
     command("MessageToPlugin", {
       plugin_url: pluginUrl, destination_plugin_id: destination, plugin_config: pluginConfig,
       message_name: name, message_payload: encoded, message_args: {},
@@ -826,13 +827,14 @@
         const callId = rpcPrefix + ":rpc" + (++rpcCount);
         let timer;
         operation.cleanup = () => { rpcCalls.delete(callId); timer?.cancel(); };
-        rpcCalls.set(callId, {operation, pluginId});
+        const maxBytes = name.startsWith("hocus_tool:") ? 64000 : RPC_MAX_BYTES;
+        rpcCalls.set(callId, {operation, pluginId, maxBytes});
         if (timeoutMs !== undefined) timer = addTimer(timeoutMs, () => {
           const error = new Error("RPC timed out: " + name);
           error.name = "TimeoutError";
           operation.reject(error);
         }, operation.reject);
-        sendPluginMessage("zellij_rpc_call", {version: 1, call_id: callId, name, payload}, pluginId ?? null, pluginUrl ?? null, config);
+        sendPluginMessage("zellij_rpc_call", {version: 1, call_id: callId, name, payload}, pluginId ?? null, pluginUrl ?? null, config, maxBytes);
       });
     },
   });
@@ -946,13 +948,13 @@
   function rpcPipe(message) {
     if (!["zellij_rpc_call", "zellij_rpc_reply"].includes(message.name)) return false;
     const from = message.source?.Plugin;
-    if (!Number.isSafeInteger(from) || from < 0 || from > 4294967295 || typeof message.payload !== "string" || encodeUtf8(message.payload).length > 64000) return true;
+    if (!Number.isSafeInteger(from) || from < 0 || from > 4294967295 || typeof message.payload !== "string" || encodeUtf8(message.payload).length > RPC_MAX_BYTES) return true;
     let call;
     try { call = JSON.parse(message.payload); validate(call); } catch (_) { return true; }
     if (call?.version !== 1 || typeof call.call_id !== "string" || !call.call_id) return true;
     if (message.name === "zellij_rpc_reply") {
       const waiting = rpcCalls.get(call.call_id);
-      if (!waiting || (waiting.pluginId !== undefined && waiting.pluginId !== from)) return true;
+      if (!waiting || (waiting.pluginId !== undefined && waiting.pluginId !== from) || encodeUtf8(message.payload).length > waiting.maxBytes) return true;
       const hasError = Object.hasOwn(call, "error"), hasResult = Object.hasOwn(call, "result");
       if (hasError && (hasResult || typeof call.error !== "string")) return true;
       // Legacy RPC senders can omit the result field.
@@ -961,6 +963,8 @@
       return true;
     }
     if (typeof call.name !== "string" || !call.name) return true;
+    const maxBytes = call.name.startsWith("hocus_tool:") ? 64000 : RPC_MAX_BYTES;
+    if (encodeUtf8(message.payload).length > maxBytes) return true;
     const origin = client;
     const reply = (result, error) => {
       const previous = client;
@@ -969,15 +973,15 @@
         let payload;
         try {
           payload = {version: 1, call_id: call.call_id, ...(error === undefined ? {result: result === undefined ? null : result} : {error: String(error).slice(0, 2000)})};
-          jsonMessage(payload);
+          jsonMessage(payload, maxBytes);
         } catch (error) {
           payload = {version: 1, call_id: call.call_id, error: String(error).slice(0, 2000)};
         }
         // Leave room for the opaque caller ID even when it nearly fills the envelope.
         if (Object.hasOwn(payload, "error")) {
-          while (encodeUtf8(JSON.stringify(payload)).length > 64000 && payload.error.length) payload.error = payload.error.slice(0, Math.floor(payload.error.length / 2));
+          while (encodeUtf8(JSON.stringify(payload)).length > maxBytes && payload.error.length) payload.error = payload.error.slice(0, Math.floor(payload.error.length / 2));
         }
-        sendPluginMessage("zellij_rpc_reply", payload, from);
+        sendPluginMessage("zellij_rpc_reply", payload, from, null, {}, maxBytes);
       } catch (error) { fail(error); }
       finally { client = previous; }
     };
