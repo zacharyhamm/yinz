@@ -35,7 +35,7 @@ fn ctrl_o_is_not_typed_into_the_input() {
     let mut state = idle_state();
     assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier()));
     assert!(state.input.get_text().is_empty());
-    assert_eq!(state.panel.anchor, None);
+    assert_eq!(state.panel.placed_corner, None);
 }
 
 // -- Esc hides, Ctrl-c interrupts ---------------------------------------

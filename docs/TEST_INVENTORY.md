@@ -1,21 +1,19 @@
 # Test inventory
 
-Generated 2026-09-08 from `32fbce7c0` by `scripts/test-inventory.sh`.
+Generated 2026-09-12 from `5c65fc44f` by `scripts/test-inventory.sh`.
 One item per automated test; the heading above each block is the gate that runs it.
-
-> Generated with `--fast`: no `--all-features`, so the **e2e** group
-> (feature `e2e`) and the **postgres** half of the plugin-data store are
-> missing. Re-run without `--fast` for the whole tree.
 
 ## Totals
 
 | gate | tests | ignored |
 |---|---:|---:|
-| `cargo x test` | 7874 | 1 |
-| `cargo x integration-test` | 379 | 0 |
+| `cargo x test` | 7995 | 1 |
+| `cargo x integration-test` | 390 | 0 |
+| `cargo x ci e2e --test` | 5 | 5 |
 | `cargo x remote-test --build && cargo x remote-test --test` | 41 | 41 |
 | `cargo x firecracker-test --build && cargo x firecracker-test --test` | 4 | 4 |
-| **total** | **8298** | **46** |
+| `cargo x postgres-test --build && cargo x postgres-test --test` | 108 | 0 |
+| **total** | **8543** | **51** |
 
 ## configuration (bin/configuration)
 
@@ -172,6 +170,8 @@ Run: `cargo x test`
 - [ ] `api::api_tests::request_body::the_tool_payload_floor_stays_under_21_kb`
 - [ ] `api::api_tests::request_body::thinking_that_arrived_as_reasoning_goes_back_as_reasoning`
 - [ ] `api::api_tests::request_body::unusable_tool_call_arguments_are_sent_as_an_empty_object`
+- [ ] `api::api_tests::responses::a_completed_response_carries_its_reported_cost`
+- [ ] `api::api_tests::responses::a_completed_response_with_an_unreadable_cost_still_finishes`
 - [ ] `api::api_tests::responses::a_failure_with_nothing_readable_still_says_something`
 - [ ] `api::api_tests::responses::an_unknown_api_is_a_config_error`
 - [ ] `api::api_tests::responses::api_key_selects_the_endpoint`
@@ -215,7 +215,10 @@ Run: `cargo x test`
 - [ ] `api::api_tests::streaming::a_bare_reasoning_delta_keeps_its_own_spelling`
 - [ ] `api::api_tests::streaming::a_chunk_carrying_thinking_and_text_yields_both_thinking_first`
 - [ ] `api::api_tests::streaming::a_chunk_keeps_reasoning_and_every_parallel_tool_call`
+- [ ] `api::api_tests::streaming::a_cost_that_is_not_a_number_costs_only_the_price`
+- [ ] `api::api_tests::streaming::a_cost_without_counts_is_kept_and_a_negative_one_is_not`
 - [ ] `api::api_tests::streaming::a_reasoning_content_delta_is_read_as_deepseek_style_thinking`
+- [ ] `api::api_tests::streaming::a_reported_cost_rides_along_in_nano_usd`
 - [ ] `api::api_tests::streaming::a_usage_on_a_content_chunk_keeps_both`
 - [ ] `api::api_tests::streaming::a_usage_only_chunk_yields_the_count_and_nothing_else`
 - [ ] `api::api_tests::streaming::a_usage_without_prompt_or_completion_counts_is_ignored`
@@ -836,6 +839,7 @@ Run: `cargo x test`
 - [ ] `main_tests::streaming::waiting_on_a_reply_shows_the_loader`
 - [ ] `main_tests::strip::a_run_that_cannot_be_resumed_says_why`
 - [ ] `main_tests::strip::a_run_that_went_live_under_the_row_is_not_resumed_twice`
+- [ ] `main_tests::strip::a_search_selection_keeps_its_revision_through_refresh_and_clears_it_for_ordinary_rows`
 - [ ] `main_tests::strip::a_selected_agent_picks_up_its_run_when_the_first_header_arrives`
 - [ ] `main_tests::strip::a_selection_message_is_how_hocus_learns_the_agent_lists_id`
 - [ ] `main_tests::strip::a_snapshot_rebuilds_the_strip`
@@ -868,8 +872,11 @@ Run: `cargo x test`
 - [ ] `main_tests::todo_tools::a_write_to_a_list_whose_project_is_gone_still_lands`
 - [ ] `main_tests::todo_tools::an_undo_opens_the_item_and_the_item_above_it`
 - [ ] `main_tests::todo_tools::crossing_an_item_off_crosses_off_the_items_below_it`
+- [ ] `main_tests::token_usage::a_reported_cost_accumulates_beside_the_tokens`
+- [ ] `main_tests::token_usage::a_request_without_a_cost_leaves_the_total_alone`
 - [ ] `main_tests::token_usage::a_resend_banks_what_the_attempt_it_supersedes_cost`
 - [ ] `main_tests::token_usage::a_usage_only_change_is_archived`
+- [ ] `main_tests::token_usage::costs_are_shown_at_title_width`
 - [ ] `main_tests::token_usage::counts_are_shown_at_title_width`
 - [ ] `main_tests::token_usage::every_request_accumulates_separate_input_and_output_totals`
 - [ ] `main_tests::token_usage::repeated_usage_chunks_contribute_once_per_stream`
@@ -915,7 +922,6 @@ Run: `cargo x test`
 - [ ] `main_tests::web_search::a_search_response_for_a_call_we_are_not_waiting_on_is_ignored`
 - [ ] `main_tests::web_search::a_search_with_no_query_is_answered_rather_than_sent`
 - [ ] `main_tests::web_search::a_stream_response_is_not_mistaken_for_a_search_result`
-- [ ] `overlay::overlay_tests::a_closed_pane_does_not_hold_a_slot_in_the_tour`
 - [ ] `overlay::overlay_tests::a_configured_size_below_the_minimum_is_raised`
 - [ ] `overlay::overlay_tests::a_dismissed_panel_does_not_follow_a_tab_switch`
 - [ ] `overlay::overlay_tests::a_dragged_divider_is_read_back_off_the_manifest_and_kept`
@@ -923,7 +929,7 @@ Run: `cargo x test`
 - [ ] `overlay::overlay_tests::a_focused_agent_list_on_a_tab_nobody_is_on_is_still_dragged_over`
 - [ ] `overlay::overlay_tests::a_greeting_that_arrives_before_our_first_pane_update_is_the_list_that_made_us`
 - [ ] `overlay::overlay_tests::a_greeting_to_a_conversation_that_was_already_open_claims_nothing`
-- [ ] `overlay::overlay_tests::a_hidden_panel_keeps_its_anchor`
+- [ ] `overlay::overlay_tests::a_hidden_panel_keeps_its_corner`
 - [ ] `overlay::overlay_tests::a_hide_only_half_landed_is_not_read_as_a_reveal`
 - [ ] `overlay::overlay_tests::a_hide_that_landed_on_one_half_is_restated_on_the_other`
 - [ ] `overlay::overlay_tests::a_hide_that_never_lands_stops_being_believed`
@@ -971,29 +977,29 @@ Run: `cargo x test`
 - [ ] `overlay::overlay_tests::an_agent_list_left_behind_by_a_summoned_conversation_is_dragged_over`
 - [ ] `overlay::overlay_tests::an_agent_list_the_user_closed_is_forgotten`
 - [ ] `overlay::overlay_tests::an_unparseable_value_falls_back_rather_than_crashing`
-- [ ] `overlay::overlay_tests::arriving_on_another_tab_drops_the_anchor`
+- [ ] `overlay::overlay_tests::arriving_on_another_tab_keeps_the_corner`
 - [ ] `overlay::overlay_tests::clicking_a_toast_brings_the_whole_panel_back`
 - [ ] `overlay::overlay_tests::clicking_a_toast_does_not_relaunch_a_list_the_user_closed`
 - [ ] `overlay::overlay_tests::clicking_a_toast_for_a_chat_that_is_gone_still_reveals_the_panel`
 - [ ] `overlay::overlay_tests::clicking_a_toast_opens_the_chat_that_raised_it`
-- [ ] `overlay::overlay_tests::closing_the_anchor_pane_leaves_the_conversation_where_it_is`
 - [ ] `overlay::overlay_tests::closing_the_list_does_not_launch_another_one`
+- [ ] `overlay::overlay_tests::closing_the_pane_the_conversation_moved_off_leaves_it_where_it_is`
 - [ ] `overlay::overlay_tests::ctrl_o_always_moves_the_conversation`
+- [ ] `overlay::overlay_tests::ctrl_o_cycles_clockwise`
 - [ ] `overlay::overlay_tests::ctrl_o_cycles_the_corners_when_there_is_one_pane`
 - [ ] `overlay::overlay_tests::ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle`
 - [ ] `overlay::overlay_tests::ctrl_o_in_the_list_always_moves_it`
-- [ ] `overlay::overlay_tests::ctrl_o_in_the_list_moves_the_panel_clear_of_the_largest_unfocused_pane`
+- [ ] `overlay::overlay_tests::ctrl_o_in_the_list_moves_the_panel_one_corner_clockwise`
 - [ ] `overlay::overlay_tests::ctrl_o_keeps_the_conversations_current_size`
 - [ ] `overlay::overlay_tests::ctrl_o_keeps_the_panels_current_size`
-- [ ] `overlay::overlay_tests::ctrl_o_moves_the_conversation_clear_of_the_largest_unfocused_pane`
+- [ ] `overlay::overlay_tests::ctrl_o_moves_the_conversation_one_corner_clockwise`
 - [ ] `overlay::overlay_tests::ctrl_o_moves_with_no_tiled_panes_at_all`
-- [ ] `overlay::overlay_tests::ctrl_o_tours_every_pane_before_it_cycles_corners`
-- [ ] `overlay::overlay_tests::ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner`
-- [ ] `overlay::overlay_tests::ctrl_o_walks_off_whatever_the_conversation_is_covering`
-- [ ] `overlay::overlay_tests::ctrl_o_with_one_tiled_pane_moves_to_the_top_right`
+- [ ] `overlay::overlay_tests::ctrl_o_twice_moves_to_the_next_corner`
+- [ ] `overlay::overlay_tests::ctrl_o_with_one_tiled_pane_moves_to_the_top_left`
 - [ ] `overlay::overlay_tests::esc_in_a_layout_pane_hides_nothing`
 - [ ] `overlay::overlay_tests::esc_in_the_conversation_puts_the_whole_panel_away`
 - [ ] `overlay::overlay_tests::esc_in_the_list_puts_the_whole_panel_away`
+- [ ] `overlay::overlay_tests::every_corner_placement_has_the_same_size`
 - [ ] `overlay::overlay_tests::every_surface_gets_a_pane_that_meets_the_minimum`
 - [ ] `overlay::overlay_tests::hiding_the_panel_drops_a_list_it_had_asked_for`
 - [ ] `overlay::overlay_tests::hiding_the_panel_moves_no_rectangle`
@@ -1003,27 +1009,10 @@ Run: `cargo x test`
 - [ ] `overlay::overlay_tests::nothing_is_followed_until_we_know_where_we_are`
 - [ ] `overlay::overlay_tests::only_the_client_the_panes_are_sitting_with_may_move_them`
 - [ ] `overlay::overlay_tests::our_own_hide_landing_is_not_a_reveal`
-- [ ] `overlay::overlay_tests::pick_anchor_breaks_ties_by_the_larger_pane`
-- [ ] `overlay::overlay_tests::pick_anchor_falls_back_to_the_only_tiled_pane`
-- [ ] `overlay::overlay_tests::pick_anchor_ignores_floating_suppressed_and_unselectable_panes`
-- [ ] `overlay::overlay_tests::pick_anchor_prefers_the_pane_hocus_is_covering`
-- [ ] `overlay::overlay_tests::pick_anchor_skips_panes_already_visited`
-- [ ] `overlay::overlay_tests::pick_anchor_skips_the_focused_pane`
 - [ ] `overlay::overlay_tests::revealing_the_conversation_asks_for_the_missing_half`
-- [ ] `overlay::overlay_tests::sole_tiled_pane_counts_only_the_layout`
 - [ ] `overlay::overlay_tests::the_agent_list_is_the_left_half_and_the_conversation_the_right`
 - [ ] `overlay::overlay_tests::the_agent_lists_tab_is_tracked_beside_our_own`
-- [ ] `overlay::overlay_tests::the_clear_placement_goes_left_of_a_pane_on_the_right`
-- [ ] `overlay::overlay_tests::the_clear_placement_goes_right_of_a_pane_on_the_left`
-- [ ] `overlay::overlay_tests::the_clear_placement_goes_top_right_when_the_pane_is_the_only_one`
-- [ ] `overlay::overlay_tests::the_clear_placement_has_nothing_to_say_without_a_surface`
-- [ ] `overlay::overlay_tests::the_clear_placement_is_never_clamped_to_the_pane`
-- [ ] `overlay::overlay_tests::the_clear_placement_is_the_same_size_as_the_corner_one`
-- [ ] `overlay::overlay_tests::the_clear_placement_leaves_a_centred_pane_in_the_default_corner`
-- [ ] `overlay::overlay_tests::the_clear_placement_picks_the_vertical_slot_that_hides_the_least`
-- [ ] `overlay::overlay_tests::the_clear_placement_still_chooses_a_row_when_the_column_was_forced`
 - [ ] `overlay::overlay_tests::the_discount_runs_out_if_the_focus_never_arrives`
-- [ ] `overlay::overlay_tests::the_first_corner_of_the_order_is_where_the_placement_goes`
 - [ ] `overlay::overlay_tests::the_height_is_configurable_and_kept_on_the_screen`
 - [ ] `overlay::overlay_tests::the_pad_shrinks_before_the_panel_does`
 - [ ] `overlay::overlay_tests::the_panel_grows_with_the_screen`
@@ -1136,6 +1125,7 @@ Run: `cargo x test`
 - [ ] `tools::tools_tests::args::an_agents_own_arguments_survive_having_no_command_to_hang_off`
 - [ ] `tools::tools_tests::args::an_array_command_is_taken_whole`
 - [ ] `tools::tools_tests::args::an_invented_placement_is_answered_with_the_ones_that_exist`
+- [ ] `tools::tools_tests::args::an_opencode_spawn_plans_the_argv_opencode_actually_takes`
 - [ ] `tools::tools_tests::args::args_parse_reads_the_note_fields`
 - [ ] `tools::tools_tests::args::args_parse_reads_the_todo_fields`
 - [ ] `tools::tools_tests::args::empty_arguments_parse_as_defaults`
@@ -1703,6 +1693,7 @@ Run: `cargo x test`
 - [ ] `tests::a_click_past_the_last_row_hits_nothing`
 - [ ] `tests::a_click_resolves_to_the_agent_row_under_it`
 - [ ] `tests::a_click_selects_and_enter_is_what_focuses`
+- [ ] `tests::a_continuation_is_marked_inside_the_prompt_cell`
 - [ ] `tests::a_fresh_strip_lands_on_the_first_agent_not_the_header`
 - [ ] `tests::a_half_too_narrow_to_wrap_into_draws_nothing`
 - [ ] `tests::a_long_label_does_not_push_the_scroll_readout_off_the_divider`
@@ -1710,6 +1701,7 @@ Run: `cargo x test`
 - [ ] `tests::a_modified_or_unrelated_letter_moves_nothing`
 - [ ] `tests::a_modified_r_is_left_alone`
 - [ ] `tests::a_modified_s_is_left_alone`
+- [ ] `tests::a_narrow_pane_sheds_the_agent_then_the_worktree_then_the_age`
 - [ ] `tests::a_pane_too_short_to_split_is_all_list`
 - [ ] `tests::a_pane_with_no_history_half_rings_straight_on_to_the_conversation`
 - [ ] `tests::a_prompt_with_no_envelope_reads_exactly_as_it_did_before`
@@ -1719,6 +1711,8 @@ Run: `cargo x test`
 - [ ] `tests::a_refusal_takes_the_whole_divider_until_the_row_asks_for_something_else`
 - [ ] `tests::a_result_that_quotes_an_envelope_opens_as_prose`
 - [ ] `tests::a_run_on_another_host_offers_no_file_to_open`
+- [ ] `tests::a_run_that_cannot_say_when_it_started_keeps_the_columns_in_line`
+- [ ] `tests::a_search_hit_fills_the_same_cells`
 - [ ] `tests::a_strip_that_moves_the_selection_closes_the_reader`
 - [ ] `tests::a_summary_that_says_the_same_thing_does_not_bounce_the_history_cache`
 - [ ] `tests::a_take_lands_the_keys_on_the_half_it_names`
@@ -1727,8 +1721,13 @@ Run: `cargo x test`
 - [ ] `tests::an_empty_list_puts_the_keys_back_in_the_list_half`
 - [ ] `tests::an_unreported_shift_tab_reads_as_a_forward_step`
 - [ ] `tests::asking_again_clears_the_last_refusal`
+- [ ] `tests::cancelled_and_replaced_search_replies_are_ignored`
+- [ ] `tests::cancelling_an_initial_search_restores_live_rows_and_summaries`
+- [ ] `tests::cancelling_edits_restores_the_applied_query_and_matches`
 - [ ] `tests::coming_back_from_raw_starts_at_the_top`
 - [ ] `tests::ctrl_o_is_taken_and_moves_the_selection_nowhere`
+- [ ] `tests::editing_a_pending_query_ignores_stale_replies_and_accepts_the_revised_query`
+- [ ] `tests::empty_results_and_errors_finish_search_and_ignore_duplicate_replies`
 - [ ] `tests::enter_in_the_history_half_opens_the_event_and_esc_comes_back`
 - [ ] `tests::esc_at_the_question_drops_it_rather_than_the_panel`
 - [ ] `tests::focus_on_a_plugin_pane_changes_nothing_at_all`
@@ -1748,10 +1747,14 @@ Run: `cargo x test`
 - [ ] `tests::reader_traverses_the_tab_bar_and_conversation_without_losing_its_event`
 - [ ] `tests::s_is_taken_on_a_row_that_names_an_agent_and_nowhere_else`
 - [ ] `tests::scrolling_the_reader_takes_the_cursor_with_it`
+- [ ] `tests::search_results_follow_selection_and_preserve_state_for_the_same_run`
+- [ ] `tests::search_revisions_reposition_with_list_focus_and_refresh_preserves_scroll`
 - [ ] `tests::shift_tab_from_the_list_visits_tabs_before_the_input_box`
 - [ ] `tests::stepping_off_the_focused_agent_and_back_takes_the_liveness_with_it`
 - [ ] `tests::stepping_skips_headers_in_both_directions`
+- [ ] `tests::strips_during_search_save_the_latest_rows_without_replacing_matches`
 - [ ] `tests::tab_walks_the_ring_and_jk_follow_the_focus`
+- [ ] `tests::the_archive_table_lines_its_columns_up`
 - [ ] `tests::the_arrows_are_a_motion_whatever_is_held_with_them`
 - [ ] `tests::the_cursor_winds_the_half_back_to_the_event_it_lands_on`
 - [ ] `tests::the_divider_asks_and_then_says_why_it_was_refused`
@@ -1878,6 +1881,7 @@ Run: `cargo x test`
 - [ ] `agents::tests::a_run_detail_is_cut_to_its_byte_budget_from_the_newest_end`
 - [ ] `agents::tests::a_run_divider_names_a_run_a_person_can_read`
 - [ ] `agents::tests::a_run_history_is_the_whole_timeline_oldest_first`
+- [ ] `agents::tests::a_run_id_names_the_kind_that_minted_it`
 - [ ] `agents::tests::a_run_recorded_before_ids_existed_is_still_compared_by_one`
 - [ ] `agents::tests::a_run_s_history_is_rendered_as_markdown`
 - [ ] `agents::tests::a_run_stored_before_the_split_keeps_the_entries_in_its_payload`
@@ -1923,6 +1927,7 @@ Run: `cargo x test`
 - [ ] `agents::tests::an_event_that_fits_the_cap_grows_no_marker`
 - [ ] `agents::tests::an_events_spans_still_tile_the_entries`
 - [ ] `agents::tests::an_idle_summary_is_the_model_s_words_wrapped_to_the_half`
+- [ ] `agents::tests::an_opencode_pane_is_detected_from_its_command_and_its_title`
 - [ ] `agents::tests::automatic_permissions_have_no_waiting_marker`
 - [ ] `agents::tests::detects_a_kind_named_as_a_whole_word_in_the_title`
 - [ ] `agents::tests::detects_a_versioned_binary_name`
@@ -1990,6 +1995,7 @@ Run: `cargo x test`
 - [ ] `agents::tests::the_rest_of_the_lifecycle_names_the_state_it_is_in`
 - [ ] `agents::tests::the_rolling_summary_is_the_newest_row_of_the_timeline`
 - [ ] `agents::tests::the_waiting_marker_believes_a_feed_outright_and_a_summary_only_while_it_is_fresh`
+- [ ] `agents::tests::the_worktree_cell_names_the_checkout_a_run_worked_in`
 - [ ] `agents::tests::there_is_no_history_where_there_is_no_room_for_one`
 - [ ] `agents::tests::two_machines_minting_a_fallback_run_at_once_do_not_collide`
 - [ ] `agents::tests::wall_clock_keeps_the_time_of_day_inside_the_day`
@@ -2216,9 +2222,13 @@ Run: `cargo x test`
 - [ ] `run_history::tests::an_entry_is_found_by_a_word_it_contains`
 - [ ] `run_history::tests::an_unknown_run_pages_to_nothing_rather_than_failing`
 - [ ] `run_history::tests::assistant_messages_are_searchable_and_pageable_after_archival_and_summary`
+- [ ] `run_history::tests::distinct_run_search_uses_substrings_only_when_fts_starts_empty`
+- [ ] `run_history::tests::distinct_runs_page_past_a_talkative_run_and_measure_overflow`
 - [ ] `run_history::tests::entries_written_before_the_index_existed_are_searchable`
 - [ ] `run_history::tests::narrowing_to_this_session_reaches_the_runs_that_predate_the_host_column`
 - [ ] `run_history::tests::runs_are_listed_newest_first_across_sessions`
+- [ ] `run_history::tests::search_detail_does_not_substitute_a_later_revision_for_a_missing_match`
+- [ ] `run_history::tests::search_detail_preserves_the_full_match_and_surrounding_context`
 - [ ] `store::tests::a_backend_overrides_the_namespace_on_a_request`
 - [ ] `store::tests::a_legacy_marker_is_not_deleted_out_from_under_the_machine_that_wrote_it`
 - [ ] `store::tests::a_machine_that_has_not_imported_is_told_so`
@@ -2690,12 +2700,17 @@ Run: `cargo x test`
 - [ ] `hocus_hooks::tests::a_remote_pane_ignores_the_pane_id_it_also_carries`
 - [ ] `hocus_hooks::tests::a_remote_pane_reports_through_its_broker`
 - [ ] `hocus_hooks::tests::an_empty_codex_home_falls_back_to_home_rather_than_to_the_current_folder`
+- [ ] `hocus_hooks::tests::an_opencode_install_writes_a_versioned_plugin_and_uninstall_removes_it`
 - [ ] `hocus_hooks::tests::generated_codex_script_names_codex_and_returns_neutral_json`
 - [ ] `hocus_hooks::tests::generated_script_streams_a_large_payload_instead_of_putting_it_in_argv`
 - [ ] `hocus_hooks::tests::installing_wires_every_event_and_installing_twice_changes_nothing`
 - [ ] `hocus_hooks::tests::neither_a_pane_id_nor_a_token_reports_nothing`
 - [ ] `hocus_hooks::tests::one_agents_failure_does_not_stop_the_other`
-- [ ] `hocus_hooks::tests::user_commands_default_to_both_agents_but_project_commands_to_claude`
+- [ ] `hocus_hooks::tests::opencode_honours_xdg_config_home_and_falls_back_to_dot_config`
+- [ ] `hocus_hooks::tests::opencode_leaves_a_plugin_file_it_did_not_write_alone`
+- [ ] `hocus_hooks::tests::opencode_plugin_reports_in_order_and_tracks_turn_text`
+- [ ] `hocus_hooks::tests::the_opencode_plugin_bakes_a_json_quoted_binary_path`
+- [ ] `hocus_hooks::tests::user_commands_default_to_every_agent_but_project_commands_to_claude`
 - [ ] `hocus_hooks::tests::writing_new_settings_only_reports_a_backup_when_it_made_one`
 - [ ] `hocus_skills::tests::skill_install_is_explicit_idempotent_and_preserves_other_files`
 - [ ] `tests::cli::cli_hocus_hooks_parses_its_three_subcommands`
@@ -2845,6 +2860,25 @@ Run: `cargo x test`
 - [ ] `options::tests::agent_double_escape_cli_round_trip`
 - [ ] `session_checkpoint_tests::checkpoint_lock_covers_parsing_pane_contents`
 - [ ] `session_checkpoint_tests::server_startup_loads_the_checkpoint_after_a_session_rename`
+- [ ] `session_picker_tests::a_key_split_across_reads_is_still_one_key`
+- [ ] `session_picker_tests::a_live_socket_overrides_a_resurrectable_session_of_the_same_name`
+- [ ] `session_picker_tests::arrows_move_within_bounds`
+- [ ] `session_picker_tests::enter_on_an_unresponsive_session_explains_and_stays_open`
+- [ ] `session_picker_tests::enter_on_the_current_session_leaves_saying_so`
+- [ ] `session_picker_tests::escape_and_interrupt_leave`
+- [ ] `session_picker_tests::exited_sessions_can_be_picked`
+- [ ] `session_picker_tests::keys_parse_from_terminal_bytes`
+- [ ] `session_picker_tests::render_fits_a_terminal_too_short_for_the_footer`
+- [ ] `session_picker_tests::render_fits_the_width_and_scrolls_to_the_cursor`
+- [ ] `session_picker_tests::render_says_when_nothing_matches`
+- [ ] `session_picker_tests::silence_after_a_part_read_key_settles_it`
+- [ ] `session_picker_tests::tab_extends_to_the_shared_prefix_then_cycles`
+- [ ] `session_picker_tests::tab_on_a_mid_name_match_cycles_the_matches`
+- [ ] `session_picker_tests::tab_with_a_single_candidate_fills_its_whole_name`
+- [ ] `session_picker_tests::the_cursor_survives_a_filter_that_empties_the_list`
+- [ ] `session_picker_tests::the_initial_cursor_skips_the_current_and_unresponsive_sessions`
+- [ ] `session_picker_tests::truncation_skips_escapes_and_resets_after_a_cut`
+- [ ] `session_picker_tests::typing_filters_by_substring_ignoring_case`
 - [ ] `setup::setup_test::cli_arguments_override_config_options`
 - [ ] `setup::setup_test::cli_arguments_override_layout_options`
 - [ ] `setup::setup_test::cli_config_dir_finds_custom_default`
@@ -3220,6 +3254,7 @@ Run: `cargo x test`
 - [ ] `layout::layout_test::layout_node_with_split_direction`
 - [ ] `layout::layout_test::layout_node_with_split_direction_and_explicit_tabs_errors`
 - [ ] `layout::layout_test::layout_node_with_tab_name`
+- [ ] `layout::layout_test::layout_with_a_user_named_tab`
 - [ ] `layout::layout_test::layout_with_borderless_panes`
 - [ ] `layout::layout_test::layout_with_command_panes`
 - [ ] `layout::layout_test::layout_with_command_panes_and_close_on_exit`
@@ -3322,6 +3357,7 @@ Run: `cargo x test`
 - [ ] `ipc::tests::roundtrip_tests::rename_active_pane_wire_roundtrip`
 - [ ] `ipc::tests::roundtrip_tests::server_client_contract`
 - [ ] `ipc::tests::roundtrip_tests::set_pane_color_wire_roundtrip`
+- [ ] `ipc::tests::roundtrip_tests::warp_companion_relationships_roundtrip_and_reject_malformed_groups`
 - [ ] `ipc::tests::socket_tests::a_backlog_that_frees_up_is_waited_out_rather_than_failed`
 - [ ] `ipc::tests::socket_tests::a_closed_peer_reports_eof_immediately_and_keeps_reporting_it`
 - [ ] `ipc::tests::socket_tests::a_connected_stream_is_close_on_exec_and_blocking`
@@ -3890,6 +3926,12 @@ Run: `cargo x test`
 - [ ] `pty_host::tests::privileged_socket_paths_get_owner_only_permissions`
 - [ ] `pty_host::tests::process_ids_cannot_signal_a_process_group_by_wrapping`
 - [ ] `pty_host::tests::the_flag_is_recognised_at_the_second_position_and_nowhere_else`
+- [ ] `swamp::tests::capture_is_private_bounded_and_disabled_without_a_path`
+- [ ] `swamp::tests::lost_acknowledgement_replays_reads_but_never_mutations`
+- [ ] `swamp::tests::multiplexes_responses_and_preserves_structured_errors`
+- [ ] `swamp::tests::operations_and_previews_are_bounded`
+- [ ] `swamp::tests::reconnect_attaches_with_cursor_without_replaying_mutation`
+- [ ] `swamp::tests::timing_records_are_opt_in_and_correlated_on_success_and_failure`
 
 ## zellij-runtime (lib/zellij_runtime)
 
@@ -3904,6 +3946,7 @@ Run: `cargo x test`
 - [ ] `agent::hooks::tests::codex_permission_state_and_broadcast_agree_even_after_pruning`
 - [ ] `agent::hooks::tests::codex_permission_uses_the_newest_matching_turn_and_preserves_the_payload`
 - [ ] `agent::hooks::tests::display_message_bursts_only_broadcast_events_and_preserve_pruned_batch_metadata`
+- [ ] `agent::hooks::tests::opencode_events_are_read_at_the_seam_and_the_translated_event_is_what_travels_as_raw`
 - [ ] `agent::launch::tests::a_blank_firecracker_field_keeps_local_agent_defaults`
 - [ ] `agent::launch::tests::a_branch_alone_means_a_worktree_off_main`
 - [ ] `agent::launch::tests::a_branch_without_a_worktree_switches_this_checkout`
@@ -3936,6 +3979,7 @@ Run: `cargo x test`
 - [ ] `agent::launch::tests::firecracker_agents_leave_the_hooks_to_the_guest_and_keep_explicit_environment`
 - [ ] `agent::launch::tests::no_branch_means_no_git_work`
 - [ ] `agent::launch::tests::nothing_else_declares_a_sandbox`
+- [ ] `agent::launch::tests::opencode_takes_its_prompt_as_a_flag_and_resumes_by_session`
 - [ ] `agent::launch::tests::the_model_flag_comes_before_the_prompt`
 - [ ] `common_path::tests::common_path_all_is_a_prefix_of_every_input`
 - [ ] `common_path::tests::common_path_all_is_order_independent`
@@ -3992,6 +4036,7 @@ Run: `cargo x test`
 - [ ] `host_terminal_env::tests::a_host_without_any_of_the_known_variables_yields_an_empty_env`
 - [ ] `host_terminal_env::tests::only_whitelisted_host_terminal_variables_are_captured`
 - [ ] `keys::can_parse_unicode_bare_keys`
+- [ ] `keys::compatibility_tests::escape_is_disambiguated_only_in_kitty_mode`
 - [ ] `keys::compatibility_tests::terminal_keys_preserve_bytes_and_binding_precedence`
 - [ ] `keys::tests::modified_backtab_keeps_implicit_shift`
 - [ ] `session_checkpoint::tests::a_sync_failure_after_publication_keeps_both_complete_snapshots`
@@ -4068,6 +4113,8 @@ Run: `cargo x test`
 
 - [ ] `background_jobs::command_output_tests::bounded_command_output_honours_a_limit_smaller_than_the_marker`
 - [ ] `background_jobs::command_output_tests::bounded_command_output_is_truncated_and_drained`
+- [ ] `background_jobs::command_output_tests::chunks_arrive_before_exit_and_both_streams_drain_after_release`
+- [ ] `background_jobs::command_output_tests::streaming_spawn_failure_returns_one_correlated_completion`
 - [ ] `background_jobs::command_output_tests::unbounded_command_output_is_unchanged`
 - [ ] `background_jobs::tests::scan_session_list_drops_a_folder_with_metadata_but_no_layout`
 - [ ] `background_jobs::tests::scan_session_list_enriches_only_the_current_session`
@@ -4375,11 +4422,13 @@ Run: `cargo x test`
 - [ ] `panes::terminal_pane::grid_tests::a_kitty_sequence_split_across_two_reads_is_still_captured`
 - [ ] `panes::terminal_pane::grid_tests::a_pane_id_stays_out_of_the_display_title`
 - [ ] `panes::terminal_pane::grid_tests::a_resumed_pane_forwards_input_again`
+- [ ] `panes::terminal_pane::grid_tests::a_spawned_opencode_pane_records_its_kind_before_it_has_said_anything`
 - [ ] `panes::terminal_pane::grid_tests::a_suspended_pane_resumes_on_enter_and_swallows_everything_else`
 - [ ] `panes::terminal_pane::grid_tests::a_title_prefix_can_be_dropped`
 - [ ] `panes::terminal_pane::grid_tests::a_title_prefix_follows_the_hostname`
 - [ ] `panes::terminal_pane::grid_tests::a_title_prefix_stays_out_of_the_raw_title`
 - [ ] `panes::terminal_pane::grid_tests::a_title_prefix_survives_every_kind_of_title`
+- [ ] `panes::terminal_pane::grid_tests::agent_double_escape_frame_prefix_restores_title_and_respects_geometry`
 - [ ] `panes::terminal_pane::grid_tests::an_ordinary_held_command_still_drops_to_a_shell_on_escape`
 - [ ] `panes::terminal_pane::grid_tests::bell_notification_state_set_and_cleared`
 - [ ] `panes::terminal_pane::grid_tests::changing_character_cell_size_with_sixel_images`
@@ -4572,6 +4621,7 @@ Run: `cargo x test`
 - [ ] `plugins::lua::unit_tests::an_rpc_call_is_answered_by_the_handler_and_the_reply_resumes_the_caller`
 - [ ] `plugins::lua::unit_tests::an_unavailable_session_list_raises_the_hosts_reason`
 - [ ] `plugins::lua::unit_tests::an_unknown_command_is_an_error_naming_it`
+- [ ] `plugins::lua::unit_tests::async_command_stream_registers_before_dispatch_and_cleans_up_at_completion`
 - [ ] `plugins::lua::unit_tests::async_constructors_subscribe_to_the_events_they_need`
 - [ ] `plugins::lua::unit_tests::await_outside_a_task_is_an_error`
 - [ ] `plugins::lua::unit_tests::bad_arguments_are_an_error_naming_the_command_rather_than_a_panic`
@@ -4603,6 +4653,7 @@ Run: `cargo x test`
 - [ ] `plugins::lua::unit_tests::json_round_trips_and_decodes_null_to_nil`
 - [ ] `plugins::lua::unit_tests::key_events_carry_a_readable_key_name`
 - [ ] `plugins::lua::unit_tests::listing_answers_in_the_root_the_caller_used`
+- [ ] `plugins::lua::unit_tests::live_output_events_reach_lua_as_binary_strings`
 - [ ] `plugins::lua::unit_tests::load_merges_user_configuration_over_the_plugins_defaults`
 - [ ] `plugins::lua::unit_tests::malformed_json_raises_rather_than_returning_nil`
 - [ ] `plugins::lua::unit_tests::metadata_is_nil_for_something_that_is_not_there`
@@ -4630,10 +4681,18 @@ Run: `cargo x test`
 - [ ] `plugins::lua::unit_tests::stop_on_failure_false_runs_on_through_a_failure`
 - [ ] `plugins::lua::unit_tests::subscribing_reaches_the_plugin_environment`
 - [ ] `plugins::lua::unit_tests::swamp_bridge_claims_ownership_before_dispatch_and_never_infers_completion_from_idle`
+- [ ] `plugins::lua::unit_tests::swamp_bridge_timing_is_opt_in_and_excludes_payloads`
+- [ ] `plugins::lua::unit_tests::swamp_exit_enter_activates_the_focused_workflow_button`
 - [ ] `plugins::lua::unit_tests::swamp_exit_preserves_scrollback_and_does_not_launch_unconfigured_or_managed_work`
 - [ ] `plugins::lua::unit_tests::swamp_output_preview_names_the_saved_version_and_keeps_return_actionable`
+- [ ] `plugins::lua::unit_tests::swamp_requests_are_builtin_only_even_with_all_permissions`
+- [ ] `plugins::lua::unit_tests::swamp_workflow_all_wrapped_details_remain_reachable_in_small_panes`
 - [ ] `plugins::lua::unit_tests::swamp_workflow_answer_requires_the_submit_button`
+- [ ] `plugins::lua::unit_tests::swamp_workflow_dims_markdown_history_and_prioritizes_the_question`
+- [ ] `plugins::lua::unit_tests::swamp_workflow_off_form_release_keeps_offscreen_choices_clickable`
+- [ ] `plugins::lua::unit_tests::swamp_workflow_question_transitions_survive_polling_and_submission_races`
 - [ ] `plugins::lua::unit_tests::swamp_workflow_renders_only_for_input_and_refresh_completion`
+- [ ] `plugins::lua::unit_tests::swamp_workflow_restricted_answers_and_free_text_transitions`
 - [ ] `plugins::lua::unit_tests::table_and_list_components_serialize_the_way_zellij_tile_does`
 - [ ] `plugins::lua::unit_tests::text_helpers_pad_and_cut_by_columns`
 - [ ] `plugins::lua::unit_tests::text_width_measures_columns`
@@ -4671,6 +4730,8 @@ Run: `cargo x test`
 - [ ] `plugins::lua::unit_tests::two_outstanding_commands_resolve_in_whichever_order_they_answer`
 - [ ] `plugins::lua::unit_tests::update_receives_a_normalized_event_and_reports_whether_to_render`
 - [ ] `plugins::lua::unit_tests::web_request_takes_named_arguments_with_absent_stream_and_proxy`
+- [ ] `plugins::lua::unit_tests::workflow_scroll_indicators_track_wrapped_rows_and_stay_above_pinned_controls`
+- [ ] `plugins::lua::unit_tests::workflow_stream_tail_preserves_utf8_and_status_while_scrolled`
 - [ ] `plugins::lua::unit_tests::writes_append_and_create_folders_when_asked`
 - [ ] `plugins::lua::unit_tests::zellij_agent_spawn_flattens_the_authors_table`
 - [ ] `plugins::pinned_executor::tests::a_job_submitted_after_the_unload_finished_is_dropped`
@@ -4962,6 +5023,7 @@ Run: `cargo x test`
 - [ ] `plugins::wasm_bridge::tests::shared_plugins_receive_messages_directed_at_any_client`
 - [ ] `plugins::wasm_bridge::wasm_bridge_tests::a_job_that_trapped_while_still_loading_is_cancelled`
 - [ ] `plugins::wasm_bridge::wasm_bridge_tests::a_job_whose_load_failed_leaves_no_cancellation_mark`
+- [ ] `plugins::wasm_bridge::wasm_bridge_tests::shutting_down_after_screen_exit_cancels_a_plugin_that_is_still_loading`
 - [ ] `plugins::wasm_bridge::wasm_bridge_tests::shutting_down_cancels_a_plugin_that_is_still_loading`
 - [ ] `plugins::watch_filesystem::tests::multi_path_filesystem_events_keep_every_path`
 - [ ] `plugins::zellij_exports::permission_tests::a_branch_checked_out_elsewhere_answers_with_that_worktree`
@@ -5125,6 +5187,7 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::animation_clock::a_loading_plugin_wakes_the_clock_at_the_dot_period`
 - [ ] `screen::screen_tests::animation_clock::a_plugin_load_cannot_slow_the_clock_under_a_moving_toast`
 - [ ] `screen::screen_tests::animation_clock::a_tick_mid_animation_asks_for_a_frame_and_leaves_the_clock_alone`
+- [ ] `screen::screen_tests::animation_clock::agent_double_escape_timeout_repaints_and_stops_the_clock`
 - [ ] `screen::screen_tests::animation_clock::quiet_ticks_put_nothing_but_the_frame_on_the_bus`
 - [ ] `screen::screen_tests::animation_clock::the_tick_that_finds_everything_settled_still_asks_for_a_frame`
 - [ ] `screen::screen_tests::break_and_move_panes::close_tab_by_id_verifies_screen_state`
@@ -5359,11 +5422,13 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::hooks::a_pane_re_run_with_its_own_command_is_still_an_agent_pane`
 - [ ] `screen::screen_tests::hooks::a_pane_whose_agent_reported_for_itself_fires_the_hook_on_exit`
 - [ ] `screen::screen_tests::hooks::a_pane_whose_record_was_cleared_before_it_exited_still_fires_agent_exit`
+- [ ] `screen::screen_tests::hooks::a_replacement_agent_starts_a_fresh_record_in_the_same_pane`
 - [ ] `screen::screen_tests::hooks::a_report_that_names_no_run_keeps_the_panes`
 - [ ] `screen::screen_tests::hooks::a_shell_pane_closing_fires_no_pane_exit`
 - [ ] `screen::screen_tests::hooks::a_wait_a_person_must_answer_blinks_until_somebody_answers_it`
 - [ ] `screen::screen_tests::hooks::accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation`
 - [ ] `screen::screen_tests::hooks::agent_double_escape_screen_resets_and_menu_dismissal`
+- [ ] `screen::screen_tests::hooks::agent_exit_captures_the_custom_title_with_host_and_checkout_prefixes`
 - [ ] `screen::screen_tests::hooks::agent_reports_wait_for_adopted_panes_and_tabs`
 - [ ] `screen::screen_tests::hooks::an_agent_going_to_waiting_fires_agent_waiting_once`
 - [ ] `screen::screen_tests::hooks::an_agent_reporting_for_itself_fires_agent_start`
@@ -5589,10 +5654,16 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::plugin_broadcasts::plugin_cursor_show_move_and_hide_render_without_session_reports`
 - [ ] `screen::screen_tests::plugin_broadcasts::replayed_plugin_cursor_renders_without_session_reports`
 - [ ] `screen::screen_tests::plugin_broadcasts::tab_switch_only_updates_active_tab_plugins`
+- [ ] `screen::screen_tests::quit::a_client_re_homed_into_a_tab_with_only_floating_panes_can_still_see_and_type`
 - [ ] `screen::screen_tests::quit::a_hidden_terminal_keeps_the_session_alive_until_it_exits`
 - [ ] `screen::screen_tests::quit::a_notice_is_dropped_with_its_plugin`
 - [ ] `screen::screen_tests::quit::a_notice_reaches_the_confirmation`
 - [ ] `screen::screen_tests::quit::a_withdrawn_notice_leaves_nothing_behind`
+- [ ] `screen::screen_tests::quit::closing_a_guarding_plugin_pane_by_keybinding_drops_its_guard`
+- [ ] `screen::screen_tests::quit::closing_a_hook_pane_over_a_dead_terminal_clears_the_terminals_guest_state`
+- [ ] `screen::screen_tests::quit::closing_a_hook_pane_over_a_dead_terminal_closes_the_last_tab`
+- [ ] `screen::screen_tests::quit::closing_a_hook_pane_over_a_dead_terminal_rehomes_the_client`
+- [ ] `screen::screen_tests::quit::closing_a_pane_for_a_client_with_no_tab_tears_down_the_pane_that_closed`
 - [ ] `screen::screen_tests::quit::closing_all_tabs_in_one_frame_still_confirms_when_a_plugin_guards`
 - [ ] `screen::screen_tests::quit::confirming_a_plain_quit_launches_the_modal_with_no_configuration`
 - [ ] `screen::screen_tests::quit::notices_from_several_plugins_are_joined_in_a_stable_order`
@@ -5611,12 +5682,11 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::reveal_pane::a_pane_that_cannot_be_revealed_is_still_marked`
 - [ ] `screen::screen_tests::reveal_pane::an_override_raised_for_nobody_in_particular_belongs_to_every_client`
 - [ ] `screen::screen_tests::reveal_pane::the_mark_is_drawn_only_for_the_client_it_was_raised_for`
-- [ ] `screen::screen_tests::scroll_and_warp::a_hidden_stack_list_member_can_be_warped`
-- [ ] `screen::screen_tests::scroll_and_warp::a_pane_a_plugin_hid_can_be_warped`
-- [ ] `screen::screen_tests::scroll_and_warp::a_pane_and_the_editor_open_on_it_cannot_be_the_last_two_panes_warped`
+- [ ] `screen::screen_tests::scroll_and_warp::a_hidden_stack_list_member_cannot_be_warped_refused`
+- [ ] `screen::screen_tests::scroll_and_warp::a_pane_a_plugin_hid_cannot_be_warped`
+- [ ] `screen::screen_tests::scroll_and_warp::a_pane_and_the_editor_open_on_it_cannot_be_the_last_two_panes_warped_group_refused`
 - [ ] `screen::screen_tests::scroll_and_warp::a_pane_from_another_session_cannot_be_warped`
 - [ ] `screen::screen_tests::scroll_and_warp::a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up`
-- [ ] `screen::screen_tests::scroll_and_warp::a_plugin_pane_cannot_be_warped`
 - [ ] `screen::screen_tests::scroll_and_warp::a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes`
 - [ ] `screen::screen_tests::scroll_and_warp::a_release_that_failed_leaves_the_pane_where_it_was`
 - [ ] `screen::screen_tests::scroll_and_warp::a_remote_pane_carries_no_local_address`
@@ -5627,49 +5697,67 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::scroll_and_warp::a_scrollback_over_budget_keeps_its_most_recent_end`
 - [ ] `screen::screen_tests::scroll_and_warp::a_scrollback_within_budget_is_left_alone`
 - [ ] `screen::screen_tests::scroll_and_warp::a_small_tab_is_not_charged_for_panes_it_does_not_have`
-- [ ] `screen::screen_tests::scroll_and_warp::a_stack_list_can_be_warped_away_a_member_at_a_time_until_one_is_left`
 - [ ] `screen::screen_tests::scroll_and_warp::a_stack_list_member_and_the_pane_it_stands_in_for_are_each_keyed_by_themselves`
 - [ ] `screen::screen_tests::scroll_and_warp::a_stack_lists_synthetic_geoms_describe_one_stack_filling_the_visible_panes_rect`
-- [ ] `screen::screen_tests::scroll_and_warp::a_tab_holding_a_hidden_floating_pane_cannot_be_warped`
-- [ ] `screen::screen_tests::scroll_and_warp::a_tab_holding_a_pane_a_plugin_hid_cannot_be_warped`
+- [ ] `screen::screen_tests::scroll_and_warp::a_tab_holding_a_hidden_floating_pane_can_be_warped`
+- [ ] `screen::screen_tests::scroll_and_warp::a_tab_holding_a_pane_a_plugin_hid_can_be_warped`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tab_is_not_taken_apart_for_a_caller_that_has_already_given_up`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tab_is_not_taken_apart_when_its_release_lands_inside_screens_own_reserve`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tab_of_nothing_but_plugin_panes_has_nothing_to_warp`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tab_that_can_be_warped_has_already_had_its_arrangement_worked_out`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tab_that_does_not_exist_cannot_be_warped`
+- [ ] `screen::screen_tests::scroll_and_warp::a_tab_warp_carries_whether_the_user_named_the_tab`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tab_warp_defaults_to_the_focused_tab`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tab_whose_only_process_is_an_overlay_has_nothing_to_warp`
-- [ ] `screen::screen_tests::scroll_and_warp::a_tab_whose_stack_list_member_is_being_edited_cannot_be_warped`
+- [ ] `screen::screen_tests::scroll_and_warp::a_tab_whose_stack_list_member_is_being_edited_can_be_warped`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tab_whose_ui_strip_reaches_past_it_can_be_warped`
-- [ ] `screen::screen_tests::scroll_and_warp::a_tab_with_a_pane_replaced_in_place_still_cannot_be_warped`
-- [ ] `screen::screen_tests::scroll_and_warp::a_tab_with_a_scrollback_editor_open_cannot_be_warped`
+- [ ] `screen::screen_tests::scroll_and_warp::a_tab_with_a_replacement_chain_can_be_warped`
+- [ ] `screen::screen_tests::scroll_and_warp::a_tab_with_a_scrollback_editor_open_can_be_warped`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tab_with_a_stack_list_can_be_warped`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tabs_last_pane_can_still_be_warped`
 - [ ] `screen::screen_tests::scroll_and_warp::a_tabs_panes_share_one_frames_worth_of_scrollback`
 - [ ] `screen::screen_tests::scroll_and_warp::a_terminal_pane_with_somewhere_to_leave_behind_can_be_warped`
-- [ ] `screen::screen_tests::scroll_and_warp::a_warped_tab_carries_its_hidden_stack_list_members_in_its_layout`
+- [ ] `screen::screen_tests::scroll_and_warp::a_warped_tab_carries_its_hidden_stack_list_relationships`
 - [ ] `screen::screen_tests::scroll_and_warp::a_warped_tab_leaves_its_overlay_behind`
 - [ ] `screen::screen_tests::scroll_and_warp::an_adopted_agent_pane_lands_in_the_focused_tab_however_crowded_it_is`
 - [ ] `screen::screen_tests::scroll_and_warp::an_adopted_focused_tab_pane_gets_focus_and_leaves_scroll_mode`
 - [ ] `screen::screen_tests::scroll_and_warp::an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus`
 - [ ] `screen::screen_tests::scroll_and_warp::an_adopted_pane_from_a_client_with_no_screen_goes_to_the_attached_clients_tab`
 - [ ] `screen::screen_tests::scroll_and_warp::an_adopted_pane_still_follows_a_client_looking_at_a_tab`
+- [ ] `screen::screen_tests::scroll_and_warp::companion_capability_refusal_and_expired_group_preserve_every_pane`
+- [ ] `screen::screen_tests::scroll_and_warp::destination_local_group_placement_does_not_notify_departure`
+- [ ] `screen::screen_tests::scroll_and_warp::floating_stack_layout_serialization_keeps_every_subject_on_the_floating_layer`
+- [ ] `screen::screen_tests::scroll_and_warp::floating_stack_resize_synchronizes_hidden_members_without_redundant_requests`
+- [ ] `screen::screen_tests::scroll_and_warp::floating_stack_shrink_hides_headers_and_growth_restores_mouse_selection`
 - [ ] `screen::screen_tests::scroll_and_warp::focusing_a_scrolled_pane_enters_scroll_mode`
 - [ ] `screen::screen_tests::scroll_and_warp::focusing_a_scrolled_pane_enters_scroll_mode_with_locked_default`
+- [ ] `screen::screen_tests::scroll_and_warp::fullscreen_floating_stack_content_targets_the_displayed_member`
+- [ ] `screen::screen_tests::scroll_and_warp::mouse_selects_hidden_members_of_a_transferred_floating_stack`
 - [ ] `screen::screen_tests::scroll_and_warp::scroll_position_is_preserved_across_move_focus`
-- [ ] `screen::screen_tests::scroll_and_warp::the_hidden_half_of_a_scrollback_editor_pair_can_be_warped`
+- [ ] `screen::screen_tests::scroll_and_warp::the_hidden_half_of_a_scrollback_editor_pair_cannot_be_warped_refused`
 - [ ] `screen::screen_tests::scroll_and_warp::the_sessions_only_pane_cannot_be_warped`
 - [ ] `screen::screen_tests::scroll_and_warp::the_sessions_only_tab_can_be_warped`
-- [ ] `screen::screen_tests::scroll_and_warp::the_visible_half_of_a_scrollback_editor_pair_can_be_warped`
-- [ ] `screen::screen_tests::scroll_and_warp::warping_a_hidden_member_that_is_an_editor_hands_its_place_to_the_pane_it_was_editing`
-- [ ] `screen::screen_tests::scroll_and_warp::warping_a_pane_being_edited_closes_the_editor_on_the_pty_thread_too`
-- [ ] `screen::screen_tests::scroll_and_warp::warping_a_pane_edited_by_a_hidden_member_takes_that_member_with_it`
-- [ ] `screen::screen_tests::scroll_and_warp::warping_a_pane_replaced_in_place_leaves_the_pane_that_replaced_it`
+- [ ] `screen::screen_tests::scroll_and_warp::tiled_mutations_preserve_a_transferred_floating_stack`
+- [ ] `screen::screen_tests::scroll_and_warp::visible_and_hidden_plugin_companions_keep_their_launch_configuration`
+- [ ] `screen::screen_tests::scroll_and_warp::warp_adoption_preserves_explicit_floating_layouts_over_destination_template`
+- [ ] `screen::screen_tests::scroll_and_warp::warp_departures_notify_plugins_and_subscribers_without_closing_processes`
+- [ ] `screen::screen_tests::scroll_and_warp::warp_floating_stack_requires_room_for_headers_and_content`
+- [ ] `screen::screen_tests::scroll_and_warp::warp_group_acknowledges_new_tab_and_missing_destination`
+- [ ] `screen::screen_tests::scroll_and_warp::warp_group_acknowledges_new_tab_fallback`
+- [ ] `screen::screen_tests::scroll_and_warp::warp_group_restores_a_hidden_editor_chain_and_selected_stack_member`
+- [ ] `screen::screen_tests::scroll_and_warp::warp_group_uses_destination_default_floating_geometry`
+- [ ] `screen::screen_tests::scroll_and_warp::warp_mixed_floating_slots_preserve_repeated_plugin_id_order`
+- [ ] `screen::screen_tests::scroll_and_warp::warping_a_hidden_editor_member_is_refused`
+- [ ] `screen::screen_tests::scroll_and_warp::warping_a_hidden_replacement_subject_is_refused`
+- [ ] `screen::screen_tests::scroll_and_warp::warping_a_stack_list_counts_all_members_for_last_pane_refusal`
 - [ ] `screen::screen_tests::scroll_and_warp::warping_a_tab_does_not_kill_the_children_of_its_hidden_stack_list_members`
 - [ ] `screen::screen_tests::scroll_and_warp::warping_a_tab_re_homes_the_overlay_it_leaves_behind`
 - [ ] `screen::screen_tests::scroll_and_warp::warping_a_tab_takes_every_pane_that_has_a_process`
+- [ ] `screen::screen_tests::scroll_and_warp::warping_a_visible_editor_carries_its_subject`
+- [ ] `screen::screen_tests::scroll_and_warp::warping_a_visible_stack_member_removes_the_whole_list`
+- [ ] `screen::screen_tests::scroll_and_warp::warping_an_editor_pair_never_closes_either_process`
 - [ ] `screen::screen_tests::scroll_and_warp::warping_the_last_tab_closes_its_overlay`
-- [ ] `screen::screen_tests::scroll_and_warp::warping_the_visible_stack_list_member_promotes_a_hidden_one`
+- [ ] `screen::screen_tests::scroll_and_warp::warping_the_subject_of_a_hidden_editor_is_refused`
 - [ ] `screen::screen_tests::sizing::a_pixel_dimensions_reply_arriving_before_the_client_size_still_derives_the_cell_size`
 - [ ] `screen::screen_tests::sizing::a_tab_created_with_no_clients_attached_gets_the_last_known_session_size`
 - [ ] `screen::screen_tests::sizing::applying_a_layout_to_an_existing_tab_keeps_its_viewer_derived_size`
@@ -5714,11 +5802,16 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::subscribers::subscriber_removed_on_remove_client`
 - [ ] `screen::screen_tests::subscribers::subscriber_removed_when_all_panes_closed`
 - [ ] `screen::screen_tests::subscribers::subscriber_state_registered_for_multiple_panes`
+- [ ] `screen::screen_tests::tab_projects::a_carried_default_caption_is_not_lent_to_the_tab`
 - [ ] `screen::screen_tests::tab_projects::a_collision_ordinal_survives_a_long_project_name`
 - [ ] `screen::screen_tests::tab_projects::a_lone_pane_lending_its_title_outranks_the_project`
 - [ ] `screen::screen_tests::tab_projects::a_lone_pane_lends_its_id_to_a_tab_however_the_tab_is_named`
+- [ ] `screen::screen_tests::tab_projects::a_lone_pane_lends_its_title_to_a_tab_born_named`
 - [ ] `screen::screen_tests::tab_projects::a_long_name_the_user_typed_is_cut_to_the_same_budget`
 - [ ] `screen::screen_tests::tab_projects::a_long_project_name_is_cut_rather_than_the_exit_marker`
+- [ ] `screen::screen_tests::tab_projects::a_name_the_tab_was_born_with_gives_way_to_the_project`
+- [ ] `screen::screen_tests::tab_projects::a_name_typed_in_rename_mode_holds_off_the_project`
+- [ ] `screen::screen_tests::tab_projects::a_name_typed_with_new_tab_holds_off_the_project`
 - [ ] `screen::screen_tests::tab_projects::a_pane_that_exits_with_a_title_still_lends_it`
 - [ ] `screen::screen_tests::tab_projects::a_pane_that_exits_without_a_title_keeps_the_projects_name`
 - [ ] `screen::screen_tests::tab_projects::a_project_names_a_tab_that_still_has_its_default_name`
@@ -5726,6 +5819,7 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::tab_projects::a_tab_the_user_named_keeps_that_name`
 - [ ] `screen::screen_tests::tab_projects::a_tab_with_two_panes_takes_the_project_name`
 - [ ] `screen::screen_tests::tab_projects::a_tab_with_two_panes_wears_no_pane_id`
+- [ ] `screen::screen_tests::tab_projects::a_warped_in_tab_takes_the_project_unless_the_user_named_it`
 - [ ] `screen::screen_tests::tab_projects::arrangement_cancels_when_a_destination_closes_during_loading`
 - [ ] `screen::screen_tests::tab_projects::arrangement_consolidates_without_changing_ids_focus_or_explicit_names`
 - [ ] `screen::screen_tests::tab_projects::arrangement_counts_final_membership_and_rechecks_rejected_projects`
@@ -5739,9 +5833,14 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::tab_projects::arrangement_selects_the_first_unknown_member_when_the_visible_member_leaves`
 - [ ] `screen::screen_tests::tab_projects::arrangement_splits_original_lists_by_project_and_preserves_separate_stacks`
 - [ ] `screen::screen_tests::tab_projects::arrangement_stack_header_preflight_leaves_a_rejected_stack_untouched`
+- [ ] `screen::screen_tests::tab_projects::clearing_the_name_hands_the_tab_back_to_its_project`
 - [ ] `screen::screen_tests::tab_projects::the_last_tab_on_a_project_goes_back_to_the_plain_name`
 - [ ] `screen::screen_tests::tab_projects::two_tabs_on_one_project_are_numbered_by_position`
 - [ ] `screen::screen_tests::tab_projects::two_tabs_sharing_a_combined_label_are_numbered_by_position`
+- [ ] `screen::screen_tests::tab_projects::undo_on_a_warped_in_tab_keeps_the_rename_it_carried`
+- [ ] `screen::screen_tests::tab_projects::undoing_a_rename_hands_the_tab_back_to_its_project`
+- [ ] `screen::screen_tests::tab_projects::whose_a_new_tabs_name_is`
+- [ ] `screen::screen_tests::tabs::a_reconciled_client_lands_in_a_tab_that_knows_it_is_visible`
 - [ ] `screen::screen_tests::tabs::a_tab_number_queued_while_a_tab_loads_keeps_its_position`
 - [ ] `screen::screen_tests::tabs::attach_after_first_tab_closed`
 - [ ] `screen::screen_tests::tabs::basic_move_of_active_tab_to_left`
@@ -5818,7 +5917,9 @@ Run: `cargo x test`
 - [ ] `session_recorder::tests::records_through_thread`
 - [ ] `session_recorder::tests::size_timeout_and_stop_flush_failures_mark_incomplete`
 - [ ] `session_recorder::tests::storage_failures_survive_later_success_and_channel_loss`
+- [ ] `session_state_tests::a_late_reply_detects_that_its_requester_stopped_waiting`
 - [ ] `session_state_tests::clear_forward_in_flight_removes_entry`
+- [ ] `session_state_tests::input_unblocks_exclude_cli_connections_and_reused_client_ids`
 - [ ] `session_state_tests::lower_plugin_id_wins_default_keybind_conflicts_until_it_unloads`
 - [ ] `session_state_tests::pick_forward_target_falls_back_when_last_active_disconnected`
 - [ ] `session_state_tests::pick_forward_target_none_when_no_clients`
@@ -6191,9 +6292,12 @@ Run: `cargo x test`
 - [ ] `tab::tab_integration_tests::visibility::floating_plugin_panes_are_notified_when_the_floating_surface_is_shown`
 - [ ] `tab::tab_integration_tests::visibility::floating_surface_toggles_in_a_hidden_tab_do_not_notify_plugins`
 - [ ] `tab::tab_integration_tests::visibility::toggling_the_floating_surface_twice_does_not_repeat_the_visibility_event`
+- [ ] `tab::tab_tests::agent_double_escape::agent_double_escape_hint_tracks_pending_input_per_client`
 - [ ] `tab::tab_tests::agent_double_escape::agent_double_escape_leaves_guest_menus_and_plugins_alone`
 - [ ] `tab::tab_tests::agent_double_escape::agent_double_escape_pairs_and_bypasses`
 - [ ] `tab::tab_tests::agent_double_escape::agent_double_escape_sync_preserves_ordinary_delivery_and_attention`
+- [ ] `tab::tab_tests::closing::a_client_joining_a_tab_with_no_panes_at_all_is_connected`
+- [ ] `tab::tab_tests::closing::a_client_joining_a_tab_with_only_floating_panes_is_connected`
 - [ ] `tab::tab_tests::closing::close_pane_with_another_pane_above_it`
 - [ ] `tab::tab_tests::closing::close_pane_with_another_pane_below_it`
 - [ ] `tab::tab_tests::closing::close_pane_with_another_pane_to_the_left`
@@ -6206,6 +6310,7 @@ Run: `cargo x test`
 - [ ] `tab::tab_tests::closing::close_pane_with_multiple_panes_to_the_left_away_from_screen_edges`
 - [ ] `tab::tab_tests::closing::close_pane_with_multiple_panes_to_the_right`
 - [ ] `tab::tab_tests::closing::close_pane_with_multiple_panes_to_the_right_away_from_screen_edges`
+- [ ] `tab::tab_tests::closing::workflow_takeover_keeps_the_original_suppressed_until_explicit_restart`
 - [ ] `tab::tab_tests::floating_fullscreen::adding_floating_pane_while_fullscreen_unsets_fullscreen`
 - [ ] `tab::tab_tests::floating_fullscreen::closing_floating_fullscreen_pane_clears_state`
 - [ ] `tab::tab_tests::floating_fullscreen::closing_fullscreen_floating_scrollback_editor_restores_geometry`
@@ -6497,6 +6602,7 @@ Run: `cargo x test`
 - [ ] `warp::warp_tests::bringing_a_tab_from_an_unreachable_session_reports_which_one`
 - [ ] `warp::warp_tests::bringing_a_tab_from_the_current_session_is_refused`
 - [ ] `warp::warp_tests::bringing_a_tab_into_a_nameless_session_is_refused`
+- [ ] `warp::warp_tests::warp_pull_budget_covers_probe_release_adoption_and_rollback`
 - [ ] `warp::warp_tests::warping_a_tab_to_the_current_session_is_refused_before_anything_is_asked_of_screen`
 - [ ] `warp::warp_tests::warping_to_the_current_session_is_refused_before_anything_is_asked_of_screen`
 
@@ -6525,6 +6631,7 @@ Run: `cargo x test`
 - [ ] `session_serialization::tests::can_serialize_tab_focus`
 - [ ] `session_serialization::tests::can_serialize_tab_hide_floating_panes`
 - [ ] `session_serialization::tests::can_serialize_tab_name`
+- [ ] `session_serialization::tests::can_serialize_tab_user_named`
 - [ ] `session_serialization::tests::can_serialize_tab_with_a_single_tiled_pane`
 - [ ] `session_serialization::tests::can_serialize_tab_with_a_single_tiled_pane_and_a_floating_pane`
 - [ ] `session_serialization::tests::can_serialize_tab_with_floating_panes`
@@ -7675,7 +7782,9 @@ Run: `cargo x test`
 - [ ] `ui_components::forms::form::tests::a_dropdown_is_clipped_to_the_form_viewport`
 - [ ] `ui_components::forms::form::tests::a_hover_between_press_and_release_cancels_the_press`
 - [ ] `ui_components::forms::form::tests::a_modified_enter_is_left_for_the_plugin`
+- [ ] `ui_components::forms::form::tests::a_narrow_form_keeps_each_focused_button_clickable`
 - [ ] `ui_components::forms::form::tests::a_negative_click_line_is_ignored`
+- [ ] `ui_components::forms::form::tests::a_partially_visible_button_stays_under_the_pointer_until_release`
 - [ ] `ui_components::forms::form::tests::a_paste_into_a_combo_lands_in_it_and_offers_the_matches`
 - [ ] `ui_components::forms::form::tests::a_press_alone_moves_focus_and_nothing_else`
 - [ ] `ui_components::forms::form::tests::a_press_dragged_off_a_button_and_back_still_fires`
@@ -7919,6 +8028,16 @@ Run: `cargo x test`
 - [ ] `agent::hooks::tests::subagent_lifecycle_only_broadcasts_without_a_parent_state_change`
 - [ ] `agent::hooks::tests::the_hook_settings_wire_every_event_to_the_command`
 - [ ] `agent::hooks::tests::tool_call_identity_accepts_both_provider_spellings_and_survives_pruning`
+- [ ] `agent::opencode::tests::a_completed_assistant_message_is_one_display_batch`
+- [ ] `agent::opencode::tests::a_permission_prompt_waits_and_names_what_it_is_about`
+- [ ] `agent::opencode::tests::a_prompt_names_the_turn_that_is_about_to_start`
+- [ ] `agent::opencode::tests::a_session_lifecycle_reports_the_states_the_reader_knows`
+- [ ] `agent::opencode::tests::a_tool_is_named_and_its_arguments_spelled_the_way_the_readers_read_them`
+- [ ] `agent::opencode::tests::a_workflow_owner_annotation_survives_translation`
+- [ ] `agent::opencode::tests::an_unknown_event_reports_nothing_and_still_names_itself`
+- [ ] `agent::opencode::tests::current_opencode_permissions_use_call_identity_metadata_and_pattern_fallback`
+- [ ] `agent::opencode::tests::opencodes_question_tool_is_the_wait_ask_user_question_names`
+- [ ] `agent::opencode::tests::the_forwarded_events_are_the_ones_the_installer_wires`
 - [ ] `animation::tests::a_blink_starts_lit_and_keeps_even_halves`
 - [ ] `animation::tests::a_delayed_tween_holds_before_it_moves`
 - [ ] `animation::tests::a_full_duration_never_drops_below_the_floor_it_is_capped_by`
@@ -8030,16 +8149,16 @@ Run: `cargo x test`
 - [ ] `zellij-runtime/src/errors.rs - errors::LoggableError::print_error (line 52)`
 - [ ] `zellij-tile/src/lib.rs - register_plugin (line 95)`
 - [ ] `zellij-tile/src/lib.rs - register_worker (line 199)`
-- [ ] `zellij-tile/src/shim.rs - shim::FetchRequestExt (line 2482)`
+- [ ] `zellij-tile/src/shim.rs - shim::FetchRequestExt (line 2517)`
 - [ ] `zellij-tile/src/shim.rs - shim::current_session_last_saved_time (line 503)`
-- [ ] `zellij-tile/src/shim.rs - shim::data_apply (line 2323)`
-- [ ] `zellij-tile/src/shim.rs - shim::data_define_entity (line 2280)`
-- [ ] `zellij-tile/src/shim.rs - shim::delete_layout (line 3276)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_cwd (line 3154)`
+- [ ] `zellij-tile/src/shim.rs - shim::data_apply (line 2358)`
+- [ ] `zellij-tile/src/shim.rs - shim::data_define_entity (line 2315)`
+- [ ] `zellij-tile/src/shim.rs - shim::delete_layout (line 3311)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_cwd (line 3189)`
 - [ ] `zellij-tile/src/shim.rs - shim::get_pane_info (line 383)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_running_command (line 3095)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_running_command (line 3130)`
 - [ ] `zellij-tile/src/shim.rs - shim::get_tab_info (line 427)`
-- [ ] `zellij-tile/src/shim.rs - shim::rename_layout (line 3336)`
+- [ ] `zellij-tile/src/shim.rs - shim::rename_layout (line 3371)`
 - [ ] `zellij-tile/src/shim.rs - shim::save_session (line 468)`
 - [ ] `zellij-tile/src/ui_components/forms/mod.rs - ui_components::forms (line 19)`
 - [ ] `zellij-types/src/internal_ids.rs - internal_ids::ClientId (line 72)`
@@ -8079,6 +8198,7 @@ Run: `cargo x integration-test`
 - [ ] `runner::tests::a_nested_bars_clock_is_stripped_and_the_border_kept`
 - [ ] `runner::tests::only_a_flush_right_clock_is_stripped`
 - [ ] `runner::tests::the_date_half_goes_with_the_time`
+- [ ] `runner::tests::the_swap_layout_indicator_is_stripped_on_the_last_row_too`
 
 ## zellij-integration-tests (test/about_pane)
 
@@ -8204,6 +8324,7 @@ Run: `cargo x integration-test`
 - [ ] `assistant_messages_reach_the_timeline_and_history_search`
 - [ ] `background_workers_preserve_the_parent_record_and_idle_count`
 - [ ] `hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement`
+- [ ] `opencode_events_report_the_pane_and_a_question_waits`
 
 ## zellij-integration-tests (test/hocus_agent_picker)
 
@@ -8456,6 +8577,8 @@ Run: `cargo x integration-test`
 
 - [ ] `a_click_on_a_form_widget_acts_on_the_widget_under_the_pointer`
 - [ ] `an_image_without_a_vm_is_refused_in_the_modals_status_row`
+- [ ] `normal_duplicate_shortcut_starts_a_new_pane_and_focuses_it`
+- [ ] `normal_fork_shortcut_starts_a_new_pane_and_focuses_it`
 - [ ] `opening_a_dropdown_leaves_the_rest_of_the_form_where_it_was`
 - [ ] `the_new_agent_modal_can_be_dragged_by_its_frame`
 
@@ -8673,6 +8796,10 @@ Run: `cargo x integration-test`
 
 - [ ] `swamp_exit_keeps_status_agent_question_and_result_in_the_original_location`
 - [ ] `swamp_exit_status_bar_tracks_mode_changes_while_the_workflow_view_is_active`
+- [ ] `workflow_fork_cancellation_returns_to_the_exit_menu_without_starting_an_agent`
+- [ ] `workflow_fork_rechecks_a_closed_source_before_confirmation`
+- [ ] `workflow_fork_rechecks_a_restarted_source_before_confirmation`
+- [ ] `workflow_fork_reuses_the_source_layout_scrollback_directory_and_focus`
 
 ## zellij-integration-tests (test/tabs)
 
@@ -8733,12 +8860,25 @@ Run: `cargo x integration-test`
 - [ ] `a_pane_keeps_its_process_when_it_moves_between_sessions`
 - [ ] `a_pane_that_cannot_be_warped_is_still_a_working_pane`
 - [ ] `a_remote_pane_keeps_its_process_when_it_moves_between_sessions`
+- [ ] `a_stack_with_a_hidden_editor_restores_after_id_remapping_and_source_shutdown`
 - [ ] `a_tab_holding_a_stacked_pane_list_warps_whole`
 - [ ] `a_tab_of_local_and_remote_panes_warps_whole`
+- [ ] `a_visible_stack_warps_to_the_floating_layer_with_selectable_members`
 - [ ] `one_unmovable_pane_stops_a_whole_tab_and_leaves_it_working`
 - [ ] `the_sessions_last_pane_is_refused_and_the_session_survives`
 - [ ] `two_idle_agents_keep_their_records_after_a_whole_tab_warp_and_source_shutdown`
-- [ ] `warping_a_pane_being_edited_takes_the_editor_down_with_it`
+- [ ] `warp_adoption_failure_returns_all_editor_companions_and_their_relationships`
+- [ ] `warping_a_visible_editor_carries_its_subject_and_restores_it_on_close`
+
+## zellij (bin/zellij) — the `tests::e2e` half — all `#[ignore]`d
+
+Run: `cargo x ci e2e --test`
+
+- [ ] `tests::e2e::cases::quit_and_resurrect_session`
+- [ ] `tests::e2e::cases::resize_terminal_window`
+- [ ] `tests::e2e::cases::send_blocking_command_through_the_cli`
+- [ ] `tests::e2e::cases::starts_with_one_terminal`
+- [ ] `tests::e2e::cases::typing_exit_closes_pane`
 
 ## zellij-server (test/remote_pane_ssh) — all `#[ignore]`d
 
@@ -8795,6 +8935,119 @@ Run: `cargo x firecracker-test --build && cargo x firecracker-test --test`
 - [ ] `project_workflows_observe_and_sync_a_real_guest`
 - [ ] `two_sessions_share_a_worktree_vm_until_the_last_one_leaves`
 
+## zellij-storage (lib/zellij_storage) — the `postgres` half
+
+Run: `cargo x postgres-test --build && cargo x postgres-test --test`
+
+- [ ] `plugin_data_store::postgres::deadline_tests::a_stalled_row_stream_has_one_deadline_and_reconnects`
+- [ ] `plugin_data_store::postgres::deadline_tests::a_timed_out_write_is_rolled_back_and_never_replayed`
+- [ ] `plugin_data_store::postgres::deadline_tests::blocked_bootstrap_and_query_discard_connections_and_reconnect`
+- [ ] `plugin_data_store::postgres::snapshot_tests::guarded_batches_exclude_unguarded_writers_on_all_touched_tables_until_commit`
+- [ ] `plugin_data_store::tests::postgres::a_constraint_violation_includes_the_operation_and_server_explanation`
+- [ ] `plugin_data_store::tests::postgres::a_database_from_before_rev_is_migrated_in_place`
+- [ ] `plugin_data_store::tests::postgres::a_lost_connection_is_reconnected_on_the_next_call`
+- [ ] `plugin_data_store::tests::postgres::a_schema_from_a_newer_zellij_is_refused`
+- [ ] `plugin_data_store::tests::postgres::concurrency::a_conflict_rolls_back_the_whole_batch`
+- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_update_conflicts_when_the_revision_has_moved`
+- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_update_still_honours_its_filter`
+- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_write_against_a_deleted_row_conflicts_rather_than_resurrecting_it`
+- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_write_at_a_stale_revision_conflicts_and_changes_nothing`
+- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_write_at_the_current_revision_applies`
+- [ ] `plugin_data_store::tests::postgres::concurrency::a_new_row_starts_at_revision_one`
+- [ ] `plugin_data_store::tests::postgres::concurrency::an_unguarded_write_that_matches_nothing_is_not_a_conflict`
+- [ ] `plugin_data_store::tests::postgres::concurrency::an_update_advances_the_revision`
+- [ ] `plugin_data_store::tests::postgres::concurrency::an_update_guarded_on_a_stale_rev_matches_nothing`
+- [ ] `plugin_data_store::tests::postgres::concurrency::an_update_that_matches_nothing_advances_no_revision`
+- [ ] `plugin_data_store::tests::postgres::concurrency::an_upsert_advances_the_revision_rather_than_resetting_it`
+- [ ] `plugin_data_store::tests::postgres::concurrency::assertions_match_the_complete_set_without_changing_rows_or_report_ids`
+- [ ] `plugin_data_store::tests::postgres::concurrency::expect_absent_inserts_once_and_conflicts_after`
+- [ ] `plugin_data_store::tests::postgres::concurrency::guards_that_could_never_hold_are_rejected`
+- [ ] `plugin_data_store::tests::postgres::concurrency::independent_writers_of_the_same_snapshot_cannot_both_commit`
+- [ ] `plugin_data_store::tests::postgres::concurrency::per_mutation_counts_line_up_with_the_mutations_given`
+- [ ] `plugin_data_store::tests::postgres::concurrency::per_mutation_distinguishes_a_hand_written_guard_that_missed`
+- [ ] `plugin_data_store::tests::postgres::concurrency::rev_can_be_selected_filtered_and_sorted_on`
+- [ ] `plugin_data_store::tests::postgres::concurrency::rev_is_reserved_against_declaration_and_direct_writes`
+- [ ] `plugin_data_store::tests::postgres::concurrency::revisions_are_per_row`
+- [ ] `plugin_data_store::tests::postgres::concurrency::stale_assertions_roll_back_earlier_writes_and_deletes`
+- [ ] `plugin_data_store::tests::postgres::from_backends_pairs_postgres_plugin_data_with_sqlite_recordings`
+- [ ] `plugin_data_store::tests::postgres::model::the_store_agrees_with_a_map_over_any_sequence_of_writes`
+- [ ] `plugin_data_store::tests::postgres::oracle::a_filter_selects_exactly_the_rows_that_satisfy_it`
+- [ ] `plugin_data_store::tests::postgres::oracle::a_guarded_write_never_loses_an_update`
+- [ ] `plugin_data_store::tests::postgres::oracle::a_watch_reports_a_change_exactly_when_the_rows_differ`
+- [ ] `plugin_data_store::tests::postgres::pagination::a_cursor_is_withheld_when_the_ordering_it_pages_through_does_not_apply`
+- [ ] `plugin_data_store::tests::postgres::pagination::a_fetch_is_capped_at_the_maximum_however_much_it_asks_for`
+- [ ] `plugin_data_store::tests::postgres::pagination::a_truncated_fetch_says_so_and_hands_back_a_cursor`
+- [ ] `plugin_data_store::tests::postgres::pagination::combining_a_cursor_with_a_sort_is_an_error_rather_than_wrong_results`
+- [ ] `plugin_data_store::tests::postgres::pagination::count_ignores_the_limit`
+- [ ] `plugin_data_store::tests::postgres::pagination::count_respects_the_filter_and_the_search`
+- [ ] `plugin_data_store::tests::postgres::properties::a_put_round_trips_through_a_fetch`
+- [ ] `plugin_data_store::tests::postgres::properties::any_search_string_searches_rather_than_erroring`
+- [ ] `plugin_data_store::tests::postgres::properties::declaring_an_index_changes_the_plan_but_never_the_results`
+- [ ] `plugin_data_store::tests::postgres::properties::paging_by_cursor_yields_every_row_exactly_once`
+- [ ] `plugin_data_store::tests::postgres::queries::a_blob_round_trips`
+- [ ] `plugin_data_store::tests::postgres::queries::a_bool_column_reads_back_as_a_bool`
+- [ ] `plugin_data_store::tests::postgres::queries::a_fetch_can_sort_and_select_the_stores_own_columns`
+- [ ] `plugin_data_store::tests::postgres::queries::a_filter_selects_rows`
+- [ ] `plugin_data_store::tests::postgres::queries::a_prefix_filter_matches_the_start_and_contains_matches_anywhere`
+- [ ] `plugin_data_store::tests::postgres::queries::an_underscore_in_a_needle_is_matched_literally_too`
+- [ ] `plugin_data_store::tests::postgres::queries::comparing_a_column_against_the_wrong_kind_is_an_error`
+- [ ] `plugin_data_store::tests::postgres::queries::filtering_on_an_undeclared_attribute_is_an_error_rather_than_an_empty_result`
+- [ ] `plugin_data_store::tests::postgres::queries::like_wildcards_in_a_needle_are_matched_literally`
+- [ ] `plugin_data_store::tests::postgres::queries::nulls_sort_first_ascending_and_last_descending`
+- [ ] `plugin_data_store::tests::postgres::queries::prefix_and_contains_are_rejected_on_a_non_text_column`
+- [ ] `plugin_data_store::tests::postgres::queries::prefix_and_contains_ignore_ascii_case_but_eq_does_not`
+- [ ] `plugin_data_store::tests::postgres::queries::sorting_and_selecting_work_together`
+- [ ] `plugin_data_store::tests::postgres::schema::a_private_namespace_is_derived_from_the_plugin_url`
+- [ ] `plugin_data_store::tests::postgres::schema::a_required_attribute_added_with_a_default_backfills_the_existing_rows`
+- [ ] `plugin_data_store::tests::postgres::schema::a_required_attribute_added_without_a_default_is_refused`
+- [ ] `plugin_data_store::tests::postgres::schema::a_second_plugin_may_extend_a_shared_entity_but_not_shrink_it`
+- [ ] `plugin_data_store::tests::postgres::schema::adding_an_attribute_preserves_existing_rows`
+- [ ] `plugin_data_store::tests::postgres::schema::changing_the_type_of_an_attribute_is_refused`
+- [ ] `plugin_data_store::tests::postgres::schema::defining_an_entity_reports_that_it_was_created`
+- [ ] `plugin_data_store::tests::postgres::schema::dropping_an_attribute_also_needs_a_version_above_the_stored_one`
+- [ ] `plugin_data_store::tests::postgres::schema::dropping_an_attribute_is_refused_unless_it_is_asked_for`
+- [ ] `plugin_data_store::tests::postgres::schema::dropping_an_attribute_works_when_asked_for_with_a_new_version`
+- [ ] `plugin_data_store::tests::postgres::schema::long_attribute_indexes_enforce_uniqueness_independently_and_can_be_removed`
+- [ ] `plugin_data_store::tests::postgres::schema::marking_an_attribute_searchable_later_indexes_the_rows_already_stored`
+- [ ] `plugin_data_store::tests::postgres::schema::namespaces_are_separate_stores`
+- [ ] `plugin_data_store::tests::postgres::schema::redeclaring_an_identical_definition_changes_nothing`
+- [ ] `plugin_data_store::tests::postgres::schema::reserved_attributes_cannot_create_or_migrate_an_entity`
+- [ ] `plugin_data_store::tests::postgres::schema::the_catalog_lists_declared_entities_with_their_definitions`
+- [ ] `plugin_data_store::tests::postgres::schema::the_catalog_of_an_unknown_namespace_is_empty`
+- [ ] `plugin_data_store::tests::postgres::schema::the_catalog_spans_namespaces_and_filters_to_one`
+- [ ] `plugin_data_store::tests::postgres::schema::using_an_undeclared_entity_says_so`
+- [ ] `plugin_data_store::tests::postgres::search::search_combines_with_a_filter`
+- [ ] `plugin_data_store::tests::postgres::search::search_finds_a_row_by_its_text`
+- [ ] `plugin_data_store::tests::postgres::search::searching_an_entity_with_nothing_searchable_says_so`
+- [ ] `plugin_data_store::tests::postgres::search::the_full_text_index_follows_updates_and_deletes`
+- [ ] `plugin_data_store::tests::postgres::two_backends_share_one_schema`
+- [ ] `plugin_data_store::tests::postgres::watches::a_deletion_that_empties_the_results_still_notifies`
+- [ ] `plugin_data_store::tests::postgres::watches::a_plugin_cannot_unwatch_another_plugins_watch`
+- [ ] `plugin_data_store::tests::postgres::watches::a_watch_is_only_notified_once_per_change`
+- [ ] `plugin_data_store::tests::postgres::watches::a_watch_respects_its_filter`
+- [ ] `plugin_data_store::tests::postgres::watches::a_watch_returns_the_current_rows_when_it_is_registered`
+- [ ] `plugin_data_store::tests::postgres::watches::a_write_in_another_namespace_does_not_notify`
+- [ ] `plugin_data_store::tests::postgres::watches::a_write_that_changes_the_results_notifies_the_watch`
+- [ ] `plugin_data_store::tests::postgres::watches::a_write_to_another_entity_does_not_notify`
+- [ ] `plugin_data_store::tests::postgres::watches::an_ids_only_watch_sends_just_the_id_column`
+- [ ] `plugin_data_store::tests::postgres::watches::unloading_a_plugin_drops_its_watches_and_leaves_the_others`
+- [ ] `plugin_data_store::tests::postgres::watches::unwatching_stops_the_notifications`
+- [ ] `plugin_data_store::tests::postgres::watches::watch_ids_are_not_reused_after_a_watch_is_dropped`
+- [ ] `plugin_data_store::tests::postgres::watches::watches_work_with_a_backend_that_has_no_sqlite_types`
+- [ ] `plugin_data_store::tests::postgres::watches::watching_an_undeclared_entity_fails_rather_than_registering`
+- [ ] `plugin_data_store::tests::postgres::watches::writing_the_same_values_again_is_silent`
+- [ ] `plugin_data_store::tests::postgres::writes::a_batch_is_all_or_nothing`
+- [ ] `plugin_data_store::tests::postgres::writes::a_batch_with_a_nul_uid_leaves_stored_data_unchanged`
+- [ ] `plugin_data_store::tests::postgres::writes::a_json_attribute_is_validated_on_write`
+- [ ] `plugin_data_store::tests::postgres::writes::a_put_with_a_uid_upserts_and_keeps_the_original_created_at`
+- [ ] `plugin_data_store::tests::postgres::writes::a_put_without_a_uid_always_inserts`
+- [ ] `plugin_data_store::tests::postgres::writes::a_unique_attribute_rejects_a_duplicate`
+- [ ] `plugin_data_store::tests::postgres::writes::an_apply_reports_which_entities_it_touched`
+- [ ] `plugin_data_store::tests::postgres::writes::an_int_written_to_a_real_attribute_reads_back_as_a_real`
+- [ ] `plugin_data_store::tests::postgres::writes::the_stores_own_columns_cannot_be_written_directly`
+- [ ] `plugin_data_store::tests::postgres::writes::update_and_delete_report_how_many_rows_they_touched`
+- [ ] `plugin_data_store::tests::postgres::writes::writing_the_wrong_kind_to_a_column_is_rejected`
+
 ## Not run by any gate above
 
 Hand-maintained; these are the tests that are not Rust test functions.
@@ -8810,19 +9063,7 @@ which appear under `cargo x integration-test` above.
 
 ## Unmatched by nextest
 
-Source `#[test]` functions whose name nextest never listed. Each is either
-behind a `cfg` this run did not enable, or in a suite that failed to build.
+None: every `#[test]` function in the sources appears in the listing above.
 
-- [ ] `typing_exit_closes_pane` — `./src/tests/e2e/cases.rs:147`
-- [ ] `blocked_bootstrap_and_query_discard_connections_and_reconnect` — `./zellij-storage/src/plugin_data_store/postgres/unit/deadlines.rs:24`
-- [ ] `a_stalled_row_stream_has_one_deadline_and_reconnects` — `./zellij-storage/src/plugin_data_store/postgres/unit/deadlines.rs:49`
-- [ ] `a_timed_out_write_is_rolled_back_and_never_replayed` — `./zellij-storage/src/plugin_data_store/postgres/unit/deadlines.rs:77`
-- [ ] `guarded_batches_exclude_unguarded_writers_on_all_touched_tables_until_commit` — `./zellij-storage/src/plugin_data_store/postgres/unit/snapshots.rs:7`
-- [ ] `a_lost_connection_is_reconnected_on_the_next_call` — `./zellij-storage/src/plugin_data_store/tests/postgres.rs:113`
-- [ ] `two_backends_share_one_schema` — `./zellij-storage/src/plugin_data_store/tests/postgres.rs:142`
-- [ ] `from_backends_pairs_postgres_plugin_data_with_sqlite_recordings` — `./zellij-storage/src/plugin_data_store/tests/postgres.rs:157`
-- [ ] `a_constraint_violation_includes_the_operation_and_server_explanation` — `./zellij-storage/src/plugin_data_store/tests/postgres.rs:231`
-- [ ] `a_schema_from_a_newer_zellij_is_refused` — `./zellij-storage/src/plugin_data_store/tests/postgres.rs:319`
-
-Scanned 8095 source test functions; 10 unmatched.
+Scanned 8227 source test functions; 0 unmatched.
 

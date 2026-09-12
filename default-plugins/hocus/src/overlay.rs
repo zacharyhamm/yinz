@@ -78,24 +78,21 @@
 //! without that, an overlay left behind on another tab would never hear the `TabUpdate` it moves
 //! on.
 //!
-//! **The corner is the default, not the only place.** Ctrl-o (`State::reposition`) moves the
-//! panel *clear of* a tiled pane - whichever one it is covering, or the largest one the user is
-//! not working in, by `pick_anchor` - and remembers that pane as the panel's `anchor`. The press
-//! puts the panel in the corner that clears that pane best (`corner_for`), at exactly the size
-//! the corner placement would have given it.
+//! **The corner is the default, and Ctrl-o cycles the four.** Ctrl-o (`State::reposition`)
+//! advances the panel one corner clockwise - `next_clockwise`, in the order of `CORNERS` - keeping
+//! its size and reading nothing of the tab layout. The press is sent as the user's own placement,
+//! so it lands over any position they dragged.
 //!
 //! **Both halves take the key, and a press moves the panel.** The conversation handles Ctrl-o
 //! itself; the list has no geometry of its own to work with, so it asks over
 //! `wire::AGENT_STRIP_REPOSITION` and hocus does the arithmetic, as it does for every other
 //! placement. Either way it is the one panel that moves, with its split intact.
 //!
-//! **Nothing the layout does moves the panel.** A placement is two steps - *choose* a corner,
-//! then *resolve* it against the surface (`corner_for`, then `rect_in_corner`) - and only the
-//! first reads the layout. The corner a press chose is remembered (`Panel::placed_corner`), so
-//! every later placement is a function of that corner, the screen and the config: a pane opening,
-//! a pane closing, a re-tile and a swap layout are not inputs to it. `track_anchor` still reads
-//! every `PaneUpdate`, but only to keep the anchor the *next* press ranks against - it places
-//! nothing. What places is a press, a reveal, a config change, and a terminal resize,
+//! **Nothing the layout does moves the panel.** A placement is two steps - *choose* a corner, then
+//! *resolve* it against the surface - and the choice is only ever the next corner clockwise or the
+//! one already remembered (`Panel::placed_corner`). Every later placement is a function of that
+//! corner, the screen and the config: a pane opening, a pane closing, a re-tile and a swap layout
+//! are not inputs to it. What places is a press, a reveal, a config change, and a terminal resize,
 //! which resolves the same corner against the screen's new size.
 //!
 //! The config is where the *size* comes from, which is the one thing a placement does not carry
@@ -103,12 +100,11 @@
 //! keeps a panel the user resized, but every other placement passes `None` and gets `panel_size`'s
 //! configured size back.
 //!
-//! **A press always moves the panel.** Every placement is one of four corners (`Corner`), so a
-//! repeat press is a walk: `pick_anchor` tours the panes nobody has been sent clear of yet
-//! (`Panel::warp_visited`), and once they are all toured the press steps to the next corner of
-//! the anchor's ordering (`Panel::warp_step`) instead of doing nothing. Four corners, then the
-//! tour re-opens. The only press that moves nothing is one on a panel the size of the screen,
-//! where all four corners are the same rectangle.
+//! **A press always moves the panel.** Four corners in a cycle means each press takes the next one
+//! clockwise and the fifth is back where the first was, and a press steps past the rectangle the
+//! manifest reports, so a panel the user dragged cannot make it a no-op. The only press that moves
+//! nothing is one on a panel the size of the screen, where all four corners are the same rectangle
+//! and there is genuinely nowhere to go.
 //!
 //! **A half is never narrower than `MIN_PANE_COLS`, the panel never shorter than `MIN_PANE_ROWS`,
 //! and nothing is ever off the screen.** That is a guarantee of this module rather than a hope:
@@ -123,7 +119,6 @@
 //! for a rectangle the server would have to clip back (`PaneGeom::adjust_coordinates` does that
 //! silently), so the rectangle hocus remembers is the rectangle it got.
 
-use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::TabPosition;
 
@@ -154,6 +149,9 @@ const HIDE_PENDING_FRAMES: u8 = 4;
 /// yield had just set. The budget is small and lapses for the same reason: a focus request
 /// that never lands must not suppress a genuine reset for ever.
 const RING_FOCUS_PENDING_FRAMES: u8 = 4;
+/// How many `PaneUpdate`s a placement of ours stays in flight for - see
+/// [`crate::State::placement_pending`].
+const PLACEMENT_PENDING_FRAMES: u8 = 4;
 /// The panel's width, as a percentage of the display area. Wide enough for a chat message not
 /// to be wrapped every other word beside the agent list, and still well short of the whole
 /// screen, so the panel reads as something sitting on the work rather than a split of it.
@@ -327,8 +325,8 @@ fn min_panel_cols(cols: usize, halves: usize) -> usize {
 
 /// The panel's `(width, height)`, resolved against the surface and clamped to it.
 ///
-/// The size half of *every* placement: moving the panel clear of a pane, or one corner along,
-/// must never resize it, so there is one answer to the size rather than a copy per path.
+/// The size half of *every* placement: moving the panel one corner along must never resize it,
+/// so there is one answer to the size rather than a copy per path.
 ///
 /// **The minimum is a floor, not a preference.** See [`fit`] for the order that makes it one, and
 /// [`min_panel_cols`] for what happens on a screen too narrow to honour it.
@@ -454,21 +452,6 @@ impl Rect {
         }
     }
 
-    fn area(&self) -> usize {
-        self.cols * self.rows
-    }
-
-    /// Cells the two rectangles share.
-    fn overlap(&self, other: &Rect) -> usize {
-        let across = (self.x + self.cols)
-            .min(other.x + other.cols)
-            .saturating_sub(self.x.max(other.x));
-        let down = (self.y + self.rows)
-            .min(other.y + other.rows)
-            .saturating_sub(self.y.max(other.y));
-        across * down
-    }
-
     /// The smallest rectangle holding both - the panel, given its two halves.
     fn union(&self, other: &Rect) -> Rect {
         let x = self.x.min(other.x);
@@ -490,38 +473,40 @@ impl Rect {
 
 /// A corner of the surface the panel may sit in.
 ///
-/// Every placement is one of these four - the default corner, the placement that gets clear of an
-/// anchor, and every step of the cycle a repeat Ctrl-o walks - so naming them is what lets a press
-/// ask for "the next place" rather than restate the arithmetic. It is also what lets a placement
-/// be *remembered* rather than re-derived: see [`Panel::placed_corner`].
+/// Every placement is one of these four, and Ctrl-o walks them in the order of [`CORNERS`] - so
+/// naming them is what lets a press ask for "the next place" rather than restate the arithmetic.
+/// It is also what lets a placement be *remembered* rather than re-derived: see
+/// [`Panel::placed_corner`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Corner {
     BottomLeft,
-    BottomRight,
-    TopRight,
     TopLeft,
+    TopRight,
+    BottomRight,
 }
 
-/// Every corner, in the order a press walks them: the home corner, then across, then up, then
-/// back - once round the perimeter, so no step is a diagonal jump across the screen.
+/// Every corner, in the order Ctrl-o walks them: **clockwise as seen on screen**, starting at the
+/// home corner - bottom-left, up the left edge, across the top, down the right edge and back.
 ///
-/// This order is also the tie-break in [`corner_order`], and it is the one the clear placement
-/// has always had: the bottom row before the top, and the near column before the far one.
+/// `CORNERS[0]` is the home corner, so `panel_rect`, `apply_overlay_geometry` and `overlay_rects`
+/// all name the same starting place they always have.
 const CORNERS: [Corner; 4] = [
     Corner::BottomLeft,
-    Corner::BottomRight,
-    Corner::TopRight,
     Corner::TopLeft,
+    Corner::TopRight,
+    Corner::BottomRight,
 ];
 
-/// The order for a panel that has the tab to itself - the far corner from the default first, and
-/// then the rest of the perimeter. See [`corner_order`].
-const CORNERS_ALONE: [Corner; 4] = [
-    Corner::TopRight,
-    Corner::TopLeft,
-    Corner::BottomLeft,
-    Corner::BottomRight,
-];
+/// The corner one step clockwise from `corner`.
+///
+/// The order is [`CORNERS`], so this is its next element, wrapping from the last back to home.
+fn next_clockwise(corner: Corner) -> Corner {
+    let index = CORNERS
+        .iter()
+        .position(|candidate| *candidate == corner)
+        .unwrap_or(0);
+    CORNERS[(index + 1) % CORNERS.len()]
+}
 
 /// The rectangle `corner` names, given the surface, the padding and the panel's `(width, height)`.
 ///
@@ -556,191 +541,6 @@ fn corner_rect(
         cols: width,
         rows: height,
     }
-}
-
-/// The four corners, best first, for a panel asked to get clear of `anchor`.
-///
-/// The first is where the placement goes; the rest are where a repeat press walks, in order.
-///
-/// - No anchor - the panel is in the corner and has been asked of nothing - is [`CORNERS`], the
-///   plain perimeter starting at home.
-/// - `alone`, one tiled pane on the whole tab, is [`CORNERS_ALONE`]. There is no other side of the
-///   screen to be on, so the rule is "the far corner from the default" rather than anything
-///   computed: every corner would tie against a pane that fills the tab.
-/// - Otherwise the corners are *sorted*, by the column the pane rules out and then by how much of
-///   it each corner covers. A pane whose centre is left of the screen's rules out the left-hand
-///   column and one whose centre is right of it rules out the right; a centred pane rules out
-///   neither. Sorting rather than filtering is what keeps the ruled-out column reachable as a last
-///   resort, which a full cycle needs; the first element is what filtering would have chosen,
-///   because the key order and the tie-break order are the same.
-///
-/// The vertical slot is chosen by overlap even when the horizontal one was forced, which is what
-/// answers a pane too wide for either side to clear outright: it is put where it hides the least
-/// of it. Covering *other* panes is not this function's problem - only the pane the user asked to
-/// see is.
-fn corner_order(
-    anchor: Option<Rect>,
-    alone: bool,
-    surface_rows: usize,
-    surface_cols: usize,
-    pad: usize,
-    size: (usize, usize),
-) -> [Corner; 4] {
-    let Some(anchor) = anchor.filter(|_| !alone) else {
-        // Nothing to rank against - no anchor at all, or an anchor that fills the tab and so ties
-        // every corner - so the fixed ordering is the whole answer.
-        return match anchor {
-            None => CORNERS,
-            Some(_) => CORNERS_ALONE,
-        };
-    };
-    // Doubled rather than halved, so a pane an odd number of columns wide is not rounded onto one
-    // side of a screen it is centred on.
-    let anchor_centre = 2 * anchor.x + anchor.cols;
-    let wrong_side = |corner: &Corner| {
-        let on_the_left = matches!(corner, Corner::BottomLeft | Corner::TopLeft);
-        usize::from(match anchor_centre.cmp(&surface_cols) {
-            std::cmp::Ordering::Less => on_the_left,
-            std::cmp::Ordering::Greater => !on_the_left,
-            std::cmp::Ordering::Equal => false,
-        })
-    };
-    let mut order = CORNERS;
-    // Stable, so corners that tie keep `CORNERS`' order - which is what makes that list the
-    // tie-break rather than something restated here.
-    order.sort_by_key(|corner| {
-        (
-            wrong_side(corner),
-            anchor.overlap(&corner_rect(*corner, surface_rows, surface_cols, pad, size)),
-        )
-    });
-    order
-}
-
-/// The id a manifest entry names.
-pub(crate) fn pane_id_of(pane: &PaneInfo) -> PaneId {
-    pane.id
-}
-
-/// Whether a manifest entry is one of the panes the layout is made of.
-///
-/// Floating, suppressed and unselectable panes are not: a floating pane is not the layout (which
-/// is what keeps hocus's own two overlays out of this), a suppressed one is not on screen, and an
-/// unselectable one is chrome such as the status bar.
-fn is_tiled(pane: &PaneInfo) -> bool {
-    !pane.is_floating && !pane.is_suppressed && pane.is_selectable
-}
-
-/// Whether the tab holds exactly one tiled pane.
-///
-/// The one case the placement cannot answer with "the other side of the screen", because a single
-/// pane has no other side - see [`corner_order`]. Read from the manifest at placement time
-/// rather than remembered, so a second pane opening drops the rule on the next re-tile.
-pub(crate) fn sole_tiled_pane(panes: &[PaneInfo]) -> bool {
-    panes.iter().filter(|pane| is_tiled(pane)).count() == 1
-}
-
-/// The tiled pane the panel should get clear of, given every pane on its tab.
-///
-/// The pane the user is working in is out: it is the one they are already looking at, and hocus
-/// is asked to uncover something else. The exception is a tab with a single tiled pane, where the
-/// focused pane is the only thing there is to be clear of - without it Ctrl-o would do nothing at
-/// all on the commonest layout there is.
-///
-/// Of the rest, **the pane the panel is covering most wins**, and the larger pane wins among
-/// equals. That ranking is what makes a press walk pane to pane: the first press takes hocus off
-/// the pane it was on, which lands it on some other pane, and the second press takes it off that
-/// one. Where hocus covers nothing the overlaps are all zero and the ranking reads as "the largest
-/// pane you are not in". The sort is stable, so a tie beyond that goes to manifest order.
-///
-/// **`visited` is what guarantees progress.** The ranking alone does not: it is a function of
-/// rectangles, so on a tab where nothing overlaps - or on a second press before the manifest has
-/// caught up - it answers the same pane again and the walk stops. Every pane already toured is out
-/// of the running, so each press either reaches a pane nobody has been sent clear of yet or says
-/// there are none left, and the caller walks the corners instead.
-///
-/// `None` when every candidate has been toured, or when there are none at all.
-pub(crate) fn pick_anchor(
-    own_rect: Rect,
-    panes: &[PaneInfo],
-    visited: &[PaneId],
-) -> Option<PaneId> {
-    let tiled: Vec<&PaneInfo> = panes.iter().filter(|pane| is_tiled(pane)).collect();
-    let mut candidates: Vec<&PaneInfo> = match tiled.len() {
-        1 => tiled,
-        _ => tiled.into_iter().filter(|pane| !pane.is_focused).collect(),
-    };
-    candidates.retain(|pane| !visited.contains(&pane_id_of(pane)));
-    candidates.sort_by_key(|pane| {
-        let rect = Rect::of(pane);
-        (Reverse(own_rect.overlap(&rect)), Reverse(rect.area()))
-    });
-    candidates.first().map(|pane| pane_id_of(pane))
-}
-
-/// Where the panel goes: the size [`panel_size`] gives, at the corner `step` of the order
-/// [`corner_order`] gives for `anchor`.
-///
-/// **The two steps of every placement, in one call** - [`corner_for`] chooses, [`rect_in_corner`]
-/// resolves. `anchor: None` at `step: 0` is the default bottom-left corner, which is what
-/// [`overlay_rects`] asks for; a press asks the same two functions itself, because it has a size
-/// to carry. They are still the one arithmetic, so a size or a padding the user configured means
-/// the same thing in all of them. The panel is never resized to suit the anchor and neither is
-/// the anchor: Ctrl-o is a request to *see* a pane, and the whole job is to stop covering it.
-///
-/// `step` is taken modulo the four corners, so a cycle that has walked past the end comes back to
-/// the best one.
-///
-/// `None` when there is no surface to compute against, which leaves the caller with the placement
-/// it already has. An anchor with no size is not an anchor at all and falls back to the corner.
-///
-/// A press threads a size and so calls the two halves itself (`State::corner_at`, `State::rect_in`);
-/// this is the pair with nothing threaded, which is what the placement is tested as.
-#[cfg(test)]
-pub(crate) fn panel_placement(
-    config: &BTreeMap<String, String>,
-    surface_rows: usize,
-    surface_cols: usize,
-    shown: Shown,
-    anchor: Option<Rect>,
-    alone: bool,
-    step: usize,
-) -> Option<Rect> {
-    let corner = corner_for(
-        config,
-        surface_rows,
-        surface_cols,
-        shown,
-        anchor,
-        alone,
-        step,
-        None,
-    )?;
-    rect_in_corner(config, surface_rows, surface_cols, shown, corner, None)
-}
-
-/// The choosing half of a placement: which corner the panel belongs in, given the pane it has
-/// been asked to get clear of.
-///
-/// **The only half that reads the layout.** The anchor's rectangle and whether it has the tab to
-/// itself are what rank the four corners, and they are read when a press asks and at no other
-/// time. What a press produces is a `Corner`, which [`Panel::placed_corner`] remembers - so every
-/// later placement goes straight to [`rect_in_corner`], and no manifest can move the panel.
-#[allow(clippy::too_many_arguments)]
-fn corner_for(
-    config: &BTreeMap<String, String>,
-    surface_rows: usize,
-    surface_cols: usize,
-    shown: Shown,
-    anchor: Option<Rect>,
-    alone: bool,
-    step: usize,
-    size: Option<(usize, usize)>,
-) -> Option<Corner> {
-    let (pad, size) = placement_terms(config, surface_rows, surface_cols, shown, size)?;
-    let anchor = anchor.filter(|anchor| anchor.rows > 0 && anchor.cols > 0);
-    let order = corner_order(anchor, alone, surface_rows, surface_cols, pad, size);
-    Some(order[step % CORNERS.len()])
 }
 
 /// The placing half: the rectangle `corner` names on the surface as it is now, at the size
@@ -869,66 +669,28 @@ pub(crate) fn tab_to_follow(
     (client_was_on == Some(own) && client_is_on != own).then_some(client_is_on)
 }
 
-/// The panel's placement: where it is, and what the next press moves it clear of.
+/// The panel's placement: the corner it is in, and the rectangle it asked for.
 ///
-/// One of these on `State`, for the one panel: both halves take Ctrl-o, and either press moves
-/// the panel along the same tour.
+/// One of these on `State`, for the one panel: both halves take Ctrl-o, and either press advances
+/// the panel one corner clockwise.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Panel {
-    /// The tiled pane this panel was last asked to keep clear of, chosen with Ctrl-o. `None` is
-    /// "nothing in particular".
-    ///
-    /// A pane rather than a position, because it is the *next* press that reads it: `pick_anchor`
-    /// will not offer the same pane twice in a tour, and `corner_for` ranks the four corners
-    /// against wherever the pane is by then. It is not something the panel follows -
-    /// `track_anchor` keeps it current and places nothing. Cleared when the pane is no longer on
-    /// our tab - closed, or we followed a client to another tab - which starts a fresh tour and
-    /// leaves the panel where it is.
-    pub(crate) anchor: Option<PaneId>,
-    /// The anchor's rectangle as the last `PaneUpdate` reported it - what the next press ranks
-    /// the corners against.
-    pub(crate) anchor_rect: Option<Rect>,
-    /// The panes Ctrl-o has toured since the cycle last wrapped.
-    ///
-    /// What makes a repeat press walk to a *different* pane instead of re-picking the best one:
-    /// the ranking is a function of rectangles, so it answers the same pane twice whenever nothing
-    /// overlaps or the manifest has not caught up. Pruned to the panes still on the tab by
-    /// `track_anchor`, and emptied when the cycle comes round.
-    pub(crate) warp_visited: Vec<PaneId>,
-    /// How far into the anchor's corner ordering the *next press* is.
-    ///
-    /// Reset to 0 by a press that reaches a new pane, advanced by a press that has none left to
-    /// reach - which is what turns "nowhere better to go" from a no-op into the next corner. Read
-    /// only by `reposition`: where the panel actually sits is [`Panel::placed_corner`].
-    pub(crate) warp_step: usize,
     /// The corner the panel was last placed in, and `None` for one that has never been placed -
     /// which is its home, the bottom-left corner.
     ///
-    /// **What makes a placement independent of the layout.** Choosing a corner reads the anchor
-    /// and the tab; resolving one reads only the screen. Remembering the choice means every
-    /// placement after a press - a hide, a reveal, a config change, a terminal resize - is the
-    /// second half alone, so a pane opening or closing cannot move the panel and a resize
+    /// **What makes a placement independent of the layout.** Choosing a corner is a step
+    /// clockwise from this one; resolving it reads only the screen. Remembering the choice means
+    /// every placement after a press - a hide, a reveal, a config change, a terminal resize - is
+    /// the resolve alone, so a pane opening or closing cannot move the panel and a resize
     /// re-resolves the corner the user left it in rather than dragging it home.
     pub(crate) placed_corner: Option<Corner>,
     /// The panel rectangle the last placement asked for.
     ///
-    /// The reference for "did this press actually move me?", and better than the manifest for
-    /// ranking because it is never stale - two presses can arrive between two `PaneUpdate`s.
+    /// The reference for "did this press actually move me?", and better than the manifest for the
+    /// size the press carries because it is never stale - two presses can arrive between two
+    /// `PaneUpdate`s. A position the user dragged is not here; [`State::reposition`] reads that off
+    /// the manifest once no placement of ours is in flight.
     pub(crate) placed_rect: Option<Rect>,
-}
-
-impl Panel {
-    /// Forget the pane this panel was getting clear of, and the tour it was on.
-    ///
-    /// The anchor is a pane on a particular tab, so a panel carried to another one has nothing
-    /// left to be clear of and the next press starts fresh. Moves nothing: where the panel sits
-    /// is [`Panel::placed_corner`], which a tab change does not touch.
-    fn reset_tour(&mut self) {
-        self.anchor = None;
-        self.anchor_rect = None;
-        self.warp_step = 0;
-        self.warp_visited.clear();
-    }
 }
 
 impl State {
@@ -1010,6 +772,7 @@ impl State {
         // What the next press ranks against, and what tells it whether it has moved. Set on every
         // placement and not only Ctrl-o's, because a resize re-places and so moves us too.
         self.panel.placed_rect = Some(panel);
+        self.placement_pending = PLACEMENT_PENDING_FRAMES;
         let placements = self.placements_of(panel);
         #[cfg(test)]
         {
@@ -1064,6 +827,7 @@ impl State {
         };
         self.panel.placed_corner = Some(corner);
         self.panel.placed_rect = Some(panel);
+        self.placement_pending = PLACEMENT_PENDING_FRAMES;
         let placements = self.placements_of(panel);
         #[cfg(test)]
         {
@@ -1074,26 +838,6 @@ impl State {
         // test `apply_overlay_geometry` makes.
         self.placed = self.own_tab_index.is_some();
         self.agents_placed = self.agents_plugin.is_none() || self.agents_tab_index.is_some();
-    }
-
-    /// The corner a press at `step` would choose, against the anchor and the tab as the last
-    /// manifest reported them.
-    ///
-    /// Asked by [`State::reposition`] and by nothing else - a press is the only thing allowed to
-    /// read the layout, which is what keeps a re-tile from moving the panel. `alone` is read from
-    /// the manifest rather than remembered from the last press, so the single-pane rule is
-    /// re-decided by each one.
-    fn corner_at(&self, step: usize, size: Option<(usize, usize)>) -> Option<Corner> {
-        corner_for(
-            &self.kdl,
-            self.surface_rows,
-            self.surface_cols,
-            self.shown(),
-            self.panel.anchor.and(self.panel.anchor_rect),
-            sole_tiled_pane(&self.tab_panes),
-            step,
-            size,
-        )
     }
 
     /// The panel's rectangle in `corner`, optionally retaining its current size.
@@ -1112,10 +856,11 @@ impl State {
     /// word for it, else the home it has not been moved from.
     ///
     /// The last placement comes first because it is never stale. Two presses can arrive between
-    /// two manifests, and ranking the second against the *first* press's rectangle is what stops
-    /// them computing the same answer twice. A position the user **dragged** is not reflected here
-    /// because the last placement wins, which costs a slightly worse choice of next pane and never
-    /// a stalled press. The manifest's size is used separately so a move cannot undo a resize.
+    /// two manifests, and comparing the second against the *first* press's rectangle is what lets
+    /// a press that cannot move say so rather than restate the same corner. A position the user
+    /// **dragged** is not reflected here - the last placement wins - but [`State::reposition`]
+    /// reads the manifest separately once no placement is in flight, so a drag cannot turn a press
+    /// into a no-op. The manifest's size is used here so a move cannot undo a resize.
     fn own_rect(&self) -> Rect {
         let reported = self.reported_panel();
         let mut own = self
@@ -1141,7 +886,7 @@ impl State {
     /// The panel as the manifest reports it: the rectangle round whichever halves are drawn, or
     /// `None` with neither on screen. Both halves together are the panel; one alone has the whole
     /// of it.
-    fn reported_panel(&self) -> Option<Rect> {
+    pub(crate) fn reported_panel(&self) -> Option<Rect> {
         let drawn = |plugin_id: Option<zellij_tile::prelude::PluginId>| {
             let plugin_id = plugin_id?;
             self.tab_panes
@@ -1195,54 +940,39 @@ impl State {
         self.split = Some((agents.cols, panel_cols));
     }
 
-    /// Ctrl-o: move the panel somewhere else.
+    /// Ctrl-o: move the panel one corner clockwise.
     ///
     /// **Both halves take the key**, and either press moves the panel: the conversation handles
-    /// it itself, the agent list asks for it over `wire::AGENT_STRIP_REPOSITION`, and there is
-    /// one anchor and one tour between them.
+    /// it itself, the agent list asks for it over `wire::AGENT_STRIP_REPOSITION`, and there is one
+    /// corner between them.
     ///
-    /// **A press moves.** Where there is a tiled pane nobody has been sent clear of yet,
-    /// [`pick_anchor`] names it and the panel is placed at the corner that clears it best, as it
-    /// always was. Where every pane has been toured - a tab of two panes with the other one
-    /// focused is the commonest case there is - the press steps to the next corner of the same
-    /// anchor's ordering instead of doing nothing, and once round the four the tour re-opens and
-    /// the ranking starts again.
+    /// **A press moves.** The panel steps from the corner it is in to [`next_clockwise`], at the
+    /// size it already has, reading nothing of the tab layout. It keeps stepping - at most once
+    /// round - until it finds a corner whose rectangle differs from the last placement *and* from
+    /// where the manifest reports the panel actually is, so neither a stale placement nor a
+    /// position the user dragged can turn a press into a no-op. A panel the screen has pinned to
+    /// one rectangle (all four corners identical) is the only press that moves nothing.
     ///
     /// Sent as the user's own placement, so it lands even on a panel they dragged.
-    ///
-    /// The one press that moves nothing is one on a panel the size of the screen, where all four
-    /// corners are the same rectangle and there is genuinely nowhere to go.
     pub(crate) fn reposition(&mut self) {
         let own = self.own_rect();
         let size = Some((own.cols, own.rows));
-        match pick_anchor(own, &self.tab_panes, &self.panel.warp_visited) {
-            Some(next) => {
-                let rect = self
-                    .tab_panes
-                    .iter()
-                    .find(|pane| pane_id_of(pane) == next)
-                    .map(Rect::of);
-                self.panel.anchor_rect = rect;
-                self.panel.anchor = Some(next);
-                self.panel.warp_visited.push(next);
-                // A fresh pane to be clear of: back to the corner that clears it best.
-                self.panel.warp_step = 0;
-            },
-            None => self.advance_warp(),
-        }
-        // The invariant, and the whole of the fix: where the step names the rectangle the
-        // panel is already at, take the next one. Once round at most.
+        // Where the manifest says the panel actually is, once nothing we placed is still in
+        // flight. A position we did not ask for is one the user dragged to, and stepping onto it
+        // would be a press that moves nothing. While a placement is pending the manifest is
+        // ignored, because a snapshot taken before it landed reports the old rectangle.
+        let drawn = (self.placement_pending == 0)
+            .then(|| self.reported_panel())
+            .flatten();
+        let mut corner = self.panel.placed_corner.unwrap_or(CORNERS[0]);
         let mut target = None;
         for _ in 0..CORNERS.len() {
-            let Some(corner) = self.corner_at(self.panel.warp_step, size) else {
-                // No surface to rank against, so there is no corner to move to either.
-                break;
-            };
-            if self.rect_in(corner, size) != Some(own) {
+            corner = next_clockwise(corner);
+            let candidate = self.rect_in(corner, size);
+            if candidate != Some(own) && candidate != drawn {
                 target = Some(corner);
                 break;
             }
-            self.advance_warp();
         }
         if let Some(corner) = target {
             self.place_panel(size, corner);
@@ -1252,10 +982,9 @@ impl State {
     /// Ctrl-o pressed in the agent list, relayed over `wire::AGENT_STRIP_REPOSITION`.
     ///
     /// The same move as [`State::reposition`], with one refusal in front of it: a list that is
-    /// not on the conversation's tab is not moved. A press ranks the corners against
-    /// `tab_panes`, which is *our* tab, and placing a parted list against panes it is not sitting
-    /// with would put it clear of nothing - and would mark it placed while it is still elsewhere.
-    /// `on_panes` drags the pair back together, and the press after that lands.
+    /// not on the conversation's tab is not moved. Placing a parted list against *our* surface
+    /// would mark it placed while it is still elsewhere; `on_panes` drags the pair back together,
+    /// and the press after that lands.
     pub(crate) fn reposition_from_list(&mut self) {
         let list_is_here = self.agents_plugin.is_some()
             && self.own_tab_index.is_some()
@@ -1264,57 +993,6 @@ impl State {
             return;
         }
         self.reposition();
-    }
-
-    /// Step one corner along, wrapping back to the best one.
-    ///
-    /// The wrap re-opens the tour: every pane is a candidate again, so the press after a full
-    /// cycle goes back to walking pane to pane rather than round the corners forever.
-    fn advance_warp(&mut self) {
-        self.panel.warp_step += 1;
-        if self.panel.warp_step >= CORNERS.len() {
-            self.panel.warp_step = 0;
-            self.panel.warp_visited.clear();
-        }
-    }
-
-    /// Read the panel's anchor off a fresh manifest of our tab: gone, moved, or as it was.
-    ///
-    /// **Bookkeeping for the next press, and not a placement.** The anchor is what Ctrl-o ranks
-    /// the four corners against, so it has to keep up with the pane it names - but keeping up is
-    /// all it does. Nothing here moves the panel, because nothing the *layout* does is allowed
-    /// to: a pane closing, opening or being re-tiled leaves the panel exactly where it is, and
-    /// the corner it is in is remembered rather than re-derived (see [`Panel::placed_corner`] and
-    /// the module header). Following a pane around used to be this function's job, and it is
-    /// what made a pane close jump the panel across the screen - a re-tile could flip
-    /// `sole_tiled_pane` and swap the whole corner ordering underneath it.
-    ///
-    /// A pane that is no longer a tiled pane on our tab - closed, floated, or left behind on the
-    /// tab we moved from - releases the anchor: there is nothing left to be clear of, so the next
-    /// press starts a fresh tour. The panel stays put through that too.
-    pub(crate) fn track_anchor(&mut self, panes: &[PaneInfo]) {
-        let panel = &mut self.panel;
-        // A pane that has closed cannot hold a slot in the tour: the press that came round to it
-        // would find it gone and go nowhere new.
-        panel
-            .warp_visited
-            .retain(|id| panes.iter().any(|pane| pane_id_of(pane) == *id));
-        let Some(anchor) = panel.anchor else {
-            return;
-        };
-        let now = panes
-            .iter()
-            .find(|pane| pane_id_of(pane) == anchor && !pane.is_floating && !pane.is_suppressed)
-            .map(Rect::of);
-        match now {
-            // The cycle belongs to the anchor: with the pane gone there is nothing to be clear
-            // of, and the next press starts a fresh tour. Safe to reset because the panel's
-            // position is `placed_corner` now, not `(anchor_rect, warp_step)`.
-            None => panel.reset_tour(),
-            // The rectangle a press ranks against, kept current. The step is kept too, so a press
-            // after a re-tile carries on from where the cycle had got to.
-            Some(rect) => panel.anchor_rect = Some(rect),
-        }
     }
 
     /// Put the **panel** away without unloading either half.
@@ -1639,9 +1317,6 @@ impl State {
         }
         break_panes_to_tab_with_index(&pane_ids, tab_index, false);
         self.own_tab_index = Some(tab_index);
-        // The anchor is a pane on the tab being left. The cycle goes with it - the panes it
-        // toured are all on the tab we are leaving.
-        self.panel.reset_tour();
         if self.agents_plugin.is_some() {
             // Both ids went in one call, so the list is wherever we are. Recorded here rather than
             // waited for, so the next `PaneUpdate` - taken before the move, possibly - does not

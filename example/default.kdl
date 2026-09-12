@@ -376,11 +376,10 @@ plugins {
     // restores the split, and either opens the half that is missing if you
     // closed one.
     //
-    // Ctrl o, in either half, moves the whole panel clear of a different tiled
-    // pane — the largest one you are not working in — and it stays clear of that
-    // pane through resizes until the pane closes or hocus follows you to another
-    // tab, when it returns to the corner. Dragging either half's frame moves the
-    // whole panel too.
+    // Ctrl o, in either half, moves the whole panel one corner clockwise around
+    // the four corners of the screen, at the size it already has, and every press
+    // moves it. Dragging either half's frame moves the whole panel too, and the
+    // press after that carries on from where the drag left it.
     hocus location="zellij:hocus" {
         shared true
         // DeepSeek v4 defaults to high-effort thinking. Disable it for shorter,

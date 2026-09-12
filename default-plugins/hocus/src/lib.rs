@@ -145,8 +145,8 @@ const LOCAL_COMMANDS: [&str; 9] = [
 /// help line, so this is the one place all of these are written down.
 const KEYS_HELP: &str = "\
 Ctrl+l        new chat, in a new tab (also /clear)
-Ctrl+o        move the panel clear of a pane - the one it is covering, or the
-              largest one you are not in (top right if it is the only pane)
+Ctrl+o        move the panel one corner clockwise - bottom left, top left,
+              top right, bottom right, and round again
 Tab, Shift+Tab   walk the panel's ring of stops: the agent list, its history
               half, the chat tab bar, the box you type in - and round again
 Up / Down     previous / next message in history
@@ -201,7 +201,7 @@ Up / Down     choose an agent, from either of the list's halves
 j / k         step by whatever the half you are in is made of
 Enter         focus that agent's pane, or open the event under the cursor
 s             ask for a summary of the agent under the cursor
-Ctrl+o        move the panel clear    Ctrl+r  re-read the branch
+Ctrl+o        move the panel     Ctrl+r  re-read the branch
 Esc           hide the panel, the conversation with it";
 
 /// Context key carrying a chat request's stream id back on its `WebRequestResult`,
@@ -822,6 +822,15 @@ pub struct State {
     /// have landed. **No list counts as placed**, or the retry would spin on every event for as
     /// long as nobody had opened one.
     pub(crate) agents_placed: bool,
+    /// How many `PaneUpdate`s a placement of ours stays in flight for.
+    ///
+    /// A placement is fire-and-forget, so a manifest arriving between the call and the server
+    /// drawing the panel still reports where the panel *was*. Reading that as the panel's real
+    /// position would let a press step from a corner it has already left. The counter is cleared
+    /// early - the first manifest that echoes the rectangle we asked for proves the placement
+    /// landed - and it lapses like the other pending budgets, so a position the user dragged is
+    /// believed by [`overlay::State::reposition`] once it has. See `overlay::PLACEMENT_PENDING_FRAMES`.
+    pub(crate) placement_pending: u8,
     /// The surface the last placement was computed against.
     ///
     /// Test-only, and a test hook rather than state: `change_overlay_coordinates` is a host call
@@ -830,10 +839,11 @@ pub struct State {
     /// *what they were last placed against*.
     #[cfg(test)]
     pub(crate) placed_against: (usize, usize),
-    /// Where the panel sits, and what the next Ctrl-o - in either half - moves it clear of.
+    /// Where the panel sits: the corner it is in and the rectangle it asked for.
     ///
     /// See [`overlay::Panel`]: the agent list and the conversation are the two halves of one
-    /// panel, so there is one anchor, one tour and one corner between them.
+    /// panel, so there is one corner between them - Ctrl-o in either half advances it one corner
+    /// clockwise.
     pub(crate) panel: overlay::Panel,
     /// Where the divider between the two halves is, as the manifest last reported it - see
     /// [`overlay::Split`]. `None` until a manifest has shown the halves side by side, which
@@ -841,9 +851,9 @@ pub struct State {
     pub(crate) split: overlay::Split,
     /// Every pane on our tab from the last `PaneUpdate`, our own entry included.
     ///
-    /// What Ctrl-o ranks. `TabUpdate` reports the surface but not the panes on it, so the manifest
-    /// is the only word hocus has about where the tiled panes are, and a key can arrive at any
-    /// time after it.
+    /// The pane manifest is the only word hocus has about where its own two halves are drawn, so
+    /// this is what `reported_panel` reads to find the panel's current rectangle; Ctrl-o itself
+    /// reads only the remembered corner and the screen.
     pub(crate) tab_panes: Vec<PaneInfo>,
     /// The last placement sent, and whether it reclaimed a user's drag.
     ///
@@ -1048,6 +1058,7 @@ impl Default for State {
             ring_focus_pending: 0,
             placed: false,
             agents_placed: true,
+            placement_pending: 0,
             #[cfg(test)]
             placed_against: (0, 0),
             panel: overlay::Panel::default(),

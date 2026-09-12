@@ -287,6 +287,7 @@ impl State {
                 self.poll_vms();
             }
             if key.bare_key == BareKey::Char('o') {
+                // Cycle the whole panel one corner clockwise; hocus owns the geometry.
                 pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_REPOSITION));
             }
             return true;
