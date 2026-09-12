@@ -20,9 +20,6 @@ zellij-ipc = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
-# For `ellipsize`, shared with the tab bars so the two ends of a lent pane title agree on how a
-# title is cut. The crate is leaf-level (ansi_term and unicode-width only), so this is acyclic.
-zellij-tile-utils = { path = "../zellij-tile-utils" }
 ansi_term = { workspace = true }
 anyhow = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
@@ -42,5 +39,4 @@ hegeltest = "0.29.3"
 insta = "1.48"
 png = { version = "0.17.16", default-features = false }
 tempfile = "3.2.0"
-zellij-test-support = { path = "../zellij-test-support" }
 zellij-tile = { path = "../zellij-tile" }

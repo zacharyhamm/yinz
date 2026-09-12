@@ -1,5 +1,9 @@
 # zellij-server test audit
 
+> File citations are as of the audit, before the crate breakout: `background_jobs.rs`, `route.rs`,
+> `pty_writer.rs` and `os_input_output.rs` are `zellij-bus/src/…` now, and the tests they name run
+> under `cargo x test -p zellij-bus`; line numbers are historical.
+
 Companion to `docs/ZELLIJ-SERVER-TESTS.md`. Two conventions:
 
 - **A ticked box in `ZELLIJ-SERVER-TESTS.md` means the test has been audited**, not that it is good.

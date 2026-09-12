@@ -32,17 +32,13 @@ crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-
 interprocess = { workspace = true }
 kdl = { workspace = true }
 log = { workspace = true }
-regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-strum = { workspace = true }
-strum_macros = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 unicode-width = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
-vte = { workspace = true }
 # For `ellipsize`, shared with the tab bars so the two ends of a lent pane title agree on how a
 # title is cut. The crate is leaf-level (ansi_term and unicode-width only), so this is acyclic.
 zellij-tile-utils = { path = "../zellij-tile-utils" }
@@ -53,8 +49,8 @@ libc = { workspace = true }
 nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
 
 [dev-dependencies]
+vte = { workspace = true }
 zellij-panes = { path = "../zellij-panes", version = "0.45.0", features = ["test-support"] }
-lazy_static = { workspace = true }
 criterion = { workspace = true }
 hegeltest = "0.29.3"
 tokio = { workspace = true, features = ["sync", "test-util"] }

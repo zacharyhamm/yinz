@@ -1,9 +1,9 @@
 # kitty graphics protocol demos
 
 Small standalone Python scripts (stdlib only — no Pillow) that emit real kitty graphics
-protocol escape sequences, for manually exercising `zellij-server/src/panes/kitty_graphics`
+protocol escape sequences, for manually exercising `zellij-terminal/src/panes/kitty_graphics`
 in a running terminal. These complement the automated conformance suite
-(`zellij-server/src/panes/kitty_graphics`, `zellij-integration-tests/tests/kitty_graphics*`);
+(`zellij-terminal/src/panes/kitty_graphics`, `zellij-integration-tests/tests/kitty_graphics*`);
 they're for looking at the result with your own eyes, e.g. inside a zellij pane, or for
 comparing zellij's rendering against a real kitty/wezterm/ghostty.
 

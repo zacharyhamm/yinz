@@ -134,7 +134,7 @@ function is paid for on every round after it, and a search hit is not.
 Server side: `PluginCommand::CheckLuaPlugin`, `ReloadPluginByUrl`, `ReadPluginLog`; the `/plugins`
 root in `zellij_exports::fs_roots`; `zellij-tile` gained `fs_read`/`fs_list`/`fs_metadata`/
 `fs_write`/`fs_remove`/`fs_create_dir`/`fs_rename`. File work lives in
-`zellij_server::plugin_authoring` (`write`, `log_tail`) and
+`zellij_plugin_host::plugin_authoring` (`write`, `log_tail`; re-exported as `zellij_server::plugin_authoring`) and
 `zellij_plugin_api::authoring::resolve_plugin_file`, so the CLI, hocus and the tests run one
 code path.
 
@@ -228,7 +228,7 @@ oneof 163 (`agent_event`; 161–162 are `main`'s text-selection actions; next 16
 **Test recipes.**
 
 ```sh
-cargo x test -p zellij-types -p zellij-runtime -p zellij-config -p zellij-plugin-api -p zellij-ipc -p zellij-session -p zellij-cli -p zellij-server -p zellij -p hocus -p hocus-agentd -p hocus-proto \
+cargo x test -p zellij-types -p zellij-runtime -p zellij-config -p zellij-plugin-api -p zellij-ipc -p zellij-session -p zellij-cli -p zellij-bus -p zellij-panes -p zellij-plugin-host -p zellij-server -p zellij -p hocus -p hocus-agentd -p hocus-proto \
   -E 'test(/agent/) | test(/events/) | test(/reconfigure/) | test(/set_hook/) | test(/overlay/) \
       | test(/plugin_authoring/) | test(/lua/) | test(/pipe/) | test(/hook/) \
       | test(/job/) | test(/chat/) | test(/plugin_/) | test(/shipped/)'

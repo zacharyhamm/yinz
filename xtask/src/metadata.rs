@@ -88,7 +88,6 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-ipc",
             "zellij-terminal",
             "zellij-bus",
-            "zellij-tile-utils",
             "zellij-tile",
             "zellij-test-support",
         ],

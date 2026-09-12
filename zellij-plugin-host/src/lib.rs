@@ -24,7 +24,7 @@ mod zellij_exports;
 use log::info;
 pub use zellij_bus::plugins::*;
 
-pub use pinned_executor::PinnedExecutor;
+pub(crate) use pinned_executor::PinnedExecutor;
 pub use zellij_process::{firecracker, pty_host};
 pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};
 pub use zellij_types::pane_id::PaneId;

@@ -36,6 +36,6 @@ pub use server_instruction::ServerInstruction;
 // what `zellij-server` and `zellij-terminal` do at their roots.
 pub use zellij_process::{firecracker, pty_host};
 pub use zellij_runtime::channels;
-pub use zellij_terminal::{host_query, output};
+pub use zellij_terminal::host_query;
 pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};
 pub use zellij_types::pane_id::PaneId;

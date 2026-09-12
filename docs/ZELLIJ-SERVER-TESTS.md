@@ -1,5 +1,12 @@
 ## zellij-server (lib/zellij_server)
 
+> Audit state as of `cb73bfd27`, before the crate breakout. Since then `background_jobs`, `os_input_output`,
+> `route`, `warp`, `session_recorder`, `session_layout_metadata`, `nested_guest` and `pty_writer` moved to
+> `zellij-bus`; `panes`, `tab`, `ui` and `pane_groups` to `zellij-panes`; `plugins` and `logging_pipe` to
+> `zellij-plugin-host` (where `plugins::plugin_tests::…` is now `plugin_tests::…`). The names below are the
+> pre-move ones; `cargo x test -p zellij-server` no longer runs most of them. `docs/TEST_INVENTORY.md` is the
+> current per-crate listing.
+
 Run: `cargo x test`
 
 - [x] `background_jobs::command_output_tests::bounded_command_output_honours_a_limit_smaller_than_the_marker`

@@ -1,5 +1,5 @@
 ---
-source: zellij-server/src/panes/tiled_panes/./unit/stacked_panes_tests.rs
+source: zellij-panes/src/panes/tiled_panes/./unit/stacked_panes_tests.rs
 assertion_line: 156
 expression: "format!(\"{:#?}\", pane_geoms_after)"
 ---

@@ -152,7 +152,7 @@ fn multiple_users_in_different_tabs() {
             grid_snapshot.tab_bar_appears()
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.contains("Tab #2")
+                && grid_snapshot.contains("[1] Tab #2")
                 && grid_snapshot.cursor_is_at(col(2).row(1))
         });
     let main_grid = zellij.wait_until(
@@ -161,7 +161,9 @@ fn multiple_users_in_different_tabs() {
             grid_snapshot.tab_bar_appears()
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.contains("Tab #2")
+                // The second client's `[1]` marker arrives in a later tab-bar frame than the
+                // tab itself; the snapshot below asserts it, so wait for it.
+                && grid_snapshot.contains("[1] Tab #2")
                 && grid_snapshot.cursor_is_at(col(2).row(1))
         },
     );

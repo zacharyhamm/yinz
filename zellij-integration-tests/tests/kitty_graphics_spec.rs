@@ -8,7 +8,7 @@
 //! The unit levels can assert on internal state; what only this level can show is that the
 //! replies actually reach the application's stdin and that the re-encoded commands actually reach
 //! the client. Every test here passes; the deviations that are still outstanding are all at the
-//! unit level, indexed in the module doc of `zellij-server/src/panes/kitty_graphics/mod.rs`.
+//! unit level, indexed in the module doc of `zellij-terminal/src/panes/kitty_graphics/mod.rs`.
 #![cfg(unix)]
 
 use zellij_integration_tests::kitty_protocol::{
