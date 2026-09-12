@@ -158,6 +158,8 @@ pub struct FrameParams {
 pub struct PaneFrame {
     pub geom: Viewport,
     pub title: String,
+    /// Text and its screen row, after any stack headers.
+    pub subtitle: Option<(String, usize)>,
     pub scroll_position: (usize, usize), // (position, length)
     pub style: Style,
     pub color: Option<PaletteColor>,
@@ -210,6 +212,7 @@ impl PaneFrame {
         PaneFrame {
             geom,
             title: main_title,
+            subtitle: None,
             scroll_position,
             style: frame_params.style,
             color: frame_params.color,
@@ -1439,7 +1442,7 @@ impl PaneFrame {
             let checkbox_center_position = self.geom.cols.saturating_sub(5);
             let checkbox_position_start = checkbox_center_position.saturating_sub(1);
             let checkbox_position_end = checkbox_center_position + 1;
-            if position.line() == -1
+            if position.line() == -1 - isize::from(self.subtitle.is_some())
                 && (position.column() >= checkbox_position_start
                     && position.column() <= checkbox_position_end)
             {
@@ -1578,6 +1581,40 @@ impl PaneFrame {
                 }
             }
         }
+        if let Some((subtitle, y)) = &self.subtitle {
+            let width = self
+                .geom
+                .cols
+                .saturating_sub(self.content_offset.left + self.content_offset.right);
+            let mut characters = dimmed_foreground_color(subtitle, self.color);
+            let mut used: usize = characters.iter().map(|c| c.width()).sum();
+            if used > width {
+                used = 0;
+                characters = characters
+                    .into_iter()
+                    .take_while(|c| {
+                        if used + c.width() > width.saturating_sub(1) {
+                            return false;
+                        }
+                        used += c.width();
+                        true
+                    })
+                    .collect();
+                if width > 0 {
+                    characters.extend(dimmed_foreground_color("…", self.color));
+                    used += 1;
+                }
+            }
+            characters.extend(std::iter::repeat_n(
+                EMPTY_TERMINAL_CHARACTER,
+                width.saturating_sub(used),
+            ));
+            character_chunks.push(CharacterChunk::new(
+                characters,
+                self.geom.x + self.content_offset.left,
+                *y,
+            ));
+        }
         Ok((character_chunks, None))
     }
     fn render_hint_segments(&self, segments: &[HintSegment]) -> (Vec<TerminalCharacter>, usize) {
@@ -1675,6 +1712,56 @@ mod tests {
                 opening_ripple: None,
             },
         )
+    }
+
+    #[test]
+    fn subtitle_moves_the_floating_pin_hit_target_with_the_title() {
+        let mut frame = pane_frame_with(false, true, 80);
+        frame.subtitle = Some(("review · running".into(), 1));
+        assert!(frame.clicked_on_pinned(Position::new(-2, 75)));
+        assert!(!frame.clicked_on_pinned(Position::new(-1, 75)));
+    }
+
+    #[test]
+    fn subtitle_fits_unicode_columns_without_touching_content_or_borders() {
+        for full in [false, true] {
+            for floating in [false, true] {
+                for width in 1..12 {
+                    let mut frame = pane_frame_with(false, floating, width + 2);
+                    frame.should_draw_pane_frames = full;
+                    frame.content_offset = if full {
+                        Offset::frame(1)
+                    } else {
+                        Offset::shift_right_top_and_bottom(0, 1, 0)
+                    };
+                    frame.subtitle = Some(("界a\u{301} · 手順/検証 · running".into(), 1));
+                    let (chunks, _) = frame.render().unwrap();
+                    let subtitle = chunks.last().unwrap();
+                    assert_eq!(subtitle.x, frame.content_offset.left);
+                    assert_eq!(subtitle.y, 1);
+                    assert_eq!(
+                        subtitle
+                            .terminal_characters
+                            .iter()
+                            .map(|c| c.width())
+                            .sum::<usize>(),
+                        frame.geom.cols - frame.content_offset.left - frame.content_offset.right
+                    );
+                    frame.stack_list_entry = Some(StackListEntry {
+                        width,
+                        label: "collapsed".into(),
+                        is_selected: false,
+                        is_emphasized: false,
+                        stack_is_focused: false,
+                    });
+                    assert_eq!(
+                        frame.render().unwrap().0.len(),
+                        1,
+                        "collapsed entries only render their title"
+                    );
+                }
+            }
+        }
     }
 
     fn characters_to_string(chars: &[TerminalCharacter]) -> String {

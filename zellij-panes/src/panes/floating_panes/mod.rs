@@ -118,7 +118,9 @@ impl FloatingPanes {
     }
     pub fn set_pane_frame_style(&mut self, pane_frame_style: PaneFrameStyle) {
         self.pane_frame_style = pane_frame_style;
-        if self.fullscreen_pane_id.is_some() && !self.floating_fullscreen_covers_ui {
+        if (self.fullscreen_pane_id.is_some() && !self.floating_fullscreen_covers_ui)
+            || self.panes.values().any(|pane| pane.subtitle().is_some())
+        {
             let _ = self.set_pane_frames();
         }
     }
@@ -566,6 +568,9 @@ impl FloatingPanes {
         };
         let pane_frame_style = self.pane_frame_style;
         for pane in self.panes.values_mut() {
+            pane.set_subtitle_enabled(
+                pane_frame_style.draws_full_frames() || pane_frame_style.draws_titles(),
+            );
             if no_ui_fullscreen_pane_id == Some(pane.pid()) {
                 pane.set_frame(false);
                 pane.set_content_offset(Offset::default());

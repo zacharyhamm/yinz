@@ -53,7 +53,17 @@ function M.pipe(message)
       worker=agent.pane
       emit('SessionStart')
       call{method='agent_prompt',work=token,key='turn',agent='worker',prompt='work'}
+      step='agent'
+      require('zellij.workflow_view').refresh()
+    elseif message.payload=='test' then
+      step='test'
+      require('zellij.workflow_view').refresh()
+    elseif message.payload=='refresh-failed' then
+      refresh_failed=true
+      require('zellij.workflow_view').refresh()
     elseif message.payload=='done' then
+      refresh_failed=false
+      step='choose'
       emit('UserPromptSubmit','work')
       emit('Stop')
       status='suspended'
@@ -147,7 +157,25 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     advance(&zellij, "agent");
     let worker = zellij.expect_pty_spawn();
     worker.output(b"INTERACTIVE AGENT\r\n");
-    zellij.wait_until("agent replaces status", |s| s.contains("INTERACTIVE AGENT"));
+    zellij.wait_until("agent shows the workflow subtitle above its output", |s| {
+        s.contains("INTERACTIVE AGENT")
+            && s.lines()[1].contains("fixture · workflow/agent · running")
+    });
+    advance(&zellij, "test");
+    zellij.wait_until(
+        "subtitle follows history while the terminal stays foregrounded",
+        |s| {
+            s.contains("INTERACTIVE AGENT")
+                && s.lines()[1].contains("fixture · workflow/test · running")
+        },
+    );
+    advance(&zellij, "refresh-failed");
+    zellij.wait_until(
+        "failed refresh marks foreground progress unavailable",
+        |s| {
+            s.contains("INTERACTIVE AGENT") && s.lines()[1].contains("fixture · status unavailable")
+        },
+    );
     zellij.send_stdin(b"interactive input\r");
     worker.wait_for_stdin("interactive input reaches agent", |s| {
         String::from_utf8_lossy(s).contains("interactive input")
@@ -155,6 +183,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     advance(&zellij, "done");
     zellij.wait_until("verified completion restores question", |s| {
         s.contains("Agent exited. Choose")
+            && s.lines()[1].contains("fixture · workflow/choose · waiting_approval")
     });
     if status_bar {
         for _ in 0..2 {

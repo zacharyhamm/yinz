@@ -3180,6 +3180,11 @@ pub enum PluginCommand {
     DataCatalog {
         namespace: Option<String>,
     },
+    /// Reserve a frame row below the title. `None` or empty text clears it.
+    SetPaneSubtitle {
+        pane_id: PaneId,
+        subtitle: Option<String>,
+    },
     /// Compose a decoration in front of a pane's title, or drop it with `None`.
     ///
     /// Not a rename: the pane's name, its own OSC title and the title a layout gave

@@ -963,6 +963,30 @@ pub trait Pane {
     /// cannot be trusted to keep — hocus-agentd puts an agent's checkout here.
     /// Only relevant for terminal panes.
     fn set_title_prefix(&mut self, _prefix: Option<String>) {}
+    fn set_subtitle(&mut self, _subtitle: Option<String>) {}
+    fn subtitle(&self) -> Option<&str> {
+        None
+    }
+    fn set_subtitle_enabled(&mut self, _enabled: bool) {}
+    fn subtitle_enabled(&self) -> bool {
+        true
+    }
+    /// Extra content inset, computed from the current geometry so shrinking a pane
+    /// never spends its last content row on a subtitle. The base frame offset is
+    /// kept separate because stack members copy it between panes.
+    fn subtitle_rows(&self) -> usize {
+        let offset = self.get_content_offset();
+        usize::from(
+            self.subtitle_enabled()
+                && self.subtitle().is_some()
+                && !self.borderless()
+                && offset.top > 0
+                && self.rows().saturating_sub(offset.top + offset.bottom) > 1
+                && self.cols() > offset.left + offset.right
+                && !(self.current_geom().is_stacked() && self.current_geom().rows.is_fixed()),
+        )
+    }
+
     /// `current_title()`, prefixed with where the pane is: the remote hostname
     /// for a pane running on another host, and whatever `set_title_prefix` last
     /// said. Use this for anything a human looks at; `current_title()` stays the
@@ -6556,6 +6580,28 @@ impl Tab {
                         .get_pane_with_id(id)
                         .is_some_and(|pane| !pane.selectable() && !pane.exited())
             })
+    }
+
+    pub fn set_pane_subtitle(&mut self, pane_id: PaneId, subtitle: Option<String>) -> Result<bool> {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+            let subtitle = subtitle
+                .map(|text| zellij_types::text::clean_string_from_control_and_linebreak(&text))
+                .filter(|text| !text.is_empty());
+            if pane.subtitle() == subtitle.as_deref() {
+                return Ok(false);
+            }
+            let presence_changed = pane.subtitle().is_some() != subtitle.is_some();
+            pane.set_subtitle(subtitle);
+            if !presence_changed {
+                return Ok(false);
+            }
+            self.tiled_panes.reapply_pane_frames();
+            self.floating_panes.set_pane_frames()?;
+            self.resize_pty_all_panes()?;
+            self.set_force_render();
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub fn resize_pty_all_panes(&mut self) -> Result<()> {

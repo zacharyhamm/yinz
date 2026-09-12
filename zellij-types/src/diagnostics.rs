@@ -125,6 +125,7 @@ pub enum ScreenContext {
     UpdatePaneCwd,
     UpdatePaneHost,
     SetPaneTitlePrefix,
+    SetPaneSubtitle,
     SetPaneCaption,
     UndoRenamePane,
     NewTab,

@@ -6995,6 +6995,9 @@ fn swamp_answer_deadline_renews_only_for_current_submission_and_reconciles_on_lo
         .unwrap();
     plugin.lua.load(r#"
 local z=require('zellij')
+z.set_pane_subtitle=function() end
+z.get_plugin_ids=function() return {plugin_id=1,host_id='host'} end
+
 local now=1000
 os.time=function() return now end
 z.subscribe=function() end
@@ -7074,6 +7077,9 @@ fn swamp_workflow_question_transitions_survive_polling_and_submission_races() {
         .unwrap();
     plugin.lua.load(r#"
 local z=require('zellij')
+z.set_pane_subtitle=function() end
+z.get_plugin_ids=function() return {plugin_id=1,host_id='host'} end
+
 z.subscribe=function() end
 z.subscribe_pane_output=function() end
 z.every=function() end
@@ -7503,6 +7509,9 @@ fn swamp_workflow_renders_only_for_input_and_refresh_completion() {
         .load(
             r#"
 local z=require('zellij')
+z.set_pane_subtitle=function() end
+z.get_plugin_ids=function() return {plugin_id=1,host_id='host'} end
+
 z.subscribe=function() end
 z.subscribe_pane_output=function() end
 z.every=function() end
@@ -7546,6 +7555,10 @@ fn swamp_output_preview_names_the_saved_version_and_keeps_return_actionable() {
         .unwrap();
     plugin.lua.load(r#"
 local z=require('zellij')
+z.set_pane_subtitle=function() end
+z.message_to_plugin=function() end
+z.get_plugin_ids=function() return {plugin_id=1,host_id='host'} end
+
 z.server_binary='zellij'
 z.subscribe=function() end
 z.subscribe_pane_output=function() end
@@ -7610,6 +7623,8 @@ fn swamp_exit_launch_deadline_renews_until_ready_and_reconciles_without_redispat
         plugin.lua.globals().set("ending", ending).unwrap();
         plugin.lua.load(r#"
 local z=require('zellij')
+z.set_pane_subtitle=function() end
+
 local view=require('zellij.workflow_view')
 local now=1000
 os.time=function() return now end
@@ -7672,6 +7687,8 @@ fn swamp_exit_enter_activates_the_focused_workflow_button() {
         .unwrap();
     plugin.lua.load(r#"
 local z=require('zellij')
+z.set_pane_subtitle=function() end
+
 local view=require('zellij.workflow_view')
 local function key(name) z.__update(M,{Key={bare_key=name,key_modifiers={}}}) end
 local function focus(id)
@@ -7762,6 +7779,8 @@ fn swamp_exit_preserves_scrollback_and_does_not_launch_unconfigured_or_managed_w
         .load(
             r#"
 local z=require('zellij')
+z.set_pane_subtitle=function() end
+
 local function key(name) z.__update(M,{Key={bare_key=name,key_modifiers={}}}) end
 z.subscribe=function() end
 z.subscribe_pane_output=function() end
@@ -7913,6 +7932,10 @@ fn swamp_bridge_claims_ownership_before_dispatch_and_never_infers_completion_fro
         .unwrap();
     plugin.lua.load(r#"
 local z=require('zellij')
+local subtitles={}
+z.set_pane_subtitle=function(args) subtitles[z.json.encode(args.pane_id)]=args.subtitle end
+local function subtitle(pane) return subtitles[z.json.encode(pane)] end
+
 local rows, owners, panes, supervisors={}, {}, {}, {}
 local handler, next_pane, spawned, sent= nil,6,0,0
 z.server_session='session'; z.server_incarnation='incarnation';z.instance_id='instance'
@@ -8041,7 +8064,7 @@ local picked,reruns,closed,acks=0,0,0,0
 z.rerun_command_pane=function(pane) assert(pane==7);reruns=reruns+1 end
 z.close_plugin_pane=function() closed=closed+1 end
 z.message_to_plugin=function(opts)
-  if opts.message_name=='workflow-changed' then return end
+  if opts.message_name=='workflow-changed' or opts.message_name=='workflow-detached' then return end
   if opts.message_name=='swamp-pane-ack' then assert(opts.destination_plugin_id==42);acks=acks+1;return end
   picked=picked+1
   assert(opts.plugin_config.caller_terminal_pane_id=='7')
@@ -8478,9 +8501,11 @@ for _,code in ipairs{0,1} do
   local before=command_panes
   local operation=assert(call(request))
   assert(visible.Terminal==operation.pane)
+  assert(subtitle(visible)=='Workflow · loading','incoming pagers inherit the cached subtitle')
   assert(call(request).pane==operation.pane and command_panes==before+1,'duplicate dispatch never opens another pane')
   z.__update(M,{CommandPaneExited={operation.pane,code,{swamp_owner=owners[operation.pane],swamp_operation=request.key}}})
   assert(visible.Plugin==1,'command exit restores the workflow view')
+  assert(subtitle({Terminal=operation.pane})==nil and subtitle(visible)=='Workflow · loading')
   assert(call(request).outcome==(code==0 and 'completed' or 'failed'))
 end
 do
@@ -8509,6 +8534,7 @@ event(first,'Stop',nil,nil,'wrong','session')
 assert(visible.Terminal==first)
 event(first,'Stop',nil,nil,'t1','session')
 assert(visible.Terminal==second and replacements==2)
+assert(subtitle({Terminal=first})==nil and subtitle(visible)=='Workflow · loading')
 event(second,'UserPromptSubmit','turn2',nil,'t2','session')
 event(second,'StopFailure',nil,nil,'t2','session')
 assert(visible.Plugin==1 and replacements==3)
@@ -8576,6 +8602,7 @@ view_exists=false
 z.agent.send=function() end
 assert(call(turn('second','detached'),3).outcome=='pending')
 assert(replacements==7,'closing the view must not open a replacement')
+assert(subtitle({Plugin=1})==nil and subtitle({Terminal=second})==nil,'closing the view clears its terminal')
 local detached_command=command_request('detached-command',true)
 local detached_operation=assert(call(detached_command,3))
 assert(call(detached_command,3).pane==detached_operation.pane)
@@ -8669,6 +8696,7 @@ for _,by_run in ipairs{false,true} do
   end
   before=replacements
   assert(manual_show(4))
+  assert(subtitle({Plugin=3})==nil,'rebinding clears the old view')
   assert(visible.Terminal==pending.pane and replacements==before+1,
     'a new view rebinds after the old view closes')
   finish(pending,1);assert(visible.Plugin==4,'pending pager exit restores the new view')
@@ -8833,6 +8861,8 @@ fn workflow_polled_logs_follow_and_preserve_pause_across_attachments() {
         .unwrap();
     plugin.lua.load(r#"
 local z=require('zellij')
+z.set_pane_subtitle=function() end
+z.get_plugin_ids=function() return {plugin_id=1} end
 z.every=function() end
 z.subscribe=function() end
 z.subscribe_pane_output=function() end
@@ -9207,4 +9237,154 @@ end}
             context,
         })
         .unwrap();
+}
+
+#[test]
+fn swamp_subtitle_uses_history_and_clears_placement_on_restart_or_close() {
+    let plugin = load(zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.server_session='session';z.server_incarnation='incarnation'
+z.get_plugin_ids=function() return {plugin_id=1,host_id='host'} end
+z.subscribe=function() end
+z.set_timeout=function() end
+z.project_config.read=function() return {root='/work'} end
+z.data.define=function() end
+z.data.eq=function(_,uid) return uid end
+local rows={}
+local function row(work,key,value)
+  local uid=z.json.encode{'host','session',work,key}
+  rows[uid]={uid=uid,value=z.json.encode(value),rev=1}
+end
+row('launch','launch',{checkout='/work'})
+row('main','attachment',{run='main',work='launch',workflow='review',root='/work'})
+row('launch','runs',{entries={main={workflow='review'},child={workflow='checks'}}})
+z.data.fetch=function(q)
+  if q.filter then return rows[q.filter] and {rows[q.filter]} or {},{} end
+  local all={};for _,r in pairs(rows) do all[#all+1]=r end;return all,{}
+end
+local history={id='main',workflowName='review',status='running',jobs={{name='review',steps={{name='wait',status='running'}}}}}
+local child={id='child',workflowName='checks',status='succeeded'}
+local fail=false
+z.async.swamp_request=function(opts)
+  local result={results={}}
+  if opts.operation=='workflow.history.get' then
+    if fail then error('history unavailable') end
+    result=opts.payload.workflowIdOrName=='main' and history or child
+  elseif opts.operation=='workflow.history.logs' then result={log={lines={}}} end
+  local future,resolve=z.async.future();resolve(result);return future
+end
+local exists=true
+local source_exited=true
+z.get_pane_info=function(pane)
+  if pane.Terminal then return {exited=source_exited,is_suppressed=true} end
+  return exists and {plugin_url='zellij:swamp-workflow',is_suppressed=false} or nil
+end
+local subtitles={}
+z.set_pane_subtitle=function(args) subtitles[args.pane_id.Plugin or args.pane_id.Terminal]=args.subtitle end
+local messages={}
+z.message_to_plugin=function(args) messages[#messages+1]=args.message_name end
+local handler
+z.rpc.handle=function(_,h) handler=h end
+M.load()
+local function show()
+  local result,err
+  z.task(function()
+    local ok,value=pcall(handler,{method='workflow_show',run='main',directory='/work'},{source={Plugin=1}})
+    if ok then result=value else err=value end
+  end)
+  return result,err
+end
+assert(show().subtitle=='review · review/wait · running')
+assert(subtitles[1]=='review · review/wait · running')
+child.status='running'
+child.jobs={{name='z',steps={{name='test',status='running'}}},{name='a',steps={{name='lint',status='running'}}}}
+local expected='review · checks/a/lint · running, checks/z/test · running'
+assert(show().subtitle==expected,'active children take precedence over the parent waiting step')
+child.jobs[1],child.jobs[2]=child.jobs[2],child.jobs[1]
+assert(show().subtitle==expected,'concurrent steps sort independently of history order')
+history.status='suspended';history.jobs[1].steps[1].status='waiting_approval';child.status='succeeded'
+assert(show().subtitle=='review · review/wait · waiting_approval')
+history.jobs={}
+for _,status in ipairs{'suspended','succeeded','cancelled','interrupted'} do
+  history.status=status
+  assert(show().subtitle=='review · '..status)
+end
+history.status='failed';history.jobs={{name='gate',steps={{name='test',status='failed'}}}}
+assert(show().subtitle=='review · gate/test · failed')
+child.status='failed';child.jobs={{name='ci',steps={{name='lint',status='failed'}}}}
+assert(show().subtitle=='review · checks/ci/lint · failed')
+history.status='cancelled'
+assert(show().subtitle=='review · checks/ci/lint (failed) · cancelled')
+history.status='failed'
+assert(show())
+M.pipe{name='workflow-refresh-failed',source={Plugin=9},payload='launch'}
+assert(subtitles[1]=='review · checks/ci/lint · failed','another view cannot change this placement')
+M.pipe{name='workflow-refresh-failed',source={Plugin=1},payload=''}
+assert(subtitles[1]=='review · status unavailable','a first-snapshot timeout may not yet know its launch')
+assert(show())
+fail=true
+assert(select(2,show()),'failed reads are surfaced')
+assert(subtitles[1]=='review · status unavailable','bridge failures also invalidate foreground progress')
+fail=false
+assert(show().subtitle=='review · checks/ci/lint · failed')
+row('launch','source',{pane=7})
+source_exited=false
+z.__update(M,{PaneUpdate={panes={}}})
+assert(subtitles[1]==nil and messages[#messages]=='workflow-detached','agent restart clears the subtitle')
+assert(show() and subtitles[1]==nil,'polling cannot revive a detached placement')
+exists=false
+z.__update(M,{PaneUpdate={panes={}}})
+assert(subtitles[1]==nil)
+"#).exec().unwrap();
+}
+
+#[test]
+fn swamp_subtitle_loading_refresh_failure_and_detachment_reach_the_view() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+z.get_plugin_ids=function() return {plugin_id=1} end
+z.subscribe=function() end
+z.subscribe_pane_output=function() end
+z.set_self_mouse_selection_support=function() end
+z.set_timeout=function() end
+z.request_render=function() end
+local subtitle,resolve,message
+z.set_pane_subtitle=function(args) subtitle=args.subtitle end
+z.message_to_plugin=function(args) message=args end
+z.rpc.call=function()
+  local future,r=z.async.future();resolve=r;return future
+end
+local function answer(value) resolve(value);z.__update(M,{Timer=0}) end
+M.load()
+M.attach{directory='/work',run='run'}
+assert(subtitle=='Workflow · loading')
+answer{error='first snapshot unavailable'}
+assert(subtitle=='Workflow · status unavailable' and message.message_payload=='')
+M.refresh()
+local snapshot={launch='launch',run='run',root='/work',history={workflowName='review',status='running'},subtitle='review · test/unit · running'}
+answer{result=snapshot}
+assert(subtitle==snapshot.subtitle)
+M.refresh();answer{error='history unavailable'}
+assert(subtitle=='review · status unavailable')
+assert(message.message_name=='workflow-refresh-failed' and message.message_payload=='launch')
+M.refresh();snapshot.history.status='succeeded';snapshot.subtitle='review · succeeded';answer{result=snapshot}
+assert(subtitle=='review · succeeded')
+M.pipe{name='workflow-detached'}
+assert(subtitle==nil)
+M.refresh();answer{result=snapshot}
+assert(subtitle==nil,'late snapshots cannot restore a detached subtitle')
+"#).exec().unwrap();
 }

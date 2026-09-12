@@ -38,7 +38,50 @@ end
 -- Placement belongs to an authenticated builtin view, never to a caller-supplied pane.
 -- It is intentionally not recovered across server/bridge reloads.
 local placements={}
+local function pane_subtitle(pane, subtitle)
+  z.set_pane_subtitle{pane_id=pane,subtitle=subtitle}
+end
+local function detach(placement)
+  if placement.detached then return end
+  placement.detached=true
+  pane_subtitle(z.plugin_pane(placement.view),nil)
+  if placement.current then pane_subtitle(z.terminal_pane(placement.current),nil) end
+  placement.subtitle=nil
+  z.message_to_plugin{destination_plugin_id=placement.view,message_name='workflow-detached'}
+end
+-- History is the authority; delivery records only decide which pane is foregrounded.
+local function workflow_subtitle(snapshot)
+  local main=snapshot.history
+  local function steps(histories, active)
+    local entries={}
+    for _,history in ipairs(histories) do
+      for _,job in ipairs(history.jobs or {}) do
+        for _,step in ipairs(job.steps or {}) do
+          local running=(history.status=='running' or history.status=='suspended') and
+            (step.status=='running' or step.status=='waiting_approval')
+          if (active and running) or (not active and step.status=='failed') then
+            local name=job.name..'/'..step.name
+            if history~=main then name=(history.workflowName or history.id)..'/'..name end
+            if not active and main.status~='failed' then name=name..' (failed)' end
+            entries[#entries+1]=name..' · '..(active and step.status or main.status)
+          end
+        end
+      end
+    end
+    table.sort(entries)
+    return entries
+  end
+  local entries=steps(snapshot.children or {},true)
+  if #entries==0 then entries=steps({main},true) end
+  if #entries==0 then
+    entries=steps(snapshot.children or {},false)
+    if #entries==0 then entries=steps({main},false) end
+  end
+  return (main.workflowName or 'Workflow')..' · '..
+    (#entries>0 and table.concat(entries,', ') or main.status)
+end
 local function close_view(work, restore_source)
+  if placements[work] then detach(placements[work]) end
   local placement=read(scope(work,'view'))
   if not placement or placement.incarnation~=identity.incarnation then return end
   local ok,pane=pcall(z.get_pane_info,z.plugin_pane(placement.view))
@@ -81,13 +124,13 @@ local function present(work)
   local view=z.plugin_pane(placement.view)
   local ok,info=pcall(z.get_pane_info,view)
   if not ok or not info or (info.plugin_url~='zellij:agent-exit' and info.plugin_url~='zellij:swamp-workflow') then
-    placement.detached=true
+    detach(placement)
     return
   end
   local current=placement.current and z.terminal_pane(placement.current) or view
   local ok,current_info=pcall(z.get_pane_info,current)
   if not ok or not current_info or current_info.is_suppressed then
-    placement.detached=true
+    detach(placement)
     return
   end
   local next_pane
@@ -99,11 +142,15 @@ local function present(work)
     end
     table.remove(placement.queue,1)
   end
-  if next_pane==placement.current then return end
+  pane_subtitle(view,placement.subtitle)
+  if next_pane==placement.current then
+    if next_pane then pane_subtitle(current,placement.subtitle) end
+    return
+  end
   local target=next_pane and z.terminal_pane(next_pane) or view
   local ok,target_info=pcall(z.get_pane_info,target)
   if not ok or not target_info or not target_info.is_suppressed then
-    placement.detached=true
+    detach(placement)
     return
   end
   if not placement.current and next_pane then
@@ -111,8 +158,20 @@ local function present(work)
     -- Keep the source for pane/VM actions, without restoring it when the view closes.
     if source then z.hide_pane_with_id(z.terminal_pane(source.pane)) end
   end
+  if placement.current then pane_subtitle(current,nil) end
+  pane_subtitle(target,placement.subtitle)
   z.replace_pane_with_existing_pane{current,target,true}
   placement.current=next_pane
+end
+local function update_subtitle(work, subtitle, workflow)
+  local placement=placements[work]
+  if not placement or placement.detached then return end
+  placement.subtitle=subtitle
+  placement.workflow=workflow or placement.workflow
+  present(work)
+end
+local function unavailable(placement,work)
+  update_subtitle(work,(placement.workflow or 'Workflow')..' · status unavailable')
 end
 local function attach_manual(work, view)
   if read(scope(work,'view')) then return end
@@ -120,8 +179,9 @@ local function attach_manual(work, view)
   if existing then
     local ok,pane=pcall(z.get_pane_info,z.plugin_pane(existing.view))
     if ok and pane then return end
+    detach(existing)
   end
-  local placement={view=view,queue={},manual=true}
+  local placement={view=view,queue={},manual=true,subtitle="Workflow · loading"}
   placements[work]=placement
   local cursor
   repeat
@@ -852,7 +912,21 @@ local function invoke_inner(args, manual_view)
   local new_launch=type(args)=='table' and args.method=='workflow_run' and not read(scope(args.work,args.key))
   local ok,response=pcall(handle,args,manual_view)
   if new_launch and launch_waiting[args.work] then launch_progress(args.work,'ready',launch_waiting[args.work].operation) end
-  if ok then return response end
+  if ok then
+    if args.method=='workflow_show' then
+      response.subtitle=workflow_subtitle(response)
+      local placement=placements[response.launch]
+      if placement and placement.view==manual_view then
+        update_subtitle(response.launch,response.subtitle,response.history.workflowName)
+      end
+    end
+    return response
+  end
+  if args.method=='workflow_show' then
+    for work,placement in pairs(placements) do
+      if placement.view==manual_view then unavailable(placement,work) end
+    end
+  end
   if new_launch then
     -- A validation/configuration failure before a runner claim is safe to restart.
     -- Once dispatch was claimed, its outcome stays uncertain until reconciled.
@@ -895,7 +969,7 @@ function M.load()
   identity = {host_id=ids.host_id, session=z.server_session, incarnation=z.server_incarnation}
   assert(identity.session ~= '', 'Bridge requires a server session')
   D.define {name='delivery', version=1, attrs={{'value','text',required=true}}}
-  z.subscribe {'agent_event', 'command_pane_exited'}
+  z.subscribe {'agent_event', 'command_pane_exited', 'pane_update'}
   z.rpc.handle('swamp', function(args, call)
     local from = type(call.source)=='table' and call.source.Plugin
     assert(from, 'Workflow RPC requires a host-authenticated plugin source')
@@ -908,13 +982,21 @@ function M.load()
         assert(existing.view==from and existing.incarnation==identity.incarnation,'Launch already belongs to another hook instance')
       else
         put(uid,{view=from,incarnation=identity.incarnation})
-        placements[args.work]={view=from,queue={}}
+        placements[args.work]={view=from,queue={},subtitle='Workflow · loading'}
+        present(args.work)
       end
     end
-    return invoke(args, (args.method=='workflow_answer' or (args.method=='workflow_show' and pane.plugin_url=='zellij:swamp-workflow')) and from or nil)
+    return invoke(args, (args.method=='workflow_answer' or args.method=='workflow_show') and from or nil)
   end)
 end
 function M.pipe(message)
+  if message.name=='workflow-refresh-failed' and message.payload then
+    local from=type(message.source)=='table' and message.source.Plugin
+    for work,placement in pairs(placements) do
+      if placement.view==from and (message.payload=='' or message.payload==work) then unavailable(placement,work) end
+    end
+    return
+  end
   if message.name=='swamp-pane-result' and message.payload then
     local from=type(message.source)=='table' and message.source.Plugin
     if not from then return end
@@ -952,6 +1034,17 @@ function M.pipe(message)
     z.unblock_cli_pipe_input(pipe)
   end)
 end
+z.on('pane_update', function()
+  for work,placement in pairs(placements) do
+    if not placement.detached then
+      local source=read(scope(work,'source'))
+      local ok,original
+      if source then ok,original=pcall(z.get_pane_info,z.terminal_pane(source.pane)) end
+      if ok and original and original.exited==false then detach(placement)
+      else present(work) end
+    end
+  end
+end)
 z.on('agent_event', function(event)
   local ok, raw = pcall(decode, event.raw or '')
   if not ok or not raw._zellij_workflow_owner then return end

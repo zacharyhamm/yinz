@@ -3,6 +3,9 @@ local z = require('zellij')
 local M = {status='No run attached', scroll=0, pending={}, selected=1}
 local form
 local on_restart
+local function set_subtitle(subtitle)
+  z.set_pane_subtitle{pane_id=z.plugin_pane(z.get_plugin_ids().plugin_id),subtitle=not M.detached and subtitle or nil}
+end
 local function text(s) return z.text.sanitize(tostring(s or '')) end
 local function quote(s) return "'"..s:gsub("'","'\"'\"'").."'" end
 local form_key, question_key, form_height, form_has_input
@@ -97,6 +100,13 @@ function M.refresh()
       controls()
     end)
     if not ok and revision==generation then M.refresh_error=tostring(err) end
+    if revision==generation then
+      if M.refresh_error then
+        set_subtitle(((M.snapshot or {}).history or {}).workflowName and
+          (M.snapshot.history.workflowName..' · status unavailable') or 'Workflow · status unavailable')
+        z.message_to_plugin{plugin_url='zellij:swamp-bridge',message_name='workflow-refresh-failed',message_payload=M.launch or ''}
+      elseif M.snapshot then set_subtitle(M.snapshot.subtitle) end
+    end
     M.refreshing=false
     if before~=z.json.encode{M.snapshot or {},M.status,M.refresh_error or ''} then repaint() end
     if revision~=generation or M.refresh_queued then M.refresh() end
@@ -117,10 +127,12 @@ function M.attach(attachment)
     streams={};latest_stream=nil
     M.scroll=0
     M.snapshot=nil
+    M.detached=false
     M.pending={}
     M.selected=1
     M.active=true
     M.status='Loading workflow...'
+    set_subtitle('Workflow · loading')
   end
   M.watch(attachment.launch or (same_run and M.launch) or nil)
   generation=generation+1
@@ -143,6 +155,7 @@ function M.load(options)
   z.every(1,function() if M.started and (M.submitting or M.active) then repaint() end end)
 end
 function M.pipe(message)
+  if message.name=='workflow-detached' then M.detached=true;set_subtitle(nil);return end
   if message.name=='workflow-progress' and message.payload then
     local progress=z.json.decode(message.payload)
     if progress.submission then

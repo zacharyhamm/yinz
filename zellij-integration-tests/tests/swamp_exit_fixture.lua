@@ -1,6 +1,8 @@
 local z=require('zellij')
 local handler,token,worker
 local status='running'
+local step='prepare'
+local refresh_failed=false
 local owners,hosts={},{}
 local real_info=z.get_pane_info
 z.get_pane_info=function(pane)
@@ -58,7 +60,8 @@ z.async.swamp_request=function(opts)
     for i=1,100 do lines[#lines+1]=string.format('LOG %03d selectable output',i) end
     result={type='log',log={lines=lines}}
   elseif op=='workflow.history.get' then
-    result={id='run',workflowName='fixture',status=status,jobs={},inputs={session=z.server_session,launch=token}}
+    if refresh_failed then error('fixture history unavailable') end
+    result={id='run',workflowName='fixture',status=status,jobs={{name='workflow',steps={{name=step,status=status=='suspended' and 'waiting_approval' or status}}}},inputs={session=z.server_session,launch=token}}
   elseif op=='data.query' then
     local results={}
     if p.predicate:find('question') and status=='suspended' then

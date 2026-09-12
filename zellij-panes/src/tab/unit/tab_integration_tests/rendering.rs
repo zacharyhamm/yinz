@@ -416,3 +416,165 @@ fn clear_screen() {
         "screen was cleared properly"
     );
 }
+
+#[test]
+fn pane_subtitle_reserves_content_and_clearing_restores_it() {
+    let size = Size { rows: 12, cols: 72 };
+    let client = ClientId::new(1);
+    for style in [
+        PaneFrameStyle::Full,
+        PaneFrameStyle::Titles,
+        PaneFrameStyle::None,
+    ] {
+        for floating in [false, true] {
+            let mut tab = create_new_tab(size, ModeInfo::default());
+            tab.set_pane_frames(style);
+            let terminal = crate::TerminalId::new(if floating { 2 } else { 1 });
+            let id = PaneId::Terminal(terminal);
+            if floating {
+                tab.toggle_floating_panes(Some(client), None, None).unwrap();
+                tab.new_pane(
+                    id,
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::default(),
+                    Some(client),
+                    None,
+                )
+                .unwrap();
+            }
+            let before = tab.get_pane_with_id(id).unwrap().get_content_rows();
+            tab.set_pane_subtitle(id, Some("review · tests/unit · running".into()))
+                .unwrap();
+            let pane = tab.get_pane_with_id(id).unwrap();
+            let shown = style != PaneFrameStyle::None;
+            assert_eq!(pane.subtitle_rows(), usize::from(shown));
+            let content_y = pane.get_content_y();
+            tab.handle_pty_bytes(terminal, b"CONTENT FIRST\r\nCONTENT SECOND".to_vec())
+                .unwrap();
+            let mut output = Output::default();
+            tab.render(&mut output, None).unwrap();
+            let rendered = take_snapshot(
+                output.serialize().unwrap().get(&client).unwrap(),
+                size.rows,
+                size.cols,
+                Palette::default(),
+            );
+            assert!(
+                rendered
+                    .lines()
+                    .nth(content_y)
+                    .unwrap()
+                    .contains("CONTENT FIRST"),
+                "{rendered}"
+            );
+            assert_eq!(rendered.contains("tests/unit"), shown, "{rendered}");
+            if shown {
+                assert!(
+                    rendered
+                        .lines()
+                        .nth(content_y - 1)
+                        .unwrap()
+                        .contains("review"),
+                    "{rendered}"
+                );
+            }
+            if style == PaneFrameStyle::None && !floating {
+                assert_eq!(content_y, 0);
+                assert!(
+                    !rendered.contains('│') && !rendered.contains('─'),
+                    "{rendered}"
+                );
+            }
+            assert_snapshot!(format!("subtitle_{style:?}_{floating}"), rendered);
+            if floating {
+                tab.toggle_active_pane_fullscreen(client);
+                let pane = tab.get_pane_with_id(id).unwrap();
+                assert_eq!(pane.subtitle_rows(), usize::from(shown));
+                assert_eq!(pane.get_content_y(), if shown { 2 } else { 0 });
+                tab.toggle_active_pane_no_ui_fullscreen(client);
+                assert_eq!(tab.get_pane_with_id(id).unwrap().subtitle_rows(), 0);
+                tab.toggle_active_pane_no_ui_fullscreen(client);
+                // Returning from no-UI fullscreen restores the ordinary floating geometry.
+            }
+            tab.set_pane_frames(PaneFrameStyle::None);
+            assert_eq!(tab.get_pane_with_id(id).unwrap().subtitle_rows(), 0);
+            tab.set_pane_frames(style);
+            for clear in [Some(String::new()), None] {
+                tab.set_pane_subtitle(id, clear).unwrap();
+                let pane = tab.get_pane_with_id(id).unwrap();
+                assert_eq!(pane.get_content_rows(), before);
+                assert_eq!(pane.subtitle(), None);
+            }
+            tab.set_force_render();
+            let mut output = Output::default();
+            tab.render(&mut output, None).unwrap();
+            let rendered = take_snapshot(
+                output.serialize().unwrap().get(&client).unwrap(),
+                size.rows,
+                size.cols,
+                Palette::default(),
+            );
+            assert!(!rendered.contains("review"), "{rendered}");
+            assert!(rendered.contains("CONTENT FIRST"), "{rendered}");
+        }
+    }
+}
+
+#[test]
+fn pane_subtitles_only_occupy_the_expanded_stack_content() {
+    let size = Size {
+        rows: 20,
+        cols: 100,
+    };
+    let client = ClientId::new(1);
+    for list in [false, true] {
+        for style in [
+            PaneFrameStyle::Full,
+            PaneFrameStyle::Titles,
+            PaneFrameStyle::None,
+        ] {
+            let mut tab = create_new_tab_with_stacked_pane_list(
+                size,
+                ModeInfo::default(),
+                list,
+                Some(two_adjacent_stacks_layout()),
+            );
+            tab.set_pane_frames(style);
+            for id in tab.get_all_pane_ids() {
+                tab.set_pane_subtitle(id, Some("workflow · running".into()))
+                    .unwrap();
+            }
+            let id = tab.get_active_pane_id(client).unwrap();
+            let PaneId::Terminal(terminal) = id else {
+                panic!("expected a terminal")
+            };
+            tab.handle_pty_bytes(terminal, b"STACK CONTENT".to_vec())
+                .unwrap();
+            let mut output = Output::default();
+            tab.render(&mut output, None).unwrap();
+            let content_y = tab.get_pane_with_id(id).unwrap().get_content_y();
+            let rendered = take_snapshot(
+                output.serialize().unwrap().get(&client).unwrap(),
+                size.rows,
+                size.cols,
+                Palette::default(),
+            );
+            assert!(
+                rendered
+                    .lines()
+                    .nth(content_y)
+                    .unwrap()
+                    .contains("STACK CONTENT"),
+                "{rendered}"
+            );
+            assert_eq!(
+                rendered.matches("workflow").count(),
+                if style == PaneFrameStyle::None { 0 } else { 2 },
+                "list={list}, style={style:?}\n{rendered}"
+            );
+        }
+    }
+}

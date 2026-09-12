@@ -2237,6 +2237,10 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             pane_id: pane_id(tc),
             prefix: optional_strings(tc),
         },
+        CommandType::SetPaneSubtitle => PluginCommand::SetPaneSubtitle {
+            pane_id: pane_id(tc),
+            subtitle: optional_strings(tc),
+        },
         CommandType::EnqueueQueueJob => PluginCommand::EnqueueQueueJob {
             queue: strings(tc),
             plugin_url: strings(tc),
