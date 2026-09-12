@@ -45,9 +45,43 @@ use {
 // them without blocking other instances
 #[derive(Default)]
 pub struct PluginMap {
-    // Immutable launch identity, readable without locking a busy plugin runtime.
-    plugin_metadata: BTreeMap<PluginId, RunPlugin>,
+    // Value-only retry state survives failed instances without retaining their resources.
+    plugin_metadata: BTreeMap<PluginId, PluginMetadata>,
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PluginMetadata {
+    pub config: PluginConfig,
+    pub resolved_source_path: Option<PathBuf>,
+    pub cwd: PathBuf,
+    pub tab_index: Option<TabId>,
+    pub size: (usize, usize),
+    pub owner_client_id: ClientId,
+}
+
+impl PluginMetadata {
+    fn from_running(plugin: &RunningPlugin) -> Self {
+        let env = plugin.env();
+        Self {
+            config: env.plugin.clone(),
+            resolved_source_path: env.resolved_source_path.clone(),
+            cwd: env.plugin_cwd.clone(),
+            tab_index: env.tab_index,
+            size: (plugin.rows, plugin.columns),
+            owner_client_id: env.owner_client_id,
+        }
+    }
+
+    fn run_plugin(&self) -> RunPlugin {
+        RunPlugin {
+            _allow_exec_host_cmd: false,
+            location: self.config.location.clone(),
+            configuration: self.config.initial_userspace_configuration.clone(),
+            initial_cwd: self.config.initial_cwd.clone(),
+            relative_path: self.config.relative_path.clone(),
+        }
+    }
 }
 
 pub type PluginAssets = (
@@ -103,7 +137,12 @@ impl PluginMap {
         plugin_id: PluginId,
         client_id: ClientId,
     ) -> Option<PluginAssets> {
-        self.plugin_assets.remove(&(plugin_id, client_id))
+        let assets = self.plugin_assets.remove(&(plugin_id, client_id))?;
+        self.plugin_metadata.insert(
+            plugin_id,
+            PluginMetadata::from_running(&assets.0.lock().unwrap()),
+        );
+        Some(assets)
     }
 
     /// Keep an instance while detached so reconnect can still find and clone the plugin.
@@ -213,12 +252,10 @@ impl PluginMap {
     ) -> Result<Vec<PluginId>> {
         let err_context = || format!("Failed to get plugin ids for location {plugin_location}");
         let plugin_ids: Vec<PluginId> = self
-            .plugin_assets
+            .plugin_metadata
             .iter()
-            .filter(|(_, (running_plugin, _subscriptions, _workers))| {
-                let running_plugin = running_plugin.lock().unwrap();
-                let env = running_plugin.env();
-                let plugin_config = &env.plugin;
+            .filter(|(_, metadata)| {
+                let plugin_config = &metadata.config;
                 let running_plugin_location = &plugin_config.location;
                 let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
                 let location_matches = running_plugin_location == plugin_location
@@ -227,7 +264,7 @@ impl PluginMap {
                     // user's plugin folder. A reload naming that file in full is the same plugin,
                     // and must reload it rather than be told it does not exist and started again
                     // in a second pane.
-                    || match (plugin_location, env.resolved_source_path.as_ref()) {
+                    || match (plugin_location, metadata.resolved_source_path.as_ref()) {
                         (RunPluginLocation::File(requested), Some(resolved)) => requested == resolved,
                         _ => false,
                     };
@@ -237,7 +274,7 @@ impl PluginMap {
                         plugin_configuration,
                     )
             })
-            .map(|((plugin_id, _client_id), _)| *plugin_id)
+            .map(|(plugin_id, _)| *plugin_id)
             .collect();
         if plugin_ids.is_empty() {
             return Err(ZellijError::PluginDoesNotExist).with_context(err_context);
@@ -299,17 +336,7 @@ impl PluginMap {
         subscriptions: Arc<Mutex<Subscriptions>>,
         running_workers: HashMap<String, UnboundedSender<MessageToWorker>>,
     ) {
-        let metadata = {
-            let plugin = running_plugin.lock().unwrap();
-            let config = &plugin.env().plugin;
-            RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: config.location.clone(),
-                configuration: config.initial_userspace_configuration.clone(),
-                initial_cwd: config.initial_cwd.clone(),
-                relative_path: config.relative_path.clone(),
-            }
-        };
+        let metadata = PluginMetadata::from_running(&running_plugin.lock().unwrap());
         self.plugin_metadata.insert(plugin_id, metadata);
         self.plugin_assets.insert(
             (plugin_id, client_id),
@@ -344,10 +371,20 @@ impl PluginMap {
             .collect()
     }
     pub fn run_plugin_of_plugin_id(&self, plugin_id: PluginId) -> Option<RunPlugin> {
-        self.plugin_metadata.get(&plugin_id).cloned()
+        self.plugin_metadata
+            .get(&plugin_id)
+            .map(PluginMetadata::run_plugin)
     }
     pub fn list_plugins(&self) -> BTreeMap<PluginId, RunPlugin> {
-        self.plugin_metadata.clone()
+        self.plugin_metadata
+            .iter()
+            .map(|(id, metadata)| (*id, metadata.run_plugin()))
+            .collect()
+    }
+    pub(crate) fn reload_metadata(&self, plugin_id: PluginId) -> Option<PluginMetadata> {
+        self.get_running_plugin(plugin_id, None)
+            .map(|plugin| PluginMetadata::from_running(&plugin.lock().unwrap()))
+            .or_else(|| self.plugin_metadata.get(&plugin_id).cloned())
     }
 }
 

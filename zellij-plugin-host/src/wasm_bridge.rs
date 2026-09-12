@@ -1065,9 +1065,8 @@ impl WasmBridge {
             self.plugin_map
                 .lock()
                 .unwrap()
-                .owner_client_ids_of_plugin_id(plugin_id)
-                .into_iter()
-                .next()
+                .reload_metadata(plugin_id)
+                .map(|metadata| metadata.owner_client_id)
         }) else {
             log::error!("No instance owner, cannot reload plugin.");
             return Ok(());
@@ -1108,8 +1107,8 @@ impl WasmBridge {
             move |senders, plugin_map, connected_clients, plugin_cache, engine| {
                 let skip_cache = true; // we want to explicitly reload the plugin
                 let mut plugin_map = plugin_map.lock().unwrap();
-                // An unload can remove the instance while this job is still queued.
-                if !plugin_map.plugin_ids().contains(&plugin_id) {
+                // A failed instance retains its identity; explicit unload removes it.
+                if plugin_map.run_plugin_of_plugin_id(plugin_id).is_none() {
                     return;
                 }
                 // The instance about to be replaced gets the same last word an unloaded one
@@ -2684,45 +2683,32 @@ impl WasmBridge {
         self.shared_plugin_ids.contains(plugin_id)
     }
     fn size_of_plugin_id(&self, plugin_id: PluginId) -> Option<(usize, usize)> {
-        // (rows/colums)
         self.plugin_map
             .lock()
             .unwrap()
-            .get_running_plugin(plugin_id, None)
-            .map(|r| {
-                let r = r.lock().unwrap();
-                (r.rows, r.columns)
-            })
+            .reload_metadata(plugin_id)
+            .map(|metadata| metadata.size)
     }
     fn cwd_of_plugin_id(&self, plugin_id: PluginId) -> Option<PathBuf> {
         self.plugin_map
             .lock()
             .unwrap()
-            .get_running_plugin(plugin_id, None)
-            .map(|r| {
-                let r = r.lock().unwrap();
-                r.env().plugin_cwd.clone()
-            })
+            .reload_metadata(plugin_id)
+            .map(|metadata| metadata.cwd)
     }
     fn plugin_config_of_plugin_id(&self, plugin_id: PluginId) -> Option<PluginConfig> {
         self.plugin_map
             .lock()
             .unwrap()
-            .get_running_plugin(plugin_id, None)
-            .map(|r| {
-                let r = r.lock().unwrap();
-                r.env().plugin.clone()
-            })
+            .reload_metadata(plugin_id)
+            .map(|metadata| metadata.config)
     }
     fn tab_index_of_plugin_id(&self, plugin_id: PluginId) -> Option<TabId> {
         self.plugin_map
             .lock()
             .unwrap()
-            .get_running_plugin(plugin_id, None)
-            .and_then(|r| {
-                let r = r.lock().unwrap();
-                r.env().tab_index
-            })
+            .reload_metadata(plugin_id)
+            .and_then(|metadata| metadata.tab_index)
     }
     fn start_plugin_loading_indication(
         &self,
