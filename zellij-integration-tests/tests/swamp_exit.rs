@@ -141,8 +141,8 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     original.exit(Some(0));
     zellij.wait_until("hook permissions", |s| s.contains("Allow? (y/n)"));
     zellij.send_stdin(b"y");
-    zellij.wait_until("workflow status in exit pane", |s| {
-        s.contains("Run run: running") && s.contains(panel_title)
+    zellij.wait_until("workflow log tail in exit pane", |s| {
+        s.contains("LOG 100") && s.contains("Cancel run") && s.contains(panel_title)
     });
     advance(&zellij, "agent");
     let worker = zellij.expect_pty_spawn();
@@ -178,6 +178,10 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
                 .all(|label| line.contains(label))
         })
     });
+    assert!(
+        question.contains("LOG 100"),
+        "workflow logs follow by default"
+    );
     let prompt_row = question
         .lines()
         .iter()
@@ -195,13 +199,20 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
             && !question.contains("Detach")
     );
     zellij.send_stdin(&keys::ESC);
+    zellij.send_stdin(b"\x1b[5~");
+    let beginning = zellij.wait_until("page up scrolls logs with pinned question", |s| {
+        s.contains("LOG 001") && s.lines()[prompt_row].contains("Agent exited. Choose")
+    });
+    assert_eq!(question.lines()[button_row], beginning.lines()[button_row]);
     zellij.send_stdin(b"\x1b[6~");
-    let scrolled = zellij.wait_until("page down scrolls logs with pinned question", |s| {
-        s.contains("LOG 020") && s.lines()[prompt_row].contains("Agent exited. Choose")
+    let scrolled = zellij.wait_until("page down returns to the tail with pinned question", |s| {
+        s.contains("LOG 100") && s.lines()[prompt_row].contains("Agent exited. Choose")
     });
     assert_eq!(question.lines()[button_row], scrolled.lines()[button_row]);
     zellij.send_stdin(b"\x1b[<64;5;3M");
-    zellij.wait_until("wheel scrolls log backward", |s| s.contains("LOG 008"));
+    zellij.wait_until("wheel scrolls log backward", |s| {
+        !s.contains("LOG 100") && s.contains("↓") && s.contains("Agent exited. Choose")
+    });
     zellij.send_stdin(b"\x1b[5~");
     let logs = zellij.wait_until("page up restores log beginning", |s| s.contains("LOG 001"));
     let log_row = logs
@@ -351,7 +362,9 @@ fn fork_picker() -> (
     original.exit(Some(0));
     zellij.wait_until("hook permissions", |s| s.contains("Allow? (y/n)"));
     zellij.send_stdin(b"y");
-    zellij.wait_until("exit view", |s| s.contains("Run run: running"));
+    zellij.wait_until("exit view follows the log tail", |s| {
+        s.contains("LOG 100") && s.contains("Cancel run")
+    });
     advance(&zellij, "fork");
     zellij.wait_until("fork resolves the suppressed source", |s| {
         s.contains("forking claude in fork-topic") && s.contains("Codex")
