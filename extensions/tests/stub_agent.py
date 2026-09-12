@@ -10,6 +10,7 @@ import termios
 import tty
 import time
 
+process_started = time.monotonic()
 remote = 'ZELLIJ_REMOTE_PANE_TOKEN' in os.environ
 binary = 'zellij' if remote else os.environ['SWAMP_SMOKE_ZELLIJ']
 settings = termios.tcgetattr(sys.stdin)
@@ -26,6 +27,7 @@ def report(hook, **fields):
 
 try:
     report('SessionStart')
+    ready_at = time.monotonic()
     print('STUB READY', flush=True)
     buffer = b''
     while True:
@@ -53,6 +55,11 @@ try:
                 with open(path, 'w') as output: output.write('resolved ' + path + '\n')
                 subprocess.run(['git', 'add', '--', path], check=True)
         if prompt.startswith('Fix the failed tests'):
+            if not remote:
+                with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'prompt-received'), 'w') as stamp:
+                    stamp.write(str(time.monotonic()))
+                with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'helper-timing.json'), 'w') as timing:
+                    json.dump(dict(started=process_started, ready=ready_at, startupMs=(ready_at-process_started)*1000), timing)
             retrieval = next((line for line in prompt.splitlines() if line.startswith('swamp data query ')), None)
             evidence = prompt
             if retrieval:
@@ -86,6 +93,9 @@ try:
             if not remote:
                 with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'exit-' + os.environ['ZELLIJ_PANE_ID']), 'w') as stamp:
                     stamp.write(str(time.monotonic()))
+                if prompt.startswith('Fix the failed tests'):
+                    with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'helper-exit'), 'w') as stamp:
+                        stamp.write(str(time.monotonic()))
             break
 finally:
     termios.tcsetattr(sys.stdin, termios.TCSANOW, settings)

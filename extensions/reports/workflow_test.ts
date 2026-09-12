@@ -16,6 +16,7 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
         ["@hammz/zellij", "earlier", "review-current", 2, {
             workflowRunId: "run",
             specName: "review",
+            modelName: "earlier-name",
         }, { findings: [] }],
         ["@hammz/zellij", "earlier", "test-current", 1, {
             workflowRunId: "previous",
@@ -87,8 +88,14 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
                 dataHandles: [],
             }],
             definitionRepository: {
-                findById: (_type, id) =>
-                    Promise.resolve({ name: id + "-name" }),
+                findById: (_type, id) => {
+                    if (id === "earlier") {
+                        throw new Error(
+                            "Report looked up a name already present in provenance",
+                        );
+                    }
+                    return Promise.resolve({ name: id + "-name" });
+                },
             },
             dataRepository: {
                 findAllGlobal: () =>

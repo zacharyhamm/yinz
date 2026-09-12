@@ -33,6 +33,14 @@ local function report_entries()
   end)
   return entries
 end
+local rendered_question
+local question_ready_at
+local function timing(phase,started,entry)
+  if not z.swamp_timing then return end
+  z.log('swamp_timing '..z.json.encode{layer='lua',method='workflow_view',phase=phase,
+    elapsedMs=z.monotonic_ms()-started,run=entry and entry.attributes.run or M.attachment and M.attachment.run,
+    question=entry and entry.attributes.question})
+end
 local function identity(entry)
   return entry and z.json.encode{entry.attributes.run,entry.model,entry.attributes.question}
 end
@@ -108,13 +116,17 @@ local function load_reports(revision)
     end
   end
 end
-function M.refresh()
+function M.refresh(changed)
   if not M.attachment then return end
-  if M.refreshing or M.submitting then M.refresh_queued=true;return end
+  if M.refreshing or M.submitting then
+    if changed~=false then M.refresh_queued=true end
+    return
+  end
   M.refresh_queued=false
   M.refreshing = true
   local revision=generation
   z.task(function()
+    local started=z.swamp_timing and z.monotonic_ms()
     local before=z.json.encode{M.snapshot or {},M.status,M.refresh_error or ''}
     local ok,err=pcall(function()
       local request = {method='workflow_show',directory=M.attachment.directory,run=M.attachment.run,launch=M.attachment.launch}
@@ -147,6 +159,7 @@ function M.refresh()
       table.sort(M.pending,function(a,b) return identity(a)<identity(b) end)
       M.selected=math.min(M.selected,math.max(1,#M.pending))
       for i,entry in ipairs(M.pending) do if identity(entry)==selected then M.selected=i end end
+      question_ready_at=z.swamp_timing and z.monotonic_ms()
       controls()
       load_reports(revision)
     end)
@@ -159,6 +172,7 @@ function M.refresh()
       elseif M.snapshot then set_subtitle(M.snapshot.subtitle) end
     end
     M.refreshing=false
+    if started then timing('refresh',started) end
     if before~=z.json.encode{M.snapshot or {},M.status,M.refresh_error or ''} then repaint() end
     if revision~=generation or M.refresh_queued then M.refresh() end
   end)
@@ -203,7 +217,7 @@ function M.load(options)
   z.subscribe {'key','mouse','pasted_text','pane_output','command_pane_exited'}
   z.set_self_mouse_selection_support(true)
   controls()
-  z.every(2,M.refresh)
+  z.every(2,function() M.refresh(false) end)
   z.every(1,function() if M.started and (M.submitting or M.active) then repaint() end end)
 end
 function M.pipe(message)
@@ -358,6 +372,7 @@ local function failed(status)
   return status=='failed' or status=='error'
 end
 function M.render(rows,cols)
+  local render_started=z.swamp_timing and z.monotonic_ms()
   controls()
   local blocks={}
   local cache={}
@@ -495,6 +510,13 @@ function M.render(rows,cols)
     if M.notice_error then line=line:error() end
     frame[#frame+1]=line:render{x=0,y=M.form_y-status_height,width=cols,height=1}
   end
-  return table.concat(frame) .. form:render{x=0,y=M.form_y,width=cols,height=height}
+  local rendered=table.concat(frame) .. form:render{x=0,y=M.form_y,width=cols,height=height}
+  local key=render_started and entry and identity(entry)..':'..tostring(entry.version)
+  if render_started and key and key~=rendered_question then
+    timing('question_render',render_started,entry)
+    timing('question_ready_to_render',question_ready_at or render_started,entry)
+  end
+  rendered_question=key
+  return rendered
 end
 return M

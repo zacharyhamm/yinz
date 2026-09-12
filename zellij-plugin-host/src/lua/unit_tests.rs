@@ -7547,6 +7547,63 @@ assert(not z.__update(M,{PaneUpdate={panes={}}}))
 }
 
 #[test]
+fn swamp_workflow_coalesces_change_notifications_without_queueing_timer_polls() {
+    let plugin =
+        load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+local z=require('zellij')
+z.subscribe=function() end
+z.subscribe_pane_output=function() end
+z.every=function() end
+z.set_self_mouse_selection_support=function() end
+z.set_pane_subtitle=function() end
+z.get_plugin_ids=function() return {plugin_id=1,host_id='host'} end
+local resolve,calls
+calls=0
+z.rpc.call=function()
+  calls=calls+1
+  local future
+  future,resolve=z.async.future()
+  return future
+end
+local function complete()
+  resolve{result={run='run',history={status='suspended'}}}
+  z.__update(M,{Timer=0})
+end
+M.load()
+M.attach{directory='/work',run='run'}
+for i=1,20 do M.refresh(false) end
+assert(calls==1)
+complete()
+assert(calls==1 and not M.refreshing,'polling must not queue another snapshot')
+M.refresh()
+for i=1,20 do M.pipe{name='workflow-changed'} end
+assert(calls==2)
+complete()
+assert(calls==3 and M.refreshing,'changes during a read need one authoritative follow-up')
+for i=1,20 do M.refresh(false) end
+complete()
+assert(calls==3 and not M.refreshing)
+M.submitting=true
+M.refresh(false)
+assert(not M.refresh_queued)
+M.pipe{name='workflow-changed'}
+assert(M.refresh_queued,'a change during submission must not be lost')
+"#,
+        )
+        .exec()
+        .unwrap();
+}
+
+#[test]
 fn swamp_output_preview_names_the_saved_version_and_keeps_return_actionable() {
     let plugin =
         load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
@@ -8339,6 +8396,28 @@ end
 local launched=assert(call(launch('workflow')))
 assert(launched.transport=='serve' and launched.run=='service-1' and not launched.pane and not launched.process)
 assert(launched.checkout=='/control')
+-- A dispatch stream already covers this run; refreshing must not replay it.
+do
+  local stream_service=z.async.swamp_request
+  local project_read=z.project_config.read
+  z.project_config.read=function() return {root='/control',config={workflow='configured'}} end
+  local attachments=0
+  z.async.swamp_request=function(opts)
+    local reply
+    if opts.operation=='run.attach' then attachments=attachments+1;reply={}
+    elseif opts.operation=='workflow.history.get' then reply={id=launched.run,status='running'}
+    elseif opts.operation=='workflow.history.logs' then reply={log={lines={}}}
+    elseif opts.operation=='workflow.history.search' or opts.operation=='data.query' then reply={results={}}
+    else return stream_service(opts) end
+    local a,r=z.async.future();r(reply);return a
+  end
+  assert(call{method='workflow_attach',work='workflow',key='attachment',run=launched.run,workflow='configured',directory='/control'})
+  for i=1,3 do assert(call{method='workflow_show',run=launched.run,directory='/control'}) end
+  assert(attachments==0,'the live dispatch stream needs no replay attachment')
+  z.async.swamp_request=stream_service
+  z.project_config.read=project_read
+end
+
 assert(call(launch('workflow')).run=='service-1' and command_panes==0 and resolved==1 and service_runs==1)
 local _,failed=call(launch('bad-root'))
 assert(tostring(failed):find('not a git repository',1,true) and command_panes==0)
@@ -8697,6 +8776,23 @@ for _,by_run in ipairs{false,true} do
   local before=replacements
   assert(manual_show() and manual_show(4))
   assert(replacements==before,'polling and other history views cannot steal or duplicate the queue')
+  local view_uid=z.json.encode({'host','session',manual_work,'view'})
+  rows[view_uid]={rev=1,value=z.json.encode{view=1,incarnation='incarnation'}}
+  -- A durable agent-exit view must not prevent manual views receiving changes.
+  z.__update(M,{Timer=0}) -- drain the coalesced initial attachment event
+  local old_after,old_message=z.after,z.message_to_plugin
+  local notified={}
+  z.after=function(_,fn) fn();return {cancel=function() end} end
+  z.message_to_plugin=function(opts)
+    if opts.message_name=='workflow-changed' then notified[opts.destination_plugin_id]=(notified[opts.destination_plugin_id] or 0)+1
+    else old_message(opts) end
+  end
+  assert(manual_show(4))
+  assert(call{method='workflow_attach',work=manual_work,key='attachment',run=manual_work..'-notify',workflow='child',directory='/control'})
+  assert(notified[3]==1 and notified[4]==1,'each manual view receives the workflow event before the next poll')
+  z.after,z.message_to_plugin=old_after,old_message
+  rows[view_uid]=nil
+
   finish(first,0);assert(visible.Terminal==second.pane)
   finish(second,1);assert(visible.Plugin==3,'failed commands restore the manual view too')
   finish(background,0);assert(visible.Plugin==3)
@@ -8765,6 +8861,8 @@ z.async.swamp_request=function(opts)
 end
 local recovered=assert(call{method='workflow_show',launch=recovery.work,directory='/control'})
 assert(recovered.history.status=='succeeded' and not recovered.active and searches==1 and reads==1)
+assert(call{method='workflow_show',launch=recovery.work,directory='/control'}.history.status=='succeeded')
+assert(searches==1 and reads==2,'warm refresh reads current run state without scanning retained history')
 assert(call(recovery).outcome=='unknown','the durable claim still prevents duplicate dispatch')
 z.async.swamp_request=old_service
 z.__update=function(_,event)

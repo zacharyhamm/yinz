@@ -6,6 +6,7 @@ socket environment. All Git changes and approvals are confined to a fresh /tmp r
 The repository and command transcripts remain available after the session stops.
 """
 import argparse
+import hashlib
 import fcntl
 import pty
 import re
@@ -30,6 +31,9 @@ parser.add_argument('--commit-rebase-only', action='store_true')
 parser.add_argument('--exit-only', action='store_true')
 parser.add_argument('--exit-menu-only', action='store_true')
 parser.add_argument('--timing-only', action='store_true', help='Three diagnostic diff-and-return runs on one warm disposable server')
+parser.add_argument('--transition-timing-only', action='store_true', help='Measure warm answer, helper dispatch, and helper exit transitions')
+parser.add_argument('--history-runs', type=int, default=0, help='Retained fixture runs (three definitions and outputs each)')
+parser.add_argument('--swamp-source', help='Matching Swamp source checkout, required for history seeding')
 parser.add_argument('--test-output-only', action='store_true')
 parser.add_argument('--latency-only', action='store_true')
 parser.add_argument('--question-latency-only', action='store_true')
@@ -44,11 +48,12 @@ binary = root / 'zellij'
 shutil.copy2(Path(args.binary).resolve(), binary)
 builtins = root / 'builtins'
 builtins.mkdir()
-for plugin in (source / 'target/wasm32-wasip1/debug').glob('*.wasm'):
+profile = 'release' if Path(args.binary).resolve().parent.name == 'release' else 'debug'
+for plugin in (source / ('target/wasm32-wasip1/' + profile)).glob('*.wasm'):
     shutil.copyfile(plugin, builtins / plugin.name)
 session = 'workflow-' + root.name.rsplit('-', 1)[-1]
 env = os.environ.copy()
-if args.timing_only:
+if args.timing_only or args.transition_timing_only:
     env['ZELLIJ_SWAMP_TIMING'] = '1'
     root.chmod(0o700)
 swamp_config = Path(env.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'swamp'
@@ -72,6 +77,10 @@ if args.source_diff_only:
     env.update(GIT_PAGER='false', PAGER='false', LESS='-F -E')
 real_swamp = shutil.which('swamp')
 assert real_swamp, 'Swamp is required'
+fixture_swamp = root / 'swamp'
+shutil.copyfile(real_swamp, fixture_swamp)
+fixture_swamp.chmod(0o755)
+real_swamp = str(fixture_swamp)
 fixture_bin = root / 'bin'
 fixture_bin.mkdir()
 wrapper = fixture_bin / 'swamp'
@@ -285,6 +294,7 @@ def exercise_exit_menus():
 
 ui_pid = ui_fd = None
 ui_output = bytearray()
+ui_frames = []
 
 def attach_ui():
     global ui_pid, ui_fd
@@ -302,6 +312,7 @@ def attach_ui():
                     output.write(data)
                     output.flush()
                     ui_output.extend(data)
+                    ui_frames.append((len(ui_output), time.monotonic()))
                     if b'\x1b[6n' in data: os.write(ui_fd, b'\x1b[1;1R')
             except OSError:
                 pass
@@ -355,6 +366,10 @@ shutil.copy(source / '.zellij/.swamp-workflows.kdl', main / '.zellij/.swamp-work
 (main / '.git/info/exclude').write_text('.swamp*\n.gitignore\nextensions/\nworkflows/\nmodels/\n.zellij/\nAGENTS.md\nCLAUDE.md\n')
 for name in ('agent-work', 'review-integration', 'question', 'agent-exit'):
     swamp('workflow', 'validate', '@hammz/zellij-' + name)
+if args.history_runs:
+    assert args.swamp_source, '--history-runs requires --swamp-source'
+    run('deno', 'run', '-A', '--config', Path(args.swamp_source) / 'deno.json',
+        source / 'extensions/tests/seed_history.ts', args.swamp_source, main, args.history_runs)
 if args.source_diff_only:
     # Exercise the exact workflow argv with a capturing pager, so assertions cover
     # all output (including lines outside the terminal viewport).
@@ -459,7 +474,7 @@ if args.firecracker_only:
     shutil.copy(provider_config, root / 'config/zellij/firecracker.json')
     # Config names the existing immutable image; VM state stays in this fixture.
 cold_start_ms = None
-if args.timing_only:
+if args.timing_only or args.transition_timing_only:
     started = time.monotonic()
     run(binary, 'workflow', 'server', 'restart')
     cold_start_ms = (time.monotonic() - started) * 1000
@@ -584,6 +599,64 @@ try:
 
         def agents():
             return [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('agent')]
+
+        if args.transition_timing_only:
+            def rendered(label, offset, value):
+                until(label, lambda: value in bytes(ui_output[offset:]), interval=0.005)
+                end = bytes(ui_output).index(value, offset) + len(value)
+                return next(stamp for size, stamp in ui_frames if size >= end)
+
+            samples = []
+            for repetition in range(3):
+                token = 'transition-' + str(repetition)
+                launch(token, gate=['/usr/bin/python3', '-c', 'print("failure-evidence" + " retained failure line" * 12000); raise SystemExit(1)'])
+                q = until('exit question', lambda: pending(token, 'exit'))
+                offset = len(ui_output)
+                zellij('workflow', 'show', q['attributes']['run'])
+                rendered('initial exit question rendered', offset, b'Begin review')
+                offset = len(ui_output)
+                started = time.monotonic()
+                os.write(ui_fd, b'\t' * q['attributes']['answers'].index('begin-review') + b'\r')
+                question_at = rendered('preparation rendered', offset, b'Show diff')
+                answer_to_question = (question_at - started) * 1000
+                answer_started = started
+                choose(token, 'prepare', 'commit-and-rebase')
+                failure_offset = len(ui_output)
+                choose(token, 'review', 'run-tests')
+                failed = until('saved failure', lambda: pending(token, 'failed-tests'))
+                rendered('failure question rendered', failure_offset, b'Start fix agent')
+                offset = len(ui_output)
+                started = time.monotonic()
+                os.write(ui_fd, b'\t' * failed['attributes']['answers'].index('start-fix-agent') + b'\r')
+                next_question_at = rendered('helper exit question rendered', offset, b'Begin review')
+                fresh = until('fresh exit question', lambda: pending(token, 'exit'))
+                assert fresh['attributes']['run'] != failed['attributes']['run']
+                assert 'failure-evidence' in (topic / 'received-failure-output').read_text()
+                prompt_at = float((root / 'prompt-received').read_text())
+                helper_exit = float((root / 'helper-exit').read_text())
+                samples.append(dict(repetition=repetition + 1, answerToQuestionMs=answer_to_question,
+                    answerToPromptMs=(prompt_at - started) * 1000,
+                    helperExitToQuestionMs=(next_question_at - helper_exit) * 1000,
+                    agent=json.loads((root / 'helper-timing.json').read_text()),
+                    clocks=dict(answer=answer_started, question=question_at, fixAnswer=started, prompt=prompt_at, helperExit=helper_exit, nextQuestion=next_question_at),
+                    previousRun=failed['attributes']['run'], nextRun=fresh['attributes']['run']))
+                for item in histories(token):
+                    run_id = item['runId']
+                    for kind in ('get', 'logs'):
+                        (root / (run_id + '.' + kind + '.json')).write_text(json.dumps(swamp('workflow', 'history', kind, run_id), indent=2))
+                (topic / 'received-failure-output').unlink()
+                (topic / 'received-failure-prompt').unlink()
+                choose(token, 'exit', 'leave')
+                print('TRANSITION:', samples[-1], flush=True)
+            for path in Path(env['TMPDIR']).rglob('zellij.log*'):
+                shutil.copy(path, root / path.name)
+            measured = dict(profile=profile, answerInput='terminal', coldStartMs=cold_start_ms, retainedRuns=args.history_runs, samples=samples,
+                wallClockOffset=time.time()-time.monotonic(),
+                reportSourceSha256=hashlib.sha256((main / 'extensions/reports/workflow.ts').read_bytes()).hexdigest(),
+                binaries={name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in [('zellij', binary), ('swamp', fixture_swamp)]})
+            (root / 'transitions.json').write_text(json.dumps(measured, indent=2))
+            print('PASS: three fix cycles with saved failure output and fresh exit questions', flush=True)
+            raise SystemExit(0)
 
         if args.exit_menu_only:
             exercise_exit_menus()
@@ -816,7 +889,7 @@ try:
                     assert timing_lines, 'Missing TypeScript timings for ' + run_id
                     for line in timing_lines:
                         record = json.loads(line.split('swamp_timing ', 1)[1])
-                        assert record['layer'] == 'typescript' and record['elapsedMs'] >= 0
+                        assert record['layer'] in ('typescript', 'swamp') and record['elapsedMs'] >= 0
                 measurements.append(dict(repetition=repetition + 1, elapsedMs=elapsed,
                     untilDismissMs=(dismissed - started) * 1000, previousRun=previous['attributes']['run'], nextRun=fresh['attributes']['run']))
                 for path in Path(env['TMPDIR']).rglob('zellij.log*'):
@@ -1108,7 +1181,11 @@ try:
         os.write(ui_fd, b'\x1b')
         cancelled = until('cancelled fork returns to fresh exit menu', lambda: pending('fork-cancel', 'exit'))
         assert cancelled['attributes']['run'] != first_menu['attributes']['run']
-        choose('fork-cancel', 'exit', 'restart')
+        choose('fork-cancel', 'exit', 'leave')
+        until('Leave closes the exited source', lambda: not any(p['id'] == original['id'] for p in agents()))
+        original = next(p for p in agents() if p.get('exited') and p['agent']['kind'] == 'claude')
+        launch('restart-choice', sourcePane=original['id'], kind='claude')
+        choose('restart-choice', 'exit', 'restart')
         until('restart uses original pane', lambda: any(p['id'] == original['id'] and not p['exited'] for p in agents()))
         print('PASS: fork cancellation returns to a fresh menu; restart reuses original pane', flush=True)
 

@@ -570,7 +570,17 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
         .start();
     zellij.wait_for_app_load();
 
-    open_sidebar(&zellij);
+    // Keep the viewport fixed while remembering the panel's home. The shared
+    // opener sends asynchronous resizes, which can move it after this snapshot.
+    zellij.send_stdin(&keys::ctrl('b'));
+    zellij.wait_until("hocus asks for permissions", |snapshot| {
+        snapshot.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(&keys::key('y'));
+    zellij.wait_until("the conversation overlay is placed", |snapshot| {
+        snapshot.contains("hocus — ")
+    });
+    zellij.send_stdin(&keys::ctrl('a'));
 
     /// Where the agent list's first row sits. The list is the panel's left half, so this is the
     /// first content cell, one row and column inside its frame even when expanded.

@@ -53,12 +53,14 @@ export const report = {
                 ? JSON.parse(new TextDecoder().decode(bytes))
                 : null;
             if (!tagged && attributes?.run !== context.workflowRunId) continue;
-            const definition = await context.definitionRepository.findById(
-                modelType,
-                modelId,
-            );
+            const model = data.tags.modelName ||
+                (await context.definitionRepository.findById(
+                    modelType,
+                    modelId,
+                ))?.name ||
+                modelId;
             resources.push({
-                model: definition?.name ?? modelId,
+                model,
                 type: modelType.normalized,
                 name: data.name,
                 version: data.version,
