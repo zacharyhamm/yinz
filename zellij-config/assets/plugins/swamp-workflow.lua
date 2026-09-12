@@ -7,11 +7,12 @@ local function text(s) return z.text.sanitize(tostring(s or '')) end
 local function quote(s) return "'"..s:gsub("'","'\"'\"'").."'" end
 local form_key, question_key, form_height, form_has_input
 local content_height=0
+local scroll_limit=0
 local answered={}
 local streams={}
 local latest_stream
 local output_render_pending=false
-local follow_live=true
+local following=true
 local generation=0
 local submission,submission_rpc,submission_ready
 local function identity(entry)
@@ -103,26 +104,33 @@ function M.refresh()
 end
 function M.focused_control() controls();return form:focused_id() end
 function M.watch(launch)
-  if launch~=M.launch then streams={};follow_live=true end
+  if launch~=M.launch then streams={};latest_stream=nil end
   M.launch=launch
   z.subscribe_pane_output(launch and {swamp_work=launch} or z.null)
 end
 function M.attach(attachment)
-  M.watch(attachment.launch)
+  local current=M.attachment
+  local same_run=current and current.directory==attachment.directory and
+    ((attachment.run and attachment.run==current.run) or (attachment.launch and attachment.launch==M.launch))
+  if not same_run then
+    following=true
+    streams={};latest_stream=nil
+    M.scroll=0
+    M.snapshot=nil
+    M.pending={}
+    M.selected=1
+    M.active=true
+    M.status='Loading workflow...'
+  end
+  M.watch(attachment.launch or (same_run and M.launch) or nil)
   generation=generation+1
   M.attachment=attachment
   M.submitting=false
   submission,submission_rpc,submission_ready=nil,nil,nil
   M.started=nil
-  M.snapshot=nil
-  M.pending={}
-  M.selected=1
-  M.scroll=0
   M.notice=nil
   M.notice_error=nil
   M.refresh_error=nil
-  M.active=true
-  M.status='Loading workflow...'
   M.refresh()
 end
 function M.load(options)
@@ -157,6 +165,12 @@ function M.pipe(message)
   local pipe = type(message.source)=='table' and message.source.Cli
   if pipe then z.cli_pipe_output(pipe,z.json.encode({attached=true})); z.unblock_cli_pipe_input(pipe) end
 end
+local function scroll_down(lines)
+  M.scroll=M.scroll+lines
+  following=following or (M.scroll>=scroll_limit and
+    (#streams==0 or latest_stream==streams[#streams]))
+  return true
+end
 function M.update(event)
   if event.name=='pane_output' and event.context and event.context.swamp_work==M.launch then
     M.output(event.context.swamp_operation or 'command','pane '..event.pane_id,event.data)
@@ -164,12 +178,12 @@ function M.update(event)
   end
   if event.name=='command_pane_exited' and event.context and event.context.swamp_work==M.launch then M.refresh();return false end
   controls()
-  if event.name=='key' and event.key=='End' and form:focused_id()~='answer' then follow_live=true;M.scroll=math.huge;return true end
-  if event.name=='key' and event.key=='PageUp' then follow_live=false; M.scroll=math.max(0,M.scroll-content_height);return true end
-  if event.name=='key' and event.key=='PageDown' then M.scroll=M.scroll+content_height;return true end
+  if event.name=='key' and event.key=='End' and form:focused_id()~='answer' then following=true;M.scroll=math.huge;return true end
+  if event.name=='key' and event.key=='PageUp' then following=false; M.scroll=math.max(0,M.scroll-content_height);return true end
+  if event.name=='key' and event.key=='PageDown' then return scroll_down(content_height) end
   if event.name=='mouse' then
-    if event.kind=='scroll_up' then follow_live=false;M.scroll=math.max(0,M.scroll-math.min(event.lines or 3,content_height));return true end
-    if event.kind=='scroll_down' then M.scroll=M.scroll+math.min(event.lines or 3,content_height);return true end
+    if event.kind=='scroll_up' then following=false;M.scroll=math.max(0,M.scroll-math.min(event.lines or 3,content_height));return true end
+    if event.kind=='scroll_down' then return scroll_down(math.min(event.lines or 3,content_height)) end
     if event.kind=='left_click' then M.selecting=(event.line or 0)<(M.form_y or 0) end
     if M.selecting then
       if event.kind=='release' then
@@ -364,8 +378,9 @@ function M.render(rows,cols)
   local indicator_height=total>page and page>=2 and cols>0 and 1 or 0
   page=page-indicator_height
   content_height=page
-  if #streams>0 and follow_live then M.scroll=math.max(0,(live_end or total)-page) end
-  M.scroll=math.max(0,math.min(M.scroll,math.max(0,total-page)))
+  scroll_limit=math.max(0,total-page)
+  if following then M.scroll=math.max(0,(live_end or total)-page) end
+  M.scroll=math.max(0,math.min(M.scroll,scroll_limit))
   local frame={}
   local function draw(block,y,skip,count)
     if block.widget then
