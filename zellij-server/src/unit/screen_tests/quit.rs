@@ -726,6 +726,15 @@ fn assert_every_client_has_a_tab(screen: &Screen) {
             tab.has_connected_client(client_id),
             "client {client_id} names tab {tab_id}, which does not count it as connected",
         );
+        let focused = tab
+            .get_active_pane_id(*client_id)
+            .expect("client has a focused pane");
+        let pane = tab.get_pane_with_id(focused).expect("focused pane exists");
+        assert!(
+            pane.selectable(),
+            "client is focused on unselectable chrome"
+        );
+        assert!(tab.has_non_suppressed_pane_with_pid(&focused));
     }
 }
 
@@ -898,7 +907,7 @@ fn closing_a_pane_for_a_client_with_no_tab_tears_down_the_pane_that_closed() {
 
 /// The dead terminal a hook pane takes with it takes its nested-guest state too.
 ///
-/// `Tab::close_dead_subject_of` destroys the suppressed terminal from inside the tab, so the
+/// `Tab::close_pane_explicitly` destroys the suppressed terminal from inside the tab, so the
 /// screen only ever heard about the stand-in - and the guest state keyed on a terminal id that
 /// gets recycled becomes some later pane's passthrough and ascend keys.
 #[test]
@@ -1129,6 +1138,12 @@ fn hidden_only_non_last_tab_keeps_its_identity_and_terminal() {
         &[TabId::new(1), TabId::new(2)],
         &[crate::ClientId::new(1)],
     );
+    screen
+        .go_to_tab(
+            zellij_types::internal_ids::TabNumber::new(1),
+            crate::ClientId::new(1),
+        )
+        .unwrap();
     let id = PaneId::Terminal(crate::TerminalId::new(1));
     screen
         .tabs
@@ -1138,6 +1153,7 @@ fn hidden_only_non_last_tab_keeps_its_identity_and_terminal() {
     screen.settle_tabs().unwrap();
     assert!(screen.tabs[&TabId::new(1)].has_pane_with_pid(&id));
     assert!(requested_tabs(&plugins).is_empty());
+    assert_every_client_has_a_tab(&screen);
 }
 
 #[test]
@@ -1283,6 +1299,108 @@ fn all_tab_close_instructions_confirm_before_destroying_the_last_tab() {
         }
     }
     mock.teardown(vec![screen_thread]);
+}
+
+#[test]
+fn explicit_close_before_creation_waits_for_removal_and_completion() {
+    for plugin in [false, true] {
+        for with_client in [false, true] {
+            let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+            let client = mock.main_client_id;
+            let screen_thread = mock.run(None, vec![]);
+            let server = mock.server_receiver.take().unwrap();
+            let plugins = mock.plugin_receiver.take().unwrap();
+            let received = Watched::new(vec![]);
+            let plugin_thread = log_actions_in_thread!(received, PluginInstruction::Exit, plugins);
+            let id = if plugin {
+                PaneId::Plugin(crate::PluginId::new(42))
+            } else {
+                PaneId::Terminal(crate::TerminalId::new(42))
+            };
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            let mut completion = crate::NotificationEnd::new(tx);
+            completion.set_exit_status(23);
+            mock.to_screen
+                .send(ScreenInstruction::ClosePane(
+                    id,
+                    with_client.then_some(client),
+                    Some(completion),
+                    Some(23),
+                ))
+                .unwrap();
+            mock.to_screen
+                .send(ScreenInstruction::QueryTabNames(client, None))
+                .unwrap();
+            let deadline = std::time::Instant::now() + zellij_test_support::default_timeout();
+            loop {
+                if matches!(
+                    server
+                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                        .unwrap()
+                        .0,
+                    ServerInstruction::Log(..)
+                ) {
+                    break;
+                }
+            }
+            assert!(
+                matches!(
+                    rx.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                ),
+                "close completion must wait for creation"
+            );
+            let creation = if plugin {
+                ScreenInstruction::AddPlugin(
+                    Some(true),
+                    false,
+                    false,
+                    zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                        "file:/path/to/fake/plugin",
+                        &None,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+                    None,
+                    None,
+                    crate::PluginId::new(42),
+                    None,
+                    None,
+                    false,
+                    None,
+                    Some(true),
+                    Some(client),
+                    None,
+                    None,
+                )
+            } else {
+                ScreenInstruction::NewPane(
+                    id,
+                    None,
+                    None,
+                    None,
+                    NewPanePlacement::default(),
+                    false,
+                    ClientTabIndexOrPaneId::ClientId(client),
+                    None,
+                    false,
+                )
+            };
+            mock.to_screen.send(creation).unwrap();
+            let completed = crate::route::wait_for_action_completion(rx, "close", false);
+            assert_eq!(
+                completed.exit_status,
+                Some(23),
+                "the original completion is retained"
+            );
+            received.wait_until("buffered close removes its pane", zellij_test_support::default_timeout(), |log| {
+                log.iter().any(|instruction| matches!(instruction, PluginInstruction::Update(events)
+                    if events.iter().any(|(_, _, event)| matches!(event, Event::PaneClosed(closed) if *closed == id)))).then_some(())
+            });
+            mock.teardown(vec![plugin_thread, screen_thread]);
+        }
+    }
 }
 
 #[test]

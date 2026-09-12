@@ -6937,6 +6937,7 @@ os.time=function() return now end
 z.server_session='session';z.server_incarnation='incarnation'
 z.get_plugin_ids=function() return {host_id='host'} end
 z.data.define=function() end
+z.data.fetch=function() return {},{} end
 z.subscribe=function() end
 z.set_timeout=function() end
 z.get_pane_info=function() return {plugin_url='zellij:swamp-workflow'} end
@@ -7724,6 +7725,11 @@ z.replace_pane_with_existing_pane=function(args)
 end
 z.rerun_command_pane=function(pane) assert(pane==7 and restored==rerun+1);rerun=rerun+1 end
 z.rpc.call=function(request)
+  if request.payload.method=='pane_action' then
+    assert(request.payload.work=='exit-token' and request.payload.action=='restart')
+    rerun=rerun+1;closed=closed+1
+    return {result={outcome='completed'}}
+  end
   if request.payload.method=='workflow_run' then return {} end
   assert(request.payload.method=='workflow_cancel' and request.payload.run=='run')
   cancelled=cancelled+1
@@ -7817,6 +7823,11 @@ local refresh=view.refresh
 view.refresh=function() end
 local expected_vm='original-vm'
 z.rpc.call=function(request)
+  if request.payload.method=='pane_action' then
+    assert(request.payload.work=='exit-token' and request.payload.action=='restart')
+    rerun=rerun+1
+    return {result={outcome='completed'}}
+  end
   assert(request.payload.directory=='/work/topic')
   assert(request.payload.inputs.firecracker==expected_vm)
   assert(request.payload.inputs.sourcePane==7)
@@ -7839,6 +7850,11 @@ assert(not M.busy)
 view.refresh=refresh
 local unresolved=true
 z.rpc.call=function(request)
+  if request.payload.method=='pane_action' then
+    assert(request.payload.work=='exit-token' and request.payload.action=='restart')
+    rerun=rerun+1
+    return {result={outcome='completed'}}
+  end
   assert(request.payload.launch=='exit-token' and not request.payload.run)
   return {result={launch='exit-token',history={status='failed'},active=unresolved,logs='Exit status: 1'}}
 end
@@ -8063,6 +8079,7 @@ rows[source_uid]={value=z.json.encode(original),rev=1}
 local picked,reruns,closed,acks=0,0,0,0
 z.rerun_command_pane=function(pane) assert(pane==7);reruns=reruns+1 end
 z.close_plugin_pane=function() closed=closed+1 end
+z.hide_pane_with_id=function() end
 z.message_to_plugin=function(opts)
   if opts.message_name=='workflow-changed' or opts.message_name=='workflow-detached' then return end
   if opts.message_name=='swamp-pane-ack' then assert(opts.destination_plugin_id==42);acks=acks+1;return end
@@ -8958,6 +8975,21 @@ for _,attachment in ipairs{
   key('PageUp');assert(not render())
 end
 "#).exec().unwrap();
+}
+
+#[test]
+fn swamp_closing_owned_panes_cancels_the_lifecycle_and_rejects_late_results() {
+    let plugin = load(zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap()).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(include_str!("swamp_close_tests.lua"))
+        .exec()
+        .unwrap();
 }
 
 #[test]

@@ -3059,6 +3059,32 @@ impl Tab {
             client_id,
             mode_info.unwrap_or_else(|| self.default_mode_info.clone()),
         );
+        let focused_is_selectable = self.get_active_pane_id(client_id).is_some_and(|id| {
+            self.get_pane_with_id(id)
+                .is_some_and(|pane| pane.selectable())
+                && self.has_non_suppressed_pane_with_pid(&id)
+                && !self.tiled_panes.panes_to_hide_contains(id)
+        });
+        if !focused_is_selectable {
+            let candidate = self
+                .tiled_panes
+                .get_panes()
+                .filter(|(id, pane)| {
+                    pane.selectable() && !self.tiled_panes.panes_to_hide_contains(**id)
+                })
+                .map(|(id, _)| *id)
+                .min()
+                .or_else(|| {
+                    self.floating_panes
+                        .get_panes()
+                        .filter(|(_, pane)| pane.selectable())
+                        .map(|(id, _)| *id)
+                        .min()
+                });
+            if let Some(id) = candidate {
+                self.focus_pane_with_id(id, false, false, client_id)?;
+            }
+        }
         self.set_force_render();
         Ok(())
     }
@@ -7447,6 +7473,7 @@ impl Tab {
         // The pane is itself suppressed: it holds no place in any layout, so there
         // is nothing to swap in behind it and nothing to relayout - it just goes.
         if !ignore_suppressed_panes && self.suppressed_panes.remove(&id).is_some() {
+            self.announce_pane_closed(id);
             return;
         }
         let closed_pane = if self.overlay_panes.panes_contain(&id) {
@@ -7745,65 +7772,63 @@ impl Tab {
             .senders
             .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id: id });
     }
-    /// Take the pane suppressed behind `stand_in` with it, when there is nothing left to go back
-    /// to.
-    ///
-    /// Closing a stand-in ordinarily restores its subject - that is what the `agent_exit`
-    /// screen's `Esc` means by "return to scrollback", and what a scrollback editor closing must
-    /// always do. But a subject whose command has already exited has nothing to return to:
-    /// putting a dead terminal back on screen only to be closed again is two gestures for one
-    /// intention, and while it was the tab's last pane the tab lingers through both. So the
-    /// user's own close-pane gesture takes it along; every other caller of `close_pane` - the
-    /// pty's exit, a plugin's `close_self` - still gets the swap.
-    ///
-    /// Returns the pane it took, which the caller owes the same teardown it gives the stand-in:
-    /// this destroys the terminal from inside the tab, so nothing above sees it go otherwise.
-    fn close_dead_subject_of(&mut self, stand_in: PaneId) -> Option<PaneId> {
-        let subject = self.stands_in_for_a_pane(stand_in)?;
-        let suppressed = self.suppressed_panes.get(&subject)?;
-        // A scrollback editor stands in for the pane it is editing, which is live by definition
-        // and must come back however the editor is dismissed.
-        let is_scrollback_editor = suppressed
-            .restored_by
-            .map(|restored_by| restored_by.is_scrollback_editor)
-            .unwrap_or(false);
-        if is_scrollback_editor
-            || !matches!(subject, PaneId::Terminal(_))
-            || !suppressed.pane.exited()
-        {
-            return None;
+    /// Explicit close destroys the whole replacement chain. Natural exits and `close_self`
+    /// still use `close_pane`, which restores the pane behind an editor or exit view.
+    pub fn close_pane_explicitly(
+        &mut self,
+        id: PaneId,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Vec<PaneId> {
+        if !self.has_pane_with_pid(&id) {
+            return vec![];
         }
-        self.suppressed_panes.remove(&subject);
-        self.pending_command_respawns.remove(&subject);
-        let _ = self
-            .senders
-            .send_to_pty(PtyInstruction::ClosePane(subject, None));
-        self.announce_pane_closed(subject);
-        Some(subject)
+        let mut closed = vec![id];
+        let mut index = 0;
+        while index < closed.len() {
+            let current = closed[index];
+            for (subject, suppressed) in &self.suppressed_panes {
+                if let Some(stand_in) = suppressed.restored_by {
+                    let related = if *subject == current {
+                        Some(stand_in.pane_id)
+                    } else if stand_in.pane_id == current {
+                        Some(*subject)
+                    } else {
+                        None
+                    };
+                    if let Some(related) = related {
+                        if !closed.contains(&related) && self.has_pane_with_pid(&related) {
+                            closed.push(related);
+                        }
+                    }
+                }
+            }
+            index += 1;
+        }
+        // Break restoration links before removing anything, including a suppressed stand-in.
+        for id in &closed {
+            if let Some(pane) = self.suppressed_panes.get_mut(id) {
+                pane.restored_by = None;
+            }
+        }
+        for closing in closed.iter().rev() {
+            self.close_pane(*closing, false, None);
+            self.senders
+                .send_to_pty(PtyInstruction::ClosePane(*closing, None))
+                .with_context(|| format!("failed to close pane {closing:?}"))
+                .non_fatal();
+        }
+        drop(completion_tx);
+        closed
     }
-    /// Close the client's focused pane.
-    ///
-    /// Returns the *extra* pane this took along - the dead subject of a stand-in, see
-    /// `close_dead_subject_of` - not the focused pane itself, which the caller already named. The
-    /// caller owes that pane the same teardown as the one it asked to close.
     pub fn close_focused_pane(
         &mut self,
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
-    ) -> Result<Option<PaneId>> {
-        let err_context = |pane_id| {
-            format!("failed to close focused pane (ID {pane_id:?}) for client {client_id}")
-        };
-
-        let mut taken_along = None;
-        if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
-            taken_along = self.close_dead_subject_of(active_pane_id);
-            self.close_pane(active_pane_id, false, None);
-            self.senders
-                .send_to_pty(PtyInstruction::ClosePane(active_pane_id, completion_tx))
-                .with_context(|| err_context(active_pane_id))?;
-        }
-        Ok(taken_along)
+    ) -> Result<Vec<PaneId>> {
+        Ok(match self.get_active_pane_id(client_id) {
+            Some(id) => self.close_pane_explicitly(id, completion_tx),
+            None => vec![],
+        })
     }
     pub fn clear_active_terminal_screen(&mut self, client_id: ClientId) -> Result<()> {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {

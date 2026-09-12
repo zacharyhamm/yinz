@@ -1884,8 +1884,8 @@ pub(crate) fn screen_thread_main(
                     exit_status,
                 ) => {
                     // A command pane whose command exited without `hold_on_close` arrives here from
-                    // the pty with no client and no completion; every other close - a user's, a
-                    // plugin's `close_self` - carries one or the other. That is the `pane_exit`
+                    // the pty with no client and no completion; explicit ID-targeted actions carry
+                    // a completion. A plugin's `close_self` also has neither, but no command. This is the `pane_exit`
                     // hook's moment for a pane that is not held.
                     if client_id.is_none() && completion_tx.is_none() {
                         if let Some(run_command) = screen
@@ -1895,53 +1895,36 @@ pub(crate) fn screen_thread_main(
                             screen.fire_pane_exit_hook(id, exit_status, &run_command, false);
                         }
                     }
-                    // A menu opened over this pane is offering to act on something that is about to
-                    // stop existing.
-                    screen.close_context_menus_for_pane(id);
-                    // And what the plugin in it had to say about a quit goes with it. A plugin that
-                    // crashed or was closed mid-reply must not leave a guard behind that nothing can
-                    // lift.
-                    if let PaneId::Plugin(plugin_id) = id {
-                        screen.drop_quit_notice(plugin_id);
+                    if client_id.is_some() || completion_tx.is_some() {
+                        if screen.tab_containing_pane(id).is_some() {
+                            screen.close_pane_explicitly(id, completion_tx);
+                        } else {
+                            pending_events_waiting_for_pane.entry(id).or_default().push(
+                                ScreenInstruction::ClosePane(
+                                    id,
+                                    client_id,
+                                    completion_tx,
+                                    exit_status,
+                                ),
+                            );
+                        }
+                    } else {
+                        screen.repaint_tab_of_closing_overlay(id);
+                        if let Some(tab) = screen.tab_containing_pane_mut(id) {
+                            tab.close_pane(id, false, exit_status);
+                        } else {
+                            pending_events_waiting_for_pane
+                                .entry(id)
+                                .or_default()
+                                .push(ScreenInstruction::ClosePane(id, None, None, exit_status));
+                        }
+                        screen.cleanup_closed_pane(id);
+                        // Natural process exit still owes the PTY its resource cleanup.
+                        let _ = screen
+                            .bus
+                            .senders
+                            .send_to_pty(PtyInstruction::ClosePane(id, None));
                     }
-                    screen.repaint_tab_of_closing_overlay(id);
-                    match client_id {
-                        Some(client_id) => {
-                            active_tab!(screen, client_id, |tab: &mut Tab| tab.close_pane(
-                                id,
-                                false,
-                                exit_status
-                            ));
-                        },
-                        None => {
-                            let mut found = false;
-                            for tab in screen.tabs.values_mut() {
-                                if tab.get_all_pane_ids().contains(&id) {
-                                    tab.close_pane(id, false, exit_status);
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if !found {
-                                pending_events_waiting_for_pane.entry(id).or_default().push(
-                                    ScreenInstruction::ClosePane(id, None, None, exit_status),
-                                );
-                            }
-                        },
-                    }
-
-                    screen.clear_nested_guest(id);
-                    screen.pane_output_activity.remove(&id);
-
-                    // Clean up PTY-side resources (async reader task, child PID mapping,
-                    // terminal_id_to_raw_fd entry). This is needed because the natural
-                    // child exit path (quit_cb) only sends ScreenInstruction::ClosePane
-                    // and never sends PtyInstruction::ClosePane. The handler in Pty is
-                    // idempotent, so this is safe even if ClosePane was already sent.
-                    let _ = screen
-                        .bus
-                        .senders
-                        .send_to_pty(PtyInstruction::ClosePane(id, None));
 
                     let connected_client_ids: Vec<ClientId> =
                         screen.active_tab_ids.keys().copied().collect();

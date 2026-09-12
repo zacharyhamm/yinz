@@ -80,6 +80,30 @@ local function workflow_subtitle(snapshot)
   return (main.workflowName or 'Workflow')..' · '..
     (#entries>0 and table.concat(entries,', ') or main.status)
 end
+local launch_waiting={}
+local delivery_rows, cancel_lifecycle
+local cancelling={}
+local function lifecycle_work(work)
+  local attachment=read(scope(work,'attachment'))
+  return attachment and attachment.work or work
+end
+local function closed(work)
+  if not work or work==z.null then return false end
+  local view=read(scope(lifecycle_work(work),'view'))
+  return view and view.closed
+end
+local function ensure_open(work)
+  assert(not closed(work),'Pane workflow lifecycle is closed')
+end
+local function transition(work, action)
+  local uid=scope(lifecycle_work(work),'view')
+  local view,row=read(uid)
+  if view then
+    ensure_open(work)
+    view.transition=action
+    put(uid,view,row)
+  end
+end
 local function close_view(work, restore_source)
   if placements[work] then detach(placements[work]) end
   local placement=read(scope(work,'view'))
@@ -89,10 +113,13 @@ local function close_view(work, restore_source)
     if restore_source and not pane.is_suppressed then
       z.replace_pane_with_existing_pane{z.plugin_pane(placement.view),z.terminal_pane(restore_source),true}
     end
+    -- A restored source must not remain linked to the view being destroyed.
+    z.hide_pane_with_id(z.plugin_pane(placement.view))
     z.close_plugin_pane(placement.view)
   end
 end
 local function active(work)
+  if closed(work) then return false end
   local works={[work]=true}
   local runs=read(scope(work,'runs'))
   for id in pairs(runs and runs.entries or {}) do works[id]=true end
@@ -119,6 +146,7 @@ local function launch_failure(work, launch, logs, directory)
     children={},active=active(work),logs=logs}
 end
 local function present(work)
+  if closed(work) then return end
   local placement=placements[work]
   if not placement or placement.detached then return end
   local view=z.plugin_pane(placement.view)
@@ -160,6 +188,9 @@ local function present(work)
   end
   if placement.current then pane_subtitle(current,nil) end
   pane_subtitle(target,placement.subtitle)
+  local uid=scope(work,'view')
+  local saved,row=read(uid)
+  if saved then saved.current=next_pane;put(uid,saved,row) end
   z.replace_pane_with_existing_pane{current,target,true}
   placement.current=next_pane
 end
@@ -174,6 +205,7 @@ local function unavailable(placement,work)
   update_subtitle(work,(placement.workflow or 'Workflow')..' · status unavailable')
 end
 local function attach_manual(work, view)
+  if closed(work) then return end
   if read(scope(work,'view')) then return end
   local existing=placements[work]
   if existing then
@@ -237,10 +269,12 @@ local function command(argv, cwd)
 end
 local tracked,notifications,watching,watch_ids={},{},{},{}
 local function changed(work)
+  if closed(work) then return end
   if notifications[work] then return end
   notifications[work]=true
   z.after(0.1,function()
     notifications[work]=nil
+    if closed(work) then return end
     local view=read(scope(work,'view'))
     if view and view.incarnation==identity.incarnation then
       z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-changed'}
@@ -267,9 +301,24 @@ local function swamp(request,root)
   end
   return encode(reply)
 end
-local launch_waiting={}
+local function cancel_run(run,root)
+  local history=decode(swamp({operation='workflow.history.get',payload={workflowIdOrName=run}},root))
+  if history.status=='running' then
+    return decode(swamp({operation='workflow.cancel',payload={runId=run}},root))
+  end
+end
+local function cancel_if_closed(work)
+  if not closed(work) then return false end
+  work=lifecycle_work(work)
+  local uid=scope(work,'view')
+  local view,row=read(uid)
+  view.cancel_pending=true
+  put(uid,view,row)
+  z.task(function() cancel_lifecycle(work) end)
+  return true
+end
 local function launch_progress(work,status,operation)
-  if not read(scope(work,'launch')) then return end
+  if closed(work) or not read(scope(work,'launch')) then return end
   local waiting=launch_waiting[work]
   if waiting then waiting.timer:cancel() end
   launch_waiting[work]=nil
@@ -295,6 +344,7 @@ end
 local function dispatch(uid,root,operation,payload,callback)
   payload=z.json.decode(encode(payload),true)
   local value,row=read(uid)
+  ensure_open(value.work)
   value.transport,value.requestId,value.checkout='serve',z.instance_id..uid,root
   value.correlation=uid
   value.outcome='unknown'
@@ -312,12 +362,21 @@ local function dispatch(uid,root,operation,payload,callback)
     on_progress=function(status) launch_progress(value.work,status,operation) end,
     on_not_dispatched=function(err)
       launch_progress(value.work,'ready',operation)
-      save_event(uid,'failed',{error=err.message})
+      local current,current_row=read(uid)
+      current.not_dispatched=true
+      if current.outcome=='pending' or current.outcome=='unknown' then
+        current.outcome,current.error='failed',err.message
+      end
+      put(uid,current,current_row)
     end},root))
   value,row=read(uid)
   if reply.runId then value.run=reply.runId end
   if value.outcome=='unknown' and tracked[value.requestId] then value.outcome='pending' end
   put(uid,value,row)
+  if closed(value.work) then
+    if operation~='model.method.run' then cancel_if_closed(value.work) end
+    ensure_open(value.work)
+  end
   return value
 end
 local function serve_observe(uid,operation,row)
@@ -382,6 +441,7 @@ z.on('custom_message',function(event)
   if not operation then return end
   local write=false
   local pending=operation.outcome=='pending' or operation.outcome=='unknown'
+  local previous_run=operation.run
   local method=decode(operation.request).operation=='model.method.run'
   if frame.event and frame.event.runId then
     operation.run=frame.event.runId
@@ -414,6 +474,10 @@ z.on('custom_message',function(event)
     tracked[frame.id]=nil;write=true
   end
   if write then put(uid,operation,row) end
+  if closed(operation.work) then
+    if not method and operation.run and operation.run~=previous_run then cancel_if_closed(operation.work) end
+    return
+  end
   local attached=read(scope(operation.work,'attachment'))
   changed(attached and attached.work or operation.work)
 end)
@@ -452,6 +516,7 @@ local function supervisor(pane, saved)
   error('No supervisor identity for pane; reconcile before sending input')
 end
 local function owned(args, running)
+  ensure_open(args.work)
   local agent = result(scope(args.work, args.agent))
   assert(agent.owner and agent.owner.host_id == identity.host_id and agent.owner.session == identity.session, 'Wrong host or session')
   assert(agent.owner.work == args.work and agent.owner.agent == args.agent, 'Wrong work or agent')
@@ -459,6 +524,7 @@ local function owned(args, running)
   if args.allow_closed and agent.owner.incarnation==identity.incarnation
     and not z.get_pane_info(z.terminal_pane(agent.pane)) then return end
   local current = supervisor(agent.pane, agent.supervisor)
+  ensure_open(args.work)
   assert(current.host_id == agent.supervisor, 'Pane belongs to a different supervisor')
   assert(current.child_pid == agent.process, 'Agent process changed')
   assert(current.attached, 'Supervisor is detached; adopt and reconcile before sending input')
@@ -474,6 +540,7 @@ local function owned(args, running)
   return agent
 end
 local function dispatch_prompt(agent)
+  if closed(agent.owner.work) then return end
   if not agent.ready or not agent.outstanding then return end
   local operation,row=read(agent.outstanding)
   if not operation or operation.outcome~='pending' or operation.dispatched then return end
@@ -482,6 +549,7 @@ local function dispatch_prompt(agent)
   z.agent.send(z.terminal_pane(agent.pane),decode(operation.request).prompt)
 end
 local function claim(args)
+  ensure_open(args.work)
   local uid = scope(args.work, args.key)
   local previous = read(uid)
   local request = encode(args)
@@ -503,6 +571,7 @@ local handle
 local function discover(work, root)
   local launch=result(scope(work,'launch'))
   assert(launch.checkout==root,'Launch belongs to a different control checkout')
+  if launch.not_dispatched then return read(scope(work,'runs')) end
   local history=decode(swamp({operation='workflow.history.search',payload={inputs={launch=work}}},root))
   for _,run in ipairs(history.results or {}) do
     if run.inputs.session==identity.session then
@@ -515,6 +584,7 @@ handle = function(args, manual_view)
   assert(type(args) == 'table', 'Expected a typed request')
   if args.method == 'identity' then return identity end
   if args.method=='swamp_read' then
+    if args.operation=='workflow.approve' then ensure_open(args.payload.runId) end
     assert(args.operation=='workflow.history.get' or args.operation=='workflow.history.search' or args.operation=='data.query' or args.operation=='workflow.approve','Unsupported bridge request')
     return decode(swamp({operation=args.operation,payload=args.payload},args.directory))
   end
@@ -532,6 +602,7 @@ handle = function(args, manual_view)
     return response.results[1]
   end
   if args.method=='workflow_answer' then
+    ensure_open(args.inputs.run)
     local heartbeat
     local function progress(status)
       if heartbeat then heartbeat:cancel();heartbeat=nil end
@@ -558,9 +629,8 @@ handle = function(args, manual_view)
     for _,child in ipairs(snapshot.children) do histories[#histories+1]=child end
     local operations={}
     for _,history in ipairs(histories) do
-      if history.status=='running' then
-        operations[#operations+1]=decode(swamp({operation='workflow.cancel',payload={runId=history.id}},snapshot.root))
-      end
+      local operation=cancel_run(history.id,snapshot.root)
+      if operation then operations[#operations+1]=operation end
     end
     return {operations=operations}
   end
@@ -585,6 +655,10 @@ handle = function(args, manual_view)
         work=history.inputs.launch
       end
     elseif args.launch and args.launch~=z.null then work=args.launch end
+    if closed(work) then
+      return {run=args.run,launch=work,root=config.root,history={id=args.run or work,status='cancelled'},
+        children={},active=false,questions={results={}},outputs={results={}},logs='Pane workflow lifecycle is closed.'}
+    end
     local runs=work and discover(work,config.root)
     if work and manual_view then attach_manual(work,manual_view) end
     if args.run and args.run~=z.null then attachment=read(scope(args.run,'attachment'))
@@ -723,10 +797,12 @@ handle = function(args, manual_view)
       if ok then break end
       if not D.is_conflict(err) or attempt==8 then error(err) end
     end
+    if cancel_if_closed(args.work) then ensure_open(args.work) end
     local view=read(scope(args.work,'view'))
     if not existing and view and view.incarnation==identity.incarnation then z.message_to_plugin{destination_plugin_id=view.view,message_name='workflow-changed'} end
     return {work=args.work,key=args.key,request=encode(args),incarnation=identity.incarnation,outcome='completed'}
   end
+  ensure_open(args.work)
   if args.method == 'reconcile' then
     local operation_uid = scope(args.work, args.operation)
     local operation, operation_row = read(operation_uid)
@@ -772,15 +848,18 @@ handle = function(args, manual_view)
     assert(name and name ~= '', 'No exit workflow configured. Use Hocus /project-setup.')
     local validation=swamp({operation='workflow.validate',payload={workflowIdOrName=name},
       on_progress=function(status) launch_progress(args.work,status,'workflow.validate') end},config.root)
+    ensure_open(args.work)
     assert(decode(validation).passed==true,'Workflow validation failed: '..validation)
     local inputs = args.inputs or {}
     inputs.launch, inputs.session = args.work, identity.session
     inputs.binary=z.server_binary or 'zellij'
     inputs.checkout = inputs.checkout or command({'git','rev-parse','--show-toplevel'},args.directory):gsub('\n$', '')
+    ensure_open(args.work)
     if inputs.sourcePane and inputs.sourcePane>=0 then
       local pane=z.get_pane_info(z.terminal_pane(inputs.sourcePane))
       assert(pane.exited,'Source pane must be exited')
       local host=supervisor(inputs.sourcePane)
+      ensure_open(args.work)
       local source_uid=scope(args.work,'source')
       local original={pane=inputs.sourcePane,supervisor=host.host_id,process=host.child_pid,target=pane.target,transportOwner=host.owner,
         owner={host_id=identity.host_id,session=identity.session,incarnation=identity.incarnation,work=args.work,agent='source'}}
@@ -803,14 +882,22 @@ handle = function(args, manual_view)
     put(uid,value,row)
     return dispatch(uid,config.root,'workflow.run',{workflowIdOrName=name,inputs=inputs})
   elseif args.method=='swamp_dispatch' then
+    if args.operation=='workflow.resume' then ensure_open(args.payload.runId) end
     return dispatch(uid,args.directory,args.operation,args.payload,true)
   elseif args.method == 'pane_action' then
     local source
-    if args.action~='leave' or fetch(scope(args.work,'source')) then
+    local view=read(scope(args.work,'view'))
+    if args.action=='restart' and not read(scope(args.work,'source')) and view
+      and view.incarnation==identity.incarnation and view.source then
+      -- Validation can fail before the supervisor record is saved. The authenticated
+      -- exit view still owns its held source and must allow the user to restart it.
+      source={pane=view.source}
+    elseif args.action~='leave' or fetch(scope(args.work,'source')) then
       source=owned{work=args.work,agent='source',allow_closed=args.action=='leave'}
     end
     if source then assert(z.get_pane_info(z.terminal_pane(source.pane)).exited,'Source pane is no longer exited') end
     if args.action=='leave' then
+      transition(args.work,'leave')
       if source then z.close_terminal_pane(source.pane) end
       value.outcome='completed'
       put(uid,value,row)
@@ -818,6 +905,7 @@ handle = function(args, manual_view)
       return value
     end
     if args.action=='restart' then
+      transition(args.work,'restart')
       close_view(args.work,source.pane)
       z.rerun_command_pane(source.pane)
       value.outcome='completed'
@@ -844,6 +932,7 @@ handle = function(args, manual_view)
     value.pane = spawned.pane_id.Terminal or spawned.pane_id
     value.branch, value.checkout = spawned.branch or z.null, spawned.cwd or z.null
     put(uid, value, row)
+    if closed(args.work) then z.close_terminal_pane(value.pane);ensure_open(args.work) end
     local info = z.get_pane_info(z.terminal_pane(value.pane))
     value, row = read(uid)
     value.target = info.target
@@ -861,6 +950,7 @@ handle = function(args, manual_view)
     value, row = read(uid)
     value.supervisor, value.process = host.host_id, host.child_pid
     value.remoteHost,value.remotePaneId=host.remote_host,host.pane_token
+    ensure_open(args.work)
     value.outcome = 'completed'
     put(uid, value, row)
   elseif args.method == 'agent_prompt' then
@@ -898,6 +988,7 @@ handle = function(args, manual_view)
     value.pane = pane.Terminal or pane
     value.checkout, value.log = args.cwd, 'terminal_' .. value.pane
     put(uid, value, row)
+    if closed(args.work) then z.close_terminal_pane(value.pane);ensure_open(args.work) end
     local placement=placements[args.work]
     if args.foreground and placement and not placement.detached then
       placement.queue[#placement.queue+1]=uid
@@ -999,7 +1090,12 @@ function M.load()
   identity = {host_id=ids.host_id, session=z.server_session, incarnation=z.server_incarnation}
   assert(identity.session ~= '', 'Bridge requires a server session')
   D.define {name='delivery', version=1, attrs={{'value','text',required=true}}}
-  z.subscribe {'agent_event', 'command_pane_exited', 'pane_update'}
+  z.subscribe {'agent_event', 'command_pane_exited', 'pane_update', 'pane_closed'}
+  for _,entry in ipairs(delivery_rows()) do
+    if entry.key=='view' and entry.value.closed and entry.value.cancel_pending then
+      z.task(function() cancel_lifecycle(entry.work) end)
+    end
+  end
   z.rpc.handle('swamp', function(args, call)
     local from = type(call.source)=='table' and call.source.Plugin
     assert(from, 'Workflow RPC requires a host-authenticated plugin source')
@@ -1011,7 +1107,7 @@ function M.load()
       if existing then
         assert(existing.view==from and existing.incarnation==identity.incarnation,'Launch already belongs to another hook instance')
       else
-        put(uid,{view=from,incarnation=identity.incarnation})
+        put(uid,{view=from,source=args.inputs and args.inputs.sourcePane,incarnation=identity.incarnation})
         placements[args.work]={view=from,queue={},subtitle='Workflow · loading'}
         present(args.work)
       end
@@ -1037,11 +1133,13 @@ function M.pipe(message)
     local uid=scope(reply.work,reply.key)
     local current=read(uid)
     assert(current and decode(current.request).method=='pane_action','No picker operation')
+    if closed(reply.work) then z.close_plugin_pane(from);return end
     if current.outcome=='completed' then
       assert(current.choice==reply.choice,'Picker result already differs')
     else assert(current.outcome=='pending' or current.outcome=='unknown','Picker dispatch cannot accept a result') end
     save_event(uid,'completed',{choice=reply.choice})
     if reply.choice=='started' then
+      transition(reply.work,'fork')
       close_view(reply.work)
     end
     z.message_to_plugin{destination_plugin_id=from,message_name='swamp-pane-ack'}
@@ -1075,11 +1173,116 @@ z.on('pane_update', function()
     end
   end
 end)
+delivery_rows = function()
+  local all,cursor={},nil
+  repeat
+    local rows,page=D.fetch{entity='delivery',after_id=cursor}
+    for _,row in ipairs(rows) do
+      local id=decode(row.uid)
+      if id[1]==identity.host_id and id[2]==identity.session then
+        all[#all+1]={uid=row.uid,rev=row.rev,work=id[3],key=id[4],value=decode(row.value)}
+      end
+    end
+    cursor=page.next_cursor
+  until not cursor or cursor==z.null
+  return all
+end
+cancel_lifecycle = function(work)
+  if cancelling[work] then return end
+  cancelling[work]=true
+  local uid=scope(work,'view')
+  local view,row=read(uid)
+  local ok,done=pcall(function()
+    local runs={}
+    local launch=read(scope(work,'launch'))
+    for _,entry in ipairs(delivery_rows()) do
+      if lifecycle_work(entry.work)==work then
+        local value=entry.value
+        if entry.key=='runs' then
+          for id,run in pairs(value.entries) do runs[id]=run.root end
+        elseif value.run and value.checkout and value.request then
+          local request=decode(value.request)
+          if request.method=='workflow_run' or request.operation=='workflow.run' or request.operation=='workflow.resume' then
+            runs[value.run]=value.checkout
+          end
+        end
+      end
+    end
+    -- A lost launch response can leave no run ID in the delivery record.
+    if launch and launch.checkout and not launch.not_dispatched then
+      local history=decode(swamp({operation='workflow.history.search',payload={inputs={launch=work}}},launch.checkout))
+      for _,run in ipairs(history.results or {}) do
+        if run.inputs and run.inputs.session==identity.session then runs[run.runId]=launch.checkout end
+      end
+    end
+    for run,root in pairs(runs) do cancel_run(run,root) end
+    return not (launch and launch.transport and not launch.not_dispatched and not launch.run and not next(runs))
+  end)
+  if ok and done then
+    view.cancel_pending=false
+    -- A late attachment changes this revision and requires another cancellation pass.
+    ok,done=pcall(put,uid,view,row)
+    if ok then done=true end
+  end
+  cancelling[work]=nil
+  if not ok or not done then
+    if not ok then z.log('Workflow cancellation pending: '..tostring(done)) end
+    z.after(1,function() z.task(function() cancel_lifecycle(work) end) end)
+  end
+end
+local function close_lifecycle(work)
+  local uid=scope(work,'view')
+  local view,row=read(uid)
+  if not view or view.closed or view.transition or view.incarnation~=identity.incarnation then return end
+  view.closed,view.cancel_pending=true,true
+  put(uid,view,row) -- durable tombstone before closing resources or yielding to cancellation
+  local placement=placements[work]
+  if placement then placement.detached=true end
+  local waiting=launch_waiting[work]
+  if waiting then waiting.timer:cancel();launch_waiting[work]=nil end
+  local panes={}
+  if view.source then panes[view.source]=true end
+  for _,entry in ipairs(delivery_rows()) do
+    if lifecycle_work(entry.work)==work then
+      local value=entry.value
+      if value.owner and value.owner.host_id==identity.host_id and value.owner.session==identity.session
+        and value.owner.incarnation==identity.incarnation and value.owner.work==entry.work and value.pane then
+        panes[value.pane]=true
+      end
+      if value.outcome=='pending' or value.outcome=='unknown' then
+        value.outcome,value.error='interrupted','Pane workflow lifecycle is closed'
+        put(entry.uid,value,entry)
+      end
+    end
+  end
+  for pane in pairs(panes) do z.close_terminal_pane(pane) end
+  z.close_plugin_pane(view.view)
+  -- Screen settlement never waits for Swamp's cancellation or history transport.
+  z.task(function() cancel_lifecycle(work) end)
+end
+z.on('pane_closed',function(event)
+  local kind,id=next(event.value or {})
+  if not id then return end
+  local affected={}
+  for _,entry in ipairs(delivery_rows()) do
+    local value=entry.value
+    if entry.key=='view' and value.incarnation==identity.incarnation then
+      if (kind=='Plugin' and value.view==id) or (kind=='Terminal' and (value.source==id or value.current==id)) then
+        affected[entry.work]=true
+      end
+    elseif kind=='Terminal' and entry.key=='source' and value.pane==id and value.owner
+      and value.owner.host_id==identity.host_id and value.owner.session==identity.session
+      and value.owner.incarnation==identity.incarnation and value.owner.work==entry.work then
+      affected[lifecycle_work(entry.work)]=true
+    end
+  end
+  for work in pairs(affected) do close_lifecycle(work) end
+end)
 z.on('agent_event', function(event)
   local ok, raw = pcall(decode, event.raw or '')
   if not ok or not raw._zellij_workflow_owner then return end
   local owner = decode(raw._zellij_workflow_owner)
-  if owner.host_id ~= identity.host_id or owner.session ~= identity.session then return end
+  if owner.host_id ~= identity.host_id or owner.session ~= identity.session or closed(owner.work) then return end
   local agent = read(scope(owner.work, owner.agent))
   if not agent or (agent.pane and agent.pane ~= event.pane_id) or encode(agent.owner) ~= encode(owner) then return end
   if event.hook=='SessionStart' then
@@ -1114,7 +1317,7 @@ z.on('command_pane_exited', function(event)
   local context = event.context or {}
   if not context.swamp_owner then return end
   local owner = decode(context.swamp_owner)
-  if owner.host_id ~= identity.host_id or owner.session ~= identity.session then return end
+  if owner.host_id ~= identity.host_id or owner.session ~= identity.session or closed(owner.work) then return end
   local uid = scope(owner.work, context.swamp_operation or owner.agent)
   local value = read(uid)
   if not value or encode(value.owner) ~= encode(owner) or (value.pane and value.pane~=event.pane_id) then return end

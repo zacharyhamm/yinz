@@ -1,4 +1,56 @@
 use super::*;
+use zellij_bus::plugins::PluginInstruction;
+use zellij_types::data::Event;
+
+#[test]
+fn explicit_close_destroys_the_entire_live_replacement_chain() {
+    for targeted in [None, Some(0), Some(1), Some(2)] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            true,
+        );
+        let (sender, receiver) = unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        let source = PaneId::Terminal(TerminalId::new(1));
+        let view = PaneId::Plugin(crate::PluginId::new(2));
+        let helper = PaneId::Terminal(TerminalId::new(3));
+        tab.suppress_pane_and_replace_with_pid(source, view, false, None, None, None)
+            .unwrap();
+        tab.suppress_pane_and_replace_with_pid(view, helper, false, None, None, None)
+            .unwrap();
+        if let Some(index) = targeted {
+            let ids = [source, view, helper];
+            assert_eq!(tab.close_pane_explicitly(ids[index], None).len(), 3);
+            assert!(tab.close_pane_explicitly(ids[index], None).is_empty());
+        } else {
+            tab.close_focused_pane(ClientId::new(1), None).unwrap();
+        }
+        assert!(
+            tab.get_all_pane_ids().is_empty(),
+            "explicit close left hidden panes alive"
+        );
+        let closed: Vec<_> = receiver
+            .try_iter()
+            .flat_map(|(instruction, _)| match instruction {
+                PluginInstruction::Update(events) => events
+                    .into_iter()
+                    .filter_map(|(_, _, event)| match event {
+                        Event::PaneClosed(id) => Some(id),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => vec![],
+            })
+            .collect();
+        for id in [source, view, helper] {
+            assert_eq!(closed.iter().filter(|closed| **closed == id).count(), 1);
+        }
+    }
+}
 
 #[test]
 fn workflow_takeover_keeps_the_original_suppressed_until_explicit_restart() {

@@ -5,6 +5,7 @@ local view=require('zellij.workflow_view')
 local launch_rpc,launch_ready
 function M.load(config)
   M.pane=tonumber(config.agent_pane_id)
+  M.launch=config.agent_exit_token
   M.directory=config.agent_firecracker_worktree or config.agent_cwd
   z.subscribe {'key'}
   if config.swamp_owner or config.agent_workflow_owner then
@@ -23,9 +24,13 @@ function M.load(config)
   view.active=true
   view.load{on_restart=function()
     if not M.busy and not view.active and not view.submitting and #view.pending==0 then
-      z.replace_pane_with_existing_pane{z.plugin_pane(z.get_plugin_ids().plugin_id),z.terminal_pane(M.pane),true}
-      z.rerun_command_pane(M.pane)
-      z.close_self()
+      M.busy=true
+      z.task(function()
+        local reply=z.await(z.rpc.call{plugin_url='zellij:swamp-bridge',name='swamp',payload={
+          method='pane_action',work=M.launch,key='restart',action='restart'}})
+        M.busy=false
+        if reply.error then view.status=reply.error;z.request_render() end
+      end)
     end
   end}
   view.status='Starting workflow...'
