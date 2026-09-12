@@ -255,6 +255,7 @@
         if (message !== "swamp-response") return false;
         const frame = JSON.parse(encoded);
         if (frame.id !== id) return false;
+        if (frame.type === "managed.progress") return false;
         if (frame.type === "error") { last = {error: frame.error}; return true; }
         if (frame.type === "event") {
           last = frame.event;

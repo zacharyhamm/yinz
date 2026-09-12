@@ -558,7 +558,7 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
     Object.assign(value, {workflow: name, checkout: config.root, launch: args.work}); put(uid!, value, row);
     return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs});
   } else if (args.method === 'swamp_dispatch') {
-    return dispatch(uid!, args.directory, args.operation, args.payload);
+    return dispatch(uid!, args.directory, args.operation, {...args.payload, _zellij_active_callback: true});
   } else if (args.method === 'pane_action') {
     let source: (Delivery & {pane: number}) | undefined;
     const saved = read(scope(args.work, 'source'))[0];

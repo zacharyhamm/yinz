@@ -7,15 +7,33 @@ fn deno_swamp_requests_match_ids_and_wait_for_terminal_frames() {
       bind({load() {
         zellij.swampRequest({directory:'/work',operation:'workflow.run',id:'start',started:true,payload:{optional:null}}).then(r=>answers.push(r));
         zellij.swampRequest({directory:'/work',operation:'model.method.run',id:'end'}).then(r=>answers.push(r));
+        zellij.swampRequest({directory:'/work',operation:'workflow.validate',id:'validate'}).then(r=>answers.push(r));
       }});
       bridge('load',{},2);
       globalThis.frame=(id,type,extra={})=>bridge('update',{CustomMessage:['swamp-response',JSON.stringify({id,type,...extra})]},2);
       frame('other','error',{error:'wrong request'});
+      for(const id of ['start','end','validate'])frame(id,'managed.progress',{payload:{status:'waiting'}});
+    "#);
+    run(&mut runtime, r#"
+      check(answers.length===0);
+      for(const id of ['start','end','validate'])frame(id,'managed.progress',{payload:{status:'ready'}});
+    "#);
+    run(&mut runtime, r#"
+      check(answers.length===0);
       frame('start','event',{event:{runId:'one',kind:'started'}});
       frame('end','event',{event:{runId:'two',kind:'started'}});
     "#);
-    run(&mut runtime, "check(answers.length===1 && answers[0].runId==='one'); frame('end','event',{event:{kind:'completed',run:{status:'failed'}}}); frame('end','done');");
-    run(&mut runtime, "check(answers.length===2 && answers[1].run.status==='failed');");
+    run(&mut runtime, r#"
+      check(answers.length===1 && answers[0].runId==='one');
+      frame('end','event',{event:{kind:'completed',run:{status:'failed'}}});
+      for(const status of ['waiting','ready'])frame('end','managed.progress',{payload:{status}});
+    "#);
+    run(&mut runtime, "check(answers.length===1); frame('end','done');");
+    run(&mut runtime, r#"
+      check(answers.length===2 && answers[1].run.status==='failed');
+      frame('validate','report',{payload:{data:{passed:true,checks:['valid']}}});
+    "#);
+    run(&mut runtime, "check(answers.length===3 && answers[2].passed===true && answers[2].checks[0]==='valid');");
     capture_commands(&mut runtime);
     run(&mut runtime, "check(sent.some(([command])=>command.SwampRequest?.payload==='{\"optional\":null}'));");
 }
@@ -28,23 +46,36 @@ fn deno_swamp_dispatch_keeps_terminal_outcomes_and_recovers_method_attachments()
     run(&mut runtime, r#"
       M.load();globalThis.done=false;mock.sleep=()=>new Promise(()=>{});
       (async()=>{
-        for(const kind of ['workflow.run','model.method.run']) {
+        for(const kind of ['workflow.run','workflow.resume','model.method.run']) {
           let dispatches=0;
           mock.swampRequest=async opts=>{
             dispatches++;
+            check(opts.payload._zellij_active_callback===true);
+            check(opts.payload.optional===null && opts.payload.inputs.answer==='yes');
             const frame=(type,event)=>handlers.CustomMessage(['swamp-response',JSON.stringify({id:opts.id,type,event})]);
             frame('event',{runId:kind,kind:'started'});
             frame('event',{kind:'completed',run:{status:'failed'}});frame('done');
             return {runId:kind};
           };
-          const args={method:'swamp_dispatch',work:'work',key:kind,directory:'/control',operation:kind,payload:{}};
+          const args={method:'swamp_dispatch',work:'work',key:kind,directory:'/control',operation:kind,payload:{optional:null,inputs:{answer:'yes'}}};
           const result=await handler(args,{source:{Plugin:1}});
+          check(!Object.hasOwn(args.payload,'_zellij_active_callback'));
           check(result.outcome==='failed' && result.exitCode===1);
           check((await handler(args,{source:{Plugin:1}})).outcome==='failed' && dispatches===1);
           let rejected=false;
-          try {await handler({...args,payload:{optional:null}},{source:{Plugin:1}});} catch {rejected=true;}
+          try {await handler({...args,payload:{inputs:{answer:'yes'}}},{source:{Plugin:1}});} catch {rejected=true;}
           check(rejected && dispatches===1);
         }
+        const operations=[];
+        mock.projectConfig={read:()=>({root:'/work',config:{}})};
+        mock.swampRequest=async opts=>{
+          operations.push(opts.operation);
+          check(!Object.hasOwn(opts.payload,'_zellij_active_callback'));
+          check(opts.payload.workflowIdOrName==='test');
+          return opts.operation==='workflow.validate'?{passed:true}:{runId:'fresh'};
+        };
+        await handler({method:'workflow_run',work:'fresh',key:'launch',workflow:'test',directory:'/work',inputs:{checkout:'/work'}},{source:{Plugin:1}});
+        check(JSON.stringify(operations)===JSON.stringify(['workflow.validate','workflow.run']));
         const args={method:'swamp_dispatch',work:'work',key:'recover',directory:'/control',operation:'model.method.run',payload:{}};
         mock.swampRequest=async()=>({runId:'recover'});
         await handler(args,{source:{Plugin:1}});
