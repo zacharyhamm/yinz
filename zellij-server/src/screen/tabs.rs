@@ -747,24 +747,6 @@ impl Screen {
             })
             .map(|tab| tab.id)
             .collect();
-        // Hidden work can retain its tab, but clients need a usable destination immediately.
-        if let Some(destination) = usable.first().copied() {
-            let stranded: Vec<_> = self
-                .active_tab_ids
-                .iter()
-                .filter_map(|(client, id)| {
-                    self.tabs
-                        .get(id)
-                        .filter(|tab| !tab.is_pending() && !tab.has_selectable_panes())
-                        .map(|_| *client)
-                })
-                .collect();
-            for client in stranded {
-                let position = self.tabs[&destination].position;
-                self.switch_active_tab(position, None, true, client)
-                    .context(err_context)?;
-            }
-        }
         let another_destination = usable.iter().any(|id| Some(*id) != self.replacement_tab);
         let doomed: Vec<TabId> = self
             .tabs
@@ -782,6 +764,26 @@ impl Screen {
             })
             .map(|tab| tab.id)
             .collect();
+        // Relocate clients from retained hidden-work tabs. Teardown uses tab history for closing tabs.
+        if let Some(destination) = usable.first().copied() {
+            let stranded: Vec<_> = self
+                .active_tab_ids
+                .iter()
+                .filter_map(|(client, id)| {
+                    self.tabs
+                        .get(id)
+                        .filter(|tab| {
+                            !tab.is_pending() && !tab.has_selectable_panes() && !doomed.contains(id)
+                        })
+                        .map(|_| *client)
+                })
+                .collect();
+            for client in stranded {
+                let position = self.tabs[&destination].position;
+                self.switch_active_tab(position, None, true, client)
+                    .context(err_context)?;
+            }
+        }
         if doomed.is_empty() {
             self.replacement_pending = false;
             return Ok(());

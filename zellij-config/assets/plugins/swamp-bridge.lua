@@ -379,6 +379,13 @@ local function dispatch(uid,root,operation,payload,callback)
   end
   return value
 end
+local function workflow_run_id(operation,request)
+  if operation.run then return operation.run end
+  if request.operation=='workflow.resume' then return request.payload.runId end
+  local history=decode(swamp({operation='workflow.history.search',payload={filter='has(tags.zellijOperation) && tags.zellijOperation == '..encode(operation.correlation)}},operation.checkout))
+  assert(#(history.results or {})<=1,'Multiple runs have the same operation identity; reconcile explicitly')
+  return history.results and history.results[1] and history.results[1].runId
+end
 local function serve_observe(uid,operation,row)
   local attachment
   for attempt=1,8 do
@@ -401,12 +408,7 @@ local function serve_observe(uid,operation,row)
       end
     else operation.outcome='unknown' end
   else
-  if request.operation=='workflow.resume' then operation.run=operation.run or request.payload.runId end
-  if not operation.run and request.operation~='workflow.resume' then
-    local history=decode(swamp({operation='workflow.history.search',payload={filter='has(tags.zellijOperation) && tags.zellijOperation == '..encode(operation.correlation)}},operation.checkout))
-    assert(#(history.results or {})<=1,'Multiple runs have the same operation identity; reconcile explicitly')
-    if history.results and history.results[1] then operation.run=history.results[1].runId end
-  end
+  operation.run=workflow_run_id(operation,request)
   if operation.run and request.operation~='model.method.run' then
     local history=decode(swamp({operation='workflow.history.get',payload={workflowIdOrName=operation.run}},operation.checkout))
     local matches=request.operation~='workflow.resume' or (history.inputs and history.inputs.submission==request.payload.inputs.submission)
@@ -1203,30 +1205,32 @@ cancel_lifecycle = function(work)
   local uid=scope(work,'view')
   local view,row=read(uid)
   local ok,done=pcall(function()
-    local runs={}
-    local launch=read(scope(work,'launch'))
+    local runs,unresolved={},false
     for _,entry in ipairs(delivery_rows()) do
       if lifecycle_work(entry.work)==work then
         local value=entry.value
         if entry.key=='runs' then
           for id,run in pairs(value.entries) do runs[id]=run.root end
-        elseif value.run and value.checkout and value.request then
+        elseif value.checkout and value.request then
           local request=decode(value.request)
           if request.method=='workflow_run' or request.operation=='workflow.run' or request.operation=='workflow.resume' then
-            runs[value.run]=value.checkout
+            local run=value.run
+            if not run and value.transport and not value.not_dispatched then
+              run=workflow_run_id(value,request)
+              if run then
+                -- History yields to delivery events. Merge only the ID into the current claim.
+                local current,current_row=read(entry.uid)
+                current.run=current.run or run
+                put(entry.uid,current,current_row)
+              else unresolved=true end
+            end
+            if run then runs[run]=value.checkout end
           end
         end
       end
     end
-    -- A lost launch response can leave no run ID in the delivery record.
-    if launch and launch.checkout and not launch.not_dispatched then
-      local history=decode(swamp({operation='workflow.history.search',payload={inputs={launch=work}}},launch.checkout))
-      for _,run in ipairs(history.results or {}) do
-        if run.inputs and run.inputs.session==identity.session then runs[run.runId]=launch.checkout end
-      end
-    end
     for run,root in pairs(runs) do cancel_run(run,root) end
-    return not (launch and launch.transport and not launch.not_dispatched and not launch.run and not next(runs))
+    return not unresolved
   end)
   if ok and done then
     view.cancel_pending=false

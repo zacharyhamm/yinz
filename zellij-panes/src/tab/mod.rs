@@ -3099,7 +3099,14 @@ impl Tab {
                         .min()
                 });
             if let Some(id) = candidate {
+                if self.floating_panes.get_pane(id).is_some()
+                    && self.tiled_panes.fullscreen_covers_ui()
+                {
+                    self.tiled_panes.unset_fullscreen();
+                }
                 self.focus_pane_with_id(id, false, false, client_id)?;
+                self.set_force_render();
+                self.set_should_clear_display_before_rendering();
             }
         }
         Ok(())

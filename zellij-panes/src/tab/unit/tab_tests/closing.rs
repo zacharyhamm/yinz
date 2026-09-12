@@ -3,6 +3,91 @@ use zellij_bus::plugins::PluginInstruction;
 use zellij_types::data::Event;
 
 #[test]
+fn no_ui_fullscreen_editor_exit_reveals_floating_survivor() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        true,
+    );
+    let (sender, _receiver) = unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+    let client = ClientId::new(1);
+    let source = PaneId::Terminal(TerminalId::new(1));
+    let plugin = PaneId::Plugin(crate::PluginId::new(2));
+    let editor = PaneId::Terminal(TerminalId::new(3));
+    let floating = PaneId::Terminal(TerminalId::new(4));
+    tab.new_pane(
+        plugin,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.set_pane_selectable(plugin, false);
+    tab.new_pane(
+        floating,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(None),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.hide_floating_panes();
+    tab.close_pane(source, false, Some(0));
+    tab.new_in_place_pane(
+        editor,
+        None,
+        None,
+        Some(plugin),
+        false,
+        Some(client),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.focus_pane_with_id(editor, false, false, client)
+        .unwrap();
+    tab.tiled_panes.toggle_pane_no_ui_fullscreen(editor);
+    tab.ensure_selectable_focus(client).unwrap();
+    assert!(
+        tab.tiled_panes.fullscreen_is_active(),
+        "valid fullscreen focus is preserved"
+    );
+    assert_eq!(tab.get_active_pane_id(client), Some(editor));
+    tab.close_pane(editor, false, Some(0));
+    tab.ensure_selectable_focus(client).unwrap();
+    assert!(tab.has_selectable_panes());
+    assert_eq!(
+        tab.get_active_pane_id(client),
+        Some(floating),
+        "floating visible {}, no-UI fullscreen {}",
+        tab.are_floating_panes_visible(),
+        tab.tiled_panes.fullscreen_covers_ui()
+    );
+    assert!(tab.are_floating_panes_visible());
+    assert!(!tab.tiled_panes.fullscreen_covers_ui());
+    assert!(!tab.tiled_panes.fullscreen_is_active());
+    assert!(tab.get_pane_with_id(floating).unwrap().selectable());
+    let receiver = install_pty_writer_capture(&mut tab);
+    tab.write_to_active_terminal(&None, b"x".to_vec(), false, client)
+        .unwrap();
+    assert!(matches!(drain_pty_writer(&receiver).as_slice(),
+        [PtyWriteInstruction::Write(bytes, terminal, _)]
+            if bytes == b"x" && *terminal == TerminalId::new(4)));
+    tab.assert_invariants();
+}
+
+#[test]
 fn middle_replacement_exit_preserves_restoration_and_explicit_chain_destruction() {
     for (stacked, hidden_member) in [(false, false), (true, false), (true, true)] {
         for scrollback_editor in [false, true] {
@@ -2407,6 +2492,11 @@ fn exiting_fullscreen_editor_restoring_nonselectable_plugin_keeps_usable_focus()
     tab.focus_pane_with_id(editor, false, false, client)
         .unwrap();
     tab.tiled_panes.toggle_pane_fullscreen(editor);
+    tab.ensure_selectable_focus(client).unwrap();
+    assert!(
+        tab.tiled_panes.fullscreen_is_active(),
+        "valid fullscreen focus is preserved"
+    );
     assert_eq!(tab.get_active_pane_id(client), Some(editor));
     assert!(tab.tiled_panes.panes_to_hide_contains(survivor));
 
