@@ -182,7 +182,7 @@ function present(work: string) {
   let next: number | undefined;
   while (placement.queue.length) {
     const [operation] = read(placement.queue[0]);
-    if (operation?.outcome === 'pending') { next = operation.pane; break; }
+    if (operation && (operation.outcome === 'pending' || (operation.capture && !operation.closed && ['completed', 'failed'].includes(operation.outcome)))) { next = operation.pane; break; }
     placement.queue.shift();
   }
   paneSubtitle(view, placement.subtitle);
@@ -609,6 +609,36 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
       } catch (error) { operation.logError = String(error); }
     }
     return operation;
+  }
+  if (args.method === 'command_close') {
+    const uid = scope(args.work, args.key), operation = result(uid);
+    assert(JSON.parse(operation.request).method === 'command', 'Not a command operation');
+    assert(operation.owner?.host_id === identity.host_id && operation.owner.session === identity.session &&
+      operation.owner.work === args.work && operation.owner.agent === args.key, 'Wrong command ownership');
+    assert(['completed', 'failed'].includes(operation.outcome), 'Command has not completed');
+    assert(operation.pane != null && operation.supervisor && operation.process != null, 'Missing command identity');
+    if (operation.closed) return operation;
+    const pane = operation.pane, info = z.command('GetPaneInfo', terminal(pane));
+    if (info) {
+      const host = await supervisor(pane, operation.supervisor);
+      assert(host.host_id === operation.supervisor && host.terminal_id === pane && host.attached, 'Command supervisor changed');
+      assert(host.child_pid === operation.process, 'Command process changed');
+      if (host.owner) assert(host.owner === (operation.transportOwner ?? encode(operation.owner)), 'Command ownership changed');
+      assert(z.command('GetPaneInfo', terminal(pane))?.exited, 'Command is still running');
+    }
+    const placement = placements.get(args.work);
+    if (placement) {
+      placement.queue = placement.queue.filter(entry => entry !== uid);
+      present(args.work);
+      if (placement.current === pane) placement.current = undefined;
+    }
+    const viewUid = scope(lifecycleWork(args.work), 'view'), [view, viewRow] = read(viewUid);
+    if (view?.current === pane) { delete view.current; put(viewUid, view, viewRow); }
+    // Replacement can briefly remove the pane from the manifest; close the verified identity anyway.
+    if (info) z.command('CloseTerminalPane', pane);
+    const [fresh, row] = read(uid); assert(fresh, 'Command disappeared');
+    fresh.closed = true; put(uid, fresh, row);
+    return fresh;
   }
   if (args.method === 'agent_inspect') return owned(args);
   if (args.method === 'workflow_attach') {
@@ -1122,6 +1152,7 @@ z.on('CommandPaneExited', ([pane, exitCode, context]) => {
   const uid = scope(owner.work, context.swamp_operation || owner.agent), [value] = read(uid);
   if (!value || encode(value.owner) !== encode(owner) || (value.pane != null && value.pane !== pane)) return;
   const request: Request = JSON.parse(value.request);
+  if (request.method === 'command' && !['pending', 'unknown'].includes(value.outcome)) return;
   saveEvent(uid, request.method === 'command' ? (exitCode === 0 ? 'completed' : 'failed') : 'process-exit', {exitCode});
   if (request.method === 'agent_spawn') { const [current, row] = read(uid); assert(current, 'No operation with that identity'); current.processExited = true; put(uid, current, row); }
   if (value.outstanding) saveEvent(value.outstanding, 'process-exit', {exitCode});

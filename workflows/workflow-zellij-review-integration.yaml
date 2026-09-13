@@ -2128,6 +2128,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"

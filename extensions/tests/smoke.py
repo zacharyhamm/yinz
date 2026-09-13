@@ -208,6 +208,14 @@ def dismiss_command(token, suffix, visible=False):
     until(suffix + ' dismissal prompt', lambda: 'Press Enter to return.' in
           zellij('action', 'dump-screen', '--pane-id', pane_id))
     zellij('action', 'write-chars', '--pane-id', pane_id, '\n')
+    if suffix == 'tests':
+        until('completed test pane closed', lambda: not any(
+            not p['is_plugin'] and p['id'] == pane['id']
+            for p in json.loads(zellij('action', 'list-panes', '--json'))))
+        # Further input to the old pane cannot restart its capture command.
+        run(binary, '--session', session, 'action', 'write-chars', '--pane-id', pane_id, '\n', check=False)
+        assert not any(not p['is_plugin'] and p['id'] == pane['id']
+                       for p in json.loads(zellij('action', 'list-panes', '--json')))
 
 
 def dismiss_commit(token):
@@ -1264,7 +1272,9 @@ try:
                 assert 'checks' in seen, seen
             ids = [h['id'] for h in [snapshot['history']] + snapshot['children']]
             requests = swamp('data', 'query', 'specName == "operation" && tags.workflowRunId in ' + json.dumps(ids), '--select', 'attributes.request')['results']
-            assert all(json.loads(r)['method'] != 'agent_spawn' for r in requests), 'Failed tests must not automatically start a repair agent'
+            requests = [json.loads(r) for r in requests]
+            assert all(r['method'] != 'agent_spawn' or r['key'].endswith('-commit-agent')
+                       for r in requests), 'Failed tests must not automatically start a repair agent'
             entry = next(e for e in snapshot['outputs']['results'] if e['attributes'].get('summaryLength', 0))
             predicate = 'modelName == ' + json.dumps(entry['model']) + ' && name == ' + json.dumps(entry['name']) + ' && version == ' + str(entry['version'])
             saved = swamp('data', 'query', predicate, '--select', 'attributes')['results'][0]
@@ -1379,7 +1389,9 @@ try:
         print('PASS: approved fix receives failure output and exits to a fresh menu; Leave preserves checkout', flush=True)
         if args.test_output_only:
             launch('passing-report')
-            prepare('passing-report')
+            passing_review = prepare('passing-report')
+            zellij('workflow', 'show', passing_review['attributes']['run'])
+            until('passing gate workflow visible', lambda: 'Run tests' in zellij('action', 'dump-screen'))
             choose('passing-report', 'review', 'run-tests')
             q = until('passing report menu', lambda: pending('passing-report', 'review'))
             frame_start = len(ui_output)

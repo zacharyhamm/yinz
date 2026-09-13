@@ -175,16 +175,31 @@ Deno.test("capture survives a failed evidence save; saved reports retain beginni
     });
     const saved = new Map<string, Record<string, unknown>>();
     let failSave = true;
+    const binary = directory + "-bridge";
+    await Deno.writeTextFile(
+        binary,
+        `#!/usr/bin/env python3
+import json, pathlib, sys
+assert json.load(sys.stdin)['method'] == 'command_close'
+assert pathlib.Path('${directory}/saved').exists(), 'cleanup before save'
+assert not pathlib.Path('${directory}/fail-cleanup').exists(), 'cleanup failed'
+print('{"result": {}}')
+`,
+    );
+    await Deno.chmod(binary, 0o700);
     const c: Context = {
         repoDir: "/tmp",
-        globalArgs: {},
+        globalArgs: { session: "test", binary },
         signal: new AbortController().signal,
         logger: { info() {} },
         readResource: (name) => Promise.resolve(saved.get(name) ?? null),
-        writeResource: (spec, name, value) => {
+        writeResource: async (spec, name, value) => {
             if (failSave) throw new Error("storage unavailable");
             resources[spec as keyof typeof resources].schema.parse(value);
             saved.set(name, value);
+            await Deno.writeTextFile(directory + "/saved", "yes").catch(
+                () => {},
+            );
             return Promise.resolve({ name, version: 1 });
         },
     };
@@ -215,7 +230,29 @@ Deno.test("capture survives a failed evidence save; saved reports retain beginni
         }
         assert(rejected && (await Deno.stat(directory)).isDirectory);
         failSave = false;
+        await Deno.writeTextFile(directory + "/fail-cleanup", "yes");
+        rejected = false;
+        try {
+            await methods.test_result.execute(input, c);
+        } catch (error) {
+            rejected = String(error).includes(
+                "Evidence saved; capture cleanup failed",
+            );
+        }
+        assert(rejected && (await Deno.stat(directory)).isDirectory);
+        const original = JSON.stringify(saved.get("test-current"));
+        await Deno.writeTextFile(
+            directory + "/output",
+            "a rerun must not replace evidence",
+        );
+        await Deno.remove(directory + "/fail-cleanup");
         await methods.test_result.execute(input, c);
+        assert(JSON.stringify(saved.get("test-current")) === original);
+        // A closed pane cleanup is idempotent even after the capture is gone.
+        await Deno.writeTextFile(
+            binary,
+            "#!/bin/sh\nprintf '%s' '{\"result\": {}}'\n",
+        );
         let removed = false;
         try {
             await Deno.stat(directory);
@@ -312,6 +349,7 @@ Deno.test("capture survives a failed evidence save; saved reports retain beginni
         );
         assert(new TextEncoder().encode(prompt).length <= 262144);
     } finally {
+        await Deno.remove(binary);
         try {
             await Deno.remove(directory, { recursive: true });
         } catch (error) {

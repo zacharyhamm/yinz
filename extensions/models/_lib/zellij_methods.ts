@@ -2,6 +2,7 @@
 import { z } from "npm:zod@4.3.6";
 import {
     AgentSpec,
+    bridge,
     observe,
     Operation,
     operation,
@@ -762,9 +763,43 @@ export const methods = {
             }
             const operationFingerprint = await digest(a);
             const previous = await c.readResource("test-current");
+            const cleanup = async (outputComplete: unknown) => {
+                if (!a.operation.capture) return;
+                try {
+                    await bridge({
+                        ...c,
+                        globalArgs: {
+                            ...c.globalArgs,
+                            session: a.operation.owner?.session ??
+                                c.globalArgs.session,
+                        },
+                    }, {
+                        method: "command_close",
+                        work: a.operation.work,
+                        key: a.operation.key,
+                    });
+                    if (outputComplete) {
+                        try {
+                            await Deno.remove(a.operation.capture.directory, {
+                                recursive: true,
+                            });
+                        } catch (error) {
+                            if (!(error instanceof Deno.errors.NotFound)) {
+                                throw error;
+                            }
+                        }
+                    }
+                } catch (error) {
+                    throw new Error(
+                        "Evidence saved; capture cleanup failed: " + error,
+                    );
+                }
+            };
             // A retry after cleanup must use the already-saved evidence.
             if (previous?.operationFingerprint === operationFingerprint) {
-                return save(c, "test", previous);
+                const result = await save(c, "test", previous);
+                await cleanup(previous.outputComplete);
+                return result;
             }
             const captured = a.operation.capture
                 ? await readCapture(
@@ -795,17 +830,7 @@ export const methods = {
                 "test",
                 Test.parse({ ...test, ...testReport(test) }),
             );
-            if (a.operation.capture && captured.outputComplete) {
-                try {
-                    await Deno.remove(a.operation.capture.directory, {
-                        recursive: true,
-                    });
-                } catch (error) {
-                    c.logger.info(
-                        "Evidence saved; capture cleanup failed: " + error,
-                    );
-                }
-            }
+            await cleanup(captured.outputComplete);
             return result;
         },
     },
