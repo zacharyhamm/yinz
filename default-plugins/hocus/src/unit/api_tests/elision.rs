@@ -91,7 +91,7 @@ fn a_superseded_write_sends_a_placeholder_instead_of_the_source() {
 
     assert!(!arguments[0].contains("draft one"), "{}", arguments[0]);
     assert!(
-        arguments[0].contains("plugin_read name=todo"),
+        arguments[0].contains("tool_result_read"),
         "{}",
         arguments[0]
     );
@@ -154,7 +154,7 @@ fn a_typescript_write_is_superseded_without_growing_an_extra_suffix() {
 
     assert!(!arguments[0].contains("draft one"), "{}", arguments[0]);
     assert!(
-        arguments[0].contains("version of clock.ts,"),
+        arguments[0].contains("tool_result_read"),
         "{}",
         arguments[0]
     );
@@ -237,11 +237,7 @@ fn a_read_is_superseded_by_a_later_read_or_change_of_the_same_file() {
     let results = wire_tool_results(&body_value(&cfg, &transcript));
 
     assert!(!results[0].contains("the old file"), "{}", results[0]);
-    assert!(
-        results[0].contains("plugin_read name=todo"),
-        "{}",
-        results[0]
-    );
+    assert!(results[0].contains("tool_result_read"), "{}", results[0]);
     assert_eq!(results[1], "wrote todo.ts", "reports are small; they stay");
     assert!(results[2].contains("the new file"), "{}", results[2]);
 }
@@ -296,7 +292,7 @@ fn the_same_page_read_twice_is_sent_once() {
     let results = wire_tool_results(&body_value(&cfg, &transcript));
 
     assert!(!results[0].contains("the first look"), "{}", results[0]);
-    assert!(results[0].contains("lines 301-600"), "{}", results[0]);
+    assert!(results[0].contains("tool_result_read"), "{}", results[0]);
     assert!(results[1].contains("the second look"), "{}", results[1]);
 }
 
@@ -320,11 +316,7 @@ fn a_page_a_write_invalidated_is_recovered_at_its_own_line() {
     let results = wire_tool_results(&body_value(&cfg, &transcript));
 
     assert!(!results[0].contains("the old page"), "{}", results[0]);
-    assert!(
-        results[0].contains("plugin_read name=todo.ts start_line=301"),
-        "{}",
-        results[0]
-    );
+    assert!(results[0].contains("tool_result_read"), "{}", results[0]);
 }
 
 /// `plugin_check` names a file and sends nothing. It used to claim the file's source slot all
@@ -603,7 +595,7 @@ fn the_breakdown_names_the_biggest_contributors() {
         result("c2", "wrote todo.ts"),
     ];
 
-    let rows = wire_breakdown(&transcript, 3);
+    let rows = wire_breakdown(&request_body(&test_config(), &transcript), 3);
 
     let labels: Vec<&str> = rows.iter().map(|(label, _)| label.as_str()).collect();
     assert_eq!(labels[0], "call:plugin_write", "{rows:?}");
@@ -625,7 +617,7 @@ fn the_breakdown_reports_the_elided_sizes() {
         result("c2", "wrote todo.ts"),
     ];
 
-    let rows = wire_breakdown(&transcript, 4);
+    let rows = wire_breakdown(&request_body(&test_config(), &transcript), 4);
     let sizes: Vec<usize> = rows.iter().map(|(_, chars)| *chars).collect();
 
     assert!(
@@ -723,7 +715,7 @@ fn a_search_is_superseded_by_a_later_edit_of_the_plugin_it_searched() {
     let results = wire_tool_results(&body_value(&cfg, &transcript));
 
     assert!(!results[0].contains("function render"), "{}", results[0]);
-    assert!(results[0].contains("out of date"), "{}", results[0]);
+    assert!(results[0].contains("tool_result_read"), "{}", results[0]);
 }
 
 /// A search of the folder is about every plugin, so any later write stales it; one confined to
@@ -783,7 +775,7 @@ fn the_same_search_twice_is_sent_once_whatever_its_context() {
     let results = wire_tool_results(&body_value(&cfg, &transcript));
 
     assert!(!results[0].contains("first look"), "{}", results[0]);
-    assert!(results[0].contains("appears again below"), "{}", results[0]);
+    assert!(results[0].contains("tool_result_read"), "{}", results[0]);
     assert!(results[1].contains("the handlers"), "{}", results[1]);
     assert!(results[2].contains("second look"), "{}", results[2]);
 }
@@ -824,11 +816,7 @@ fn an_outline_is_superseded_by_a_later_edit_of_the_same_plugin() {
     let results = wire_tool_results(&body_value(&cfg, &transcript));
 
     assert!(!results[0].contains("the old map"), "{}", results[0]);
-    assert!(
-        results[0].contains("plugin_outline name=todo"),
-        "{}",
-        results[0]
-    );
+    assert!(results[0].contains("tool_result_read"), "{}", results[0]);
     assert!(
         results[2].contains("the clock's map"),
         "another plugin's outline stays"
@@ -967,8 +955,8 @@ fn a_superseded_batch_edit_sends_a_placeholder_instead_of_its_edits() {
     let elided: serde_json::Value = serde_json::from_str(&arguments[0]).unwrap();
     assert_eq!(elided["name"], "todo.ts");
     assert!(
-        elided["edits"].is_string(),
-        "the array became the placeholder: {}",
+        elided["edits"].is_array(),
+        "the edits array keeps its structure: {}",
         arguments[0]
     );
     assert!(arguments[1].contains(FINAL), "{}", arguments[1]);
@@ -1022,8 +1010,8 @@ fn docs_search_elision_distinguishes_case_modes_and_defaults_to_sensitive() {
     assert!(distinct[0].contains("c1"));
     assert!(distinct[1].contains("c2"));
     let repeated = wire_tool_results(&body_value(&cfg, &transcript));
-    assert!(repeated[0].starts_with("[elided:"));
-    assert!(repeated[1].starts_with("[elided:"));
+    assert!(repeated[0].starts_with("[omitted:"));
+    assert!(repeated[1].starts_with("[omitted:"));
     assert!(repeated[2].contains("c3"));
     assert!(repeated[3].contains("c4"));
 }

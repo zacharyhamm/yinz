@@ -1171,11 +1171,17 @@ impl State {
             self.finish_head(log::truncate_str(&answer, plugin_docs::MAX_DOCS_OUTPUT));
             return true;
         }
-        // Likewise: the host compiles the source it is handed and nothing else is involved.
+        // Explicit drafts need no folder; omitted source reads the saved file first.
         if call.name == "plugin_check" {
             let result = match (args.name.as_deref(), args.source.as_deref()) {
                 (None, _) => "name is required".to_owned(),
-                (_, None) => "source is required: send the complete plugin file".to_owned(),
+                (Some(_), None) if self.user_plugin_dir.trim().is_empty() => {
+                    tools::NO_PLUGIN_FOLDER.to_owned()
+                },
+                (Some(name), None) => tools::plugin_fs_path(Some(name))
+                    .and_then(|path| tools::plugin_fs_read(&path))
+                    .map(|source| tools::semantic_report(name, &source))
+                    .unwrap_or_else(|error| error),
                 // The lint rides along with the compile result, which is the whole point of
                 // checking before writing: a source that compiles can still be spelling a
                 // namespace or a permission the store will refuse at run time.
@@ -1475,6 +1481,7 @@ impl State {
         if !matches!(
             call.name.as_str(),
             tools::LOAD_TOOL
+                | "tool_result_read"
                 | "schedule"
                 | "unschedule"
                 | "project_list"
@@ -1505,6 +1512,9 @@ impl State {
             // Nothing to run: the load is the call itself being in the transcript,
             // which `tools::loaded_families` reads on the way out. This only says
             // what the next request will advertise.
+            "tool_result_read" => {
+                api::tool_result_read(&self.messages, &args).unwrap_or_else(|error| error)
+            },
             tools::LOAD_TOOL => tools::load_family(args.family.as_deref(), self.is_planning()),
             "schedule" => self.schedule(&args),
             "unschedule" => self.unschedule(args.job_id),

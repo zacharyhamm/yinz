@@ -84,7 +84,7 @@ fn a_refused_load_widens_nothing() {
     assert!(tool_results(&state)[0]
         .content
         .contains("no such tool family"));
-    assert_eq!(advertised(&state).len(), 48);
+    assert_eq!(advertised(&state).len(), 49);
 }
 
 /// What a reopened chat gets. The loaded set is derived from the transcript rather

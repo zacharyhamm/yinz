@@ -3,6 +3,11 @@ use crate::*;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static SENT_REQUESTS: std::cell::RefCell<Vec<Vec<u8>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 // ---------------------------------------------------------------------------
 // Event handling
 // ---------------------------------------------------------------------------
@@ -1453,6 +1458,9 @@ impl State {
                 "allow_tools": cfg.tools,
                 "advertised_tools": tool_stats.count,
                 "tool_bytes": tool_stats.bytes,
+                "original_payload_bytes": tool_stats.original_payload_bytes,
+                "transmitted_payload_bytes": tool_stats.transmitted_payload_bytes,
+                "omitted_results": tool_stats.omitted_results,
             }),
         );
         // Only for the requests big enough to be worth explaining. A breakdown on every round
@@ -1465,7 +1473,7 @@ impl State {
                 serde_json::json!({
                     "stream_id": stream_id,
                     "body_bytes": body_len,
-                    "largest": api::wire_breakdown(&self.messages, 5)
+                    "largest": api::wire_breakdown(&body, 5)
                         .into_iter()
                         .map(|(label, chars)| serde_json::json!([label, chars]))
                         .collect::<Vec<_>>(),
@@ -1473,6 +1481,29 @@ impl State {
             );
         }
 
+        if body_len > cfg.context_max_bytes
+            || tool_stats.result_bytes > api::TOOL_RESULTS_BYTES
+            || tool_stats.max_result_bytes > api::TOOL_RESULT_BYTES
+        {
+            let error = format!("Context budget refused: serialized request is {body_len} bytes (context_max_bytes={}); tool results use {} bytes (limit {}), largest result {} bytes (limit {}). After tool-payload limits, this request still exceeds a context limit. Instructions, prose, recent arguments, reasoning and metadata are preserved. Largest request pieces: {:?}.", cfg.context_max_bytes, tool_stats.result_bytes, api::TOOL_RESULTS_BYTES, tool_stats.max_result_bytes, api::TOOL_RESULT_BYTES, api::wire_breakdown(&body, 5));
+            self.log("api_budget_refusal", serde_json::json!({"body_bytes": body_len, "context_max_bytes": cfg.context_max_bytes, "result_bytes": tool_stats.result_bytes, "max_result_bytes": tool_stats.max_result_bytes}));
+            let carried = self.stream.take().and_then(|stream| stream.usage);
+            self.record_usage(carried);
+            self.pop_empty_placeholder();
+            self.reply_at = None;
+            self.retry = None;
+            if matches!(self.status, Status::AwaitingRetry) {
+                self.status = Status::Idle;
+            }
+            self.owes_reply = false;
+            self.scheduled_run = None;
+            self.messages.push(Message::error(error));
+            self.pin_to_bottom();
+            return;
+        }
+
+        #[cfg(test)]
+        SENT_REQUESTS.with_borrow_mut(|requests| requests.push(body.clone()));
         web_request_stream(
             &stream_id,
             &cfg.url,
@@ -1494,6 +1525,7 @@ impl State {
         // what that terminator would have done, so nothing is counted twice.
         let carried = self.stream.take().and_then(|stream| stream.usage);
         self.record_usage(carried);
+        self.last_request_input = None;
         self.stream = Some(StreamState {
             id: stream_id,
             finishing: false,
@@ -1873,13 +1905,14 @@ impl State {
     fn note_usage(
         &mut self,
         stream_id: &str,
-        prompt: u64,
+        prompt: Option<u64>,
         completion: u64,
         cost_nanos: Option<u64>,
     ) {
+        self.last_request_input = prompt;
         if let Some(stream) = self.stream.as_mut() {
             stream.usage = Some(TokenUsage {
-                input_tokens: prompt,
+                input_tokens: prompt.unwrap_or(0),
                 output_tokens: completion,
                 cost_nanos,
             });

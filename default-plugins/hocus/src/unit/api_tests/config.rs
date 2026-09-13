@@ -391,3 +391,21 @@ fn an_empty_linear_key_reads_as_absent() {
     .unwrap();
     assert_eq!(cfg.linear_api_key, None);
 }
+
+#[test]
+fn context_bytes_default_and_override_are_positive() {
+    let env = map(&[("OPENAI_API_KEY", "test")]);
+    for (setting, expected) in [
+        ("", CONTEXT_MAX_BYTES),
+        ("0", CONTEXT_MAX_BYTES),
+        ("bad", CONTEXT_MAX_BYTES),
+        ("65536", 65536),
+    ] {
+        assert_eq!(
+            Config::resolve(&map(&[("context_max_bytes", setting)]), &env)
+                .unwrap()
+                .context_max_bytes,
+            expected
+        );
+    }
+}

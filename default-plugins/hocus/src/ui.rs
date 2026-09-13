@@ -1023,6 +1023,12 @@ fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
         );
     }
     if layout.chrome.rules {
+        let usage = format!("─ {} ", usage_note(state));
+        let rule = format!(
+            "{}{}",
+            truncate_to_width(&usage, cols),
+            "─".repeat(cols.saturating_sub(usage.width()))
+        );
         print_text_with_coordinates(
             Text::new(&rule).dim_range(..),
             0,
@@ -1089,31 +1095,30 @@ fn render_title(state: &mut State, cols: usize) {
 /// counted so a background reply is visible without looking for its `●` in the
 /// bar, and jobs, which fire and bill whichever tab is on screen.
 fn title_note(state: &State) -> Option<String> {
-    let activity = match state.parked_count() {
+    match state.parked_count() {
         0 => state.any_jobs().then(|| format!("⏲ {}", state.job_count())),
         n => Some(format!("+{n}")),
-    };
-    let usage = usage_note(state);
-    match (activity, usage) {
-        (Some(activity), Some(usage)) => Some(format!("{activity} · {usage}")),
-        (activity, usage) => activity.or(usage),
     }
 }
 
-/// Provider-reported usage accumulated across every request in this chat, and
-/// what it cost when the provider says - never an estimate.
-fn usage_note(state: &State) -> Option<String> {
-    state.usage.map(|usage| {
-        let tokens = format!(
-            "{} in · {} out",
+/// Provider-reported last-request input and cumulative totals, never estimates.
+fn usage_note(state: &State) -> String {
+    let last = state
+        .last_request_input
+        .map(format_tokens)
+        .unwrap_or_else(|| "unknown".into());
+    let mut note = format!("last request input {last}");
+    if let Some(usage) = state.usage {
+        note.push_str(&format!(
+            " · {} total input · {} total output",
             format_tokens(usage.input_tokens),
             format_tokens(usage.output_tokens)
-        );
-        match usage.cost_nanos {
-            Some(nanos) => format!("{tokens} · {}", format_cost(nanos)),
-            None => tokens,
+        ));
+        if let Some(cost) = usage.cost_nanos {
+            note.push_str(&format!(" · {}", format_cost(cost)));
         }
-    })
+    }
+    note
 }
 
 /// A nano-USD amount at title width: `$0`, `<$0.0001`, `$0.0123`, `$1.23`.
@@ -3405,34 +3410,13 @@ mod tests {
         let mut state = tabs_state(2);
         assert_eq!(title_note(&state), None, "nothing happening anywhere");
 
-        state.usage = Some(crate::TokenUsage {
-            input_tokens: 1_200,
-            output_tokens: 34,
-            cost_nanos: Some(12_300_000),
-        });
-        assert_eq!(
-            title_note(&state).as_deref(),
-            Some("1.2k in · 34 out · $0.0123"),
-            "a provider that prices the request has its cost shown"
-        );
-
-        state.usage = Some(crate::TokenUsage {
-            input_tokens: 1_200,
-            output_tokens: 34,
-            cost_nanos: None,
-        });
-        assert_eq!(title_note(&state).as_deref(), Some("1.2k in · 34 out"));
-
         state.jobs.push(job(1));
-        assert_eq!(
-            title_note(&state).as_deref(),
-            Some("⏲ 1 · 1.2k in · 34 out")
-        );
+        assert_eq!(title_note(&state).as_deref(), Some("⏲ 1"));
 
         state.parked[0].jobs.push(job(2));
         assert_eq!(
             title_note(&state).as_deref(),
-            Some("+1 · 1.2k in · 34 out"),
+            Some("+1"),
             "the other tab is live, and counted"
         );
         assert!(chat_tabs(&state, 80)[1].text.starts_with(" ● "));
@@ -3454,6 +3438,25 @@ mod tests {
 
         state.parked[0].jobs.push(job(2));
         assert_eq!(title_note(&state).as_deref(), Some("+1"));
+    }
+
+    #[test]
+    fn usage_distinguishes_last_request_from_totals_without_spending_tab_width() {
+        let mut state = tabs_state(2);
+        assert_eq!(usage_note(&state), "last request input unknown");
+        state.last_request_input = Some(400);
+        state.usage = Some(crate::TokenUsage {
+            input_tokens: 1200,
+            output_tokens: 34,
+            cost_nanos: Some(12_300_000),
+        });
+        assert_eq!(
+            usage_note(&state),
+            "last request input 400 · 1.2k total input · 34 total output · $0.0123"
+        );
+        assert!(usage_note(&state).width() < 80);
+        render_title(&mut state, 80);
+        assert_eq!(state.chat_tab_width, 80);
     }
 
     #[test]

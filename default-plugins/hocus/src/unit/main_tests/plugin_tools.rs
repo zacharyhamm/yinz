@@ -149,7 +149,7 @@ fn a_compile_check_answers_at_once_and_needs_no_folder() {
     ));
     assert!(tool_results(&state)[0]
         .content
-        .contains("source is required"));
+        .contains(tools::NO_PLUGIN_FOLDER));
 }
 
 #[test]
@@ -884,4 +884,57 @@ fn extension_reload_refuses_duplicate_namespaces_across_languages() {
     assert!(results.contains("keys.js") && results.contains("keys.ts"));
     assert!(state.extension_files.is_empty());
     test_seams::reset();
+}
+
+#[test]
+fn saved_file_checks_use_original_file_and_keep_draft_validation() {
+    tools::test_seams::reset();
+    tools::test_seams::set_plugin_source("export const answer: number = 42;");
+    let mut state = plugin_state();
+    run_file_tool(&mut state, "plugin_check", r#"{"name":"saved.ts"}"#);
+    assert!(tool_results(&state)
+        .last()
+        .unwrap()
+        .content
+        .contains("compiles"));
+    assert_eq!(tools::test_seams::PLUGIN_WRITE_CALLS.get(), 0);
+
+    tools::test_seams::set_plugin_source("export const answer: number = 'wrong';");
+    let mut state = plugin_state();
+    run_file_tool(&mut state, "plugin_check", r#"{"name":"saved.ts"}"#);
+    assert!(!tool_results(&state)
+        .last()
+        .unwrap()
+        .content
+        .contains("compiles"));
+
+    let mut state = plugin_state();
+    run_file_tool(
+        &mut state,
+        "plugin_check",
+        r#"{"name":"saved.ts","source":"export const answer = 42;"}"#,
+    );
+    assert!(
+        tool_results(&state)
+            .last()
+            .unwrap()
+            .content
+            .contains("compiles"),
+        "explicit draft wins over disk"
+    );
+
+    tools::test_seams::PLUGIN_READS.with_borrow_mut(|reads| {
+        reads.insert(
+            "/plugins/missing.ts".into(),
+            Err("file does not exist".into()),
+        );
+    });
+    let mut state = plugin_state();
+    run_file_tool(&mut state, "plugin_check", r#"{"name":"missing.ts"}"#);
+    assert!(tool_results(&state)
+        .last()
+        .unwrap()
+        .content
+        .contains("file does not exist"));
+    tools::test_seams::reset();
 }

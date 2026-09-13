@@ -85,6 +85,7 @@ fn confirmation_policy_lists_tools_correctly() {
         "plugin_outline",
         // Loading a family changes nothing but what the next request advertises.
         LOAD_TOOL,
+        "tool_result_read",
     ] {
         assert!(!needs_confirmation(name), "{name} should not be confirmed");
     }
@@ -101,7 +102,7 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 90);
+    assert_eq!(names.len(), 91);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
     assert_eq!(confirmed, 15);
 }

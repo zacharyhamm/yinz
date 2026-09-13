@@ -42,7 +42,10 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree named after the branch; an agent outside a linked worktree needs `allow_outside_worktree`. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij TypeScript plugins with explicit `.ts` filenames yourself, never by spawning an agent: `plugin_docs section=quickstart` starts TypeScript authoring; extensionless names select TypeScript. `plugin_docs` is authoritative - `query=` it for a spelling before fetching a section. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_outline`/`plugin_search` find the lines, `plugin_read` reads that range, `plugin_edit` changes it (`edits` batches several) - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error (`headless` for a plugin with no pane, answered from its log), `plugin_log` for what it logged; a plugin that runs agents uses TypeScript async functions and `zellij.agent` - section `agents`, example `example_agent_harness`; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
+pub const CONTEXT_MAX_BYTES: usize = 262_144;
+pub const TOOL_RESULT_BYTES: usize = 8 * 1024;
+pub const TOOL_RESULTS_BYTES: usize = 64 * 1024;
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree named after the branch; an agent outside a linked worktree needs `allow_outside_worktree`. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij TypeScript plugins with explicit `.ts` filenames yourself, never by spawning an agent: `plugin_docs section=quickstart` starts TypeScript authoring; extensionless names select TypeScript. `plugin_docs` is authoritative - `query=` it for a spelling before fetching a section. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_outline`/`plugin_search` find the lines, `plugin_read` reads that range, `plugin_edit` changes it (`edits` batches several) - never re-send a whole file you did not just write. `plugin_check name=…` checks saved files; `source` is for drafts. Writes/edits check syntax already. Recover omitted payloads with `tool_result_read` by call ID. `plugin_reload` for the first render or the load error (`headless` for a plugin with no pane, answered from its log), `plugin_log` for what it logged; a plugin that runs agents uses TypeScript async functions and `zellij.agent` - section `agents`, example `example_agent_harness`; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
 the tools array: the rest are loaded on demand, and calling one by name loads its family and \
 runs it, so call the tool you want rather than asking for it. `tools_load` is there for when \
 you do not know the name. Make independent calls together.";
@@ -142,6 +145,8 @@ pub struct Config {
     /// field, so it needs an off switch. Off, hocus shows no totals unless the
     /// provider includes usage without being asked.
     pub stream_usage: bool,
+    /// Complete serialized request ceiling, in bytes (not tokens).
+    pub context_max_bytes: usize,
 }
 
 /// A config problem, carrying enough context to render a useful banner.
@@ -296,6 +301,10 @@ impl Config {
                 max_tool_rounds,
                 reasoning_echo,
                 stream_usage,
+                context_max_bytes: non_empty(kdl, "context_max_bytes")
+                    .and_then(|v| v.parse().ok())
+                    .filter(|v| *v > 0)
+                    .unwrap_or(CONTEXT_MAX_BYTES),
             }),
             // The environment we see is the one captured when the *session*
             // started, so "I exported it after launching zellij" is by far the
@@ -518,13 +527,17 @@ pub fn request_body_with_stats(
     // rather than tracked, so it costs no state and survives a reopened chat; see
     // `tools::loaded_families`.
     let loaded = tools::loaded_families(transcript.iter().flat_map(|m| m.tool_calls.iter()));
-    let tools = tool_specs(cfg, plan, extension_tools, &loaded);
-    let stats = ToolStats {
+    let tools = tool_specs(cfg, plan, extension_tools, &loaded).map(|tools| match cfg.api {
+        Api::Chat => tools,
+        Api::Responses => flatten_tools(tools),
+    });
+    let mut stats = ToolStats {
         count: tools.as_ref().and_then(Value::as_array).map_or(0, Vec::len),
         bytes: tools
             .as_ref()
             .and_then(|tools| serde_json::to_vec(tools).ok())
             .map_or(0, |bytes| bytes.len()),
+        ..ToolStats::default()
     };
     // What the transcript no longer needs to send. Built once and handed to whichever transport
     // is speaking; see `Elision`.
@@ -533,19 +546,40 @@ pub fn request_body_with_stats(
         Api::Chat => chat_request_body(cfg, transcript, system, tools, &elision),
         Api::Responses => responses_request_body(cfg, transcript, system, tools, &elision),
     };
+    for (i, message) in transcript.iter().enumerate() {
+        match message.role {
+            Role::Tool => {
+                let sent = elision.content(i).unwrap_or(&message.content).len();
+                stats.original_payload_bytes += message.content.len();
+                stats.transmitted_payload_bytes += sent;
+                stats.result_bytes += sent;
+                stats.max_result_bytes = stats.max_result_bytes.max(sent);
+            },
+            Role::Assistant => {
+                for (at, call) in message.tool_calls.iter().enumerate() {
+                    stats.original_payload_bytes += call.arguments.len();
+                    stats.transmitted_payload_bytes +=
+                        wire_arguments(call, elision.arguments(i, at)).len();
+                }
+            },
+            _ => {},
+        }
+    }
+    stats.omitted_results = elision.results.len();
     (body, stats)
 }
 
-/// What the tool array cost this request, for the log.
-///
-/// `wire_breakdown` walks only the transcript, so without this the largest fixed
-/// item in the body is the one thing the size logging cannot see — and since most
-/// tools are now withheld until they are asked for, the number moves during a
-/// conversation rather than being a constant anyone could look up.
+/// Tool-array and selected payload sizes for request logging. Payload bytes exclude their
+/// enclosing wire JSON; the complete serialized request is measured separately.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct ToolStats {
     pub count: usize,
     pub bytes: usize,
+    pub original_payload_bytes: usize,
+    pub transmitted_payload_bytes: usize,
+    pub omitted_results: usize,
+    pub result_bytes: usize,
+    pub max_result_bytes: usize,
 }
 
 /// The system prompt as it goes out, whichever transport carries it: the
@@ -887,7 +921,7 @@ fn responses_request_body(
         include: (cfg.reasoning_effort.is_some() && cfg.reasoning_echo)
             .then_some(["reasoning.encrypted_content"]),
         input,
-        tools: tools.map(flatten_tools),
+        tools,
     };
 
     serde_json::to_vec(&body).expect("serializing a responses request cannot fail")
@@ -945,25 +979,10 @@ fn enum_setting(
 // Elision
 // ---------------------------------------------------------------------------
 
-/// What the outgoing body leaves out because the transcript already holds something newer.
-///
-/// hocus sends the whole transcript every turn, so the cost of a round is the cost of every
-/// round before it. Plugin authoring is where that bites hardest: a `plugin_write` carries the
-/// complete TypeScript source in its arguments, those arguments are echoed back verbatim on every
-/// later request (`wire_arguments`), and a write-reload-fix loop makes four or five of them. By
-/// the fifth round the request is re-uploading four drafts nobody will ever read again, four
-/// pane screenshots of a plugin that has since changed, and every file it read on the way.
-///
-/// So the body drops what a later message has replaced. Three rules govern it:
-///
-/// - **Only the payload.** Names, call ids and `tool_call_id`s are untouched, and an elided
-///   argument object keeps its other keys, so every call still has an answer and every
-///   arguments string is still a JSON object - the two things the endpoints enforce.
-/// - **Never the most recent.** For each file, each plugin and each docs section, the newest of
-///   everything is sent whole. What goes is only history, and every placeholder names the call
-///   that fetches it back.
-/// - **Never the transcript itself.** This runs on the way out. `Message::content` and
-///   `Message::display` are what the archive writes and the pane draws, and neither changes.
+/// Outbound-only selection: deduplicate, age completed source arguments, then retain at most
+/// 64 KiB of result bodies newest first (8 KiB each, notices included). Original messages and
+/// archives remain intact; references recover their exact historical payloads. Call IDs,
+/// result pairing, instructions, prose and provider reasoning never change.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Elision {
     /// `(message index, index within that message's `tool_calls`)` -> the arguments to send.
@@ -1009,6 +1028,70 @@ enum Subject {
 impl Elision {
     /// Work out what this transcript no longer needs to send.
     pub(crate) fn plan(transcript: &[Message]) -> Self {
+        let mut elision = Self::deduplicate(transcript);
+        let completed: BTreeSet<&str> = transcript
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .filter_map(|m| m.tool_call_id.as_deref())
+            .collect();
+        let mut batches = 0;
+        for (i, m) in transcript.iter().enumerate().rev() {
+            if m.role != Role::Assistant || m.tool_calls.is_empty() {
+                continue;
+            }
+            batches += 1;
+            for (at, call) in m.tool_calls.iter().enumerate() {
+                if !completed.contains(call.id.as_str()) {
+                    elision.calls.remove(&(i, at));
+                    continue;
+                }
+                if matches!(
+                    call.name.as_str(),
+                    "plugin_write" | "plugin_edit" | "plugin_check"
+                ) && (batches > 2 || elision.calls.contains_key(&(i, at)))
+                {
+                    let note = retrieval_reference(&call.id, "arguments");
+                    if let Ok(mut args) = serde_json::from_str::<Value>(&call.arguments) {
+                        mask_arguments(&mut args, &note);
+                        let replacement = args.to_string();
+                        elision.calls.remove(&(i, at));
+                        if replacement.len() < call.arguments.len() {
+                            elision.calls.insert((i, at), replacement);
+                        }
+                    }
+                }
+            }
+        }
+        // Reserve space for every older reference before spending the rest newest first.
+        let results: Vec<_> = transcript
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.role == Role::Tool)
+            .map(|(i, m)| {
+                let note = retrieval_reference(m.tool_call_id.as_deref().unwrap_or(""), "result");
+                let content = if elision.results.contains_key(&i) && note.len() < m.content.len() {
+                    note.clone()
+                } else {
+                    m.content.clone()
+                };
+                let minimum = content.len().min(note.len());
+                (i, content, note, minimum)
+            })
+            .collect();
+        let mut remaining = TOOL_RESULTS_BYTES.saturating_sub(results.iter().map(|r| r.3).sum());
+        for (i, content, note, minimum) in results.into_iter().rev() {
+            let limit = TOOL_RESULT_BYTES.min(minimum + remaining);
+            let selected = bounded_result(&content, &note, limit);
+            remaining = remaining.saturating_sub(selected.len().saturating_sub(minimum));
+            elision.results.remove(&i);
+            if selected != transcript[i].content {
+                elision.results.insert(i, selected);
+            }
+        }
+        elision
+    }
+
+    fn deduplicate(transcript: &[Message]) -> Self {
         let mut elision = Elision::default();
         // Backwards, which is the whole trick: the first thing seen for a subject is the newest
         // one, so "keep the most recent" needs no special case - it is simply whatever got
@@ -1063,6 +1146,92 @@ impl Elision {
     fn content(&self, message: usize) -> Option<&str> {
         self.results.get(&message).map(String::as_str)
     }
+}
+
+fn retrieval_reference(id: &str, part: &str) -> String {
+    format!(
+        "[omitted: tool_result_read tool_call_id={} part={part} offset=0]",
+        json!(id)
+    )
+}
+
+fn mask_arguments(args: &mut Value, note: &str) {
+    for key in ["source", "old_string", "new_string"] {
+        if let Some(Value::String(s)) = args.get_mut(key) {
+            if s.len() > note.len() {
+                *s = note.to_owned();
+            }
+        }
+    }
+    if let Some(edits) = args.get_mut("edits").and_then(Value::as_array_mut) {
+        for edit in edits {
+            mask_arguments(edit, note);
+        }
+    }
+}
+
+fn bounded_result(content: &str, note: &str, limit: usize) -> String {
+    if content.len() <= limit {
+        return content.to_owned();
+    }
+    if note.len() >= content.len() {
+        return content.to_owned();
+    }
+    let mut end = limit.saturating_sub(note.len() + 1).min(content.len());
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        note.to_owned()
+    } else {
+        format!("{}\n{note}", &content[..end])
+    }
+}
+
+/// Read the original bytes through character offsets, including JSON escaping in the page cap.
+pub(crate) fn tool_result_read(
+    transcript: &[Message],
+    args: &tools::Args,
+) -> Result<String, String> {
+    let id = args
+        .tool_call_id
+        .as_deref()
+        .ok_or("tool_call_id is required")?;
+    let call = transcript
+        .iter()
+        .flat_map(|m| &m.tool_calls)
+        .find(|c| c.id == id)
+        .ok_or("unknown tool_call_id in this chat")?;
+    let text = match args.part.as_deref() {
+        Some("arguments") => &call.arguments,
+        Some("result") => {
+            &transcript
+                .iter()
+                .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some(id))
+                .ok_or("tool result is not available")?
+                .content
+        },
+        _ => return Err("part must be result or arguments".into()),
+    };
+    let offset = args.offset.unwrap_or(0);
+    if offset > text.chars().count() {
+        return Err("offset exceeds character count".into());
+    }
+    let mut page = String::new();
+    // Reserve metadata space. Each character costs its JSON-escaped UTF-8 representation.
+    let mut bytes = 128;
+    let mut count = 0;
+    for c in text.chars().skip(offset).take(4000) {
+        let cost = json!(c.to_string()).to_string().len() - 2;
+        if bytes + cost > TOOL_RESULT_BYTES {
+            break;
+        }
+        page.push(c);
+        bytes += cost;
+        count += 1;
+    }
+    let next = (offset + count < text.chars().count()).then_some(offset + count);
+    Ok(json!({"text": page, "next_offset": next}).to_string())
 }
 
 /// Every plugin call in the transcript, keyed by its id, as `(tool name, subject)`.
@@ -1314,51 +1483,65 @@ fn note_write(name: &str, subject: &Subject, seen: &mut BTreeSet<(&'static str, 
     }
 }
 
-/// The biggest things in the outgoing transcript, largest first, as `(label, chars)`.
-///
-/// What a "why was that request 48 000 tokens?" question is answered with. `body_bytes` alone
-/// says the request was large; this says which three messages made it so, and a label like
-/// `result:plugin_docs` is enough to know what to do about it.
-///
-/// Elision is applied, so what this reports is what was actually sent.
-pub fn wire_breakdown(transcript: &[Message], top: usize) -> Vec<(String, usize)> {
-    let elision = Elision::plan(transcript);
-    let subjects = call_subjects(transcript);
-    let mut rows: Vec<(String, usize)> = transcript
-        .iter()
-        .enumerate()
-        .filter_map(|(index, message)| match message.role {
-            Role::User => Some(("user".to_owned(), message.content.len())),
-            Role::Assistant if !message.tool_calls.is_empty() => {
-                let chars: usize = message
-                    .tool_calls
-                    .iter()
-                    .enumerate()
-                    .map(|(at, call)| wire_arguments(call, elision.arguments(index, at)).len())
-                    .sum();
-                let names: Vec<&str> = message
-                    .tool_calls
-                    .iter()
-                    .map(|call| call.name.as_str())
-                    .collect();
-                Some((format!("call:{}", names.join("+")), chars))
-            },
-            Role::Assistant => Some(("assistant".to_owned(), message.content.len())),
-            Role::Tool => {
-                let content = elision.content(index).unwrap_or(&message.content);
-                // The tool a result belongs to is only knowable through the call that made it,
-                // which is the same lookup elision does.
-                let name = message
-                    .tool_call_id
-                    .as_deref()
-                    .and_then(|id| subjects.get(id))
-                    .map_or("?", |(name, _)| *name);
-                Some((format!("result:{name}"), content.len()))
-            },
-            Role::Error | Role::Notice => None,
-        })
-        .collect();
-    rows.sort_by_key(|(_, chars)| std::cmp::Reverse(*chars));
+/// Largest serialized pieces of the actual outbound body, including reasoning and metadata.
+pub fn wire_breakdown(body: &[u8], top: usize) -> Vec<(String, usize)> {
+    let Ok(Value::Object(body)) = serde_json::from_slice(body) else {
+        return Vec::new();
+    };
+    let messages = body
+        .get("messages")
+        .or_else(|| body.get("input"))
+        .and_then(Value::as_array);
+    let mut names = BTreeMap::new();
+    for m in messages.into_iter().flatten() {
+        if m["type"] == "function_call" {
+            names.insert(
+                m["call_id"].as_str().unwrap_or_default(),
+                m["name"].as_str().unwrap_or("?"),
+            );
+        }
+        for c in m["tool_calls"].as_array().into_iter().flatten() {
+            names.insert(
+                c["id"].as_str().unwrap_or_default(),
+                c["function"]["name"].as_str().unwrap_or("?"),
+            );
+        }
+    }
+    let mut rows = Vec::new();
+    for (key, value) in &body {
+        if key != "messages" && key != "input" {
+            rows.push((key.clone(), value.to_string().len()));
+            continue;
+        }
+        for m in value.as_array().into_iter().flatten() {
+            let label = if m["role"] == "tool" || m["type"] == "function_call_output" {
+                let id = m["tool_call_id"]
+                    .as_str()
+                    .or_else(|| m["call_id"].as_str())
+                    .unwrap_or_default();
+                format!("result:{}", names.get(id).unwrap_or(&"?"))
+            } else if let Some(calls) = m["tool_calls"].as_array() {
+                format!(
+                    "call:{}",
+                    calls
+                        .iter()
+                        .filter_map(|c| c["function"]["name"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("+")
+                )
+            } else if m["type"] == "function_call" {
+                format!("call:{}", m["name"].as_str().unwrap_or("?"))
+            } else {
+                m["role"]
+                    .as_str()
+                    .or_else(|| m["type"].as_str())
+                    .unwrap_or("?")
+                    .to_owned()
+            };
+            rows.push((label, m.to_string().len()));
+        }
+    }
+    rows.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
     rows.truncate(top);
     rows
 }
@@ -1608,7 +1791,7 @@ pub enum SseItem {
     /// nano-USD when the provider prices it too (OpenRouter's `usage.cost`).
     /// Normally sent once on the final chunk.
     Usage {
-        prompt: u64,
+        prompt: Option<u64>,
         completion: u64,
         cost_nanos: Option<u64>,
     },
@@ -1800,7 +1983,7 @@ fn parse_chat_chunk(chunk: StreamChunk) -> Vec<SseItem> {
         let cost_nanos = cost_nanos(cost);
         if prompt.is_some() || completion.is_some() || cost_nanos.is_some() {
             items.push(SseItem::Usage {
-                prompt: prompt.unwrap_or(0),
+                prompt,
                 completion: completion.unwrap_or(0),
                 cost_nanos,
             });
@@ -2060,7 +2243,7 @@ fn response_usage(response: Option<&ResponseBody>) -> Option<SseItem> {
     let cost_nanos = cost_nanos(usage.cost);
     (usage.input_tokens.is_some() || usage.output_tokens.is_some() || cost_nanos.is_some())
         .then_some(SseItem::Usage {
-            prompt: usage.input_tokens.unwrap_or(0),
+            prompt: usage.input_tokens,
             completion: usage.output_tokens.unwrap_or(0),
             cost_nanos,
         })

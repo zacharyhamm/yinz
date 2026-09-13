@@ -1864,14 +1864,14 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_check",
-            "Check proposed JS/TS without execution; JS/TS includes types and local imports. Report diagnostics, literal permissions and warnings. Writes/edits check syntax before confirmation.",
+            "Check saved JS/TS by name, or pass source for an unwritten draft, without execution; JS/TS includes types and local imports. Report diagnostics, literal permissions and warnings. Writes/edits check syntax before confirmation.",
             json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
                     "source": { "type": "string" },
                 },
-                "required": ["name", "source"],
+                "required": ["name"],
             }),
         ),
         tool(
@@ -1979,6 +1979,8 @@ pub fn specs() -> Value {
                 "required": ["vm"],
             }),
         ),
+        tool("tool_result_read", "Read original tool payloads in this chat without rerunning. Character offset defaults to 0; follow next_offset until null.",
+            json!({"type":"object","properties":{"tool_call_id":{"type":"string"},"part":{"type":"string","enum":["result","arguments"]},"offset":{"type":"integer","minimum":0}},"required":["tool_call_id","part"]})),
         tool(
             "tools_load",
             // Built rather than written out, so a family added to `FAMILIES` cannot
@@ -2032,6 +2034,7 @@ fn load_tool_description() -> String {
 /// outlives the turn; and `focus`, `rename` and `scroll_pane` are harmless to
 /// the session but move the screen under someone who is reading a plan.
 pub const READ_ONLY: &[&str] = &[
+    "tool_result_read",
     "project_config_read",
     // The session, as it is.
     "list_session",
@@ -2142,6 +2145,7 @@ pub const FAMILIES: &[Family] = &[
         summary: "panes, tabs and sessions",
         deferred: false,
         tools: &[
+            "tool_result_read",
             "list_session",
             "list_other_sessions",
             "warp_pane_here",
@@ -2658,6 +2662,8 @@ fn adjacent_direction(first: &PanePosition, second: &PanePosition) -> Option<Pan
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Args {
+    pub tool_call_id: Option<String>,
+    pub part: Option<String>,
     pub pane_id: Option<u32>,
     pub is_plugin: Option<bool>,
     pub tab_id: Option<TabId>,

@@ -388,8 +388,12 @@ const TOOL_HELP: &[(&str, &str)] = &[
         "Read one TypeScript or JavaScript plugin of the user. Use explicit .ts filenames for new plugins. Extensionless names select TypeScript. The tool reads 300 lines from start_line. Use plugin_outline or plugin_search first, then read only the range that you must change.",
     ),
     (
+        "tool_result_read",
+        "Read the original result or arguments of a tool call in this chat. Give tool_call_id and part (result or arguments). Offset counts characters from zero. Each page has at most 4,000 characters and 8 KiB. Use next_offset for the next page. A null next_offset means the end. This tool never runs the original action again.",
+    ),
+    (
         "plugin_check",
-        "Check a TypeScript or JavaScript source, but write nothing and load nothing; JS/TS also checks types and local imports. Use this to try a correction before you write it. Hocus makes this check for the model, and refuses a source that fails; a plugin_write that you type is not checked, thus check it yourself. A source that checks can still fail at load; plugin_reload shows that.",
+        "Check a saved file by name, or give source to check an unwritten TypeScript or JavaScript draft. Write nothing and load nothing; JS/TS also checks types and local imports. Use this to try a correction before you write it. Hocus makes this check for the model, and refuses a source that fails; a plugin_write that you type is not checked, thus check it yourself. A source that checks can still fail at load; plugin_reload shows that.",
     ),
     (
         "plugin_write",
