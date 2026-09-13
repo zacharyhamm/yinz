@@ -594,12 +594,12 @@ fn the_resend_goes_out_once_however_long_the_answer_takes() {
 fn the_countdown_stops_once_the_resend_is_out() {
     let mut state = ready_state();
     state.on_response(429, &rate_limit_body("1s"), &stream_context("hocus-1"));
-    assert!(state.loader().expect("waiting").contains("rate limited"));
+    assert!(state.loader().expect("waiting").contains("retrying in"));
 
     state.on_timer(2.0);
 
     let phrase = state.loader().expect("still working");
-    assert!(!phrase.contains("rate limited"), "{phrase}");
+    assert!(!phrase.contains("retrying in"), "{phrase}");
 }
 
 /// The count has to survive the error that increments it. It used to be cleared on the way into
@@ -747,7 +747,146 @@ fn the_countdown_is_in_the_loader() {
 
     let phrase = state.loader().expect("a spinner while waiting");
 
-    assert!(phrase.contains("rate limited"), "{phrase}");
+    assert!(phrase.contains("retrying in"), "{phrase}");
     assert!(phrase.contains("4s"), "{phrase}");
     assert!(phrase.contains("1/4"), "{phrase}");
+}
+
+const H2_ERROR: &str = "Upstream error from Together: Stream error: h2 protocol error: error reading a body from connection";
+
+fn fail_h2(state: &mut State, transport: bool) {
+    let id = state.active_stream_id().expect("a request in flight");
+    if transport {
+        state.on_chunk(&id, b"", true, Some(H2_ERROR.into()));
+    } else {
+        let frame = format!(
+            "data: {}\n",
+            serde_json::json!({"error": {"message": H2_ERROR}})
+        );
+        state.on_chunk(&id, frame.as_bytes(), false, None);
+    }
+}
+
+#[test]
+fn h2_recovery_discards_only_the_failed_attempt_and_accounts_for_its_usage() {
+    for transport in [false, true] {
+        let mut state = ready_state();
+        state.stream_seq = 1;
+        state.scheduled_run = Some(ScheduledRun {
+            job_id: 1,
+            auto_confirm: true,
+        });
+        let call = ToolCall {
+            id: "completed".into(),
+            name: "get_pane_info".into(),
+            arguments: "{}".into(),
+        };
+        let history = vec![
+            Message::user("hi"),
+            Message::tool_calls(vec![call]),
+            Message::tool_result("completed", "saved result"),
+        ];
+        state.messages = history.clone();
+        state.reply_at = Some(history.len());
+        state.messages.push(Message::assistant(""));
+        state.on_chunk("hocus-1", b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\",\"reasoning_content\":\"unfinished reasoning\"}}]}\n", false, None);
+        state.on_chunk(
+            "hocus-1",
+            &tool_call_frame("incomplete", "close_pane", r#"{"pane_id":"#),
+            false,
+            None,
+        );
+        state.on_chunk(
+            "hocus-1",
+            b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":400,\"completion_tokens\":25}}\n",
+            false,
+            None,
+        );
+        assert!(state.messages.last().unwrap().reasoning.is_some());
+
+        fail_h2(&mut state, transport);
+
+        assert_eq!(state.messages, history, "transport={transport}");
+        assert!(state.reply_at.is_none());
+        assert!(state.tool_calls.take().is_empty());
+        assert!(state.pending.is_empty());
+        assert!(state.scheduled_run.is_some());
+        assert!(matches!(state.status, Status::AwaitingRetry));
+        assert!(state.loader().unwrap().contains("retrying in 1s (1/4)"));
+        assert!(!state.loader().unwrap().contains("rate limited"));
+
+        state.on_timer(1.0);
+        let resent = state.active_stream_id().expect("resent");
+        assert_ne!(resent, "hocus-1");
+        assert_eq!(state.messages[..history.len()], history);
+        assert!(state.scheduled_run.is_some());
+        assert_eq!(state.usage.unwrap().input_tokens, 400);
+        assert_eq!(state.usage.unwrap().output_tokens, 25);
+        // The previous stream may terminate after its replacement has already started.
+        assert!(!state.on_chunk(
+            "hocus-1",
+            &delta_frame("stale"),
+            true,
+            Some(H2_ERROR.into())
+        ));
+        assert_eq!(state.retry.unwrap().attempt, 0);
+        state.on_chunk(&resent, &delta_frame("recovered"), false, None);
+        assert!(
+            state.retry.is_some(),
+            "partial output does not reset the count"
+        );
+        state.on_chunk(&resent, b"", true, None);
+        assert!(
+            state.retry.is_none(),
+            "successful recovery resets the count"
+        );
+        assert_eq!(state.messages.last().unwrap().content, "recovered");
+        assert_eq!(state.messages.len(), history.len() + 1);
+        assert_eq!(state.usage.unwrap().input_tokens, 400, "counted once");
+    }
+}
+
+#[test]
+fn h2_errors_back_off_four_times_then_show_the_final_error() {
+    for transport in [false, true] {
+        let mut state = ready_state();
+        state.stream_seq = 1;
+        for (attempt, seconds) in [1, 2, 4, 8].into_iter().enumerate() {
+            let id = state.active_stream_id().unwrap();
+            state.on_chunk(&id, &delta_frame("partial"), false, None);
+            fail_h2(&mut state, transport);
+            let retry = state.retry.expect("armed");
+            assert_eq!(retry.attempt, attempt as u32);
+            assert_eq!(retry.due_ms, Some(state.mono_ms + seconds * 1000));
+            assert!(!state.messages.iter().any(|m| m.role == Role::Error));
+            state.on_timer(seconds as f64);
+        }
+        fail_h2(&mut state, transport);
+        assert!(state.retry.is_none());
+        assert_eq!(state.messages.last().unwrap(), &Message::error(H2_ERROR));
+        assert!(matches!(state.status, Status::Idle));
+        assert!(state.pending.is_empty());
+    }
+}
+
+#[test]
+fn cancelling_h2_retries_and_their_resends_prevents_late_errors_from_rearming_them() {
+    for transport in [false, true] {
+        for resend in [false, true] {
+            let mut state = ready_state();
+            state.stream_seq = 1;
+            fail_h2(&mut state, transport);
+            if resend {
+                state.on_timer(1.0);
+            }
+            let id = state.active_stream_id().unwrap_or_else(|| "hocus-1".into());
+            assert!(state.cancel_stream());
+            let cancelled = state.messages.clone();
+            state.on_chunk(&id, b"", true, Some(H2_ERROR.into()));
+            state.on_timer(10.0);
+            assert!(state.retry.is_none());
+            assert!(!state.is_receiving());
+            assert_eq!(state.messages, cancelled);
+        }
+    }
 }

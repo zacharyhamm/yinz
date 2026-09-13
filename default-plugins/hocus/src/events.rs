@@ -1651,7 +1651,7 @@ impl State {
                 SseItem::ApiError(message) => {
                     let m = message.clone();
                     // The same "not yet" the non-2xx path takes, for a provider that reports
-                    // its rate limit inside the stream instead of ahead of it. A half-streamed
+                    // a transient error inside the stream instead of ahead of it. A half-streamed
                     // set of tool-call fragments is dropped either way.
                     //
                     // So is a half-streamed *reply*, which is the one thing this path does to
@@ -1710,16 +1710,20 @@ impl State {
                     let (reasoning_items, prose_before) = self.tool_calls.take_replay();
                     let calls = self.tool_calls.take();
                     if let Some(message) = error {
-                        let m = message.clone();
-                        self.pop_empty_placeholder();
-                        self.messages.push(Message::error(message));
-                        self.log(
-                            "api_error",
-                            serde_json::json!({
-                                "stream_id": stream_id,
-                                "error": log::truncate(&m),
-                            }),
-                        );
+                        if self.arm_streamed_retry(&message) {
+                            self.pop_placeholder();
+                        } else {
+                            let m = message.clone();
+                            self.pop_empty_placeholder();
+                            self.messages.push(Message::error(message));
+                            self.log(
+                                "api_error",
+                                serde_json::json!({
+                                    "stream_id": stream_id,
+                                    "error": log::truncate(&m),
+                                }),
+                            );
+                        }
                     } else if !calls.is_empty() {
                         // A complete response ends the outage. Partial fragments do not: a
                         // provider may still end the same stream with another rate limit.
