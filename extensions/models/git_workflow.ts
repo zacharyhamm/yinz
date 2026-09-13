@@ -9,6 +9,7 @@ import {
     Context,
     digest,
     exec,
+    Key,
     Literal,
 } from "./_lib/workflow.ts";
 
@@ -48,7 +49,7 @@ const Test = z.object({
     passed: z.boolean(),
 });
 const CheckoutStatusArgs = Args.pick({ source: true, targetBranch: true });
-const Integration = Mutation.extend({
+export const Integration = Mutation.extend({
     evidence: Evidence,
     review: Review.nullable(),
     test: Test.nullable(),
@@ -72,6 +73,107 @@ async function liveVm(c: Context, args: z.infer<typeof Args>) {
     ) throw new Error("VM sync evidence belongs to a different agent");
     return (current.vm ?? null) === (args.vmSync.vm ?? null) &&
         current.clean === true;
+}
+
+// Saved method calls without pane ownership retain their guarded internal execution.
+const Placement = z.object({
+    work: Key.optional(),
+    session: Literal.min(1).optional(),
+});
+export const Cleanup = Mutation.extend({
+    approved: z.literal(true),
+    commit: z.string().regex(/^[a-f0-9]{40,64}$/),
+});
+/** Execute under the caller's checkout locks. */
+export async function cleanupCheckout(
+    args: z.infer<typeof Cleanup>,
+    c: Context & GitContext,
+) {
+    if (!await liveVm(c, args)) {
+        throw new Error(
+            "Guest changes or sync conflicts remain unresolved",
+        );
+    }
+    const current = await evidence(c, args);
+    if (
+        !current.source.clean ||
+        current.source.rebasing ||
+        current.source.commit !== args.commit
+    ) {
+        throw new Error(
+            "Cleanup source changed after integration",
+        );
+    }
+    await git(c, current.target.checkout, [
+        "merge-base",
+        "--is-ancestor",
+        args.commit,
+        current.target.commit,
+    ]);
+    return official.methods.remove_worktree.execute({
+        path: current.source.checkout,
+    }, {
+        ...c,
+        globalArgs: {
+            ...c.globalArgs,
+            repoPath: args.source,
+        },
+    });
+}
+/** Execute under the caller's checkout locks. */
+export async function integrateCheckout(
+    args: z.infer<typeof Integration>,
+    c: Context,
+    run = (cwd: string, argv: string[]) => checked(c, cwd, argv),
+) {
+    const vmClean = await liveVm(c, args);
+    const current = await evidence(c, args);
+    if (!vmClean) {
+        return {
+            integrated: false,
+            reason: "Guest changes require sync and fresh evidence",
+            evidence: current,
+        };
+    }
+    for (
+        const proof of [
+            args.evidence,
+            ...(args.review ? [args.review.evidence] : []),
+            ...(args.test ? [args.test.evidence] : []),
+        ]
+    ) {
+        if (await digest(current) !== await digest(proof)) {
+            return {
+                integrated: false,
+                reason: "Stale evidence: repeat preparation and approval",
+                evidence: current,
+            };
+        }
+    }
+    if (
+        ![current.source, current.target].every((r) =>
+            r.clean && !r.rebasing &&
+            r.conflicts.length === 0
+        )
+    ) throw new Error("Checkout has unresolved changes");
+    await git(c, current.target.checkout, [
+        "merge-base",
+        "--is-ancestor",
+        current.target.commit,
+        current.source.commit,
+    ]);
+    await run(current.target.checkout, [
+        "git",
+        "merge",
+        "--ff-only",
+        "--no-edit",
+        current.source.commit,
+    ]);
+    return {
+        integrated: true,
+        reason: null,
+        evidence: await evidence(c, args),
+    };
 }
 const resource = <T extends z.ZodType>(schema: T, description: string) => ({
     schema,
@@ -131,6 +233,123 @@ const RebaseResult = z.object({
     operation: Operation.optional(),
     outputRef: OutputRef.optional(),
 });
+async function foreground(
+    args: z.infer<typeof Mutation> & { work: string; session: string },
+    c: Context,
+    mode: "commit" | "continue" | "integrate" | "cleanup",
+) {
+    return await claimed(c, args.key, { mode, ...args }, async () => {
+        if (!c.modelType || !c.modelId) {
+            throw new Error(
+                "Saved output model identity unavailable",
+            );
+        }
+        const author: string[] = [];
+        for (
+            const [key, config] of [["authorName", "user.name"], [
+                "authorEmail",
+                "user.email",
+            ]]
+        ) {
+            const value = c.globalArgs[key];
+            if (value) {
+                author.push(
+                    "-c",
+                    `${config}=${Literal.parse(value)}`,
+                );
+            }
+        }
+        const { denoPath } = z.object({ denoPath: Literal.min(1) })
+            .parse(
+                JSON.parse(
+                    await checked(c, c.repoDir, [
+                        "swamp",
+                        "doctor",
+                        "extensions",
+                        "--json",
+                    ]),
+                ),
+            );
+        const worker = `${c.repoDir}/extensions/models/_lib/commit_worker.ts`;
+        await Deno.stat(worker);
+        // Retain files on uncertain observation: the independent worker may still be writing.
+        const directory = await Deno.makeTempDir({
+            prefix: "zellij-commit-",
+        });
+        const request = {
+            work: args.work,
+            key: args.key,
+            session: args.session,
+            binary: args.binary,
+        };
+        await operation(c, {
+            ...request,
+            method: "command",
+            foreground: true,
+            cwd: mode === "cleanup" ? args.target : args.source,
+            argv: [
+                denoPath,
+                "run",
+                "--no-config",
+                "--allow-all",
+                worker,
+                JSON.stringify({
+                    ...args,
+                    mode,
+                    author,
+                    directory,
+                    repoDir: c.repoDir,
+                }),
+            ],
+        });
+        const command = await observe(c, request, 3600, false);
+        if (
+            !["completed", "failed"].includes(command.outcome) ||
+            command.exitCode == null || command.exitCode === 125 ||
+            command.exitCode > 128
+        ) {
+            throw new Error(
+                "Foreground command was interrupted or its completion is uncertain; inspect the saved operation before proceeding",
+            );
+        }
+        const saved = JSON.parse(
+            await Deno.readTextFile(`${directory}/result.json`),
+        );
+        const completed = z.object({
+            exitCode: z.number().int(),
+        }).passthrough().parse(saved);
+        if (completed.exitCode !== command.exitCode) {
+            throw new Error(
+                "Worker exit status does not match its saved result",
+            );
+        }
+        const output = await Deno.readTextFile(
+            `${directory}/output.log`,
+        );
+        const handle = await c.writeResource(
+            "commandOutput",
+            `command-output-${args.key}`,
+            { output },
+        );
+        const outputRef = OutputRef.parse({
+            modelType: c.modelType.normalized,
+            modelId: c.modelId,
+            ...handle,
+        });
+        delete command.output;
+        const result = {
+            ...completed,
+            stdout: outputPreview(output),
+            stderr: "",
+            outputRef,
+            operation: command,
+        };
+        c.signal.throwIfAborted();
+        if (saved.error) throw new Error(String(saved.error));
+        await Deno.remove(directory, { recursive: true });
+        return result;
+    });
+}
 /** Additional methods; the official commit and non-force cleanup remain available. */
 export const extension = {
     type: "@swamp/git",
@@ -162,6 +381,11 @@ export const extension = {
                 integrated: z.boolean(),
                 reason: z.string().nullable(),
                 evidence: Evidence,
+                exitCode: z.number().int().optional(),
+                stdout: z.string().optional(),
+                stderr: z.string().optional(),
+                operation: Operation.optional(),
+                outputRef: OutputRef.optional(),
             }),
             "Integration result or the evidence invalidation that requires a new review cycle",
         ),
@@ -228,113 +452,7 @@ export const extension = {
                 c: Context,
             ) => {
                 const args = CommitAndRebase.parse(input);
-                const result = await claimed(c, args.key, args, async () => {
-                    if (!c.modelType || !c.modelId) {
-                        throw new Error(
-                            "Saved output model identity unavailable",
-                        );
-                    }
-                    const author: string[] = [];
-                    for (
-                        const [key, config] of [["authorName", "user.name"], [
-                            "authorEmail",
-                            "user.email",
-                        ]]
-                    ) {
-                        const value = c.globalArgs[key];
-                        if (value) {
-                            author.push(
-                                "-c",
-                                `${config}=${Literal.parse(value)}`,
-                            );
-                        }
-                    }
-                    const { denoPath } = z.object({ denoPath: Literal.min(1) })
-                        .parse(
-                            JSON.parse(
-                                await checked(c, c.repoDir, [
-                                    "swamp",
-                                    "doctor",
-                                    "extensions",
-                                    "--json",
-                                ]),
-                            ),
-                        );
-                    const worker =
-                        `${c.repoDir}/extensions/models/_lib/commit_worker.ts`;
-                    await Deno.stat(worker);
-                    // Retain files on uncertain observation: the independent worker may still be writing.
-                    const directory = await Deno.makeTempDir({
-                        prefix: "zellij-commit-",
-                    });
-                    const request = {
-                        work: args.work,
-                        key: args.key,
-                        session: args.session,
-                        binary: args.binary,
-                    };
-                    await operation(c, {
-                        ...request,
-                        method: "command",
-                        foreground: true,
-                        cwd: args.source,
-                        argv: [
-                            denoPath,
-                            "run",
-                            "--no-config",
-                            "--allow-all",
-                            worker,
-                            JSON.stringify({ ...args, author, directory }),
-                        ],
-                    });
-                    const command = await observe(c, request, 3600, false);
-                    if (
-                        !["completed", "failed"].includes(command.outcome) ||
-                        command.exitCode == null || command.exitCode === 125 ||
-                        command.exitCode > 128
-                    ) {
-                        throw new Error(
-                            "Commit and rebase was interrupted or its completion is uncertain; inspect the saved operation before proceeding",
-                        );
-                    }
-                    const saved = JSON.parse(
-                        await Deno.readTextFile(`${directory}/result.json`),
-                    );
-                    if (saved.error) throw new Error(String(saved.error));
-                    const completed = z.object({
-                        exitCode: z.number().int(),
-                        evidence: Evidence,
-                    }).parse(saved);
-                    if (completed.exitCode !== command.exitCode) {
-                        throw new Error(
-                            "Worker exit status does not match its saved result",
-                        );
-                    }
-                    const output = await Deno.readTextFile(
-                        `${directory}/output.log`,
-                    );
-                    const handle = await c.writeResource(
-                        "commandOutput",
-                        `command-output-${args.key}`,
-                        { output },
-                    );
-                    const outputRef = OutputRef.parse({
-                        modelType: c.modelType.normalized,
-                        modelId: c.modelId,
-                        ...handle,
-                    });
-                    delete command.output;
-                    const result = RebaseResult.parse({
-                        ...completed,
-                        stdout: outputPreview(output),
-                        stderr: "",
-                        outputRef,
-                        operation: command,
-                    });
-                    c.signal.throwIfAborted();
-                    await Deno.remove(directory, { recursive: true });
-                    return result;
-                });
+                const result = await foreground(args, c, "commit");
                 return save(c, "rebaseResult", RebaseResult.parse(result));
             },
         },
@@ -376,59 +494,41 @@ export const extension = {
         guarded_cleanup: {
             description:
                 "Use official non-force cleanup after approved, verified integration",
-            arguments: Mutation.extend({
-                approved: z.literal(true),
-                commit: z.string().regex(/^[a-f0-9]{40,64}$/),
-            }),
-            execute: (
-                input: z.infer<typeof Mutation> & {
-                    approved: true;
-                    commit: string;
-                },
+            arguments: Cleanup.extend(Placement.shape),
+            execute: async (
+                input: z.infer<typeof Cleanup> & z.infer<typeof Placement>,
                 c: Context & GitContext,
             ) => {
-                const args = Mutation.extend({
-                    approved: z.literal(true),
-                    commit: z.string().regex(/^[a-f0-9]{40,64}$/),
-                }).parse(input);
-                c.logger.info("Verifying approved worktree cleanup");
-                return claimed(c, args.key, args, () =>
-                    locked(
+                const args = Cleanup.extend(Placement.shape).parse(input);
+                if (args.work || args.session) {
+                    const result = await foreground(
+                        { ...args, ...Placement.required().parse(args) },
                         c,
-                        [args.source, args.target],
-                        async () => {
-                            if (!await liveVm(c, args)) {
-                                throw new Error(
-                                    "Guest changes or sync conflicts remain unresolved",
-                                );
-                            }
-                            const current = await evidence(c, args);
-                            if (
-                                !current.source.clean ||
-                                current.source.rebasing ||
-                                current.source.commit !== args.commit
-                            ) {
-                                throw new Error(
-                                    "Cleanup source changed after integration",
-                                );
-                            }
-                            await git(c, current.target.checkout, [
-                                "merge-base",
-                                "--is-ancestor",
-                                args.commit,
-                                current.target.commit,
-                            ]);
-                            return official.methods.remove_worktree.execute({
-                                path: current.source.checkout,
-                            }, {
-                                ...c,
-                                globalArgs: {
-                                    ...c.globalArgs,
-                                    repoPath: args.source,
-                                },
-                            });
-                        },
-                    ));
+                        "cleanup",
+                    );
+                    const removal = official.resources.removeWorktreeResult
+                        .schema.parse(result.removal);
+                    return {
+                        dataHandles: [
+                            await c.writeResource(
+                                "removeWorktreeResult",
+                                "remove-worktree",
+                                removal,
+                            ),
+                        ],
+                    };
+                }
+                return claimed(
+                    c,
+                    args.key,
+                    args,
+                    () =>
+                        locked(
+                            c,
+                            [args.source, args.target],
+                            () => cleanupCheckout(args, c),
+                        ),
+                );
             },
         },
         show_diff: {
@@ -503,9 +603,35 @@ export const extension = {
         },
         rebase_continue: {
             description: "Continue an explicitly resolved rebase",
-            arguments: Mutation,
-            execute: (args: z.infer<typeof Mutation>, c: Context) =>
-                mutate(Mutation.parse(args), c, "continue"),
+            arguments: Mutation.extend(Placement.shape).extend({
+                evidence: Evidence.optional(),
+            }),
+            execute: async (
+                input: z.infer<typeof Mutation> & z.infer<typeof Placement> & {
+                    evidence?: z.infer<typeof Evidence>;
+                },
+                c: Context,
+            ) => {
+                const args = Mutation.extend(Placement.shape).extend({
+                    evidence: Evidence.optional(),
+                }).parse(input);
+                return args.work || args.session
+                    ? save(
+                        c,
+                        "rebaseResult",
+                        RebaseResult.parse(
+                            await foreground(
+                                {
+                                    ...args,
+                                    ...Placement.required().parse(args),
+                                },
+                                c,
+                                "continue",
+                            ),
+                        ),
+                    )
+                    : mutate(args, c, "continue");
+            },
         },
         rebase_abort: {
             description:
@@ -517,67 +643,35 @@ export const extension = {
         integrate: {
             description:
                 "Fast-forward under both checkout locks with revision-bound optional checks and explicit approval",
-            arguments: Integration,
-            execute: async (input: z.infer<typeof Integration>, c: Context) => {
-                const args = Integration.parse(input);
+            arguments: Integration.extend(Placement.shape),
+            execute: async (
+                input: z.infer<typeof Integration> & z.infer<typeof Placement>,
+                c: Context,
+            ) => {
+                const args = Integration.extend(Placement.shape).parse(input);
                 c.logger.info(
                     "Verifying approval and evidence for local integration",
                 );
-                const result = await locked(c, [
-                    args.source,
-                    args.target,
-                ], () =>
-                    claimed(c, args.key, args, async () => {
-                        const vmClean = await liveVm(c, args);
-                        const current = await evidence(c, args);
-                        if (!vmClean) {
-                            return {
-                                integrated: false,
-                                reason:
-                                    "Guest changes require sync and fresh evidence",
-                                evidence: current,
-                            };
-                        }
-                        for (
-                            const proof of [
-                                args.evidence,
-                                ...(args.review ? [args.review.evidence] : []),
-                                ...(args.test ? [args.test.evidence] : []),
-                            ]
-                        ) {
-                            if (await digest(current) !== await digest(proof)) {
-                                return {
-                                    integrated: false,
-                                    reason:
-                                        "Stale evidence: repeat preparation and approval",
-                                    evidence: current,
-                                };
-                            }
-                        }
-                        if (
-                            ![current.source, current.target].every((r) =>
-                                r.clean && !r.rebasing &&
-                                r.conflicts.length === 0
-                            )
-                        ) throw new Error("Checkout has unresolved changes");
-                        await git(c, current.target.checkout, [
-                            "merge-base",
-                            "--is-ancestor",
-                            current.target.commit,
-                            current.source.commit,
-                        ]);
-                        await git(c, current.target.checkout, [
-                            "merge",
-                            "--ff-only",
-                            "--no-edit",
-                            current.source.commit,
-                        ]);
-                        return {
-                            integrated: true,
-                            reason: null,
-                            evidence: await evidence(c, args),
-                        };
-                    }));
+                const result = args.work || args.session
+                    ? await foreground(
+                        { ...args, ...Placement.required().parse(args) },
+                        c,
+                        "integrate",
+                    )
+                    : await locked(
+                        c,
+                        [
+                            args.source,
+                            args.target,
+                        ],
+                        () =>
+                            claimed(
+                                c,
+                                args.key,
+                                args,
+                                () => integrateCheckout(args, c),
+                            ),
+                    );
                 const handles = [
                     await c.writeResource(
                         "integrationDecision",

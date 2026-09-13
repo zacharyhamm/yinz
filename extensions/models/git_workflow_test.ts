@@ -84,7 +84,7 @@ function context(repoDir: string, repoPath: string) {
     };
     return { c, saved };
 }
-Deno.test("foreground commit/rebase preserves Git results, dismissal, and dispatch guards", async () => {
+Deno.test("foreground Git commands preserve results, dismissal, and dispatch guards", async () => {
     const dir = await Deno.makeTempDir();
     const main = dir + "/main", source = dir + "/topic ' $(touch INJECTED)";
     const { c, saved } = context(Deno.cwd(), source);
@@ -138,7 +138,13 @@ Deno.test("foreground commit/rebase preserves Git results, dismissal, and dispat
                             if (request.method === "command") {
                                 dispatches++;
                                 assert(request.foreground === true);
-                                assert(request.cwd === source);
+                                assert(
+                                    request.cwd ===
+                                        (JSON.parse(request.argv.at(-1))
+                                                .mode === "cleanup"
+                                            ? main
+                                            : source),
+                                );
                                 assert(request.session === args.session);
                                 current = {
                                     work: request.work,
@@ -355,7 +361,57 @@ Deno.test("foreground commit/rebase preserves Git results, dismissal, and dispat
         );
         await rejects(() => run("already-rebasing"), /Resolve the rebase/);
         await Deno.remove(outputDirectory, { recursive: true });
-        await git(source, "rebase", "--abort");
+        await rejects(
+            () =>
+                methods.rebase_continue.execute(
+                    { ...args, key: "unresolved" },
+                    c,
+                ),
+            /not ready/,
+        );
+        await Deno.remove(outputDirectory, { recursive: true });
+        await Deno.writeTextFile(source + "/file", "resolved file\n");
+        await git(source, "add", "file");
+        await methods.verify_checkout.execute(args, c);
+        const staged = Evidence.parse(saved.get("evidence-current"));
+        const continueArgs = {
+            ...args,
+            key: "continue-explicit",
+            evidence: staged,
+        };
+        const beforeContinue = await git(source, "rev-parse", "HEAD");
+        await Deno.writeTextFile(source + "/late", "invalidate choice");
+        await rejects(
+            () =>
+                methods.rebase_continue.execute({
+                    ...continueArgs,
+                    key: "continue-stale",
+                }, c),
+            /Stale rebase choice/,
+        );
+        await Deno.remove(outputDirectory, { recursive: true });
+        assert(await git(source, "rev-parse", "HEAD") === beforeContinue);
+        await Deno.remove(source + "/late");
+        // No additional resolver edits are required after the staged decision.
+        await methods.rebase_continue.execute(continueArgs, c);
+        assert(
+            Evidence.parse(result().evidence).source.conflicts.includes("file"),
+        );
+        assert(String(result().stdout).includes("--continue"));
+        const continuedDispatches = dispatches;
+        await methods.rebase_continue.execute(continueArgs, c);
+        assert(dispatches === continuedDispatches);
+        await Deno.writeTextFile(source + "/file", "resolved again\n");
+        await git(source, "add", "file");
+        await methods.rebase_continue.execute({
+            ...args,
+            key: "continue-again",
+        }, c);
+        assert(
+            result().exitCode === 0 &&
+                !Evidence.parse(result().evidence).source.rebasing,
+            JSON.stringify(result()),
+        );
         await Deno.writeTextFile(main + "/file", "dirty target\n");
         await rejects(() => run("dirty-target"), /Target checkout is dirty/);
         await Deno.remove(outputDirectory, { recursive: true });
@@ -478,6 +534,81 @@ for path in sys.argv[2:]:
                 }, c),
             /Conflicting request/,
         );
+        forcedOutcome = "";
+        await git(main, "config", "--unset", "core.hooksPath");
+        await methods.verify_checkout.execute(args, c);
+        const mergeArgs = {
+            ...args,
+            key: "foreground-merge",
+            approved: true as const,
+            evidence: Evidence.parse(saved.get("evidence-current")),
+            review: null,
+            test: null,
+        };
+        for (const status of ["unknown", "failed"] as const) {
+            forcedOutcome = status;
+            forcedExit = 130;
+            for (const mode of ["continue", "integrate", "cleanup"] as const) {
+                const key = `uncertain-${mode}-${status}`;
+                const execute = () =>
+                    mode === "continue"
+                        ? methods.rebase_continue.execute({ ...args, key }, c)
+                        : mode === "integrate"
+                        ? methods.integrate.execute({ ...mergeArgs, key }, c)
+                        : methods.guarded_cleanup.execute({
+                            ...args,
+                            key,
+                            approved: true,
+                            commit: mergeArgs.evidence.source.commit,
+                        }, c);
+                await rejects(execute, /completion is uncertain/);
+                const beforeRetry: number = dispatches;
+                await rejects(execute, /is unknown/);
+                assert(dispatches === beforeRetry);
+                await Deno.remove(outputDirectory, { recursive: true });
+            }
+        }
+        forcedOutcome = "";
+        await Deno.writeTextFile(source + "/late", "stale merge approval");
+        await methods.integrate.execute({
+            ...mergeArgs,
+            key: "foreground-stale",
+        }, c);
+        assert(saved.get("integrationDecision-current")?.integrated === false);
+        await Deno.remove(source + "/late");
+        await methods.integrate.execute(mergeArgs, c);
+        assert(saved.get("integrationDecision-current")?.integrated === true);
+        const mergeDispatches = dispatches;
+        await methods.integrate.execute(mergeArgs, c);
+        assert(dispatches === mergeDispatches);
+        assert(
+            await git(main, "rev-parse", "HEAD") ===
+                mergeArgs.evidence.source.commit,
+        );
+        const cleanupArgs = {
+            ...args,
+            key: "foreground-cleanup",
+            approved: true as const,
+            commit: mergeArgs.evidence.source.commit,
+        };
+        await Deno.writeTextFile(source + "/keep", "preserve me");
+        await rejects(
+            () =>
+                methods.guarded_cleanup.execute({
+                    ...cleanupArgs,
+                    key: "foreground-unsafe",
+                }, c),
+            /changed after integration/,
+        );
+        assert(await Deno.readTextFile(source + "/keep") === "preserve me");
+        await Deno.remove(outputDirectory, { recursive: true });
+        await Deno.remove(source + "/keep");
+        await methods.guarded_cleanup.execute(cleanupArgs, c);
+        assert(saved.get("remove-worktree")?.removed === true);
+        const cleanupDispatches = dispatches;
+        await methods.guarded_cleanup.execute(cleanupArgs, c);
+        assert(dispatches === cleanupDispatches);
+        await rejects(() => Deno.stat(source), /NotFound/);
         assert(
             !methods.commit_and_rebase.arguments.safeParse({
                 ...args,

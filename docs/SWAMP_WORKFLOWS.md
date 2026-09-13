@@ -139,12 +139,12 @@ local extensions unpublished.
 
 ## Exit and review choices
 
-1. When the local checkout is unchanged, choose **Restart**, **Fork**, or **Leave**, in that order.
+1. When the local checkout is unchanged, choose **Restart**, **Fork**, **Run tests**, or **Leave**, in that order.
    Unchanged means no staged, unstaged, untracked, or submodule changes, no paused rebase,
    and zero commits in `targetBranch..HEAD`. Ignored files do not count.
    The check uses the configured local target branch (`main` by default) without fetching.
    Clean branches equal to or behind that target receive this menu.
-   Otherwise, choose **Restart**, **Fork**, **Begin review**, or **Leave**.
+   Otherwise, choose **Restart**, **Fork**, **Begin review**, **Run tests**, or **Leave**.
    Inspection errors and VM context retain these existing choices. The exit check does not synchronize VMs.
    Restart starts a fresh agent conversation in the held pane, without the original prompt or
    resume arguments. It preserves the model, permissions, environment, directory, and execution target. Fork opens the existing agent-kind picker in the
@@ -153,7 +153,7 @@ local extensions unpublished.
    Leave closes the original exited terminal and its exit view. It preserves the
    checkout and other workflow panes. Manual launches without a source terminal can
    also complete with Leave.
-2. After Begin review, choose **Show diff**, **Commit and rebase**, or **Leave**.
+2. After Begin review, choose **Show diff**, **Commit and rebase**, **Run tests**, or **Leave**.
    Show diff displays unstaged changes to tracked files and untracked, non-ignored files after VM synchronization.
    Only the agent’s checkout is included, even when inherited Git settings point to another worktree.
    Untracked nested repositories appear as safely quoted directory entries. Their contents are not traversed.
@@ -165,26 +165,38 @@ local extensions unpublished.
    It then shows each Git command and its live output in a foreground pane.
    It skips empty commits and rebases onto the configured local target. After success
    or failure, press Enter to return to the workflow. A failed commit stops before rebase.
-3. If a rebase is paused, choose **Resolve with agent** or **Leave paused**.
-   Only approval starts a resolver. The agent stages resolutions. The workflow
-   inspects the result and continues the rebase. Further conflicts require another
-   decision. Other errors remain visible without automatic retries.
+3. If a rebase has conflicts, choose **Resolve with agent**, **Run tests**, or **Leave paused**.
+   Only a recorded choice starts a resolver. After the resolver exits, the workflow inspects the checkout.
+   If conflicts remain, it offers the same choices again.
+   If Git is paused without unresolved conflicts, choose **Continue rebase**, **Run tests**, or **Leave paused**.
+   Continue rebase requires a recorded choice, even when the resolver made no additional edits.
+   Further conflicts repeat this loop. After rebase completion, uncommitted changes return to preparation.
+   A clean checkout proceeds to review. This also applies if the resolver completed the rebase itself.
+   Other errors remain visible without automatic retries.
 4. After preparation, choose **Run tests**, **Start code review**, **Merge**, or **Leave**.
-   Passing tests return to this menu. Failed tests offer **Start fix agent**,
-   **Return to menu**, or **Leave**. A fix agent receives the saved failure output.
-   Its process exit returns to a fresh initial exit menu.
+   Tests are optional at every decision before integration, including the initial exit menu and merge confirmation.
+   They use the configured gate command on the source checkout.
+   Passing tests return to the originating workflow and stage. Failed tests offer **Run tests**, **Start fix agent**, **Return to menu**, or **Leave**.
+   A fix agent receives the saved failure output. Its process exit refreshes checkout evidence before returning.
+   Checkout changes invalidate stale test and review results and can return the decision to preparation or conflict resolution.
+   Tests never implicitly commit, continue a rebase, or approve a merge. Returning to merge confirmation requires fresh approval.
 5. A selected reviewer inspects the checkout. The workflow compares commits and all
    tracked and untracked contents before and after the process exits. Changes return
    to the initial menu. An unchanged checkout proceeds to merge confirmation with
    the saved findings. Missing or malformed findings remain a failed review.
 6. Confirm the exact source and target revisions. The prompt states whether tests
-   and review passed, failed, or were skipped. You can explicitly accept failed or
+   and review passed, failed, or were skipped. Choose **Run tests** to check again before approval.
+   You can explicitly accept failed or
    skipped checks and unresolved findings. Decline to preserve everything and end.
    Changed source or target state returns to preparation and requires fresh approval.
    Integration uses local fast-forward only and retains checkout locks, live VM
    verification, clean-state checks, and ancestry checks.
 7. After integration, choose **Remove clean worktree** or **Keep**. Removal uses the
-   existing guarded, non-force cleanup method. Changed state prevents removal.
+   existing guarded, non-force cleanup method. Changed state prevents removal. Tests are no longer offered after integration.
+
+Tests, Continue rebase, Merge, and cleanup show live command output in foreground panes.
+After completion, press Enter to restore the decision view. Agents and diff viewers use the same foreground location.
+Cancelling observation does not undo a command. Uncertain completion preserves the operation and output for inspection instead of repeating execution.
 
 On agent exit, the workflow uses the exit pane for status, questions and interactive
 agents. The original terminal and its scrollback remain behind that view.
@@ -446,6 +458,7 @@ python3 extensions/tests/smoke.py --exit-menu-only
 python3 extensions/tests/smoke.py --source-diff-only
 python3 extensions/tests/smoke.py --commit-rebase-only
 python3 extensions/tests/smoke.py --rebase-only
+python3 extensions/tests/smoke.py --decisions-only
 cargo x ci check
 cargo x firecracker-test --build
 cargo x firecracker-test --test
@@ -460,6 +473,8 @@ fresh checks after Fork cancellation, and fallback choices for inspection errors
 `--source-diff-only` path checks short, long, untracked, staged-only, and empty diffs in manual, agent-exit,
 and unattended views, including dismissal, scrolling, search, checkout isolation, nested repositories, and temporary-file cleanup.
 `--commit-rebase-only` checks configured commit agents, saved multiline messages, clean checkouts, malformed output, cancellation, and foreground Git results.
+`--decisions-only` checks passing, failing, retried, and checkout-changing tests from each exit, preparation, review, and merge-confirmation menu.
+The `--rebase-only` path checks tests in paused rebases and explicit continuation through repeated conflicts.
 The Firecracker suite also runs the typed bridge against a real guest, including a sync
 conflict. Run socket and KVM tests outside a sandbox that blocks those facilities.
 

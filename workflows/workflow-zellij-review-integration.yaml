@@ -91,10 +91,25 @@ inputs:
       - review
       - tests
       - failed-tests
+      - test-return
       - fix
       - review-agent
       - confirm
       - cleanup
+    testReturn:
+      type: object
+      default:
+        workflow: "@hammz/zellij-review-integration"
+        phase: review
+      properties:
+        workflow:
+          type: string
+          enum: ["@hammz/zellij-agent-exit", "@hammz/zellij-review-integration"]
+        phase:
+          type: string
+          enum: [prepare, conflict, resolved, review, confirm]
+      required: [workflow, phase]
+      additionalProperties: false
     state:
       type: object
       default:
@@ -164,7 +179,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["prepare", "commit", "resolved", "diff"]) }}
+    guard: ${{ !(inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) }}
   - name: inspect
     task:
       type: model_method
@@ -179,7 +194,7 @@ jobs:
         targetBranch: "${{ inputs.targetBranch }}"
         gate: "${{ inputs.gate }}"
         binary: "${{ inputs.binary }}"
-        vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+        vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
     dependsOn:
     - step: sync
       condition:
@@ -219,12 +234,13 @@ jobs:
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
-          phase: conflict
+          phase: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() > 0 ? "conflict" : "resolved" }}'
           state:
-            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review:
             test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: inspect
@@ -249,10 +265,11 @@ jobs:
         question: prepare
         step: prepare-approval
         kind: choice
-        prompt: 'Begin review: Show diff, Commit and rebase, or Leave.'
+        prompt: 'Begin review: Show diff, Commit and rebase, Run tests, or Leave.'
         answers:
         - show-diff
         - commit-and-rebase
+        - run-tests
         - leave
         resumeInput: answer
     dependsOn:
@@ -266,7 +283,7 @@ jobs:
   - name: prepare-approval
     task:
       type: manual_approval
-      prompt: 'Begin review: Show diff, Commit and rebase, or Leave.'
+      prompt: 'Begin review: Show diff, Commit and rebase, Run tests, or Leave.'
     dependsOn:
     - step: prepare-question
       condition:
@@ -330,10 +347,11 @@ jobs:
           sourcePane: "${{ inputs.sourcePane }}"
           phase: diff
           state:
-            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: "${{ inputs.state.review }}"
             test: "${{ inputs.state.test }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: prepare-answer
@@ -376,10 +394,11 @@ jobs:
           sourcePane: "${{ inputs.sourcePane }}"
           phase: commit
           state:
-            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: "${{ inputs.state.review }}"
             test: "${{ inputs.state.test }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: prepare-diff
@@ -515,10 +534,11 @@ jobs:
           sourcePane: "${{ inputs.sourcePane }}"
           phase: prepare
           state:
-            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: "${{ inputs.state.review }}"
             test: "${{ inputs.state.test }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: diff-succeeded
@@ -674,7 +694,7 @@ jobs:
         targetBranch: "${{ inputs.targetBranch }}"
         gate: "${{ inputs.gate }}"
         binary: "${{ inputs.binary }}"
-        vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+        vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
         work: "${{ inputs.launch }}"
         session: "${{ inputs.session }}"
         key: ${{ run.id + "-commit-and-rebase" }}
@@ -733,12 +753,13 @@ jobs:
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
-          phase: '${{ data.latest(run.id + "-rebase", "rebaseResult-current").attributes.evidence.source.rebasing ? "conflict" : "review" }}'
+          phase: '${{ data.latest(run.id + "-rebase", "rebaseResult-current").attributes.evidence.source.rebasing ? (data.latest(run.id + "-rebase", "rebaseResult-current").attributes.evidence.source.conflicts.size() > 0 ? "conflict" : "resolved") : (data.latest(run.id + "-rebase", "rebaseResult-current").attributes.evidence.source.clean ? "review" : "prepare") }}'
           state:
-            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
             evidence: ${{ data.latest(run.id + "-rebase", "rebaseResult-current").attributes.evidence }}
             review:
             test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: rebase-errors
@@ -760,13 +781,11 @@ jobs:
       inputs:
         run: "${{ run.id }}"
         workflow: "${{ run.workflowName }}"
-        question: conflict
-        step: conflict-approval
+        question: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0 ? "resolved" : "conflict" }}'
+        step: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0 ? "resolved-approval" : "conflict-approval" }}'
         kind: conflict
-        prompt: Rebase is paused. Resolve with agent, or Leave paused?
-        answers:
-        - resolve-with-agent
-        - leave-paused
+        prompt: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0 ? "Rebase is paused. Continue rebase, Run tests, or Leave paused?" : "Rebase has conflicts. Resolve with agent, Run tests, or Leave paused?" }}'
+        answers: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0 ? ["continue-rebase", "run-tests", "leave-paused"] : ["resolve-with-agent", "run-tests", "leave-paused"] }}'
         resumeInput: answer
     dependsOn:
     - step: rebase-next
@@ -775,11 +794,11 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["conflict"]) }}
+    guard: ${{ !(inputs.phase in ["conflict", "resolved"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing) }}
   - name: conflict-approval
     task:
       type: manual_approval
-      prompt: Rebase is paused. Resolve with agent, or Leave paused?
+      prompt: Rebase has conflicts. Resolve with agent, Run tests, or Leave paused?
     dependsOn:
     - step: conflict-question
       condition:
@@ -787,7 +806,19 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["conflict"]) }}
+    guard: ${{ !(inputs.phase in ["conflict", "resolved"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() > 0) }}
+  - name: resolved-approval
+    task:
+      type: manual_approval
+      prompt: Rebase is paused. Continue rebase, Run tests, or Leave paused?
+    dependsOn:
+    - step: conflict-question
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase in ["conflict", "resolved"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0) }}
   - name: conflict-answer
     task:
       type: model_method
@@ -799,17 +830,23 @@ jobs:
         binary: "${{ inputs.binary }}"
       inputs:
         run: "${{ run.id }}"
-        question: conflict
+        question: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0 ? "resolved" : "conflict" }}'
         answer: "${{ inputs.answer }}"
         submission: "${{ inputs.submission }}"
     dependsOn:
+    - step: resolved-approval
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
     - step: conflict-approval
       condition:
         type: or
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["conflict"]) }}
+    guard: ${{ !(inputs.phase in ["conflict", "resolved"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing) }}
   - name: resolve-choice
     task:
       type: model_method
@@ -847,6 +884,7 @@ jobs:
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: "${{ inputs.state.review }}"
             test: "${{ inputs.state.test }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: conflict-answer
@@ -855,7 +893,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["conflict"] && inputs.answer == "resolve-with-agent") }}
+    guard: ${{ !(inputs.phase in ["conflict", "resolved"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && inputs.answer == "resolve-with-agent") }}
   - name: helper-kind
     task:
       type: assert
@@ -931,6 +969,7 @@ jobs:
             evidence:
             review:
             test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: review-baseline
@@ -1069,7 +1108,7 @@ jobs:
         key: ${{ run.id + "-fix-exited" }}
         session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
-        workflow: "@hammz/zellij-agent-exit"
+        workflow: "@hammz/zellij-review-integration"
         inputs:
           launch: "${{ inputs.launch }}"
           session: "${{ inputs.session }}"
@@ -1086,12 +1125,9 @@ jobs:
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
-          phase: prepare
-          state:
-            vmSync:
-            evidence:
-            review:
-            test:
+          phase: test-return
+          state: "${{ inputs.state }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: helper-exit-known
@@ -1138,6 +1174,7 @@ jobs:
             evidence: "${{ inputs.state.evidence }}"
             review:
             test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: fix-exited
@@ -1147,52 +1184,6 @@ jobs:
         - type: succeeded
         - type: skipped
     guard: ${{ !(inputs.phase in ["resolve"]) }}
-  - name: still-conflicted
-    task:
-      type: model_method
-      modelType: "@hammz/zellij"
-      modelName: ${{ run.id + "-still-conflicted" }}
-      methodName: continue_flow
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        work: "${{ inputs.launch }}"
-        key: ${{ run.id + "-still-conflicted" }}
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-        workflow: "@hammz/zellij-review-integration"
-        inputs:
-          launch: "${{ inputs.launch }}"
-          session: "${{ inputs.session }}"
-          checkout: "${{ inputs.checkout }}"
-          target: "${{ inputs.target }}"
-          targetBranch: "${{ inputs.targetBranch }}"
-          gate: "${{ inputs.gate }}"
-          kind: "${{ inputs.kind }}"
-          binary: "${{ inputs.binary }}"
-          agentCommand: "${{ inputs.agentCommand }}"
-          agentArgs: "${{ inputs.agentArgs }}"
-          commitAgent: "${{ inputs.commitAgent }}"
-          rebasePrompt: "${{ inputs.rebasePrompt }}"
-          firecracker: "${{ inputs.firecracker }}"
-          firecrackerImage: "${{ inputs.firecrackerImage }}"
-          sourcePane: "${{ inputs.sourcePane }}"
-          phase: conflict
-          state:
-            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
-            evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
-            review: "${{ inputs.state.review }}"
-            test: "${{ inputs.state.test }}"
-          flowVersion: "${{ inputs.flowVersion }}"
-    dependsOn:
-    - step: resolver-exited
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ !(inputs.phase in ["resolved"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() > 0) }}
   - name: continue-rebase
     task:
       type: model_method
@@ -1207,16 +1198,19 @@ jobs:
         targetBranch: "${{ inputs.targetBranch }}"
         gate: "${{ inputs.gate }}"
         binary: "${{ inputs.binary }}"
-        vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
-        key: continue
+        vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+        work: "${{ inputs.launch }}"
+        session: "${{ inputs.session }}"
+        evidence: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}'
+        key: ${{ run.id + "-continue-rebase" }}
     dependsOn:
-    - step: still-conflicted
+    - step: resolver-exited
       condition:
         type: or
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["resolved"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0) }}
+    guard: ${{ !(inputs.phase in ["resolved", "conflict"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0 && inputs.answer == "continue-rebase") }}
   - name: continue-errors
     task:
       type: assert
@@ -1230,7 +1224,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["resolved"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0) }}
+    guard: ${{ !(inputs.phase in ["resolved", "conflict"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0 && inputs.answer == "continue-rebase") }}
   - name: continued
     task:
       type: model_method
@@ -1262,12 +1256,13 @@ jobs:
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
-          phase: '${{ data.latest(run.id + "-continue-rebase", "rebaseResult-current").attributes.evidence.source.rebasing ? "conflict" : "review" }}'
+          phase: '${{ data.latest(run.id + "-continue-rebase", "rebaseResult-current").attributes.evidence.source.rebasing ? (data.latest(run.id + "-continue-rebase", "rebaseResult-current").attributes.evidence.source.conflicts.size() > 0 ? "conflict" : "resolved") : (data.latest(run.id + "-continue-rebase", "rebaseResult-current").attributes.evidence.source.clean ? "review" : "prepare") }}'
           state:
-            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
             evidence: ${{ data.latest(run.id + "-continue-rebase", "rebaseResult-current").attributes.evidence }}
-            review: "${{ inputs.state.review }}"
-            test: "${{ inputs.state.test }}"
+            review:
+            test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: continue-errors
@@ -1276,7 +1271,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["resolved"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0) }}
+    guard: ${{ !(inputs.phase in ["resolved", "conflict"] && data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0 && inputs.answer == "continue-rebase") }}
   - name: resolved-complete
     task:
       type: model_method
@@ -1308,12 +1303,13 @@ jobs:
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
-          phase: review
+          phase: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.source.clean ? "review" : "prepare" }}'
           state:
-            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+            vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff", "conflict", "tests", "failed-tests", "test-return"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
-            review: "${{ inputs.state.review }}"
-            test: "${{ inputs.state.test }}"
+            review:
+            test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: continued
@@ -1322,7 +1318,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["resolved"] && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0) }}
+    guard: ${{ !(inputs.phase in ["resolved", "conflict"] && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && data.latest(run.id + "-inspect", "evidence-current").attributes.source.conflicts.size() == 0) }}
   - name: menu-stale
     task:
       type: model_method
@@ -1360,6 +1356,7 @@ jobs:
             evidence:
             review:
             test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: resolved-complete
@@ -1368,7 +1365,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["review", "confirm", "failed-tests", "tests"] && !(data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence)) }}
+    guard: ${{ !(inputs.phase in ["review", "confirm"] && !(data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence)) }}
   - name: review-question
     task:
       type: model_method
@@ -1433,52 +1430,6 @@ jobs:
         - type: succeeded
         - type: skipped
     guard: ${{ !(inputs.phase in ["review"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) }}
-  - name: review-tests
-    task:
-      type: model_method
-      modelType: "@hammz/zellij"
-      modelName: ${{ run.id + "-review-tests" }}
-      methodName: continue_flow
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        work: "${{ inputs.launch }}"
-        key: ${{ run.id + "-review-tests" }}
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-        workflow: "@hammz/zellij-review-integration"
-        inputs:
-          launch: "${{ inputs.launch }}"
-          session: "${{ inputs.session }}"
-          checkout: "${{ inputs.checkout }}"
-          target: "${{ inputs.target }}"
-          targetBranch: "${{ inputs.targetBranch }}"
-          gate: "${{ inputs.gate }}"
-          kind: "${{ inputs.kind }}"
-          binary: "${{ inputs.binary }}"
-          agentCommand: "${{ inputs.agentCommand }}"
-          agentArgs: "${{ inputs.agentArgs }}"
-          commitAgent: "${{ inputs.commitAgent }}"
-          rebasePrompt: "${{ inputs.rebasePrompt }}"
-          firecracker: "${{ inputs.firecracker }}"
-          firecrackerImage: "${{ inputs.firecrackerImage }}"
-          sourcePane: "${{ inputs.sourcePane }}"
-          phase: tests
-          state:
-            vmSync: "${{ inputs.state.vmSync }}"
-            evidence: "${{ inputs.state.evidence }}"
-            review: "${{ inputs.state.review }}"
-            test: "${{ inputs.state.test }}"
-          flowVersion: "${{ inputs.flowVersion }}"
-    dependsOn:
-    - step: review-answer
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ !(inputs.phase in ["review"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence && inputs.answer == "run-tests") }}
   - name: review-review-agent
     task:
       type: model_method
@@ -1516,9 +1467,10 @@ jobs:
             evidence: "${{ inputs.state.evidence }}"
             review: "${{ inputs.state.review }}"
             test: "${{ inputs.state.test }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
-    - step: review-tests
+    - step: review-answer
       condition:
         type: or
         conditions:
@@ -1562,6 +1514,7 @@ jobs:
             evidence: "${{ inputs.state.evidence }}"
             review: "${{ inputs.state.review }}"
             test: "${{ inputs.state.test }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: review-review-agent
@@ -1586,6 +1539,7 @@ jobs:
         session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
         captureOutput: true
+        foreground: true
         argv: "${{ inputs.gate }}"
         cwd: "${{ inputs.checkout }}"
     dependsOn:
@@ -1595,7 +1549,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) }}
+    guard: ${{ !(inputs.phase in ["tests"]) }}
   - name: tests-exit
     task:
       type: model_method
@@ -1617,7 +1571,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) }}
+    guard: ${{ !(inputs.phase in ["tests"]) }}
   - name: test-result
     task:
       type: model_method
@@ -1637,7 +1591,21 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) }}
+    guard: ${{ !(inputs.phase in ["tests"]) }}
+  - name: tests-known
+    task:
+      type: assert
+      expr: data.latest(run.id + "-tests-exit", "operation-current").attributes.outcome in ["completed", "failed"] && data.latest(run.id + "-tests-exit", "operation-current").attributes.exitCode != null && data.latest(run.id + "-tests-exit", "operation-current").attributes.exitCode != 125 && data.latest(run.id + "-tests-exit", "operation-current").attributes.exitCode <= 128
+      message: Tests were interrupted or completion is uncertain. Inspect saved output before proceeding.
+      severity: high
+    dependsOn:
+    - step: test-result
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase == "tests") }}
   - name: tested-checkout
     task:
       type: model_method
@@ -1652,61 +1620,15 @@ jobs:
         targetBranch: "${{ inputs.targetBranch }}"
         gate: "${{ inputs.gate }}"
         binary: "${{ inputs.binary }}"
-        vmSync: "${{ inputs.state.vmSync }}"
+        vmSync: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.vmSync }}'
     dependsOn:
-    - step: test-result
+    - step: tests-known
       condition:
         type: or
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) }}
-  - name: tests-changed
-    task:
-      type: model_method
-      modelType: "@hammz/zellij"
-      modelName: ${{ run.id + "-tests-changed" }}
-      methodName: continue_flow
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        work: "${{ inputs.launch }}"
-        key: ${{ run.id + "-tests-changed" }}
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-        workflow: "@hammz/zellij-agent-exit"
-        inputs:
-          launch: "${{ inputs.launch }}"
-          session: "${{ inputs.session }}"
-          checkout: "${{ inputs.checkout }}"
-          target: "${{ inputs.target }}"
-          targetBranch: "${{ inputs.targetBranch }}"
-          gate: "${{ inputs.gate }}"
-          kind: "${{ inputs.kind }}"
-          binary: "${{ inputs.binary }}"
-          agentCommand: "${{ inputs.agentCommand }}"
-          agentArgs: "${{ inputs.agentArgs }}"
-          commitAgent: "${{ inputs.commitAgent }}"
-          rebasePrompt: "${{ inputs.rebasePrompt }}"
-          firecracker: "${{ inputs.firecracker }}"
-          firecrackerImage: "${{ inputs.firecrackerImage }}"
-          sourcePane: "${{ inputs.sourcePane }}"
-          phase: prepare
-          state:
-            vmSync:
-            evidence:
-            review:
-            test:
-          flowVersion: "${{ inputs.flowVersion }}"
-    dependsOn:
-    - step: tested-checkout
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ !(inputs.phase in ["tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence && data.latest(run.id + "-tested-checkout", "evidence-current").attributes != data.latest(run.id + "-inspect", "evidence-current").attributes) }}
+    guard: ${{ !(inputs.phase in ["tests"]) }}
   - name: tests-next
     task:
       type: model_method
@@ -1721,7 +1643,7 @@ jobs:
         key: ${{ run.id + "-tests-next" }}
         session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
-        workflow: "@hammz/zellij-review-integration"
+        workflow: '${{ data.latest(run.id + "-test-result", "test-current").attributes.passed ? inputs.testReturn.workflow : "@hammz/zellij-review-integration" }}'
         inputs:
           launch: "${{ inputs.launch }}"
           session: "${{ inputs.session }}"
@@ -1738,21 +1660,22 @@ jobs:
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
-          phase: '${{ data.latest(run.id + "-test-result", "test-current").attributes.passed ? "review" : "failed-tests" }}'
+          phase: '${{ data.latest(run.id + "-test-result", "test-current").attributes.passed ? (inputs.testReturn.workflow == "@hammz/zellij-agent-exit" ? "prepare" : data.latest(run.id + "-tested-checkout", "evidence-current").attributes.source.rebasing ? (data.latest(run.id + "-tested-checkout", "evidence-current").attributes.source.conflicts.size() > 0 ? "conflict" : "resolved") : (!data.latest(run.id + "-tested-checkout", "evidence-current").attributes.source.clean || inputs.testReturn.phase == "prepare" || data.latest(run.id + "-tested-checkout", "evidence-current").attributes != data.latest(run.id + "-inspect", "evidence-current").attributes) ? "prepare" : inputs.testReturn.phase in ["conflict", "resolved"] ? "review" : inputs.testReturn.phase) : "failed-tests" }}'
           state:
-            vmSync: "${{ inputs.state.vmSync }}"
-            evidence: "${{ inputs.state.evidence }}"
-            review: "${{ inputs.state.review }}"
-            test: ${{ data.latest(run.id + "-test-result", "test-current").attributes }}
+            vmSync: '${{ data.latest(run.id + "-tested-checkout", "evidence-current").attributes.vmSync }}'
+            evidence: '${{ data.latest(run.id + "-tested-checkout", "evidence-current").attributes }}'
+            review: '${{ inputs.state.review != null && inputs.state.review.evidence == data.latest(run.id + "-tested-checkout", "evidence-current").attributes ? inputs.state.review : null }}'
+            test: '${{ !data.latest(run.id + "-test-result", "test-current").attributes.passed || data.latest(run.id + "-test-result", "test-current").attributes.evidence == data.latest(run.id + "-tested-checkout", "evidence-current").attributes ? data.latest(run.id + "-test-result", "test-current").attributes : null }}'
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
-    - step: tests-changed
+    - step: tested-checkout
       condition:
         type: or
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence && data.latest(run.id + "-tested-checkout", "evidence-current").attributes == data.latest(run.id + "-inspect", "evidence-current").attributes) }}
+    guard: ${{ !(inputs.phase == "tests") }}
   - name: failed-tests-question
     task:
       type: model_method
@@ -1768,8 +1691,9 @@ jobs:
         question: failed-tests
         step: failed-tests-approval
         kind: choice
-        prompt: Tests failed. Start fix agent, Return to menu, or Leave? Saved command output is included below.
+        prompt: Tests failed. Run tests again, Start fix agent, Return to menu, or Leave? Saved command output is included below.
         answers:
+        - run-tests
         - start-fix-agent
         - return-to-menu
         - leave
@@ -1781,11 +1705,11 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["failed-tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) }}
+    guard: ${{ !(inputs.phase in ["failed-tests"]) }}
   - name: failed-tests-approval
     task:
       type: manual_approval
-      prompt: Tests failed. Start fix agent, Return to menu, or Leave? Saved command output is included below.
+      prompt: Tests failed. Run tests again, Start fix agent, Return to menu, or Leave? Saved command output is included below.
     dependsOn:
     - step: failed-tests-question
       condition:
@@ -1793,7 +1717,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["failed-tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) }}
+    guard: ${{ !(inputs.phase in ["failed-tests"]) }}
   - name: failed-tests-answer
     task:
       type: model_method
@@ -1815,7 +1739,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["failed-tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) }}
+    guard: ${{ !(inputs.phase in ["failed-tests"]) }}
   - name: fix-choice
     task:
       type: model_method
@@ -1853,6 +1777,7 @@ jobs:
             evidence: "${{ inputs.state.evidence }}"
             review: "${{ inputs.state.review }}"
             test: "${{ inputs.state.test }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: failed-tests-answer
@@ -1861,7 +1786,31 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["failed-tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence && inputs.answer == "start-fix-agent") }}
+    guard: ${{ !(inputs.phase in ["failed-tests"] && inputs.answer == "start-fix-agent") }}
+  # Refresh after the recorded return choice; the menu may have waited through edits.
+  - name: return-checkout
+    task:
+      type: model_method
+      modelType: "@swamp/git"
+      modelName: ${{ run.id + "-return-checkout" }}
+      methodName: verify_checkout
+      globalArgs:
+        repoPath: "${{ inputs.checkout }}"
+      inputs:
+        source: "${{ inputs.checkout }}"
+        target: "${{ inputs.target }}"
+        targetBranch: "${{ inputs.targetBranch }}"
+        gate: "${{ inputs.gate }}"
+        binary: "${{ inputs.binary }}"
+        vmSync: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.vmSync }}'
+    dependsOn:
+    - step: fix-choice
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase == "test-return" || (inputs.phase == "failed-tests" && inputs.answer == "return-to-menu")) }}
   - name: tests-return
     task:
       type: model_method
@@ -1876,7 +1825,7 @@ jobs:
         key: ${{ run.id + "-tests-return" }}
         session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
-        workflow: "@hammz/zellij-review-integration"
+        workflow: "${{ inputs.testReturn.workflow }}"
         inputs:
           launch: "${{ inputs.launch }}"
           session: "${{ inputs.session }}"
@@ -1893,21 +1842,22 @@ jobs:
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
-          phase: review
+          phase: '${{ inputs.testReturn.workflow == "@hammz/zellij-agent-exit" ? "prepare" : data.latest(run.id + "-return-checkout", "evidence-current").attributes.source.rebasing ? (data.latest(run.id + "-return-checkout", "evidence-current").attributes.source.conflicts.size() > 0 ? "conflict" : "resolved") : (!data.latest(run.id + "-return-checkout", "evidence-current").attributes.source.clean || inputs.testReturn.phase == "prepare" || data.latest(run.id + "-return-checkout", "evidence-current").attributes != inputs.state.evidence) ? "prepare" : inputs.testReturn.phase in ["conflict", "resolved"] ? "review" : inputs.testReturn.phase }}'
           state:
-            vmSync: "${{ inputs.state.vmSync }}"
-            evidence: "${{ inputs.state.evidence }}"
-            review: "${{ inputs.state.review }}"
-            test: "${{ inputs.state.test }}"
+            vmSync: '${{ data.latest(run.id + "-return-checkout", "evidence-current").attributes.vmSync }}'
+            evidence: '${{ data.latest(run.id + "-return-checkout", "evidence-current").attributes }}'
+            review: '${{ inputs.state.review != null && inputs.state.review.evidence == data.latest(run.id + "-return-checkout", "evidence-current").attributes ? inputs.state.review : null }}'
+            test: '${{ inputs.state.test != null && inputs.state.test.evidence == data.latest(run.id + "-return-checkout", "evidence-current").attributes ? inputs.state.test : null }}'
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
-    - step: fix-choice
+    - step: return-checkout
       condition:
         type: or
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["failed-tests"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence && inputs.answer == "return-to-menu") }}
+    guard: ${{ !(inputs.phase == "test-return" || (inputs.phase == "failed-tests" && inputs.answer == "return-to-menu")) }}
   - name: review-sync
     task:
       type: model_method
@@ -1990,6 +1940,7 @@ jobs:
             evidence:
             review:
             test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: reviewed-checkout
@@ -2057,6 +2008,7 @@ jobs:
             evidence: "${{ inputs.state.evidence }}"
             review: ${{ data.latest(run.id + "-review-result", "review-current").attributes }}
             test: "${{ inputs.state.test }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: review-result
@@ -2102,9 +2054,10 @@ jobs:
         question: merge
         step: merge-approval
         kind: merge
-        prompt: '${{ inputs.phase == "confirm" ? ("Merge exact revision " + inputs.state.evidence.source.commit + " into local " + inputs.targetBranch + " at " + inputs.state.evidence.target.commit + "? Tests: " + (inputs.state.test == null ? "SKIPPED" : (inputs.state.test.passed ? "PASSED" : "FAILED (see saved output)")) + ". Review: " + (inputs.state.review == null ? "SKIPPED" : (inputs.state.review.resolved ? "PASSED" : "FAILED / unresolved findings (see saved review)")) + ". Merge explicitly accepts these check results. Leave preserves everything.") : "Inactive decision" }}'
+        prompt: '${{ inputs.phase == "confirm" ? ("Merge exact revision " + inputs.state.evidence.source.commit + " into local " + inputs.targetBranch + " at " + inputs.state.evidence.target.commit + "? Tests: " + (inputs.state.test == null ? "SKIPPED" : (inputs.state.test.passed ? "PASSED" : "FAILED (see saved output)")) + ". Review: " + (inputs.state.review == null ? "SKIPPED" : (inputs.state.review.resolved ? "PASSED" : "FAILED / unresolved findings (see saved review)")) + ". Merge explicitly accepts these check results. Run tests to check again. Leave preserves everything.") : "Inactive decision" }}'
         answers:
         - merge
+        - run-tests
         - leave
         resumeInput: answer
     dependsOn:
@@ -2118,7 +2071,7 @@ jobs:
   - name: merge-approval
     task:
       type: manual_approval
-      prompt: '${{ (inputs.phase in ["confirm"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) ? (inputs.phase == "confirm" ? ("Merge exact revision " + inputs.state.evidence.source.commit + " into local " + inputs.targetBranch + " at " + inputs.state.evidence.target.commit + "? Tests: " + (inputs.state.test == null ? "SKIPPED" : (inputs.state.test.passed ? "PASSED" : "FAILED (see saved output)")) + ". Review: " + (inputs.state.review == null ? "SKIPPED" : (inputs.state.review.resolved ? "PASSED" : "FAILED / unresolved findings (see saved review)")) + ". Merge explicitly accepts these check results. Leave preserves everything.") : "Inactive decision") : "Inactive decision" }}'
+      prompt: '${{ (inputs.phase in ["confirm"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) ? (inputs.phase == "confirm" ? ("Merge exact revision " + inputs.state.evidence.source.commit + " into local " + inputs.targetBranch + " at " + inputs.state.evidence.target.commit + "? Tests: " + (inputs.state.test == null ? "SKIPPED" : (inputs.state.test.passed ? "PASSED" : "FAILED (see saved output)")) + ". Review: " + (inputs.state.review == null ? "SKIPPED" : (inputs.state.review.resolved ? "PASSED" : "FAILED / unresolved findings (see saved review)")) + ". Merge explicitly accepts these check results. Run tests to check again. Leave preserves everything.") : "Inactive decision") : "Inactive decision" }}'
     dependsOn:
     - step: merge-question
       condition:
@@ -2149,6 +2102,52 @@ jobs:
         - type: succeeded
         - type: skipped
     guard: ${{ !(inputs.phase in ["confirm"] && data.latest(run.id + "-inspect", "evidence-current").attributes == inputs.state.evidence) }}
+  - name: menu-tests
+    task:
+      type: model_method
+      modelType: "@hammz/zellij"
+      modelName: ${{ run.id + "-menu-tests" }}
+      methodName: continue_flow
+      globalArgs:
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+      inputs:
+        work: "${{ inputs.launch }}"
+        key: ${{ run.id + "-menu-tests" }}
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+        workflow: "@hammz/zellij-review-integration"
+        inputs:
+          launch: "${{ inputs.launch }}"
+          session: "${{ inputs.session }}"
+          checkout: "${{ inputs.checkout }}"
+          target: "${{ inputs.target }}"
+          targetBranch: "${{ inputs.targetBranch }}"
+          gate: "${{ inputs.gate }}"
+          kind: "${{ inputs.kind }}"
+          binary: "${{ inputs.binary }}"
+          agentCommand: "${{ inputs.agentCommand }}"
+          agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
+          firecracker: "${{ inputs.firecracker }}"
+          firecrackerImage: "${{ inputs.firecrackerImage }}"
+          sourcePane: "${{ inputs.sourcePane }}"
+          phase: tests
+          state:
+            vmSync: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.vmSync }}'
+            evidence: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}'
+            review: "${{ inputs.state.review }}"
+            test: "${{ inputs.state.test }}"
+          testReturn: '${{ inputs.phase == "failed-tests" ? inputs.testReturn : {"workflow": run.workflowName, "phase": inputs.phase} }}'
+          flowVersion: "${{ inputs.flowVersion }}"
+    dependsOn:
+    - step: merge-answer
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase in ["prepare", "conflict", "resolved", "review", "failed-tests", "confirm"] && inputs.answer == "run-tests") }}
   - name: integrate
     task:
       type: model_method
@@ -2164,13 +2163,15 @@ jobs:
         gate: "${{ inputs.gate }}"
         binary: "${{ inputs.binary }}"
         vmSync: "${{ inputs.state.vmSync }}"
-        key: integrate
+        work: "${{ inputs.launch }}"
+        session: "${{ inputs.session }}"
+        key: ${{ run.id + "-integrate" }}
         approved: true
         evidence: "${{ inputs.state.evidence }}"
         review: "${{ inputs.state.review }}"
         test: "${{ inputs.state.test }}"
     dependsOn:
-    - step: merge-answer
+    - step: menu-tests
       condition:
         type: or
         conditions:
@@ -2214,6 +2215,7 @@ jobs:
             evidence:
             review:
             test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: integrate
@@ -2260,6 +2262,7 @@ jobs:
             evidence: ${{ data.latest(run.id + "-integrate", "integrationDecision-current").attributes.evidence }}
             review: "${{ inputs.state.review }}"
             test: "${{ inputs.state.test }}"
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: approval-stale
@@ -2346,7 +2349,9 @@ jobs:
         gate: "${{ inputs.gate }}"
         binary: "${{ inputs.binary }}"
         vmSync: "${{ inputs.state.vmSync }}"
-        key: cleanup
+        work: "${{ inputs.launch }}"
+        session: "${{ inputs.session }}"
+        key: ${{ run.id + "-cleanup" }}
         approved: true
         commit: '${{ inputs.state.evidence != null ? inputs.state.evidence.source.commit : "" }}'
     dependsOn:

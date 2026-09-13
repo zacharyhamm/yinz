@@ -91,10 +91,25 @@ inputs:
       - review
       - tests
       - failed-tests
+      - test-return
       - fix
       - review-agent
       - confirm
       - cleanup
+    testReturn:
+      type: object
+      default:
+        workflow: "@hammz/zellij-review-integration"
+        phase: review
+      properties:
+        workflow:
+          type: string
+          enum: ["@hammz/zellij-agent-exit", "@hammz/zellij-review-integration"]
+        phase:
+          type: string
+          enum: [prepare, conflict, resolved, review, confirm]
+      required: [workflow, phase]
+      additionalProperties: false
     state:
       type: object
       default:
@@ -176,8 +191,8 @@ jobs:
         question: exit
         step: '${{ inputs.sourcePane < 0 ? "manual-exit-approval" : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? "unchanged-exit-approval" : "exit-approval" }}'
         kind: choice
-        prompt: '${{ inputs.sourcePane < 0 ? "Choose Begin review or Leave." : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? "Agent exited. Choose Restart, Fork, or Leave." : "Agent exited. Choose Restart, Fork, Begin review, or Leave." }}'
-        answers: '${{ inputs.sourcePane < 0 ? ["begin-review", "leave"] : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? ["restart", "fork", "leave"] : ["restart", "fork", "begin-review", "leave"] }}'
+        prompt: '${{ inputs.sourcePane < 0 ? "Choose Begin review, Run tests, or Leave." : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? "Agent exited. Choose Restart, Fork, Run tests, or Leave." : "Agent exited. Choose Restart, Fork, Begin review, Run tests, or Leave." }}'
+        answers: '${{ inputs.sourcePane < 0 ? ["begin-review", "run-tests", "leave"] : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? ["restart", "fork", "run-tests", "leave"] : ["restart", "fork", "begin-review", "run-tests", "leave"] }}'
         resumeInput: answer
     dependsOn:
     - step: checkout-status
@@ -191,7 +206,7 @@ jobs:
   - name: exit-approval
     task:
       type: manual_approval
-      prompt: Agent exited. Choose Restart, Fork, Begin review, or Leave.
+      prompt: Agent exited. Choose Restart, Fork, Begin review, Run tests, or Leave.
     dependsOn:
     - step: exit-question
       condition:
@@ -203,7 +218,7 @@ jobs:
   - name: unchanged-exit-approval
     task:
       type: manual_approval
-      prompt: Agent exited. Choose Restart, Fork, or Leave.
+      prompt: Agent exited. Choose Restart, Fork, Run tests, or Leave.
     dependsOn:
     - step: exit-question
       condition:
@@ -215,7 +230,7 @@ jobs:
   - name: manual-exit-approval
     task:
       type: manual_approval
-      prompt: Choose Begin review or Leave.
+      prompt: Choose Begin review, Run tests, or Leave.
     dependsOn:
     - step: exit-question
       condition:
@@ -279,7 +294,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.answer != "begin-review") }}
+    guard: ${{ !(inputs.answer in ["restart", "fork", "duplicate", "leave"]) }}
   - name: picker-result
     task:
       type: model_method
@@ -339,6 +354,7 @@ jobs:
             evidence:
             review:
             test:
+          testReturn: "${{ inputs.testReturn }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: picker-result
@@ -379,12 +395,11 @@ jobs:
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
-          phase: prepare
-          state:
-            vmSync:
-            evidence:
-            review:
-            test:
+          phase: '${{ inputs.answer == "run-tests" ? "tests" : "prepare" }}'
+          state: "${{ inputs.state }}"
+          testReturn:
+            workflow: "@hammz/zellij-agent-exit"
+            phase: prepare
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
     - step: picker-cancelled
@@ -393,7 +408,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.answer == "begin-review") }}
+    guard: ${{ !(inputs.answer in ["begin-review", "run-tests"]) }}
 reports:
   require:
   - "@hammz/workflow"
