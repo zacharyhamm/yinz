@@ -582,6 +582,47 @@ export default {load() {
     );
 }
 
+#[test]
+fn source_permission_cache_tracks_names_source_and_errors() {
+    test_seams::reset();
+    let read = "zellij.requestPermission(['ReadFiles']);";
+    let write = "zellij.requestPermission(['WriteFiles']);";
+    for _ in 0..3 {
+        assert_eq!(
+            source_permissions("keys", read).unwrap(),
+            vec![PermissionType::ReadFiles]
+        );
+        assert_eq!(
+            source_permissions("keys", write).unwrap(),
+            vec![PermissionType::WriteFiles]
+        );
+    }
+    assert_eq!(test_seams::PLUGIN_CHECK_CALLS.get(), 2);
+    assert_eq!(
+        source_permissions("other", write).unwrap(),
+        vec![PermissionType::WriteFiles]
+    );
+    assert_eq!(test_seams::PLUGIN_CHECK_CALLS.get(), 3);
+    // A third entry evicts the oldest source, keeping retained source memory bounded.
+    assert_eq!(
+        source_permissions("keys", read).unwrap(),
+        vec![PermissionType::ReadFiles]
+    );
+    assert_eq!(test_seams::PLUGIN_CHECK_CALLS.get(), 4);
+
+    let invalid = "export default {";
+    let error = source_permissions("keys", invalid).unwrap_err();
+    assert!(!error.is_empty());
+    assert_eq!(source_permissions("keys", invalid).unwrap_err(), error);
+    assert_eq!(test_seams::PLUGIN_CHECK_CALLS.get(), 5);
+    // Failures to obtain a report are retried, rather than saved as empty permissions.
+    for _ in 0..2 {
+        assert!(source_permissions("../keys", read).is_err());
+    }
+    assert_eq!(test_seams::PLUGIN_CHECK_CALLS.get(), 7);
+    test_seams::reset();
+}
+
 /// The approval of a write is the approval of its permissions, so the sentence being agreed
 /// to has to say what they are.
 #[test]

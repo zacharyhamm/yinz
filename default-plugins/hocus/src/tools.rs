@@ -10,6 +10,7 @@
 // crate for the host triple (as a workspace-wide `cargo clippy` does) reads those helpers as dead.
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::DataRevision;
 use zellij_tile::prelude::SupervisorId;
@@ -3342,6 +3343,7 @@ pub fn check_report(
     source: &str,
     mode: plugin_authoring::PluginCheckMode,
 ) -> Result<plugin_authoring::PluginCheckReport, String> {
+    test_seams::PLUGIN_CHECK_CALLS.set(test_seams::PLUGIN_CHECK_CALLS.get() + 1);
     let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
     let path = plugin_authoring::resolve_plugin_file(dir.path(), name)?;
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|error| error.to_string())?;
@@ -3413,16 +3415,42 @@ pub fn semantic_report(name: &str, source: &str) -> String {
     }
 }
 
+struct SourcePermissions {
+    name: String,
+    source: String,
+    result: Result<Vec<PermissionType>, String>,
+}
+
+thread_local! {
+    // ponytail: two sources cover one edit's before/after pair; grow only if concurrent
+    // confirmations thrash this cache. Rendering must not spawn workers for unchanged text.
+    static SOURCE_PERMISSIONS: RefCell<Vec<SourcePermissions>> = const { RefCell::new(Vec::new()) };
+}
+
 pub fn source_permissions(name: &str, source: &str) -> Result<Vec<PermissionType>, String> {
-    let report = check_report(
-        name,
-        source,
-        zellij_tile::plugin_authoring::PluginCheckMode::Syntax,
-    )?;
-    if !report.diagnostics.is_empty() {
-        return Err(report.diagnostics.join("\n"));
-    }
-    Ok(report.permissions)
+    SOURCE_PERMISSIONS.with_borrow_mut(|cache| {
+        if let Some(cached) = cache
+            .iter()
+            .find(|entry| entry.name == name && entry.source == source)
+        {
+            return cached.result.clone();
+        }
+        let report = check_report(name, source, plugin_authoring::PluginCheckMode::Syntax)?;
+        let result = if report.diagnostics.is_empty() {
+            Ok(report.permissions)
+        } else {
+            Err(report.diagnostics.join("\n"))
+        };
+        if cache.len() == 2 {
+            cache.remove(0);
+        }
+        cache.push(SourcePermissions {
+            name: name.to_owned(),
+            source: source.to_owned(),
+            result: result.clone(),
+        });
+        result
+    })
 }
 
 /// The same refusal for an edit, which is a different situation and used to be told otherwise.
@@ -5250,6 +5278,7 @@ pub mod test_seams {
         pub static PLUGIN_FS_EXISTS: Cell<Option<bool>> = const { Cell::new(None) };
         pub static RELOAD_CALLS: Cell<usize> = const { Cell::new(0) };
         pub static PLUGIN_WRITE_CALLS: Cell<usize> = const { Cell::new(0) };
+        pub static PLUGIN_CHECK_CALLS: Cell<usize> = const { Cell::new(0) };
         pub static PLUGIN_ENTRIES: RefCell<Option<Vec<zellij_tile::prelude::FsEntry>>> = const { RefCell::new(None) };
         pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
         /// The `running` each `reload_plugin_headless` was given, in order.
@@ -5276,6 +5305,8 @@ pub mod test_seams {
         PLUGIN_READS.with_borrow_mut(super::BTreeMap::clear);
         RELOAD_CALLS.set(0);
         PLUGIN_WRITE_CALLS.set(0);
+        PLUGIN_CHECK_CALLS.set(0);
+        super::SOURCE_PERMISSIONS.with_borrow_mut(Vec::clear);
         HEADLESS_RELOADS.with_borrow_mut(Vec::clear);
         SPAWN_AGENT_CALLS.with_borrow_mut(Vec::clear);
         PLUGIN_SOURCE.with_borrow_mut(|source| *source = None);

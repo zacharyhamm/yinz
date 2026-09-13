@@ -1,4 +1,22 @@
 #[test]
+fn deno_padding_preserves_long_combining_sequences_that_fit() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+        const combined = 'x' + '\u0300'.repeat(40000);
+        check(zellij.text.pad(combined, 80) === combined + ' '.repeat(79));
+        check(zellij.text.padLeft(combined, 80) === ' '.repeat(79) + combined);
+        check(zellij.text.center(combined, 80) === ' '.repeat(39) + combined + ' '.repeat(40));
+        for (const pad of [zellij.text.pad, zellij.text.padLeft, zellij.text.center]) {
+            check(pad(combined, 1) === combined);
+            check(pad(combined, 0) === '');
+            check(pad('日本語', 4) === '日本');
+            check(pad('日', 1) === ' ');
+            check(pad('', 0) === '');
+        }
+    "#);
+}
+
+#[test]
 fn deno_widgets_match_shared_rust_controls_and_markdown() {
     use zellij_tile::ui_components::{forms::*, serialize_text_with_coordinates};
     let mut runtime = sdk();

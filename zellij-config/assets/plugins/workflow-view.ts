@@ -207,11 +207,11 @@ function update(event: Event): boolean {
   if ('Key' in event && event.Key.bare_key === 'End' && form!.focusedId() !== 'answer') { followLive = true; view.scroll = Infinity; return true; }
   if ('Key' in event && event.Key.bare_key === 'Home' && form!.focusedId() !== 'answer') { followLive = false; view.scroll = 0; return true; }
   if ('Key' in event && event.Key.bare_key === 'PageUp') { followLive = false; view.scroll = Math.max(0, view.scroll - contentHeight); return true; }
-  if ('Key' in event && event.Key.bare_key === 'PageDown') { view.scroll += contentHeight; followLive = view.scroll >= scrollLimit; return true; }
+  if ('Key' in event && event.Key.bare_key === 'PageDown') { view.scroll += contentHeight; followLive = view.scroll >= scrollLimit && latestStream === streams.at(-1); return true; }
   if ('Mouse' in event) {
     const mouse = event.Mouse;
     if ('ScrollUp' in mouse) { followLive = false; view.scroll = Math.max(0, view.scroll - Math.min(Number(mouse.ScrollUp), contentHeight)); return true; }
-    if ('ScrollDown' in mouse) { view.scroll += Math.min(Number(mouse.ScrollDown), contentHeight); followLive = view.scroll >= scrollLimit; return true; }
+    if ('ScrollDown' in mouse) { view.scroll += Math.min(Number(mouse.ScrollDown), contentHeight); followLive = view.scroll >= scrollLimit && latestStream === streams.at(-1); return true; }
     if ('LeftClick' in mouse) view.selecting = Number(mouse.LeftClick[0]) < view.formY;
     if (view.selecting) {
       if ('Release' in mouse) { view.selecting = false; if (view.dirty) { view.dirty = false; repaint(); } }
