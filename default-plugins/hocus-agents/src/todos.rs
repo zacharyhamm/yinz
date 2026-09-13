@@ -23,6 +23,10 @@ pub(super) struct View {
     last_list_rows: usize,
     rendered_ids: Vec<u64>,
     rendered_projects: Vec<String>,
+    /// The visible items wrapped and styled for a width. Parsing markdown is the expensive
+    /// part of a render and the pane redraws on a timer, so this lives until the rows or the
+    /// width change; the cursor is painted on top and never invalidates it.
+    line_cache: Option<(usize, Vec<TodoLine>)>,
 }
 
 #[derive(Default)]
@@ -60,12 +64,23 @@ struct Row {
     done: bool,
 }
 
+/// One screen row of a wrapped item: the checkbox gutter and markdown body, without the
+/// cursor column, which is painted per frame.
+#[derive(Clone)]
+struct TodoLine {
+    id: u64,
+    line: markdown::MdLine,
+    first: bool,
+    done: bool,
+}
+
 impl View {
     pub(super) fn clear_dimensions(&mut self) {
         self.last_window = 0;
         self.last_list_rows = 0;
         self.rendered_ids.clear();
         self.rendered_projects.clear();
+        self.line_cache = None;
     }
 }
 
@@ -122,6 +137,7 @@ impl State {
         }
         self.todos.project_root = root.clone();
         self.todos.list = Default::default();
+        self.todos.line_cache = None;
         self.todos.selected = None;
         self.todos.mode = Mode::Normal;
         self.todos.list_scroll = None;
@@ -148,6 +164,7 @@ impl State {
     fn take_todo_rows(&mut self, rows: &DataRows) {
         let root = self.todos.project_root.as_deref().unwrap_or_default();
         self.todos.list = todos::from_rows(rows).remove(root).unwrap_or_default();
+        self.todos.line_cache = None;
         let visible = todo_rows(&self.todos.list, self.todos.show_done);
         if !self
             .todos
@@ -498,6 +515,7 @@ impl State {
     }
 
     fn take_todo_rows_from_list(&mut self) {
+        self.todos.line_cache = None;
         let rows = todo_rows(&self.todos.list, self.todos.show_done);
         if !self
             .todos
@@ -595,43 +613,63 @@ impl State {
             self.render_todo_footer(list_rows, cols, "projects · Enter open · Esc cancel");
             return;
         }
-        let display = todo_rows(&self.todos.list, self.todos.show_done);
+        if self
+            .todos
+            .line_cache
+            .as_ref()
+            .is_none_or(|(width, _)| *width != cols)
+        {
+            let rows = todo_rows(&self.todos.list, self.todos.show_done);
+            self.todos.line_cache = Some((cols, todo_lines(&rows, cols)));
+        }
+        let lines = self
+            .todos
+            .line_cache
+            .as_ref()
+            .map(|(_, lines)| lines.as_slice())
+            .unwrap_or_default();
         let cursor = match self.todos.mode {
             Mode::Move { target, .. } => target,
             _ => self.todos.selected,
         };
-        let selected = cursor
-            .and_then(|id| display.iter().position(|row| row.id == id))
+        // Scrolling is in screen rows, so a tall item is a tall stretch of the list.
+        let first = cursor
+            .and_then(|id| lines.iter().position(|line| line.id == id))
             .unwrap_or(0);
+        let end = lines[first..]
+            .iter()
+            .position(|line| Some(line.id) != cursor)
+            .map_or(lines.len(), |offset| first + offset);
         let start = self
             .todos
             .list_scroll
-            .unwrap_or_else(|| selected.saturating_sub(list_rows / 2))
-            .min(display.len().saturating_sub(list_rows));
+            .unwrap_or_else(|| {
+                let start = first.saturating_sub(list_rows / 2);
+                // An item taller than what is left below shows its head.
+                match end > start + list_rows {
+                    true => first.min(end.saturating_sub(list_rows)),
+                    false => start,
+                }
+            })
+            .min(lines.len().saturating_sub(list_rows));
         self.todos.last_window = start;
-        for (line, row) in display.iter().skip(start).take(list_rows).enumerate() {
-            self.todos.rendered_ids.push(row.id);
-            let prefix = format!(
-                "{}{}[{}] ",
-                if cursor == Some(row.id) { ">" } else { " " },
-                "  ".repeat(row.depth),
-                if row.done { "x" } else { " " },
-            );
-            let text = Text::new(agents::cut_to_width(format!("{prefix}{}", row.text), cols));
-            let text = if cursor == Some(row.id) {
-                text.selected()
-            } else {
-                text
+        for (row, line) in lines.iter().skip(start).take(list_rows).enumerate() {
+            self.todos.rendered_ids.push(line.id);
+            let selected = cursor == Some(line.id);
+            let body = match selected && line.first {
+                true => line.line.clone().prepend(">", markdown::MdStyle::default()),
+                false => line.line.clone().indent(1),
             };
+            let text = markdown::style_text(&body.text, &body.styles, line.done);
             paint(
-                if row.done { text.dim_range(..) } else { text },
+                if selected { text.selected() } else { text },
                 0,
-                line,
+                row,
                 Some(cols),
                 None,
             );
         }
-        if display.is_empty() {
+        if lines.is_empty() {
             paint(
                 Text::new("nothing on the list").dim_range(..),
                 0,
@@ -700,6 +738,36 @@ fn todo_rows(list: &todos::List, show_done: bool) -> Vec<Row> {
     let mut rows = Vec::new();
     walk(&list.items, 0, show_done, &mut rows);
     rows
+}
+
+/// `rows` word-wrapped as markdown to `cols`, the cursor column included in the budget.
+///
+/// A continuation row is indented to where the item's text starts, so the checkbox column
+/// stays clear.
+fn todo_lines(rows: &[Row], cols: usize) -> Vec<TodoLine> {
+    let mut out = Vec::new();
+    for row in rows {
+        let marker = format!(
+            "{}[{}] ",
+            "  ".repeat(row.depth),
+            if row.done { "x" } else { " " }
+        );
+        let gutter = marker.width();
+        let width = cols.saturating_sub(gutter + 1).max(1);
+        let rendered = markdown::render(&row.text, width, markdown::Options::compact());
+        for (index, line) in rendered.into_iter().enumerate() {
+            out.push(TodoLine {
+                id: row.id,
+                line: match index {
+                    0 => line.prepend(&marker, markdown::MdStyle::default()),
+                    _ => line.indent(gutter),
+                },
+                first: index == 0,
+                done: row.done,
+            });
+        }
+    }
+    out
 }
 
 fn collect_ids(items: &[todos::Item], ids: &mut Vec<u64>) {
@@ -930,6 +998,76 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn items_render_as_markdown_and_wrap_under_their_text() {
+        let list = todos::List {
+            items: vec![item(
+                1,
+                "**bold** and `code`",
+                false,
+                vec![item(2, "one two three four five six", true, vec![])],
+            )],
+            ..Default::default()
+        };
+        let lines = todo_lines(&todo_rows(&list, true), 16);
+        let texts: Vec<_> = lines.iter().map(|line| line.line.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "[ ] bold and",
+                "    code",
+                "  [x] one two",
+                "      three",
+                "      four five",
+                "      six"
+            ]
+        );
+        assert!(lines[0].line.styles[4].bold);
+        assert!(!lines[0].line.styles[9].bold);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| (line.id, line.first))
+                .collect::<Vec<_>>(),
+            [
+                (1, true),
+                (1, false),
+                (2, true),
+                (2, false),
+                (2, false),
+                (2, false)
+            ]
+        );
+        assert!(lines
+            .iter()
+            .all(|line| line.line.text.width() < 16 && line.done == (line.id == 2)));
+    }
+
+    #[test]
+    fn wrapped_items_scroll_by_row_and_click_through_continuations() {
+        let mut state = State::default();
+        state.todos.list.items = vec![
+            item(1, "short", false, vec![]),
+            item(2, "one two three four five six seven eight", false, vec![]),
+            item(3, "last", false, vec![]),
+        ];
+        state.todos.selected = Some(1);
+        state.render_todos(20, 16);
+        assert_eq!(state.todos.rendered_ids, [1, 2, 2, 2, 2, 3]);
+
+        state.todo_mouse(Mouse::LeftClick(3, 0));
+        assert_eq!(state.todos.selected, Some(2));
+
+        // Three list rows: the tall item shows its head rather than being centred past it.
+        state.render_todos(4, 16);
+        assert_eq!(state.todos.last_window, 1);
+        assert_eq!(state.todos.rendered_ids, [2, 2, 2]);
+
+        state.todos.selected = Some(3);
+        state.render_todos(4, 16);
+        assert_eq!(state.todos.rendered_ids, [2, 2, 3]);
     }
 
     #[test]
