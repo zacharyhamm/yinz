@@ -41,6 +41,23 @@ inputs:
     agentCommand:
       type: string
       default: ''
+    commitAgent:
+      type: object
+      default: {}
+      properties:
+        kind:
+          type: string
+        model:
+          type: string
+        effort:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
     rebasePrompt:
       type: string
       minLength: 1
@@ -197,6 +214,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -305,6 +323,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -350,6 +369,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -488,6 +508,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -507,6 +528,138 @@ jobs:
         - type: succeeded
         - type: skipped
     guard: ${{ !(inputs.phase in ["diff"]) }}
+  - name: commit-kind
+    task:
+      type: assert
+      expr: '(has(inputs.commitAgent.command) ? inputs.commitAgent.command : size(inputs.commitAgent) == 0 ? inputs.agentCommand : "") != "" || (has(inputs.commitAgent.kind) ? inputs.commitAgent.kind : inputs.kind) in ["codex", "claude", "cursor", "opencode"]'
+      message: Commit agent kind is unknown; configure commit_agent in .zellij/.swamp-workflows.kdl.
+      severity: high
+    dependsOn:
+    - step: diff-return
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase == "commit" && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.clean) }}
+  - name: commit-prompt
+    task:
+      type: model_method
+      modelType: "@hammz/zellij"
+      modelName: ${{ run.id + "-commit-prompt" }}
+      methodName: prepare_prompt
+      globalArgs:
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+      inputs:
+        prompt: '${{ "Write a commit message for the pending changes in this checkout. Inspect the branch changes against local target branch " + inputs.targetBranch + ", including staged, unstaged and untracked files; use existing branch commits as context but describe the changes this new commit will contain. Leave files and Git state untouched. Do not commit, rebase, merge, remove resources or contact remotes. Return only JSON {\"message\":\"Descriptive subject\\n\\nExplanatory body\"}, without Markdown fences or commentary. Then exit." }}'
+    dependsOn:
+    - step: commit-kind
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase == "commit" && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.clean) }}
+  - name: commit-agent
+    task:
+      type: model_method
+      modelType: "@hammz/zellij"
+      modelName: ${{ run.id + "-commit-agent" }}
+      methodName: agent_spawn
+      globalArgs:
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+      inputs:
+        work: "${{ inputs.launch }}"
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+        key: ${{ run.id + "-commit-agent" }}
+        spec:
+          kind: '${{ has(inputs.commitAgent.kind) ? inputs.commitAgent.kind : inputs.kind }}'
+          command: '${{ has(inputs.commitAgent.command) ? inputs.commitAgent.command : size(inputs.commitAgent) == 0 ? inputs.agentCommand : "" }}'
+          args: '${{ has(inputs.commitAgent.args) ? inputs.commitAgent.args : size(inputs.commitAgent) == 0 ? inputs.agentArgs : [] }}'
+          model: '${{ has(inputs.commitAgent.model) ? inputs.commitAgent.model : "" }}'
+          effort: '${{ has(inputs.commitAgent.effort) ? inputs.commitAgent.effort : "" }}'
+          cwd: "${{ inputs.checkout }}"
+          source_directory: "${{ inputs.checkout }}"
+          reuse: true
+    dependsOn:
+    - step: commit-prompt
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase == "commit" && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.clean) }}
+  - name: commit-agent-prompt
+    task:
+      type: model_method
+      modelType: "@hammz/zellij"
+      modelName: ${{ run.id + "-commit-agent-prompt" }}
+      methodName: agent_prompt
+      globalArgs:
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+      inputs:
+        work: "${{ inputs.launch }}"
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+        key: ${{ run.id + "-commit-agent-prompt" }}
+        agent: ${{ run.id + "-commit-agent" }}
+        prompt: ${{ data.latest(run.id + "-commit-prompt", "prompt-current").attributes.prompt }}
+        waitForExit: true
+    dependsOn:
+    - step: commit-agent
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase == "commit" && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.clean) }}
+  - name: commit-agent-exit
+    task:
+      type: model_method
+      modelType: "@hammz/zellij"
+      modelName: ${{ run.id + "-commit-agent-exit" }}
+      methodName: observe
+      globalArgs:
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+      inputs:
+        work: "${{ inputs.launch }}"
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+        key: ${{ run.id + "-commit-agent-prompt" }}
+    dependsOn:
+    - step: commit-agent-prompt
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase == "commit" && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.clean) }}
+  - name: commit-message
+    task:
+      type: model_method
+      modelType: "@hammz/zellij"
+      modelName: ${{ run.id + "-commit-message" }}
+      methodName: commit_message_result
+      globalArgs:
+        session: "${{ inputs.session }}"
+        binary: "${{ inputs.binary }}"
+      inputs:
+        operation: ${{ data.latest(run.id + "-commit-agent-exit", "operation-current").attributes }}
+        evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
+        agent: ${{ run.id + "-commit-agent" }}
+    dependsOn:
+    - step: commit-agent-exit
+      condition:
+        type: or
+        conditions:
+        - type: succeeded
+        - type: skipped
+    guard: ${{ !(inputs.phase == "commit" && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing && !data.latest(run.id + "-inspect", "evidence-current").attributes.source.clean) }}
   - name: rebase
     task:
       type: model_method
@@ -525,9 +678,10 @@ jobs:
         work: "${{ inputs.launch }}"
         session: "${{ inputs.session }}"
         key: ${{ run.id + "-commit-and-rebase" }}
-        message: Complete agent work
+        message: '${{ data.latest(run.id + "-inspect", "evidence-current").attributes.source.clean ? "No changes to commit" : data.latest(run.id + "-commit-message", "commitMessage-current").attributes.message }}'
+        expectedEvidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
     dependsOn:
-    - step: diff-return
+    - step: commit-message
       condition:
         type: or
         conditions:
@@ -574,6 +728,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -681,6 +836,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -764,6 +920,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -924,6 +1081,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -969,6 +1127,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1014,6 +1173,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1097,6 +1257,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1142,6 +1303,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1187,6 +1349,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1296,6 +1459,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1341,6 +1505,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1386,6 +1551,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1521,6 +1687,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1566,6 +1733,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1674,6 +1842,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1719,6 +1888,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1809,6 +1979,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -1875,6 +2046,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -2031,6 +2203,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -2076,6 +2249,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"

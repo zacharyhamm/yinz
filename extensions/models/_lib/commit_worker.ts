@@ -1,7 +1,7 @@
 /** The supervised pane owns Git and its locks; cancelling Swamp only stops observation. */
 import { z } from "npm:zod@4.3.6";
 import { CommitAndRebase, evidence, git, locked } from "./git_checkout.ts";
-import { Literal } from "./workflow.ts";
+import { digest, Literal } from "./workflow.ts";
 
 const args = CommitAndRebase.extend({
     author: z.array(Literal),
@@ -33,6 +33,14 @@ try {
         let result;
         try {
             const before = await evidence(c, args);
+            if (
+                args.expectedEvidence &&
+                await digest(before) !== await digest(args.expectedEvidence)
+            ) {
+                throw new Error(
+                    "Checkout changed since commit message preparation; generate a new message before committing",
+                );
+            }
             if (!before.target.clean || before.target.rebasing) {
                 throw new Error("Target checkout is dirty or rebasing");
             }

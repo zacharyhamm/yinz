@@ -88,7 +88,8 @@ Deno.test("foreground commit/rebase preserves Git results, dismissal, and dispat
     const dir = await Deno.makeTempDir();
     const main = dir + "/main", source = dir + "/topic ' $(touch INJECTED)";
     const { c, saved } = context(Deno.cwd(), source);
-    const message = "Complete 'quoted' work $(touch INJECTED)\nsecond line";
+    const message =
+        "Complete 'quoted' work $(touch INJECTED) — é\n\nExplain the changes.\nPreserve the second body line.";
     const args = {
         source,
         target: main,
@@ -312,6 +313,26 @@ Deno.test("foreground commit/rebase preserves Git results, dismissal, and dispat
         await run("clean");
         assert(await git(source, "rev-parse", "HEAD") === head);
         assert(String(result().stdout).includes("No changes to commit."));
+        await methods.verify_checkout.execute(args, c);
+        const expectedEvidence = Evidence.parse(saved.get("evidence-current"));
+        for (const side of [source, main]) {
+            await Deno.writeTextFile(
+                side + "/changed-after-message",
+                "new contents\n",
+            );
+            await rejects(
+                () =>
+                    methods.commit_and_rebase.execute({
+                        ...args,
+                        key: "stale-" + (side === source ? "source" : "target"),
+                        expectedEvidence,
+                    }, c),
+                /Checkout changed since commit message/,
+            );
+            assert(await git(source, "rev-parse", "HEAD") === head);
+            assert(await git(source, "diff", "--cached") === "");
+            await Deno.remove(side + "/changed-after-message");
+        }
         await Deno.writeTextFile(source + "/file", "commit should fail\n");
         const hooks = dir + "/hooks";
         await Deno.mkdir(hooks);

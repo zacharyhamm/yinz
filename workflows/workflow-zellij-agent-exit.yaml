@@ -41,6 +41,23 @@ inputs:
     agentCommand:
       type: string
       default: ''
+    commitAgent:
+      type: object
+      default: {}
+      properties:
+        kind:
+          type: string
+        model:
+          type: string
+        effort:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
     rebasePrompt:
       type: string
       minLength: 1
@@ -311,6 +328,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
@@ -356,6 +374,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          commitAgent: "${{ inputs.commitAgent }}"
           rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"

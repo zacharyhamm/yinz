@@ -1,5 +1,6 @@
 import { methods, resources } from "./_lib/zellij_methods.ts";
-import { Context } from "./_lib/workflow.ts";
+import { Context, digest } from "./_lib/workflow.ts";
+import { Evidence } from "./_lib/git_checkout.ts";
 function assert(v: unknown): asserts v {
     if (!v) throw new Error("assertion failed");
 }
@@ -48,6 +49,58 @@ Deno.test("review and gate evidence cannot be inferred from missing findings, pr
         gate: ["true"],
         vmSync: { ...op, clean: true as const, vm: null },
     };
+    const message =
+        "Describe 'quoted' changes — é\n\nPreserve the body and literal $(text).";
+    const commit = {
+        ...op,
+        outcome: "process-exit" as const,
+        hook: "Stop",
+        exitCode: 0,
+        message: JSON.stringify({ message }),
+    };
+    for (
+        const invalid of [
+            { message: "" },
+            { message: "not JSON" },
+            { message: "{}" },
+            { message: JSON.stringify({ message: "  " }) },
+            { message: JSON.stringify({ message: "bad\0text" }) },
+            { outcome: "completed" as const },
+            { outcome: "unknown" as const },
+            { outcome: "failed" as const },
+            { exitCode: 1 },
+            { exitCode: null },
+            { hook: "StopFailure" },
+            { owner: { ...owner, agent: "wrong-agent" } },
+        ]
+    ) {
+        let rejected = false;
+        try {
+            await methods.commit_message_result.execute({
+                operation: { ...commit, ...invalid },
+                evidence,
+                agent: owner.agent,
+            }, c);
+        } catch {
+            rejected = true;
+        }
+        assert(rejected && !saved.has("commitMessage-current"));
+    }
+    await methods.commit_message_result.execute({
+        operation: commit,
+        evidence,
+        agent: owner.agent,
+    }, c);
+    const generated = resources.commitMessage.schema.parse(
+        saved.get("commitMessage-current"),
+    );
+    assert(
+        generated.message === message && generated.owner.agent === owner.agent,
+    );
+    assert(
+        await digest(generated.evidence) ===
+            await digest(Evidence.parse(evidence)),
+    );
     for (const message of ["", "not JSON", '{"findings":null}']) {
         await methods.review_result.execute({
             operation: { ...op, message },

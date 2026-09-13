@@ -9,6 +9,7 @@ pub struct ProjectConfig {
     pub default_branch: Option<String>,
     pub rebase_prompt: Option<String>,
     pub agent: Option<zellij_types::agent::AgentSpawnSpec>,
+    pub commit_agent: Option<zellij_types::agent::AgentSpawnSpec>,
 }
 
 pub fn parse(source: &str) -> Result<ProjectConfig, String> {
@@ -57,9 +58,9 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
             "control_checkout" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.control_checkout = args.pop(),
             "ci" if properties.is_empty() && !args.is_empty() && !args[0].trim().is_empty() => config.ci = Some(args),
             "default_branch" if properties.is_empty() && args.len() == 1 && valid_branch(&args[0]) => config.default_branch = args.pop(),
-            "agent" if args.is_empty() && properties.keys().all(|k| ["kind", "model", "effort"].contains(k)) => {
+            "agent" | "commit_agent" if args.is_empty() && properties.keys().all(|k| ["kind", "model", "effort"].contains(k)) => {
                 if properties.values().any(|v| v.trim().is_empty()) {
-                    return Err("agent: settings must not be blank".into());
+                    return Err(format!("{name}: settings must not be blank"));
                 }
                 let spec = zellij_types::agent::AgentSpawnSpec {
                     kind: properties.get("kind").map(|v| v.to_string()),
@@ -70,17 +71,21 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
                 if let Some(kind) = spec.kind.as_deref() {
                     if !zellij_runtime::agent::launch::OFFERED.contains(&kind) {
                         return Err(format!(
-                            "agent kind {kind:?}: use {}",
+                            "{name} kind {kind:?}: use {}",
                             zellij_runtime::agent::launch::OFFERED.join(", ")
                         ));
                     }
                     zellij_runtime::agent::launch::plan(&spec)?;
                 } else if spec.effort.is_some() {
-                    return Err("agent effort requires kind".into());
+                    return Err(format!("{name} effort requires kind"));
                 }
-                config.agent = Some(spec);
+                if name == "commit_agent" {
+                    config.commit_agent = Some(spec);
+                } else {
+                    config.agent = Some(spec);
+                }
             },
-            _ => return Err(format!("agent_exit: invalid {name}; expected rebase_prompt \"instructions\", ci \"program\" \"arg\", default_branch \"branch\", or agent kind=\"codex\" model=\"...\" effort=\"medium\"")),
+            _ => return Err(format!("agent_exit: invalid {name}; expected rebase_prompt \"instructions\", ci \"program\" \"arg\", default_branch \"branch\", or agent/commit_agent kind=\"codex\" model=\"...\" effort=\"medium\"")),
         }
     }
     Ok(config)
@@ -302,6 +307,30 @@ pub fn access_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn commit_agent_uses_the_shared_agent_validation() {
+        let config = parse("agent_exit { agent kind=\"claude\"; commit_agent kind=\"codex\" model=\"example\" effort=\"medium\"; }").unwrap();
+        let commit = config.commit_agent.unwrap();
+        assert_eq!(commit.kind.as_deref(), Some("codex"));
+        assert_eq!(commit.model.as_deref(), Some("example"));
+        assert_eq!(commit.effort.as_deref(), Some("medium"));
+        assert_eq!(config.agent.unwrap().kind.as_deref(), Some("claude"));
+        assert!(parse("agent_exit {}").unwrap().commit_agent.is_none());
+        for settings in [
+            "kind=\"unknown\"",
+            "effort=\"medium\"",
+            "kind=\"claude\" effort=\"none\"",
+            "model=\" \"",
+            "kind=\"codex\" extra=\"x\"",
+            "\"codex\"",
+            "kind=\"codex\"; commit_agent kind=\"claude\"",
+        ] {
+            assert!(
+                parse(&format!("agent_exit {{ commit_agent {settings}; }}")).is_err(),
+                "{settings}"
+            );
+        }
+    }
     #[test]
     fn rebase_prompt_is_optional_literal_nonblank_text() {
         assert_eq!(parse("agent_exit {}").unwrap().rebase_prompt, None);
