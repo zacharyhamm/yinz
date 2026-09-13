@@ -86,6 +86,12 @@ try:
             assert 'failure-evidence' in evidence and 'Test report: FAILED' in evidence
             with open('received-failure-output', 'w') as output: output.write(evidence)
             with open('received-failure-prompt', 'w') as output: output.write(prompt)
+        if prompt.startswith('Fix the saved review findings'):
+            assert 'Unresolved fixture finding' in prompt
+            with open('review-fix-evidence', 'w') as output: output.write(prompt)
+            with open('review-fixed', 'w') as output: output.write('fixed\n')
+        if '--repair-tests' in sys.argv and prompt.startswith('Fix the failed tests'):
+            with open('gate-fixed', 'w') as output: output.write('fixed\n')
         if '--edit-review' in sys.argv and prompt.startswith('Review '):
             with open('reviewer-change', 'w') as output: output.write('reviewer edit\n')
         # A reviewer responds with the required structured findings. The worker leaves
@@ -112,11 +118,14 @@ try:
             assert not remote
             assert not subprocess.check_output(['git', 'status', '--porcelain'])
             inspected = dict(checkout=os.getcwd(), commit=subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip(),
-                             contents=hashlib.sha256(b'["","",[]]').hexdigest(),
+                             contents=hashlib.sha256(b'["","","",[]]').hexdigest(),
                              host_file=open('host-only').read())
             message = json.dumps(dict(findings=[dict(severity='info', file='host-only', message=json.dumps(inspected))]))
-        if '--findings' in sys.argv and prompt.startswith('Review '):
+        if ('--findings' in sys.argv or '--findings-until-fixed' in sys.argv and not os.path.exists('review-fixed')) and prompt.startswith('Review '):
             message = '{"findings":[{"severity":"warning","file":"file","message":"Unresolved fixture finding"}]}'
+        if not remote and prompt.startswith('Review '):
+            while os.path.exists(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'hold-review')):
+                time.sleep(0.01)
         report('Stop', last_assistant_message=message)
         if '--exit' in sys.argv:
             if not remote:

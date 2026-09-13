@@ -809,12 +809,18 @@ impl UnixPtyBackend {
     }
 
     pub fn force_kill(&self, pid: ProcessId) -> Result<()> {
-        let _ = kill(crate::pty_host::process_pid(pid)?, Some(Signal::SIGKILL));
+        let pid = crate::pty_host::process_pid(pid)?;
+        if kill(unistd::Pid::from_raw(-pid.as_raw()), Some(Signal::SIGKILL)).is_err() {
+            let _ = kill(pid, Some(Signal::SIGKILL));
+        }
         Ok(())
     }
 
     pub fn send_sigint(&self, pid: ProcessId) -> Result<()> {
-        let _ = kill(crate::pty_host::process_pid(pid)?, Some(Signal::SIGINT));
+        let pid = crate::pty_host::process_pid(pid)?;
+        if kill(unistd::Pid::from_raw(-pid.as_raw()), Some(Signal::SIGINT)).is_err() {
+            let _ = kill(pid, Some(Signal::SIGINT));
+        }
         Ok(())
     }
 

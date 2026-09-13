@@ -312,10 +312,23 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
       if(immediate)handlers.CommandPaneExited([6,17,opts.context]);
       return {pane_id:{Terminal:6},cwd:'/control'};
     };
-    const args={method:'agent_spawn',work:'work',key:'startup',waitForExit:true,spec:{prompt}};
+    const args={method:'agent_spawn',work:'work',key:'startup',waitForExit:true,spec:{prompt},prompt_sha256:'a'.repeat(64)};
     await call(args);check(read('work','startup').outcome===(immediate?'process-exit':'pending'));
     check((await call(args)).pane===6&&launches===(immediate?2:1));
-    if(!immediate)handlers.CommandPaneExited([6,0,{swamp_owner:JSON.stringify(owner('work','startup')),swamp_operation:'startup'}]);
+    if(!immediate){
+      const event=(hook,hash,turn)=>handlers.AgentEvent({pane_id:6,hook,session_id:'agent-session',prompt:prompt.slice(0,10),last_message:'Successful Stop message',
+        raw:JSON.stringify({_zellij_workflow_owner:JSON.stringify(owner('work','startup')),prompt_sha256:hash,turn_id:turn})});
+      for(const hash of [undefined,'b'.repeat(64)]){
+        event('UserPromptSubmit',hash,'rejected');event('Stop',hash,'rejected');
+        check(!read('work','startup').accepted&&!read('work','startup').message);
+      }
+      event('UserPromptSubmit',args.prompt_sha256,'accepted');
+      check(read('work','startup').accepted&&read('work','startup').turn==='accepted');
+      event('Stop',args.prompt_sha256,'accepted');
+      check(read('work','startup').outcome==='pending'&&read('work','startup').message==='Successful Stop message');
+      handlers.CommandPaneExited([6,0,{swamp_owner:JSON.stringify(owner('work','startup')),swamp_operation:'startup'}]);
+      check(read('work','startup').message==='Successful Stop message');
+    }
     const value=read('work','startup');check(value.outcome==='process-exit'&&value.processExited&&value.exitCode===(immediate?17:0));
   }
   check(launches===2&&sends===0);
@@ -327,20 +340,21 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     await call({method:'workflow_run',work:'work',key:'launch',directory:'/control',inputs:{rebasePrompt:explicit}});
     check(requests.find(r=>r.operation==='workflow.run').payload.inputs.rebasePrompt===expected);
   }
+  for(const [role,setting] of [["commitAgent","commit_agent"],["reviewAgent","review_agent"],["reviewFixAgent","review_fix_agent"],["rebaseAgent","rebase_agent"],["testFixAgent","test_fix_agent"]])
   for(const {config,explicit,inputs,expected} of [
-    {config:{commit_agent:{kind:'codex',model:'commit-model',effort:'medium'},agent:{kind:'claude',model:'review-model'}},expected:{kind:'codex',model:'commit-model',effort:'medium'}},
-    {config:{commit_agent:{kind:'codex'},agent:{kind:'claude',model:'review-model',effort:'high'}},expected:{kind:'codex'}},
+    {config:{[setting]:{kind:'codex',model:'commit-model',effort:'medium'},agent:{kind:'claude',model:'review-model'}},expected:{kind:'codex',model:'commit-model',effort:'medium'}},
+    {config:{[setting]:{kind:'codex'},agent:{kind:'claude',model:'review-model',effort:'high'}},expected:{kind:'codex'}},
     {config:{agent:{kind:'claude',model:'shared-model',effort:'high'}},expected:{kind:'claude',model:'shared-model',effort:'high'}},
-    {config:{commit_agent:{kind:'claude'}},explicit:{kind:'codex',model:'input-model'},expected:{kind:'codex',model:'input-model'}},
+    {config:{[setting]:{kind:'claude'}},explicit:{kind:'codex',model:'input-model'},expected:{kind:'codex',model:'input-model'}},
     {config:{},expected:{kind:'claude',command:'/stub',args:['--exit']}},
     {config:{},inputs:{kind:'claude'},expected:{kind:'claude',command:''}},
-    {config:{commit_agent:{kind:'codex',model:null,effort:null}},expected:{kind:'codex'}},
-    {config:{commit_agent:{kind:null,model:'commit-model',effort:null}},expected:{kind:'claude',model:'commit-model'}},
+    {config:{[setting]:{kind:'codex',model:null,effort:null}},expected:{kind:'codex'}},
+    {config:{[setting]:{kind:null,model:'commit-model',effort:null}},expected:{kind:'claude',model:'commit-model'}},
   ]){
     seed();rows.delete(uid('work','launch'));
     mock.projectConfig.read=()=>({root:'/control',config:{...config,workflow:'exit'}});
-    await call({method:'workflow_run',work:'work',key:'launch',directory:'/control',inputs:inputs??{kind:'claude',agentCommand:'/stub',agentArgs:['--exit'],commitAgent:explicit}});
-    check(JSON.stringify(requests.find(r=>r.operation==='workflow.run').payload.inputs.commitAgent)===JSON.stringify(expected));
+    await call({method:'workflow_run',work:'work',key:'launch',directory:'/control',inputs:inputs??{kind:'claude',agentCommand:'/stub',agentArgs:['--exit'],[role]:explicit}});
+    check(JSON.stringify(requests.find(r=>r.operation==='workflow.run').payload.inputs[role])===JSON.stringify(expected));
   }
   seed();for(const key of ['view','launch','source'])rows.delete(uid('work',key));
   panemap.p99={plugin_url:'zellij:agent-exit',is_suppressed:false};
@@ -352,5 +366,42 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
   handlers.CommandPaneExited([6,0,{swamp_owner:JSON.stringify(owner('work','placed')),swamp_operation:'placed'}]);
   check(!read('work','view').current&&!panemap.p99.is_suppressed);
 
+  // Cancellation is idempotent across dispatch, completion, and reload. It never
+  // permits new execution while ownership or termination remains uncertain.
+  for (const race of ['dispatch', 'replacement', 'completion', 'reload', 'adopted', 'changed-row']) {
+    seed();let signals=[];mock.workflowSignal=request=>signals.push(request);
+    const work='cancel-test', key='worker';
+    const value={work,key,request:JSON.stringify({method:'command',work,key}),owner:owner(work,key),
+      outcome:'pending',pane:3,supervisor:'supervisor-3',process:103,incarnation:'incarnation'};
+    if(race==='dispatch')delete value.supervisor;
+    if(race==='replacement')value.process=999;
+    if(race==='adopted')value.owner.incarnation='previous-server';
+    save(work,key,value);
+    const runCommand=mock.runCommand;
+    if(race==='changed-row')mock.runCommand=async opts=>{
+      const response=await runCommand(opts);
+      save(work,key,{...read(work,key),process:104});
+      return response;
+    };
+    await call({method:'cancel_step',work,operation:key});await flush();
+    if(race==='dispatch'){check(signals.length===0);save(work,key,{...read(work,key),supervisor:'supervisor-3'});await tick();}
+    mock.runCommand=runCommand;
+    if(race==='replacement'||race==='changed-row'){
+      check(signals.length===0&&read(work,key).outcome==='unknown');
+      check((await rejected(()=>call({method:'command',work,key:'retry',argv:['no']}))).includes('Cancellation'));
+      check((await rejected(()=>call({method:'step_ready',work,key:'ready'}))).includes('uncertain'));
+    } else {
+      check(signals.length===1&&!signals[0].kill&&signals[0].process===103);
+      await call({method:'cancel_step',work,operation:key});await flush();check(signals.length===1);
+      if(race==='reload'){reload();await flush();check(signals.length===1);}
+      if(race==='completion')await call({method:'step_finished',work,operation:key,process:103});
+      const originalNow=Date.now;Date.now=()=>originalNow()+6000;await tick();Date.now=originalNow;
+      check(signals.length===(race==='completion'?1:2));
+      if(signals.length===2)check(signals[1].kill);
+      handlers.CommandPaneExited([3,130,{swamp_owner:JSON.stringify(value.owner),swamp_operation:key}]);
+      await tick();check(read(work,key).outcome==='cancelled'&&read(work,key).terminationVerified);
+      check((await call({method:'step_ready',work,key:'ready'})).outcome==='completed');
+    }
+  }
   done=true;
 })().catch(error=>{failure=error.stack;});

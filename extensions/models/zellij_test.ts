@@ -1,4 +1,5 @@
 import { model } from "./zellij.ts";
+import { createHash } from "node:crypto";
 
 Deno.test("Zellij methods preserve argv, validate snapshots, and fail without writing", async () => {
     const original = Deno.Command;
@@ -519,6 +520,7 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
         }, ownedContext);
         const request = JSON.parse(calls.pop()!.at(-1)!);
         equal(request.spec, { command: "/stub agent", args: ["$(literal)"] });
+        equal(request.prompt_sha256, undefined);
         const savedOperation = writes.pop()!.data;
         for (const [key, value] of Object.entries(operation)) {
             equal(savedOperation[key], value);
@@ -548,6 +550,10 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
             }, ownedContext);
             const startupRequest = JSON.parse(calls.pop()!.at(-1)!);
             equal(startupRequest.spec.prompt, startupPrompt);
+            equal(
+                startupRequest.prompt_sha256,
+                createHash("sha256").update(startupPrompt).digest("hex"),
+            );
             equal(startupRequest.spec.args, ["--exit"]);
             equal(startupRequest.waitForExit, true);
             writes.pop();

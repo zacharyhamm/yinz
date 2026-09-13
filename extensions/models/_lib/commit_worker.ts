@@ -1,4 +1,4 @@
-/** The supervised pane owns Git and its locks; cancelling Swamp only stops observation. */
+/** The supervised pane owns Git and its locks; cancellation never implies rollback. */
 import { z } from "npm:zod@4.3.6";
 import {
     CommitAndRebase,
@@ -8,6 +8,7 @@ import {
     locked,
     Mutation,
 } from "./git_checkout.ts";
+import { operation } from "./bridge.ts";
 import { Context, digest, Literal } from "./workflow.ts";
 import type { GitContext } from "../../../.swamp/pulled-extensions/@swamp/git/models/_lib/types.ts";
 import {
@@ -27,10 +28,13 @@ const args = z.discriminatedUnion("mode", [
     Integration.extend({ mode: z.literal("integrate") }),
     Cleanup.extend({ mode: z.literal("cleanup") }),
 ]).and(z.object({
+    work: z.string().min(1),
+    session: Literal.min(1),
     author: z.array(Literal),
     directory: Literal.min(1),
     repoDir: Literal.min(1),
 })).parse(JSON.parse(Deno.args[0]));
+let cancelled = false, dismissing = false;
 const records = new Map<string, Record<string, unknown>>();
 const c: Context & GitContext = {
     signal: new AbortController().signal,
@@ -61,8 +65,24 @@ const emit = async (bytes: Uint8Array) => {
     await screen.write(bytes);
 };
 const print = (text: string) => emit(new TextEncoder().encode(text));
+Deno.addSignalListener("SIGINT", () => {
+    if (dismissing) Deno.exit(exitCode);
+    if (cancelled) return;
+    cancelled = true;
+    void operation(c, {
+        method: "cancel_step",
+        work: args.work,
+        operation: args.key,
+        key: args.key,
+        session: args.session,
+        binary: args.binary,
+    }).catch((error) => print(String(error) + "\n"));
+});
 const run = async (cwd: string, argv: string[]) => {
     await print("$ " + argv.map((a) => JSON.stringify(a)).join(" ") + "\n");
+    if (cancelled) {
+        throw new Error("Step cancelled; inspect the checkout before retrying");
+    }
     const child = new Deno.Command("bash", {
         args: ["-c", 'exec "$@" 2>&1', "foreground-command", ...argv],
         cwd,
@@ -143,11 +163,17 @@ try {
                 if (before.source.rebasing || before.source.conflicts.length) {
                     throw new Error("Resolve the rebase before committing");
                 }
+                if (cancelled) {
+                    throw new Error(
+                        "Step cancelled; inspect the checkout before retrying",
+                    );
+                }
                 const child = new Deno.Command("bash", {
                     args: [
                         "-c",
                         String.raw`
 set -eu
+trap 'exit 130' INT
 exec 2>&1
 target=$1 message=$2 dirty=$3
 shift 3
@@ -187,8 +213,16 @@ run git rebase "$target"
             }
         } catch (error) {
             exitCode = 124;
-            result = { exitCode, error: String(error) };
+            result = {
+                exitCode,
+                error: String(error),
+                evidence: await evidence(c, args),
+            };
             await print(`${error}\n`);
+        }
+        if (cancelled) {
+            exitCode = 130;
+            result = { ...result, exitCode, cancelled: true };
         }
         await Deno.writeTextFile(
             `${args.directory}/result.json`,
@@ -205,6 +239,19 @@ run git rebase "$target"
                     : "Cleanup"
             } finished (exit ${exitCode}). Press Enter to return.\n`,
         );
+        await operation(c, {
+            method: "step_finished",
+            work: args.work,
+            key: args.key,
+            operation: args.key,
+            process: Deno.pid,
+            session: args.session,
+            binary: args.binary,
+        })
+            .catch((error) =>
+                print("Completion notification failed: " + String(error) + "\n")
+            );
+        dismissing = true;
         const byte = new Uint8Array(1);
         while (true) {
             if (await Deno.stdin.read(byte) === null) {

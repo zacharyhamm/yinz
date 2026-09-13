@@ -189,6 +189,8 @@ print('{"result": {}}')
     await Deno.chmod(binary, 0o700);
     const c: Context = {
         repoDir: "/tmp",
+        modelType: { normalized: "@hammz/zellij" },
+        modelId: "saved",
         globalArgs: { session: "test", binary },
         signal: new AbortController().signal,
         logger: { info() {} },
@@ -311,12 +313,13 @@ print('{"result": {}}')
                 startup,
             }, c);
             const prompt = String(saved.get("prompt-current")?.prompt);
-            assert(prompt.startsWith("Fix the failed tests.\n\nREPORT START"));
-            assert(prompt.endsWith("REPORT END") && !prompt.includes("\ufffd"));
+            assert(prompt.startsWith("Fix the failed tests.\n\n"));
+            assert(!prompt.includes("\ufffd"));
             if (startup) {
                 assert(new TextEncoder().encode(prompt).length <= 131071);
                 assert(
-                    prompt.includes("middle omitted to fit 131071 UTF-8 bytes"),
+                    prompt.includes("swamp data query") &&
+                        String(saved.get("repair-test")?.summary) === summary,
                 );
             } else {
                 assert(prompt === "Fix the failed tests.\n\n" + summary);
@@ -360,16 +363,32 @@ print('{"result": {}}')
 
 Deno.test("foreground tests stream output and preserve exit status only after dismissal", async () => {
     for (const code of [0, 7]) {
-        for (const dismiss of [true, false]) {
+        for (const dismiss of [true, false, "interrupt"]) {
             const directory = await Deno.makeTempDir({
                 dir: "/tmp",
                 prefix: "zellij-test-",
             });
-            const argv = captureCommand(directory, [
-                "bash",
-                "-c",
-                `echo LIVE; echo DIAGNOSTIC >&2; exit ${code}`,
-            ], true);
+            const notify = directory + "/notify";
+            await Deno.writeTextFile(
+                notify,
+                '#!/bin/sh\ncat > "' + directory + '/finished"\n',
+            );
+            await Deno.chmod(notify, 0o700);
+            const argv = captureCommand(
+                directory,
+                [
+                    "bash",
+                    "-c",
+                    `echo LIVE; echo DIAGNOSTIC >&2; exit ${code}`,
+                ],
+                true,
+                {
+                    binary: notify,
+                    session: "session",
+                    work: "PROCESS",
+                    key: "PROCESS",
+                },
+            );
             const child = new Deno.Command(argv[0], {
                 args: argv.slice(1),
                 stdin: "piped",
@@ -398,14 +417,25 @@ Deno.test("foreground tests stream output and preserve exit status only after di
                             capture.output.includes("DIAGNOSTIC"),
                     );
                     sent = true;
-                    const writer = child.stdin.getWriter();
-                    if (dismiss) {
-                        await writer.write(new TextEncoder().encode("\n"));
+                    if (dismiss === "interrupt") child.kill("SIGINT");
+                    else {
+                        const writer = child.stdin.getWriter();
+                        if (dismiss) {
+                            await writer.write(new TextEncoder().encode("\n"));
+                        }
+                        await writer.close();
                     }
-                    await writer.close();
                 }
             }
+            const finished = JSON.parse(
+                await Deno.readTextFile(directory + "/finished"),
+            );
+            assert(
+                finished.process === child.pid && finished.work === "PROCESS" &&
+                    finished.operation === "PROCESS",
+            );
             assert(sent && (await status).code === (dismiss ? code : 125));
+            if (dismiss === "interrupt") await child.stdin.close();
             assert(!await errors);
             await Deno.remove(directory, { recursive: true });
         }

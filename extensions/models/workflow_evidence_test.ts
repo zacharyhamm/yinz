@@ -84,7 +84,9 @@ Deno.test("review and gate evidence cannot be inferred from missing findings, pr
         } catch {
             rejected = true;
         }
-        assert(rejected && !saved.has("commitMessage-current"));
+        assert(
+            !rejected && saved.get("commitMessage-current")?.valid === false,
+        );
     }
     await methods.commit_message_result.execute({
         operation: commit,
@@ -95,7 +97,7 @@ Deno.test("review and gate evidence cannot be inferred from missing findings, pr
         saved.get("commitMessage-current"),
     );
     assert(
-        generated.message === message && generated.owner.agent === owner.agent,
+        generated.message === message && generated.owner?.agent === owner.agent,
     );
     assert(
         await digest(generated.evidence) ===

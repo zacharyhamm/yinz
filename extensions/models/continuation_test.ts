@@ -30,6 +30,8 @@ if request['method'] == 'swamp_dispatch':
     assert request['payload']['inputs']['testReturn'] == dict(workflow='@hammz/zellij-review-integration', phase='resolved')
     assert request['payload']['inputs']['rebasePrompt'] == 'Configured resolver: stage, then exit.'
     assert request['payload']['inputs']['commitAgent'] == dict(kind='codex', model='commit-model', effort='medium')
+    for role in ('reviewAgent', 'reviewFixAgent', 'rebaseAgent', 'testFixAgent'):
+        assert request['payload']['inputs'][role] == dict(kind='claude', model=role)
     assert len(json.dumps(request).encode()) < 262144
     assert request['payload']['inputs']['state']['test']['outputRef']['version'] == 1
     assert 'argv' not in request
@@ -127,7 +129,7 @@ print(json.dumps(dict(result=result)))
         key: "continue",
         workflow: "@hammz/zellij-review-integration",
         inputs: {
-            flowVersion: 2,
+            flowVersion: 3,
             launch: "work",
             session: "test",
             binary,
@@ -144,6 +146,10 @@ print(json.dumps(dict(result=result)))
                 model: "commit-model",
                 effort: "medium",
             },
+            ...Object.fromEntries(
+                ["reviewAgent", "reviewFixAgent", "rebaseAgent", "testFixAgent"]
+                    .map((role) => [role, { kind: "claude", model: role }]),
+            ),
             firecracker: "",
             firecrackerImage: "",
             sourcePane: -1,

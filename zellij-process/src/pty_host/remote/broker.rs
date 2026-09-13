@@ -1032,7 +1032,10 @@ fn signal_child(child_pid: ProcessId, signal: ChildSignal) {
             return;
         },
     };
-    let _ = nix::sys::signal::kill(pid, Some(sig));
+    let group = nix::unistd::Pid::from_raw(-pid.as_raw());
+    if nix::sys::signal::kill(group, Some(sig)).is_err() {
+        let _ = nix::sys::signal::kill(pid, Some(sig));
+    }
 }
 
 // --- daemon entry points ---

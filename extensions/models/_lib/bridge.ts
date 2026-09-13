@@ -50,6 +50,7 @@ export const Operation = z.object({
         "completed",
         "failed",
         "interrupted",
+        "cancelled",
         "process-exit",
     ]),
     incarnation: z.string(),
@@ -80,6 +81,8 @@ export const Operation = z.object({
         }),
     ]).optional(),
     processExited: z.boolean().optional(),
+    cancelRequested: z.boolean().optional(),
+    terminationVerified: z.boolean().optional(),
     outstanding: z.string().optional(),
     accepted: z.boolean().optional(),
     choice: z.enum(["started", "cancelled"]).optional(),
@@ -234,8 +237,13 @@ export async function operation(c: Context, request: Record<string, unknown>) {
             },
         };
     }
-    if (request.method === "agent_prompt") {
-        const prompt = PromptText.parse(request.prompt);
+    const startupPrompt = request.method === "agent_spawn"
+        ? (request.spec as z.infer<typeof AgentSpec> | undefined)?.prompt
+        : undefined;
+    if (request.method === "agent_prompt" || startupPrompt != null) {
+        const prompt = request.method === "agent_spawn"
+            ? StartupPromptText.parse(startupPrompt)
+            : PromptText.parse(request.prompt);
         const hash = await crypto.subtle.digest(
             "SHA-256",
             new TextEncoder().encode(prompt),

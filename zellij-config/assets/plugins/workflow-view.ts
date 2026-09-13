@@ -7,9 +7,10 @@ type History = {id?: string; workflowName?: string; status: string; jobs?: {name
 type Output = {output?: string; previewTruncated?: boolean; outputTruncated?: boolean; logError?: string;
   summaryLength?: number; outputComplete?: boolean; passed?: boolean; pane?: number; log?: string; outcome?: string; exitCode?: number | null;
   findings?: {severity: string; file: string; message: string}[]; review?: Output; test?: Output;
+  problem?: string; reason?: string; stdout?: string; stderr?: string;
   evidence?: {source: {commit: string}; target: {commit: string}}; source?: {commit: string}; target?: {commit: string}};
 type ReportEntry = {model: string; name: string; version: number; createdAt?: string; attributes: Output};
-type Snapshot = {run?: string; launch?: string; root: string; history: History; children?: History[]; active?: boolean;
+type Snapshot = {activeOperation?: {work: string; key: string} | null; run?: string; launch?: string; root: string; history: History; children?: History[]; active?: boolean;
   questions?: {results?: Question[]}; outputs?: {results?: ReportEntry[]}; logs?: string;
   subtitle?: string};
 type Attachment = {directory: string; run?: string; launch?: string};
@@ -108,7 +109,7 @@ const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 const identity = (entry?: Question) => entry ? JSON.stringify([entry.attributes.run, entry.model, entry.attributes.question]) : undefined;
 function controls() {
   const entry = view.pending[view.selected], q = entry?.attributes, key = identity(entry);
-  const signature = JSON.stringify([key ?? '', q?.kind ?? '', q?.answers ?? [], view.pending.length > 1, view.active, view.cancellable]);
+  const signature = JSON.stringify([key ?? '', q?.kind ?? '', q?.answers ?? [], view.pending.length > 1, view.active, view.cancellable, view.snapshot?.activeOperation]);
   if (signature === formKey) return;
   const focus = key === questionKey ? form?.focusedId() : undefined;
   const hasInput = !!q && !(q.answers?.length);
@@ -116,10 +117,11 @@ function controls() {
   const fields: FieldDescriptor[] = [];
   if (q) {
     if (!hasInput) q.answers!.forEach((answer, index) => fields.push({kind: 'button', id: `choice_${index + 1}`,
-      label: text(answer.replaceAll('-', ' ').replace(/^[a-z]/, c => c.toUpperCase()))}));
+      label: ({'commit-and-rebase': 'Commit & rebase', 'fix-review-with-agent': 'Fix review with agent', 'fix-tests-with-agent': 'Fix tests with agent'} as Record<string, string>)[answer] ?? text(answer.replaceAll('-', ' ').replace(/^[a-z]/, c => c.toUpperCase()))}));
     else fields.push({kind: 'textInput', id: 'answer', label: 'Answer', value}, {kind: 'button', id: 'submit', label: 'Submit'});
   }
   if (view.pending.length > 1) fields.push({kind: 'button', id: 'next', label: 'Next question'});
+  if (view.snapshot?.activeOperation) fields.push({kind: 'button', id: 'cancel_step', label: 'Cancel step'});
   if (view.cancellable) fields.push({kind: 'button', id: 'cancel_run', label: 'Cancel run'});
   if (onRestart && !q?.answers?.includes('restart')) fields.push({kind: 'button', id: 'restart', label: 'Restart agent'});
   if (onFork && !q?.answers?.includes('fork')) fields.push({kind: 'button', id: 'fork', label: 'Fork agent'});
@@ -246,6 +248,9 @@ function update(event: Event): boolean {
     if (entry.version <= (answered.get(identity(entry)!) ?? -Infinity)) return false;
     const q = entry.attributes, answer = choice ? q.answers![Number(choice[1]) - 1] : String(form!.value('answer'));
     request = {method: 'workflow_answer', directory: view.snapshot!.root, model: entry.model, inputs: {run: q.run, question: q.question, answer, submission: `${z.instanceId}-${generation + 1}`}}; success = 'Answer recorded';
+  } else if (action.id === 'cancel_step' && view.snapshot?.activeOperation) {
+    const active = view.snapshot.activeOperation;
+    request = {method: 'cancel_step', work: active.work, operation: active.key}; success = 'Step cancellation requested; waiting for verified termination';
   } else if (action.id === 'cancel_run' && view.snapshot && view.attachment?.run) {
     request = {method: 'workflow_cancel', directory: view.snapshot.root, run: view.attachment.run}; success = 'Cancellation requested; resources preserved';
   } else return true;
@@ -335,6 +340,10 @@ function render(rows: number, cols: number): string {
     for (const entry of snapshot.outputs?.results ?? []) {
       add(`${entry.model}/${entry.name} v${entry.version}`);
       const attrs = entry.attributes ?? {}, review = attrs.review ?? attrs;
+      if (attrs.problem) add(attrs.problem, true);
+      if (attrs.reason) add(attrs.reason, true);
+      if (attrs.stderr) add(attrs.stderr, true);
+      if (attrs.stdout) add(attrs.stdout);
       for (const finding of review.findings ?? []) add(`${finding.severity} ${finding.file}: ${finding.message}`, true);
       if (attrs.pane != null) add(`Pane ${attrs.pane} / ${text(attrs.log)} / ${text(attrs.outcome)}`, failed(attrs.outcome));
       function showOutput(value: Output, path: string) {

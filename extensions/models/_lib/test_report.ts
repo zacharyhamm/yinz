@@ -16,22 +16,58 @@ export function captureCommand(
     directory: string,
     argv: string[],
     foreground = false,
+    cancellation?: {
+        binary: string;
+        session: string;
+        work: string;
+        key: string;
+    },
 ) {
     Capture.parse({ directory });
+    const interrupt = cancellation
+        ? `printf "%s\\n" "$cancel_request" | "$cancel_binary" --session "$cancel_session" pipe --name swamp --plugin zellij:swamp-bridge >/dev/null`
+        : ":";
     return [
         "/bin/bash",
         "-c",
         // Literal argv remains positional. PIPESTATUS must be copied immediately;
         // tee failure must never replace the tested command's exit status.
         (foreground ? "unset $(git rev-parse --local-env-vars)\n" : "") +
-        'dir=$1; shift\n"$@" 2>&1 | tee "$dir/output" 2>"$dir/error"\n' +
-        'codes=("${PIPESTATUS[@]}")\nprintf "%s %s\\n" "${codes[0]}" "${codes[1]}" >"$dir/status"\n' +
-        (foreground
-            ? 'printf "\\nTests finished (exit %s). Press Enter to return.\\n" "${codes[0]}"\nIFS= read -r dismissal || exit 125\n'
+        "dir=$1 cancel_binary=$2 cancel_session=$3 cancel_request=$4 finished_request=$5; shift 5\n" +
+        `trap 'trap "" INT; touch "$dir/cancelled"; ${interrupt}' INT\n` +
+        '(trap - INT; "$@" 2>&1 | tee "$dir/output" 2>"$dir/error"; codes=("${PIPESTATUS[@]}"); printf "%s %s\\n" "${codes[0]}" "${codes[1]}" >"$dir/status") <&0 & child=$!\n' +
+        'while kill -0 "$child" 2>/dev/null; do wait "$child"; done\n' +
+        'read -r code capture_code <"$dir/status" || code=125\n' +
+        'if [ -e "$dir/cancelled" ]; then code=130; fi\n' +
+        (cancellation
+            ? 'printf \'%s,"process":%s}\\n\' "${finished_request%?}" "$$" | "$cancel_binary" --session "$cancel_session" pipe --name swamp --plugin zellij:swamp-bridge >/dev/null\n'
             : "") +
-        'exit "${codes[0]}"',
+        (foreground
+            ? 'trap \'exit "$code"\' INT\nprintf "\\nTests finished (exit %s). Press Enter to return.\\n" "$code"\nIFS= read -r dismissal || exit 125\n'
+            : "") +
+        'exit "$code"',
         "zellij-test-capture",
         directory,
+        cancellation?.binary ?? "",
+        cancellation?.session ?? "",
+        JSON.stringify(
+            cancellation
+                ? {
+                    method: "cancel_step",
+                    work: cancellation.work,
+                    operation: cancellation.key,
+                }
+                : {},
+        ),
+        JSON.stringify(
+            cancellation
+                ? {
+                    method: "step_finished",
+                    work: cancellation.work,
+                    operation: cancellation.key,
+                }
+                : {},
+        ),
         ...argv,
     ];
 }
@@ -132,7 +168,9 @@ export function testReport(test: {
     }
     const summary = [
         "Test report: " +
-        (passed
+        (test.outcome === "cancelled"
+            ? "CANCELLED"
+            : passed
             ? "PASSED"
             : test.outputComplete !== true
             ? "INCOMPLETE"
@@ -161,7 +199,9 @@ export function testReport(test: {
             ? ["Non-test gate errors: " + gateErrors.join(", ")]
             : []),
         ...(!recognized
-            ? ["Runner output was not recognized as Cargo/nextest; no test identities inferred."]
+            ? [
+                "Runner output was not recognized as Cargo/nextest; no test identities inferred.",
+            ]
             : []),
         "",
         // Keep the complete diagnostic stream, including failure blocks and output

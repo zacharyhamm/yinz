@@ -145,6 +145,26 @@ fn op_zellij_workflow_remote_panes(
     query().map_err(|error| JsErrorBox::generic(format!("{error:#}")))
 }
 
+#[op2]
+fn op_zellij_workflow_signal(
+    state: &OpState,
+    #[serde] request: super::host_bridge::WorkflowSignal,
+) -> std::result::Result<(), JsErrorBox> {
+    let signal = || -> Result<()> {
+        state.borrow::<Arc<limits::Limits>>().check()?;
+        let env = state
+            .borrow::<HostState>()
+            .env
+            .as_ref()
+            .context("host commands are unavailable during module initialization")?;
+        if env.cancel.load(Ordering::Acquire) {
+            bail!(CANCELLED_BY_HOST);
+        }
+        super::host_bridge::workflow_signal(&env.plugin.location, &env.senders, request)
+    };
+    signal().map_err(|error| JsErrorBox::generic(format!("{error:#}")))
+}
+
 // Validate before the SDK inspects permission/unsubscribe payloads. Otherwise
 // its bookkeeping could invoke an accessor or proxy before the command op.
 #[op2(fast)]
@@ -229,6 +249,7 @@ deno_core::extension!(
     ops = [
         op_zellij_command,
         op_zellij_workflow_remote_panes,
+        op_zellij_workflow_signal,
         op_zellij_monotonic_ms,
         op_zellij_validate,
         op_zellij_encode,

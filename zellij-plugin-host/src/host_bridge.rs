@@ -44,3 +44,36 @@ pub(super) fn workflow_remote_panes(
     rx.recv_timeout(std::time::Duration::from_secs(5))
         .context("receive remote workflow pane identities from PTY (five-second timeout)")
 }
+
+#[derive(serde::Deserialize)]
+pub(super) struct WorkflowSignal {
+    terminal_id: zellij_types::internal_ids::TerminalId,
+    owner: String,
+    process: Option<zellij_types::internal_ids::ProcessId>,
+    supervisor: String,
+    kill: bool,
+}
+pub(super) fn workflow_signal(
+    location: &RunPluginLocation,
+    senders: &zellij_bus::thread_bus::ThreadSenders,
+    request: WorkflowSignal,
+) -> Result<()> {
+    anyhow::ensure!(
+        is_workflow_bridge(location),
+        "workflowSignal is restricted to zellij:swamp-bridge"
+    );
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    senders
+        .send_to_pty(zellij_bus::pty::PtyInstruction::WorkflowSignal {
+            terminal_id: request.terminal_id,
+            owner: request.owner,
+            process: request.process,
+            supervisor: request.supervisor,
+            kill: request.kill,
+            reply,
+        })
+        .context("signal owned workflow pane")?;
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .context("receive workflow signal acknowledgement")?
+        .map_err(|error| anyhow!(error))
+}

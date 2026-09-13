@@ -128,6 +128,8 @@ export async function integrateCheckout(
 ) {
     const vmClean = await liveVm(c, args);
     const current = await evidence(c, args);
+    const reason = mergeCheckProblem(current, args.review, args.test);
+    if (reason) return { integrated: false, reason, evidence: current };
     if (!vmClean) {
         return {
             integrated: false,
@@ -174,6 +176,41 @@ export async function integrateCheckout(
         reason: null,
         evidence: await evidence(c, args),
     };
+}
+/** Shared by the menu and the mutation boundary; flags alone are not proof. */
+export function mergeCheckProblem(
+    current: z.infer<typeof Evidence>,
+    review: z.infer<typeof Review> | null,
+    test: z.infer<typeof Test> | null,
+): string | null {
+    if (
+        !review || !review.valid || !review.resolved ||
+        !["completed", "process-exit"].includes(review.outcome) ||
+        review.findings.some((f) => f.severity !== "info")
+    ) {
+        return "A valid review with no error or warning findings is required";
+    }
+    if (
+        !test || !test.passed || test.outcome !== "completed" ||
+        test.exitCode !== 0
+    ) {
+        return "Passing tests are required";
+    }
+    if (
+        [review.evidence, test.evidence].some((proof) =>
+            JSON.stringify(proof) !== JSON.stringify(current)
+        )
+    ) {
+        return "Stale checks: review and test the current source and target again";
+    }
+    if (
+        ![current.source, current.target].every((r) =>
+            r.clean && !r.rebasing && !r.conflicts.length
+        )
+    ) {
+        return "Both checkouts must be clean with no paused rebase or conflicts";
+    }
+    return null;
 }
 const resource = <T extends z.ZodType>(schema: T, description: string) => ({
     schema,
@@ -303,29 +340,12 @@ async function foreground(
             ],
         });
         const command = await observe(c, request, 3600, false);
-        if (
-            !["completed", "failed"].includes(command.outcome) ||
-            command.exitCode == null || command.exitCode === 125 ||
-            command.exitCode > 128
-        ) {
-            throw new Error(
-                "Foreground command was interrupted or its completion is uncertain; inspect the saved operation before proceeding",
-            );
+        let output = "";
+        try {
+            output = await Deno.readTextFile(`${directory}/output.log`);
+        } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
         }
-        const saved = JSON.parse(
-            await Deno.readTextFile(`${directory}/result.json`),
-        );
-        const completed = z.object({
-            exitCode: z.number().int(),
-        }).passthrough().parse(saved);
-        if (completed.exitCode !== command.exitCode) {
-            throw new Error(
-                "Worker exit status does not match its saved result",
-            );
-        }
-        const output = await Deno.readTextFile(
-            `${directory}/output.log`,
-        );
         const handle = await c.writeResource(
             "commandOutput",
             `command-output-${args.key}`,
@@ -336,16 +356,63 @@ async function foreground(
             modelId: c.modelId,
             ...handle,
         });
+        const cancelled = command.outcome === "cancelled" &&
+            command.terminationVerified === true;
+        if (
+            !cancelled && (!["completed", "failed"].includes(command.outcome) ||
+                command.exitCode == null || command.exitCode === 125 ||
+                command.exitCode > 128)
+        ) {
+            throw new Error(
+                "Foreground command completion is uncertain; output is saved. Reconcile before proceeding",
+            );
+        }
+        let saved;
+        try {
+            saved = JSON.parse(
+                await Deno.readTextFile(`${directory}/result.json`),
+            );
+        } catch (error) {
+            if (!cancelled) throw error;
+        }
+        if (cancelled) {
+            saved = {
+                ...saved,
+                exitCode: command.exitCode ?? 130,
+                ...(mode !== "cleanup"
+                    ? { evidence: await evidence(c, args) }
+                    : {}),
+                ...(mode === "integrate"
+                    ? {
+                        integrated: saved?.integrated === true,
+                        reason:
+                            "Merge interrupted; checkout inspected. No rollback implied.",
+                    }
+                    : {}),
+            };
+        }
+        const completed = z.object({ exitCode: z.number().int() }).passthrough()
+            .parse(saved);
+        if (!cancelled && completed.exitCode !== command.exitCode) {
+            throw new Error(
+                "Worker exit status does not match its saved result",
+            );
+        }
+        if (saved.error && mode === "integrate") {
+            Object.assign(completed, {
+                integrated: false,
+                reason: saved.error,
+            });
+        }
         delete command.output;
         const result = {
             ...completed,
             stdout: outputPreview(output),
-            stderr: "",
+            stderr: saved.error ?? "",
             outputRef,
             operation: command,
         };
         c.signal.throwIfAborted();
-        if (saved.error) throw new Error(String(saved.error));
         await Deno.remove(directory, { recursive: true });
         return result;
     });
@@ -354,6 +421,17 @@ async function foreground(
 export const extension = {
     type: "@swamp/git",
     resources: {
+        cleanupDecision: resource(
+            z.object({
+                removed: z.boolean(),
+                reason: z.string().nullable(),
+                stdout: z.string(),
+                stderr: z.string(),
+                operation: Operation,
+                outputRef: OutputRef,
+            }),
+            "Verified cleanup result and retained diagnostics",
+        ),
         checkoutStatus: resource(
             z.object({ unchanged: z.boolean(), error: z.string().nullable() }),
             "Whether the local checkout is clean, not rebasing, and has no commits beyond the target branch",
@@ -507,14 +585,35 @@ export const extension = {
                         "cleanup",
                     );
                     const removal = official.resources.removeWorktreeResult
-                        .schema.parse(result.removal);
+                        .schema.safeParse(result.removal);
+                    const decision = {
+                        removed: removal.success &&
+                            removal.data.removed === true,
+                        reason: removal.success ? null : String(
+                            result.stderr ||
+                                "Cleanup interrupted; inspect before retrying",
+                        ),
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                        operation: result.operation,
+                        outputRef: result.outputRef,
+                    };
                     return {
                         dataHandles: [
                             await c.writeResource(
-                                "removeWorktreeResult",
-                                "remove-worktree",
-                                removal,
+                                "cleanupDecision",
+                                "cleanupDecision-current",
+                                decision,
                             ),
+                            ...(removal.success
+                                ? [
+                                    await c.writeResource(
+                                        "removeWorktreeResult",
+                                        "remove-worktree",
+                                        removal.data,
+                                    ),
+                                ]
+                                : []),
                         ],
                     };
                 }
@@ -642,7 +741,7 @@ export const extension = {
         },
         integrate: {
             description:
-                "Fast-forward under both checkout locks with revision-bound optional checks and explicit approval",
+                "Fast-forward under both checkout locks with passing current checks and explicit approval",
             arguments: Integration.extend(Placement.shape),
             execute: async (
                 input: z.infer<typeof Integration> & z.infer<typeof Placement>,
