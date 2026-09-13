@@ -900,6 +900,57 @@ async function scenario() {
 }
 
 #[test]
+fn workflow_manual_scrolling_only_resumes_following_the_final_stream() {
+    let view = builtin_body(include_str!(
+        "../../../../zellij-config/assets/plugins/workflow-view.ts"
+    ));
+    let source = r#"
+import real, {definePlugin} from 'zellij:plugin';
+const z: any = {...real, command() {}, subscribe() {}, every() {}, requestRender() {}};
+const view: any = (() => {/*BODY*/
+return view;})();
+function scenario() {
+  view.load();
+  const render = () => view.render(8, 80);
+  const key = (bare_key: string) => {view.update({Key: {bare_key, key_modifiers: []}}); render();};
+  const output = (pane_id: number, text: string) => {
+    view.update({PaneOutput: {pane_id, context: {swamp_work: 'launch'}, data: real.encodeUtf8(text)}});
+    render();
+  };
+  for (const scroll of [
+    () => key('PageDown'),
+    () => {view.update({Mouse: {ScrollDown: 100}}); render();},
+  ]) {
+    view.watch(); view.watch('launch');
+    output(1, 'earlier\n'.repeat(20));
+    output(2, 'final\n'.repeat(20));
+    const bottom = view.scroll;
+    // Appending to the current last line changes the live stream without adding a row.
+    output(1, 'more');
+    const earlier = view.scroll;
+    check(earlier < bottom, 'live following can target the earlier stream');
+    key('Home');
+    for (let i = 0; i < 20; i++) scroll();
+    eq(view.scroll, bottom, 'manual scrolling reaches the bottom and stays there');
+    output(1, ' again');
+    eq(view.scroll, bottom, 'earlier output does not resume following');
+    key('End');
+    eq(view.scroll, earlier, 'End explicitly follows the earlier live stream');
+
+    output(2, 'latest');
+    key('Home');
+    for (let i = 0; i < 20; i++) scroll();
+    eq(view.scroll, bottom, 'scrolling to the final live stream reaches the bottom');
+    output(2, '\nnew line');
+    check(view.scroll > bottom, 'reaching the final live stream resumes following');
+  }
+}
+"#
+    .replace("/*BODY*/", &view);
+    run_scenario("swamp-workflow", &source);
+}
+
+#[test]
 fn typescript_reference_examples_load_and_render_in_deno() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins");
     let store = tempfile::tempdir().unwrap();

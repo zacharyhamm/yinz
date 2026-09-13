@@ -442,18 +442,18 @@ pub(super) fn op_zellij_ui_pure<'s>(
             },
             Pure::Pad((s, width)) => {
                 width_check(width)?;
-                let s = fit(&s, width);
+                let s = if s.width() > width { fit(&s, width) } else { s };
                 let n = width.saturating_sub(s.width());
                 s + " ".repeat(n).as_str()
             },
             Pure::PadLeft((s, width)) => {
                 width_check(width)?;
-                let s = fit(&s, width);
+                let s = if s.width() > width { fit(&s, width) } else { s };
                 " ".repeat(width.saturating_sub(s.width())) + s.as_str()
             },
             Pure::Center((s, width)) => {
                 width_check(width)?;
-                let s = fit(&s, width);
+                let s = if s.width() > width { fit(&s, width) } else { s };
                 let n = width.saturating_sub(s.width());
                 " ".repeat(n / 2) + s.as_str() + " ".repeat(n - n / 2).as_str()
             },

@@ -35,6 +35,11 @@ fn a_plugin_edit_discloses_and_grants_only_the_permission_it_adds() {
         !consequence.contains("grants it: read_files"),
         "{consequence}"
     );
+    assert_eq!(crate::tools::test_seams::PLUGIN_CHECK_CALLS.get(), 2);
+    for _ in 0..3 {
+        assert_eq!(state.confirmation_prompt().unwrap().detail, prompt.detail);
+    }
+    assert_eq!(crate::tools::test_seams::PLUGIN_CHECK_CALLS.get(), 2);
 
     state.confirm_tool();
 
@@ -45,6 +50,30 @@ fn a_plugin_edit_discloses_and_grants_only_the_permission_it_adds() {
     let report = &tool_results(&state)[0].content;
     assert!(report.contains("granted it write_files"), "{report}");
     assert!(!report.contains("granted it read_files"), "{report}");
+    crate::tools::test_seams::reset();
+}
+
+#[test]
+fn plugin_write_confirmations_reuse_permission_analysis() {
+    crate::tools::test_seams::reset();
+    let mut state = plugin_state();
+    state.pending.push_back(ToolCall {
+        id: "write".into(),
+        name: "plugin_write".into(),
+        arguments: serde_json::json!({
+            "name": "keys",
+            "source": "zellij.requestPermission(['ReadFiles']);",
+        })
+        .to_string(),
+    });
+    state.pump_tools();
+    let prompt = state.confirmation_prompt().expect("confirmation");
+    assert!(prompt.detail[0].0.contains("grants it: read_files"));
+    let analyzed = crate::tools::test_seams::PLUGIN_CHECK_CALLS.get();
+    for _ in 0..3 {
+        assert_eq!(state.confirmation_prompt().unwrap().detail, prompt.detail);
+    }
+    assert_eq!(crate::tools::test_seams::PLUGIN_CHECK_CALLS.get(), analyzed);
     crate::tools::test_seams::reset();
 }
 
