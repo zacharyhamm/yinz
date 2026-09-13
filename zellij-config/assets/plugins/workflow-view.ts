@@ -21,10 +21,15 @@ export const view = {
   notice: undefined as string | undefined, noticeError: false, refreshError: undefined as string | undefined,
   load, watch, attach, refresh, pipe, update, render, focusedControl: () => {controls(); return form!.focusedId();},
 };
-let form: FormWidget | undefined, onRestart: (() => void) | undefined;
+let form: FormWidget | undefined, onRestart: (() => void) | undefined, onFork: (() => void) | undefined;
 let formKey: string | undefined, questionKey: string | undefined, formHeight = 1, formHasInput = false, contentHeight = 0;
 const answered = new Map<string, number>();
-let generation = 0;
+let generation = 0, refreshQueued = false;
+let questionReadyAt: number | undefined, renderedQuestion: string | undefined;
+function timing(phase: string, started: number, entry?: Question) {
+  z.log('swamp_timing ' + JSON.stringify({layer: 'deno_view', phase, elapsedMs: z.monotonicMs() - started,
+    launch, run: entry?.attributes.run ?? view.attachment?.run, question: entry?.attributes.question}));
+}
 type Report = {chunks: string[]; offset: number; total: number; loading?: boolean; error?: string;
   width?: number; rendered?: number; lines?: string[]};
 const reports = new Map<string, Report>();
@@ -114,15 +119,18 @@ function controls() {
   }
   if (view.pending.length > 1) fields.push({kind: 'button', id: 'next', label: 'Next question'});
   if (view.cancellable) fields.push({kind: 'button', id: 'cancel_run', label: 'Cancel run'});
-  if (onRestart && !view.active && !view.pending.length) fields.push({kind: 'button', id: 'restart', label: 'Restart agent'});
+  if (onRestart && !q?.answers?.includes('restart')) fields.push({kind: 'button', id: 'restart', label: 'Restart agent'});
+  if (onFork && !q?.answers?.includes('fork')) fields.push({kind: 'button', id: 'fork', label: 'Fork agent'});
   form = z.ui.form(fields);
   if (focus && fields.some(field => field.id === focus)) form.focus(focus);
   formKey = signature; questionKey = key; formHasInput = hasInput; formHeight = hasInput ? 2 : fields.length ? 1 : 0;
 }
 function repaint() { if (view.selecting) view.dirty = true; else z.requestRender(); }
-async function refresh() {
-  if (!view.attachment || view.refreshing || view.submitting) return;
-  view.refreshing = true;
+async function refresh(changed = true) {
+  if (!view.attachment) return;
+  if (view.refreshing || view.submitting) { if (changed) refreshQueued = true; return; }
+  refreshQueued = false; view.refreshing = true;
+  const started = z.swampTiming ? z.monotonicMs() : undefined;
   const revision = generation, before = JSON.stringify([view.snapshot ?? {}, view.status, view.refreshError ?? '']);
   try {
     const snapshot = await z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp', timeoutMs: 30000,
@@ -144,6 +152,7 @@ async function refresh() {
     view.selected = Math.min(view.selected, Math.max(0, view.pending.length - 1));
     const index = view.pending.findIndex(entry => identity(entry) === selected);
     if (index >= 0) view.selected = index;
+    questionReadyAt = z.swampTiming ? z.monotonicMs() : undefined;
     controls(); loadReports(revision);
   } catch (error) { if (revision === generation) view.refreshError = String(error); }
   finally {
@@ -156,8 +165,9 @@ async function refresh() {
       } else if (view.snapshot) setSubtitle(view.snapshot.subtitle);
     }
     view.refreshing = false;
+    if (started != null) timing('refresh', started);
     if (before !== JSON.stringify([view.snapshot ?? {}, view.status, view.refreshError ?? ''])) repaint();
-    if (revision !== generation) void refresh();
+    if (revision !== generation || refreshQueued) void refresh();
   }
 }
 function attach(attachment: Attachment) {
@@ -168,10 +178,10 @@ function attach(attachment: Attachment) {
   detached = false; setSubtitle('Workflow · loading');
   void refresh();
 }
-function load(options?: {onRestart?: () => void}) {
-  onRestart = options?.onRestart; formKey = undefined;
+function load(options?: {onRestart?: () => void; onFork?: () => void}) {
+  onRestart = options?.onRestart; onFork = options?.onFork; formKey = undefined;
   z.subscribe(['Key', 'Mouse', 'PastedText', 'PaneOutput', 'CommandPaneExited']); z.command('SetSelfMouseSelectionSupport', true);
-  controls(); z.every(2000, refresh);
+  controls(); z.every(2000, () => refresh(false));
 }
 function pipe(message: PipeMessage) {
   if (message.name === 'workflow-detached') {detached = true; setSubtitle(); return;}
@@ -217,7 +227,8 @@ function update(event: Event): boolean {
   else return false;
   if ('id' in action && action.id === 'next') { view.selected = (view.selected + 1) % view.pending.length; controls(); return true; }
   if (action.kind !== 'buttonPressed' || view.submitting) return action.kind !== 'ignored';
-  if (action.id === 'restart' && onRestart && !view.active && !view.pending.length) { onRestart(); return true; }
+  if (action.id === 'restart' && onRestart) { onRestart(); return true; }
+  if (action.id === 'fork' && onFork) { onFork(); return true; }
   const entry = view.pending[view.selected], choice = /^choice_(\d+)$/.exec(action.id ?? '');
   let request: Record<string, Json>, success: string;
   if (entry && (action.id === 'submit' || choice)) {
@@ -255,6 +266,7 @@ async function submit(request: Record<string, Json>, success: string, attachment
 let markdownCache: {source: string; dim: boolean; widget: MarkdownComponent}[] = [];
 const failed = (status?: string) => status === 'failed' || status === 'error';
 function render(rows: number, cols: number): string {
+  const started = z.swampTiming ? z.monotonicMs() : undefined;
   controls();
   const blocks: Block[] = [], cache: typeof markdownCache = [];
   function markdown(source: string, dim: boolean): Block {
@@ -359,5 +371,12 @@ function render(rows: number, cols: number): string {
     frame.push(z.ui.text(z.text.truncate(label, cols)).dim().render({x: 0, y: page, width: cols, height: 1}));
   }
   if (question && footerHeight > 0) draw(question, page + indicatorHeight + separator, 0, footerHeight);
-  return frame.join('') + form!.render({x: 0, y: view.formY, width: cols, height});
+  const rendered = frame.join('') + form!.render({x: 0, y: view.formY, width: cols, height});
+  const key = started != null && entry ? identity(entry) + ':' + entry.version : undefined;
+  if (started != null && key && key !== renderedQuestion) {
+    timing('question_render', started, entry);
+    timing('question_ready_to_render', questionReadyAt ?? started, entry);
+  }
+  renderedQuestion = key;
+  return rendered;
 }

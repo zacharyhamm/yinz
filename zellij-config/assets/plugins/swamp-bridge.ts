@@ -8,7 +8,7 @@ type Request = {
   method: string; work: string; key: string; agent: string; operation: string;
   directory: string; run: string; launch: string; workflow: string;
   prompt: string; prompt_sha256?: string; waitForExit?: boolean; includeOutput?: boolean; foreground?: boolean;
-  action: string; spec: AgentSpawnOptions & {source_directory?: string; automatic_firecracker_vm?: boolean}; argv: string[]; cwd: string;
+  action: string; cancel_active?: boolean; spec: AgentSpawnOptions & {source_directory?: string; automatic_firecracker_vm?: boolean}; argv: string[]; cwd: string;
   inputs?: Record<string, Json>;
   payload: Record<string, Json>; model: string; name: string; offset: number; version: number; capture?: Json;
 };
@@ -35,6 +35,7 @@ type Placement = {view: number; queue: string[]; current?: number; detached?: bo
 // Placement belongs to an authenticated builtin view, never to a caller-supplied pane.
 // It is intentionally not recovered across server/bridge reloads.
 const placements = new Map<string, Placement>();
+const manualViews = new Map<string, Set<number>>();
 function assert(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 // Lua's encoder sorts object keys recursively. Preserve exact request/owner comparisons on reload.
 function encode(value: unknown): string {
@@ -119,6 +120,21 @@ function transition(work: string, action: string) {
   const uid = scope(lifecycleWork(work), 'view'), [view, row] = read(uid);
   if (view) { ensureOpen(work); view.transition = action; put(uid, view, row); }
 }
+function cancelAfterTransition(work: string) {
+  work = lifecycleWork(work);
+  const uid = scope(work, 'view'), [view, row] = read(uid);
+  if (!view) return;
+  view.closed = true; view.cancel_pending = true; put(uid, view, row);
+  for (const entry of deliveryRows()) {
+    const value = entry.value;
+    if (!['pending', 'unknown'].includes(value.outcome) || !value.request || lifecycleWork(entry.work) !== work) continue;
+    const request: Request = JSON.parse(value.request);
+    if (request.method === 'pane_action' && ['fork', 'duplicate'].includes(request.action)) {
+      value.outcome = 'interrupted'; value.error = 'Pane workflow lifecycle is closed'; put(entry.uid, value, entry.row);
+    }
+  }
+  void cancelLifecycle(work);
+}
 function closeView(work: string, restoreSource?: number) {
   const existing = placements.get(work);
   if (existing) detach(existing);
@@ -141,7 +157,10 @@ function active(work: string): boolean {
       const id: string[] = JSON.parse(String(row.uid));
       if (id[0] === identity.host_id && id[1] === identity.session && works.has(id[2])) {
         const operation: Delivery = JSON.parse(String(row.value));
-        if (['pending', 'unknown'].includes(operation.outcome) && ['command', 'agent_prompt'].includes(JSON.parse(operation.request).method)) return true;
+        if (['pending', 'unknown'].includes(operation.outcome)) {
+          const request: Request = JSON.parse(operation.request);
+          if (['command', 'agent_prompt'].includes(request.method) || (request.method === 'agent_spawn' && request.waitForExit)) return true;
+        }
       }
     }
     cursor = raw.next_cursor;
@@ -197,6 +216,8 @@ function unavailable(placement: Placement, work: string) {
 }
 function attachManual(work: string, view: number) {
   if (closed(work)) return;
+  if (!manualViews.has(work)) manualViews.set(work, new Set());
+  manualViews.get(work)!.add(view);
   if (read(scope(work, 'view'))[0]) return;
   const existing = placements.get(work);
   if (existing) {
@@ -234,13 +255,17 @@ function changed(work: string) {
   if (closed(work)) return;
   if (notifications.has(work)) return;
   notifications.add(work);
-  void z.sleep(100).then(() => {
+  void z.sleep(0).then(() => {
     notifications.delete(work);
     if (closed(work)) return;
     const view = read(scope(work, 'view'))[0];
     if (view?.incarnation === identity.incarnation && view.view != null) message({destination_plugin_id: view.view, message_name: 'workflow-changed'});
-    const placement = placements.get(work);
-    if (placement?.manual && !placement.detached) message({destination_plugin_id: placement.view, message_name: 'workflow-changed'});
+    for (const id of manualViews.get(work) ?? []) {
+      let pane;
+      try { pane = z.command('GetPaneInfo', plugin(id)); } catch { /* A closed view is removed below. */ }
+      if (!pane) manualViews.get(work)!.delete(id);
+      else if (view?.incarnation !== identity.incarnation || id !== view.view) message({destination_plugin_id: id, message_name: 'workflow-changed'});
+    }
   });
 }
 async function swamp(request: SwampRequest, directory: string): Promise<string> {
@@ -276,7 +301,7 @@ async function workflowRunId(operation: Delivery, request: Request): Promise<str
   return history.results?.[0]?.runId;
 }
 function watchRun(run: string, work: string, root: string) {
-  if (watching.has(run)) return;
+  if (watching.has(run) || [...tracked.values()].some(uid => read(uid)[0]?.run === run)) return;
   const id = `${z.instanceId}-watch-${run}`;
   watching.add(run); watchIds.set(id, {run, work});
   void swamp({operation: 'run.attach', payload: {runId: run, afterSeq: 0}, id}, root)
@@ -348,10 +373,14 @@ async function serveObserve(uid: string, operation: Delivery, row?: DataRecord):
   }
   return operation;
 }
+const refreshEvents = new Set(['started', 'step_completed', 'step_failed', 'suspended', 'completed', 'cancelled', 'error', 'report_completed', 'report_failed']);
+function changesSnapshot(frame: {type: string; event?: {kind: string}}) {
+  return frame.type === 'done' || frame.type === 'error' || !!frame.event && refreshEvents.has(frame.event.kind);
+}
 z.on('CustomMessage', ([name, payload]) => {
   if (name !== 'swamp-response') return;
   const frame = JSON.parse(payload), watch = watchIds.get(frame.id);
-  if (watch) {changed(watch.work); return;}
+  if (watch) {if (changesSnapshot(frame)) changed(watch.work); return;}
   const uid = tracked.get(frame.id);
   if (!uid) return;
   const [operation, row] = read(uid);
@@ -383,7 +412,7 @@ z.on('CustomMessage', ([name, payload]) => {
     if (!method && operation.run && operation.run !== previousRun) cancelIfClosed(operation.work);
     return;
   }
-  changed(read<Attachment>(scope(operation.work, 'attachment'))[0]?.work ?? operation.work);
+  if (write || changesSnapshot(frame)) changed(read<Attachment>(scope(operation.work, 'attachment'))[0]?.work ?? operation.work);
 });
 async function supervisor(pane: number, saved?: string): Promise<Supervisor> {
   for (const row of z.workflowRemotePanes?.() ?? []) {
@@ -442,6 +471,22 @@ function claim(args: Partial<Request>): [string, Delivery | undefined] {
   }
   return [uid, undefined];
 }
+function openPicker(work: string, key: string, action: string, source: number) {
+  message({plugin_url: 'zellij:hocus-new-agent', message_name: 'swamp-pane-action',
+    plugin_config: {caller_terminal_pane_id: String(source), [action === 'fork' ? 'fork_focused' : 'duplicate_focused']: 'true',
+      swamp_reply_plugin: String(z.getPluginIds().plugin_id), swamp_work: work, swamp_key: key},
+    new_plugin_args: {should_float: true, should_focus: true, pane_id_to_replace: null, pane_title: null, cwd: null, skip_cache: false}});
+}
+function openPickerOperation(work: string, action: string) {
+  const lifecycle = lifecycleWork(work);
+  for (const entry of deliveryRows()) {
+    const value = entry.value;
+    if (!['pending', 'unknown'].includes(value.outcome) || !value.request || lifecycleWork(entry.work) !== lifecycle) continue;
+    const request: Request = JSON.parse(value.request);
+    if (request.method === 'pane_action' && request.action === action && request.cancel_active) return value;
+  }
+}
+const discovered = new Set<string>();
 async function discover(work: string, root: string) {
   const launch = result(scope(work, 'launch'));
   assert(launch.checkout === root, 'Launch belongs to a different control checkout');
@@ -509,7 +554,11 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
     if (closed(work)) return {run: args.run, launch: work, root: config.root, history: {id: args.run ?? work, status: 'cancelled'},
       children: [], active: false, questions: {results: []}, outputs: {results: []}, logs: 'Pane workflow lifecycle is closed.'};
     if (work && manualView != null) attachManual(work, manualView);
-    const runs = work ? await discover(work, config.root) : undefined;
+    let runs = work ? read(scope(work, 'runs'))[0] : undefined;
+    if (work) {
+      assert(result(scope(work, 'launch')).checkout === config.root, 'Launch belongs to a different control checkout');
+      if (!discovered.has(work) || !runs) { runs = await discover(work, config.root); discovered.add(work); }
+    }
     if (args.run) [attachment] = read<Attachment>(scope(args.run, 'attachment'));
     else if (runs) for (const [id, entry] of Object.entries(runs.entries ?? {})) {
       if (entry.workflow === '@hammz/zellij-agent-exit' || !attachment) attachment = {...entry, run: id};
@@ -599,8 +648,17 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
     }
     return operation;
   }
-  if (args.method === 'agent_prompt') assert(typeof args.prompt === 'string' && z.encodeUtf8(args.prompt).length > 0 && z.encodeUtf8(args.prompt).length <= 262144,
-    'Prompt must contain 1–262144 UTF-8 bytes (256 KiB)');
+  const prompt = args.method === 'agent_prompt' ? args.prompt : args.method === 'agent_spawn' ? args.spec?.prompt : undefined;
+  if (args.method === 'agent_prompt' || prompt != null) assert(typeof prompt === 'string' && /\S/.test(prompt) && !prompt.includes('\0') && z.encodeUtf8(prompt).length <= 262144,
+    'Prompt must contain 1–262144 UTF-8 bytes (256 KiB), must not be blank or contain NUL');
+  if (args.method === 'pane_action' && args.cancel_active && ['fork', 'duplicate'].includes(args.action)) {
+    const open = openPickerOperation(args.work, args.action);
+    if (open) {
+      const request: Request = JSON.parse(open.request), source = await owned({work: request.work, agent: 'source'});
+      assert(z.command('GetPaneInfo', terminal(source.pane))?.exited, 'Source pane is no longer exited');
+      openPicker(request.work, request.key, request.action, source.pane); return open;
+    }
+  }
   let uid: string | undefined, value: Delivery | undefined, row: DataRecord | undefined;
   if (args.method === 'vm_status') value = {work: args.work, key: args.key, request: encode(args), incarnation: identity.incarnation} as Delivery;
   else {
@@ -636,6 +694,7 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
     assert(!inputs.firecracker || (typeof inputs.sourcePane === 'number' && inputs.sourcePane >= 0), 'VM work requires its original pane identity');
     inputs.target ??= config.root; inputs.gate ??= config.config.ci ?? ['cargo', 'x', 'ci', 'check'];
     inputs.targetBranch ??= config.config.default_branch ?? 'main';
+    if (config.config.rebase_prompt != null) inputs.rebasePrompt ??= config.config.rebase_prompt;
     Object.assign(value, {workflow: name, checkout: config.root, launch: args.work}); put(uid!, value, row);
     return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs});
   } else if (args.method === 'swamp_dispatch') {
@@ -660,22 +719,20 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
     assert(source, 'Missing source pane');
     if (args.action === 'restart') {
       transition(args.work, 'restart');
+      if (args.cancel_active) cancelAfterTransition(args.work);
       closeView(args.work, source.pane); z.command('RerunCommandPane', source.pane); value.outcome = 'completed'; put(uid!, value, row);
     } else {
       assert(args.action === 'fork' || args.action === 'duplicate', 'Unknown pane choice');
       value.outcome = 'pending'; put(uid!, value, row);
-      message({plugin_url: 'zellij:hocus-new-agent', message_name: 'swamp-pane-action',
-        plugin_config: {caller_terminal_pane_id: String(source.pane), [args.action === 'fork' ? 'fork_focused' : 'duplicate_focused']: 'true',
-          swamp_reply_plugin: String(z.getPluginIds().plugin_id), swamp_work: args.work, swamp_key: args.key},
-        new_plugin_args: {should_float: true, should_focus: true, pane_id_to_replace: null, pane_title: null, cwd: null, skip_cache: false}});
+      openPicker(args.work, args.key, args.action, source.pane);
     }
   } else if (args.method === 'agent_spawn') {
     assert(args.spec, 'Missing agent specification');
-    assert(!args.spec.prompt, 'Spawn without prompt, then call agent_prompt to register observation first');
+
     const owner = {...identity, work: args.work, agent: args.key};
     value.owner = owner; value.outcome = 'pending'; put(uid!, value, row);
-    const {source_directory, automatic_firecracker_vm, ...spec} = args.spec;
-    const opts = {...spec,
+    const {source_directory, automatic_firecracker_vm, prompt, ...spec} = args.spec;
+    const opts = {...spec, ...(prompt != null ? {prompt} : {}),
       ...(source_directory !== undefined ? {sourceDirectory: source_directory} : {}),
       ...(automatic_firecracker_vm !== undefined ? {automaticFirecrackerVm: automatic_firecracker_vm} : {}),
       context: {swamp_owner: encode(owner), swamp_operation: args.key}, startSuppressed: !!read(scope(args.work, 'view'))[0]};
@@ -700,8 +757,11 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
     } else host = await supervisor(value.pane!);
     [value, row] = read(uid!); assert(value, 'No operation with that identity');
     ensureOpen(args.work);
-    Object.assign(value, {supervisor: host.host_id, process: host.child_pid, remoteHost: host.remote_host, remotePaneId: host.pane_token, outcome: 'completed'});
+    Object.assign(value, {supervisor: host.host_id, process: host.child_pid, remoteHost: host.remote_host, remotePaneId: host.pane_token});
+    if (!value.processExited) value.outcome = args.waitForExit ? 'pending' : 'completed';
     put(uid!, value, row);
+    const placement = placements.get(args.work);
+    if (args.waitForExit && placement && !placement.manual && !placement.detached) { placement.queue.push(uid!); present(args.work); }
   } else if (args.method === 'agent_prompt') {
     await owned(args, true);
     const agentUid = scope(args.work, args.agent), [agent, agentRow] = read(agentUid);
@@ -770,6 +830,7 @@ function testPreview(path: string): string {
   return `{"evidence":${path}.evidence,"outcome":${path}.outcome,"exitCode":${path}.exitCode,"summaryLength":has(${path}.summaryLength) ? ${path}.summaryLength : 0,"outputComplete":has(${path}.outputComplete) && ${path}.outputComplete,"log":${path}.log,"passed":${path}.passed,"outputRef":has(${path}.outputRef) ? ${path}.outputRef : null,${preview(path)}}`;
 }
 const projection = `{"model":modelName,"name":name,"version":version,"createdAt":createdAt,"attributes":
+  has(tags.type) && tags.type == "report" ? {} :
   specName == "claim" ? {"key":attributes.key,"fingerprint":attributes.fingerprint,"outcome":attributes.outcome} :
   specName == "commandOutput" ? {} :
   specName == "rebaseResult" ? {"exitCode":attributes.exitCode,"evidence":attributes.evidence,
@@ -879,14 +940,22 @@ export default definePlugin({
       if (reply.choice === 'started') assert(reply.pane_id && Object.keys(reply.pane_id).length === 1 && Number.isInteger(reply.pane_id.Terminal) && reply.pane_id.Terminal >= 0 && reply.pane_id.Terminal <= 4294967295, 'Started picker result requires a terminal pane ID');
       const uid = scope(reply.work, reply.key), [current] = read(uid);
       assert(current && JSON.parse(current.request).method === 'pane_action', 'No picker operation');
-      if (closed(reply.work)) {
+      if (current.outcome === 'completed') {
+        assert(current.choice === reply.choice, 'Picker result already differs');
+        message({destination_plugin_id: from, message_name: 'swamp-pane-ack'}); return;
+      }
+      const view = read(scope(lifecycleWork(reply.work), 'view'))[0];
+      if (closed(reply.work) || (reply.choice === 'started' && view?.transition)) {
         if (reply.choice === 'started') z.command('CloseTerminalPane', reply.pane_id!.Terminal);
         z.command('ClosePluginPane', from); return;
       }
-      if (current.outcome === 'completed') assert(current.choice === reply.choice, 'Picker result already differs');
-      else assert(['pending', 'unknown'].includes(current.outcome), 'Picker dispatch cannot accept a result');
+      assert(['pending', 'unknown'].includes(current.outcome), 'Picker dispatch cannot accept a result');
       saveEvent(uid, 'completed', {choice: reply.choice});
-      if (reply.choice === 'started') { transition(reply.work, 'fork'); closeView(reply.work); }
+      if (reply.choice === 'started') {
+        transition(reply.work, 'fork');
+        if (JSON.parse(current.request).cancel_active) cancelAfterTransition(reply.work);
+        closeView(reply.work);
+      }
       message({destination_plugin_id: from, message_name: 'swamp-pane-ack'});
       return;
     }

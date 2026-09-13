@@ -1,7 +1,7 @@
 // Attach a project-owned Swamp workflow. Retain the source until Leave.
 import z, {definePlugin, type Event} from 'zellij:plugin';
 import {view} from 'zellij:workflow-view';
-let status = 'Agent exited.', busy = false, workflow = false;
+let status = 'Agent exited.', busy = false, acting = false, workflow = false;
 let pane: number | undefined, directory: string | undefined, launchToken: string | undefined;
 async function launch(config: Record<string, string>) {
   const ownPane = {Plugin: z.getPluginIds().plugin_id};
@@ -36,14 +36,15 @@ export default definePlugin({
       if (snapshot.error || !snapshot.config.workflow) throw new Error(snapshot.error || 'No exit workflow configured.');
     } catch (error) { status = `${error}\nUse Hocus /project-setup to configure .zellij/.swamp-workflows.kdl.`; return; }
     view.active = true;
-    view.load({onRestart() {
-      if (!busy && !view.active && !view.submitting && !view.pending.length && pane != null) {
-        busy = true;
-        void z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp',
-          payload: {method: 'pane_action', work: launchToken!, key: 'restart', action: 'restart'}})
-          .catch(error => { view.status = String(error); z.requestRender(); }).finally(() => { busy = false; });
-      }
-    }});
+    const paneAction = (action: string, key: string) => {
+      if (acting || view.submitting) return;
+      acting = true;
+      void z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp',
+        payload: {method: 'pane_action', work: launchToken!, key, action, cancel_active: true}})
+        .catch(error => { view.status = String(error); z.requestRender(); }).finally(() => { acting = false; });
+    };
+    view.load({onRestart: () => paneAction('restart', 'restart'),
+      onFork: () => paneAction('fork', 'fork-' + z.monotonicMs())});
     view.status = 'Starting workflow...'; workflow = true; busy = true;
     void launch(config).catch(error => { view.status = String(error); z.requestRender(); });
   },
@@ -64,7 +65,7 @@ export default definePlugin({
   pipe: message => view.pipe(message),
   render(rows, cols) {
     if (workflow) return view.render(Math.max(0, rows - 1), cols) + z.ui.text(z.text.truncate(busy || view.active || view.submitting
-      ? 'Enter: activate button. Leave: close held pane. Cancel run: explicit cancellation.'
+      ? 'Enter: activate button. Restart/Fork: cancel run and continue. Cancel run: explicit cancellation.'
       : 'Enter: activate button  Delete: leave and close held pane', cols)).dim().render({x: 0, y: Math.max(0, rows - 1), width: cols, height: 1});
     return [...status.split('\n').filter(Boolean), `Directory: ${directory ?? 'unknown'}`, 'Enter: restart agent  Esc: scrollback  Delete: close held pane']
       .slice(0, rows).map((line, y) => z.ui.text(z.text.truncate(z.text.sanitize(line), cols)).render({x: 0, y, width: cols, height: 1})).join('');

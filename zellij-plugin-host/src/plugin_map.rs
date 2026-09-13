@@ -122,15 +122,18 @@ fn configuration_matches_for_reload(
 }
 
 impl PluginMap {
+    pub(crate) fn remember_plugin(&mut self, id: PluginId, metadata: PluginMetadata) {
+        self.plugin_metadata.insert(id, metadata);
+    }
     pub fn remove_plugins(&mut self, pid: PluginId) -> HashMap<(PluginId, ClientId), PluginAssets> {
         self.plugin_metadata.remove(&pid);
+        self.deno_client_cancellations
+            .retain(|(id, _), _| *id != pid);
         let mut removed = HashMap::new();
         let ids_in_plugin_map: Vec<(PluginId, ClientId)> =
             self.plugin_assets.keys().copied().collect();
         for (plugin_id, client_id) in ids_in_plugin_map {
             if pid == plugin_id {
-                self.deno_client_cancellations
-                    .remove(&(plugin_id, client_id));
                 if let Some(plugin_asset) = self.plugin_assets.remove(&(plugin_id, client_id)) {
                     removed.insert((plugin_id, client_id), plugin_asset);
                 }
@@ -143,6 +146,8 @@ impl PluginMap {
         plugin_id: PluginId,
         client_id: ClientId,
     ) -> Option<PluginAssets> {
+        self.deno_client_cancellations
+            .remove(&(plugin_id, client_id));
         let assets = self.plugin_assets.remove(&(plugin_id, client_id))?;
         self.plugin_metadata.insert(
             plugin_id,
@@ -151,19 +156,33 @@ impl PluginMap {
         Some(assets)
     }
 
-    /// Keep an instance while detached so reconnect can still find and clone the plugin.
+    /// Wasm retains its last detached instance; Deno retains only retry metadata.
     pub fn remove_disconnected_instances(
         &mut self,
         plugin_id: PluginId,
         connected: &[ClientId],
     ) -> Vec<(ClientId, PluginAssets)> {
         let owners = self.owner_client_ids_of_plugin_id(plugin_id);
-        if !owners.iter().any(|owner| connected.contains(owner)) {
+        let keep_detached = !owners.iter().any(|owner| connected.contains(owner))
+            && !self
+                .plugin_config_of_plugin_id(plugin_id)
+                .is_some_and(|config| {
+                    config.runtime() == zellij_config::plugins::PluginRuntime::Deno
+                });
+        if keep_detached {
             return vec![];
         }
         owners
             .into_iter()
-            .filter(|owner| !connected.contains(owner))
+            .filter(|owner| {
+                !connected.contains(owner)
+                    || self
+                        .deno_client_cancellations
+                        .get(&(plugin_id, *owner))
+                        .is_some_and(|(_, cancel)| cancel.load(Ordering::Acquire))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
             .filter_map(|owner| {
                 self.remove_instance(plugin_id, owner)
                     .map(|assets| (owner, assets))
@@ -172,12 +191,7 @@ impl PluginMap {
     }
 
     pub fn plugin_ids(&self) -> Vec<PluginId> {
-        let mut unique_plugins: HashSet<PluginId> = self
-            .plugin_assets
-            .keys()
-            .map(|(plugin_id, _client_id)| *plugin_id)
-            .collect();
-        unique_plugins.drain().collect()
+        self.plugin_metadata.keys().copied().collect()
     }
     pub fn running_plugins(&mut self) -> Vec<(PluginId, ClientId, Arc<Mutex<RunningPlugin>>)> {
         self.plugin_assets
@@ -296,31 +310,16 @@ impl PluginMap {
             HashMap<PluginUserConfiguration, Vec<(PluginId, ClientId)>>,
         > = HashMap::new();
         for (plugin_id, metadata) in &self.plugin_metadata {
-            let plugin_config = &metadata.config;
-            let client_id = &metadata.owner_client_id;
-            let running_plugin_location = &plugin_config.location;
-            let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
-            match cloned_plugin_assets.get_mut(running_plugin_location) {
-                Some(location_map) => match location_map.get_mut(running_plugin_configuration) {
-                    Some(plugin_instances_info) => {
-                        plugin_instances_info.push((*plugin_id, *client_id));
-                    },
-                    None => {
-                        location_map.insert(
-                            running_plugin_configuration.clone(),
-                            vec![(*plugin_id, *client_id)],
-                        );
-                    },
-                },
-                None => {
-                    let mut location_map = HashMap::new();
-                    location_map.insert(
-                        running_plugin_configuration.clone(),
-                        vec![(*plugin_id, *client_id)],
-                    );
-                    cloned_plugin_assets.insert(running_plugin_location.clone(), location_map);
-                },
+            let mut owners = self.owner_client_ids_of_plugin_id(*plugin_id);
+            if owners.is_empty() {
+                owners.push(metadata.owner_client_id);
             }
+            cloned_plugin_assets
+                .entry(metadata.config.location.clone())
+                .or_default()
+                .entry(metadata.config.initial_userspace_configuration.clone())
+                .or_default()
+                .extend(owners.into_iter().map(|client| (*plugin_id, client)));
         }
         cloned_plugin_assets
     }
@@ -370,7 +369,8 @@ impl PluginMap {
                 (Some(deno.generation()), deno.client_cancel()),
             );
         } else {
-            self.deno_client_cancellations.remove(&(plugin_id, client_id));
+            self.deno_client_cancellations
+                .remove(&(plugin_id, client_id));
         }
         if let Some((previous, _, _)) = self.plugin_assets.insert(
             (plugin_id, client_id),
@@ -421,7 +421,9 @@ impl PluginMap {
             .map(PluginMetadata::run_plugin)
     }
     pub fn plugin_config_of_plugin_id(&self, plugin_id: PluginId) -> Option<PluginConfig> {
-        self.plugin_metadata.get(&plugin_id).map(|metadata| metadata.config.clone())
+        self.plugin_metadata
+            .get(&plugin_id)
+            .map(|metadata| metadata.config.clone())
     }
     pub fn list_plugins(&self) -> BTreeMap<PluginId, RunPlugin> {
         self.plugin_metadata
