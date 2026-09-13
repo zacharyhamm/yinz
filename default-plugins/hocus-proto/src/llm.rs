@@ -147,18 +147,19 @@ pub fn retry_delay(status: u16, body: &[u8], attempt: u32) -> Option<f64> {
 /// place it cannot be mistaken, that nothing about the request was wrong; a mid-stream error is
 /// free text, and most of what arrives that way - a refusal, a context-length complaint, a
 /// malformed tool call - is a thing a resend would only repeat. So this asks the message to
-/// name a rate limit before it will wait on one.
+/// name a rate limit or an h2 protocol error before it will wait on one.
 pub fn streamed_retry_delay(message: &str, attempt: u32) -> Option<f64> {
     let lowered = message.to_ascii_lowercase();
-    let rate_limited = [
+    let retryable = [
         "rate limit",
         "tokens per min",
         "requests per min",
         "too many requests",
+        "h2 protocol error",
     ]
     .iter()
     .any(|marker| lowered.contains(marker));
-    if !rate_limited {
+    if !retryable {
         return None;
     }
     let seconds = retry_hint(message).unwrap_or_else(|| f64::from(1u32 << attempt.min(6)));
@@ -388,6 +389,40 @@ org-PY8t1WwcVzrAcPUs8vCKH02p on tokens per min (TPM): Limit 200000, Used 164171,
 learn more."}}}}"#
         )
         .into_bytes()
+    }
+
+    #[test]
+    fn streamed_errors_retry_only_rate_limits_and_h2_protocol_errors() {
+        for message in [
+            "h2 protocol error",
+            "Together: H2 PROTOCOL ERROR",
+            "Upstream error from Together: Stream error: h2 protocol error: error reading a body from connection",
+        ] {
+            for (attempt, seconds) in [1.0, 2.0, 4.0, 8.0].into_iter().enumerate() {
+                assert_eq!(streamed_retry_delay(message, attempt as u32), Some(seconds));
+            }
+        }
+        for message in [
+            "Rate limit reached",
+            "tokens per min",
+            "requests per min",
+            "Too Many Requests",
+        ] {
+            assert_eq!(streamed_retry_delay(message, 0), Some(1.0));
+        }
+        assert_eq!(
+            streamed_retry_delay("Rate limit reached. Please try again in 3.565s", 0),
+            Some(3.565)
+        );
+        for message in [
+            "connection reset",
+            "cancelled",
+            "invalid tool schema",
+            "context length exceeded",
+            "protocol error",
+        ] {
+            assert_eq!(streamed_retry_delay(message, 0), None);
+        }
     }
 
     #[test]

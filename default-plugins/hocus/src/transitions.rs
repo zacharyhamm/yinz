@@ -494,7 +494,7 @@ impl State {
             // in-flight request would sit at "retrying in 1s" for as long as it took.
             let left = due_ms.saturating_sub(self.mono_ms).div_ceil(1000).max(1);
             return Some(format!(
-                "{spinner} rate limited - retrying in {left}s ({}/{MAX_RETRIES})",
+                "{spinner} retrying in {left}s ({}/{MAX_RETRIES})",
                 attempt + 1
             ));
         }

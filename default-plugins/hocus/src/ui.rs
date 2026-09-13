@@ -1708,7 +1708,7 @@ fn help_line(state: &State) -> &'static str {
         Status::AwaitingLinear => "reading linear…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingExtension => "running extension…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingPluginLoad => "loading plugin…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingRetry => "rate limited…  <Ctrl c> give up  <Esc> hide  <↑↓> scroll",
+        Status::AwaitingRetry => "retrying…  <Ctrl c> give up  <Esc> hide  <↑↓> scroll",
         Status::Idle if state.is_streaming() => {
             "streaming…  <Ctrl c> cancel  <Esc> hide  <↑↓> scroll"
         },
