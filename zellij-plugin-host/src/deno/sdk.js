@@ -1528,6 +1528,11 @@
         rpcPrefix = arg.instanceId;
         metadata = arg.identity;
         metadata.swampTiming = arg.swampTiming;
+        if (arg.workflowBridge) api.workflowSignal = request => {
+          if (client === null) throw new Error("host commands are unavailable during module initialization");
+          validate(request);
+          return core.ops.op_zellij_workflow_signal(request);
+        };
         if (arg.workflowBridge) api.workflowRemotePanes = () => {
           if (client === null) throw new Error("host commands are unavailable during module initialization");
           return workflowRemotePanes();

@@ -3189,3 +3189,48 @@ fn a_respawn_without_a_context_falls_back_to_the_panes_original() {
         vec!["1".to_owned()]
     );
 }
+
+#[test]
+fn workflow_signals_refuse_changed_ownership_and_replacement_processes() {
+    let mock = MockOsApi::new();
+    let (mut pty, _) = make_pty_with_plugin_receiver(mock);
+    let terminal = crate::TerminalId::new(7);
+    let process = zellij_types::internal_ids::ProcessId::new(4242);
+    pty.id_to_child_pid.insert(terminal, process);
+    let mut origin = step_origin("workflow");
+    origin
+        .context
+        .insert("swamp_owner".into(), "original-owner".into());
+    pty.originating_plugins.insert(terminal, origin);
+    assert!(pty
+        .workflow_signal(
+            terminal,
+            "replacement-owner",
+            Some(process),
+            "supervisor",
+            ChildSignal::Int
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("owner changed"));
+    assert!(pty
+        .workflow_signal(
+            terminal,
+            "original-owner",
+            Some(zellij_types::internal_ids::ProcessId::new(9999)),
+            "supervisor",
+            ChildSignal::Kill
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("process changed"));
+    assert!(pty
+        .workflow_signal(
+            terminal,
+            "original-owner",
+            None,
+            "supervisor",
+            ChildSignal::Kill
+        )
+        .is_err());
+}

@@ -1,4 +1,5 @@
 import { Evidence, extension } from "./git_workflow.ts";
+import { locked } from "./_lib/git_checkout.ts";
 import { checked, Claim, claimed, Context } from "./_lib/workflow.ts";
 const methods = extension.methods[0];
 const owner = {
@@ -292,6 +293,84 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
         const run = (key: string) =>
             methods.commit_and_rebase.execute({ ...args, key }, c);
         const result = () => saved.get("rebaseResult-current")!;
+        // Cancel a real worker while another owner holds both checkout locks.
+        const cancelledDirectory = dir + "/cancelled-worker";
+        await Deno.mkdir(cancelledDirectory);
+        const beforeCancelled = await git(source, "rev-parse", "HEAD");
+        const waiting = Promise.withResolvers<void>();
+        const interrupted = Promise.withResolvers<void>();
+        let cancelledOutput = "";
+        await locked(c, [source, main], async () => {
+            pane = new originalCommand(Deno.execPath(), {
+                args: [
+                    "eval",
+                    `const lock = Deno.FsFile.prototype.lock;
+Deno.FsFile.prototype.lock = function(...args) {
+    console.log("WAITING FOR LOCK");
+    return lock.apply(this, args);
+};
+Deno.addSignalListener("SIGINT", () => console.log("SIGINT RECEIVED"));
+await import(${
+                        JSON.stringify(
+                            new URL("./_lib/commit_worker.ts", import.meta.url)
+                                .href,
+                        )
+                    });`,
+                    JSON.stringify({
+                        ...args,
+                        mode: "commit",
+                        binary: "/usr/bin/true",
+                        author: [],
+                        directory: cancelledDirectory,
+                        repoDir: Deno.cwd(),
+                    }),
+                ],
+                stdin: "piped",
+                stdout: "piped",
+                stderr: "inherit",
+            }).spawn();
+            const timeout = setTimeout(() => pane.kill("SIGKILL"), 30000);
+            completion = (async () => {
+                try {
+                    for await (
+                        const text of pane.stdout.pipeThrough(
+                            new TextDecoderStream(),
+                        )
+                    ) {
+                        cancelledOutput += text;
+                        if (cancelledOutput.includes("WAITING FOR LOCK")) {
+                            waiting.resolve();
+                        }
+                        if (cancelledOutput.includes("SIGINT RECEIVED")) {
+                            interrupted.resolve();
+                        }
+                    }
+                    assert((await pane.status).code === 130, cancelledOutput);
+                } finally {
+                    clearTimeout(timeout);
+                }
+            })();
+            const writer = pane.stdin.getWriter();
+            await writer.write(new TextEncoder().encode("\n"));
+            await writer.close();
+            await Promise.race([waiting.promise, completion]);
+            pane.kill("SIGINT");
+            await Promise.race([interrupted.promise, completion]);
+        });
+        await completion!;
+        const cancelledResult = JSON.parse(
+            await Deno.readTextFile(cancelledDirectory + "/result.json"),
+        );
+        assert(cancelledResult.cancelled && cancelledResult.exitCode === 130);
+        assert(String(cancelledResult.error).includes("Step cancelled"));
+        assert(
+            !/\$ git (add|commit|rebase)\b/.test(cancelledOutput),
+            cancelledOutput,
+        );
+        assert(await git(source, "rev-parse", "HEAD") === beforeCancelled);
+        assert(await git(source, "diff", "--cached") === "");
+        assert(await Deno.readTextFile(source + "/file") === "topic\n");
+        assert(!Evidence.parse(cancelledResult.evidence).source.rebasing);
         await run("dirty");
         assert(result().exitCode === 0);
         assert(String(result().stdout).includes("$ git add -A"));
@@ -326,14 +405,15 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
                 side + "/changed-after-message",
                 "new contents\n",
             );
-            await rejects(
-                () =>
-                    methods.commit_and_rebase.execute({
-                        ...args,
-                        key: "stale-" + (side === source ? "source" : "target"),
-                        expectedEvidence,
-                    }, c),
-                /Checkout changed since commit message/,
+            await methods.commit_and_rebase.execute({
+                ...args,
+                key: "stale-" + (side === source ? "source" : "target"),
+                expectedEvidence,
+            }, c);
+            assert(
+                String(saved.get("rebaseResult-current")?.stderr).includes(
+                    "Checkout changed since commit message",
+                ),
             );
             assert(await git(source, "rev-parse", "HEAD") === head);
             assert(await git(source, "diff", "--cached") === "");
@@ -359,17 +439,13 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
         assert(
             Evidence.parse(result().evidence).source.conflicts.includes("file"),
         );
-        await rejects(() => run("already-rebasing"), /Resolve the rebase/);
-        await Deno.remove(outputDirectory, { recursive: true });
-        await rejects(
-            () =>
-                methods.rebase_continue.execute(
-                    { ...args, key: "unresolved" },
-                    c,
-                ),
-            /not ready/,
+        await run("already-rebasing");
+        assert(String(result().stderr).includes("Resolve the rebase"));
+        await methods.rebase_continue.execute(
+            { ...args, key: "unresolved" },
+            c,
         );
-        await Deno.remove(outputDirectory, { recursive: true });
+        assert(String(result().stderr).includes("not ready"));
         await Deno.writeTextFile(source + "/file", "resolved file\n");
         await git(source, "add", "file");
         await methods.verify_checkout.execute(args, c);
@@ -381,15 +457,11 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
         };
         const beforeContinue = await git(source, "rev-parse", "HEAD");
         await Deno.writeTextFile(source + "/late", "invalidate choice");
-        await rejects(
-            () =>
-                methods.rebase_continue.execute({
-                    ...continueArgs,
-                    key: "continue-stale",
-                }, c),
-            /Stale rebase choice/,
-        );
-        await Deno.remove(outputDirectory, { recursive: true });
+        await methods.rebase_continue.execute({
+            ...continueArgs,
+            key: "continue-stale",
+        }, c);
+        assert(String(result().stderr).includes("Stale rebase choice"));
         assert(await git(source, "rev-parse", "HEAD") === beforeContinue);
         await Deno.remove(source + "/late");
         // No additional resolver edits are required after the staged decision.
@@ -413,8 +485,8 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
             JSON.stringify(result()),
         );
         await Deno.writeTextFile(main + "/file", "dirty target\n");
-        await rejects(() => run("dirty-target"), /Target checkout is dirty/);
-        await Deno.remove(outputDirectory, { recursive: true });
+        await run("dirty-target");
+        assert(String(result().stderr).includes("Target checkout is dirty"));
         await git(main, "restore", "file");
         // A real worker keeps both kernel locks after its observer goes away.
         for (
@@ -522,9 +594,9 @@ for path in sys.argv[2:]:
         await rejects(() => run("unknown"), /Operation unknown is unknown/);
         assert(dispatches === count);
         forcedOutcome = "failed";
-        await rejects(() => run("interrupted"), /interrupted/);
+        await rejects(() => run("interrupted"), /uncertain/);
         forcedExit = 125;
-        await rejects(() => run("input-closed"), /interrupted/);
+        await rejects(() => run("input-closed"), /uncertain/);
 
         await rejects(
             () =>
@@ -542,8 +614,21 @@ for path in sys.argv[2:]:
             key: "foreground-merge",
             approved: true as const,
             evidence: Evidence.parse(saved.get("evidence-current")),
-            review: null,
-            test: null,
+            review: {
+                evidence: Evidence.parse(saved.get("evidence-current")),
+                outcome: "process-exit",
+                findings: [],
+                reviewer: "reviewer",
+                valid: true,
+                resolved: true,
+            },
+            test: {
+                evidence: Evidence.parse(saved.get("evidence-current")),
+                outcome: "completed",
+                exitCode: 0,
+                log: "test log",
+                passed: true,
+            },
         };
         for (const status of ["unknown", "failed"] as const) {
             forcedOutcome = status;
@@ -592,16 +677,17 @@ for path in sys.argv[2:]:
             commit: mergeArgs.evidence.source.commit,
         };
         await Deno.writeTextFile(source + "/keep", "preserve me");
-        await rejects(
-            () =>
-                methods.guarded_cleanup.execute({
-                    ...cleanupArgs,
-                    key: "foreground-unsafe",
-                }, c),
-            /changed after integration/,
+        await methods.guarded_cleanup.execute({
+            ...cleanupArgs,
+            key: "foreground-unsafe",
+        }, c);
+        assert(
+            String(saved.get("cleanupDecision-current")?.reason).includes(
+                "changed after integration",
+            ),
         );
+        assert(saved.get("cleanupDecision-current")?.removed === false);
         assert(await Deno.readTextFile(source + "/keep") === "preserve me");
-        await Deno.remove(outputDirectory, { recursive: true });
         await Deno.remove(source + "/keep");
         await methods.guarded_cleanup.execute(cleanupArgs, c);
         assert(saved.get("remove-worktree")?.removed === true);
@@ -938,8 +1024,49 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
             );
             await methods.integrate.execute(informed, c);
             assert(
-                saved.get("integrationDecision-current")?.integrated === true,
+                saved.get("integrationDecision-current")?.integrated === false,
             );
+        }
+        for (
+            const outcome of [
+                "failed",
+                "cancelled",
+                "stale",
+                "pending",
+                "unknown",
+            ]
+        ) {
+            for (const side of ["review", "test"] as const) {
+                const checks = {
+                    review: {
+                        ...input.review,
+                        evidence: localProof,
+                        outcome: side === "review" ? outcome : "completed",
+                        valid: true,
+                        resolved: true,
+                        findings: [],
+                    },
+                    test: {
+                        ...input.test,
+                        evidence: localProof,
+                        outcome: side === "test" ? outcome : "completed",
+                        passed: true,
+                        exitCode: 0,
+                    },
+                };
+                await methods.integrate.execute({
+                    ...local,
+                    key: `reject-${side}-${outcome}`,
+                    evidence: localProof,
+                    approved: true,
+                    ...checks,
+                }, c);
+                assert(
+                    saved.get("integrationDecision-current")?.integrated ===
+                        false,
+                    `${side}: ${outcome}`,
+                );
+            }
         }
         await Deno.writeTextFile(
             source + "/late-untracked",

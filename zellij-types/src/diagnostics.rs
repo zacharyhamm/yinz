@@ -350,6 +350,7 @@ pub enum ScreenContext {
 )]
 pub enum PtyContext {
     WorkflowRemotePanes,
+    WorkflowSignal,
     SpawnTerminal,
     SpawnResolved,
     OpenInPlaceEditor,

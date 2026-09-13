@@ -247,6 +247,9 @@ fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
       const absent: import('zellij:plugin').FileMetadata | null = zellij.fs.metadata('/host/missing');
       zellij.projectConfig.write('.', 'agent_exit {}', null);
       const commitAgent: import('zellij:plugin').AgentSpawnSpec | null = zellij.projectConfig.read('.').config.commit_agent;
+      for (const role of ['review_agent','review_fix_agent','rebase_agent','test_fix_agent'] as const) {
+        const spec: import('zellij:plugin').AgentSpawnSpec | null = zellij.projectConfig.read('.').config[role];
+      }
       const paneInfo = zellij.command('GetPaneInfo', {Terminal: 1});
       if (paneInfo) { const restartError: string | null = paneInfo.restart_error; }
       const d = zellij.data;
@@ -815,7 +818,7 @@ fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
         "project_commit_agent",
         "ProjectConfig",
         zellij_config::project_config::parse(
-            "agent_exit { commit_agent kind=\"codex\" model=\"commit-model\" effort=\"medium\"; }"
+            "agent_exit { commit_agent kind=\"codex\" model=\"commit-model\" effort=\"medium\"; review_agent kind=\"claude\"; review_fix_agent kind=\"codex\"; rebase_agent kind=\"claude\" model=\"resolver\"; test_fix_agent kind=\"codex\" effort=\"high\"; }"
         )
         .unwrap()
     );

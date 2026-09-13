@@ -1317,6 +1317,27 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 let response = pty.get_pane_git_probe(pane_id, &cwd, refresh_token.as_deref());
                 let _ = response_channel.send(response);
             },
+            PtyInstruction::WorkflowSignal {
+                terminal_id,
+                owner,
+                process,
+                supervisor,
+                kill,
+                reply,
+            } => {
+                let result = pty.workflow_signal(
+                    terminal_id,
+                    &owner,
+                    process,
+                    &supervisor,
+                    if kill {
+                        ChildSignal::Kill
+                    } else {
+                        ChildSignal::Int
+                    },
+                );
+                let _ = reply.send(result.map_err(|error| format!("{error:#}")));
+            },
             PtyInstruction::WorkflowRemotePanes(reply) => {
                 let rows = pty
                     .bus
@@ -2836,6 +2857,45 @@ impl Pty {
     }
     /// Deliver a signal to a pane's child, wherever that child lives.
     ///
+    fn workflow_signal(
+        &self,
+        terminal_id: TerminalId,
+        owner: &str,
+        process: Option<ProcessId>,
+        supervisor: &str,
+        signal: ChildSignal,
+    ) -> Result<()> {
+        let context = self
+            .originating_plugins
+            .get(&terminal_id)
+            .context("Workflow pane has no owner")?;
+        anyhow::ensure!(
+            context.context.get("swamp_owner").map(String::as_str) == Some(owner),
+            "Workflow pane owner changed"
+        );
+        let os = self.bus.os_input.as_ref().context("No OS interface")?;
+        if os.is_remote_pane(terminal_id) {
+            anyhow::ensure!(
+                process.is_none()
+                    && os
+                        .workflow_remote_panes()
+                        .iter()
+                        .any(|row| row["terminal_id"] == serde_json::json!(terminal_id)
+                            && row["host_id"] == supervisor
+                            && row["owner"] == owner),
+                "Remote workflow process changed"
+            );
+        } else {
+            anyhow::ensure!(
+                process.is_some() && self.id_to_child_pid.get(&terminal_id).copied() == process,
+                "Workflow process changed"
+            );
+        }
+        // Validation and delivery share the PTY thread with reruns and adoption.
+        self.signal_pane_child(terminal_id, signal);
+        Ok(())
+    }
+
     /// The remote check comes first, and deliberately so. For a remote pane
     /// `id_to_child_pid` holds nothing usable, and a pid from another machine is
     /// worse than no pid at all: pid spaces are per-machine, so it names some

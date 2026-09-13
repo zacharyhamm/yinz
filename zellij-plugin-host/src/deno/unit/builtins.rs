@@ -319,7 +319,7 @@ fn embedded_loading_imports_diagnostics_and_compiler_recovery() {
 fn deno_preserves_server_identity_but_reload_replaces_instance_identity() {
     let source = r#"
 const identity = [zellij.serverBinary, zellij.serverSession, zellij.serverIncarnation, zellij.instanceId];
-if (!Object.isFrozen(zellij) || 'workflowRemotePanes' in zellij) throw Error('SDK exposure');
+if (!Object.isFrozen(zellij) || 'workflowRemotePanes' in zellij || 'workflowSignal' in zellij) throw Error('SDK exposure');
 let refused = false;
 try { zellij.command('GetPluginIds'); } catch (_) { refused = true; }
 if (!refused) throw Error('initialization commands allowed');
@@ -400,6 +400,55 @@ export default {render() {return JSON.stringify(zellij.workflowRemotePanes());}}
     )
     .unwrap();
     assert_eq!(ordinary.render(1, 80).unwrap(), b"false");
+}
+
+#[test]
+fn workflow_signal_is_private_and_delivers_owned_process_identity() {
+    use zellij_bus::pty::PtyInstruction;
+    use zellij_runtime::channels::SenderWithContext;
+    let (tx, rx) = zellij_runtime::channels::unbounded();
+    let mut env = test_env();
+    env.senders.to_pty = Some(SenderWithContext::new(tx));
+    let source = r#"
+let refused = false;
+try { zellij.workflowSignal({terminal_id:3,owner:'owned',process:456,supervisor:'host',kill:false}); } catch (_) { refused = true; }
+if (!refused) throw Error('initialization signal allowed');
+export default {render() {
+  zellij.workflowSignal({terminal_id:3,owner:'owned',process:456,supervisor:'host',kill:true});
+  return 'sent';
+}};
+"#;
+    let mut plugin = load_builtin("swamp-bridge", source, env).unwrap();
+    let responder = std::thread::spawn(move || {
+        let (
+            PtyInstruction::WorkflowSignal {
+                terminal_id,
+                owner,
+                process,
+                supervisor,
+                kill,
+                reply,
+            },
+            _,
+        ) = rx.recv().unwrap()
+        else {
+            panic!("wrong signal")
+        };
+        assert_eq!(terminal_id, zellij_types::internal_ids::TerminalId::new(3));
+        assert_eq!(
+            process,
+            Some(zellij_types::internal_ids::ProcessId::new(456))
+        );
+        assert_eq!(owner, "owned");
+        assert_eq!(supervisor, "host");
+        assert!(kill);
+        reply.send(Ok(())).unwrap();
+    });
+    assert_eq!(plugin.render(1, 1000).unwrap(), b"sent");
+    responder.join().unwrap();
+    plugin.env_mut().plugin.location = RunPluginLocation::File("swamp-bridge.ts".into());
+    assert!(format!("{:#}", plugin.render(2, 1000).unwrap_err())
+        .contains("restricted to zellij:swamp-bridge"));
 }
 
 #[test]

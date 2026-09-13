@@ -59,14 +59,17 @@ existing JSON frames. Local extension bundling is a dry run; nothing is publishe
 All smoke mutations and approvals use disposable repositories. No merge or cleanup of
 the development checkout is authorized by this review.
 
-## User-driven exit update
+## Repeatable local validation update
 
-Fresh exit runs present choices before any agent launch. Repeated menus use new Swamp
-run identities. Git records local checkout evidence directly and accepts explicit
-merge approval with skipped or failed checks. Revision freshness, live VM state,
-checkout locks, clean state, ancestry, and non-force cleanup remain mandatory.
+Fresh launches use flow version 3 and one manual action menu. Earlier suspended decision flows require a fresh launch.
+Review covers committed, staged, unstaged, and untracked changes. Repairs receive complete saved findings or failure reports.
+Every helper receives its startup prompt and must exit before the next decision.
+All five role specifications survive continuations without inheriting omitted model or effort fields.
 
-The existing duplicate/fork modal receives the original terminal ID. Its result
-returns to the owning operation. Helper exits advance inspection exactly once.
-They do not prove that conflicts are resolved, tests passed, or review completed.
-Historical suspended runs are not migrated to these definitions.
+Integration now requires current passing tests and a valid review without warning or error findings, including for direct model calls.
+Exact revision approval, local fast-forward integration, VM checks, checkout locks, and guarded non-force removal remain required.
+No remote Git operations were added.
+
+Step cancellation retains partial output, checks owned process identities, interrupts the process group, and escalates after five seconds.
+Unknown termination blocks new execution. Git inspection preserves completed mutations and paused rebases without implying rollback.
+The existing extension, bridge, SDK, and real-server smoke tests cover these paths.

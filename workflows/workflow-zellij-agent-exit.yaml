@@ -1,8 +1,7 @@
----
 id: 76a1fdc0-9f59-4108-9d62-64ef3c8289d0
-name: "@hammz/zellij-agent-exit"
-version: 1
-description: User-driven agent exit decisions. Every continuation has a fresh run identity; no agent starts without a choice.
+name: '@hammz/zellij-agent-exit'
+description: Repeatable local validation. Every action is a developer choice; merge requires current passing checks.
+version: 2
 inputs:
   type: object
   properties:
@@ -19,13 +18,13 @@ inputs:
       default: main
     gate:
       type: array
-      items:
-        type: string
       default:
       - cargo
       - x
       - ci
       - check
+      items:
+        type: string
     kind:
       type: string
       default: ''
@@ -47,6 +46,12 @@ inputs:
       properties:
         kind:
           type: string
+          enum:
+          - ''
+          - claude
+          - codex
+          - cursor
+          - opencode
         model:
           type: string
         effort:
@@ -60,14 +65,15 @@ inputs:
       additionalProperties: false
     rebasePrompt:
       type: string
+      default: 'Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort:
+        the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done.'
       minLength: 1
-      pattern: '\S'
-      default: "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done."
+      pattern: \S
     agentArgs:
       type: array
+      default: []
       items:
         type: string
-      default: []
     firecracker:
       type: string
       default: ''
@@ -76,8 +82,8 @@ inputs:
       default: ''
     sourcePane:
       type: integer
-      minimum: -1
       default: -1
+      minimum: -1
     phase:
       type: string
       default: prepare
@@ -85,72 +91,173 @@ inputs:
       - prepare
       - diff
       - commit
-      - conflict
       - resolve
-      - resolved
-      - review
-      - tests
-      - failed-tests
-      - test-return
-      - fix
+      - continue
       - review-agent
+      - review-fix
+      - fix
+      - tests
       - confirm
       - cleanup
     testReturn:
       type: object
       default:
-        workflow: "@hammz/zellij-review-integration"
+        workflow: '@hammz/zellij-review-integration'
         phase: review
       properties:
         workflow:
           type: string
-          enum: ["@hammz/zellij-agent-exit", "@hammz/zellij-review-integration"]
+          enum:
+          - '@hammz/zellij-agent-exit'
+          - '@hammz/zellij-review-integration'
         phase:
           type: string
-          enum: [prepare, conflict, resolved, review, confirm]
-      required: [workflow, phase]
+          enum:
+          - prepare
+          - conflict
+          - resolved
+          - review
+          - confirm
+      required:
+      - workflow
+      - phase
       additionalProperties: false
     state:
       type: object
       default:
-        vmSync:
-        evidence:
-        review:
-        test:
+        vmSync: null
+        evidence: null
+        review: null
+        test: null
       additionalProperties: true
     flowVersion:
       type: integer
-      default: 2
+      default: 3
+    reviewAgent:
+      type: object
+      default: {}
+      properties:
+        kind:
+          type: string
+          enum:
+          - ''
+          - claude
+          - codex
+          - cursor
+          - opencode
+        model:
+          type: string
+        effort:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    reviewFixAgent:
+      type: object
+      default: {}
+      properties:
+        kind:
+          type: string
+          enum:
+          - ''
+          - claude
+          - codex
+          - cursor
+          - opencode
+        model:
+          type: string
+        effort:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    rebaseAgent:
+      type: object
+      default: {}
+      properties:
+        kind:
+          type: string
+          enum:
+          - ''
+          - claude
+          - codex
+          - cursor
+          - opencode
+        model:
+          type: string
+        effort:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    testFixAgent:
+      type: object
+      default: {}
+      properties:
+        kind:
+          type: string
+          enum:
+          - ''
+          - claude
+          - codex
+          - cursor
+          - opencode
+        model:
+          type: string
+        effort:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
   required:
   - launch
   - session
   - checkout
   - target
+reports:
+  require:
+  - '@hammz/workflow'
 jobs:
 - name: main
   steps:
   - name: flow-version
     task:
       type: assert
-      expr: has(inputs.flowVersion) && inputs.flowVersion == 2
-      message: This suspended run predates the user-driven flow. Preserve it and start a fresh run.
+      expr: has(inputs.flowVersion) && inputs.flowVersion == 3
+      message: This suspended decision uses an older flow. Preserve it and start a fresh launch.
       severity: high
   - name: attach
     task:
       type: model_method
-      modelType: "@hammz/zellij"
+      modelType: '@hammz/zellij'
       modelName: ${{ run.id + "-attach" }}
       methodName: workflow_attach
       globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
+        session: ${{ inputs.session }}
+        binary: ${{ inputs.binary }}
       inputs:
-        work: "${{ inputs.launch }}"
+        session: ${{ inputs.session }}
+        binary: ${{ inputs.binary }}
+        work: ${{ inputs.launch }}
         key: ${{ run.id + "-attach" }}
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-        run: "${{ run.id }}"
-        workflow: "${{ run.workflowName }}"
+        run: ${{ run.id }}
+        workflow: ${{ run.workflowName }}
     dependsOn:
     - step: flow-version
       condition:
@@ -158,17 +265,45 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-  - name: checkout-status
+  - name: begin-review
     task:
       type: model_method
-      modelType: "@swamp/git"
-      modelName: ${{ run.id + "-checkout-status" }}
-      methodName: checkout_status
+      modelType: '@hammz/zellij'
+      modelName: ${{ run.id + "-begin-review" }}
+      methodName: continue_flow
       globalArgs:
-        repoPath: "${{ inputs.checkout }}"
+        session: ${{ inputs.session }}
+        binary: ${{ inputs.binary }}
       inputs:
-        source: "${{ inputs.checkout }}"
-        targetBranch: "${{ inputs.targetBranch }}"
+        session: ${{ inputs.session }}
+        binary: ${{ inputs.binary }}
+        work: ${{ inputs.launch }}
+        key: ${{ run.id + "-begin-review" }}
+        workflow: '@hammz/zellij-review-integration'
+        inputs:
+          launch: ${{ inputs.launch }}
+          session: ${{ inputs.session }}
+          checkout: ${{ inputs.checkout }}
+          target: ${{ inputs.target }}
+          targetBranch: ${{ inputs.targetBranch }}
+          gate: ${{ inputs.gate }}
+          kind: ${{ inputs.kind }}
+          binary: ${{ inputs.binary }}
+          agentCommand: ${{ inputs.agentCommand }}
+          agentArgs: ${{ inputs.agentArgs }}
+          commitAgent: ${{ inputs.commitAgent }}
+          reviewAgent: ${{ inputs.reviewAgent }}
+          reviewFixAgent: ${{ inputs.reviewFixAgent }}
+          rebaseAgent: ${{ inputs.rebaseAgent }}
+          testFixAgent: ${{ inputs.testFixAgent }}
+          rebasePrompt: ${{ inputs.rebasePrompt }}
+          firecracker: ${{ inputs.firecracker }}
+          firecrackerImage: ${{ inputs.firecrackerImage }}
+          sourcePane: ${{ inputs.sourcePane }}
+          flowVersion: ${{ inputs.flowVersion }}
+          testReturn: ${{ inputs.testReturn }}
+          phase: prepare
+          state: ${{ inputs.state }}
     dependsOn:
     - step: attach
       condition:
@@ -176,239 +311,3 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-  - name: exit-question
-    task:
-      type: model_method
-      modelType: "@hammz/question"
-      modelName: ${{ run.id + "-questions" }}
-      methodName: open
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        run: "${{ run.id }}"
-        workflow: "${{ run.workflowName }}"
-        question: exit
-        step: '${{ inputs.sourcePane < 0 ? "manual-exit-approval" : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? "unchanged-exit-approval" : "exit-approval" }}'
-        kind: choice
-        prompt: '${{ inputs.sourcePane < 0 ? "Choose Begin review, Run tests, or Leave." : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? "Agent exited. Choose Restart, Fork, Run tests, or Leave." : "Agent exited. Choose Restart, Fork, Begin review, Run tests, or Leave." }}'
-        answers: '${{ inputs.sourcePane < 0 ? ["begin-review", "run-tests", "leave"] : (inputs.firecracker == "" && inputs.firecrackerImage == "" && data.latest(run.id + "-checkout-status", "checkoutStatus-current").attributes.unchanged) ? ["restart", "fork", "run-tests", "leave"] : ["restart", "fork", "begin-review", "run-tests", "leave"] }}'
-        resumeInput: answer
-    dependsOn:
-    - step: checkout-status
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-  # Swamp leaves approval prompt expressions literal. Select a fixed prompt
-  # using the step named by the saved question.
-  - name: exit-approval
-    task:
-      type: manual_approval
-      prompt: Agent exited. Choose Restart, Fork, Begin review, Run tests, or Leave.
-    dependsOn:
-    - step: exit-question
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ data.latest(run.id + "-questions", "exit").attributes.step != "exit-approval" }}
-  - name: unchanged-exit-approval
-    task:
-      type: manual_approval
-      prompt: Agent exited. Choose Restart, Fork, Run tests, or Leave.
-    dependsOn:
-    - step: exit-question
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ data.latest(run.id + "-questions", "exit").attributes.step != "unchanged-exit-approval" }}
-  - name: manual-exit-approval
-    task:
-      type: manual_approval
-      prompt: Choose Begin review, Run tests, or Leave.
-    dependsOn:
-    - step: exit-question
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ data.latest(run.id + "-questions", "exit").attributes.step != "manual-exit-approval" }}
-  - name: exit-answer
-    task:
-      type: model_method
-      modelType: "@hammz/question"
-      modelName: ${{ run.id + "-questions" }}
-      methodName: consume
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        run: "${{ run.id }}"
-        question: exit
-        answer: "${{ inputs.answer }}"
-        submission: "${{ inputs.submission }}"
-    dependsOn:
-    - step: exit-approval
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    - step: unchanged-exit-approval
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    - step: manual-exit-approval
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-  - name: pane-choice
-    task:
-      type: model_method
-      modelType: "@hammz/zellij"
-      modelName: ${{ run.id + "-pane-choice" }}
-      methodName: pane_action
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        work: "${{ inputs.launch }}"
-        key: ${{ run.id + "-pane-choice" }}
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-        action: "${{ inputs.answer }}"
-    dependsOn:
-    - step: exit-answer
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ !(inputs.answer in ["restart", "fork", "duplicate", "leave"]) }}
-  - name: picker-result
-    task:
-      type: model_method
-      modelType: "@hammz/zellij"
-      modelName: ${{ run.id + "-picker-result" }}
-      methodName: observe
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        work: "${{ inputs.launch }}"
-        key: ${{ run.id + "-pane-choice" }}
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-    dependsOn:
-    - step: pane-choice
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ !(inputs.answer in ["fork", "duplicate"]) }}
-  - name: picker-cancelled
-    task:
-      type: model_method
-      modelType: "@hammz/zellij"
-      modelName: ${{ run.id + "-picker-cancelled" }}
-      methodName: continue_flow
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        work: "${{ inputs.launch }}"
-        key: ${{ run.id + "-picker-cancelled" }}
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-        workflow: "@hammz/zellij-agent-exit"
-        inputs:
-          launch: "${{ inputs.launch }}"
-          session: "${{ inputs.session }}"
-          checkout: "${{ inputs.checkout }}"
-          target: "${{ inputs.target }}"
-          targetBranch: "${{ inputs.targetBranch }}"
-          gate: "${{ inputs.gate }}"
-          kind: "${{ inputs.kind }}"
-          binary: "${{ inputs.binary }}"
-          agentCommand: "${{ inputs.agentCommand }}"
-          agentArgs: "${{ inputs.agentArgs }}"
-          commitAgent: "${{ inputs.commitAgent }}"
-          rebasePrompt: "${{ inputs.rebasePrompt }}"
-          firecracker: "${{ inputs.firecracker }}"
-          firecrackerImage: "${{ inputs.firecrackerImage }}"
-          sourcePane: "${{ inputs.sourcePane }}"
-          phase: prepare
-          state:
-            vmSync:
-            evidence:
-            review:
-            test:
-          testReturn: "${{ inputs.testReturn }}"
-          flowVersion: "${{ inputs.flowVersion }}"
-    dependsOn:
-    - step: picker-result
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ !(inputs.answer in ["fork", "duplicate"] && data.latest(run.id + "-picker-result", "operation-current").attributes.choice == "cancelled") }}
-  - name: begin-review
-    task:
-      type: model_method
-      modelType: "@hammz/zellij"
-      modelName: ${{ run.id + "-begin-review" }}
-      methodName: continue_flow
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        work: "${{ inputs.launch }}"
-        key: ${{ run.id + "-begin-review" }}
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-        workflow: "@hammz/zellij-review-integration"
-        inputs:
-          launch: "${{ inputs.launch }}"
-          session: "${{ inputs.session }}"
-          checkout: "${{ inputs.checkout }}"
-          target: "${{ inputs.target }}"
-          targetBranch: "${{ inputs.targetBranch }}"
-          gate: "${{ inputs.gate }}"
-          kind: "${{ inputs.kind }}"
-          binary: "${{ inputs.binary }}"
-          agentCommand: "${{ inputs.agentCommand }}"
-          agentArgs: "${{ inputs.agentArgs }}"
-          commitAgent: "${{ inputs.commitAgent }}"
-          rebasePrompt: "${{ inputs.rebasePrompt }}"
-          firecracker: "${{ inputs.firecracker }}"
-          firecrackerImage: "${{ inputs.firecrackerImage }}"
-          sourcePane: "${{ inputs.sourcePane }}"
-          phase: '${{ inputs.answer == "run-tests" ? "tests" : "prepare" }}'
-          state: "${{ inputs.state }}"
-          testReturn:
-            workflow: "@hammz/zellij-agent-exit"
-            phase: prepare
-          flowVersion: "${{ inputs.flowVersion }}"
-    dependsOn:
-    - step: picker-cancelled
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ !(inputs.answer in ["begin-review", "run-tests"]) }}
-reports:
-  require:
-  - "@hammz/workflow"

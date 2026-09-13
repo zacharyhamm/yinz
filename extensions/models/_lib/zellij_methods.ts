@@ -21,7 +21,7 @@ import {
     ReportFields,
     testReport,
 } from "./test_report.ts";
-import { Evidence, Finding, Sync } from "../git_workflow.ts";
+import { Evidence, Finding, mergeCheckProblem, Sync } from "../git_workflow.ts";
 const Agent = Request.extend({ agent: Key });
 const Spawn = Request.extend({
     spec: AgentSpec,
@@ -65,12 +65,11 @@ const ReviewArgs = z.object({
     worker: Key,
 });
 const CommitMessage = z.object({
-    message: Literal.refine(
-        (s) => s.trim().length > 0,
-        "Commit message must not be blank",
-    ),
+    message: Literal.nullable(),
+    valid: z.boolean(),
+    problem: z.string().nullable(),
     evidence: Evidence,
-    owner: Owner,
+    owner: Owner.nullable(),
 });
 const CommitMessageArgs = z.object({
     operation: Operation,
@@ -81,10 +80,17 @@ const Checks = z.object({
     evidence: Evidence,
     review: Review.nullable(),
     test: Test.nullable(),
-    tests: z.enum(["skipped", "passed", "failed"]),
-    codeReview: z.enum(["skipped", "passed", "failed"]),
+    tests: z.enum(["missing", "current", "stale", "failed", "cancelled"]),
+    codeReview: z.enum(["missing", "current", "stale", "failed", "cancelled"]),
+    ready: z.boolean(),
+    reason: z.string().nullable(),
 });
-const CheckArgs = Checks.omit({ tests: true, codeReview: true });
+const CheckArgs = Checks.omit({
+    tests: true,
+    codeReview: true,
+    ready: true,
+    reason: true,
+});
 const Assessment = z.object({
     review: Review,
     test: Test.nullable(),
@@ -121,7 +127,7 @@ export const resources = {
     ),
     checks: resource(
         Checks,
-        "Exact revision and optional check results presented for informed merge approval",
+        "Current revision and required check results",
     ),
     checkoutSync: resource(
         Sync,
@@ -174,8 +180,9 @@ async function reportPrompt(
     c: Context,
     introduction: string,
     test: z.infer<typeof Test>,
+    maxBytes: number,
 ) {
-    const ref = test.outputRef;
+    let ref = test.outputRef;
     if (ref) {
         if (!c.dataRepository) {
             throw new Error("Saved evidence repository unavailable");
@@ -185,12 +192,35 @@ async function reportPrompt(
     }
     const summary = test.summary ?? testReport(test).summary;
     const full = introduction + "\n\n" + summary;
-    if (PromptText.safeParse(full).success) return full;
+    if (
+        new TextEncoder().encode(full).length <= maxBytes &&
+        PromptText.safeParse(full).success
+    ) return full;
     if (!ref) {
-        throw new Error(
-            "Oversized test report has no saved evidence reference",
-        );
+        ref = await saveEvidence(c, "test", test);
     }
+    return savedPrompt(c, introduction, ref, "failure report");
+}
+async function saveEvidence(
+    c: Context,
+    spec: "test" | "review",
+    value: Record<string, unknown>,
+) {
+    if (!c.modelType || !c.modelId) {
+        throw new Error("Saved evidence model identity unavailable");
+    }
+    return OutputRef.parse({
+        modelType: c.modelType.normalized,
+        modelId: c.modelId,
+        ...await c.writeResource(spec, "repair-" + spec, value),
+    });
+}
+function savedPrompt(
+    c: Context,
+    introduction: string,
+    ref: z.infer<typeof OutputRef>,
+    label: string,
+) {
     const predicate = `modelType == ${
         JSON.stringify(ref.modelType)
     } && ownerType == "model-method" && ownerRef == ${
@@ -198,16 +228,22 @@ async function reportPrompt(
     } && name == ${JSON.stringify(ref.name)} && version == ${ref.version}`;
     const quote = (s: string) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
     return PromptText.parse(
-        introduction + "\n\nTested revision: " + test.evidence.source.commit +
-            "\nCompletion: " + test.outcome + "; exit status: " +
-            test.exitCode +
-            "\nThe complete report exceeds the prompt limit. Read this exact saved version before fixing failures (summary and raw output are included):\n" +
+        introduction + "\n\nThe complete " + label +
+            " exceeds the prompt limit. Read this exact saved version before fixing failures:\n" +
             "swamp data query " + quote(predicate) +
             " --select attributes --json --repo-dir " + quote(c.repoDir),
     );
 }
+
+const RoleSpec = AgentSpec.pick({
+    kind: true,
+    model: true,
+    effort: true,
+    command: true,
+    args: true,
+});
 const FlowInputs = z.object({
-    flowVersion: z.literal(2),
+    flowVersion: z.literal(3),
     launch: Key,
     session: Literal.min(1),
     binary: Literal.min(1),
@@ -218,13 +254,11 @@ const FlowInputs = z.object({
     kind: Literal,
     agentCommand: Literal,
     agentArgs: z.array(Literal),
-    commitAgent: AgentSpec.pick({
-        kind: true,
-        model: true,
-        effort: true,
-        command: true,
-        args: true,
-    }).optional(),
+    commitAgent: RoleSpec.optional(),
+    reviewAgent: RoleSpec.optional(),
+    reviewFixAgent: RoleSpec.optional(),
+    rebaseAgent: RoleSpec.optional(),
+    testFixAgent: RoleSpec.optional(),
     rebasePrompt: Literal.refine((s) => s.trim().length > 0).default(
         "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done.",
     ),
@@ -244,6 +278,8 @@ const FlowInputs = z.object({
         "test-return",
         "fix",
         "review-agent",
+        "review-fix",
+        "continue",
         "confirm",
         "cleanup",
     ]),
@@ -270,6 +306,7 @@ const ContinueFlow = Request.extend({
         "@hammz/zellij-review-integration",
     ]),
     inputs: FlowInputs,
+    invalidateChecks: z.boolean().default(false),
 });
 export const methods = {
     commit_message_result: {
@@ -278,25 +315,34 @@ export const methods = {
         arguments: CommitMessageArgs,
         execute: (input: z.infer<typeof CommitMessageArgs>, c: Context) => {
             const a = CommitMessageArgs.parse(input);
-            if (
-                a.operation.outcome !== "process-exit" ||
-                a.operation.exitCode !== 0 || a.operation.hook !== "Stop" ||
-                a.operation.owner?.agent !== a.agent
-            ) {
-                throw new Error(
-                    "Commit message agent did not complete successfully; inspect its saved operation",
-                );
+            let message: string | null = null, problem: string | null = null;
+            try {
+                if (
+                    a.operation.outcome !== "process-exit" ||
+                    a.operation.exitCode !== 0 ||
+                    a.operation.hook !== "Stop" ||
+                    a.operation.owner?.agent !== a.agent
+                ) {
+                    throw new Error(
+                        "Commit message agent did not complete successfully; inspect its saved operation",
+                    );
+                }
+                message = z.object({
+                    message: Literal.refine((s) => s.trim().length > 0),
+                })
+                    .parse(JSON.parse(a.operation.message ?? "")).message;
+            } catch (error) {
+                problem = String(error);
             }
-            const { message } = CommitMessage.pick({ message: true }).parse(
-                JSON.parse(a.operation.message ?? ""),
-            );
             return save(
                 c,
                 "commitMessage",
                 CommitMessage.parse({
                     message,
+                    valid: problem === null,
+                    problem,
                     evidence: a.evidence,
-                    owner: a.operation.owner,
+                    owner: a.operation.owner ?? null,
                 }),
             );
         },
@@ -307,46 +353,80 @@ export const methods = {
         arguments: z.object({
             prompt: z.string(),
             test: Test.nullable().optional(),
+            review: Review.nullable().optional(),
             startup: z.boolean().default(false),
         }),
         execute: async (
             input: {
                 prompt: string;
                 test?: z.infer<typeof Test> | null;
+                review?: z.infer<typeof Review> | null;
                 startup?: boolean;
             },
             c: Context,
-        ) => save(c, "prompt", {
-            prompt: preparePrompt(
-                input.test
-                    ? await reportPrompt(
+        ) => {
+            const maxBytes = input.startup ? STARTUP_PROMPT_BYTES : 262144;
+            let prompt = input.test
+                ? await reportPrompt(
+                    c,
+                    input.prompt,
+                    Test.parse(input.test),
+                    maxBytes,
+                )
+                : input.prompt;
+            if (input.review) {
+                const full = prompt + "\n\nSaved review findings:\n" +
+                    JSON.stringify(Review.parse(input.review));
+                prompt = new TextEncoder().encode(full).length <= maxBytes
+                    ? full
+                    : savedPrompt(
                         c,
-                        input.prompt,
-                        Test.parse(input.test),
-                    )
-                    : input.prompt,
-                input.startup ? STARTUP_PROMPT_BYTES : undefined,
-            ),
-        }),
+                        prompt,
+                        await saveEvidence(c, "review", input.review),
+                        "review findings",
+                    );
+            }
+            return save(c, "prompt", {
+                prompt: preparePrompt(prompt, maxBytes),
+            });
+        },
     },
     check_status: {
         description:
-            "Save the exact optional check results shown at merge confirmation",
+            "Classify saved checks against the current checkout evidence",
         arguments: CheckArgs,
         execute: (input: z.infer<typeof CheckArgs>, c: Context) => {
             const a = CheckArgs.parse(input);
+            const status = (check: typeof a.review | typeof a.test) => {
+                if (!check) return "missing";
+                if (
+                    check.outcome === "stale" ||
+                    JSON.stringify(check.evidence) !==
+                        JSON.stringify(a.evidence)
+                ) return "stale";
+                if (["cancelled", "interrupted"].includes(check.outcome)) {
+                    return "cancelled";
+                }
+                return ("findings" in check
+                        ? check.valid && check.resolved &&
+                            check.findings.every((f) =>
+                                f.severity === "info"
+                            ) &&
+                            ["completed", "process-exit"].includes(
+                                check.outcome,
+                            )
+                        : check.passed && check.outcome === "completed" &&
+                            check.exitCode === 0)
+                    ? "current"
+                    : "failed";
+            };
+            const reason = mergeCheckProblem(a.evidence, a.review, a.test);
             return save(c, "checks", {
                 ...a,
-                tests: a.test === null
-                    ? "skipped"
-                    : a.test.passed
-                    ? "passed"
-                    : "failed",
-                codeReview: a.review === null
-                    ? "skipped"
-                    : a.review.resolved
-                    ? "passed"
-                    : "failed",
+                tests: status(a.test),
+                codeReview: status(a.review),
+                ready: reason === null,
+                reason,
             });
         },
     },
@@ -356,6 +436,13 @@ export const methods = {
         arguments: ContinueFlow,
         execute: async (input: z.infer<typeof ContinueFlow>, c: Context) => {
             const a = ContinueFlow.parse(input);
+            if (a.invalidateChecks) {
+                for (
+                    const check of [a.inputs.state.review, a.inputs.state.test]
+                ) {
+                    if (check) check.outcome = "stale";
+                }
+            }
             const test = a.inputs.state.test;
             const continuationName = "continuation-" +
                 await digest({ work: a.work, key: a.key });
@@ -492,11 +579,21 @@ export const methods = {
         }),
         "pane_action",
     ),
+    step_ready: method(
+        "Refuse another step until earlier owned commands have finished or been reconciled",
+        Request,
+        "step_ready",
+    ),
     checkout_sync: {
         description:
             "Sync and verify the original VM, or record explicit local checkout evidence",
-        arguments: Request,
-        execute: async (input: z.infer<typeof Request>, c: Context) => {
+        arguments: Request.extend({ previous: Sync.nullable().optional() }),
+        execute: async (
+            input: z.infer<typeof Request> & {
+                previous?: z.infer<typeof Sync> | null;
+            },
+            c: Context,
+        ) => {
             const result = await operation(c, {
                 ...Request.parse(input),
                 method: "source_sync",
@@ -507,10 +604,17 @@ export const methods = {
                     "Original VM has unresolved changes or sync conflicts",
                 );
             }
+            const previous = input.previous;
+            // A fresh sync must not stale identical VM contents merely by changing its operation key.
+            const sameVm = previous && !("mode" in previous) &&
+                result.vm === previous.vm &&
+                JSON.stringify(result.owner) === JSON.stringify(previous.owner);
             return save(
                 c,
                 "checkoutSync",
-                result.vm ? Sync.parse(result) : { mode: "local" },
+                result.vm
+                    ? (sameVm ? previous : Sync.parse(result))
+                    : { mode: "local" },
             );
         },
     },
@@ -551,17 +655,8 @@ export const methods = {
                 "assessment",
                 Assessment.parse({
                     ...a,
-                    ready: a.current.source.clean && a.current.target.clean &&
-                        !a.current.source.rebasing &&
-                        !a.current.target.rebasing &&
-                        a.current.source.conflicts.length === 0 &&
-                        a.current.target.conflicts.length === 0 &&
-                        a.review.resolved && a.test !== null &&
-                        a.test.passed &&
-                        JSON.stringify(a.review.evidence) ===
-                            JSON.stringify(a.test.evidence) &&
-                        JSON.stringify(a.current) ===
-                            JSON.stringify(a.review.evidence),
+                    ready:
+                        mergeCheckProblem(a.current, a.review, a.test) === null,
                 }),
             );
         },
@@ -678,6 +773,14 @@ export const methods = {
                                 capture.directory,
                                 args.argv,
                                 args.foreground,
+                                {
+                                    binary: args.binary ??
+                                        String(c.globalArgs.binary ?? "zellij"),
+                                    session: args.session ??
+                                        String(c.globalArgs.session),
+                                    work: args.work,
+                                    key: args.key,
+                                },
                             ),
                         }
                         : {}),
@@ -694,6 +797,11 @@ export const methods = {
         "Sync an owned VM and report unresolved changes",
         Agent,
         "vm_sync",
+    ),
+    cancel_step: method(
+        "Interrupt one owned operation and verify termination before another step",
+        Request.extend({ operation: Key }),
+        "cancel_step",
     ),
     reconcile: method(
         "Reconcile a saved supervisor without repeating uncertain mutations",
@@ -722,7 +830,8 @@ export const methods = {
             if (
                 (a.operation.outcome !== "completed" &&
                     !(a.operation.outcome === "process-exit" &&
-                        a.operation.hook === "Stop")) ||
+                        a.operation.hook === "Stop" &&
+                        a.operation.exitCode === 0)) ||
                 !a.operation.owner ||
                 a.operation.owner.agent === a.worker
             ) problem = "A separate review agent must explicitly complete";

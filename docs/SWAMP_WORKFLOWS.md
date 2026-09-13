@@ -30,13 +30,20 @@ The optional `rebase_prompt` must be a nonblank string. An explicit workflow inp
 `rebasePrompt`, overrides it. If both are absent, the existing conflict-resolution
 instructions apply. The launch captures this value and retains it through all continuations.
 
-`commit_agent` accepts `kind`, `model`, and `effort`, with the same validation as `agent`.
-For example, add `model="your-model"` to select a model supported by that agent.
-If `commit_agent` is absent, commit generation uses the `agent` settings.
-If both are absent, it uses the helper command or original agent kind.
-The selected specification does not inherit omitted model or effort values from another specification.
-Those values use launcher defaults. An explicit `commitAgent` workflow input overrides KDL.
-The launch captures these settings and preserves them through continuations.
+Each helper role accepts `kind`, `model`, and `effort`, with the same validation as `agent`:
+
+| KDL setting | Explicit workflow input | Purpose |
+|---|---|---|
+| `commit_agent` | `commitAgent` | Generate a commit message |
+| `review_agent` | `reviewAgent` | Review all branch and checkout changes |
+| `review_fix_agent` | `reviewFixAgent` | Repair saved review findings |
+| `rebase_agent` | `rebaseAgent` | Resolve and stage rebase conflicts |
+| `test_fix_agent` | `testFixAgent` | Repair saved test failures |
+
+Selection uses the explicit role input, then the role-specific KDL setting, then shared `agent` settings.
+If none exists, it uses the original agent kind or helper command.
+The selected specification does not inherit omitted model or effort fields. Those fields use launcher defaults.
+The launch captures every role setting and preserves it through all continuations.
 
 For a dirty checkout, **Commit & rebase** starts a local agent to write a subject and body.
 The agent inspects pending changes with the branch history as context, then returns JSON containing `message` and exits.
@@ -51,10 +58,9 @@ Retrieve saved messages from the control checkout:
 swamp data query 'name == "commitMessage-current"' --select attributes --json
 ```
 
-For resolution, the prepared prompt becomes the agent's startup argument through the
-shared launcher. The bridge registers ownership before launch and waits for process exit.
-It sends no second prompt. Fix and review helpers still receive their prompts after launch.
-The resolver must stage conflicts and exit. The workflow runs `rebase --continue`.
+Every helper receives its prepared prompt at startup through the shared launcher.
+The bridge registers ownership before launch and waits for process exit.
+The resolver must stage conflicts and exit. Only **Continue rebase** runs `rebase --continue`.
 
 The control checkout defaults to the primary Git checkout. To use another directory,
 set `control_checkout "relative-or-absolute-path"` in the primary checkout's binding.
@@ -74,12 +80,11 @@ zellij workflow show RUN_ID --json
 chosen token. Identical requests return the existing claim; changed arguments with the
 same token fail. `--no-view` starts an unattended run. It still suspends for questions.
 `--input` accepts a JSON object of declared workflow inputs. Tests default to
-`cargo x ci check`. The target defaults to local `main`. Both tests and agent review
-are optional. No step pushes commits or creates a pull request.
+`cargo x ci check`. The target defaults to local `main`. Tests and review run only when selected. Both must pass before merge. No step pushes commits or creates a pull request.
 
 The exit hook supplies the original terminal ID, agent kind, checkout, and VM context.
 For a manual launch, pass `sourcePane` to enable the pane exit choices described below.
-Without a source pane, the menu offers only Begin review and Leave.
+Without a source pane, the same validation menu is available, with no Restart or Fork choices.
 `agentCommand` and `agentArgs` can select an explicit helper command.
 VM-backed runs require the original pane identity. Preparation synchronizes that VM
 without starting a worker. Local checkout evidence does not require a VM-sync record.
@@ -139,64 +144,52 @@ local extensions unpublished.
 
 ## Exit and review choices
 
-1. When the local checkout is unchanged, choose **Restart**, **Fork**, **Run tests**, or **Leave**, in that order.
-   Unchanged means no staged, unstaged, untracked, or submodule changes, no paused rebase,
-   and zero commits in `targetBranch..HEAD`. Ignored files do not count.
-   The check uses the configured local target branch (`main` by default) without fetching.
-   Clean branches equal to or behind that target receive this menu.
-   Otherwise, choose **Restart**, **Fork**, **Begin review**, **Run tests**, or **Leave**.
-   Inspection errors and VM context retain these existing choices. The exit check does not synchronize VMs.
-   Restart starts a fresh agent conversation in the held pane, without the original prompt or
-   resume arguments. It preserves the model, permissions, environment, directory, and execution target. Fork opens the existing agent-kind picker in the
-   same checkout and VM context. Cancel the picker to return to a fresh exit menu and checkout check.
-   Each new exit run checks again. Its saved result determines the answers and both question and approval prompts.
-   Leave closes the original exited terminal and its exit view. It preserves the
-   checkout and other workflow panes. Manual launches without a source terminal can
-   also complete with Leave.
-2. After Begin review, choose **Show diff**, **Commit and rebase**, **Run tests**, or **Leave**.
-   Show diff displays unstaged changes to tracked files and untracked, non-ignored files after VM synchronization.
-   Only the agent’s checkout is included, even when inherited Git settings point to another worktree.
-   Untracked nested repositories appear as safely quoted directory entries. Their contents are not traversed.
-   A persistent `less` viewer temporarily occupies the workflow pane, including for short or empty diffs.
-   Empty diffs show “No unstaged or untracked changes.” Staged-only changes are excluded. Press `q` or `Esc` to return to the Begin review preparation menu.
-   Arrow keys scroll, and `/` searches. Pager settings are overridden only for this viewer.
-   Temporary output and key bindings are removed on exit. Command failures appear in the workflow view.
-   Commit and rebase first generates and saves a message when the checkout has pending changes.
-   It then shows each Git command and its live output in a foreground pane.
-   It skips empty commits and rebases onto the configured local target. After success
-   or failure, press Enter to return to the workflow. A failed commit stops before rebase.
-3. If a rebase has conflicts, choose **Resolve with agent**, **Run tests**, or **Leave paused**.
-   Only a recorded choice starts a resolver. After the resolver exits, the workflow inspects the checkout.
-   If conflicts remain, it offers the same choices again.
-   If Git is paused without unresolved conflicts, choose **Continue rebase**, **Run tests**, or **Leave paused**.
-   Continue rebase requires a recorded choice, even when the resolver made no additional edits.
-   Further conflicts repeat this loop. After rebase completion, uncommitted changes return to preparation.
-   A clean checkout proceeds to review. This also applies if the resolver completed the rebase itself.
-   Other errors remain visible without automatic retries.
-4. After preparation, choose **Run tests**, **Start code review**, **Merge**, or **Leave**.
-   Tests are optional at every decision before integration, including the initial exit menu and merge confirmation.
-   They use the configured gate command on the source checkout.
-   Passing tests return to the originating workflow and stage. Failed tests offer **Run tests**, **Start fix agent**, **Return to menu**, or **Leave**.
-   A fix agent receives the saved failure output. Its process exit refreshes checkout evidence before returning.
-   Checkout changes invalidate stale test and review results and can return the decision to preparation or conflict resolution.
-   Tests never implicitly commit, continue a rebase, or approve a merge. Returning to merge confirmation requires fresh approval.
-5. A selected reviewer inspects the checkout. The workflow compares commits and all
-   tracked and untracked contents before and after the process exits. Changes return
-   to the initial menu. An unchanged checkout proceeds to merge confirmation with
-   the saved findings. Missing or malformed findings remain a failed review.
-6. Confirm the exact source and target revisions. The prompt states whether tests
-   and review passed, failed, or were skipped. Choose **Run tests** to check again before approval.
-   You can explicitly accept failed or
-   skipped checks and unresolved findings. Decline to preserve everything and end.
-   Changed source or target state returns to preparation and requires fresh approval.
-   Integration uses local fast-forward only and retains checkout locks, live VM
-   verification, clean-state checks, and ancestry checks.
-7. After integration, choose **Remove clean worktree** or **Keep**. Removal uses the
-   existing guarded, non-force cleanup method. Changed state prevents removal. Tests are no longer offered after integration.
+One menu offers **Show diff**, **Review**, **Commit & rebase**, **Run tests**, **Merge**, and **Leave**.
+Each check shows `missing`, `current`, `stale`, `failed`, or `cancelled`.
+An exit-hook launch also offers **Restart** and **Fork** for its original terminal.
+Each completed action returns to this menu. Repairs, retries, and later checks require a new choice.
 
-Tests, Continue rebase, Merge, and cleanup show live command output in foreground panes.
-After completion, press Enter to restore the decision view. Agents and diff viewers use the same foreground location.
-Cancelling observation does not undo a command. Uncertain completion preserves the operation and output for inspection instead of repeating execution.
+- **Show diff** and **Review** cover committed branch changes, staged changes, unstaged changes, and untracked files.
+  Both use the source checkout and configured local target. Review is available before committing.
+  The viewer uses `less`, including for short or empty diffs. Press `q` or `Esc` to return.
+  Untracked nested repositories appear as quoted directory entries. The viewer does not traverse them.
+- **Review** requires valid structured findings from a helper that exits successfully.
+  Missing or malformed output records a failed review. Saved findings add **Fix review with agent** and **Review again**.
+  A repair receives the complete saved findings. Large reports use an exact saved-version reference.
+- **Commit & rebase** generates a message for pending changes, verifies its evidence, commits, and rebases onto the local target.
+  A clean source skips message generation. A failed commit stops before rebase and retains its diagnostics.
+  Choose **Commit & rebase** again to retry after correcting the problem.
+- A paused rebase adds **Resolve with agent**, **Continue rebase**, and **Leave paused**.
+  The resolver stages its changes and exits. **Continue rebase** requires a separate choice and no unresolved conflicts.
+  Additional conflicts repeat these choices. Leaving preserves the paused rebase.
+- **Run tests** runs the configured command against the source checkout.
+  Failed or cancelled tests add **Fix tests with agent** and **Retry tests**.
+  The fix agent receives the complete failure report, including output that exceeds the view or startup prompt limit.
+- **Merge** requires a current valid review with no error or warning findings, passing tests, and clean source and target checkouts.
+  Informational findings are permitted. Commits, rebases, repairs, and source or target changes require fresh checks.
+  There is no override for missing, failed, cancelled, or stale checks. The integration method enforces these requirements for direct calls too.
+  Confirm the exact source and target revisions. Integration checks them again under checkout locks and uses local fast-forward only.
+  VM synchronization, ownership, and ancestry checks remain required.
+- After integration, choose **Remove clean worktree** or **Keep** separately.
+  Removal verifies the source revision, clean files, target ancestry, and VM state. It uses the existing non-force cleanup method.
+  A refused removal preserves diagnostics and returns to the cleanup choice.
+
+Commands and helpers occupy the existing workflow location for exit-hook and manual interactive launches.
+Command output remains visible until dismissal. Press Enter after a command completes to restore the decision view.
+
+**Cancel step** targets the active owned operation and preserves the workflow.
+Ctrl-C in a foreground command requests the same cancellation.
+The bridge verifies ownership before sending an interrupt. After five seconds, it sends a kill signal if execution continues.
+Signals target the command process group, including child processes.
+Cancellation during dispatch waits for the saved process identity. Duplicate requests do not repeat execution or signals.
+Changed ownership or uncertain termination blocks another step until the saved operation is reconciled.
+
+Cancellation preserves partial output and records `cancelled`, separately from success or failure.
+Dismiss the saved cancellation output to return to the menu. No repair agent starts automatically.
+Interrupted Git operations trigger fresh checkout inspection. Completed mutations and paused rebases remain in place.
+Cancellation does not imply rollback.
+
+Flow version 3 preserves the workflow IDs. Suspended decision flows from earlier versions require a fresh launch.
 
 On agent exit, the workflow uses the exit pane for status, questions and interactive
 agents. The original terminal and its scrollback remain behind that view.
@@ -288,7 +281,7 @@ with the new decision sequence.
 The bridge stores only ownership, operation claims, event delivery and attachment state
 outside Swamp. Ownership names the host, session, server incarnation, agent and work
 item. Supervisor and process identities verify a pane before input. One prompt may be
-outstanding per agent. Prompts are limited to 256 KiB (262,144 UTF-8 bytes), including generated fix and review prompts.
+outstanding per agent. Prompts are limited to 256 KiB (262,144 UTF-8 bytes), Startup prompts have a separate limit of 131,071 UTF-8 bytes.
 Oversized prompts fail before a host claim is created. Repair instructions are never truncated.
 Bridge requests travel as one JSON line on stdin.
 Acceptance compares the expected SHA-256 digest with the host-computed digest when available.
@@ -458,27 +451,31 @@ python3 extensions/tests/smoke.py --exit-menu-only
 python3 extensions/tests/smoke.py --source-diff-only
 python3 extensions/tests/smoke.py --commit-rebase-only
 python3 extensions/tests/smoke.py --rebase-only
-python3 extensions/tests/smoke.py --decisions-only
+python3 extensions/tests/smoke.py --cancellation-only
 cargo x ci check
 cargo x firecracker-test --build
 cargo x firecracker-test --test
 ```
 
-The smoke runner creates disposable repositories and stub agents. It tests unattended
-questions, an interactive workflow view, stale evidence, optional checks, informed merges, explicit conflict resolution,
-recorded-answer recovery, cancellation, and server crash/adoption. It prints the
-fixture directory containing its command transcript and terminal capture. The
-`--exit-menu-only` path checks exact menus and approval prompts, rejected hidden choices,
-fresh checks after Fork cancellation, and fallback choices for inspection errors and VM context. The
-`--source-diff-only` path checks short, long, untracked, staged-only, and empty diffs in manual, agent-exit,
-and unattended views, including dismissal, scrolling, search, checkout isolation, nested repositories, and temporary-file cleanup.
-`--commit-rebase-only` checks configured commit agents, saved multiline messages, clean checkouts, malformed output, cancellation, and foreground Git results.
-`--decisions-only` checks passing, failing, retried, and checkout-changing tests from each exit, preparation, review, and merge-confirmation menu.
-The `--rebase-only` path checks tests in paused rebases and explicit continuation through repeated conflicts.
-The Firecracker suite also runs the typed bridge against a real guest, including a sync
-conflict. Run socket and KVM tests outside a sandbox that blocks those facilities.
+The smoke runner creates disposable repositories and stub agents. It tests the manual validation loop,
+complete repair reports, required checks, exact revision approval, guarded cleanup, and repeated conflicts.
+It also verifies retained output, cancelled commands and child processes, explicit retries, answer recovery, and server crash/adoption.
+The printed fixture directory contains its command transcript and terminal capture.
+
+- `--validation-loop-only` runs the review, repair, commit, test, merge, cancellation, and conflict scenarios.
+- `--cancellation-only` runs real command and child-process interruption, escalation, output retention, and retry.
+- `--rebase-only` runs explicit continuation through repeated conflicts.
+- `--exit-only` or `--exit-menu-only` verifies manual and exit-hook helper placement, restoration, and Fork cancellation.
+- `--source-diff-only` adds direct viewer checks for checkout isolation, staged changes, nested repositories, and temporary-file cleanup.
+- `--commit-rebase-only` adds a configured commit-agent role to the full run.
+- `--recovery-only` runs bridge reload and server crash/adoption checks.
+
+The Firecracker suite runs the typed bridge against a real guest, including a synchronization conflict.
+Run socket and KVM tests outside a sandbox that blocks those facilities.
 
 ### Measured results (2026-09-10)
+
+These historical measurements used the earlier staged flow. Flow version 3 changes the sequence of decisions.
 
 Run `python3 extensions/tests/smoke.py --question-latency-only` with the compatible
 Swamp build on `PATH`. The check records eight samples: one cold, then seven warm.

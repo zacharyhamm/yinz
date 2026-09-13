@@ -8,7 +8,7 @@ type Request = {
   method: string; work: string; key: string; agent: string; operation: string;
   directory: string; run: string; launch: string; workflow: string;
   prompt: string; prompt_sha256?: string; waitForExit?: boolean; includeOutput?: boolean; foreground?: boolean;
-  action: string; cancel_active?: boolean; spec: AgentSpawnOptions & {source_directory?: string; automatic_firecracker_vm?: boolean}; argv: string[]; cwd: string;
+  process?: number; action: string; cancel_active?: boolean; spec: AgentSpawnOptions & {source_directory?: string; automatic_firecracker_vm?: boolean}; argv: string[]; cwd: string;
   inputs?: Record<string, Json>;
   payload: Record<string, Json>; model: string; name: string; offset: number; version: number; capture?: Json;
 };
@@ -26,6 +26,7 @@ type Delivery = {
   transport?: string; requestId?: string; correlation?: string; run?: string;
   closed?: boolean; cancel_pending?: boolean; transition?: string; source?: number; current?: number;
   not_dispatched?: boolean; capture?: Json;
+  executionFinished?: boolean; cancelRequested?: boolean; interruptSent?: boolean; interruptedAt?: number; killSent?: boolean; terminationVerified?: boolean;
 };
 type Supervisor = {terminal_id: number; host_id: string; child_pid?: number; attached: boolean;
   session_name: string; child_exit_status?: number | null; owner?: string | null; remote_host?: string; pane_token?: string};
@@ -167,6 +168,64 @@ function active(work: string): boolean {
   } while (cursor != null);
   return false;
 }
+function activeOperation(work: string) {
+  return deliveryRows().find(entry => {
+    const v = entry.value;
+    if (lifecycleWork(entry.work) !== lifecycleWork(work) || !['pending', 'unknown'].includes(v.outcome) || !v.request) return false;
+    const r: Request = JSON.parse(v.request);
+    return r.method === 'command' || r.method === 'agent_prompt' || r.method === 'agent_spawn' && r.waitForExit;
+  });
+}
+const stopping = new Map<string, Promise<void>>();
+function stopOperation(uid: string): Promise<void> {
+  const existing = stopping.get(uid);
+  if (existing) return existing;
+  const pending = (async () => {
+    try {
+      const deadline = Date.now() + 30000;
+      for (;;) {
+        let [value, row] = read(uid);
+        assert(value?.cancelRequested, 'Cancellation no longer owns this operation');
+        if (!['pending', 'unknown'].includes(value.outcome) || value.executionFinished) return;
+        assert(Date.now() < deadline, 'Termination is uncertain; reconcile the saved operation before retrying');
+        // Cancellation can arrive while dispatch is still waiting for its supervisor.
+        if (value.pane == null || !value.supervisor) { await z.sleep(100); continue; }
+        const owner = value.owner;
+        assert(owner?.host_id === identity.host_id && owner.session === identity.session &&
+          owner.work === value.work, 'Wrong cancellation owner');
+        const host = await supervisor(value.pane, value.supervisor);
+        assert(host.host_id === value.supervisor && host.child_pid === value.process && host.attached,
+          'Process ownership changed; reconcile without signalling the replacement');
+        if (host.owner) assert(host.owner === (value.transportOwner ?? encode(owner)), 'Remote ownership changed');
+        [value, row] = read(uid); assert(value?.cancelRequested, 'Cancellation lost its operation');
+        if (!['pending', 'unknown'].includes(value.outcome) || value.executionFinished) return;
+        assert(encode(value.owner) === encode(owner) && value.process === host.child_pid && value.supervisor === host.host_id,
+          'Operation ownership changed while checking its process');
+        if (host.child_exit_status != null) {
+          saveEvent(uid, 'cancelled', {exitCode: host.child_exit_status, processExited: true, terminationVerified: true});
+          present(value.work); changed(value.work); return;
+        }
+        if (!value.interruptSent) {
+          value.interruptSent = true; value.interruptedAt = Date.now(); put(uid, value, row);
+          assert(z.workflowSignal, 'Owned pane signalling is unavailable');
+          z.workflowSignal({terminal_id: host.terminal_id, owner: encode(owner), process: value.process, supervisor: value.supervisor!, kill: false});
+        } else if (!value.killSent && Date.now() - (value.interruptedAt ?? Date.now()) >= 5000) {
+          value.killSent = true; put(uid, value, row);
+          assert(z.workflowSignal, 'Owned pane signalling is unavailable');
+          z.workflowSignal({terminal_id: host.terminal_id, owner: encode(owner), process: value.process, supervisor: value.supervisor!, kill: true});
+        }
+        await z.sleep(100);
+      }
+    } catch (error) {
+      const current = result(uid);
+      if (['pending', 'unknown'].includes(current.outcome) && !current.executionFinished) {
+        saveEvent(uid, 'unknown', {error: String(error), terminationVerified: false});
+        changed(current.work);
+      }
+    }
+  })().finally(() => stopping.delete(uid));
+  stopping.set(uid, pending); return pending;
+}
 function launchFailure(work: string, launch: Delivery, logs: string, directory?: string) {
   return {launch: work, root: launch.checkout ?? directory, history: {id: work, workflowName: launch.workflow ?? 'Workflow launch', status: 'failed'}, children: [], active: active(work), logs};
 }
@@ -236,7 +295,7 @@ function attachManual(work: string, view: number) {
       const operation: Delivery = JSON.parse(String(row.value));
       if (operation.outcome !== 'pending' || operation.pane == null) continue;
       const request: Request = JSON.parse(operation.request);
-      if (request.method === 'command' && request.foreground) placement.queue.push(String(row.uid));
+      if ((request.method === 'command' && request.foreground || request.method === 'agent_spawn' && request.waitForExit)) placement.queue.push(String(row.uid));
     }
     cursor = raw.next_cursor;
   } while (cursor != null);
@@ -586,7 +645,7 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
       children.push(child);
       if (child.status === 'running') watchRun(child.id, attachment.work, config.root);
     }
-    return {run, launch: attachment.work, root: config.root, history, children, active: active(attachment.work), outputs,
+    return {run, launch: attachment.work, root: config.root, history, children, active: active(attachment.work), activeOperation: (() => { const entry = activeOperation(attachment!.work); return entry ? {work: entry.work, key: entry.key} : null; })(), outputs,
       logs: await swamp({operation: 'workflow.history.logs', payload: {runIdOrWorkflow: run, tail: 100}}, config.root), questions};
   }
   key(args.work);
@@ -640,6 +699,28 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     fresh.closed = true; put(uid, fresh, row);
     return fresh;
   }
+  if (args.method === 'step_ready') {
+    assert(!activeOperation(args.work), 'An owned operation is still active or uncertain; cancel or reconcile it before another step');
+    return {work: args.work, key: args.key, request: encode(args), incarnation: identity.incarnation, outcome: 'completed'};
+  }
+  if (args.method === 'step_finished') {
+    const uid = scope(args.work, args.operation), [value, row] = read(uid);
+    assert(value?.owner && value.process === args.process && value.owner.work === args.work &&
+      value.owner.host_id === identity.host_id && value.owner.session === identity.session, 'Completion belongs to a different process');
+    value.executionFinished = true; put(uid, value, row); return value;
+  }
+  if (args.method === 'cancel_step') {
+    ensureOpen(args.work);
+    const uid = scope(args.work, args.operation), [value, row] = read(uid);
+    assert(value?.request, 'No operation with that identity');
+    const request: Request = JSON.parse(value.request);
+    assert(request.method === 'command' || request.method === 'agent_prompt' || request.method === 'agent_spawn' && request.waitForExit,
+      'This operation has no cancellable process');
+    if (!['pending', 'unknown'].includes(value.outcome) || value.executionFinished) return value;
+    if (!value.cancelRequested) { value.cancelRequested = true; put(uid, value, row); }
+    void stopOperation(uid);
+    return result(uid);
+  }
   if (args.method === 'agent_inspect') return owned(args);
   if (args.method === 'workflow_attach') {
     const entry: Attachment = {run: args.run, work: args.work, workflow: args.workflow, root: args.directory};
@@ -671,7 +752,8 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
       operation.pane = host.terminal_id;
       if (operation.log) operation.log = `terminal_${host.terminal_id}`;
       if (host.child_exit_status != null) {
-        operation.outcome = JSON.parse(operation.request).method === 'command' ? (host.child_exit_status === 0 ? 'completed' : 'failed') : 'process-exit';
+        operation.terminationVerified = true; operation.processExited = true;
+        operation.outcome = operation.cancelRequested ? 'cancelled' : JSON.parse(operation.request).method === 'command' ? (host.child_exit_status === 0 ? 'completed' : 'failed') : 'process-exit';
         operation.exitCode = host.child_exit_status;
       } else if (operation.outcome === 'pending' && operation.incarnation !== identity.incarnation) operation.outcome = 'unknown';
       put(uid, operation, row);
@@ -679,6 +761,11 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     return operation;
   }
   const prompt = args.method === 'agent_prompt' ? args.prompt : args.method === 'agent_spawn' ? args.spec?.prompt : undefined;
+  if (['command', 'agent_spawn', 'agent_prompt'].includes(args.method) && !read(scope(args.work, args.key))[0]) {
+    assert(!deliveryRows().some(entry => lifecycleWork(entry.work) === lifecycleWork(args.work) &&
+      entry.value.cancelRequested && ['pending', 'unknown'].includes(entry.value.outcome)),
+      'Cancellation has not finished; reconcile the owned operation before starting another');
+  }
   if (args.method === 'agent_prompt' || prompt != null) assert(typeof prompt === 'string' && /\S/.test(prompt) && !prompt.includes('\0') && z.encodeUtf8(prompt).length <= 262144,
     'Prompt must contain 1–262144 UTF-8 bytes (256 KiB), must not be blank or contain NUL');
   if (args.method === 'pane_action' && args.cancel_active && ['fork', 'duplicate'].includes(args.action)) {
@@ -725,11 +812,15 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     inputs.target ??= config.root; inputs.gate ??= config.config.ci ?? ['cargo', 'x', 'ci', 'check'];
     inputs.targetBranch ??= config.config.default_branch ?? 'main';
     if (config.config.rebase_prompt != null) inputs.rebasePrompt ??= config.config.rebase_prompt;
-    const selected = config.config.commit_agent ?? config.config.agent;
-    inputs.commitAgent ??= selected
-      ? {kind: selected.kind ?? inputs.kind, ...(selected.model != null ? {model: selected.model} : {}),
-        ...(selected.effort != null ? {effort: selected.effort} : {})}
-      : {kind: inputs.kind, command: inputs.agentCommand ?? '', ...(inputs.agentArgs != null ? {args: inputs.agentArgs} : {})};
+    for (const [input, setting] of [['commitAgent', 'commit_agent'], ['reviewAgent', 'review_agent'],
+      ['reviewFixAgent', 'review_fix_agent'], ['rebaseAgent', 'rebase_agent'], ['testFixAgent', 'test_fix_agent']] as const) {
+      const selected = config.config[setting] ?? config.config.agent;
+      inputs[input] ??= selected
+        ? {kind: selected.kind ?? inputs.kind, ...(selected.model != null ? {model: selected.model} : {}),
+          ...(selected.effort != null ? {effort: selected.effort} : {})}
+        : {kind: inputs.kind, command: inputs.agentCommand ?? '', ...(inputs.agentArgs != null ? {args: inputs.agentArgs} : {})};
+    }
+    inputs.flowVersion ??= 3;
     Object.assign(value, {workflow: name, checkout: config.root, launch: args.work}); put(uid!, value, row);
     return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs});
   } else if (args.method === 'swamp_dispatch') {
@@ -774,7 +865,7 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     const opts = {...spec, ...(prompt != null ? {prompt} : {}),
       ...(source_directory !== undefined ? {sourceDirectory: source_directory} : {}),
       ...(automatic_firecracker_vm !== undefined ? {automaticFirecrackerVm: automatic_firecracker_vm} : {}),
-      context: {swamp_owner: encode(owner), swamp_operation: args.key}, startSuppressed: !!read(scope(args.work, 'view'))[0]};
+      context: {swamp_owner: encode(owner), swamp_operation: args.key}, startSuppressed: !!placements.get(args.work) && !placements.get(args.work)!.detached};
     const spawned = z.agent.spawnDetails(opts);
     assert('Terminal' in spawned.pane_id, 'Expected an agent terminal');
     [value, row] = read(uid!); assert(value, 'No operation with that identity');
@@ -800,7 +891,7 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     if (!value.processExited) value.outcome = args.waitForExit ? 'pending' : 'completed';
     put(uid!, value, row);
     const placement = placements.get(args.work);
-    if (args.waitForExit && placement && !placement.manual && !placement.detached) { placement.queue.push(uid!); present(args.work); }
+    if (args.waitForExit && placement && !placement.detached) { placement.queue.push(uid!); present(args.work); }
   } else if (args.method === 'agent_prompt') {
     await owned(args, true);
     const agentUid = scope(args.work, args.agent), [agent, agentRow] = read(agentUid);
@@ -813,7 +904,7 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     D.apply([D.put('delivery', {value: encode(value)}, {uid, expectRev: row.rev}),
       D.put('delivery', {value: encode(agent)}, {uid: agentUid, expectRev: agentRow.rev})]);
     const placement = placements.get(args.work);
-    if (placement && !placement.manual && !placement.detached) { placement.queue.push(uid!); present(args.work); }
+    if (placement && !placement.detached) { placement.queue.push(uid!); present(args.work); }
     dispatchPrompt(agent);
   } else if (args.method === 'command') {
     assert(Array.isArray(args.argv) && args.argv.length > 0 && args.argv.every(arg => typeof arg === 'string'), 'Missing literal argv');
@@ -940,7 +1031,10 @@ export default definePlugin({
     assert(identity.session !== '', 'Bridge requires a server session');
     D.define('delivery', {value: {kind: 'Text', required: true}}, {version: 1});
     z.subscribe(['AgentEvent', 'CommandPaneExited', 'PaneUpdate', 'PaneClosed']);
-    for (const entry of deliveryRows()) if (entry.key === 'view' && entry.value.closed && entry.value.cancel_pending) void cancelLifecycle(entry.work);
+    for (const entry of deliveryRows()) {
+      if (entry.key === 'view' && entry.value.closed && entry.value.cancel_pending) void cancelLifecycle(entry.work);
+      else if (entry.value.cancelRequested && ['pending', 'unknown'].includes(entry.value.outcome) && !closed(entry.work)) void stopOperation(entry.uid);
+    }
     z.rpc.handle('swamp', async (payload, call) => {
       const from = call.source?.Plugin;
       assert(from != null, 'Workflow RPC requires a host-authenticated plugin source');
@@ -1118,13 +1212,15 @@ z.on('AgentEvent', event => {
     const [current, row] = read(uid); assert(current, 'No operation with that identity'); current.ready = true; put(uid, current, row);
     if (current.outstanding && current.supervisor) void owned({work: owner.work, agent: owner.agent}, true).then(dispatchPrompt).catch(error => z.log(String(error)));
   }
-  if (event.hook === 'UserPromptSubmit' && agent.outstanding) {
-    const [value, row] = read(agent.outstanding);
+  const startup: Partial<Request> = agent.request ? JSON.parse(agent.request) : {};
+  const promptUid = agent.outstanding ?? (startup.method === 'agent_spawn' && startup.waitForExit && startup.spec?.prompt ? uid : undefined);
+  if (event.hook === 'UserPromptSubmit' && promptUid) {
+    const [value, row] = read(promptUid);
     if (value?.outcome === 'pending') {
       const request: Request = JSON.parse(value.request);
-      const matches = request.prompt_sha256 && raw.prompt_sha256 ? request.prompt_sha256 === raw.prompt_sha256 : request.prompt === event.prompt;
+      const matches = request.prompt_sha256 && raw.prompt_sha256 ? request.prompt_sha256 === raw.prompt_sha256 : (request.method === 'agent_spawn' ? request.spec.prompt : request.prompt) === event.prompt;
       if (matches && !value.accepted) {
-        value.accepted = true; value.agentSession = event.session_id; value.turn = raw.turn_id; put(agent.outstanding, value, row);
+        value.accepted = true; value.agentSession = event.session_id; value.turn = raw.turn_id; put(promptUid, value, row);
       }
     }
   }
@@ -1132,17 +1228,20 @@ z.on('AgentEvent', event => {
 });
 function finishAgent(owner: Owner, event: AgentEvent, raw: {turn_id?: string}) {
   const uid = scope(owner.work, owner.agent), [agent, row] = read(uid);
-  if (!agent || encode(agent.owner) !== encode(owner) || !agent.outstanding) return;
+  if (!agent || encode(agent.owner) !== encode(owner)) return;
+  const request: Partial<Request> = agent.request ? JSON.parse(agent.request) : {};
+  const promptUid = agent.outstanding ?? (request.method === 'agent_spawn' && request.waitForExit && request.spec?.prompt ? uid : undefined);
+  if (!promptUid) return;
   const outcome = ({Stop: 'completed', StopFailure: 'failed', Interrupt: 'interrupted'} as Record<string, string>)[event.hook];
   if (!outcome) return;
-  const operation = result(agent.outstanding);
+  const operation = result(promptUid);
   if (!operation.accepted || operation.agentSession !== event.session_id || (operation.turn && operation.turn !== raw.turn_id)) return;
   if (JSON.parse(operation.request).waitForExit) {
-    const [current, currentRow] = read(agent.outstanding);
+    const [current, currentRow] = read(promptUid);
     assert(current, 'No operation with that identity');
-    current.message = event.last_message ?? null; current.hook = event.hook; put(agent.outstanding, current, currentRow); return;
+    current.message = event.last_message ?? null; current.hook = event.hook; put(promptUid, current, currentRow); return;
   }
-  saveEvent(agent.outstanding, outcome, {message: event.last_message ?? null, hook: event.hook, agentSession: event.session_id ?? null});
+  saveEvent(promptUid, outcome, {message: event.last_message ?? null, hook: event.hook, agentSession: event.session_id ?? null});
   delete agent.outstanding; put(uid, agent, row); present(owner.work);
 }
 z.on('CommandPaneExited', ([pane, exitCode, context]) => {
@@ -1153,8 +1252,8 @@ z.on('CommandPaneExited', ([pane, exitCode, context]) => {
   if (!value || encode(value.owner) !== encode(owner) || (value.pane != null && value.pane !== pane)) return;
   const request: Request = JSON.parse(value.request);
   if (request.method === 'command' && !['pending', 'unknown'].includes(value.outcome)) return;
-  saveEvent(uid, request.method === 'command' ? (exitCode === 0 ? 'completed' : 'failed') : 'process-exit', {exitCode});
+  saveEvent(uid, (value.cancelRequested || exitCode === 130) ? 'cancelled' : request.method === 'command' ? (exitCode === 0 ? 'completed' : 'failed') : 'process-exit', {exitCode, processExited: true, terminationVerified: true});
   if (request.method === 'agent_spawn') { const [current, row] = read(uid); assert(current, 'No operation with that identity'); current.processExited = true; put(uid, current, row); }
-  if (value.outstanding) saveEvent(value.outstanding, 'process-exit', {exitCode});
+  if (value.outstanding) { const op = result(value.outstanding); saveEvent(value.outstanding, op.cancelRequested ? 'cancelled' : 'process-exit', {exitCode, processExited: true, terminationVerified: true}); }
   present(owner.work); changed(owner.work);
 });
