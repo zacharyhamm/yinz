@@ -28,6 +28,7 @@ parser.add_argument('--firecracker-only', action='store_true')
 parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
 parser.add_argument('--commit-rebase-only', action='store_true')
+parser.add_argument('--rebase-only', action='store_true')
 parser.add_argument('--exit-only', action='store_true')
 parser.add_argument('--exit-menu-only', action='store_true')
 parser.add_argument('--timing-only', action='store_true', help='Three diagnostic diff-and-return runs on one warm disposable server')
@@ -366,6 +367,13 @@ shutil.copy(source / '.zellij/.swamp-workflows.kdl', main / '.zellij/.swamp-work
 (main / '.git/info/exclude').write_text('.swamp*\n.gitignore\nextensions/\nworkflows/\nmodels/\n.zellij/\nAGENTS.md\nCLAUDE.md\n')
 for name in ('agent-work', 'review-integration', 'question', 'agent-exit'):
     swamp('workflow', 'validate', '@hammz/zellij-' + name)
+    if name in ('agent-exit', 'review-integration'):
+        definition = swamp('workflow', 'get', '@hammz/zellij-' + name)
+        for job in definition['jobs']:
+            for step in job['steps']:
+                task = step['task']
+                if task.get('methodName') == 'continue_flow':
+                    assert task['inputs']['inputs']['rebasePrompt'] == '${{ inputs.rebasePrompt }}'
 if args.history_runs:
     assert args.swamp_source, '--history-runs requires --swamp-source'
     run('deno', 'run', '-A', '--config', Path(args.swamp_source) / 'deno.json',
@@ -478,6 +486,40 @@ if args.timing_only or args.transition_timing_only:
     started = time.monotonic()
     run(binary, 'workflow', 'server', 'restart')
     cold_start_ms = (time.monotonic() - started) * 1000
+def rebase_smoke():
+    # Build a real paused rebase and refuse a resolver before approving one.
+    (topic / 'file').write_text('source conflict\n')
+    run('git', 'commit', '-am', 'source conflict', cwd=topic)
+    (topic / 'second').write_text('source second conflict\n')
+    run('git', 'commit', '-am', 'second source conflict', cwd=topic)
+    (main / 'file').write_text('target conflict\n')
+    (main / 'second').write_text('target second conflict\n')
+    run('git', 'commit', '-am', 'target conflict')
+    launch('conflict-leave')
+    choose('conflict-leave', 'exit', 'begin-review')
+    choose('conflict-leave', 'prepare', 'commit-and-rebase')
+    count = len(agents())
+    choose('conflict-leave', 'conflict', 'leave-paused')
+    assert len(agents()) == count
+    assert run('git', 'diff', '--name-only', '--diff-filter=U', cwd=topic).stdout.strip() == 'file'
+    configured_prompt = 'CUSTOM RESOLVER: Resolve and stage conflicts; do not continue or abort the rebase. Exit.'
+    config_path = main / '.zellij/.swamp-workflows.kdl'
+    original_config = config_path.read_text()
+    config_path.write_text(re.sub(r'    rebase_prompt .*', '    rebase_prompt ' + json.dumps(configured_prompt), original_config))
+    launch('conflict-resolve')
+    choose('conflict-resolve', 'exit', 'begin-review')
+    first_conflict = choose('conflict-resolve', 'conflict', 'resolve-with-agent')
+    config_path.write_text(original_config)
+    next_conflict = choose('conflict-resolve', 'conflict', 'resolve-with-agent')
+    assert first_conflict['attributes']['run'] != next_conflict['attributes']['run']
+    choose('conflict-resolve', 'review', 'leave')
+    assert not run('git', 'diff', '--name-only', '--diff-filter=U', cwd=topic).stdout.strip()
+    assert run('git', 'symbolic-ref', '--short', 'HEAD', cwd=topic).stdout.strip() == 'topic'
+    prompts = [json.loads(line) for line in (root / 'resolver-prompts.jsonl').read_text().splitlines()]
+    assert prompts.count(configured_prompt) == 2 and prompts[-2:] == [configured_prompt, configured_prompt], prompts
+    print('PASS: paused rebase requires an explicit resolver; workflow alone continues the resolved index', flush=True)
+
+
 run(binary, 'attach', '--create-background', session)
 try:
     if args.question_latency_only:
@@ -599,6 +641,10 @@ try:
 
         def agents():
             return [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('agent')]
+
+        if args.rebase_only:
+            rebase_smoke()
+            raise SystemExit(0)
 
         if args.transition_timing_only:
             def rendered(label, offset, value):
@@ -1200,30 +1246,7 @@ try:
         choose('unresolved-review', 'cleanup', 'keep')
         print('PASS: informed merge accepts unresolved review findings', flush=True)
 
-        # Build a real paused rebase and refuse a resolver before approving one.
-        (topic / 'file').write_text('source conflict\n')
-        run('git', 'commit', '-am', 'source conflict', cwd=topic)
-        (topic / 'second').write_text('source second conflict\n')
-        run('git', 'commit', '-am', 'second source conflict', cwd=topic)
-        (main / 'file').write_text('target conflict\n')
-        (main / 'second').write_text('target second conflict\n')
-        run('git', 'commit', '-am', 'target conflict')
-        launch('conflict-leave')
-        choose('conflict-leave', 'exit', 'begin-review')
-        choose('conflict-leave', 'prepare', 'commit-and-rebase')
-        count = len(agents())
-        choose('conflict-leave', 'conflict', 'leave-paused')
-        assert len(agents()) == count
-        assert run('git', 'diff', '--name-only', '--diff-filter=U', cwd=topic).stdout.strip() == 'file'
-        launch('conflict-resolve')
-        choose('conflict-resolve', 'exit', 'begin-review')
-        first_conflict = choose('conflict-resolve', 'conflict', 'resolve-with-agent')
-        next_conflict = choose('conflict-resolve', 'conflict', 'resolve-with-agent')
-        assert first_conflict['attributes']['run'] != next_conflict['attributes']['run']
-        choose('conflict-resolve', 'review', 'leave')
-        assert not run('git', 'diff', '--name-only', '--diff-filter=U', cwd=topic).stdout.strip()
-        assert run('git', 'symbolic-ref', '--short', 'HEAD', cwd=topic).stdout.strip() == 'topic'
-        print('PASS: paused rebase requires an explicit resolver; workflow alone continues the resolved index', flush=True)
+        rebase_smoke()
 
         zellij('workflow', 'run', '@hammz/zellij-question', '--launch', 'recovery', '--no-view', '--input', json.dumps(dict(kind='text', prompt='Instructions?', answers=[])))
         question = until('text question', lambda: pending('recovery', 'question'))

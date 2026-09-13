@@ -3,6 +3,7 @@ import {
     operation,
     preparePrompt,
     PromptText,
+    StartupPromptText,
 } from "./_lib/bridge.ts";
 import { checked, Context } from "./_lib/workflow.ts";
 import { methods, resources } from "./_lib/zellij_methods.ts";
@@ -86,36 +87,72 @@ Deno.test("prompt preparation preserves exact limits and excerpts oversized UTF-
             return Promise.resolve({ name });
         },
     };
-    for (const character of ["x", "é", "界", "🙂"]) {
-        const width = new TextEncoder().encode(character).length;
-        const exact = character.repeat(Math.floor(262144 / width)) +
-            "x".repeat(262144 % width);
-        for (const prompt of ["short prompt", exact]) {
-            assert(preparePrompt(prompt) === prompt);
-            await methods.prepare_prompt.execute({ prompt }, c);
-            assert(saved.get("prompt-current")?.prompt === prompt);
-        }
-        for (const padding of ["", "a", "ab", "abc"]) {
-            const beginning =
-                "Fix the failed tests. Do not merge.\nLOG START\n" +
-                padding;
-            const end = "\nLOG END\n";
-            const prompt = beginning + exact + character + end;
-            const prepared = preparePrompt(prompt);
-            assert(PromptText.safeParse(prepared).success);
-            assert(new TextEncoder().encode(prepared).length <= 262144);
-            assert(!prepared.includes("\ufffd"));
-            const [head, tail] = prepared.split(
-                /\n\n\[Prompt truncated:.*\]\n\n/,
-            );
-            assert(head.startsWith(beginning) && prompt.startsWith(head));
-            assert(tail.endsWith(end) && prompt.endsWith(tail));
-            assert(prepared.includes("middle omitted"));
-            assert(prepared.includes("full evidence remains saved in Swamp"));
-            await methods.prepare_prompt.execute({ prompt }, c);
-            assert(saved.get("prompt-current")?.prompt === prepared);
+    assert(
+        methods.prepare_prompt.arguments.parse({ prompt: "short prompt" })
+            .startup === false,
+    );
+    for (const startup of [false, true]) {
+        const limit = startup ? 131071 : 262144;
+        const schema = startup ? StartupPromptText : PromptText;
+        for (const character of ["x", "é", "界", "🙂"]) {
+            const width = new TextEncoder().encode(character).length;
+            const exact = character.repeat(Math.floor(limit / width)) +
+                "x".repeat(limit % width);
+            assert(schema.safeParse(exact).success);
+            assert(!schema.safeParse(exact + "x").success);
+            for (const prompt of ["short prompt", exact]) {
+                assert(
+                    preparePrompt(prompt, startup ? limit : undefined) ===
+                        prompt,
+                );
+                await methods.prepare_prompt.execute({ prompt, startup }, c);
+                assert(saved.get("prompt-current")?.prompt === prompt);
+            }
+            for (const padding of ["", "a", "ab", "abc"]) {
+                const beginning =
+                    "Resolve the rebase conflicts. Stage, then exit.\nLOG START\n" +
+                    padding;
+                const end = "\nLOG END\n";
+                const prompt = beginning + exact + character + end;
+                const prepared = preparePrompt(
+                    prompt,
+                    startup ? limit : undefined,
+                );
+                assert(schema.safeParse(prepared).success);
+                assert(new TextEncoder().encode(prepared).length <= limit);
+                assert(!prepared.includes("\ufffd"));
+                const [head, tail] = prepared.split(
+                    /\n\n\[Prompt truncated:.*\]\n\n/,
+                );
+                assert(head.startsWith(beginning) && prompt.startsWith(head));
+                assert(tail.endsWith(end) && prompt.endsWith(tail));
+                assert(prepared.includes("middle omitted"));
+                assert(
+                    prepared.includes(
+                        startup ? "131071 UTF-8 bytes" : "256 KiB",
+                    ),
+                );
+                assert(
+                    prepared.includes("full evidence remains saved in Swamp"),
+                );
+                await methods.prepare_prompt.execute({ prompt, startup }, c);
+                assert(saved.get("prompt-current")?.prompt === prepared);
+            }
         }
     }
+    // Exercise the actual argv boundary, beyond the bridge's stdin dispatch.
+    await methods.prepare_prompt.execute({
+        prompt: "x".repeat(262144),
+        startup: true,
+    }, c);
+    const startupPrompt = String(saved.get("prompt-current")?.prompt);
+    assert(new TextEncoder().encode(startupPrompt).length === 131071);
+    assert(startupPrompt.includes("Prompt truncated"));
+    assert(
+        (await new Deno.Command("/usr/bin/true", { args: [startupPrompt] })
+            .output())
+            .success,
+    );
     saved.clear();
     let rejected = false;
     try {

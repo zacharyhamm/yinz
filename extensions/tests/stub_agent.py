@@ -29,27 +29,34 @@ try:
     report('SessionStart')
     ready_at = time.monotonic()
     print('STUB READY', flush=True)
+    startup_prompt = sys.argv[-1] if len(sys.argv) > 1 and not sys.argv[-1].startswith('--') else None
     buffer = b''
     while True:
-        chunk = os.read(sys.stdin.fileno(), 4096)
-        if not chunk:
-            break
-        buffer += chunk
-        if b'\x1b[201~' in buffer:
-            before, buffer = buffer.split(b'\x1b[201~', 1)
-            prompt = before.split(b'\x1b[200~', 1)[-1].decode()
-        elif b'\x1b[200~' not in buffer and (b'\r' in buffer or b'\n' in buffer):
-            before, buffer = buffer.replace(b'\r', b'\n').split(b'\n', 1)
-            prompt = before.decode().strip()
+        if startup_prompt is not None:
+            prompt, startup_prompt = startup_prompt, None
         else:
-            continue
+            chunk = os.read(sys.stdin.fileno(), 4096)
+            if not chunk:
+                break
+            buffer += chunk
+            if b'\x1b[201~' in buffer:
+                before, buffer = buffer.split(b'\x1b[201~', 1)
+                prompt = before.split(b'\x1b[200~', 1)[-1].decode()
+            elif b'\x1b[200~' not in buffer and (b'\r' in buffer or b'\n' in buffer):
+                before, buffer = buffer.replace(b'\r', b'\n').split(b'\n', 1)
+                prompt = before.decode().strip()
+            else:
+                continue
         if not prompt: continue
         report('UserPromptSubmit', prompt=prompt)
         if prompt == 'guest edit':
             with open('guest.txt', 'w') as output: output.write('guest\n')
         if prompt == 'guest conflict':
             with open('file', 'w') as output: output.write('guest conflict\n')
-        if prompt.startswith('Resolve only the current rebase conflicts'):
+        if prompt.startswith(('Resolve only the current rebase conflicts', 'CUSTOM RESOLVER:')):
+            assert sys.argv[-1] == prompt, 'resolver prompt must arrive as startup argument'
+            with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'resolver-prompts.jsonl'), 'a') as log:
+                log.write(json.dumps(prompt) + '\n')
             conflicts = subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=U', '-z']).decode().split('\0')
             for path in filter(None, conflicts):
                 with open(path, 'w') as output: output.write('resolved ' + path + '\n')

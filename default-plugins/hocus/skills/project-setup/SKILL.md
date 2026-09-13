@@ -13,6 +13,7 @@ Propose .zellij/.swamp-workflows.kdl in the primary checkout with this shape:
 agent_exit {
     workflow "@hammz/zellij-agent-exit"
     ci "cargo" "x" "ci" "check"
+    rebase_prompt "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done."
     // default_branch "main"
     // agent kind="codex" model="..." effort="medium"
 }

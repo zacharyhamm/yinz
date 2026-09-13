@@ -2,17 +2,27 @@
 import { z } from "npm:zod@4.3.6";
 import { checked, Context, Key, Literal } from "./workflow.ts";
 import { Capture } from "./test_report.ts";
-export const PromptText = z.string().min(1).refine(
+export const PromptText = Literal.refine(
+    (s) => s.trim().length > 0,
+    "Prompt must not be blank",
+).refine(
     (s) => new TextEncoder().encode(s).length <= 262144,
     "Prompt exceeds 256 KiB (262144 UTF-8 bytes)",
 );
-export function preparePrompt(prompt: string): string {
+// Leave room for the terminating NUL under Linux's per-argument limit.
+export const STARTUP_PROMPT_BYTES = 131071;
+export const StartupPromptText = PromptText.refine(
+    (s) => new TextEncoder().encode(s).length <= STARTUP_PROMPT_BYTES,
+    `Startup prompt exceeds ${STARTUP_PROMPT_BYTES} UTF-8 bytes`,
+);
+export function preparePrompt(prompt: string, maxBytes = 262144): string {
     const encoder = new TextEncoder();
     const bytes = encoder.encode(prompt);
-    if (bytes.length <= 262144) return PromptText.parse(prompt);
+    if (bytes.length <= maxBytes) return PromptText.parse(prompt);
+    const limit = maxBytes === 262144 ? "256 KiB" : `${maxBytes} UTF-8 bytes`;
     const notice =
-        "\n\n[Prompt truncated: middle omitted to fit 256 KiB. Beginning and end excerpts retained; full evidence remains saved in Swamp.]\n\n";
-    const budget = 262144 - encoder.encode(notice).length;
+        `\n\n[Prompt truncated: middle omitted to fit ${limit}. Beginning and end excerpts retained; full evidence remains saved in Swamp.]\n\n`;
+    const budget = maxBytes - encoder.encode(notice).length;
     let head = Math.ceil(budget / 2);
     let tail = bytes.length - Math.floor(budget / 2);
     // Move cuts past UTF-8 continuation bytes without splitting characters.
@@ -100,6 +110,7 @@ export const Request = z.object({
     binary: Literal.min(1).optional(),
 });
 export const AgentSpec = z.object({
+    prompt: StartupPromptText.nullish().transform((s) => s ?? undefined),
     kind: z.enum(["", "codex", "claude", "cursor", "opencode"]).transform((s) =>
         s || undefined
     ).optional(),

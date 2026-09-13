@@ -158,7 +158,7 @@ local function active(work)
         if operation.outcome=='pending' or operation.outcome=='unknown' then
           local method=decode(operation.request).method
           -- workflow_run copies the runner's outcome but does not track its completion.
-          if method=='command' or method=='agent_prompt' then return true end
+          if method=='command' or method=='agent_prompt' or (method=='agent_spawn' and decode(operation.request).waitForExit) then return true end
         end
       end
     end
@@ -909,8 +909,11 @@ handle = function(args, manual_view)
     return operation
   end
 
-  if args.method == 'agent_prompt' then
-    assert(type(args.prompt) == 'string' and #args.prompt > 0 and #args.prompt <= 262144, 'Prompt must contain 1–262144 UTF-8 bytes (256 KiB)')
+  local prompt = args.method=='agent_prompt' and args.prompt or
+    (args.method=='agent_spawn' and args.spec and args.spec.prompt)
+  if args.method=='agent_prompt' or (args.method=='agent_spawn' and args.spec and args.spec.prompt~=nil and args.spec.prompt~=z.null) then
+    assert(type(prompt)=='string' and prompt:match('%S') and not prompt:find('%z') and #prompt<=262144,
+      'Prompt must contain 1–262144 UTF-8 bytes (256 KiB), must not be blank or contain NUL')
   end
   if args.method=='pane_action' and args.cancel_active and (args.action=='fork' or args.action=='duplicate') then
     local open=open_picker_operation(args.work,args.action)
@@ -968,6 +971,7 @@ handle = function(args, manual_view)
     inputs.target = inputs.target or config.root
     inputs.gate = inputs.gate or config.config.ci or {'cargo','x','ci','check'}
     inputs.targetBranch = inputs.targetBranch or config.config.default_branch or 'main'
+    inputs.rebasePrompt = inputs.rebasePrompt or config.config.rebase_prompt
     value,row=read(uid)
     value.workflow,value.checkout,value.launch=name,config.root,args.work
     put(uid,value,row)
@@ -1010,7 +1014,7 @@ handle = function(args, manual_view)
     end
   elseif args.method == 'agent_spawn' then
     local opts = assert(args.spec, 'Missing agent specification')
-    assert(not opts.prompt, 'Spawn without prompt, then call agent_prompt to register observation first')
+    if opts.prompt==z.null then opts.prompt=nil end
     local owner = {host_id=identity.host_id, session=identity.session, incarnation=identity.incarnation, work=args.work, agent=args.key}
     value.owner, value.outcome = owner, 'pending'
     put(uid, value, row)
@@ -1040,8 +1044,13 @@ handle = function(args, manual_view)
     value.supervisor, value.process = host.host_id, host.child_pid
     value.remoteHost,value.remotePaneId=host.remote_host,host.pane_token
     ensure_open(args.work)
-    value.outcome = 'completed'
+    if not value.processExited then value.outcome = args.waitForExit and 'pending' or 'completed' end
     put(uid, value, row)
+    local placement=placements[args.work]
+    if args.waitForExit and placement and not placement.manual and not placement.detached then
+      placement.queue[#placement.queue+1]=uid
+      present(args.work)
+    end
   elseif args.method == 'agent_prompt' then
     local agent = owned(args, true)
     local agent_uid = scope(args.work, args.agent)

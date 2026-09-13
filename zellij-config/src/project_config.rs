@@ -7,6 +7,7 @@ pub struct ProjectConfig {
     pub control_checkout: Option<String>,
     pub ci: Option<Vec<String>>,
     pub default_branch: Option<String>,
+    pub rebase_prompt: Option<String>,
     pub agent: Option<zellij_types::agent::AgentSpawnSpec>,
 }
 
@@ -51,6 +52,7 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
             }
         }
         match name {
+            "rebase_prompt" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.rebase_prompt = args.pop(),
             "workflow" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.workflow = args.pop(),
             "control_checkout" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.control_checkout = args.pop(),
             "ci" if properties.is_empty() && !args.is_empty() && !args[0].trim().is_empty() => config.ci = Some(args),
@@ -78,7 +80,7 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
                 }
                 config.agent = Some(spec);
             },
-            _ => return Err(format!("agent_exit: invalid {name}; expected ci \"program\" \"arg\", default_branch \"branch\", or agent kind=\"codex\" model=\"...\" effort=\"medium\"")),
+            _ => return Err(format!("agent_exit: invalid {name}; expected rebase_prompt \"instructions\", ci \"program\" \"arg\", default_branch \"branch\", or agent kind=\"codex\" model=\"...\" effort=\"medium\"")),
         }
     }
     Ok(config)
@@ -300,6 +302,37 @@ pub fn access_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rebase_prompt_is_optional_literal_nonblank_text() {
+        assert_eq!(parse("agent_exit {}").unwrap().rebase_prompt, None);
+        let prompt = "  Resolve \"quoted\" conflicts.\nStage, then exit.  ";
+        let source = format!(
+            "agent_exit {{ rebase_prompt {}; }}",
+            serde_json::to_string(prompt).unwrap()
+        );
+        assert_eq!(
+            parse(&source).unwrap().rebase_prompt.as_deref(),
+            Some(prompt)
+        );
+        for setting in [
+            "rebase_prompt",
+            "rebase_prompt 1",
+            "rebase_prompt true",
+            "rebase_prompt \"\"",
+            "rebase_prompt \" \t\"",
+            "rebase_prompt \"one\" \"two\"",
+            "rebase_prompt text=\"x\"",
+            "rebase_prompt \"x\"; rebase_prompt \"y\"",
+            "rebase_prompt (text)\"x\"",
+            "rebase_prompt \"x\" {}",
+            "rebase_prompt \"bad\\u{0}text\"",
+        ] {
+            assert!(
+                parse(&format!("agent_exit {{ {setting}; }}")).is_err(),
+                "{setting}"
+            );
+        }
+    }
     #[test]
     fn validates_workflow_settings_without_executing_them() {
         let config = parse("agent_exit { ci \"cargo\" \"x\" \"ci\" \"check\"; agent kind=\"codex\" effort=\"medium\"; default_branch \"trunk\"; }").unwrap();

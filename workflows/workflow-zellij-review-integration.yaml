@@ -41,6 +41,11 @@ inputs:
     agentCommand:
       type: string
       default: ''
+    rebasePrompt:
+      type: string
+      minLength: 1
+      pattern: '\S'
+      default: "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done."
     agentArgs:
       type: array
       items:
@@ -192,6 +197,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -299,6 +305,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -343,6 +350,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -480,6 +488,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -565,6 +574,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -671,6 +681,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -753,6 +764,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -782,7 +794,8 @@ jobs:
         binary: "${{ inputs.binary }}"
       inputs:
         test: '${{ inputs.phase == "fix" ? inputs.state.test : null }}'
-        prompt: '${{ inputs.phase == "resolve" ? "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done." : (inputs.phase == "fix" ? "Fix the failed tests below. Do not merge, remove resources, or contact remotes. Report the result and exit when done.\n" : "Review the checkout against the local target branch " + inputs.targetBranch + ". Do not edit, commit, merge, remove resources, or contact remotes. Return only JSON {\"findings\":[{\"severity\":\"error|warning|info\",\"file\":\"path\",\"message\":\"finding\"}]}; an empty array means a completed clean review. Then exit.") }}'
+        startup: '${{ inputs.phase == "resolve" }}'
+        prompt: '${{ inputs.phase == "resolve" ? inputs.rebasePrompt : (inputs.phase == "fix" ? "Fix the failed tests below. Do not merge, remove resources, or contact remotes. Report the result and exit when done.\n" : "Review the checkout against the local target branch " + inputs.targetBranch + ". Do not edit, commit, merge, remove resources, or contact remotes. Return only JSON {\"findings\":[{\"severity\":\"error|warning|info\",\"file\":\"path\",\"message\":\"finding\"}]}; an empty array means a completed clean review. Then exit.") }}'
     dependsOn:
     - step: review-start-stale
       condition:
@@ -805,7 +818,9 @@ jobs:
         key: ${{ run.id + "-helper" }}
         session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
+        waitForExit: '${{ inputs.phase == "resolve" }}'
         spec:
+          prompt: '${{ inputs.phase == "resolve" ? data.latest(run.id + "-prepare-helper-prompt", "prompt-current").attributes.prompt : null }}'
           kind: "${{ inputs.kind }}"
           command: "${{ inputs.agentCommand }}"
           args: "${{ inputs.agentArgs }}"
@@ -846,7 +861,7 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !((inputs.phase in ["resolve", "fix", "review-agent"]) && (inputs.phase in ["resolve", "fix"] || data.latest(run.id + "-review-baseline", "evidence-current").attributes == inputs.state.evidence)) }}
+    guard: ${{ !((inputs.phase in ["fix", "review-agent"]) && (inputs.phase in ["resolve", "fix"] || data.latest(run.id + "-review-baseline", "evidence-current").attributes == inputs.state.evidence)) }}
   - name: helper-exit
     task:
       type: model_method
@@ -858,7 +873,7 @@ jobs:
         binary: "${{ inputs.binary }}"
       inputs:
         work: "${{ inputs.launch }}"
-        key: ${{ run.id + "-helper-prompt" }}
+        key: '${{ run.id + (inputs.phase == "resolve" ? "-helper" : "-helper-prompt") }}'
         session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
     dependsOn:
@@ -909,6 +924,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -953,6 +969,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -997,6 +1014,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1079,6 +1097,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1123,6 +1142,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1167,6 +1187,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1275,6 +1296,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1319,6 +1341,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1363,6 +1386,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1497,6 +1521,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1541,6 +1566,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1648,6 +1674,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1692,6 +1719,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1781,6 +1809,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -1846,6 +1875,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -2001,6 +2031,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -2045,6 +2076,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"

@@ -8,6 +8,7 @@ import {
     preparePrompt,
     PromptText,
     Request,
+    STARTUP_PROMPT_BYTES,
 } from "./bridge.ts";
 import { OutputRef, readEvidence, resolveEvidence } from "./evidence.ts";
 import { Context, digest, Key, Literal } from "./workflow.ts";
@@ -20,7 +21,10 @@ import {
 } from "./test_report.ts";
 import { Evidence, Finding, Sync } from "../git_workflow.ts";
 const Agent = Request.extend({ agent: Key });
-const Spawn = Request.extend({ spec: AgentSpec });
+const Spawn = Request.extend({
+    spec: AgentSpec,
+    waitForExit: z.boolean().default(false),
+});
 const Prompt = Agent.extend({
     prompt: PromptText,
     waitForExit: z.boolean().default(false),
@@ -195,6 +199,9 @@ const FlowInputs = z.object({
     kind: Literal,
     agentCommand: Literal,
     agentArgs: z.array(Literal),
+    rebasePrompt: Literal.refine((s) => s.trim().length > 0).default(
+        "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done.",
+    ),
     firecracker: Literal,
     firecrackerImage: Literal,
     sourcePane: z.number().int().min(-1),
@@ -234,14 +241,26 @@ export const methods = {
         arguments: z.object({
             prompt: z.string(),
             test: Test.nullable().optional(),
+            startup: z.boolean().default(false),
         }),
         execute: async (
-            input: { prompt: string; test?: z.infer<typeof Test> | null },
+            input: {
+                prompt: string;
+                test?: z.infer<typeof Test> | null;
+                startup?: boolean;
+            },
             c: Context,
         ) => save(c, "prompt", {
-            prompt: input.test
-                ? await reportPrompt(c, input.prompt, Test.parse(input.test))
-                : preparePrompt(input.prompt),
+            prompt: preparePrompt(
+                input.test
+                    ? await reportPrompt(
+                        c,
+                        input.prompt,
+                        Test.parse(input.test),
+                    )
+                    : input.prompt,
+                input.startup ? STARTUP_PROMPT_BYTES : undefined,
+            ),
         }),
     },
     check_status: {
