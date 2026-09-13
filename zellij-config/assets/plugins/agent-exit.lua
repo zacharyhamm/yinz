@@ -18,7 +18,7 @@ function M.load(config)
   end
   local ok, snapshot=pcall(z.project_config.read,M.directory)
   if not ok or snapshot.error or not snapshot.config.workflow then
-    M.status=(not ok and tostring(snapshot) or snapshot.error or 'No exit workflow configured.') .. '\nUse Hocus /project-setup to configure .zellij/.swamp-workflows.kdl.'
+    M.status=(not ok and tostring(snapshot) or snapshot.error or 'No exit workflow configured.') .. '\nUse Hocus /project-setup to configure .zellij/swamp-workflows.kdl.'
     return
   end
   view.active=true

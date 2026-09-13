@@ -7,7 +7,7 @@ Load the plugin tool family. Call project_config_read before proposing a write.
 Choose the full local CI gate required by the repository, not only a focused test.
 Verify the selected Swamp workflow exists with swamp workflow get and validate it before binding.
 Resolve an existing control_checkout redirect before choosing where to write.
-Propose .zellij/.swamp-workflows.kdl in the primary checkout with this shape:
+Propose .zellij/swamp-workflows.kdl in the primary checkout with this shape:
 
 ```kdl
 agent_exit {

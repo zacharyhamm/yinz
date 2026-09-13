@@ -1507,7 +1507,7 @@ Linked worktrees resolve through the primary checkout. An optional
 relative paths resolve against the primary checkout. Both directories require
 `FullHdAccess` when outside the plugin directory. Configuration, definitions, models,
 and Swamp state all resolve through that control checkout. The old root `.zellij.kdl`
-is ignored. Move its settings to `.zellij/.swamp-workflows.kdl` and add a workflow binding.
+is ignored. Move its settings to `.zellij/swamp-workflows.kdl` and add a workflow binding.
 
 `zellij.agent.spawn_details(opts)` returns the actual `{ pane_id, branch, cwd }`.
 `zellij.agent.spawn(opts)` still returns the pane ID. Existing effort options remain

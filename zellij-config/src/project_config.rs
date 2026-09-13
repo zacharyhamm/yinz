@@ -14,13 +14,13 @@ pub struct ProjectConfig {
 pub fn parse(source: &str) -> Result<ProjectConfig, String> {
     let doc: kdl::KdlDocument = source
         .parse()
-        .map_err(|e| format!(".zellij/.swamp-workflows.kdl: {e}"))?;
+        .map_err(|e| format!(".zellij/swamp-workflows.kdl: {e}"))?;
     let mut config = ProjectConfig::default();
     if doc.nodes().is_empty() {
         return Ok(config);
     }
     if doc.nodes().len() != 1 || doc.nodes()[0].name().value() != "agent_exit" {
-        return Err(".zellij/.swamp-workflows.kdl must contain only one agent_exit block".into());
+        return Err(".zellij/swamp-workflows.kdl must contain only one agent_exit block".into());
     }
     let node = &doc.nodes()[0];
     if !node.entries().is_empty() || node.ty().is_some() {
@@ -193,7 +193,7 @@ pub fn access_root(
         let fd = unsafe {
             libc::openat(
                 directory.as_raw_fd(),
-                c".swamp-workflows.kdl".as_ptr(),
+                c"swamp-workflows.kdl".as_ptr(),
                 libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
             )
         };
@@ -202,25 +202,25 @@ pub fn access_root(
             if e.kind() == std::io::ErrorKind::NotFound {
                 return Ok(None);
             }
-            return Err(format!("Cannot read .zellij/.swamp-workflows.kdl (must be a regular file, not a symlink): {e}"));
+            return Err(format!("Cannot read .zellij/swamp-workflows.kdl (must be a regular file, not a symlink): {e}"));
         }
         // SAFETY: openat returned a new owned descriptor.
         let file = unsafe { fs::File::from_raw_fd(fd) };
         if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-            return Err(".zellij/.swamp-workflows.kdl must be a regular file".into());
+            return Err(".zellij/swamp-workflows.kdl must be a regular file".into());
         }
         let mut source = String::new();
         file.take(65537)
             .read_to_string(&mut source)
             .map_err(|e| e.to_string())?;
         if source.len() > 65536 {
-            return Err(".zellij/.swamp-workflows.kdl exceeds 64 KiB".into());
+            return Err(".zellij/swamp-workflows.kdl exceeds 64 KiB".into());
         }
         Ok(Some(source))
     };
     if let Some((source, expected)) = write {
         if source.len() > 65536 {
-            return Err(".zellij/.swamp-workflows.kdl exceeds 64 KiB".into());
+            return Err(".zellij/swamp-workflows.kdl exceeds 64 KiB".into());
         }
         parse(source)?;
         use std::io::Write;
@@ -249,13 +249,13 @@ pub fn access_root(
             .create(true)
             .truncate(false)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(gitdir.join(".swamp-workflows.kdl.lock"))
-            .map_err(|e| format!("Cannot lock .zellij/.swamp-workflows.kdl for writing: {e}"))?;
+            .open(gitdir.join("swamp-workflows.kdl.lock"))
+            .map_err(|e| format!("Cannot lock .zellij/swamp-workflows.kdl for writing: {e}"))?;
         lock.try_lock()
-            .map_err(|e| format!("Cannot lock .zellij/.swamp-workflows.kdl for writing: {e}"))?;
+            .map_err(|e| format!("Cannot lock .zellij/swamp-workflows.kdl for writing: {e}"))?;
         if read()?.as_deref() != expected {
             return Err(
-                ".zellij/.swamp-workflows.kdl changed; read it again before approving a new write"
+                ".zellij/swamp-workflows.kdl changed; read it again before approving a new write"
                     .into(),
             );
         }
@@ -275,12 +275,12 @@ pub fn access_root(
                 libc::AT_FDCWD,
                 from.as_ptr(),
                 directory.as_raw_fd(),
-                c".swamp-workflows.kdl".as_ptr(),
+                c"swamp-workflows.kdl".as_ptr(),
             )
         } != 0
         {
             return Err(format!(
-                "Cannot atomically replace .zellij/.swamp-workflows.kdl: {}",
+                "Cannot atomically replace .zellij/swamp-workflows.kdl: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -396,7 +396,7 @@ mod tests {
             .output()
             .unwrap();
         std::fs::create_dir(dir.path().join(".zellij")).unwrap();
-        let path = dir.path().join(".zellij/.swamp-workflows.kdl");
+        let path = dir.path().join(".zellij/swamp-workflows.kdl");
         std::fs::write(&path, "agent_exit { invalid").unwrap();
         let snapshot = access(dir.path(), None).unwrap();
         assert!(snapshot.error.is_some());
@@ -432,8 +432,8 @@ mod tests {
             Some(source)
         );
         access(dir.path(), Some(("", Some(source)))).unwrap();
-        std::fs::remove_file(dir.path().join(".zellij/.swamp-workflows.kdl")).unwrap();
-        std::os::unix::fs::symlink("missing", dir.path().join(".zellij/.swamp-workflows.kdl"))
+        std::fs::remove_file(dir.path().join(".zellij/swamp-workflows.kdl")).unwrap();
+        std::os::unix::fs::symlink("missing", dir.path().join(".zellij/swamp-workflows.kdl"))
             .unwrap();
         assert!(access(dir.path(), None).is_err());
         assert!(access(dir.path(), Some((source, None))).is_err());
@@ -497,7 +497,7 @@ mod tests {
             control_root(&root(&linked).unwrap()).unwrap(),
             linked.canonicalize().unwrap()
         );
-        std::fs::remove_file(primary.join(".zellij/.swamp-workflows.kdl")).unwrap();
+        std::fs::remove_file(primary.join(".zellij/swamp-workflows.kdl")).unwrap();
         for root in [primary.as_path(), linked.as_path()] {
             access_root(root, Some(("", None))).unwrap();
             let gitdir = std::path::PathBuf::from(
@@ -505,7 +505,7 @@ mod tests {
             );
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "project_config::tests::config_writes_recover_after_process_exit_without_worktree_artifacts", "--nocapture"])
-                .env("ZELLIJ_TEST_CONFIG_LOCK", gitdir.join(".swamp-workflows.kdl.lock"))
+                .env("ZELLIJ_TEST_CONFIG_LOCK", gitdir.join("swamp-workflows.kdl.lock"))
                 .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
             let ready = std::io::BufReader::new(child.stdout.take().unwrap())
                 .lines()
@@ -519,7 +519,7 @@ mod tests {
             std::fs::write(gitdir.join(".tmp-abandoned"), "partial").unwrap();
             access_root(root, Some(("agent_exit {}", Some("")))).unwrap();
             let candidates = git(root, &["ls-files", "--others", "--exclude-standard"]);
-            assert_eq!(candidates, ".zellij/.swamp-workflows.kdl\n");
+            assert_eq!(candidates, ".zellij/swamp-workflows.kdl\n");
 
             let barrier = std::sync::Barrier::new(2);
             std::thread::scope(|scope| {
@@ -542,14 +542,14 @@ mod tests {
                     1
                 );
             });
-            std::fs::write(root.join(".swamp-workflows.kdl.lock"), "legacy lock").unwrap();
+            std::fs::write(root.join("swamp-workflows.kdl.lock"), "legacy lock").unwrap();
             let previous = access_root(root, None).unwrap().source;
             access_root(root, Some(("", previous.as_deref()))).unwrap();
             assert_eq!(
-                std::fs::read_to_string(root.join(".swamp-workflows.kdl.lock")).unwrap(),
+                std::fs::read_to_string(root.join("swamp-workflows.kdl.lock")).unwrap(),
                 "legacy lock"
             );
-            std::fs::remove_file(root.join(".swamp-workflows.kdl.lock")).unwrap();
+            std::fs::remove_file(root.join("swamp-workflows.kdl.lock")).unwrap();
         }
     }
 }

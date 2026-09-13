@@ -2826,12 +2826,12 @@ fn redirected_project_configuration_requires_authorization_for_both_checkouts() 
     std::fs::create_dir(dirs.host.path().join(".zellij")).unwrap();
     std::fs::create_dir(control.path().join(".zellij")).unwrap();
     std::fs::write(
-        dirs.host.path().join(".zellij/.swamp-workflows.kdl"),
+        dirs.host.path().join(".zellij/swamp-workflows.kdl"),
         format!("agent_exit {{ control_checkout {:?}; }}", control.path()),
     )
     .unwrap();
     let source = "agent_exit { workflow \"review\"; }";
-    std::fs::write(control.path().join(".zellij/.swamp-workflows.kdl"), source).unwrap();
+    std::fs::write(control.path().join(".zellij/swamp-workflows.kdl"), source).unwrap();
     let read = format!(
         "return zellij.project_config.read({:?}).source",
         dirs.host.path()
@@ -2850,7 +2850,7 @@ fn redirected_project_configuration_requires_authorization_for_both_checkouts() 
     let write = format!("return zellij.project_config.write({:?}, 'agent_exit {{ workflow \"other\"; }}', {:?}).source", dirs.host.path(), source);
     assert!(render_with_dirs(&write, &dirs, read_only).is_err());
     assert_eq!(
-        std::fs::read_to_string(control.path().join(".zellij/.swamp-workflows.kdl")).unwrap(),
+        std::fs::read_to_string(control.path().join(".zellij/swamp-workflows.kdl")).unwrap(),
         source
     );
     let allowed = Some(
