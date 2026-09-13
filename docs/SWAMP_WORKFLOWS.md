@@ -14,7 +14,7 @@ The extensions stay under `@hammz` in this repository. Do not publish them. The 
 is `extensions/manifest.yaml`. The Git extension adds methods with `export const
 extension` and reuses the official commit and non-force worktree removal methods.
 
-Put the binding in the control checkout's `.zellij/.swamp-workflows.kdl`:
+Put the binding in the control checkout's `.zellij/swamp-workflows.kdl`:
 
 ```kdl
 agent_exit {

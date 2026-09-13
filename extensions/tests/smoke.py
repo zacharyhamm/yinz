@@ -363,7 +363,7 @@ if args.commit_rebase_only:
 """ + marker)
     git_source.write_text(git_code)
 (main / '.zellij').mkdir()
-shutil.copy(source / '.zellij/.swamp-workflows.kdl', main / '.zellij/.swamp-workflows.kdl')
+shutil.copy(source / '.zellij/swamp-workflows.kdl', main / '.zellij/swamp-workflows.kdl')
 (main / '.git/info/exclude').write_text('.swamp*\n.gitignore\nextensions/\nworkflows/\nmodels/\n.zellij/\nAGENTS.md\nCLAUDE.md\n')
 for name in ('agent-work', 'review-integration', 'question', 'agent-exit'):
     swamp('workflow', 'validate', '@hammz/zellij-' + name)
@@ -503,7 +503,7 @@ def rebase_smoke():
     assert len(agents()) == count
     assert run('git', 'diff', '--name-only', '--diff-filter=U', cwd=topic).stdout.strip() == 'file'
     configured_prompt = 'CUSTOM RESOLVER: Resolve and stage conflicts; do not continue or abort the rebase. Exit.'
-    config_path = main / '.zellij/.swamp-workflows.kdl'
+    config_path = main / '.zellij/swamp-workflows.kdl'
     original_config = config_path.read_text()
     config_path.write_text(re.sub(r'    rebase_prompt .*', '    rebase_prompt ' + json.dumps(configured_prompt), original_config))
     launch('conflict-resolve')

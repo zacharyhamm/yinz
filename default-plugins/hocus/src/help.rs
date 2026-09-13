@@ -382,7 +382,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
         "Search the Lua plugins of the user with a regular expression. Each hit gives file:LINE:text, and each context line gives file-LINE-text, with two hyphens between the groups. The text after the second separator is the line exactly as it is in the file: copy that text, and not the prefix, into the old_string of plugin_edit. The answer gives 40 hits, and 200 with max_results; context is 0 lines, and 10 at the most. A search of every plugin stops after a number of files, and says how many files it left out.",
     ),
     ("project_config_read", "Read the active project workflow settings and their exact source. Missing configuration has a null source. Invalid configuration returns an error."),
-    ("project_config_write", "Validate and write .zellij/.swamp-workflows.kdl after confirmation. Supply the complete source and the exact previous source as expected, or null for an absent file. Stale changes are refused. This does not execute CI or grant permissions."),
+    ("project_config_write", "Validate and write .zellij/swamp-workflows.kdl after confirmation. Supply the complete source and the exact previous source as expected, or null for an absent file. Stale changes are refused. This does not execute CI or grant permissions."),
     (
         "plugin_read",
         "Read one Lua plugin of the user. The .lua at the end of the name is optional. The tool reads 300 lines from start_line. Use plugin_outline or plugin_search first, then read only the range that you must change.",
