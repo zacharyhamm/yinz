@@ -19,6 +19,7 @@ export const view = {
   submitting: false, refreshing: false, selecting: false, dirty: false, formY: 0,
   attachment: undefined as Attachment | undefined, snapshot: undefined as Snapshot | undefined,
   notice: undefined as string | undefined, noticeError: false, refreshError: undefined as string | undefined,
+  action: undefined as string | undefined,
   load, watch, attach, refresh, pipe, update, render, focusedControl: () => {controls(); return form!.focusedId();},
 };
 let form: FormWidget | undefined, onRestart: (() => void) | undefined, onFork: (() => void) | undefined;
@@ -174,7 +175,7 @@ function attach(attachment: Attachment) {
   generation++; reports.clear(); view.submitting = false;
   view.selecting = false; view.dirty = false; formKey = undefined; questionKey = undefined;
   watch(attachment.launch); view.attachment = {...attachment}; view.snapshot = undefined; view.pending = []; view.selected = 0; view.scroll = 0;
-  view.notice = undefined; view.noticeError = false; view.refreshError = undefined; view.active = true; view.status = 'Loading workflow...';
+  view.action = undefined; view.notice = undefined; view.noticeError = false; view.refreshError = undefined; view.active = true; view.status = 'Loading workflow...';
   detached = false; setSubtitle('Workflow · loading');
   void refresh();
 }
@@ -239,6 +240,7 @@ function update(event: Event): boolean {
     request = {method: 'workflow_cancel', directory: view.snapshot.root, run: view.attachment.run}; success = 'Cancellation requested; resources preserved';
   } else return true;
   generation++; view.submitting = true; view.noticeError = false;
+  view.action = choice ? entry.attributes.answers![Number(choice[1]) - 1] : action.id;
   view.notice = success === 'Answer recorded' ? 'Submitting answer...' : 'Requesting cancellation...';
   void submit(request, success, view.attachment!, entry);
   return true;
@@ -336,11 +338,12 @@ function render(rows: number, cols: number): string {
     blocks[blocks.length - 1].live = stream === latestStream;
   }
   markdownCache = cache;
-  const height = Math.min(formHeight, Math.max(0, rows - (rows >= 2 ? 1 : 0)));
-  const footerHeight = question ? Math.min(question.count, Math.floor((rows - height) / 2)) : 0;
+  const noticeHeight = view.notice && rows >= 3 ? 1 : 0;
+  const height = Math.min(formHeight, Math.max(0, rows - noticeHeight - (rows >= 2 ? 1 : 0)));
+  const footerHeight = question ? Math.min(question.count, Math.floor((rows - height - noticeHeight) / 2)) : 0;
   if (question && question.count > footerHeight) blocks.unshift({...question, count: question.count - footerHeight, scroll: footerHeight});
-  const separator = footerHeight > 0 && rows - height - footerHeight >= 2 ? 1 : 0;
-  let page = Math.max(0, rows - height - footerHeight - separator); view.formY = rows - height;
+  const separator = footerHeight > 0 && rows - height - noticeHeight - footerHeight >= 2 ? 1 : 0;
+  let page = Math.max(0, rows - height - noticeHeight - footerHeight - separator); view.formY = rows - height;
   const total = blocks.reduce((sum, block) => sum + block.count, 0);
   const indicatorHeight = total > page && page >= 2 && cols > 0 ? 1 : 0;
   page -= indicatorHeight; contentHeight = page; scrollLimit = Math.max(0, total - page);
@@ -371,6 +374,10 @@ function render(rows: number, cols: number): string {
     frame.push(z.ui.text(z.text.truncate(label, cols)).dim().render({x: 0, y: page, width: cols, height: 1}));
   }
   if (question && footerHeight > 0) draw(question, page + indicatorHeight + separator, 0, footerHeight);
+  if (noticeHeight) {
+    const notice = z.ui.text(z.text.truncate(text(`${view.action ? view.action + ': ' : ''}${view.notice}`), cols));
+    frame.push((view.noticeError ? notice.error() : notice).render({x: 0, y: view.formY - noticeHeight, width: cols, height: 1}));
+  }
   const rendered = frame.join('') + form!.render({x: 0, y: view.formY, width: cols, height});
   const key = started != null && entry ? identity(entry) + ':' + entry.version : undefined;
   if (started != null && key && key !== renderedQuestion) {

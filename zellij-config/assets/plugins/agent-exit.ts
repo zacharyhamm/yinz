@@ -34,14 +34,14 @@ export default definePlugin({
     try {
       const snapshot = z.projectConfig.read(directory);
       if (snapshot.error || !snapshot.config.workflow) throw new Error(snapshot.error || 'No exit workflow configured.');
-    } catch (error) { status = `${error}\nUse Hocus /project-setup to configure .zellij/.swamp-workflows.kdl.`; return; }
+    } catch (error) { status = `${error}\nUse Hocus /project-setup to configure .zellij/swamp-workflows.kdl.`; return; }
     view.active = true;
     const paneAction = (action: string, key: string) => {
       if (acting || view.submitting) return;
       acting = true;
       void z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp',
         payload: {method: 'pane_action', work: launchToken!, key, action, cancel_active: true}})
-        .catch(error => { view.status = String(error); z.requestRender(); }).finally(() => { acting = false; });
+        .catch(error => { view.action = action; view.notice = String(error); view.noticeError = true; z.requestRender(); }).finally(() => { acting = false; });
     };
     view.load({onRestart: () => paneAction('restart', 'restart'),
       onFork: () => paneAction('fork', 'fork-' + z.monotonicMs())});

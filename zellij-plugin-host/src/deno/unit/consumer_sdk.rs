@@ -826,7 +826,7 @@ fn deno_workflow_refresh_coalesces_changes_without_queueing_polls() {
 fn deno_agent_exit_actions_are_available_during_launch_and_ignore_duplicate_presses() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
-      globalThis.actions=[];globalThis.settle=null;
+      globalThis.actions=[];globalThis.settle=null;globalThis.refuse=null;
       globalThis.mock={...zellij,getPluginIds:()=>({plugin_id:1}),subscribe(){},every(){},requestRender(){},
         monotonicMs:()=>actions.length,
         projectConfig:{read:()=>({config:{workflow:'exit'}})},
@@ -835,7 +835,7 @@ fn deno_agent_exit_actions_are_available_during_launch_and_ignore_duplicate_pres
         rpc:{call({payload}) {
           if(payload.method==='workflow_run')return new Promise(()=>{});
           check(payload.method==='pane_action'&&payload.work==='launch'&&payload.cancel_active);
-          actions.push(payload);return new Promise(resolve=>settle=resolve);
+          actions.push(payload);return new Promise((resolve,reject)=>{settle=resolve;refuse=reject;});
         }}};
     "#);
     consumer(&mut runtime, "workflow-view");
@@ -848,11 +848,23 @@ fn deno_agent_exit_actions_are_available_during_launch_and_ignore_duplicate_pres
       focus('fork');key('Enter');focus('restart');key('Enter');
       check(actions.length===1&&actions[0].action==='fork'&&actions[0].key.startsWith('fork-'));settle({});
     "#);
-    run(&mut runtime, "key('Enter');check(actions.length===2&&actions[1].action==='restart');settle({});");
+    run(&mut runtime, "key('Enter');check(actions.length===2&&actions[1].action==='restart');refuse(Error('Cannot restart agent: unsupported print option'));");
     run(&mut runtime, r#"
+      view.status='Workflow running';
+      check(view.action==='restart'&&view.noticeError&&view.notice.includes('unsupported print option'));
+      M.update({PaneOutput:{pane_id:8,context:{swamp_work:'launch'},data:zellij.encodeUtf8('output\n'.repeat(100))}});
+      for(const scroll of ['Home','End']) {
+        key(scroll);
+        check(plain(M.render(8,120)).includes('restart: Error: Cannot restart agent: unsupported print option'));
+      }
       view.pending=[{model:'m',version:1,attributes:{run:'r',question:'q',kind:'choice',answers:['yes'],prompt:'Continue?'}}];
       view.submitting=true;focus('fork');key('Enter');check(actions.length===2);
       view.submitting=false;key('Enter');check(actions.length===3&&actions[2].key!==actions[0].key);
+      refuse(Error('Fork failed'));
+    "#);
+    run(&mut runtime, r#"
+      check(view.action==='fork'&&view.noticeError&&view.notice==='Error: Fork failed');
+      check(plain(M.render(8,120)).includes('fork: Error: Fork failed'));
     "#);
 }
 

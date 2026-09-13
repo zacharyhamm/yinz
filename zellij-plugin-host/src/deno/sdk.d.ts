@@ -449,7 +449,7 @@ export interface CellCoordinates {x: Integer; y: Integer;}
 export interface PaneContents {lines_above_viewport: string[]; lines_below_viewport: string[]; viewport: string[]; selected_text: {start: Position; end: Position} | null; cursor: CellCoordinates | null; last_output_ms_ago: Integer | null; is_scrolled: boolean;}
 export interface PaneInfo {
   id: number; is_plugin: boolean; is_focused: boolean; is_fullscreen: boolean; is_floating: boolean; is_suppressed: boolean; is_stack_list_member: boolean;
-  title: string; exited: boolean; exit_status: number | null; is_held: boolean;
+  title: string; exited: boolean; exit_status: number | null; is_held: boolean; restart_error: string | null;
   pane_x: Integer; pane_content_x: Integer; pane_y: Integer; pane_content_y: Integer;
   pane_rows: Integer; pane_content_rows: Integer; pane_columns: Integer; pane_content_columns: Integer;
   cursor_coordinates_in_pane: CellCoordinates | null; terminal_command: string | null; plugin_url: string | null;
@@ -522,7 +522,7 @@ export type QueueJobOutcome = 'Succeeded' | 'Failed' | 'Cancelled' | 'Aborted';
 export interface QueueJobInfo {job_id: Integer; queue: string; plugin_url: string; plugin_id: number | null; enqueuer_plugin_id: number; context: StringMap; state: 'Pending' | 'Running';}
 export interface QueueSnapshot {queue: string; concurrency: Integer; pending: QueueJobInfo[]; running: QueueJobInfo[];}
 export interface ProjectConfigSnapshot {root: string; source: string | null; config: ProjectConfig; error: string | null;}
-export interface ProjectConfig {workflow: string | null; control_checkout: string | null; ci: string[] | null; default_branch: string | null; rebase_prompt: string | null; agent: AgentSpawnSpec | null;}
+export interface ProjectConfig {workflow: string | null; control_checkout: string | null; ci: string[] | null; default_branch: string | null; rebase_prompt: string | null; agent: AgentSpawnSpec | null; commit_agent: AgentSpawnSpec | null;}
 export type DataValue = 'Null' | {Int: Integer} | {Real: number} | {Text: string} | {Bool: boolean} | {Blob: Bytes};
 export type AttrKind = 'Text' | 'Int' | 'Real' | 'Bool' | 'Blob' | 'Json';
 export interface AttrDef {name: string; kind: AttrKind; indexed: boolean; full_text: boolean; unique: boolean; required: boolean; default: DataValue | null;}

@@ -1308,6 +1308,8 @@ The builtin `agent-exit` hook launches the workflow bound in the control checkou
 its scrollback. Escape closes the view and restores that pane. Enter restarts the agent; Delete closes its held pane.
 An unconfigured exit shows setup guidance and retains these controls.
 
+Configure `.zellij/swamp-workflows.kdl` in the control checkout:
+
 ```kdl
 agent_exit {
     workflow "@hammz/zellij-agent-exit"

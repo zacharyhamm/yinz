@@ -847,22 +847,30 @@ fn workflow_restart_delivers_no_prompt_on_repeated_restarts() {
 fn exit_panel_restart_delivers_no_prompt_on_repeated_restarts() {
     let root = zellij_integration_tests::test_env::init().join("plain-agent-restart");
     fs::create_dir_all(&root).unwrap();
-    let path = root.join("exit.lua");
-    fs::write(&path, format!(r#"
-local z=require('zellij')
-z.project_config.read=function() return {{config={{}}}} end
-local hook=(function()
-{}
-end)()
-local load=hook.load
-hook.load=function(config)
-  z.task(function()
-    z.await(z.async.permissions{{'read_application_state','change_application_state','run_commands'}})
-    load(config)
-  end)
-end
-return hook
-"#, zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap())).unwrap();
+    let path = root.join("exit.ts");
+    fs::write(
+        &path,
+        format!(
+            r#"
+import real, {{definePlugin}} from 'zellij:plugin';
+const z = {{...real, projectConfig: {{read: () => ({{config: {{}}}})}}}};
+const view = (() => {{ {}
+return view; }})();
+const hook = (() => {{ {} }})();
+const load = hook.load;
+hook.load = async config => {{
+  await real.waitForPermissions(['ReadApplicationState','ChangeApplicationState','RunCommands']);
+  load(config);
+}};
+export default hook;
+"#,
+            body(include_str!(
+                "../../zellij-config/assets/plugins/workflow-view.ts"
+            )),
+            body(zellij_config::consts::builtin_deno_plugin("agent-exit").unwrap())
+        ),
+    )
+    .unwrap();
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!("load_plugins clear-defaults=true {{}}\nhooks {{ agent_exit \"file:{}\"; }}", path.display()))
         .with_layout(LayoutInfo::Stringified(r#"layout {

@@ -2224,6 +2224,7 @@ optional string firecracker_image = 31;
 optional string firecracker_worktree = 32;
 optional command.PaneTarget target = 33;
 bool is_stack_list_member = 34;
+optional string restart_error = 35;
 }
 message AgentInfo {
 string kind = 1;

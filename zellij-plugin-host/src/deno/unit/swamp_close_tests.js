@@ -183,6 +183,20 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     await rejected(()=>M.pipe({name:'swamp-pane-result',source:{Plugin:6},payload:JSON.stringify({work:'work',key:'duplicate',choice:'started',pane_id})}));
     check(panemap.t1&&panemap.p2&&panemap.p6&&read('work','duplicate').outcome==='pending');
   }
+  // Refusal preserves active work and the view before or after source registration.
+  for(const fallback of [false,true]){
+    seed();if(fallback)rows.delete(uid('work','source'));
+    panemap.t1.restart_error='Cannot restart agent: unsupported print option';
+    const view=rows.get(uid('work','view')).value,command=mock.command;
+    mock.command=(name,args)=>{if(name==='RerunCommandPane')throw Error('refused restart must not rerun');return command(name,args);};
+    const error=await rejected(()=>call({method:'pane_action',work:'work',key:'restart',action:'restart',cancel_active:true}));
+    mock.command=command;await flush();
+    check(error.includes('unsupported print option'));
+    check(rows.get(uid('work','view')).value===view);
+    check(!cancelled.run&&!cancelled.child&&panemap.t3&&panemap.t4);
+    check(panemap.t1.exited&&panemap.t1.is_suppressed&&panemap.p2);
+    check(read('work','restart').outcome!=='completed');
+  }
   seed();
   await call({method:'pane_action',work:'work',key:'restart',action:'restart',cancel_active:true});await flush();
   check(read('work','view').closed&&read('work','view').transition==='restart'&&cancelled.run&&cancelled.child);
@@ -270,6 +284,21 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     mock.projectConfig.read=()=>({root:'/control',config:{workflow:'exit',rebase_prompt:configured}});
     await call({method:'workflow_run',work:'work',key:'launch',directory:'/control',inputs:{rebasePrompt:explicit}});
     check(requests.find(r=>r.operation==='workflow.run').payload.inputs.rebasePrompt===expected);
+  }
+  for(const {config,explicit,inputs,expected} of [
+    {config:{commit_agent:{kind:'codex',model:'commit-model',effort:'medium'},agent:{kind:'claude',model:'review-model'}},expected:{kind:'codex',model:'commit-model',effort:'medium'}},
+    {config:{commit_agent:{kind:'codex'},agent:{kind:'claude',model:'review-model',effort:'high'}},expected:{kind:'codex'}},
+    {config:{agent:{kind:'claude',model:'shared-model',effort:'high'}},expected:{kind:'claude',model:'shared-model',effort:'high'}},
+    {config:{commit_agent:{kind:'claude'}},explicit:{kind:'codex',model:'input-model'},expected:{kind:'codex',model:'input-model'}},
+    {config:{},expected:{kind:'claude',command:'/stub',args:['--exit']}},
+    {config:{},inputs:{kind:'claude'},expected:{kind:'claude',command:''}},
+    {config:{commit_agent:{kind:'codex',model:null,effort:null}},expected:{kind:'codex'}},
+    {config:{commit_agent:{kind:null,model:'commit-model',effort:null}},expected:{kind:'claude',model:'commit-model'}},
+  ]){
+    seed();rows.delete(uid('work','launch'));
+    mock.projectConfig.read=()=>({root:'/control',config:{...config,workflow:'exit'}});
+    await call({method:'workflow_run',work:'work',key:'launch',directory:'/control',inputs:inputs??{kind:'claude',agentCommand:'/stub',agentArgs:['--exit'],commitAgent:explicit}});
+    check(JSON.stringify(requests.find(r=>r.operation==='workflow.run').payload.inputs.commitAgent)===JSON.stringify(expected));
   }
   seed();for(const key of ['view','launch','source'])rows.delete(uid('work',key));
   panemap.p99={plugin_url:'zellij:agent-exit',is_suppressed:false};
