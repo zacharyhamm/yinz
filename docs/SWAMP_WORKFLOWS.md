@@ -161,9 +161,17 @@ turn alone does not advance these decisions. Standalone agent-work remains avail
 to explicit callers and retains its turn-based observation.
 
 Final results and errors stay visible unless the workflow closes the exit view through
-Leave. Enter activates the selected button. After completion, **Restart agent** reruns
-the original command. Delete performs the same cleanup as Leave: it closes the original
-terminal and its exit view. Restart and Delete are disabled while work is active.
+Leave. Enter activates the selected button. **Restart agent** reruns the original
+command and **Fork agent** opens the picker for a different agent in its place; both are
+offered at every step, including while the workflow is still launching. Choosing either while
+work is active ends the lifecycle: its running runs are cancelled, a run still being dispatched
+is cancelled once it has an ID, later steps are refused, and a run that attaches afterwards is
+cancelled too, preserving panes, checkouts and VMs. A cancelled fork picker cancels nothing, and
+pressing Fork again while a picker opened by that button is open returns to it instead of opening
+a second one; a picker the workflow's own menu opened is never reused. Restart closes a fork
+picker that is still open.
+Delete performs the same cleanup as Leave: it closes the original terminal and its exit
+view. Delete is disabled while work is active.
 The workflow view has no Detach button, and Esc does not close it.
 Ordinary CLI launches keep their separate view.
 

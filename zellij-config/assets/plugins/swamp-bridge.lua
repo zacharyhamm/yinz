@@ -105,6 +105,30 @@ local function transition(work, action)
     put(uid,view,row)
   end
 end
+-- A transition keeps the lifecycle out of close_lifecycle's cancellation. A restart or fork
+-- chosen mid-workflow abandons it instead: the tombstone refuses later steps and cancels runs
+-- that attach late, so no run keeps working beside the new agent. The source pane stays open.
+local function cancel_after_transition(work)
+  work=lifecycle_work(work)
+  local uid=scope(work,'view')
+  local view,row=read(uid)
+  if not view then return end
+  view.closed,view.cancel_pending=true,true
+  put(uid,view,row) -- durable before yielding, so a reload resumes the cancellation
+  -- A picker still open can no longer be accepted. Its late result closes it.
+  for _,entry in ipairs(delivery_rows()) do
+    local value=entry.value
+    if (value.outcome=='pending' or value.outcome=='unknown') and value.request
+      and lifecycle_work(entry.work)==work then
+      local request=decode(value.request)
+      if request.method=='pane_action' and (request.action=='fork' or request.action=='duplicate') then
+        value.outcome,value.error='interrupted','Pane workflow lifecycle is closed'
+        put(entry.uid,value,entry)
+      end
+    end
+  end
+  z.task(function() cancel_lifecycle(work) end)
+end
 local function close_view(work, restore_source)
   if placements[work] then detach(placements[work]) end
   local placement=read(scope(work,'view'))
@@ -590,6 +614,27 @@ local function claim(args)
   end
   return uid
 end
+local function open_picker(work, key, action, source_pane)
+  z.message_to_plugin{plugin_url='zellij:hocus-new-agent',message_name='swamp-pane-action',
+    plugin_config={caller_terminal_pane_id=tostring(source_pane),[action=='fork' and 'fork_focused' or 'duplicate_focused']='true',
+      swamp_reply_plugin=tostring(z.get_plugin_ids().plugin_id),swamp_work=work,swamp_key=key},
+    new_plugin_args={should_float=true,should_focus=true}}
+end
+-- A picker for this action that the view's own button opened, still waiting on its result.
+-- The workflow's pickers never cancel the lifecycle, so a press never folds into one of them.
+local function open_picker_operation(work, action)
+  local lifecycle=lifecycle_work(work)
+  for _,entry in ipairs(delivery_rows()) do
+    local value=entry.value
+    if (value.outcome=='pending' or value.outcome=='unknown') and value.request
+      and lifecycle_work(entry.work)==lifecycle then
+      local request=decode(value.request)
+      if request.method=='pane_action' and request.action==action and request.cancel_active then
+        return value
+      end
+    end
+  end
+end
 local handle
 local discovered={}
 local function discover(work, root)
@@ -867,6 +912,18 @@ handle = function(args, manual_view)
   if args.method == 'agent_prompt' then
     assert(type(args.prompt) == 'string' and #args.prompt > 0 and #args.prompt <= 262144, 'Prompt must contain 1–262144 UTF-8 bytes (256 KiB)')
   end
+  if args.method=='pane_action' and args.cancel_active and (args.action=='fork' or args.action=='duplicate') then
+    local open=open_picker_operation(args.work,args.action)
+    if open then
+      local request=decode(open.request)
+      local source=owned{work=request.work,agent='source'}
+      assert(z.get_pane_info(z.terminal_pane(source.pane)).exited,'Source pane is no longer exited')
+      -- The same configuration reaches the picker still open, or relaunches one that closed
+      -- without reporting, whose result then settles the operation it belongs to.
+      open_picker(request.work,request.key,request.action,source.pane)
+      return open
+    end
+  end
   local uid, previous, value, row
   if args.method=='vm_status' then
     value={work=args.work,key=args.key,request=encode(args),incarnation=identity.incarnation}
@@ -940,6 +997,7 @@ handle = function(args, manual_view)
     end
     if args.action=='restart' then
       transition(args.work,'restart')
+      if args.cancel_active then cancel_after_transition(args.work) end
       close_view(args.work,source.pane)
       z.rerun_command_pane(source.pane)
       value.outcome='completed'
@@ -948,10 +1006,7 @@ handle = function(args, manual_view)
       assert(args.action=='fork' or args.action=='duplicate','Unknown pane choice')
       value.outcome='pending'
       put(uid,value,row)
-      z.message_to_plugin{plugin_url='zellij:hocus-new-agent',message_name='swamp-pane-action',
-        plugin_config={caller_terminal_pane_id=tostring(source.pane),[args.action=='fork' and 'fork_focused' or 'duplicate_focused']='true',
-          swamp_reply_plugin=tostring(z.get_plugin_ids().plugin_id),swamp_work=args.work,swamp_key=args.key},
-        new_plugin_args={should_float=true,should_focus=true}}
+      open_picker(args.work,args.key,args.action,source.pane)
     end
   elseif args.method == 'agent_spawn' then
     local opts = assert(args.spec, 'Missing agent specification')
@@ -1173,17 +1228,25 @@ function M.pipe(message)
     local uid=scope(reply.work,reply.key)
     local current=read(uid)
     assert(current and decode(current.request).method=='pane_action','No picker operation')
-    if closed(reply.work) then
+    if current.outcome=='completed' then
+      -- A retried result for an accepted choice only needs its acknowledgment again.
+      assert(current.choice==reply.choice,'Picker result already differs')
+      z.message_to_plugin{destination_plugin_id=from,message_name='swamp-pane-ack'}
+      return
+    end
+    -- One lifecycle forks at most once: a second picker's agent is closed, not accepted.
+    local view=read(scope(lifecycle_work(reply.work),'view'))
+    if closed(reply.work) or (reply.choice=='started' and view and view.transition) then
       if reply.choice=='started' then z.close_terminal_pane(reply.pane_id.Terminal) end
       z.close_plugin_pane(from)
       return
     end
-    if current.outcome=='completed' then
-      assert(current.choice==reply.choice,'Picker result already differs')
-    else assert(current.outcome=='pending' or current.outcome=='unknown','Picker dispatch cannot accept a result') end
+    assert(current.outcome=='pending' or current.outcome=='unknown','Picker dispatch cannot accept a result')
     save_event(uid,'completed',{choice=reply.choice})
     if reply.choice=='started' then
       transition(reply.work,'fork')
+      -- Only a started fork cancels: a cancelled picker leaves the workflow where it was.
+      if decode(current.request).cancel_active then cancel_after_transition(reply.work) end
       close_view(reply.work)
     end
     z.message_to_plugin{destination_plugin_id=from,message_name='swamp-pane-ack'}

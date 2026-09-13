@@ -382,6 +382,95 @@ for _,action in ipairs{'duplicate','fork'} do
     end
   end
 end
+-- Restart or fork chosen from the view mid-workflow cancels the runs still going.
+seed()
+local restart=call{method='pane_action',work='work',key='restart',action='restart',cancel_active=true}
+assert(restart.ok,tostring(restart.value))
+assert(read('work','view').transition=='restart' and read('work','view').closed)
+assert(cancelled.run and cancelled.child and not read('work','view').cancel_pending)
+assert(panes.t1 and not panes.t1.exited,'the restarted source survives the abandoned lifecycle')
+-- The abandoned lifecycle refuses later steps, and a run attaching afterwards is cancelled.
+for _,args in ipairs{
+  {method='agent_spawn',work='work',key='late',spec={}},
+  {method='swamp_dispatch',work='child',key='late',directory='/control',operation='workflow.resume',payload={runId='child'}},
+  {method='workflow_attach',work='work',key='attachment',run='late-attach',workflow='child-workflow',directory='/control'},
+} do
+  local response=call(args)
+  assert(response.ok==false and tostring(response.value):find('closed'),tostring(response.value))
+end
+tick()
+assert(cancelled['late-attach'],'a run attaching after restart is cancelled')
+-- A run whose dispatch is still in flight when Restart lands is cancelled once it has an ID.
+seed();delayed='workflow.run'
+local in_flight=call{method='swamp_dispatch',work='run',key='continuation',directory='/control',
+  operation='workflow.run',payload={workflowIdOrName='child-workflow'}}
+assert(call{method='pane_action',work='work',key='restart',action='restart',cancel_active=true}.ok)
+assert(cancelled.run and cancelled.child and not cancelled['late-run'])
+delayed=nil;resolve_delay{runId='late-run'}
+z.__update(M,{Timer=0});tick()
+assert(in_flight.ok==false,'a late dispatch does not complete successfully')
+assert(cancelled['late-run'],'a run dispatched across Restart is cancelled')
+seed()
+panes.p6={plugin_url='zellij:hocus-new-agent'}
+local pickers={}
+z.message_to_plugin=function(message)
+  if message.message_name=='swamp-pane-action' then pickers[#pickers+1]=message.plugin_config.swamp_key end
+end
+assert(call{method='pane_action',work='work',key='fork-1',action='fork',cancel_active=true}.ok)
+-- A second press while that picker is open returns to it instead of opening another.
+local again=call{method='pane_action',work='work',key='fork-2',action='fork',cancel_active=true}
+assert(again.ok and again.value.key=='fork-1' and again.value.outcome=='pending',tostring(again.value))
+assert(not rows[uid('work','fork-2')],'a repeated press claims no second operation')
+assert(#pickers==2 and pickers[1]=='fork-1' and pickers[2]=='fork-1')
+M.pipe{name='swamp-pane-result',source={Plugin=6},
+  payload=z.json.encode{work='work',key='fork-1',choice='cancelled',pane_id=z.null}}
+assert(not cancelled.run and not cancelled.child and not read('work','view').transition,
+  'a cancelled picker leaves the workflow running')
+assert(call{method='pane_action',work='work',key='fork-3',action='fork',cancel_active=true}.ok)
+assert(pickers[3]=='fork-3','a press after a cancelled picker opens a new one')
+-- Hold a second picker operation open, as a killed picker relaunched later would.
+assert(call{method='pane_action',work='work',key='fork-4',action='fork'}.ok)
+panes.t1.exited=false
+local started={name='swamp-pane-result',source={Plugin=6},
+  payload=z.json.encode{work='work',key='fork-3',choice='started',pane_id={Terminal=1}}}
+M.pipe(started)
+assert(read('work','view').transition=='fork' and read('work','view').closed)
+assert(cancelled.run and cancelled.child)
+M.pipe(started)
+assert(panes.t1 and panes.p6,'a retried result for the accepted fork keeps its agent')
+panes.t8={target='Local',exited=false}
+M.pipe{name='swamp-pane-result',source={Plugin=6},
+  payload=z.json.encode{work='work',key='fork-4',choice='started',pane_id={Terminal=8}}}
+assert(not panes.t8 and not panes.p6 and panes.t1,'a second fork in one lifecycle is closed')
+-- A press never folds into a picker the workflow opened itself.
+local opened,acks={},0
+z.message_to_plugin=function(message)
+  if message.message_name=='swamp-pane-action' then opened[#opened+1]=message.plugin_config
+  elseif message.message_name=='swamp-pane-ack' then acks=acks+1 end
+end
+seed()
+assert(call{method='pane_action',work='work',key='menu-duplicate',action='duplicate'}.ok)
+local press=call{method='pane_action',work='work',key='fork-a',action='fork',cancel_active=true}
+assert(press.ok and press.value.key=='fork-a',tostring(press.value))
+assert(opened[2].swamp_key=='fork-a' and opened[2].fork_focused=='true' and not opened[2].duplicate_focused,
+  'a fork press beside a workflow duplicate picker opens a fork picker')
+seed()
+assert(call{method='pane_action',work='work',key='menu-fork',action='fork'}.ok)
+press=call{method='pane_action',work='work',key='fork-b',action='fork',cancel_active=true}
+assert(press.ok and press.value.key=='fork-b' and rows[uid('work','fork-b')],tostring(press.value))
+panes.p6={plugin_url='zellij:hocus-new-agent'};panes.t1.exited=false
+M.pipe{name='swamp-pane-result',source={Plugin=6},
+  payload=z.json.encode{work='work',key='fork-b',choice='started',pane_id={Terminal=1}}}
+assert(cancelled.run and cancelled.child,'a fork press beside a workflow fork picker still cancels')
+-- Restart while a pressed fork picker is open settles it, and its late result closes it.
+seed();acks=0
+panes.p6={plugin_url='zellij:hocus-new-agent'}
+assert(call{method='pane_action',work='work',key='fork-c',action='fork',cancel_active=true}.ok)
+assert(call{method='pane_action',work='work',key='restart',action='restart',cancel_active=true}.ok)
+assert(read('work','fork-c').outcome=='interrupted','restart settles the open picker operation')
+M.pipe{name='swamp-pane-result',source={Plugin=6},
+  payload=z.json.encode{work='work',key='fork-c',choice='cancelled',pane_id=z.null}}
+assert(not panes.p6 and acks==0,'the stranded picker is closed, not acknowledged')
 -- Malformed started results cannot close any pane or settle an operation.
 seed()
 panes.p6={plugin_url='zellij:hocus-new-agent'}

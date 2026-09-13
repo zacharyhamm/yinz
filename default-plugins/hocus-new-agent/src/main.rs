@@ -258,6 +258,7 @@ impl ZellijPlugin for State {
             EventType::RunCommandResult,
             EventType::Visible,
             EventType::PaneClosed,
+            EventType::PaneUpdate,
         ]);
         // The fork dialog has no Git fields to suggest into, and its fallback when the
         // pane turns out not to be an agent is a refusal rather than the form - so there
@@ -274,6 +275,19 @@ impl ZellijPlugin for State {
         match event {
             Event::PaneClosed(pane) if self.workflow_reply.is_some() => {
                 if self.workflow_source == Some(pane) {
+                    self.finish_picker(None);
+                }
+                false
+            },
+            // A source rerun elsewhere (Restart) leaves nothing to fork. The picker's own launch
+            // reruns it too, but that has already sent its result, which `finish_picker` guards.
+            Event::PaneUpdate(manifest) if self.workflow_reply.is_some() => {
+                let rerun = manifest
+                    .panes
+                    .values()
+                    .flatten()
+                    .any(|pane| Some(pane.id) == self.workflow_source && !pane.exited);
+                if rerun {
                     self.finish_picker(None);
                 }
                 false
@@ -1970,6 +1984,58 @@ mod tests {
             "cancelled picker must not even submit the form"
         );
         assert!(state.workflow_focus.is_none());
+    }
+
+    #[test]
+    fn workflow_picker_cancels_when_its_source_is_rerun_elsewhere() {
+        let source = PaneId::Terminal(TerminalId::new(7));
+        let manifest = |exited| {
+            Event::PaneUpdate(PaneManifest {
+                panes: std::collections::HashMap::from([(
+                    Default::default(),
+                    vec![PaneInfo {
+                        id: source,
+                        exited,
+                        ..Default::default()
+                    }],
+                )]),
+            })
+        };
+        let mut state = State {
+            job: Job::Fork {
+                pane_id: 7,
+                source: ForkSource::Waiting,
+            },
+            workflow_reply: Some((42, "work".to_owned(), "fork".to_owned())),
+            workflow_source: Some(source),
+            ..Default::default()
+        };
+        state.update(manifest(true));
+        assert!(
+            !state.workflow_result_pending,
+            "an exited source is still forkable"
+        );
+        state.update(manifest(false));
+        assert!(
+            state.workflow_result_pending,
+            "a rerun source cancels the picker"
+        );
+        assert!(matches!(state.job, Job::New) && state.workflow_focus.is_none());
+
+        // The picker's own launch reruns the source after its result is already on the way.
+        let started = PaneId::Terminal(TerminalId::new(7));
+        let mut state = State {
+            workflow_reply: Some((42, "work".to_owned(), "fork".to_owned())),
+            workflow_source: Some(source),
+            ..Default::default()
+        };
+        state.finish_launch(started);
+        state.update(manifest(false));
+        assert_eq!(
+            state.workflow_focus,
+            Some(started),
+            "a started fork stays started"
+        );
     }
 
     #[test]

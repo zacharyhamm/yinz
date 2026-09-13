@@ -7757,11 +7757,14 @@ local function focus(id)
   end
   error('Missing control: '..id)
 end
-local function no_restart()
+local function seen(id)
+  local found=0
   for i=1,8 do
-    assert(view.focused_control()~='restart' and view.focused_control()~='detach')
+    assert(view.focused_control()~='detach')
+    if view.focused_control()==id then found=1 end
     key('Tab')
   end
+  return found
 end
 z.subscribe=function() end
 z.subscribe_pane_output=function() end
@@ -7774,7 +7777,7 @@ z.project_config.read=function() return {config={workflow='configured'}} end
 z.rpc.call=function() return {} end
 z.await=function(value) return value end
 view.refresh=function() end
-local closed,rerun,cancelled=0,0,0
+local closed,rerun,cancelled,forks=0,0,0,0
 z.close_self=function() closed=closed+1 end
 local restored=0
 z.replace_pane_with_existing_pane=function(args)
@@ -7784,8 +7787,14 @@ end
 z.rerun_command_pane=function(pane) assert(pane==7 and restored==rerun+1);rerun=rerun+1 end
 z.rpc.call=function(request)
   if request.payload.method=='pane_action' then
-    assert(request.payload.work=='exit-token' and request.payload.action=='restart')
-    rerun=rerun+1;closed=closed+1
+    assert(request.payload.work=='exit-token' and request.payload.cancel_active==true)
+    if request.payload.action=='fork' then
+      assert(request.payload.key:match('^fork%-'))
+      forks=forks+1
+    else
+      assert(request.payload.action=='restart')
+      rerun=rerun+1;closed=closed+1
+    end
     return {result={outcome='completed'}}
   end
   if request.payload.method=='workflow_run' then return {} end
@@ -7793,11 +7802,23 @@ z.rpc.call=function(request)
   cancelled=cancelled+1
   return {result={}}
 end
-local launch
-z.task=function(f) launch=f end
+local launch,acting
+z.task=function(f) if launch then acting=f else launch=f end end
 M.load{agent_pane_id='7',agent_cwd='/work/topic',agent_exit_token='exit-token'}
 assert(M.busy and view.active)
-no_restart()
+-- Offered from the first step, and usable while the launch is still in flight.
+assert(seen('restart')==1 and seen('fork')==1)
+focus('fork')
+key('Enter')
+focus('restart')
+key('Enter')
+assert(acting and M.acting,'a press starts its pane action')
+acting()
+assert(forks==1 and rerun==0 and not M.acting,'a second press while one is in flight is ignored')
+key('Enter')
+acting()
+assert(rerun==1 and closed==1 and M.busy,'restart reaches the bridge during launch')
+rerun,closed,forks,restored=0,0,0,0
 z.task=function(f) f() end
 launch()
 view.snapshot={root='/work/topic',history={status='running'}}
@@ -7817,15 +7838,25 @@ view.submitting=true
 key('Enter')
 assert(rerun==0)
 view.submitting=false
-M.busy=true
+M.acting=true
 key('Enter')
 assert(rerun==0)
-M.busy=false
+M.acting=false
 key('Enter')
 assert(rerun==1 and closed==1)
+-- An active run and a pending question at a later step still offer both.
+view.active=true
 view.pending={{model='model',version=1,attributes={run='run',question='q',kind='choice',answers={'yes'}}}}
-no_restart()
-assert(rerun==1)
+assert(seen('restart')==1 and seen('fork')==1)
+focus('fork')
+key('Enter')
+assert(forks==1 and rerun==1)
+focus('restart')
+key('Enter')
+assert(rerun==2)
+-- The exit menu answers restart and fork itself, so the view does not repeat them.
+view.pending={{model='model',version=1,attributes={run='run',question='exit',kind='choice',answers={'restart','fork','leave'}}}}
+assert(seen('restart')==0 and seen('fork')==0)
 "#).exec().unwrap();
 }
 
@@ -7894,13 +7925,13 @@ z.rpc.call=function(request)
 end
 M.load{agent_pane_id='7',agent_cwd='/guest',agent_firecracker_worktree='/work/topic',agent_firecracker_vm=expected_vm,agent_exit_token='exit-token'}
 assert(not M.busy)
-key('Enter')
 key('Delete')
-assert(rerun==1 and closed==0,'active workflow disables restart and destructive close')
-view.active=false
-key('Tab')
+assert(rerun==1 and closed==0,'active workflow disables destructive close')
 key('Enter')
-assert(rerun==2,'completed workflow permits restarting the original agent')
+assert(rerun==2,'active workflow still permits restarting the original agent')
+view.active=false
+key('Enter')
+assert(rerun==3,'completed workflow permits restarting the original agent')
 expected_vm=''
 M.load{agent_pane_id='7',agent_cwd='/work/topic',agent_exit_token='exit-token'}
 assert(not M.busy)
@@ -7919,17 +7950,17 @@ end
 for i=1,2 do
   view.refresh()
   assert(not view.attachment.run and view.active and not view.refreshing)
-  key('Enter')
   key('Delete')
-  assert(rerun==2 and closed==0)
+  assert(rerun==2+i and closed==0,'an unresolved launch keeps close disabled')
+  key('Enter')
+  assert(rerun==3+i,'restart stays available while unresolved')
 end
 unresolved=false
 view.refresh()
 assert(not view.active and not view.attachment.run)
-key('Tab')
 key('Enter')
 key('Delete')
-assert(rerun==3 and closed==1)
+assert(rerun==6 and closed==1)
 "#,
         )
         .exec()
