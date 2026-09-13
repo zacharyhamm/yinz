@@ -254,7 +254,7 @@ pub(super) fn check_source(path: &std::path::Path, source: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn read_source(path: &std::path::Path) -> Result<String> {
+pub(crate) fn read_source(path: &std::path::Path) -> Result<String> {
     use std::io::Read;
     let mut source = String::new();
     std::fs::File::open(path)

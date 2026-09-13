@@ -8374,10 +8374,16 @@ mod permission_tests {
             check_command_permission(&env, &check(PluginCheckMode::Syntax)),
             (PermissionStatus::Granted, None)
         );
-        assert_eq!(
-            check_command_permission(&env, &check(PluginCheckMode::Semantic)),
-            (PermissionStatus::Denied, Some(PermissionType::ReadFiles))
-        );
+        for mode in [
+            PluginCheckMode::Semantic,
+            PluginCheckMode::Format,
+            PluginCheckMode::Prepare,
+        ] {
+            assert_eq!(
+                check_command_permission(&env, &check(mode)),
+                (PermissionStatus::Denied, Some(PermissionType::ReadFiles))
+            );
+        }
     }
 
     #[test]

@@ -4,13 +4,13 @@ use super::{analysis, limits, loader};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
-    os::fd::AsRawFd,
+    os::{fd::AsRawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 use zellij_runtime::errors::prelude::*;
-use zellij_types::authoring::PluginCheckReport;
+use zellij_types::authoring::{PluginCheckMode, PluginCheckReport};
 
 const ARG: &str = "--deno-compilation-worker";
 const MAX: usize = zellij_ipc::MAX_IPC_FRAME_LEN;
@@ -20,6 +20,7 @@ const DEADLINE: Duration = Duration::from_secs(30);
 enum Operation {
     Transpile,
     Analyze,
+    Check(PluginCheckMode),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -67,6 +68,17 @@ pub(super) fn analyze(path: &Path, source: &str) -> Result<PluginCheckReport> {
     }
 }
 
+pub(super) fn check(path: &Path, source: &str, mode: PluginCheckMode) -> Result<PluginCheckReport> {
+    match request(path, source, true, Operation::Check(mode))? {
+        Output::Analysis(report) => Ok(report),
+        _ => bail!("authoring worker returned the wrong operation"),
+    }
+}
+
+fn inside_worker() -> bool {
+    std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(ARG))
+}
+
 fn request(path: &Path, source: &str, declarations: bool, operation: Operation) -> Result<Output> {
     let context = format!("{operation:?} compilation worker for {}", path.display());
     (|| {
@@ -80,7 +92,13 @@ fn request(path: &Path, source: &str, declarations: bool, operation: Operation) 
         let input = serde_json::to_vec(&request).context("encode request")?;
         let binary = std::env::var_os("ZELLIJ_COMPILATION_WORKER")
             .map(PathBuf::from)
-            .or_else(|| zellij_bus::os_input_output_unix::server_binary().cloned())
+            .or_else(|| {
+                if inside_worker() {
+                    std::env::current_exe().ok()
+                } else {
+                    zellij_bus::os_input_output_unix::server_binary().cloned()
+                }
+            })
             .context("resolve server executable")?;
         // Direct cargo/libtest launches must opt in with the freshly built executable.
         if binary.parent().is_some_and(|dir| dir.ends_with("deps")) {
@@ -101,15 +119,13 @@ pub(crate) fn spawn_count() -> usize {
     SPAWNS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-struct Reap(Child);
+struct Reap(Child, bool);
 impl Drop for Reap {
     fn drop(&mut self) {
-        // Test workers start a private process group, including their compilation children.
-        // Compilation workers used by normal plugins retain their caller's group.
-        let pid = self.0.id() as libc::pid_t;
-        if unsafe { libc::getpgid(pid) } == pid {
+        // All worker descendants share this process group, including Oxlint's tsgolint.
+        if self.1 {
             unsafe {
-                libc::kill(-pid, libc::SIGKILL);
+                libc::kill(-(self.0.id() as i32), libc::SIGKILL);
             }
         }
         let _ = self.0.kill();
@@ -162,10 +178,39 @@ pub(crate) fn exchange_cancel<T: serde::de::DeserializeOwned>(
     timeout: Duration,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<T> {
+    let (status, output, errors) = supervise_cancel(command, input, timeout, cancel)?;
+    if !status.success() {
+        bail!(
+            "worker exited with {status}: {}",
+            String::from_utf8_lossy(&errors)
+        );
+    }
+    let response: std::result::Result<T, String> = serde_json::from_slice(&output).context("invalid worker response")?;
+    response.map_err(|error| anyhow!(error))
+}
+
+pub(super) fn supervise(
+    command: &mut Command,
+    input: &[u8],
+    timeout: Duration,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
+    supervise_cancel(command, input, timeout, None)
+}
+
+fn supervise_cancel(
+    command: &mut Command,
+    input: &[u8],
+    timeout: Duration,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
     if input.len() > MAX {
         bail!("worker request exceeds frame limit");
     }
     let deadline = Instant::now() + timeout;
+    let owns_group = !inside_worker();
+    if owns_group {
+        command.process_group(0);
+    }
     let mut child = Reap(
         command
             .stdin(Stdio::piped())
@@ -173,6 +218,7 @@ pub(crate) fn exchange_cancel<T: serde::de::DeserializeOwned>(
             .stderr(Stdio::piped())
             .spawn()
             .context("spawn worker")?,
+        owns_group,
     );
     #[cfg(test)]
     SPAWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -216,18 +262,10 @@ pub(crate) fn exchange_cancel<T: serde::de::DeserializeOwned>(
         }
         if let Some(status) = child.0.try_wait().context("wait for worker")? {
             if stdout_done && stderr_done {
-                if !status.success() {
-                    bail!(
-                        "worker exited with {status}: {}",
-                        String::from_utf8_lossy(&errors)
-                    );
-                }
                 if !remaining.is_empty() {
                     bail!("worker exited before reading request");
                 }
-                let response: std::result::Result<T, String> =
-                    serde_json::from_slice(&output).context("invalid worker response")?;
-                return response.map_err(|error| anyhow!(error));
+                return Ok((status, output, errors));
             }
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -264,6 +302,11 @@ pub fn run_compilation_worker() {
                     })
                     .map_err(|error| format!("{error:#}"))
             },
+            Operation::Check(mode) => Ok(Output::Analysis(analysis::check_authoring(
+                &request.path,
+                &request.source,
+                mode,
+            ))),
             Operation::Analyze => Ok(Output::Analysis(analysis::analyze_native(
                 &request.path,
                 &request.source,

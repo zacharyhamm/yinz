@@ -45,6 +45,11 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   in `compiler/provenance.json`, hash-checked by a test) runs offline with ES2022 declarations
   and `sdk.d.ts`; plugin source is data to it, never a module it evaluates. `analysis.rs` runs in
   the worker and is where Hocus's inferred grants and the lint findings come from.
+- **Strict authoring is separate from loading.** `authoring.rs` stages the loader's confined
+  dependency graph, formats only the requested file, then runs the compiler and pinned native
+  Oxlint/tsgolint. `authoring/` owns the shared policies, hashes and licenses; xtask installs the
+  tools independently of Wasm builtins. `Syntax` stays lightweight; `Format` and `Prepare`
+  return formatted source. The worker deadline covers the complete process group.
 - **Events keep their serde shape.** `update(event)` and `on(type, payload, raw)` receive the
   externally tagged Rust enum as JSON - positional tuples, `null` in absent slots - with two
   deliberate exceptions built in Rust: `PaneRenderReport` is re-keyed `terminal_3` (`event.rs`),

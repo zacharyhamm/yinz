@@ -3016,6 +3016,12 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         Ok(check_plugin_payload::Mode::Semantic) => {
                             zellij_types::authoring::PluginCheckMode::Semantic
                         },
+                        Ok(check_plugin_payload::Mode::Format) => {
+                            zellij_types::authoring::PluginCheckMode::Format
+                        },
+                        Ok(check_plugin_payload::Mode::Prepare) => {
+                            zellij_types::authoring::PluginCheckMode::Prepare
+                        },
                         Err(_) => return Err("Invalid CheckPlugin mode"),
                     },
                 }),
@@ -5413,6 +5419,12 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         },
                         zellij_types::authoring::PluginCheckMode::Semantic => {
                             check_plugin_payload::Mode::Semantic as i32
+                        },
+                        zellij_types::authoring::PluginCheckMode::Format => {
+                            check_plugin_payload::Mode::Format as i32
+                        },
+                        zellij_types::authoring::PluginCheckMode::Prepare => {
+                            check_plugin_payload::Mode::Prepare as i32
                         },
                     },
                 })),

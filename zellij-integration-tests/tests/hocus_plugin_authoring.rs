@@ -124,7 +124,7 @@ fn hocus_writes_a_typescript_plugin_and_loads_it() {
     // No confirmation appears here even though `plugin_write` is in the confirmation table:
     // typing a slash command *is* the confirmation, so `run_manual` goes straight to
     // `run_head`. The prompt the model would get is covered by the unit tests instead.
-    let source = "export default {render() {return \\\"probe is running\\\";}};";
+    let source = "export default {render(): string {return \\\"probe is running\\\";}};";
     submit_awaiting(
         &zellij,
         &format!(r#"/plugin_write {{"name": "probe", "source": "{source}"}}"#),
@@ -161,20 +161,24 @@ fn hocus_writes_a_typescript_plugin_and_loads_it() {
     });
     clear(&zellij, "probe is running");
 
-    // Writing it again without `overwrite` is refused after checking the host's file metadata.
-    submit(
-        &zellij,
-        r#"/plugin_write {"name": "probe", "source": "export default {};"}"#,
-    );
-    zellij.wait_until("the existing plugin is not clobbered", |grid_snapshot| {
-        grid_snapshot.contains("already exists")
-    });
-    let after = fs::read_to_string(&written).expect("the plugin is still readable");
-    assert!(
-        after.contains("probe is running"),
-        "the original must survive a refused overwrite, got: {after}"
-    );
-    clear(&zellij, "already exists");
+    // Refusing a write preserves both the source and a backup from an earlier overwrite.
+    let backup = plugin_dir.join("probe.bak.ts");
+    fs::write(&backup, "previous backup").unwrap();
+    let before = fs::read_to_string(&written).unwrap();
+    for overwrite in ["", ", \"overwrite\": false"] {
+        submit(
+            &zellij,
+            &format!(
+                r#"/plugin_write {{"name": "probe", "source": "export default {{}};"{overwrite}}}"#
+            ),
+        );
+        zellij.wait_until("the existing plugin is not clobbered", |grid_snapshot| {
+            grid_snapshot.contains("already exists")
+        });
+        assert_eq!(fs::read_to_string(&written).unwrap(), before);
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "previous backup");
+        clear(&zellij, "already exists");
+    }
 
     // A symlink in the folder passes every rule about the *name*, so the containment that the
     // name check can only assert lexically is enforced by the host, on the real link.
@@ -265,17 +269,22 @@ fn hocus_writes_a_typescript_plugin_and_loads_it() {
 /// pane for `agent_exit`, it logs from `load`, where that point's payload arrives as the
 /// configuration.
 const AGENT_LOOP_HOOK: &str = r#"
-import zellij from 'zellij:plugin';
-function logFiring(point,payload) {
-  const pane=payload.pane_id ?? payload.agent_pane_id ?? '?';
-  const detail=payload.agent?.state.toLowerCase() ?? payload.exit_code ?? payload.agent_exit_code ?? '';
+import zellij, {definePlugin} from 'zellij:plugin';
+function logFiring(point: string, pane: string | number, detail: string | number): void {
   zellij.log(`fired ${point} pane=${pane} ${detail}`);
 }
-zellij.on('Hook', e => logFiring(e.point,e.payload));
-export default {
-  load(config) {zellij.subscribe(['Hook']); if (config.agent_pane_id) logFiring('agent_exit',config); else zellij.log('loaded headless');},
+zellij.on('Hook', ({point, payload}) => {
+  if (!('pane_id' in payload)) return;
+  logFiring(point, payload.pane_id, 'agent' in payload ? payload.agent.state.toLowerCase() : payload.exit_code ?? '');
+});
+export default definePlugin({
+  load(config) {
+    zellij.subscribe(['Hook']);
+    if (config['agent_pane_id']) logFiring('agent_exit',config['agent_pane_id'],config['agent_exit_code'] ?? '');
+    else zellij.log('loaded headless');
+  },
   render() {return 'agent-loop hook is up';}
-};
+});
 "#;
 
 /// The agent's state as one `pane_update` event reports it for `terminal_id`, or `None` when
@@ -488,28 +497,35 @@ fn wasm_hocus_checks_writes_edits_and_loads_typescript_with_literal_grants() {
         "parse plugin",
     );
     assert!(!plugins.path().join("broken.ts").exists());
-    let source = "import api from 'zellij:plugin';\nimport {title} from './title.ts';\nlet state = 'loading';\nexport default {async load() {await api.waitForPermissions(['ReadFiles']); state = title;}, render() {return state;}};";
+    let source = "import api from 'zellij:plugin';\nimport {title} from './title.ts';\nlet state = 'loading';\nexport default {async load(): Promise<void> {await api.waitForPermissions(['ReadFiles']); state = title;}, render(): string {return state;}};";
     tool(
         "plugin_check",
         serde_json::json!({"name":"probe.ts","source":source}),
         "No such file",
     );
-    // A write is syntax-only; its local dependency need not exist yet.
+    // Strict writes leave the destination untouched until dependencies exist.
+    tool(
+        "plugin_write",
+        serde_json::json!({"name":"probe.ts","source":source}),
+        "No such file",
+    );
+    assert!(!plugins.path().join("probe.ts").exists());
+    tool(
+        "plugin_write",
+        serde_json::json!({"name":"title.ts","source":"export const title = 'typed plugin running';"}),
+        "call plugin_reload",
+    );
     tool(
         "plugin_write",
         serde_json::json!({"name":"probe.ts","source":source}),
         "call plugin_reload",
     );
-    assert_eq!(
-        fs::read_to_string(plugins.path().join("probe.ts")).unwrap(),
-        format!("{source}\n")
+    let prepared = fs::read_to_string(plugins.path().join("probe.ts")).unwrap();
+    assert!(
+        prepared.contains("async load(): Promise<void>"),
+        "{prepared}"
     );
     assert!(!plugins.path().join("probe.ts.ts").exists());
-    tool(
-        "plugin_write",
-        serde_json::json!({"name":"title.ts","source":"export const title: string = 'typed plugin running';"}),
-        "call plugin_reload",
-    );
     tool(
         "plugin_check",
         serde_json::json!({"name":"probe.ts","source":source}),
@@ -533,7 +549,7 @@ fn wasm_hocus_checks_writes_edits_and_loads_typescript_with_literal_grants() {
     tool(
         "plugin_search",
         serde_json::json!({"name":"probe.ts","query":"waitForPermissions"}),
-        "probe.ts:4:",
+        "probe.ts:6:",
     );
     tool(
         "plugin_edit",
@@ -542,16 +558,26 @@ fn wasm_hocus_checks_writes_edits_and_loads_typescript_with_literal_grants() {
     );
     assert_eq!(
         fs::read_to_string(plugins.path().join("probe.ts")).unwrap(),
-        format!("{source}\n")
+        prepared
     );
     tool(
         "plugin_edit",
-        serde_json::json!({"name":"probe.ts","old_string":"state = title;","new_string":"state = title + ':' + api.fs.metadata('/plugins/probe.ts').is_file;"}),
+        serde_json::json!({"name":"probe.ts","old_string":"state = title;","new_string":"state = 1;"}),
+        "TS2322",
+    );
+    assert_eq!(
+        fs::read_to_string(plugins.path().join("probe.ts")).unwrap(),
+        prepared
+    );
+    assert!(!plugins.path().join("probe.bak.ts").exists());
+    tool(
+        "plugin_edit",
+        serde_json::json!({"name":"probe.ts","old_string":"state = title;","new_string":"state = title + ':' + String(api.fs.metadata('/plugins/probe.ts')?.is_file ?? false);"}),
         "edited probe.ts",
     );
     assert_eq!(
         fs::read_to_string(plugins.path().join("probe.bak.ts")).unwrap(),
-        format!("{source}\n")
+        prepared
     );
     tool(
         "plugin_list",
@@ -586,7 +612,7 @@ fn hocus_registers_calls_and_reloads_a_typescript_extension() {
         });
         clear(&zellij, expected);
     };
-    let source = "export default {async load() {await zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']); zellij.hocus.tools({forecast:{description:'Read a forecast', handler:async () => 'first forecast from TypeScript'}});}};";
+    let source = "export default {async load(): Promise<void> {await zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']); zellij.hocus.tools({forecast:{description:'Read a forecast', handler:() => 'first forecast from TypeScript'}});}};";
     tool(
         "plugin_write",
         serde_json::json!({"name":"hocus/weather.ts","source":source}),

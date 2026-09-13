@@ -59,7 +59,7 @@ xflags::xflags! {
             /// reports: `<data dir>/builtins/<version>`, or `$PREFIX/share/zellij/builtins/<version>`
             /// when PREFIX is set. Nothing is pruned under an explicit directory.
             optional --builtins-dir path: PathBuf
-            /// Install the binary only; the builtins are already in place
+            /// Install the binary and authoring tools; skip Wasm builtins
             optional --no-builtins
             /// Extra arguments appended to the native `cargo build` invocation
             /// (e.g. `--no-default-features`, `--features ...`, `--offline`, `--locked`, `-j N`).
@@ -78,13 +78,13 @@ xflags::xflags! {
             repeated args: OsString
         }
 
-        /// Run `cargo fmt` on all crates
+        /// Format Rust crates and shipped TypeScript plugins
         cmd format {
             /// Run `cargo fmt` in check mode
             optional --check
         }
 
-        /// Run `cargo clippy` on all crates, denying warnings
+        /// Check Rust crates and shipped TypeScript plugins, denying warnings
         cmd lint {
             /// Apply clippy's automatic suggestions instead of only reporting them
             optional --fix

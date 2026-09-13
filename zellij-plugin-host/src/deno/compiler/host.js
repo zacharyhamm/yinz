@@ -1,5 +1,5 @@
 // Runs only in the isolated compiler runtime. Never evaluates a plugin buffer.
-function zellijCheck({ entry, sdk, testing }) {
+function zellijCheck({ entry, sdk, testing, strictOptions, diagnostics }) {
   const prefix = "/$zellij/";
   const sdkPath = prefix + "sdk.d.ts";
   const ops = Deno.core.ops;
@@ -19,6 +19,9 @@ function zellijCheck({ entry, sdk, testing }) {
     noUncheckedSideEffectImports: true,
     skipLibCheck: false,
   };
+  for (const [name, value] of Object.entries(strictOptions)) {
+    if (typeof value === "boolean") options[name] = value;
+  }
   function readFile(name) {
     if (name === sdkPath) return sdk;
     if (name === prefix + "testing.d.ts" && testing) return testing;
@@ -67,8 +70,8 @@ function zellijCheck({ entry, sdk, testing }) {
     resolveTypeReferenceDirectives: names => names.map(() => undefined),
   };
   const program = ts.createProgram([entry, sdkPath], options, host);
-  const diagnostics = ts.getPreEmitDiagnostics(program);
-  if (diagnostics.length) {
-    throw new Error(ts.formatDiagnostics(diagnostics, host));
+  const findings = diagnostics ? ts.getPreEmitDiagnostics(program) : program.getSyntacticDiagnostics();
+  if (findings.length) {
+    throw new Error(ts.formatDiagnostics(findings, host));
   }
 }

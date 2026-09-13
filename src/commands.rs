@@ -1614,6 +1614,19 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             print_plugin_findings(&report.warnings);
             Ok(())
         },
+        PluginsCli::Format { name, file, check } => {
+            let path = match (name, file) {
+                (_, Some(file)) => file,
+                (Some(name), None) => {
+                    zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
+                        .map_err(|e| anyhow::anyhow!(e))?
+                },
+                (None, None) => anyhow::bail!("give a plugin name, or --file"),
+            };
+            zellij_server::plugin_authoring::format_file(&path, check)?;
+            println!("{} is formatted", path.display());
+            Ok(())
+        },
         PluginsCli::Reload { name } => {
             let path = zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
                 .map_err(|e| anyhow::anyhow!(e))?;

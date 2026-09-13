@@ -1,5 +1,5 @@
 //! Parsed entrypoint analysis; nothing here executes guest code or follows imports for grants.
-use super::{checker, loader};
+use super::loader;
 use deno_ast::swc::{
     ast::*,
     common::{Span, SyntaxContext},
@@ -14,6 +14,22 @@ use zellij_types::{
 };
 
 pub(crate) fn check(path: &Path, source: &str, mode: PluginCheckMode) -> PluginCheckReport {
+    let result = if mode == PluginCheckMode::Syntax {
+        super::worker::analyze(path, source)
+    } else {
+        super::worker::check(path, source, mode)
+    };
+    result.unwrap_or_else(|error| PluginCheckReport {
+        diagnostics: vec![format!("{error:#}")],
+        ..Default::default()
+    })
+}
+
+pub(super) fn check_authoring(
+    path: &Path,
+    source: &str,
+    mode: PluginCheckMode,
+) -> PluginCheckReport {
     let mut report = match super::worker::analyze(path, source) {
         Ok(report) => report,
         Err(error) => PluginCheckReport {
@@ -21,9 +37,18 @@ pub(crate) fn check(path: &Path, source: &str, mode: PluginCheckMode) -> PluginC
             ..Default::default()
         },
     };
-    if report.diagnostics.is_empty() && mode == PluginCheckMode::Semantic {
-        if let Err(error) = checker::check_semantic_source(path, source) {
-            report.diagnostics.push(format!("{error:#}"));
+    if report.diagnostics.is_empty() && mode != PluginCheckMode::Syntax {
+        match super::authoring::run(path, source, mode) {
+            Ok(formatted) => {
+                if let Some(ref source) = formatted {
+                    match super::worker::analyze(path, source) {
+                        Ok(formatted_report) => report = formatted_report,
+                        Err(error) => report.diagnostics.push(format!("{error:#}")),
+                    }
+                }
+                report.formatted_source = formatted;
+            },
+            Err(error) => report.diagnostics.push(format!("{error:#}")),
         }
     }
     report
@@ -39,6 +64,48 @@ pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
             return report;
         },
     };
+    for comment in parsed.comments().get_vec() {
+        let text = comment.text.trim();
+        let directive = text.trim_start_matches('*').trim();
+        let lint_directive = [
+            "eslint",
+            "oxlint",
+            "oxfmt-ignore",
+            "prettier-ignore",
+            "global ",
+            "globals ",
+            "exported ",
+        ]
+        .iter()
+        .any(|prefix| directive.starts_with(prefix));
+        let compiler_directive = ["@ts-ignore", "@ts-nocheck", "@ts-expect-error"]
+            .iter()
+            .any(|prefix| directive.starts_with(prefix));
+        if lint_directive || compiler_directive {
+            let allowed = [
+                "oxlint-disable-next-line ",
+                "oxlint-disable-line ",
+                "eslint-disable-next-line ",
+                "eslint-disable-line ",
+            ]
+            .iter()
+            .find_map(|prefix| directive.strip_prefix(prefix))
+            .and_then(|rest| rest.split_once(" -- "))
+            .is_some_and(|(rules, reason)| {
+                !reason.trim().is_empty()
+                    && rules.split(',').all(|rule| {
+                        let rule = rule.trim();
+                        rule.contains('/')
+                            && rule
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-'))
+                    })
+            });
+            if !allowed || comment.kind != deno_ast::swc::common::comments::CommentKind::Line {
+                report.diagnostics.push(format!("{}: only rule-named line-level lint suppressions with an explanation (`// oxlint-disable-next-line plugin/rule -- reason`) are allowed", path.display()));
+            }
+        }
+    }
     let mut analysis = Analysis {
         text: parsed.text_info_lazy(),
         unresolved: parsed.unresolved_context(),

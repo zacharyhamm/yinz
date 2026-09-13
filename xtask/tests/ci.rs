@@ -3,6 +3,36 @@ use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 #[test]
 fn gate_runs_integration_and_aggregates_failures() {
     let root = tempfile::tempdir().unwrap();
+    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    fs::create_dir_all(root.path().join("target/debug")).unwrap();
+    std::os::unix::fs::symlink(
+        checkout.join("target/authoring-tools"),
+        root.path().join("target/authoring-tools"),
+    )
+    .unwrap();
+    let policy = "zellij-plugin-host/src/deno/authoring";
+    fs::create_dir_all(root.path().join(policy)).unwrap();
+    fs::copy(
+        checkout.join(policy).join("oxfmt.json"),
+        root.path().join(policy).join("oxfmt.json"),
+    )
+    .unwrap();
+    fs::create_dir_all(root.path().join("example-plugins")).unwrap();
+    fs::create_dir_all(root.path().join("zellij-config/assets/plugins")).unwrap();
+    fs::write(
+        root.path().join("example-plugins/main.ts"),
+        "export const value = 1;\n",
+    )
+    .unwrap();
+    let binary = root.path().join("target/debug/zellij");
+    fs::write(
+        &binary,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GATE_LOG\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
     for (out, src, generated) in [
         (
             "zellij-plugin-api/assets",
@@ -85,6 +115,9 @@ exit 0
         let calls = fs::read_to_string(log).unwrap();
         assert!(calls.contains("3|fmt --all --check"), "{calls}");
         assert!(calls.contains("3|clippy --workspace"), "{calls}");
+        if failure == "0" {
+            assert!(calls.contains("plugins check --file"), "{calls}");
+        }
         if no_nextest == "0" {
             assert!(calls.contains("3|nextest run --profile unit"), "{calls}");
             assert!(

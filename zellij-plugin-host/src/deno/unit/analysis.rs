@@ -65,7 +65,7 @@ fn runtime_check_reports_syntax_semantics_and_confined_dependency_failures() {
     assert!(!check(&path, "const broken = ;", PluginCheckMode::Syntax)
         .diagnostics
         .is_empty());
-    let source = "import {value} from './dep.ts'; const n: number = value;";
+    let source = "import {value} from './dep.ts'; export const n: number = value;";
     assert!(check(&path, source, PluginCheckMode::Syntax)
         .diagnostics
         .is_empty());

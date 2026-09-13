@@ -277,8 +277,8 @@ fn overview() -> String {
 fn index() -> String {
     let mut out = String::from(
         "Zellij TypeScript plugin reference, reference. Never ask another agent to write a plugin. \
-         `plugin_write` checks syntax, asks approval and writes the source, then grants its literal permissions. \
-         `plugin_check` also checks JS/TS types and local imports. To edit, use `plugin_outline` or \
+         `plugin_write` formats and checks strict types and lint, asks approval, keeps a backup, writes the prepared source, then grants its literal permissions. \
+         `plugin_check` checks saved files or drafts without writing. `plugin_format` formats drafts or confirms a saved-file change. Fix diagnostics and create dependencies first. To edit, use `plugin_outline` or \
          `plugin_search`, then `plugin_read` and `plugin_edit`. `plugin_reload` reports the first render \
          or load error; `plugin_log` reads logs. `plugin_docs query=<regex>` searches sections \
          (section:LINE:text); `section=` reads one, narrowed by `start_line`/`line_count`:\n\n",

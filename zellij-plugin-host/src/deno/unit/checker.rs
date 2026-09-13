@@ -499,7 +499,7 @@ fn sdk_checks_imported_helpers_event_types_and_render_results() {
     for (source, expected) in [
         ("import zellij from 'zellij:plugin'; zellij.subscribee(['PaneUpdate']);", "subscribee"),
         ("import type {EventType} from 'zellij:plugin'; const event: EventType = 'PaneUpdat';", "PaneUpdat"),
-        ("import {definePlugin} from 'zellij:plugin'; export default definePlugin({render: () => 42});", "TS2322"),
+        ("import {definePlugin} from 'zellij:plugin'; export default definePlugin({render: () => 42});", "No overload"),
     ] {
         let error = check_semantic_source(&entry, source).unwrap_err();
         let error = format!("{error:#}");
@@ -855,13 +855,14 @@ fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
         PluginCommand::CheckPlugin {
             name: "example.ts".into(),
             source: "export default {};".into(),
-            mode: PluginCheckMode::Semantic
+            mode: PluginCheckMode::Prepare
         }
     );
     fixture!(
         "report",
         "PluginCheckReport",
         PluginCheckReport {
+            formatted_source: Some("export default {};\n".into()),
             permissions: vec![PermissionType::ReadFiles],
             outline: vec![OutlineEntry {
                 line: 1,

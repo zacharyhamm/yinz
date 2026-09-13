@@ -426,15 +426,19 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_check",
-        "Check a saved file by name, or give source to check an unwritten TypeScript or JavaScript draft. Write nothing and load nothing; JS/TS also checks types and local imports. Use this to try a correction before you write it. Hocus makes this check for the model, and refuses a source that fails; a plugin_write that you type is not checked, thus check it yourself. A source that checks can still fail at load; plugin_reload shows that.",
+        "Check a saved file by name, or give source to check an unwritten TypeScript or JavaScript draft. Write nothing and load nothing; JS/TS also checks types and local imports. Use this to try a correction before you write it. Writes and edits format the proposed source and require strict types and lint. A failed check leaves files, backups, and grants unchanged. A source that checks can still fail at load; plugin_reload shows that.",
     ),
     (
         "plugin_write",
-        "Write a complete TypeScript plugin with an explicit .ts filename. The source is the whole file, not a patch. Overwrite is necessary to replace a file that exists, and the earlier version stays as <name>.bak. The name can be folder/module, for a file that a plugin imports. Approval of the write also grants the permissions that the source asks for. Hocus compiles the source of the model first, and refuses a source that fails; a write that you type goes to disk uncompiled, thus use plugin_check first. Use plugin_reload after this, and plugin_edit to change a plugin that works.",
+        "Write a complete TypeScript plugin with an explicit .ts filename. The source is the whole file, not a patch. Overwrite is necessary to replace a file that exists, and the earlier version stays as <name>.bak. The name can be folder/module, for a file that a plugin imports. Approval of the write also grants the permissions that the source asks for. Hocus formats and strictly checks every write before saving. Create imported dependencies first. Fix diagnostics and check again before reload. Use plugin_reload after this, and plugin_edit to change a plugin that works.",
+    ),
+    (
+        "plugin_format",
+        "Format TypeScript or JavaScript with the shared Oxfmt policy. Give source to return formatted draft text without writing. Omit source to format a saved file after confirmation, keeping the previous version as a backup. Only the named file changes.",
     ),
     (
         "plugin_edit",
-        "Change a part of a TypeScript or JavaScript plugin. The old_string becomes the new_string, and the old_string must match the file exactly and one time only, unless you set replace_all. Give edits for more than one change under one approval. Hocus compiles the result, and writes nothing if any change misses or the result does not compile. The earlier version stays as <name>.bak, unless the new file is the same as the old one.",
+        "Change a part of a TypeScript or JavaScript plugin. The old_string becomes the new_string, and the old_string must match the file exactly and one time only, unless you set replace_all. Give edits for more than one change under one approval. Hocus formats and strictly checks the result, and writes nothing if any change or check fails. The earlier version stays as <name>.bak, unless the new file is the same as the old one.",
     ),
     (
         "plugin_reload",

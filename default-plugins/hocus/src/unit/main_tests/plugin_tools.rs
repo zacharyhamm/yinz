@@ -11,6 +11,118 @@ fn plugin_state() -> State {
     state
 }
 
+#[test]
+fn strict_failures_never_write_backups_source_or_grants() {
+    use crate::tools::test_seams;
+    for (name, arguments) in [
+        (
+            "plugin_write",
+            serde_json::json!({"name":"keys", "overwrite":true, "source":"zellij.requestPermission(['WriteFiles']); export const value: string = 1;"}),
+        ),
+        (
+            "plugin_edit",
+            serde_json::json!({"name":"keys", "old_string":"1", "new_string":"'wrong'"}),
+        ),
+    ] {
+        test_seams::reset();
+        test_seams::set_plugin_source("export const value: number = 1;");
+        test_seams::PLUGIN_FS_EXISTS.set(Some(true));
+        let mut state = plugin_state();
+        state.pending.push_back(ToolCall {
+            id: "strict".into(),
+            name: name.into(),
+            arguments: arguments.to_string(),
+        });
+        state.pump_tools();
+        assert!(state.confirmation_prompt().is_none());
+        assert_eq!(test_seams::PLUGIN_WRITE_CALLS.get(), 0);
+        assert!(test_seams::granted_permissions().is_empty());
+        assert!(!tool_results(&state).is_empty());
+    }
+    test_seams::reset();
+}
+
+#[test]
+fn plugin_write_requires_overwrite_before_reading_or_backing_up_existing_source() {
+    use crate::tools::test_seams;
+    let previous = "export const previous = 1;";
+    let source = "zellij.requestPermission(['WriteFiles']);";
+    for overwrite in [None, Some(false), Some(true)] {
+        test_seams::reset();
+        test_seams::set_plugin_source(previous);
+        test_seams::PLUGIN_FS_EXISTS.set(Some(true));
+        let mut args = serde_json::json!({"name":"keys", "source":source});
+        if let Some(overwrite) = overwrite {
+            args["overwrite"] = overwrite.into();
+        }
+        if overwrite != Some(true) {
+            test_seams::PLUGIN_READS.with_borrow_mut(|reads| {
+                reads.insert(
+                    "/plugins/keys.ts".into(),
+                    Err("must not read the existing source".into()),
+                );
+            });
+        }
+        let mut state = plugin_state();
+        run_file_tool(&mut state, "plugin_write", &args.to_string());
+        let writes = test_seams::PLUGIN_WRITES.with_borrow(Clone::clone);
+        if overwrite == Some(true) {
+            assert_eq!(writes.len(), 2, "{writes:?}");
+            assert_eq!(writes[0], ("/plugins/keys.bak.ts".into(), previous.into()));
+            assert_eq!(writes[1].0, "/plugins/keys.ts");
+            assert_eq!(
+                test_seams::granted_permissions(),
+                vec![PermissionType::WriteFiles]
+            );
+        } else {
+            assert_eq!(
+                tool_results(&state)[0].content,
+                tools::exists_report("keys.ts")
+            );
+            assert!(writes.is_empty(), "{writes:?}");
+            assert!(test_seams::granted_permissions().is_empty());
+        }
+    }
+    test_seams::reset();
+}
+
+#[test]
+fn formatting_a_draft_is_immediate_and_saved_formatting_confirms_and_backs_up() {
+    use crate::tools::test_seams;
+    test_seams::reset();
+    let source = "export const label='λ'";
+    let mut state = ready_state();
+    run_file_tool(
+        &mut state,
+        "plugin_format",
+        &serde_json::json!({"name":"keys", "source":source}).to_string(),
+    );
+    assert!(tool_results(&state)[0]
+        .content
+        .contains("export const label = \"λ\";"));
+    assert!(state.confirmation_prompt().is_none());
+    assert_eq!(test_seams::PLUGIN_WRITE_CALLS.get(), 0);
+    test_seams::set_plugin_source(source);
+    let mut state = plugin_state();
+    state.pending.push_back(ToolCall {
+        id: "format".into(),
+        name: "plugin_format".into(),
+        arguments: r#"{"name":"keys"}"#.into(),
+    });
+    state.pump_tools();
+    assert!(state.confirmation_prompt().is_some());
+    assert_eq!(test_seams::PLUGIN_WRITE_CALLS.get(), 0);
+    state.confirm_tool();
+    let writes = test_seams::PLUGIN_WRITES.with_borrow(Clone::clone);
+    assert_eq!(writes.len(), 2, "{writes:?}");
+    assert!(writes[0].0.ends_with("keys.bak.ts"), "{writes:?}");
+    assert_eq!(writes[0].1, source);
+    assert!(writes[1].0.ends_with("keys.ts"));
+    assert_eq!(writes[1].1, "export const label = \"λ\";\n");
+    assert!(test_seams::granted_permissions().is_empty());
+    test_seams::reset();
+}
+
 /// Disclosure, pre-granting and the report all use the same complete-source difference.
 #[test]
 fn a_plugin_edit_discloses_and_grants_only_the_permission_it_adds() {
@@ -35,11 +147,11 @@ fn a_plugin_edit_discloses_and_grants_only_the_permission_it_adds() {
         !consequence.contains("grants it: read_files"),
         "{consequence}"
     );
-    assert_eq!(crate::tools::test_seams::PLUGIN_CHECK_CALLS.get(), 2);
+    assert_eq!(crate::tools::test_seams::PLUGIN_CHECK_CALLS.get(), 3);
     for _ in 0..3 {
         assert_eq!(state.confirmation_prompt().unwrap().detail, prompt.detail);
     }
-    assert_eq!(crate::tools::test_seams::PLUGIN_CHECK_CALLS.get(), 2);
+    assert_eq!(crate::tools::test_seams::PLUGIN_CHECK_CALLS.get(), 3);
 
     state.confirm_tool();
 
@@ -219,7 +331,7 @@ fn the_file_tools_and_the_log_answer_at_once() {
         ("plugin_search", r#"{"name":"keys","query":"x"}"#),
         (
             "plugin_write",
-            r#"{"name":"keys","source":"const M = {};"}"#,
+            r#"{"name":"keys","source":"export const M = {};"}"#,
         ),
         ("plugin_reload", r#"{"name":"keys"}"#),
         ("plugin_log", r#"{"name":"keys"}"#),
@@ -569,7 +681,7 @@ fn a_batch_edit_asks_once_and_grants_before_versus_final() {
     let report = &results[0].content;
     assert!(
         report.starts_with(
-            "edited keys.ts at line 1 (now 2 lines) and granted it write_files, run_commands;"
+            "edited keys.ts at lines 1-2 (now 2 lines) and granted it write_files, run_commands;"
         ),
         "{report}"
     );

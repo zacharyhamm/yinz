@@ -3146,6 +3146,8 @@ pub mod check_plugin_payload {
     pub enum Mode {
         Syntax = 0,
         Semantic = 1,
+        Format = 2,
+        Prepare = 3,
     }
     impl Mode {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -3156,6 +3158,8 @@ pub mod check_plugin_payload {
             match self {
                 Mode::Syntax => "Syntax",
                 Mode::Semantic => "Semantic",
+                Mode::Format => "Format",
+                Mode::Prepare => "Prepare",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3163,6 +3167,8 @@ pub mod check_plugin_payload {
             match value {
                 "Syntax" => Some(Self::Syntax),
                 "Semantic" => Some(Self::Semantic),
+                "Format" => Some(Self::Format),
+                "Prepare" => Some(Self::Prepare),
                 _ => None,
             }
         }

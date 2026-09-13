@@ -152,6 +152,16 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
         }
     }
 
+    let (user, system) = builtin_dirs_of(sh, &binary)?;
+    crate::authoring::install(
+        sh,
+        &if std::env::var_os("PREFIX").is_some() {
+            system
+        } else {
+            user
+        },
+    )?;
+
     if !flags.no_builtins {
         install_builtins(sh, &binary, profile, flags.builtins_dir.as_deref())
             .with_context(err_context)?;

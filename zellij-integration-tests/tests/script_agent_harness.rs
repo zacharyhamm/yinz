@@ -13,16 +13,19 @@ use zellij_cli::args::CliAction;
 use zellij_integration_tests::{default_timeout, LayoutInfo, TestRunner, TERMINAL_SIZE};
 
 const HARNESS: &str = r#"
-import zellij from 'zellij:plugin';
-export default {
+import zellij, {definePlugin} from 'zellij:plugin';
+export default definePlugin({
   async load() {
     zellij.requestPermission(['RunCommands','ReadApplicationState','WriteToStdin']);
     let inForce=false;
-    try {zellij.host.listClients(); inForce=true;} catch (_) {}
+    try {zellij.host.listClients(); inForce=true;} catch {
+      // The first load has no grant yet.
+    }
     zellij.log('in force at load: '+inForce);
     await zellij.waitForPermissions(['RunCommands','ReadApplicationState','WriteToStdin']);
     zellij.log('permissions Granted');
     const pane=zellij.agent.spawn({kind:'claude',hooks:false,cwd:'/host',allow_outside_worktree:true});
+    if (!('Terminal' in pane)) throw new Error('Expected a terminal agent');
     zellij.log('spawned pane='+pane.Terminal);
     await zellij.agent.waitForState(pane,'waiting');
     zellij.log('waiting pane='+pane.Terminal);
@@ -31,7 +34,7 @@ export default {
     zellij.log('exited pane='+pane.Terminal+' '+exit.exitCode);
   },
   render() {return 'harness is up';}
-};
+});
 "#;
 
 const HARNESS_LAYOUT: &str = r#"layout {

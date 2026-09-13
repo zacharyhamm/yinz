@@ -1611,10 +1611,11 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::CheckPlugin => PluginCommand::CheckPlugin {
             name: strings(tc),
             source: strings(tc),
-            mode: if booleans(tc) {
-                zellij_types::authoring::PluginCheckMode::Syntax
-            } else {
-                zellij_types::authoring::PluginCheckMode::Semantic
+            mode: match (booleans(tc), booleans(tc)) {
+                (false, false) => zellij_types::authoring::PluginCheckMode::Syntax,
+                (false, true) => zellij_types::authoring::PluginCheckMode::Semantic,
+                (true, false) => zellij_types::authoring::PluginCheckMode::Format,
+                (true, true) => zellij_types::authoring::PluginCheckMode::Prepare,
             },
         },
         CommandType::GetLocalUtcOffset => PluginCommand::GetLocalUtcOffset {

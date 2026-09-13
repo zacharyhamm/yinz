@@ -1713,7 +1713,7 @@ string payload = 4;
 message CheckPluginPayload {
 string name = 1;
 string source = 2;
-enum Mode { Syntax = 0; Semantic = 1; }
+enum Mode { Syntax = 0; Semantic = 1; Format = 2; Prepare = 3; }
 Mode mode = 3;
 }
 message CheckPluginResponse {

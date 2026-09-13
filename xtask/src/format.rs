@@ -26,7 +26,7 @@ pub fn format(sh: &Shell, flags: flags::Format) -> anyhow::Result<()> {
     cmd.run()
         .map_err(|_| anyhow!("formatting check failed"))
         .context("failed to run task 'format'")?;
-    Ok(())
+    crate::authoring::format(sh, flags.check)
 }
 
 fn check_rustfmt() -> anyhow::Result<PathBuf> {

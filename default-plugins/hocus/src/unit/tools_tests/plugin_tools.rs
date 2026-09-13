@@ -54,7 +54,7 @@ fn only_a_complete_plugin_write_is_candidate_for_a_compile_refusal() {
         None
     );
     assert_eq!(
-        compile_report("keys", "export default {};").unwrap(),
+        semantic_report("keys", "export default {};"),
         "keys.ts compiles"
     );
 }
@@ -428,7 +428,7 @@ fn a_write_that_changes_nothing_keeps_nothing() {
     let same = "export default {};\n";
     assert_eq!(keep_replaced("probe", Some(same), same), Kept::Nothing);
     assert_eq!(keep_replaced("probe", None, same), Kept::Nothing);
-    assert_eq!(keep_replaced("probe", Some("   "), same), Kept::Nothing);
+    assert_eq!(keep_replaced("probe", Some("   "), same), Kept::Failed);
     // Off wasm there is no plugin folder to write into, which is the failure this reports.
     assert_eq!(
         keep_replaced("probe", Some("return { old = true }\n"), same),

@@ -67,6 +67,7 @@ pub fn call_needs_confirmation(call: &ToolCall) -> bool {
         "new_pane" | "new_remote_pane" => names_a_command(call),
         // Scheduling is otherwise free; handing a job standing permission to use
         // tools without asking again is the confirmable part.
+        "plugin_format" => Args::parse(&call.arguments).map_or(true, |args| args.source.is_none()),
         "schedule" => Args::parse(&call.arguments).is_ok_and(|args| args.auto_confirm),
         // No prompt means nothing runs until a human types into the new pane —
         // the same shape as a bare `new_pane`. A prompt hands the new agent an
@@ -128,6 +129,7 @@ pub fn needs_confirmation(name: &str) -> bool {
             | "project_config_write"
             | "plugin_write"
             | "plugin_edit"
+            | "plugin_format"
             | "skill_write"
             | "skill_enable"
             | "skill_disable"
@@ -356,6 +358,7 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         // An edit is the same act as a write - model-written code landing in the config dir -
         // in a smaller package. `State` adds any newly requested permissions after reading
         // and applying the edit to the complete source.
+        "plugin_format" => format!("formats {} in your Zellij plugin folder and keeps a backup", args.name.as_deref().unwrap_or("a plugin")),
         "plugin_edit" => {
             let name = args.name.as_deref().unwrap_or("a plugin");
             let file = plugin_source::file_name(name);
@@ -1901,7 +1904,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_check",
-            "Check saved JS/TS by name, or pass source for an unwritten draft, without execution; JS/TS includes types and local imports. Report diagnostics, literal permissions and warnings. Writes/edits check syntax before confirmation.",
+            "Check saved JS/TS by name, or pass source for an unwritten draft, without execution; JS/TS includes types and local imports. Report diagnostics, literal permissions and warnings. Writes/edits format and require strict types and lint before confirmation. Fix diagnostics, check again, then reload.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1912,8 +1915,13 @@ pub fn specs() -> Value {
             }),
         ),
         tool(
+            "plugin_format",
+            "Format JS/TS with the shared two-space Oxfmt policy. Pass source to return formatted draft text without writing. Omit source to format a saved plugin after confirmation, preserving its previous version as a backup. Formats only the named file.",
+            json!({"type":"object", "properties":{"name":{"type":"string"}, "source":{"type":"string"}}, "required":["name"]}),
+        ),
+        tool(
             "plugin_write",
-            "Write JS/TS after syntax checking and confirmation. Show literal SDK permission requests before approval; grant after writing. Computed requests use runtime approval. Prefer explicit .ts filenames for new plugins. Extensionless names select TypeScript. Existing files need overwrite. name accepts folder/module. Use plugin_edit for edits, then plugin_reload.",
+            "Write JS/TS after formatting, strict type/lint checks and confirmation. Create dependencies before files that import them. Show literal SDK permission requests before approval; grant after writing. Computed requests use runtime approval. Prefer explicit .ts filenames for new plugins. Extensionless names select TypeScript. Existing files need overwrite. name accepts folder/module. Use plugin_edit for edits, then plugin_reload.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1926,7 +1934,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_edit",
-            "Replace exact old_string with new_string once, or all with replace_all. Alternatively apply edits in order. Confirm once; not written at all if compilation or any match fails. Keep the previous source as <stem>.bak.<extension>; report changed lines and newly requested permissions.",
+            "Replace exact old_string with new_string once, or all with replace_all. Alternatively apply edits in order. Confirm once; format the result and require strict type/lint checks; not written at all if any check or match fails. Keep the previous source as <stem>.bak.<extension>; report changed lines and newly requested permissions.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2315,6 +2323,7 @@ pub const FAMILIES: &[Family] = &[
             "plugin_search",
             "plugin_check",
             "plugin_test",
+            "plugin_format",
             "plugin_write",
             "plugin_edit",
             "plugin_reload",
@@ -3384,12 +3393,13 @@ pub const SKILL_FILE_TOOLS: [&str; 4] =
 /// `get_user_plugin_dir`, for the reload URL and the permission grant). None runs a command;
 /// every one but `plugin_reload` answers at once - a reload is fire-and-forget on the host, so
 /// that one defers until the pane has had time to show what happened.
-pub const PLUGIN_TOOLS: [&str; 13] = [
+pub const PLUGIN_TOOLS: [&str; 14] = [
     "project_config_read",
     "project_config_write",
     "plugin_docs",
     "plugin_check",
     "plugin_test",
+    "plugin_format",
     "plugin_list",
     "plugin_read",
     "plugin_outline",
@@ -3435,17 +3445,18 @@ pub fn check_report(
     Err("plugin analysis requires the plugin host".into())
 }
 
-pub fn compile_check(name: &str, source: &str) -> Result<(), String> {
-    let report = check_report(
-        name,
-        source,
-        zellij_tile::plugin_authoring::PluginCheckMode::Syntax,
-    )?;
-    if report.diagnostics.is_empty() {
-        Ok(())
-    } else {
-        Err(report.diagnostics.join("\n"))
+pub fn formatted_source(
+    name: &str,
+    source: &str,
+    mode: plugin_authoring::PluginCheckMode,
+) -> Result<String, String> {
+    let report = check_report(name, source, mode)?;
+    if !report.diagnostics.is_empty() {
+        return Err(report.diagnostics.join("\n"));
     }
+    report
+        .formatted_source
+        .ok_or_else(|| "authoring check returned no formatted source".into())
 }
 
 pub fn chunk_name(name: &str) -> String {
@@ -3455,11 +3466,6 @@ pub fn chunk_name(name: &str) -> String {
             .and_then(|name| name.to_str())
             .unwrap_or(name.trim()),
     )
-}
-
-pub fn compile_report(name: &str, source: &str) -> Result<String, String> {
-    compile_check(name, source).map(|()| format!("{} compiles", chunk_name(name)))
-        .map_err(|error| format!("{} does not compile: {error}\nFix it and try again - plugin_edit to change a file that exists, plugin_write for a new one.", chunk_name(name)))
 }
 
 pub fn semantic_report(name: &str, source: &str) -> String {
@@ -3561,7 +3567,7 @@ pub fn uncompilable_write(call: &ToolCall) -> Option<String> {
     let args = Args::parse(&call.arguments).ok()?;
     let name = args.name.as_deref()?;
     let source = args.source.as_deref()?;
-    compile_report(name, source).err()
+    formatted_source(name, source, plugin_authoring::PluginCheckMode::Prepare).err()
 }
 
 /// How many log lines `plugin_log` shows unless asked otherwise.
@@ -3758,10 +3764,8 @@ fn kept_sentence(kept: &Kept) -> String {
 
 /// Keep `replaced` - the source that was there before this write - as the plugin's backup.
 ///
-/// Best effort by necessity: hocus writes through the host and only then makes its copy, so a
-/// backup that cannot be written cannot un-write the file the user already approved. What it
-/// can do is say so, which is what [`Kept::Failed`] is for. One version deep, since what a
-/// rewrite that dropped a feature needs is the file as it was one edit ago.
+/// Called before replacing the source. Callers refuse the write if the backup fails.
+/// One version deep: the previous source remains recoverable.
 ///
 /// A write that changed nothing keeps nothing: copying the file over its own backup would throw
 /// away the last version that actually differed, which is the one worth having.
@@ -3769,7 +3773,7 @@ pub fn keep_replaced(name: &str, replaced: Option<&str>, written: &str) -> Kept 
     let Some(replaced) = replaced else {
         return Kept::Nothing;
     };
-    if replaced.trim().is_empty() || replaced == written {
+    if replaced == written {
         return Kept::Nothing;
     }
     let backup = backup_name(name);
@@ -5352,6 +5356,7 @@ pub mod test_seams {
         pub static PLUGIN_FS_EXISTS: Cell<Option<bool>> = const { Cell::new(None) };
         pub static RELOAD_CALLS: Cell<usize> = const { Cell::new(0) };
         pub static PLUGIN_WRITE_CALLS: Cell<usize> = const { Cell::new(0) };
+        pub static PLUGIN_WRITES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
         pub static PLUGIN_CHECK_CALLS: Cell<usize> = const { Cell::new(0) };
         pub static PLUGIN_ENTRIES: RefCell<Option<Vec<zellij_tile::prelude::FsEntry>>> = const { RefCell::new(None) };
         pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
@@ -5379,6 +5384,7 @@ pub mod test_seams {
         PLUGIN_READS.with_borrow_mut(super::BTreeMap::clear);
         RELOAD_CALLS.set(0);
         PLUGIN_WRITE_CALLS.set(0);
+        PLUGIN_WRITES.with_borrow_mut(Vec::clear);
         PLUGIN_CHECK_CALLS.set(0);
         super::SOURCE_PERMISSIONS.with_borrow_mut(Vec::clear);
         HEADLESS_RELOADS.with_borrow_mut(Vec::clear);
@@ -5425,8 +5431,9 @@ pub const PLUGIN_FOLDER_UNREACHABLE: &str =
     "the plugin folder is only reachable from inside zellij";
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn plugin_fs_write(_path: &str, _source: &str, _overwrite: bool) -> Result<bool, String> {
+pub fn plugin_fs_write(path: &str, source: &str, _overwrite: bool) -> Result<bool, String> {
     test_seams::PLUGIN_WRITE_CALLS.set(test_seams::PLUGIN_WRITE_CALLS.get() + 1);
+    test_seams::PLUGIN_WRITES.with_borrow_mut(|writes| writes.push((path.into(), source.into())));
     match test_seams::PLUGIN_SOURCE.with_borrow(Option::is_some) {
         true => Ok(true),
         false => Err(PLUGIN_FOLDER_UNREACHABLE.to_owned()),
