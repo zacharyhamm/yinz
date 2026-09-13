@@ -298,7 +298,7 @@ fn close_plugin_instance(
     let needs_before_close = subscriptions_guard.contains(&EventType::BeforeClose);
     drop(subscriptions_guard); // Release lock before calling plugin
 
-    if needs_before_close {
+    if needs_before_close && !running_plugin.lock().unwrap().is_disposed() {
         let mut rp = running_plugin.lock().unwrap();
         // Holding the lock means the guest is not running. If the token was set but
         // never tripped, the guest was idle and `BeforeClose` gets a normal call. If
@@ -319,7 +319,12 @@ fn close_plugin_instance(
                     log::error!("{:?}", e);
                     let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
                     if !rp.is_disposed() {
-                        handle_plugin_crash(plugin_id, rp.env().deno_generation, stringified_error, senders.clone());
+                        handle_plugin_crash(
+                            plugin_id,
+                            rp.env().deno_generation,
+                            stringified_error,
+                            senders.clone(),
+                        );
                     }
                 },
             }
@@ -327,7 +332,9 @@ fn close_plugin_instance(
     }
 
     running_plugin.lock().unwrap().dispose();
-    let _ = senders.send_to_screen(ScreenInstruction::UnsubscribePaneOutput(plugin_id));
+    let _ = senders.send_to_screen(ScreenInstruction::SubscribePaneOutput(
+        plugin_id, client_id, None, None,
+    ));
     drop(running_plugin);
     drop(subscriptions);
 }
@@ -1236,11 +1243,12 @@ impl WasmBridge {
                         .contains(&EventType::BeforeClose);
                     let old_instance = running_plugin.clone();
                     let mut running_plugin = running_plugin.lock().unwrap();
-                    if let Some(directory) = &running_plugin.env().temporary_data_dir {
-                        // Transfer ownership on the executor, before replacing the old instance.
-                        // The plugin thread must not wait for a loader just to create a context.
-                        loading_context.plugin_own_data_dir = directory.path().to_path_buf();
-                        loading_context.temporary_data_dir = directory.clone();
+                    if client_id == first_client_id || running_plugin.env().plugin.is_shared() {
+                        if let Some(directory) = &running_plugin.env().temporary_data_dir {
+                            // Retain the reload owner's data, independent of instance iteration order.
+                            loading_context.plugin_own_data_dir = directory.path().to_path_buf();
+                            loading_context.temporary_data_dir = directory.clone();
+                        }
                     }
                     if wants_before_close && !running_plugin.is_disposed() {
                         // As in the unload job: holding the lock means the guest is not
@@ -1276,10 +1284,10 @@ impl WasmBridge {
                             }
                         }
                     }
-                    // Keep the handle and metadata for a retry, but release every old
-                    // isolate here, before source resolution or compilation can fail.
                     if is_deno {
                         running_plugin.dispose();
+                        drop(running_plugin);
+                        plugin_map.remove_instance(plugin_id, client_id);
                     }
                 }
                 // A replacement must opt in again, including when BeforeClose resubscribed.
@@ -2360,8 +2368,12 @@ impl WasmBridge {
     }
 
     pub fn remove_client(&mut self, client_id: ClientId) {
-        self.client_cancellations.lock().unwrap().entry(client_id)
-            .or_default().store(true, Ordering::Release);
+        self.client_cancellations
+            .lock()
+            .unwrap()
+            .entry(client_id)
+            .or_default()
+            .store(true, Ordering::Release);
         let was_connected = {
             let mut clients = self.connected_clients.lock().unwrap();
             let previous_len = clients.len();
@@ -3031,8 +3043,7 @@ impl WasmBridge {
         self.plugin_map
             .lock()
             .unwrap()
-            .reload_metadata(plugin_id)
-            .map(|metadata| metadata.config)
+            .plugin_config_of_plugin_id(plugin_id)
     }
     fn tab_index_of_plugin_id(&self, plugin_id: PluginId) -> Option<TabId> {
         self.plugin_map

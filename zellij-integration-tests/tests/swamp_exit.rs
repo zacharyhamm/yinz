@@ -59,7 +59,7 @@ export default definePlugin({
         if(reply.pane_id?.Terminal!==source) throw Error('the fork picker must report the terminal it reused');
       } else if(reply.pane_id!==null) throw Error('cancelled picker results must carry a null pane ID');
       await bridge.pipe(message);
-      if(reply.choice==='cancelled' && (await call({method:'lookup',work:reply.work,key:reply.key})).outcome==='completed') {status='suspended';await view.refresh();}
+      if(reply.choice==='cancelled' && reply.key==='fork' && (await call({method:'lookup',work:reply.work,key:reply.key})).outcome==='completed') {status='suspended';await view.refresh();}
       return;
     }
     if(message.name!=='fixture') {hook.pipe?.(message);return;}
@@ -73,6 +73,8 @@ export default definePlugin({
     } else if(message.payload==='state') {
       const result=await call({method:'lookup',work:token,key:'fork'});
       real.command('CliPipeOutput',[message.source.Cli,JSON.stringify(result)]);real.command('UnblockCliPipeInput',message.source.Cli);return;
+    } else if(message.payload==='status') {
+      real.command('CliPipeOutput',[message.source.Cli,status]);real.command('UnblockCliPipeInput',message.source.Cli);return;
     } else if(message.payload==='agent') {
       const agent=await call({method:'agent_spawn',work:token,key:'worker',spec:{kind:'claude',cwd:'/host',allow_outside_worktree:true}});
       worker=agent.pane; emit('SessionStart');

@@ -699,16 +699,17 @@ impl FileEvents {
 }
 
 const SCRATCH_PLUGIN: &str = r#"
-return {
-  load = function() zellij.subscribe { 'before_close' } end,
-  update = function(event)
-    if event.name == 'before_close' then
-      zellij.fs.write('/data/closed', zellij.fs.read('/data/value'))
-      zellij.fs.write('/cache/saved', zellij.fs.read('/data/closed'))
-    end
-    return false
-  end,
-}
+import z from 'zellij:plugin';
+export default {
+  load() { z.subscribe(['BeforeClose']); },
+  update(event) {
+    if (event === 'BeforeClose') {
+      z.fs.write('/data/closed', z.fs.read('/data/value'));
+      z.fs.write('/cache/saved', z.fs.read('/data/closed'));
+    }
+    return false;
+  },
+};
 "#;
 
 impl TestBridge {
@@ -717,7 +718,14 @@ impl TestBridge {
         let client_id = ClientId::new(client);
         self.bridge.cancel_token(plugin_id);
         self.bridge.plugin_executor.register_plugin(plugin_id);
-        let path = self._dirs[0].path().join(format!("{id}.lua"));
+        let path = self._dirs[0].path().join(format!(
+            "{id}.{}",
+            if source.starts_with("(module") {
+                "wasm"
+            } else {
+                "ts"
+            }
+        ));
         std::fs::write(&path, source).unwrap();
         let config = PluginConfig::from_run_plugin(&RunPlugin {
             location: RunPluginLocation::File(path),
@@ -739,18 +747,32 @@ impl TestBridge {
     }
 
     fn load(&self, context: LoadingContext) -> Result<()> {
-        let mut map = self.bridge.plugin_map.lock().unwrap();
-        PluginLoader::new(
+        let done = zellij_test_support::Watched::new(None);
+        let observed = done.clone();
+        self.bridge.plugin_executor.execute_for_plugin_tagged(
+            context.plugin_id,
+            "fixture load",
             false,
-            context,
-            self.bridge.senders.clone(),
-            Engine::default(),
-            Default::default(),
-            &mut map,
-            self.bridge.connected_clients.clone(),
-        )
-        .without_connected_clients()
-        .start_plugin()
+            move |senders, plugin_map, connected_clients, cache, engine| {
+                let result = PluginLoader::new(
+                    false,
+                    context,
+                    senders,
+                    engine,
+                    cache,
+                    &mut plugin_map.lock().unwrap(),
+                    connected_clients,
+                )
+                .without_connected_clients()
+                .start_plugin();
+                *observed.lock() = Some(result);
+            },
+        );
+        done.wait_until("fixture load", Duration::from_secs(30), |result| {
+            result.as_ref().map(|_| ())
+        });
+        let result = done.lock().take().unwrap();
+        result
     }
 
     fn wait_for_executor(&self, plugin_id: PluginId) {
@@ -800,7 +822,7 @@ fn temporary_data_lasts_through_before_close_and_cache_survives_shutdown() {
     std::fs::write(one_path.join("value"), "saved by BeforeClose").unwrap();
     test.load(one).unwrap();
     test.grant_files(1, 1);
-    let two = test.context(2, 1, "return {}");
+    let two = test.context(2, 1, "export default {}");
     let two_path = two.plugin_own_data_dir.clone();
     test.load(two).unwrap();
     test.bridge.unload_plugin(PluginId::new(1)).unwrap();
@@ -832,8 +854,19 @@ fn reload_retains_temporary_data_and_old_users_cannot_remove_it() {
     std::fs::write(path.join("value"), "reload state").unwrap();
     test.load(context).unwrap();
     test.grant_files(1, 1);
+    test.bridge
+        .connected_clients
+        .lock()
+        .unwrap()
+        .push(ClientId::new(2));
+    let secondary = test.context(1, 2, SCRATCH_PLUGIN);
+    let secondary_path = secondary.plugin_own_data_dir.clone();
+    std::fs::write(secondary_path.join("value"), "other client").unwrap();
+    test.load(secondary).unwrap();
+    test.grant_files(1, 2);
     test.bridge.reload_plugin_with_id(PluginId::new(1)).unwrap();
     test.finish_reload(PluginId::new(1));
+    events.wait("secondary reload data cleanup", || !secondary_path.exists());
     assert_eq!(
         std::fs::read_to_string(path.join("closed")).unwrap(),
         "reload state"
@@ -862,27 +895,31 @@ fn assert_reload_recovers(wasm: bool, by_url: bool) {
     let mut test = TestBridge::new();
     let id = PluginId::new(1);
     let owner = ClientId::new(7);
-    let good = if wasm { RECOVERABLE_WASM } else { "return {}" };
+    let good = if wasm {
+        RECOVERABLE_WASM
+    } else {
+        "export default {}"
+    };
     let bad = if wasm {
         RECOVERABLE_WASM.replace("(export \"load\")", "(export \"load\") unreachable")
     } else {
-        "return { load = function() error('load failed') end }".to_owned()
+        "export default { load() { throw Error('load failed'); } }".to_owned()
     };
     let mut context = test.context(1, 1, good);
     let source = context
         .plugin_config
         .path
-        .with_extension(if wasm { "wasm" } else { "lua" });
+        .with_extension(if wasm { "wasm" } else { "ts" });
     std::fs::write(&source, good).unwrap();
     context.plugin_config.path = source.clone();
     context.plugin_config.location = RunPluginLocation::File(source.clone());
     if !wasm {
-        // A relative Lua URL resolves through the user's plugin folder. Recovery must also
+        // A relative TypeScript URL resolves through the user's plugin folder. Recovery must also
         // recognize the full source path after the instance that resolved it has gone.
-        let named = test._dirs[0].path().join("missing/1.lua");
+        let named = test._dirs[0].path().join("missing/1.ts");
         context.plugin_config.path = named.clone();
         context.plugin_config.location = RunPluginLocation::File(named);
-        context.plugin_config.relative_path = Some(PathBuf::from("1.lua"));
+        context.plugin_config.relative_path = Some(PathBuf::from("1.ts"));
         context.user_plugin_dir = Some(test._dirs[0].path().to_path_buf());
         test.bridge.user_plugin_dir = context.user_plugin_dir.clone();
     }
@@ -1006,12 +1043,12 @@ fn assert_reload_recovers(wasm: bool, by_url: bool) {
 }
 
 #[test]
-fn lua_reload_recovers_by_id_after_load_failure() {
+fn deno_reload_recovers_by_id_after_load_failure() {
     assert_reload_recovers(false, false);
 }
 
 #[test]
-fn lua_reload_recovers_by_url_after_load_failure() {
+fn deno_reload_recovers_by_url_after_load_failure() {
     assert_reload_recovers(false, true);
 }
 
@@ -1028,10 +1065,10 @@ fn wasm_reload_recovers_by_url_after_load_failure() {
 #[test]
 fn removing_an_instance_retains_latest_values_and_url_lookup_deduplicates_ids() {
     let mut test = TestBridge::new();
-    let one = test.context(1, 1, "return {}");
+    let one = test.context(1, 1, "export default {}");
     let location = one.plugin_config.location.clone();
     test.load(one).unwrap();
-    let two = test.context(1, 2, "return {}");
+    let two = test.context(1, 2, "export default {}");
     test.load(two).unwrap();
     let id = PluginId::new(1);
     let mut map = test.bridge.plugin_map.lock().unwrap();
@@ -1040,6 +1077,9 @@ fn removing_an_instance_retains_latest_values_and_url_lookup_deduplicates_ids() 
             .unwrap(),
         vec![id]
     );
+    let destinations = &map.clone_plugin_assets()[&location][&PluginUserConfiguration::default()];
+    assert!(destinations.contains(&(id, ClientId::new(1))));
+    assert!(destinations.contains(&(id, ClientId::new(2))));
     drop(map.remove_instance(id, ClientId::new(1)));
     let plugin = map.get_running_plugin(id, None).unwrap();
     let weak = Arc::downgrade(&plugin);
@@ -1066,15 +1106,15 @@ fn removing_an_instance_retains_latest_values_and_url_lookup_deduplicates_ids() 
 fn failed_loads_and_cancelled_loading_contexts_release_temporary_data() {
     let mut test = TestBridge::new();
     for source in [
-        "not lua!",
-        "return { load = function() error('load failed') end }",
+        "not typescript!",
+        "export default { load() { throw Error('load failed'); } }",
     ] {
         let context = test.context(1, 1, source);
         let path = context.plugin_own_data_dir.clone();
         assert!(test.load(context).is_err());
         assert!(!path.exists());
     }
-    let context = test.context(2, 1, "return {}");
+    let context = test.context(2, 1, "export default {}");
     let path = context.plugin_own_data_dir.clone();
     drop(context); // A download/queued load cancelled before instantiation.
     assert!(!path.exists());
@@ -1084,11 +1124,11 @@ fn failed_loads_and_cancelled_loading_contexts_release_temporary_data() {
 fn departing_client_releases_its_data_while_another_client_stays() {
     let mut test = TestBridge::new();
     *test.bridge.connected_clients.lock().unwrap() = vec![ClientId::new(1), ClientId::new(2)];
-    let one = test.context(1, 1, "return {}");
+    let one = test.context(1, 1, "export default {}");
     let one_path = one.plugin_own_data_dir.clone();
     let events = FileEvents::new(one_path.parent().unwrap());
     test.load(one).unwrap();
-    let two = test.context(1, 2, "return {}");
+    let two = test.context(1, 2, "export default {}");
     let two_path = two.plugin_own_data_dir.clone();
     test.load(two).unwrap();
     test.bridge.remove_client(ClientId::new(1));
@@ -1103,7 +1143,7 @@ fn outstanding_work_keeps_data_alive_after_host_drop() {
     let mut test = TestBridge::new();
     let root = test.bridge.temporary_root.path().to_path_buf();
     let events = FileEvents::new(root.parent().unwrap());
-    let context = test.context(1, 1, "return {}");
+    let context = test.context(1, 1, "export default {}");
     let path = context.plugin_own_data_dir.clone();
     let in_flight = context.clone();
     test.load(context).unwrap();
@@ -1140,7 +1180,7 @@ fn outstanding_work_keeps_data_alive_after_host_drop() {
 #[test]
 fn wasm_workers_release_their_shared_temporary_data_after_unload() {
     let mut test = TestBridge::new();
-    let mut context = test.context(1, 1, "return {}");
+    let mut context = test.context(1, 1, "export default {}");
     let path = context.plugin_own_data_dir.clone();
     let events = FileEvents::new(path.parent().unwrap());
     let wasm = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1162,17 +1202,21 @@ fn assert_unload_cancels_queued_reload(failed: bool) {
         .lock()
         .unwrap()
         .push(ClientId::new(1));
-    let context = test.context(1, 1, "return {}");
+    let context = test.context(1, 1, "export default {}");
     let path = context.plugin_own_data_dir.clone();
     let events = FileEvents::new(path.parent().unwrap());
     let source = context.plugin_config.path.clone();
     test.load(context).unwrap();
     if failed {
-        std::fs::write(&source, "return { load = function() error('failed') end }").unwrap();
+        std::fs::write(
+            &source,
+            "export default { load() { throw Error('failed'); } }",
+        )
+        .unwrap();
         test.bridge.reload_plugin_with_id(PluginId::new(1)).unwrap();
         test.finish_reload(PluginId::new(1));
         assert!(!path.exists());
-        std::fs::write(&source, "return {}").unwrap();
+        std::fs::write(&source, "export default {}").unwrap();
     }
     let started = zellij_test_support::Watched::new(false);
     let release = zellij_test_support::Watched::new(false);
@@ -1244,10 +1288,10 @@ fn unload_cancels_a_queued_recovery_after_load_failure() {
 fn reconnecting_before_client_cleanup_keeps_the_live_instance() {
     let mut test = TestBridge::new();
     *test.bridge.connected_clients.lock().unwrap() = vec![ClientId::new(1), ClientId::new(2)];
-    let one = test.context(1, 1, "return {}");
+    let one = test.context(1, 1, RECOVERABLE_WASM);
     let path = one.plugin_own_data_dir.clone();
     test.load(one).unwrap();
-    let two = test.context(1, 2, "return {}");
+    let two = test.context(1, 2, RECOVERABLE_WASM);
     test.load(two).unwrap();
     let started = zellij_test_support::Watched::new(false);
     let release = zellij_test_support::Watched::new(false);

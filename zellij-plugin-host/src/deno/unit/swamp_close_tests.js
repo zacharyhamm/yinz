@@ -183,5 +183,103 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     await rejected(()=>M.pipe({name:'swamp-pane-result',source:{Plugin:6},payload:JSON.stringify({work:'work',key:'duplicate',choice:'started',pane_id})}));
     check(panemap.t1&&panemap.p2&&panemap.p6&&read('work','duplicate').outcome==='pending');
   }
+  seed();
+  await call({method:'pane_action',work:'work',key:'restart',action:'restart',cancel_active:true});await flush();
+  check(read('work','view').closed&&read('work','view').transition==='restart'&&cancelled.run&&cancelled.child);
+  check(panemap.t1&&!panemap.t1.exited&&!read('work','view').cancel_pending);
+  for(const args of [
+    {method:'agent_spawn',work:'work',key:'late',spec:{}},
+    {method:'swamp_dispatch',work:'child',key:'late',directory:'/control',operation:'workflow.resume',payload:{runId:'child'}},
+    {method:'workflow_attach',work:'work',key:'attachment',run:'late-attach',workflow:'child',directory:'/control'},
+  ])check((await rejected(()=>call(args))).includes('closed'));
+  await tick();check(cancelled['late-attach']);
+  seed();delayed='workflow.run';
+  const inFlight=rejected(()=>call({method:'swamp_dispatch',work:'run',key:'continuation',directory:'/control',operation:'workflow.run',payload:{workflowIdOrName:'child'}}));
+  await flush();
+  await call({method:'pane_action',work:'work',key:'restart',action:'restart',cancel_active:true});await flush();
+  check(cancelled.run&&cancelled.child&&!cancelled['late-run']);
+  delayed=undefined;release({runId:'late-run'});await inFlight;await tick();check(cancelled['late-run']);
+
+  const originalCommand=mock.command;
+  let pickers=[];
+  mock.command=(name,args)=>{
+    if(name==='MessageToPlugin'&&args.message_name==='swamp-pane-action')pickers.push(args.plugin_config);
+    return originalCommand(name,args);
+  };
+  const picker=(key,choice='started',pane=1)=>M.pipe({name:'swamp-pane-result',source:{Plugin:6},payload:JSON.stringify({work:'work',key,choice,pane_id:choice==='started'?{Terminal:pane}:null})});
+  seed();panemap.p6={plugin_url:'zellij:hocus-new-agent'};
+  await call({method:'pane_action',work:'work',key:'fork-1',action:'fork',cancel_active:true});
+  const again=await call({method:'pane_action',work:'work',key:'fork-2',action:'fork',cancel_active:true});
+  check(again.key==='fork-1'&&!read('work','fork-2')&&pickers.length===2&&pickers.every(p=>p.swamp_key==='fork-1'));
+  // A cancellation is acknowledged too, while leaving the active workflow alone.
+  mock.command=(name,args)=>{
+    if(name==='MessageToPlugin'&&args.message_name==='swamp-pane-ack'){acks++;return;}
+    if(name==='MessageToPlugin'&&args.message_name==='swamp-pane-action')pickers.push(args.plugin_config);
+    return originalCommand(name,args);
+  };
+  await picker('fork-1','cancelled');await picker('fork-1','cancelled');
+  check(acks===2&&!cancelled.run&&!read('work','view').transition);
+  await call({method:'pane_action',work:'work',key:'fork-3',action:'fork',cancel_active:true});
+  check(pickers.at(-1).swamp_key==='fork-3');
+  await call({method:'pane_action',work:'work',key:'fork-4',action:'fork'});
+  panemap.t1.exited=false;await picker('fork-3');await flush();
+  check(read('work','view').closed&&read('work','view').transition==='fork'&&cancelled.run&&cancelled.child);
+  await picker('fork-3');check(panemap.t1&&panemap.p6);
+  panemap.t8={target:'Local'};await picker('fork-4','started',8);check(!panemap.t8&&!panemap.p6&&panemap.t1);
+  for(const action of ['duplicate','fork']){
+    seed();pickers=[];panemap.p6={plugin_url:'zellij:hocus-new-agent'};
+    await call({method:'pane_action',work:'work',key:'menu',action});
+    const press=await call({method:'pane_action',work:'work',key:'button',action:'fork',cancel_active:true});
+    check(press.key==='button'&&pickers[1].fork_focused==='true'&&!pickers[1].duplicate_focused);
+    panemap.t1.exited=false;await picker('button');await flush();check(cancelled.run&&cancelled.child);
+  }
+  seed();panemap.p6={plugin_url:'zellij:hocus-new-agent'};
+  await call({method:'pane_action',work:'work',key:'fork-c',action:'fork',cancel_active:true});
+  await call({method:'pane_action',work:'work',key:'restart',action:'restart',cancel_active:true});
+  check(read('work','fork-c').outcome==='interrupted');
+  await picker('fork-c','cancelled');check(!panemap.p6&&acks===0);
+  mock.command=originalCommand;
+
+  let launches=0,sends=0;
+  mock.agent.send=()=>sends++;
+  for(const prompt of ['', '  ', 'bad\0', 'x'.repeat(262145), false, 7, '😀'.repeat(65537)]){
+    seed();mock.agent.spawnDetails=()=>{launches++;throw Error('must not spawn');};
+    await rejected(()=>call({method:'agent_spawn',work:'work',key:'startup',spec:{prompt}}));
+    check(!read('work','startup'));
+  }
+  check(launches===0);
+  for(const immediate of [false,true]){
+    seed();const prompt='Resolve "quoted" conflicts.\nStage, then exit.';
+    mock.agent.spawnDetails=opts=>{
+      launches++;check(read('work','startup').owner.agent==='startup'&&read('work','startup').outcome==='pending'&&opts.prompt===prompt);
+      panemap.t6={target:'Local'};
+      if(immediate)handlers.CommandPaneExited([6,17,opts.context]);
+      return {pane_id:{Terminal:6},cwd:'/control'};
+    };
+    const args={method:'agent_spawn',work:'work',key:'startup',waitForExit:true,spec:{prompt}};
+    await call(args);check(read('work','startup').outcome===(immediate?'process-exit':'pending'));
+    check((await call(args)).pane===6&&launches===(immediate?2:1));
+    if(!immediate)handlers.CommandPaneExited([6,0,{swamp_owner:JSON.stringify(owner('work','startup')),swamp_operation:'startup'}]);
+    const value=read('work','startup');check(value.outcome==='process-exit'&&value.processExited&&value.exitCode===(immediate?17:0));
+  }
+  check(launches===2&&sends===0);
+  seed();mock.agent.spawnDetails=opts=>{check(opts.prompt===undefined);panemap.t6={target:'Local'};return {pane_id:{Terminal:6},cwd:'/control'};};
+  check((await call({method:'agent_spawn',work:'work',key:'plain',spec:{prompt:null}})).outcome==='completed');
+  for(const [configured,explicit,expected] of [['Project prompt',undefined,'Project prompt'],['Project prompt','Input prompt','Input prompt'],[]]){
+    seed();rows.delete(uid('work','launch'));
+    mock.projectConfig.read=()=>({root:'/control',config:{workflow:'exit',rebase_prompt:configured}});
+    await call({method:'workflow_run',work:'work',key:'launch',directory:'/control',inputs:{rebasePrompt:explicit}});
+    check(requests.find(r=>r.operation==='workflow.run').payload.inputs.rebasePrompt===expected);
+  }
+  seed();for(const key of ['view','launch','source'])rows.delete(uid('work',key));
+  panemap.p99={plugin_url:'zellij:agent-exit',is_suppressed:false};
+  await call({method:'workflow_run',work:'work',key:'launch',directory:'/control',inputs:{sourcePane:1}});
+  mock.agent.spawnDetails=opts=>{check(opts.startSuppressed);panemap.t6={target:'Local',is_suppressed:true};return {pane_id:{Terminal:6},cwd:'/control'};};
+  await call({method:'agent_spawn',work:'work',key:'placed',waitForExit:true,spec:{prompt:'Resolve and exit'}});
+  check(read('work','view').current===6&&!panemap.t6.is_suppressed);
+  check((await call({method:'workflow_show',work:'work',launch:'work',directory:'/control'})).active);
+  handlers.CommandPaneExited([6,0,{swamp_owner:JSON.stringify(owner('work','placed')),swamp_operation:'placed'}]);
+  check(!read('work','view').current&&!panemap.p99.is_suppressed);
+
   done=true;
 })().catch(error=>{failure=error.stack;});

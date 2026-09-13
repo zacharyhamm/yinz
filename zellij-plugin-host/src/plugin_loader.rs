@@ -179,6 +179,21 @@ impl<'a> PluginLoader<'a> {
         self
     }
     pub fn start_plugin(&mut self) -> Result<()> {
+        let resolved_source_path = self
+            .plugin_map
+            .reload_metadata(self.plugin_id)
+            .and_then(|metadata| metadata.resolved_source_path);
+        self.plugin_map.remember_plugin(
+            self.plugin_id,
+            super::plugin_map::PluginMetadata {
+                config: self.plugin_config.clone(),
+                resolved_source_path,
+                cwd: self.plugin_cwd.clone(),
+                tab_index: self.tab_index,
+                size: (self.size.rows, self.size.cols),
+                owner_client_id: self.client_id,
+            },
+        );
         if self
             .plugin_config
             .path
@@ -238,6 +253,10 @@ impl<'a> PluginLoader<'a> {
         } else {
             Some(resolved_path.clone())
         };
+        if let Some(mut metadata) = self.plugin_map.reload_metadata(self.plugin_id) {
+            metadata.resolved_source_path = plugin_env.resolved_source_path.clone();
+            self.plugin_map.remember_plugin(self.plugin_id, metadata);
+        }
         let subscriptions = plugin_env.subscriptions.clone();
         let running = {
             let path = resolved_path;
@@ -273,7 +292,8 @@ impl<'a> PluginLoader<'a> {
             .with_context(err_context);
         if loaded.is_err() {
             plugin.lock().unwrap().dispose();
-            self.plugin_map.remove_instance(self.plugin_id, self.client_id);
+            self.plugin_map
+                .remove_instance(self.plugin_id, self.client_id);
             if self.deno_client_disconnected() {
                 return self.clone_instance_for_other_clients();
             }
@@ -379,11 +399,8 @@ impl<'a> PluginLoader<'a> {
                 .with_context(err_context)
         })();
         if loaded.is_err() {
-            plugin.lock().unwrap().dispose();
-            self.plugin_map.remove_instance(self.plugin_id, self.client_id);
-            if self.deno_client_disconnected() {
-                return self.clone_instance_for_other_clients();
-            }
+            self.plugin_map
+                .remove_instance(self.plugin_id, self.client_id);
         }
         loaded?;
 

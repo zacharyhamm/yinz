@@ -370,19 +370,26 @@ fn deno_workflow_view_preserves_question_races_focus_previews_and_scrolling() {
 fn deno_workflow_view_keeps_restart_explicit_and_all_details_reachable() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
-      globalThis.restarted=0;globalThis.closed=0;
+      globalThis.restarted=0;globalThis.forked=0;globalThis.closed=0;
       globalThis.mock={...zellij, getPluginIds:()=>({plugin_id:1}),subscribe(){},every(){},command(name){if(name==='CloseSelf')closed++;}};
     "#);
     consumer(&mut runtime, "workflow-view");
     run(&mut runtime, r#"
-      M.active=true;M.load({onRestart(){restarted++}});
+      M.active=true;M.load({onRestart(){restarted++},onFork(){forked++}});
       const key=bare_key=>M.update({Key:{bare_key,key_modifiers:[]}});
-      for(let i=0;i<6;i++){check(M.focusedControl()!=='restart');key('Tab');}
+      check(M.focusedControl()==='restart');key('Tab');check(M.focusedControl()==='fork');
+      key('Enter');check(forked===1);key('Tab');
       key('Esc');check(closed===0 && restarted===0);
       M.active=false;
       while(M.focusedControl()!=='restart')key('Tab');
       M.submitting=true;key('Enter');check(restarted===0);M.submitting=false;key('Enter');check(restarted===1);
       M.pending=[{model:'m',version:1,attributes:{run:'r',question:'q',kind:'text',state:'pending',answers:[],prompt:'long '.repeat(100)+'QUESTION-END'}}];
+      M.active=true;
+      const seen=()=>{const ids=new Set();for(let i=0;i<10;i++){ids.add(M.focusedControl());key('Tab');}return ids;};
+      check(seen().has('restart')&&seen().has('fork'));
+      M.pending[0].attributes.answers=['restart','fork','leave'];
+      check(!seen().has('restart')&&!seen().has('fork')&&seen().has('choice_1'));
+      M.pending[0].attributes.answers=[];
       M.snapshot={root:'/work',history:{status:'failed'},logs:'history '.repeat(100)+'HISTORY-END'};
       M.render(8,24);
       while(M.scroll>0){key('PageUp');M.render(8,24);}
@@ -796,4 +803,107 @@ fn deno_bridge_report_queries_pin_versions_and_preserve_captured_output() {
       })().catch(error=>{failure=error.stack;});
     "#);
     run(&mut runtime, "if(failure) throw Error(failure);check(done);");
+}
+
+#[test]
+fn deno_workflow_refresh_coalesces_changes_without_queueing_polls() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.calls=0;globalThis.resolve=null;
+      globalThis.mock={...zellij,getPluginIds:()=>({plugin_id:1}),subscribe(){},every(){},command(){},requestRender(){},
+        rpc:{call(){calls++;return new Promise(r=>resolve=r);}}};
+      globalThis.complete=()=>resolve({run:'run',history:{status:'suspended'}});
+    "#);
+    consumer(&mut runtime, "workflow-view");
+    run(&mut runtime, "M.load();M.attach({directory:'/work',run:'run'});for(let i=0;i<20;i++)M.refresh(false);check(calls===1);complete();");
+    run(&mut runtime, "check(calls===1&&!M.refreshing);M.refresh();for(let i=0;i<20;i++)M.pipe({name:'workflow-changed'});check(calls===2);complete();");
+    run(&mut runtime, "check(calls===3&&M.refreshing);for(let i=0;i<20;i++)M.refresh(false);complete();");
+    run(&mut runtime, "check(calls===3&&!M.refreshing);M.submitting=true;M.refresh(false);M.pipe({name:'workflow-changed'});M.submitting=false;M.refresh();complete();");
+    run(&mut runtime, "check(calls===4&&!M.refreshing);");
+}
+
+#[test]
+fn deno_agent_exit_actions_are_available_during_launch_and_ignore_duplicate_presses() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.actions=[];globalThis.settle=null;
+      globalThis.mock={...zellij,getPluginIds:()=>({plugin_id:1}),subscribe(){},every(){},requestRender(){},
+        monotonicMs:()=>actions.length,
+        projectConfig:{read:()=>({config:{workflow:'exit'}})},
+        waitForEvent:()=>Object.assign(new Promise(()=>{}),{cancel(){}}),
+        command:name=>name==='GetPaneInfo'?{is_suppressed:false}:undefined,
+        rpc:{call({payload}) {
+          if(payload.method==='workflow_run')return new Promise(()=>{});
+          check(payload.method==='pane_action'&&payload.work==='launch'&&payload.cancel_active);
+          actions.push(payload);return new Promise(resolve=>settle=resolve);
+        }}};
+    "#);
+    consumer(&mut runtime, "workflow-view");
+    run(&mut runtime, "globalThis.view=M;");
+    consumer(&mut runtime, "agent-exit");
+    run(&mut runtime, r#"
+      M.load({agent_pane_id:'7',agent_cwd:'/work',agent_exit_token:'launch'});
+      globalThis.key=bare_key=>M.update({Key:{bare_key,key_modifiers:[]}});
+      globalThis.focus=id=>{for(let i=0;i<10;i++){if(view.focusedControl()===id)return;key('Tab');}throw Error('missing '+id);};
+      focus('fork');key('Enter');focus('restart');key('Enter');
+      check(actions.length===1&&actions[0].action==='fork'&&actions[0].key.startsWith('fork-'));settle({});
+    "#);
+    run(&mut runtime, "key('Enter');check(actions.length===2&&actions[1].action==='restart');settle({});");
+    run(&mut runtime, r#"
+      view.pending=[{model:'m',version:1,attributes:{run:'r',question:'q',kind:'choice',answers:['yes'],prompt:'Continue?'}}];
+      view.submitting=true;focus('fork');key('Enter');check(actions.length===2);
+      view.submitting=false;key('Enter');check(actions.length===3&&actions[2].key!==actions[0].key);
+    "#);
+}
+
+#[test]
+fn deno_bridge_refresh_reuses_dispatch_and_notifies_all_manual_views() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    run(&mut runtime, r#"
+      globalThis.requests=[];globalThis.notified=[];globalThis.timers=[];
+      const original=mock.command;
+      mock.command=(name,args)=>{
+        if(name==='MessageToPlugin'){if(args.message_name==='workflow-changed')notified.push(args.destination_plugin_id);return;}
+        return original(name,args);
+      };
+      mock.sleep=()=>new Promise(resolve=>timers.push(resolve));
+      mock.projectConfig={read:()=>({root:'/work',config:{workflow:'exit'}})};
+      mock.swampRequest=async request=>{
+        requests.push(request);
+        if(request.operation==='workflow.validate')return {passed:true};
+        if(request.operation==='workflow.run')return {runId:'run'};
+        if(request.operation==='workflow.history.get')return {id:request.payload.workflowIdOrName,status:'running'};
+        if(request.operation==='workflow.history.logs')return {log:{lines:[]}};
+        return {results:[]};
+      };
+    "#);
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load();globalThis.done=false;
+      (async()=>{
+        const call=(args,from=1)=>handler(args,{source:{Plugin:from}});
+        await call({method:'workflow_run',work:'work',key:'launch',directory:'/work',inputs:{checkout:'/work'}});
+        await call({method:'workflow_attach',work:'work',key:'attachment',run:'run',workflow:'exit',directory:'/work'});
+        const show={method:'workflow_show',directory:'/work',run:'run'};
+        for(const id of [1,3,4])await call(show,id);
+        check(requests.filter(r=>r.operation==='workflow.history.search').length===1);
+        check(!requests.some(r=>r.operation==='run.attach'));
+        // A durable hook does not prevent manual history views from receiving updates.
+        rows.set(JSON.stringify(['host','session','work','view']),{rev:1,value:JSON.stringify({view:1,incarnation:'incarnation'})});
+        timers.splice(0).forEach(resolve=>resolve());await Promise.resolve();notified=[];
+        const dispatch=requests.find(r=>r.operation==='workflow.run');
+        for(const kind of ['stdout','step_started'])handlers.CustomMessage(['swamp-response',JSON.stringify({id:dispatch.id,type:'event',event:{kind}})]);
+        check(timers.length===0);
+        for(const kind of ['step_completed','report_completed','report_failed'])handlers.CustomMessage(['swamp-response',JSON.stringify({id:dispatch.id,type:'event',event:{kind}})]);
+        check(timers.length===1);timers.splice(0).forEach(resolve=>resolve());await Promise.resolve();
+        check(notified.sort().join()==='1,3,4');
+        notified=[];await call({...show},4);
+        await call({method:'workflow_attach',work:'work',key:'attachment',run:'child',workflow:'child',directory:'/work'});
+        timers.splice(0).forEach(resolve=>resolve());await Promise.resolve();
+        check(notified.sort().join()==='1,3,4');
+        done=true;
+      })().catch(e=>failure=String(e.stack));
+    "#);
+    run(&mut runtime, "if(failure)throw Error(failure);check(done);");
 }
