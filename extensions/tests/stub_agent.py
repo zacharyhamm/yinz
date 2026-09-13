@@ -83,6 +83,18 @@ try:
         if '--wait' in sys.argv:
             continue
         message = 'unstructured findings' if '--malformed' in sys.argv and prompt.startswith('Review ') else '{"findings":[]}'
+        if prompt.startswith('Write a commit message'):
+            assert not remote
+            if '--hold-commit' in sys.argv:
+                while not os.path.exists(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'release-commit-agent')):
+                    time.sleep(0.01)
+            changes = subprocess.check_output(['git', 'status', '--porcelain']).decode()
+            assert changes, 'clean checkouts must skip the commit agent'
+            message = json.dumps(dict(message="Describe 'quoted' branch changes — é\n\nExplain the pending changes.\nKeep literal $(touch INJECTED) text."))
+            with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'commit-messages.jsonl'), 'a') as log:
+                log.write(json.dumps(dict(message=json.loads(message)['message'], changes=changes, checkout=os.getcwd())) + '\n')
+            if '--malformed-commit' in sys.argv:
+                message = 'not a structured commit message'
         if prompt == 'guest edit':
             # The mirror preserves host ownership; trust only this disposable guest checkout.
             message = subprocess.check_output(['git', '-c', 'safe.directory=' + os.getcwd(), 'rev-parse', 'HEAD']).decode().strip()

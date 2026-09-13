@@ -99,7 +99,7 @@ fixture_claude = fixture_bin / 'claude'
 fixture_claude.write_text('#!/usr/bin/python3\nimport os\nos.execv("/usr/bin/python3", ["/usr/bin/python3", ' + repr(str(main / 'extensions/tests/stub_agent.py')) + ', "--exit"])\n')
 fixture_claude.chmod(0o755)
 fixture_codex = fixture_bin / 'codex'
-fixture_codex.write_text(fixture_claude.read_text().replace('import os\n', 'import os\nos.environ["SWAMP_SMOKE_KIND"] = "codex"\n'))
+fixture_codex.write_text(fixture_claude.read_text().replace('import os\n', 'import os, sys, json\nos.environ["SWAMP_SMOKE_KIND"] = "codex"\nwith open(os.path.join(os.environ["SWAMP_SMOKE_ROOT"], "codex-argv.jsonl"), "a") as log: log.write(json.dumps(sys.argv[1:]) + "\\n")\n'))
 fixture_codex.chmod(0o755)
 
 env.update(PATH=str(fixture_bin) + os.pathsep + env['PATH'],
@@ -364,6 +364,9 @@ if args.commit_rebase_only:
     git_source.write_text(git_code)
 (main / '.zellij').mkdir()
 shutil.copy(source / '.zellij/swamp-workflows.kdl', main / '.zellij/swamp-workflows.kdl')
+if args.commit_rebase_only:
+    binding = main / '.zellij/swamp-workflows.kdl'
+    binding.write_text(binding.read_text().replace('agent_exit {', 'agent_exit {\n    commit_agent kind="codex" model="commit-model" effort="medium"'))
 (main / '.git/info/exclude').write_text('.swamp*\n.gitignore\nextensions/\nworkflows/\nmodels/\n.zellij/\nAGENTS.md\nCLAUDE.md\n')
 for name in ('agent-work', 'review-integration', 'question', 'agent-exit'):
     swamp('workflow', 'validate', '@hammz/zellij-' + name)
@@ -374,6 +377,7 @@ for name in ('agent-work', 'review-integration', 'question', 'agent-exit'):
                 task = step['task']
                 if task.get('methodName') == 'continue_flow':
                     assert task['inputs']['inputs']['rebasePrompt'] == '${{ inputs.rebasePrompt }}'
+                    assert task['inputs']['inputs']['commitAgent'] == '${{ inputs.commitAgent }}'
 if args.history_runs:
     assert args.swamp_source, '--history-runs requires --swamp-source'
     run('deno', 'run', '-A', '--config', Path(args.swamp_source) / 'deno.json',
@@ -749,6 +753,8 @@ try:
                             if p.get('plugin_url') in ('zellij:swamp-workflow', 'zellij:agent-exit')
                             and not p['is_suppressed'] and p['is_focused'])
                 head = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
+                messages = root / 'commit-messages.jsonl'
+                previous_messages = messages.read_text().splitlines() if messages.exists() else []
                 answer(q, 'commit-and-rebase', 'foreground-' + scenario)
                 pane = until('foreground commit pane', lambda: commit_pane(token))
                 pane_id = 'terminal_' + str(pane['id'])
@@ -770,6 +776,17 @@ try:
                     assert 'COMMIT REJECTED' in output
                 if scenario in ('clean', 'commit-failed'):
                     assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout == head
+                generated = messages.read_text().splitlines()
+                assert len(generated) == len(previous_messages) + (scenario != 'clean')
+                if scenario == 'success':
+                    generated_message = json.loads(generated[-1])
+                    assert generated_message['checkout'] == str(topic)
+                    assert run('git', 'log', '-1', '--format=%B', cwd=topic).stdout.rstrip('\n') == generated_message['message']
+                    assert not (topic / 'INJECTED').exists()
+                    argv = json.loads((root / 'codex-argv.jsonl').read_text().splitlines()[-1])
+                    assert 'commit-model' in argv and any('model_reasoning_effort' in arg and 'medium' in arg for arg in argv), argv
+                    retained = swamp('data', 'query', 'name == "commitMessage-current"', '--select', 'attributes')['results']
+                    assert any(item['message'] == generated_message['message'] and item['owner']['agent'].endswith('-commit-agent') for item in retained)
                 # Persistence is the behavior under test: finished commands must await input.
                 time.sleep(1)
                 assert commit_pane(token) and not pending(token, 'review') and not pending(token, 'conflict')
@@ -812,6 +829,36 @@ try:
                     choose(token, 'conflict' if scenario == 'conflict' else 'review',
                            'leave-paused' if scenario == 'conflict' else 'leave')
                 print('PASS:', scenario, 'shows commands/output in place, waits for Enter, and restores workflow', flush=True)
+            run('git', 'rebase', '--abort', cwd=topic)
+            (topic / 'commit-description-test').write_text('pending commit\n')
+            for scenario in ('malformed', 'cancelled'):
+                token = 'commit-message-' + scenario
+                flag = '--malformed-commit' if scenario == 'malformed' else '--hold-commit'
+                launch(token, commitAgent=dict(command='/usr/bin/python3', args=[str(main / 'extensions/tests/stub_agent.py'), '--exit', flag]))
+                choose(token, 'exit', 'begin-review')
+                q = until('commit message preparation', lambda: pending(token, 'prepare'))
+                head = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
+                answer(q, 'commit-and-rebase', token)
+                commit_runs = lambda: swamp('workflow', 'history', 'search', '--input', 'launch=' + token)['results']
+                def commit_operation():
+                    for item in commit_runs():
+                        operation = bridge(method='lookup', work=token, key=item['runId'] + '-commit-agent-prompt')
+                        if operation and operation.get('accepted'):
+                            return item, operation
+                item, operation = until('commit agent received prompt', commit_operation)
+                if scenario == 'cancelled':
+                    zellij('workflow', 'cancel', item['runId'])
+                    until('commit run cancelled', lambda: all(r['status'] not in ('running', 'suspended') for r in commit_runs()))
+                    (root / 'release-commit-agent').touch()
+                    until('late commit agent exits', lambda: any(p['id'] == operation['pane'] and p['exited'] for p in agents()))
+                else:
+                    until('malformed message stops workflow', lambda: any(r['status'] == 'failed' for r in commit_runs()))
+                    report = swamp('report', 'get', '@swamp/method-summary', '--model', item['runId'] + '-commit-message')['json']
+                    assert report['status'] == 'failed' and report['methodName'] == 'commit_message_result'
+                assert bridge(method='lookup', work=token, key=item['runId'] + '-commit-and-rebase') is None
+                assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout == head
+                assert (topic / 'commit-description-test').exists()
+                print('PASS:', scenario, 'commit message preserves changes and prevents Git dispatch', flush=True)
             raise SystemExit(0)
 
         def exercise_diff(token, view=None):
@@ -1022,7 +1069,7 @@ try:
             choose('success', 'review', 'merge')
             q = until('informed skipped-check confirmation', lambda: pending('success', 'merge'))
             assert 'Tests: SKIPPED' in q['attributes']['prompt'] and 'Review: SKIPPED' in q['attributes']['prompt']
-            assert not agents(), 'Preparation and merge confirmation must not start agents'
+            assert all(p['exited'] for p in agents()), 'Only the completed commit agent is expected before optional review'
             zellij('workflow', 'show', q['attributes']['run'])
             until('confirmation rendered', lambda: b'Merge exact revision' in re.sub(rb'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]', b'', bytes(ui_output)))
             # Changed target invalidates this exact approval and returns to preparation.

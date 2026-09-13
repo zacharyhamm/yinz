@@ -5,6 +5,7 @@ import {
     observe,
     Operation,
     operation,
+    Owner,
     preparePrompt,
     PromptText,
     Request,
@@ -62,6 +63,19 @@ const ReviewArgs = z.object({
     evidence: Evidence,
     worker: Key,
 });
+const CommitMessage = z.object({
+    message: Literal.refine(
+        (s) => s.trim().length > 0,
+        "Commit message must not be blank",
+    ),
+    evidence: Evidence,
+    owner: Owner,
+});
+const CommitMessageArgs = z.object({
+    operation: Operation,
+    evidence: Evidence,
+    agent: Key,
+});
 const Checks = z.object({
     evidence: Evidence,
     review: Review.nullable(),
@@ -88,6 +102,10 @@ const resource = <T extends z.ZodType>(schema: T, description: string) => ({
     garbageCollection: 50,
 });
 export const resources = {
+    commitMessage: resource(
+        CommitMessage,
+        "Generated commit subject and body bound to the inspected checkout and authoring agent",
+    ),
     capture: resource(
         Capture,
         "Private command capture pending durable test evidence",
@@ -199,6 +217,13 @@ const FlowInputs = z.object({
     kind: Literal,
     agentCommand: Literal,
     agentArgs: z.array(Literal),
+    commitAgent: AgentSpec.pick({
+        kind: true,
+        model: true,
+        effort: true,
+        command: true,
+        args: true,
+    }).optional(),
     rebasePrompt: Literal.refine((s) => s.trim().length > 0).default(
         "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done.",
     ),
@@ -235,6 +260,35 @@ const ContinueFlow = Request.extend({
     inputs: FlowInputs,
 });
 export const methods = {
+    commit_message_result: {
+        description:
+            "Validate and retain the commit agent's complete message before Git mutation",
+        arguments: CommitMessageArgs,
+        execute: (input: z.infer<typeof CommitMessageArgs>, c: Context) => {
+            const a = CommitMessageArgs.parse(input);
+            if (
+                a.operation.outcome !== "process-exit" ||
+                a.operation.exitCode !== 0 || a.operation.hook !== "Stop" ||
+                a.operation.owner?.agent !== a.agent
+            ) {
+                throw new Error(
+                    "Commit message agent did not complete successfully; inspect its saved operation",
+                );
+            }
+            const { message } = CommitMessage.pick({ message: true }).parse(
+                JSON.parse(a.operation.message ?? ""),
+            );
+            return save(
+                c,
+                "commitMessage",
+                CommitMessage.parse({
+                    message,
+                    evidence: a.evidence,
+                    owner: a.operation.owner,
+                }),
+            );
+        },
+    },
     prepare_prompt: {
         description:
             "Prepare and validate a helper prompt before spawning its agent",

@@ -547,6 +547,29 @@ for _,case in ipairs{
   assert(found)
 end
 
+for _,case in ipairs{
+  {config={commit_agent={kind='codex',model='commit-model',effort='medium'},agent={kind='claude',model='review-model'}},expected={kind='codex',model='commit-model',effort='medium'}},
+  {config={commit_agent={kind='codex'},agent={kind='claude',model='review-model',effort='high'}},expected={kind='codex'}},
+  {config={agent={kind='claude',model='shared-model',effort='high'}},expected={kind='claude',model='shared-model',effort='high'}},
+  {config={commit_agent={kind='claude'}},explicit={kind='codex',model='input-model'},expected={kind='codex',model='input-model'}},
+  {config={},expected={kind='claude',command='/stub',args={'--exit'}}},
+  {config={},inputs={kind='claude'},expected={kind='claude',command=''}},
+} do
+  seed();rows[uid('work','launch')]=nil
+  case.config.workflow='exit'
+  z.project_config.read=function() return {root='/control',config=case.config} end
+  local response=call{method='workflow_run',work='work',key='launch',directory='/control',inputs=case.inputs or {kind='claude',agentCommand='/stub',agentArgs={'--exit'},commitAgent=case.explicit}}
+  assert(response.ok,tostring(response.value))
+  local found=false
+  for _,request in ipairs(requests) do
+    if request.operation=='workflow.run' then
+      found=true
+      assert(z.json.encode(request.payload.inputs.commitAgent)==z.json.encode(case.expected),z.json.encode(request.payload.inputs.commitAgent))
+    end
+  end
+  assert(found)
+end
+
 -- A running startup-prompt agent occupies the same workflow placement as a prompted helper.
 seed();reload_bridge()
 z.hide_pane_with_id=function(pane) z.get_pane_info(pane).is_suppressed=true end

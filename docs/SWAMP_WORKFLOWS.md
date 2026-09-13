@@ -21,6 +21,7 @@ agent_exit {
     workflow "@hammz/zellij-agent-exit"
     ci "cargo" "x" "ci" "check"
     default_branch "main"
+    commit_agent kind="codex" effort="medium"
     rebase_prompt "Resolve and stage conflicts. Leave rebase continuation to the workflow, then exit."
 }
 ```
@@ -28,6 +29,27 @@ agent_exit {
 The optional `rebase_prompt` must be a nonblank string. An explicit workflow input,
 `rebasePrompt`, overrides it. If both are absent, the existing conflict-resolution
 instructions apply. The launch captures this value and retains it through all continuations.
+
+`commit_agent` accepts `kind`, `model`, and `effort`, with the same validation as `agent`.
+For example, add `model="your-model"` to select a model supported by that agent.
+If `commit_agent` is absent, commit generation uses the `agent` settings.
+If both are absent, it uses the helper command or original agent kind.
+The selected specification does not inherit omitted model or effort values from another specification.
+Those values use launcher defaults. An explicit `commitAgent` workflow input overrides KDL.
+The launch captures these settings and preserves them through continuations.
+
+For a dirty checkout, **Commit & rebase** starts a local agent to write a subject and body.
+The agent inspects pending changes with the branch history as context, then returns JSON containing `message` and exits.
+The workflow saves the message, checkout evidence, and agent identity in `commitMessage-current` Swamp data.
+The Git extension receives the saved message through CEL and checks the evidence under its checkout locks.
+Failed or missing agent output, or changed checkout evidence, prevents the commit.
+A clean checkout skips message generation and proceeds to rebase. Existing commit messages remain unchanged.
+
+Retrieve saved messages from the control checkout:
+
+```sh
+swamp data query 'name == "commitMessage-current"' --select attributes --json
+```
 
 For resolution, the prepared prompt becomes the agent's startup argument through the
 shared launcher. The bridge registers ownership before launch and waits for process exit.
@@ -138,7 +160,8 @@ local extensions unpublished.
    Empty diffs show “No unstaged or untracked changes.” Staged-only changes are excluded. Press `q` or `Esc` to return to the Begin review preparation menu.
    Arrow keys scroll, and `/` searches. Pager settings are overridden only for this viewer.
    Temporary output and key bindings are removed on exit. Command failures appear in the workflow view.
-   Commit and rebase shows each Git command and its live output in a foreground pane.
+   Commit and rebase first generates and saves a message when the checkout has pending changes.
+   It then shows each Git command and its live output in a foreground pane.
    It skips empty commits and rebases onto the configured local target. After success
    or failure, press Enter to return to the workflow. A failed commit stops before rebase.
 3. If a rebase is paused, choose **Resolve with agent** or **Leave paused**.
@@ -433,8 +456,9 @@ fixture directory containing its command transcript and terminal capture. The
 `--exit-menu-only` path checks exact menus and approval prompts, rejected hidden choices,
 fresh checks after Fork cancellation, and fallback choices for inspection errors and VM context. The
 `--source-diff-only` path checks short, long, untracked, staged-only, and empty diffs in manual, agent-exit,
-and unattended views, including dismissal, scrolling, search, checkout isolation, nested repositories, and temporary-file cleanup. The
-Firecracker suite also runs the typed bridge against a real guest, including a sync
+and unattended views, including dismissal, scrolling, search, checkout isolation, nested repositories, and temporary-file cleanup.
+`--commit-rebase-only` checks configured commit agents, saved multiline messages, clean checkouts, malformed output, cancellation, and foreground Git results.
+The Firecracker suite also runs the typed bridge against a real guest, including a sync
 conflict. Run socket and KVM tests outside a sandbox that blocks those facilities.
 
 ### Measured results (2026-09-10)

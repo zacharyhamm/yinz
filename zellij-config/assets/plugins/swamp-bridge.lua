@@ -972,6 +972,14 @@ handle = function(args, manual_view)
     inputs.gate = inputs.gate or config.config.ci or {'cargo','x','ci','check'}
     inputs.targetBranch = inputs.targetBranch or config.config.default_branch or 'main'
     inputs.rebasePrompt = inputs.rebasePrompt or config.config.rebase_prompt
+    if not inputs.commitAgent then
+      local selected=config.config.commit_agent or config.config.agent
+      if selected then
+        inputs.commitAgent={kind=selected.kind or inputs.kind,model=selected.model,effort=selected.effort}
+      else
+        inputs.commitAgent={kind=inputs.kind,command=inputs.agentCommand or '',args=inputs.agentArgs}
+      end
+    end
     value,row=read(uid)
     value.workflow,value.checkout,value.launch=name,config.root,args.work
     put(uid,value,row)

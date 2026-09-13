@@ -28,6 +28,7 @@ if request['method'] == 'swamp_dispatch':
     assert request['operation'] == 'workflow.run'
     assert request['payload']['noSupersede'] is True
     assert request['payload']['inputs']['rebasePrompt'] == 'Configured resolver: stage, then exit.'
+    assert request['payload']['inputs']['commitAgent'] == dict(kind='codex', model='commit-model', effort='medium')
     assert len(json.dumps(request).encode()) < 262144
     assert request['payload']['inputs']['state']['test']['outputRef']['version'] == 1
     assert 'argv' not in request
@@ -137,6 +138,11 @@ print(json.dumps(dict(result=result)))
             agentCommand: "",
             agentArgs: [],
             rebasePrompt: "Configured resolver: stage, then exit.",
+            commitAgent: {
+                kind: "codex",
+                model: "commit-model",
+                effort: "medium",
+            },
             firecracker: "",
             firecrackerImage: "",
             sourcePane: -1,

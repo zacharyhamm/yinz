@@ -36,6 +36,7 @@ export const CommitAndRebase = Mutation.extend({
     work: Key,
     session: Literal.min(1),
     message: Literal.min(1),
+    expectedEvidence: Evidence.optional(),
 });
 export const git = (c: Pick<Context, "signal">, path: string, args: string[]) =>
     checked(c, path, ["git", ...args]);
