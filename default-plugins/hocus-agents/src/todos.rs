@@ -163,16 +163,11 @@ impl State {
 
     fn take_todo_rows(&mut self, rows: &DataRows) {
         let root = self.todos.project_root.as_deref().unwrap_or_default();
+        let before = todo_rows(&self.todos.list, self.todos.show_done);
         self.todos.list = todos::from_rows(rows).remove(root).unwrap_or_default();
         self.todos.line_cache = None;
         let visible = todo_rows(&self.todos.list, self.todos.show_done);
-        if !self
-            .todos
-            .selected
-            .is_some_and(|id| visible.iter().any(|row| row.id == id))
-        {
-            self.todos.selected = visible.first().map(|row| row.id);
-        }
+        self.todos.selected = nearest_surviving(&before, &visible, self.todos.selected);
         self.todos.list_scroll = None;
         self.todos.status.clear();
     }
@@ -514,16 +509,12 @@ impl State {
         changed
     }
 
+    /// Re-derives the visible rows after `show_done` has just been flipped.
     fn take_todo_rows_from_list(&mut self) {
         self.todos.line_cache = None;
+        let before = todo_rows(&self.todos.list, !self.todos.show_done);
         let rows = todo_rows(&self.todos.list, self.todos.show_done);
-        if !self
-            .todos
-            .selected
-            .is_some_and(|id| rows.iter().any(|row| row.id == id))
-        {
-            self.todos.selected = rows.first().map(|row| row.id);
-        }
+        self.todos.selected = nearest_surviving(&before, &rows, self.todos.selected);
         self.todos.list_scroll = None;
     }
 
@@ -770,6 +761,26 @@ fn todo_lines(rows: &[Row], cols: usize) -> Vec<TodoLine> {
     out
 }
 
+/// The id to keep the cursor on once the visible rows go from `before` to `after`: `selected` if
+/// it is still visible, else the nearest survivor after where it was, else the nearest before it,
+/// else the first row. Scanning `before` skips a completed item's hidden children as well.
+fn nearest_surviving(before: &[Row], after: &[Row], selected: Option<u64>) -> Option<u64> {
+    let survives = |id: u64| after.iter().any(|row| row.id == id);
+    if let Some(id) = selected.filter(|id| survives(*id)) {
+        return Some(id);
+    }
+    selected
+        .and_then(|id| before.iter().position(|row| row.id == id))
+        .and_then(|at| {
+            before[at + 1..]
+                .iter()
+                .chain(before[..at].iter().rev())
+                .map(|row| row.id)
+                .find(|id| survives(*id))
+        })
+        .or_else(|| after.first().map(|row| row.id))
+}
+
 fn collect_ids(items: &[todos::Item], ids: &mut Vec<u64>) {
     for item in items {
         ids.push(item.id);
@@ -917,6 +928,73 @@ mod tests {
                 .unwrap()
                 .0
         );
+    }
+
+    #[test]
+    fn a_vanished_selection_moves_to_its_nearest_surviving_neighbour() {
+        let list = todos::List {
+            items: vec![
+                item(1, "first", false, vec![]),
+                item(2, "parent", false, vec![item(3, "child", false, vec![])]),
+                item(4, "last", false, vec![]),
+            ],
+            ..Default::default()
+        };
+        let before = todo_rows(&list, false);
+        let without = |hidden: &[u64]| -> Vec<Row> {
+            before
+                .iter()
+                .filter(|row| !hidden.contains(&row.id))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(nearest_surviving(&before, &before, Some(2)), Some(2));
+        assert_eq!(nearest_surviving(&before, &without(&[3]), Some(3)), Some(4));
+        assert_eq!(
+            nearest_surviving(&before, &without(&[2, 3]), Some(2)),
+            Some(4)
+        );
+        assert_eq!(nearest_surviving(&before, &without(&[4]), Some(4)), Some(3));
+        assert_eq!(nearest_surviving(&before, &before, Some(9)), Some(1));
+        assert_eq!(nearest_surviving(&before, &[], Some(2)), None);
+    }
+
+    #[test]
+    fn completing_the_selected_todo_keeps_the_cursor_in_place() {
+        use zellij_tile::prelude::DataValue;
+
+        let rows = |done: u64| DataRows {
+            columns: ["id", "root", "text", "parent_id", "rev", "done"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            rows: (1..=3)
+                .map(|id| {
+                    vec![
+                        DataValue::Int(id),
+                        DataValue::Text("/work".into()),
+                        DataValue::Text(format!("todo {id}")),
+                        DataValue::Null,
+                        DataValue::Int(id),
+                        DataValue::Bool(id as u64 == done),
+                    ]
+                })
+                .collect(),
+            truncated: false,
+            next_cursor: None,
+        };
+        for (selected, expected) in [(2, 3), (3, 2)] {
+            let mut state = State {
+                surface: Surface::Todos,
+                ..Default::default()
+            };
+            state.todos.project_root = Some("/work".into());
+            state.todos.todo_watch = Some(DataWatchId::new(1));
+            state.todo_rows_changed(DataWatchId::new(1), rows(0));
+            state.todos.selected = Some(selected);
+            state.todo_rows_changed(DataWatchId::new(1), rows(selected));
+            assert_eq!(state.todos.selected, Some(expected));
+        }
     }
 
     #[test]
