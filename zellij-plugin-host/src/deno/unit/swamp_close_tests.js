@@ -5,7 +5,7 @@ const uid=(work,key)=>JSON.stringify(['host','session',work,key]);
 const read=(work,key)=>rows.has(uid(work,key))?JSON.parse(rows.get(uid(work,key)).value):undefined;
 const save=(work,key,value)=>rows.set(uid(work,key),{rev:(rows.get(uid(work,key))?.rev??0)+1,value:JSON.stringify(value)});
 const owner=(work,agent)=>({host_id:'host',session:'session',incarnation:'incarnation',work,agent});
-let requests=[],cancelled={},timers=[],delayed,release,panemap={},acks=0;
+let requests=[],cancelled={},timers=[],delayed,release,panemap={},acks=0,transientRestore=false,missingPane;
 const flush=async()=>{for(let i=0;i<50;i++)await Promise.resolve();};
 const tick=async()=>{const pending=timers;timers=[];pending.forEach(resolve=>resolve());await flush();};
 const close=pane=>handlers.PaneClosed(pane);
@@ -15,12 +15,15 @@ mock.getPluginIds=()=>({host_id:'host',plugin_id:99});
 mock.sleep=()=>new Promise(resolve=>timers.push(resolve));
 mock.projectConfig={read:()=>({root:'/control',config:{workflow:'exit'}})};
 mock.command=(name,args)=>{
+  if(name==='GetPaneInfo'&&args.Terminal===missingPane&&missingPane!==undefined){missingPane=undefined;return;}
   if(name==='GetPaneInfo')return panemap['Plugin' in args?'p'+args.Plugin:'t'+args.Terminal];
   if(name==='CloseTerminalPane'){delete panemap['t'+args];close({Terminal:args});return;}
   if(name==='ClosePluginPane'){delete panemap['p'+args];close({Plugin:args});return;}
   if(name==='HidePaneWithId'){const pane=mock.command('GetPaneInfo',args);if(pane)pane.is_suppressed=true;return;}
   if(name==='ReplacePaneWithExistingPane'){
-    mock.command('GetPaneInfo',args[0]).is_suppressed=true;mock.command('GetPaneInfo',args[1]).is_suppressed=false;return;
+    mock.command('GetPaneInfo',args[0]).is_suppressed=true;mock.command('GetPaneInfo',args[1]).is_suppressed=false;
+    if(transientRestore&&'Terminal' in args[0]&&'Plugin' in args[1])missingPane=args[0].Terminal;
+    return;
   }
   if(name==='RerunCommandPane'){panemap['t'+args].exited=false;return;}
   if(name==='SetPaneSubtitle')return;
@@ -29,7 +32,7 @@ mock.command=(name,args)=>{
   throw Error('Unexpected command '+name);
 };
 mock.runCommand=async opts=>({exitCode:0,stderr:new Uint8Array(),stdout:zellij.encodeUtf8(opts.command[0]==='git'?'/control\n':JSON.stringify(
-  Object.keys(panemap).filter(p=>p[0]==='t').map(p=>({terminal_id:Number(p.slice(1)),attached:true,session_name:'session',host_id:'supervisor-'+p.slice(1),child_pid:100+Number(p.slice(1))}))))});
+  Object.keys(panemap).filter(p=>p[0]==='t').map(p=>({terminal_id:Number(p.slice(1)),attached:true,session_name:'session',host_id:'supervisor-'+p.slice(1),child_pid:panemap[p].process??100+Number(p.slice(1)),child_exit_status:panemap[p].exited?(panemap[p].exit_status===undefined?0:panemap[p].exit_status):null}))))});
 mock.swampRequest=async opts=>{
   requests.push(opts);
   if(delayed===opts.operation)return new Promise(resolve=>{release=resolve;});
@@ -42,7 +45,7 @@ mock.swampRequest=async opts=>{
 };
 function reload(){timers=[];handlers={};reloadConsumer();M.load();}
 function seed(){
-  rows.clear();timers=[];requests=[];cancelled={};delayed=undefined;release=undefined;acks=0;
+  rows.clear();timers=[];requests=[];cancelled={};delayed=undefined;release=undefined;acks=0;transientRestore=false;missingPane=undefined;
   panemap={p99:{plugin_url:'zellij:swamp-workflow'},p2:{plugin_url:'zellij:agent-exit',is_suppressed:false},
     t1:{target:'Local',exited:true,is_suppressed:true},t3:{target:'Local',is_suppressed:true},t4:{target:'Local',is_suppressed:true},t5:{target:'Local'}};
   save('work','view',{view:2,source:1,current:3,incarnation:'incarnation'});
@@ -55,6 +58,45 @@ function seed(){
 }
 const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').length;
 (async()=>{
+  for(const state of ['completed','failed','signal','running','replaced','wrong-owner','missing','detached']) {
+    seed();
+    const operation=read('work','worker');
+    operation.outcome=state==='failed'?'failed':'completed';operation.exitCode=state==='failed'?7:0;
+    if(state==='signal'){operation.outcome='failed';operation.exitCode=null;panemap.t3.exit_status=null;}
+    if(state==='wrong-owner')operation.owner.agent='someone-else';
+    save('work','worker',operation);
+    panemap.t3.exited=state!=='running';
+    if(state==='replaced')panemap.t3.process=999;
+    if(state==='missing')delete panemap.t3;
+    if(state==='detached')delete panemap.p2;
+    const args={method:'command_close',work:'work',key:'worker'};
+    if(['running','replaced','wrong-owner'].includes(state)) {
+      await rejected(()=>call(args));check(panemap.t3&&!read('work','worker').closed);
+    } else {
+      await call(args);await call(args);await flush();
+      check(!panemap.t3&&read('work','worker').closed&&!read('work','view').closed);
+      check(!Object.keys(cancelled).length&&read('work','view').current===undefined);
+    }
+    handlers.CommandPaneExited([3,99,{swamp_owner:JSON.stringify(operation.owner),swamp_operation:'worker'}]);
+    check(read('work','worker').exitCode===operation.exitCode);
+  }
+  for(const detached of [false,true]) for(const exitCode of [0,null]) {
+    seed();for(const key of ['view','launch','source'])rows.delete(uid('work',key));
+    panemap.p99={plugin_url:'zellij:agent-exit',is_suppressed:false};
+    await call({method:'workflow_run',work:'work',key:'launch',directory:'/control',inputs:{sourcePane:1}});
+    await call({method:'command',work:'work',key:'tests',argv:['helper'],foreground:true,capture:{directory:'/capture'}});
+    check(panemap.p99.is_suppressed&&!panemap.t3.is_suppressed);
+    panemap.t3.exited=true;
+    panemap.t3.exit_status=exitCode;
+    handlers.CommandPaneExited([3,exitCode,{swamp_owner:JSON.stringify(owner('work','tests')),swamp_operation:'tests'}]);
+    check(read('work','tests').outcome===(exitCode===0?'completed':'failed'));
+    check(panemap.p99.is_suppressed&&!panemap.t3.is_suppressed);
+    if(detached) { panemap.t3.is_suppressed=true;handlers.PaneUpdate(); }
+    transientRestore=!detached;
+    await call({method:'command_close',work:'work',key:'tests'});await call({method:'command_close',work:'work',key:'tests'});await flush();
+    check(!panemap.t3&&panemap.p99.is_suppressed===detached&&!read('work','view').closed);
+    check(!Object.keys(cancelled).length);
+  }
   for(const pane of [{Plugin:2},{Terminal:1},{Terminal:3}]){
     seed();close(pane);await flush();
     check(read('work','view').closed && !read('work','view').cancel_pending);
