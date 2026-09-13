@@ -242,6 +242,7 @@ struct Chat {
     pub(crate) retry: Option<Retry>,
     pub(crate) plan: Plan,
     pub(crate) usage: Option<TokenUsage>,
+    pub(crate) last_request_input: Option<u64>,
     /// Travels with the chat for the same reason `spotlight` does: the reload was asked for by
     /// *this* conversation, and it is the one owed the report. A watch left on `State` alone
     /// would be overwritten by another chat's reload and stranded when this one is parked.
@@ -490,6 +491,7 @@ pub struct State {
     pub plan_cache: Option<(ui::PlanKey, Vec<ui::VLine>)>,
     /// Provider-reported input/output totals for this chat.
     pub(crate) usage: Option<TokenUsage>,
+    pub(crate) last_request_input: Option<u64>,
     /// Which archived chat this conversation is being written back to. `None`
     /// until the first save, which is what makes an untouched pane leave no file.
     chat_id: Option<u64>,
@@ -984,6 +986,7 @@ impl Default for State {
             transcript_cache: None,
             plan_cache: None,
             usage: None,
+            last_request_input: None,
             chat_id: None,
             saved: (0, 0, None),
             parked: Vec::new(),

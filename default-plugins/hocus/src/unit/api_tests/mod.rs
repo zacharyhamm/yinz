@@ -37,6 +37,7 @@ fn test_config() -> Config {
         // On, as it resolves by default; `request_body_asks_for_usage` is the
         // proof it lands on the wire.
         stream_usage: true,
+        context_max_bytes: CONTEXT_MAX_BYTES,
     }
 }
 
@@ -97,3 +98,5 @@ mod search;
 mod streaming;
 mod tool_calls;
 mod urls;
+
+mod context_budget;

@@ -202,7 +202,7 @@ fn parses_a_whole_responses_turn() {
         ]
     );
     assert!(items.contains(&SseItem::Usage {
-        prompt: 1200,
+        prompt: Some(1200),
         completion: 34,
         cost_nanos: None,
     }));
@@ -288,7 +288,7 @@ fn surfaces_an_incomplete_response() {
         items,
         vec![
             SseItem::Usage {
-                prompt: 1200,
+                prompt: Some(1200),
                 completion: 34,
                 cost_nanos: None,
             },
@@ -310,7 +310,7 @@ fn a_completed_response_carries_its_reported_cost() {
         items,
         vec![
             SseItem::Usage {
-                prompt: 1200,
+                prompt: Some(1200),
                 completion: 34,
                 cost_nanos: Some(12_300_000),
             },
@@ -332,7 +332,7 @@ fn a_completed_response_with_an_unreadable_cost_still_finishes() {
         items,
         vec![
             SseItem::Usage {
-                prompt: 1200,
+                prompt: Some(1200),
                 completion: 34,
                 cost_nanos: None,
             },

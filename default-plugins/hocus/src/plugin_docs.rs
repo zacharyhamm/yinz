@@ -359,7 +359,7 @@ fn index() -> String {
 pub fn section(name: &str) -> Option<String> {
     match name {
         "index" => Some(index()),
-        "quickstart" => Some(format!("Write `clock.ts` with `plugin_write`, check it with `plugin_check`, then call `plugin_reload name=clock.ts`. Use explicit `.ts` filenames. Extensionless names select TypeScript.\n\n```ts\n{EXAMPLE_CLOCK}\n```\n\nRead `overview` and `lifecycle` for the SDK and module rules.")),
+        "quickstart" => Some(format!("Write `clock.ts` with `plugin_write`, then call `plugin_reload name=clock.ts`. Use explicit `.ts` filenames. Extensionless names select TypeScript.\n\n```ts\n{EXAMPLE_CLOCK}\n```\n\nRead `overview` and `lifecycle` for the SDK and module rules.")),
         "overview" => Some(overview()),
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),
         "example_capabilities" => Some(fenced(EXAMPLE_CAPABILITIES)),

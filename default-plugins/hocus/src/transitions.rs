@@ -99,6 +99,7 @@ impl State {
             transcript_cache: self.transcript_cache.take(),
             plan_cache: self.plan_cache.take(),
             usage: self.usage.take(),
+            last_request_input: self.last_request_input.take(),
             messages: std::mem::take(&mut self.messages),
             status: std::mem::take(&mut self.status),
             stream: self.stream.take(),
@@ -148,6 +149,7 @@ impl State {
         self.retry = chat.retry;
         self.plan = chat.plan;
         self.usage = chat.usage;
+        self.last_request_input = chat.last_request_input;
         self.plugin_load = chat.plugin_load;
         self.extension_call_started_ms = chat.extension_call_started_ms;
         self.jobs = chat.jobs;
@@ -1764,6 +1766,7 @@ impl State {
         self.messages.clear();
         self.plan_cache = None;
         self.usage = None;
+        self.last_request_input = None;
         self.chat_id = None;
         self.saved = self.fingerprint();
         self.picker = None;

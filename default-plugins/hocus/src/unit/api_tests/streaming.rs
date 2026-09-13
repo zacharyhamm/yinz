@@ -204,7 +204,7 @@ fn a_usage_only_chunk_yields_the_count_and_nothing_else() {
     assert!(matches!(
         items[0],
         SseItem::Usage {
-            prompt: 120,
+            prompt: Some(120),
             completion: 7,
             cost_nanos: None,
         }
@@ -219,7 +219,7 @@ fn a_reported_cost_rides_along_in_nano_usd() {
     assert_eq!(
         parser.feed(frame),
         vec![SseItem::Usage {
-            prompt: 120,
+            prompt: Some(120),
             completion: 7,
             cost_nanos: Some(420_000),
         }]
@@ -234,7 +234,7 @@ fn a_cost_without_counts_is_kept_and_a_negative_one_is_not() {
     assert_eq!(
         parser.feed(frame),
         vec![SseItem::Usage {
-            prompt: 0,
+            prompt: None,
             completion: 0,
             cost_nanos: Some(1_000_000),
         }]
@@ -259,7 +259,7 @@ fn a_usage_without_prompt_or_completion_counts_is_ignored() {
     assert!(matches!(
         items[..],
         [SseItem::Usage {
-            prompt: 9,
+            prompt: Some(9),
             completion: 0,
             cost_nanos: None,
         }]
@@ -277,7 +277,7 @@ fn a_usage_on_a_content_chunk_keeps_both() {
     assert!(matches!(
         items[0],
         SseItem::Usage {
-            prompt: 3,
+            prompt: Some(3),
             completion: 1,
             cost_nanos: None,
         }
@@ -298,7 +298,7 @@ fn a_cost_that_is_not_a_number_costs_only_the_price() {
         assert_eq!(
             items[0],
             SseItem::Usage {
-                prompt: 3,
+                prompt: Some(3),
                 completion: 1,
                 cost_nanos: None,
             },
