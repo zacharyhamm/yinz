@@ -945,9 +945,10 @@ fn sdk_rpc_declarations_require_one_destination_and_json() {
     let dir = tempfile::tempdir().unwrap();
     check_semantic_source(&dir.path().join("rpc.ts"), r#"
       import zellij, {type Json, type RpcCall, type CancellablePromise} from 'zellij:plugin';
-      zellij.rpc.handle('echo', async (payload: Json, call: RpcCall) => {const id: number = call.source.Plugin; return payload;});
+      zellij.rpc.handle('echo', async (payload: Json, call: RpcCall) => {const id: number = call.source.Plugin; call.progress({status:'waiting'}); return payload;});
       zellij.rpc.handle('nil', () => {});
-      const request: CancellablePromise<Json> = zellij.rpc.call({pluginId:7,name:'echo',payload:null,timeoutMs:10});
+      const request: CancellablePromise<Json> = zellij.rpc.call({pluginId:7,name:'echo',payload:null,timeoutMs:10,onProgress: (payload: Json) => {}});
+      zellij.swampRequest({directory:'/work',operation:'model.method.run',onProgress: (payload: Json) => {}});
       request.cancel();
       zellij.rpc.call({pluginUrl:'file:/plugin.ts',pluginConfig:{city:'Oslo'},name:'echo'});
       // @ts-expect-error destination required
@@ -960,6 +961,10 @@ fn sdk_rpc_declarations_require_one_destination_and_json() {
       zellij.rpc.call({pluginId:7,name:'echo',payload:1n});
       // @ts-expect-error numeric timeout
       zellij.rpc.call({pluginId:7,name:'echo',timeoutMs:'10'});
+      // @ts-expect-error progress is a callback
+      zellij.rpc.call({pluginId:7,name:'echo',onProgress:true});
+      // @ts-expect-error progress requires JSON
+      zellij.rpc.handle('bad-progress', (_, call) => {call.progress(1n);});
       // @ts-expect-error unknown option
       zellij.rpc.call({pluginId:7,name:'echo',timeout:10});
       // @ts-expect-error JSON results

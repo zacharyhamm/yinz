@@ -115,6 +115,77 @@ fn rpc_replacement_isolates_have_distinct_call_ids() {
 }
 
 #[test]
+fn rpc_progress_is_correlated_nonterminal_bounded_and_keeps_the_deadline() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.now=1000; Date.now=()=>now;
+      globalThis.progress=[]; globalThis.results=[]; globalThis.requests=[]; globalThis.finish=null; globalThis.report=null;
+      zellij.rpc.handle('work', async (_, call)=>{
+        report=call.progress; report({status:'waiting'});
+        await new Promise(resolve=>finish=resolve);
+        report({status:'ready'}); return 'done';
+      });
+      bind({load(){
+        for(let i=0;i<4;i++) {
+          const request=zellij.rpc.call({pluginId:7,name:'work',timeoutMs:100,
+            onProgress: payload=>{progress.push([i,payload,zellij.getPluginIds().client_id]);if(i===3)throw Error('callback failed');}});
+          requests.push(request);
+          request.then(value=>results.push([i,value]),error=>results.push([i,error.name]));
+        }
+      }}); bridge('load',{},2);
+      globalThis.receive=(id,payload,source={Plugin:7},extra={})=>bridge('pipe',{
+        name:'zellij_rpc_progress',source,payload:JSON.stringify({version:1,call_id:id,payload,...extra})},9);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      globalThis.calls=sent.filter(([c])=>c.MessageToPlugin).map(([c])=>c.MessageToPlugin);
+      globalThis.ids=calls.map(c=>JSON.parse(c.message_payload).call_id);
+      receive('stale',null); receive(ids[0],null,{Plugin:8}); receive(ids[0],null,'Keybind');
+      receive(ids[0],null,{Plugin:7},{version:2}); receive(ids[0],null,{Plugin:7},{result:'bad'});
+      receive(ids[0],'x'.repeat(1048576));
+      check(progress.length===0 && results.length===0);
+      bridge('pipe',{name:'zellij_rpc_call',source:{Plugin:7},payload:calls[0].message_payload},3);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const [[command,origin]]=sent.filter(([c])=>c.MessageToPlugin?.message_name==='zellij_rpc_progress');
+      check(origin===3 && command.MessageToPlugin.destination_plugin_id===7);
+      const frame=JSON.parse(command.MessageToPlugin.message_payload);
+      check(frame.call_id===ids[0]);receive(frame.call_id,frame.payload);
+      for(const payload of [1n,undefined,'x'.repeat(1048576)]) {
+        let rejected=false;try {report(payload);}catch{rejected=true;}check(rejected);
+      }
+      receive(ids[1],{status:'waiting'}); receive(ids[2],{status:'waiting'}); receive(ids[3],null);
+    "#);
+    run(&mut runtime, r#"
+      check(progress.length===4 && progress.every(p=>p[2]===2));
+      check(results.length===1 && results[0][0]===3 && results[0][1]==='Error');
+      requests[2].cancel(); receive(ids[2],null); receive(ids[3],null);
+      finish();
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const messages=sent.filter(([c])=>c.MessageToPlugin).map(([c])=>c.MessageToPlugin);
+      for(const message of messages.slice(4))bridge('pipe',{name:message.message_name,source:{Plugin:7},payload:message.message_payload},9);
+    "#);
+    run(&mut runtime, r#"
+      const count=progress.length;
+      receive(ids[0],null);report({status:'late'});
+      check(progress.length===count);
+      now=1100;bridge('update',{Timer:0},9);
+    "#);
+    run(&mut runtime, r#"
+      check(results.length===4);
+      check(results.some(r=>r[0]===0 && r[1]==='done'));
+      check(results.some(r=>r[0]===1 && r[1]==='TimeoutError'));
+      check(results.some(r=>r[0]===2 && r[1]==='AbortError'));
+      bind({load(){zellij.unsubscribe(['Timer']);}});bridge('load',{},2);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, "check(sent.at(-1)[0].Unsubscribe.includes('Timer'));check(sent.filter(([c])=>c.MessageToPlugin?.message_name==='zellij_rpc_progress').length===2);");
+}
+
+#[test]
 fn rpc_bounds_error_replies_even_with_a_full_size_call_id() {
     let mut runtime = sdk();
     run(&mut runtime, r#"

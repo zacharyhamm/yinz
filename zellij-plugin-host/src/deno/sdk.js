@@ -249,13 +249,20 @@
   }
   function swampRequest(options) {
     return cancellable((operation) => {
-      const {directory, operation: name, payload = {}, id = `${rpcPrefix}-swamp-${++nextAsync}`, started = false} = record(options, "swampRequest options");
+      const {directory, operation: name, payload = {}, id = `${rpcPrefix}-swamp-${++nextAsync}`, started = false, onProgress} = record(options, "swampRequest options");
+      if (onProgress !== undefined && typeof onProgress !== "function") throw new TypeError("onProgress must be a function");
+      const origin = client;
       let last;
       observeEvent(operation, "CustomMessage", ([message, encoded]) => {
         if (message !== "swamp-response") return false;
         const frame = JSON.parse(encoded);
         if (frame.id !== id) return false;
-        if (frame.type === "managed.progress") return false;
+        if (frame.type === "managed.progress") {
+          const previous = client;
+          client = origin;
+          try { onProgress?.(frame.payload); } finally { client = previous; }
+          return false;
+        }
         if (frame.type === "error") { last = {error: frame.error}; return true; }
         if (frame.type === "event") {
           last = frame.event;
@@ -815,8 +822,9 @@
     },
     call(options) {
       return cancellable((operation) => {
-        const {pluginId, pluginUrl, pluginConfig, name, payload = null, timeoutMs} = record(options, "RPC options");
-        for (const key of Object.keys(options)) if (!["pluginId", "pluginUrl", "pluginConfig", "name", "payload", "timeoutMs"].includes(key)) throw new TypeError("unknown RPC option: " + key);
+        const {pluginId, pluginUrl, pluginConfig, name, payload = null, timeoutMs, onProgress} = record(options, "RPC options");
+        for (const key of Object.keys(options)) if (!["pluginId", "pluginUrl", "pluginConfig", "name", "payload", "timeoutMs", "onProgress"].includes(key)) throw new TypeError("unknown RPC option: " + key);
+        if (onProgress !== undefined && typeof onProgress !== "function") throw new TypeError("onProgress must be a function");
         if ((pluginId === undefined) === (pluginUrl === undefined)) throw new TypeError("RPC requires exactly one destination");
         if (pluginId !== undefined && (!Number.isSafeInteger(pluginId) || pluginId < 0 || pluginId > 4294967295)) throw new TypeError("pluginId must fit u32");
         if (pluginUrl !== undefined && (typeof pluginUrl !== "string" || !pluginUrl)) throw new TypeError("pluginUrl must be nonempty");
@@ -828,7 +836,7 @@
         let timer;
         operation.cleanup = () => { rpcCalls.delete(callId); timer?.cancel(); };
         const maxBytes = name.startsWith("hocus_tool:") ? 64000 : RPC_MAX_BYTES;
-        rpcCalls.set(callId, {operation, pluginId, maxBytes});
+        rpcCalls.set(callId, {operation, pluginId, maxBytes, onProgress, origin: client});
         if (timeoutMs !== undefined) timer = addTimer(timeoutMs, () => {
           const error = new Error("RPC timed out: " + name);
           error.name = "TimeoutError";
@@ -946,15 +954,24 @@
     return false;
   }
   function rpcPipe(message) {
-    if (!["zellij_rpc_call", "zellij_rpc_reply"].includes(message.name)) return false;
+    if (!["zellij_rpc_call", "zellij_rpc_reply", "zellij_rpc_progress"].includes(message.name)) return false;
     const from = message.source?.Plugin;
     if (!Number.isSafeInteger(from) || from < 0 || from > 4294967295 || typeof message.payload !== "string" || encodeUtf8(message.payload).length > RPC_MAX_BYTES) return true;
     let call;
     try { call = JSON.parse(message.payload); validate(call); } catch (_) { return true; }
     if (call?.version !== 1 || typeof call.call_id !== "string" || !call.call_id) return true;
-    if (message.name === "zellij_rpc_reply") {
+    if (message.name !== "zellij_rpc_call") {
       const waiting = rpcCalls.get(call.call_id);
       if (!waiting || (waiting.pluginId !== undefined && waiting.pluginId !== from) || encodeUtf8(message.payload).length > waiting.maxBytes) return true;
+      if (message.name === "zellij_rpc_progress") {
+        if (!Object.hasOwn(call, "payload") || Object.hasOwn(call, "error") || Object.hasOwn(call, "result")) return true;
+        const previous = client;
+        client = waiting.origin;
+        try { waiting.onProgress?.(call.payload); }
+        catch (error) { waiting.operation.reject(error); }
+        finally { client = previous; }
+        return true;
+      }
       const hasError = Object.hasOwn(call, "error"), hasResult = Object.hasOwn(call, "result");
       if (hasError && (hasResult || typeof call.error !== "string")) return true;
       // Legacy RPC senders can omit the result field.
@@ -966,7 +983,16 @@
     const maxBytes = call.name.startsWith("hocus_tool:") ? 64000 : RPC_MAX_BYTES;
     if (encodeUtf8(message.payload).length > maxBytes) return true;
     const origin = client;
+    let active = true;
+    const progress = (payload) => {
+      if (!active) return;
+      const previous = client;
+      client = origin;
+      try { sendPluginMessage("zellij_rpc_progress", {version: 1, call_id: call.call_id, payload}, from, null, {}, maxBytes); }
+      finally { client = previous; }
+    };
     const reply = (result, error) => {
+      active = false;
       const previous = client;
       client = origin;
       try {
@@ -989,7 +1015,7 @@
     try {
       if (!handler) throw new Error("no rpc handler named " + call.name);
       const payload = call.payload ?? null;
-      track(handler(payload, {version:1, callId:call.call_id, name:call.name, payload, source:{Plugin:from}}), (result) => reply(result), (error) => reply(null, error ?? "RPC handler failed"));
+      track(handler(payload, {version:1, callId:call.call_id, name:call.name, payload, source:{Plugin:from}, progress}), (result) => reply(result), (error) => reply(null, error ?? "RPC handler failed"));
     } catch (error) { reply(null, error ?? "RPC handler failed"); }
     return true;
   }
