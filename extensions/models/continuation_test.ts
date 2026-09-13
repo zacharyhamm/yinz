@@ -27,6 +27,7 @@ if request['method'] == 'swamp_dispatch':
     path.write_text(json.dumps(request))
     assert request['operation'] == 'workflow.run'
     assert request['payload']['noSupersede'] is True
+    assert request['payload']['inputs']['testReturn'] == dict(workflow='@hammz/zellij-review-integration', phase='resolved')
     assert request['payload']['inputs']['rebasePrompt'] == 'Configured resolver: stage, then exit.'
     assert request['payload']['inputs']['commitAgent'] == dict(kind='codex', model='commit-model', effort='medium')
     assert len(json.dumps(request).encode()) < 262144
@@ -162,6 +163,20 @@ print(json.dumps(dict(result=result)))
             },
         },
     });
+    assert(input.inputs.testReturn.phase === "review"); // Legacy continuations default to review.
+    input.inputs.testReturn.phase = "resolved";
+    assert(
+        !methods.continue_flow.arguments.safeParse({
+            ...input,
+            inputs: {
+                ...input.inputs,
+                testReturn: {
+                    workflow: "@hammz/zellij-review-integration",
+                    phase: "cleanup",
+                },
+            },
+        }).success,
+    );
     // Reuse the original test result instead of copying its multi-megabyte output.
     records.push({
         modelType: c.modelType!,

@@ -29,6 +29,7 @@ parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
 parser.add_argument('--commit-rebase-only', action='store_true')
 parser.add_argument('--rebase-only', action='store_true')
+parser.add_argument('--decisions-only', action='store_true')
 parser.add_argument('--exit-only', action='store_true')
 parser.add_argument('--exit-menu-only', action='store_true')
 parser.add_argument('--timing-only', action='store_true', help='Three diagnostic diff-and-return runs on one warm disposable server')
@@ -185,21 +186,32 @@ def answer(q, value, token):
     return zellij('workflow', 'answer', a['run'], q['model'], a['question'], value, '--submission', token)
 
 
-def commit_pane(token):
+def command_pane(token, suffix):
     for item in histories(token):
-        operation = bridge(method='lookup', work=token, key=item['runId'] + '-commit-and-rebase')
+        operation = bridge(method='lookup', work=token, key=item['runId'] + '-' + suffix)
         if operation and operation.get('outcome') == 'pending' and operation.get('pane') is not None:
             return next((p for p in json.loads(zellij('action', 'list-panes', '--json'))
                          if not p['is_plugin'] and p['id'] == operation['pane']), None)
     return None
 
 
-def dismiss_commit(token):
-    pane = until('commit and rebase pane', lambda: commit_pane(token))
+def commit_pane(token):
+    return command_pane(token, 'commit-and-rebase')
+
+
+def dismiss_command(token, suffix, visible=False):
+    def ready():
+        pane = command_pane(token, suffix)
+        return pane if pane and (not visible or not pane['is_suppressed']) else None
+    pane = until(suffix + ' pane', ready)
     pane_id = 'terminal_' + str(pane['id'])
-    until('commit and rebase dismissal prompt', lambda: 'Press Enter to return.' in
+    until(suffix + ' dismissal prompt', lambda: 'Press Enter to return.' in
           zellij('action', 'dump-screen', '--pane-id', pane_id))
     zellij('action', 'write-chars', '--pane-id', pane_id, '\n')
+
+
+def dismiss_commit(token):
+    dismiss_command(token, 'commit-and-rebase')
 
 
 def exercise_exit_menus():
@@ -210,12 +222,12 @@ def exercise_exit_menus():
     zellij('action', 'write-chars', '--pane-id', str(pane), 'exit\n')
     automatic = until('exit-menu automatic run', lambda: swamp('workflow', 'history', 'search', '--filter', 'inputs.sourcePane == ' + str(pane))['results'])
     token = automatic[0]['inputs']['launch']
-    reduced = ['restart', 'fork', 'leave']
-    full = ['restart', 'fork', 'begin-review', 'leave']
+    reduced = ['restart', 'fork', 'run-tests', 'leave']
+    full = ['restart', 'fork', 'begin-review', 'run-tests', 'leave']
     prompts = {
-        tuple(reduced): 'Agent exited. Choose Restart, Fork, or Leave.',
-        tuple(full): 'Agent exited. Choose Restart, Fork, Begin review, or Leave.',
-        ('begin-review', 'leave'): 'Choose Begin review or Leave.',
+        tuple(reduced): 'Agent exited. Choose Restart, Fork, Run tests, or Leave.',
+        tuple(full): 'Agent exited. Choose Restart, Fork, Begin review, Run tests, or Leave.',
+        ('begin-review', 'run-tests', 'leave'): 'Choose Begin review, Run tests, or Leave.',
     }
 
     def menu(token, answers):
@@ -263,7 +275,7 @@ def exercise_exit_menus():
     (checkout / 'ignored-exit').write_text('ignored\n')
     for name, answers, overrides in (
         ('behind', reduced, {}),
-        ('manual', ['begin-review', 'leave'], {'sourcePane': -1}),
+        ('manual', ['begin-review', 'run-tests', 'leave'], {'sourcePane': -1}),
         ('missing-ref', full, {'targetBranch': 'missing-ref'}),
         ('inspection-error', full, {'checkout': str(root)}),
         ('vm-name', full, {'firecracker': 'uninspected-vm'}),
@@ -353,7 +365,7 @@ if args.commit_rebase_only:
     # Keep oversized legacy rows beside new results to test the actual CEL projection.
     git_source = main / 'extensions/models/git_workflow.ts'
     git_code = git_source.read_text()
-    marker = '                    const handle = await c.writeResource('
+    marker = '        const handle = await c.writeResource('
     assert git_code.count(marker) == 1
     git_code = git_code.replace(marker, """                    if (output.includes('LARGE HOOK BEGIN')) {
                         const legacy = { ...completed, stdout: output, stderr: output, operation: { ...command, output } };
@@ -490,6 +502,77 @@ if args.timing_only or args.transition_timing_only:
     started = time.monotonic()
     run(binary, 'workflow', 'server', 'restart')
     cold_start_ms = (time.monotonic() - started) * 1000
+def decision_tests_smoke():
+    for stage in ('exit', 'prepare', 'review', 'merge'):
+        token = 'test-return-' + stage
+        checkout = root / token
+        control = root / (token + '-control')
+        control.write_text('pass')
+        run('git', 'worktree', 'add', '-b', token, checkout)
+        gate = ['python3', '-c', 'from pathlib import Path; mode=Path(' + repr(str(control)) + ').read_text(); '
+                'print("test-return live output", flush=True); '
+                'Path("test-created").write_text("changed") if mode == "change" else None; '
+                'raise SystemExit(1 if mode == "fail" else 0)']
+        launch(token, checkout=str(checkout), gate=gate)
+        if stage != 'exit': choose(token, 'exit', 'begin-review')
+        if stage in ('review', 'merge'): choose(token, 'prepare', 'commit-and-rebase')
+        if stage == 'merge': choose(token, 'review', 'merge')
+        q = until(stage + ' offers tests', lambda: pending(token, stage))
+        assert 'run-tests' in q['attributes']['answers']
+        zellij('workflow', 'show', q['attributes']['run'])
+        until('test menu displayed', lambda: 'Run tests' in zellij('action', 'dump-screen'))
+        head = run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout
+        choose(token, stage, 'run-tests', visible=True)
+        fresh = until('passing tests return to ' + stage, lambda: pending(token, stage))
+        assert fresh['attributes']['run'] != q['attributes']['run']
+        control.write_text('fail')
+        choose(token, stage, 'run-tests', visible=True)
+        failed = until('failed tests offer retry', lambda: pending(token, 'failed-tests'))
+        assert failed['attributes']['answers'] == ['run-tests', 'start-fix-agent', 'return-to-menu', 'leave']
+        control.write_text('pass')
+        choose(token, 'failed-tests', 'run-tests', visible=True)
+        until('retry returns to ' + stage, lambda: pending(token, stage))
+        control.write_text('fail')
+        choose(token, stage, 'run-tests', visible=True)
+        choose(token, 'failed-tests', 'return-to-menu')
+        until('failed tests return to ' + stage, lambda: pending(token, stage))
+        control.write_text('change')
+        choose(token, stage, 'run-tests', visible=True)
+        destination = 'exit' if stage == 'exit' else 'prepare'
+        changed = until('changed tests refresh evidence', lambda: pending(token, destination))
+        state = next(h['inputs']['state'] for h in histories(token) if h['runId'] == changed['attributes']['run'])
+        assert state['test'] is None and state['review'] is None
+        assert run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout == head
+        assert (checkout / 'test-created').read_text() == 'changed'
+        if stage == 'exit':
+            control.write_text('fail')
+            choose(token, 'exit', 'run-tests', visible=True)
+            until('failed exit tests waiting', lambda: pending(token, 'failed-tests'))
+            (checkout / 'edited-while-waiting').write_text('late edit')
+            choose(token, 'failed-tests', 'return-to-menu')
+            returned = until('return rechecks late edits', lambda: pending(token, 'exit'))
+            state = next(h['inputs']['state'] for h in histories(token) if h['runId'] == returned['attributes']['run'])
+            assert state['test'] is None and state['review'] is None
+        choose(token, destination, 'leave')
+        print('PASS: tests from', stage, 'pass/fail/retry/return/change preserve origin and require fresh approval', flush=True)
+
+
+    token = 'foreground-cleanup'
+    checkout = root / token
+    run('git', 'worktree', 'add', '-b', token, checkout)
+    launch(token, checkout=str(checkout))
+    choose(token, 'exit', 'begin-review')
+    choose(token, 'prepare', 'commit-and-rebase')
+    choose(token, 'review', 'merge')
+    q = until('cleanup fixture confirmation', lambda: pending(token, 'merge'))
+    zellij('workflow', 'show', q['attributes']['run'])
+    until('merge confirmation displayed', lambda: 'Merge exact revision' in zellij('action', 'dump-screen'))
+    choose(token, 'merge', 'merge', visible=True)
+    choose(token, 'cleanup', 'remove-clean-worktree', visible=True)
+    until('guarded removal completed', lambda: not checkout.exists())
+    print('PASS: merge and non-force cleanup occupy the foreground and wait for dismissal', flush=True)
+
+
 def rebase_smoke():
     # Build a real paused rebase and refuse a resolver before approving one.
     (topic / 'file').write_text('source conflict\n')
@@ -512,16 +595,52 @@ def rebase_smoke():
     config_path.write_text(re.sub(r'    rebase_prompt .*', '    rebase_prompt ' + json.dumps(configured_prompt), original_config))
     launch('conflict-resolve')
     choose('conflict-resolve', 'exit', 'begin-review')
+    choose('conflict-resolve', 'conflict', 'run-tests')
     first_conflict = choose('conflict-resolve', 'conflict', 'resolve-with-agent')
     config_path.write_text(original_config)
+    staged = until('explicit staged decision', lambda: pending('conflict-resolve', 'resolved'))
+    assert staged['attributes']['answers'] == ['continue-rebase', 'run-tests', 'leave-paused']
+    head = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
+    choose('conflict-resolve', 'resolved', 'run-tests')
+    assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout == head
+    until('tests return to staged decision', lambda: pending('conflict-resolve', 'resolved'))
+    assert not pending('conflict-resolve', 'review')
+    choose('conflict-resolve', 'resolved', 'continue-rebase')
     next_conflict = choose('conflict-resolve', 'conflict', 'resolve-with-agent')
+    choose('conflict-resolve', 'resolved', 'continue-rebase')
     assert first_conflict['attributes']['run'] != next_conflict['attributes']['run']
     choose('conflict-resolve', 'review', 'leave')
     assert not run('git', 'diff', '--name-only', '--diff-filter=U', cwd=topic).stdout.strip()
     assert run('git', 'symbolic-ref', '--short', 'HEAD', cwd=topic).stdout.strip() == 'topic'
     prompts = [json.loads(line) for line in (root / 'resolver-prompts.jsonl').read_text().splitlines()]
     assert prompts.count(configured_prompt) == 2 and prompts[-2:] == [configured_prompt, configured_prompt], prompts
-    print('PASS: paused rebase requires an explicit resolver; workflow alone continues the resolved index', flush=True)
+    print('PASS: paused rebase requires an explicit resolver; each continuation requires a choice and tests preserve the paused index', flush=True)
+
+    for mode in ('unchanged', 'completed', 'completed-dirty', 'staged-dirty'):
+        checkout = root / ('resolver-' + mode)
+        token = 'resolver-' + mode
+        run('git', 'worktree', 'add', '-b', token, checkout, base)
+        (checkout / 'file').write_text('resolver fixture conflict\n')
+        run('git', 'commit', '-am', 'resolver fixture', cwd=checkout)
+        paused = run('git', 'rebase', 'main', cwd=checkout, check=False)
+        assert paused.returncode != 0
+        launch(token, checkout=str(checkout), agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit', '--resolver-' + mode])
+        choose(token, 'exit', 'begin-review')
+        before = run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout
+        q = choose(token, 'conflict', 'resolve-with-agent')
+        if mode == 'staged-dirty':
+            choose(token, 'resolved', 'continue-rebase')
+        destination = {'unchanged': 'conflict', 'completed': 'review', 'completed-dirty': 'prepare', 'staged-dirty': 'prepare'}[mode]
+        fresh = until('resolver ' + mode + ' inspected', lambda: pending(token, destination))
+        assert fresh['attributes']['run'] != q['attributes']['run']
+        if mode == 'unchanged':
+            assert run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout == before
+            assert run('git', 'diff', '--name-only', '--diff-filter=U', cwd=checkout).stdout.strip() == 'file'
+        else:
+            assert run('git', 'symbolic-ref', '--short', 'HEAD', cwd=checkout).stdout.strip() == token
+        choose(token, destination, 'leave-paused' if mode == 'unchanged' else 'leave')
+        print('PASS: resolver', mode, 'returns to', destination, 'without automatic continuation', flush=True)
+
 
 
 run(binary, 'attach', '--create-background', session)
@@ -630,12 +749,16 @@ try:
     if not args.recovery_only:
         attach_ui()
         until('terminal client has rendered', lambda: len(ui_output) > 1000)
-        def choose(token, question, value):
+        def choose(token, question, value, dismiss=True, visible=False):
             print('CHOICE:', token, question, value, flush=True)
             q = until(token + ': ' + question, lambda: pending(token, question))
             answer(q, value, 'answer-' + q['attributes']['run'])
-            if value == 'commit-and-rebase':
-                dismiss_commit(token)
+            suffix = {'commit-and-rebase': 'commit-and-rebase', 'continue-rebase': 'continue-rebase',
+                      'run-tests': 'tests', 'remove-clean-worktree': 'cleanup'}.get(value)
+            if value == 'merge' and question == 'merge':
+                suffix = 'integrate'
+            if suffix and dismiss:
+                dismiss_command(token, suffix, visible=visible)
             return q
 
         def prepare(token):
@@ -645,6 +768,10 @@ try:
 
         def agents():
             return [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('agent')]
+
+        if args.decisions_only:
+            decision_tests_smoke()
+            raise SystemExit(0)
 
         if args.rebase_only:
             rebase_smoke()
@@ -678,8 +805,8 @@ try:
                 offset = len(ui_output)
                 started = time.monotonic()
                 os.write(ui_fd, b'\t' * failed['attributes']['answers'].index('start-fix-agent') + b'\r')
-                next_question_at = rendered('helper exit question rendered', offset, b'Begin review')
-                fresh = until('fresh exit question', lambda: pending(token, 'exit'))
+                next_question_at = rendered('helper exit question rendered', offset, b'Show diff')
+                fresh = until('fresh preparation question', lambda: pending(token, 'prepare'))
                 assert fresh['attributes']['run'] != failed['attributes']['run']
                 assert 'failure-evidence' in (topic / 'received-failure-output').read_text()
                 prompt_at = float((root / 'prompt-received').read_text())
@@ -696,7 +823,7 @@ try:
                         (root / (run_id + '.' + kind + '.json')).write_text(json.dumps(swamp('workflow', 'history', kind, run_id), indent=2))
                 (topic / 'received-failure-output').unlink()
                 (topic / 'received-failure-prompt').unlink()
-                choose(token, 'exit', 'leave')
+                choose(token, 'prepare', 'leave')
                 print('TRANSITION:', samples[-1], flush=True)
             for path in Path(env['TMPDIR']).rglob('zellij.log*'):
                 shutil.copy(path, root / path.name)
@@ -1019,7 +1146,7 @@ try:
             snapshot = json.loads(zellij('pipe', '--name', 'snapshot', '--plugin', 'file:' + str(observer), '--', '{}'))
             assert original_id not in [p['pane_id'] for p in snapshot['panes']]
             menu = choose(token, 'exit', 'fork')
-            assert menu['attributes']['answers'] == ['restart', 'fork', 'begin-review', 'leave']
+            assert menu['attributes']['answers'] == ['restart', 'fork', 'begin-review', 'run-tests', 'leave']
             until('hidden source resolved by Fork', lambda: 'forking claude' in zellij('action', 'dump-screen'))
             os.write(ui_fd, b'\x1b')
             until('Fork cancellation returns to exit question', lambda: pending(token, 'exit'))
@@ -1055,8 +1182,8 @@ try:
         if not args.test_output_only and not args.latency_only:
             launch('success')
             initial = until('initial exit menu', lambda: pending('success', 'exit'))
-            assert initial['attributes']['answers'] == ['begin-review', 'leave']
-            assert initial['attributes']['prompt'] == 'Choose Begin review or Leave.'
+            assert initial['attributes']['answers'] == ['begin-review', 'run-tests', 'leave']
+            assert initial['attributes']['prompt'] == 'Choose Begin review, Run tests, or Leave.'
             assert bridge(method='lookup', work='success', key='worker') is None
             assert not agents(), 'Exit must not start an agent'
             assert run('git', 'rev-parse', 'HEAD').stdout.strip() == base
@@ -1167,7 +1294,7 @@ try:
         clicked = time.monotonic()
         if args.test_output_only:
             # Report scenarios approve through the bridge; latency checks cover button feedback.
-            choose('failed-checks', 'review', 'run-tests')
+            choose('failed-checks', 'review', 'run-tests', dismiss=False)
             feedback = None
         else:
             frame_start = len(ui_output)
@@ -1193,6 +1320,7 @@ try:
         assert not release.exists(), 'Closing the pane externally must not release or stop execution'
         released = time.monotonic()
         release.touch()
+        dismiss_command('failed-checks', 'tests')
         until('next question rendered', lambda: 'Start fix agent' in zellij('action', 'dump-screen'), interval=0.005)
         until('failure summary displayed before execution details', lambda: 'Test report: FAILED' in zellij('action', 'dump-screen'))
         timings = dict(click_to_feedback_seconds=feedback, submission_seconds=submission,
@@ -1206,7 +1334,7 @@ try:
             if pane.get('plugin_url') == 'zellij:swamp-workflow':
                 zellij('action', 'close-pane', '--pane-id', 'plugin_' + str(pane['id']))
         failed = until('failed-test choices', lambda: pending('failed-checks', 'failed-tests'))
-        assert failed['attributes']['answers'] == ['start-fix-agent', 'return-to-menu', 'leave']
+        assert failed['attributes']['answers'] == ['run-tests', 'start-fix-agent', 'return-to-menu', 'leave']
         complete_summary = check_output_previews(failed)
         frame_start = len(ui_output)
         zellij('workflow', 'show', failed['attributes']['run'])
@@ -1216,11 +1344,17 @@ try:
         informed = until('failed-check merge confirmation', lambda: pending('failed-checks', 'merge'))
         assert 'Tests: FAILED' in informed['attributes']['prompt']
         check_output_previews(informed, nested=True)
+        def confirmation_report():
+            report = swamp('report', 'get', '@hammz/workflow', '--workflow', '@hammz/zellij-review-integration')['json']
+            return report if report.get('run') == informed['attributes']['run'] else None
+        # Reports are published after execution, not while approval is suspended.
+        # Keep cleanup pending until the exact confirmation report is inspected.
         choose('failed-checks', 'merge', 'merge')
-        choose('failed-checks', 'cleanup', 'keep')
-        report = swamp('report', 'get', '@hammz/workflow', '--workflow', '@hammz/zellij-review-integration')['json']
+        until('cleanup decision pending', lambda: pending('failed-checks', 'cleanup'))
+        report = until('confirmation report saved', confirmation_report)
         assert not report.get('error'), report
         assert complete_summary in report['testReports']
+        choose('failed-checks', 'cleanup', 'keep')
         print('PASS: verbose failed-test previews and merge confirmation; full logs retained; no automatic repair', flush=True)
         for token, gate in [('fix', ['/bin/sh', '-c', 'printf failure-evidence; exit 1']),
                             ('large-fix', ['/usr/bin/python3', '-c', live_gate])]:
@@ -1228,8 +1362,8 @@ try:
             prepare(token)
             choose(token, 'review', 'run-tests')
             choose(token, 'failed-tests', 'start-fix-agent')
-            until('fix exit returns to initial menu', lambda: pending(token, 'exit'))
-            choose(token, 'exit', 'leave')
+            until('fix exit returns to preparation for its edits', lambda: pending(token, 'prepare'))
+            choose(token, 'prepare', 'leave')
             assert topic.exists()
             received = (topic / 'received-failure-output').read_text()
             prompt = (topic / 'received-failure-prompt').read_text()
@@ -1266,8 +1400,8 @@ try:
         original = next(p for p in agents() if p.get('exited') and p['agent']['kind'] == 'claude')
         launch('fork-cancel', sourcePane=original['id'], kind='claude')
         first_menu = choose('fork-cancel', 'exit', 'fork')
-        assert first_menu['attributes']['answers'] == ['restart', 'fork', 'leave']
-        assert first_menu['attributes']['prompt'] == 'Agent exited. Choose Restart, Fork, or Leave.'
+        assert first_menu['attributes']['answers'] == ['restart', 'fork', 'run-tests', 'leave']
+        assert first_menu['attributes']['prompt'] == 'Agent exited. Choose Restart, Fork, Run tests, or Leave.'
         until('existing fork picker', lambda: any(p.get('plugin_url') == 'zellij:hocus-new-agent' and not p['is_suppressed'] for p in json.loads(zellij('action', 'list-panes', '--json'))))
         zellij('action', 'start-or-reload-plugin', 'zellij:swamp-bridge')
         until('picker dispatch becomes uncertain after reload', lambda: bridge(method='observe', work='fork-cancel', key=first_menu['attributes']['run'] + '-pane-choice')['outcome'] == 'unknown')
@@ -1283,6 +1417,7 @@ try:
         print('PASS: fork cancellation returns to a fresh menu; restart reuses original pane', flush=True)
 
         exercise_exit_menus()
+        decision_tests_smoke()
 
         launch('unresolved-review', agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit', '--findings'])
         prepare('unresolved-review')

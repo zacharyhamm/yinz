@@ -240,11 +240,22 @@ const FlowInputs = z.object({
         "review",
         "tests",
         "failed-tests",
+        "test-return",
         "fix",
         "review-agent",
         "confirm",
         "cleanup",
     ]),
+    testReturn: z.object({
+        workflow: z.enum([
+            "@hammz/zellij-agent-exit",
+            "@hammz/zellij-review-integration",
+        ]),
+        phase: z.enum(["prepare", "conflict", "resolved", "review", "confirm"]),
+    }).default({
+        workflow: "@hammz/zellij-review-integration",
+        phase: "review",
+    }),
     state: z.object({
         vmSync: Sync.nullable(),
         evidence: Evidence.nullable(),
@@ -662,7 +673,11 @@ export const methods = {
                     ...(capture
                         ? {
                             capture,
-                            argv: captureCommand(capture.directory, args.argv),
+                            argv: captureCommand(
+                                capture.directory,
+                                args.argv,
+                                args.foreground,
+                            ),
                         }
                         : {}),
                 }),

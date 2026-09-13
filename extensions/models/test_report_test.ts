@@ -319,3 +319,57 @@ Deno.test("capture survives a failed evidence save; saved reports retain beginni
         }
     }
 });
+
+Deno.test("foreground tests stream output and preserve exit status only after dismissal", async () => {
+    for (const code of [0, 7]) {
+        for (const dismiss of [true, false]) {
+            const directory = await Deno.makeTempDir({
+                dir: "/tmp",
+                prefix: "zellij-test-",
+            });
+            const argv = captureCommand(directory, [
+                "bash",
+                "-c",
+                `echo LIVE; echo DIAGNOSTIC >&2; exit ${code}`,
+            ], true);
+            const child = new Deno.Command(argv[0], {
+                args: argv.slice(1),
+                stdin: "piped",
+                stdout: "piped",
+                stderr: "piped",
+            }).spawn();
+            const errors = new Response(child.stderr).text();
+            let exited = false;
+            const status = child.status.then((s) => {
+                exited = true;
+                return s;
+            });
+            let output = "", sent = false;
+            for await (
+                const text of child.stdout.pipeThrough(new TextDecoderStream())
+            ) {
+                output += text;
+                if (!sent && output.includes("Press Enter to return.")) {
+                    assert(
+                        !exited && output.includes("LIVE") &&
+                            output.includes("DIAGNOSTIC"),
+                    );
+                    const capture = await readCapture(directory, code);
+                    assert(
+                        capture.outputComplete &&
+                            capture.output.includes("DIAGNOSTIC"),
+                    );
+                    sent = true;
+                    const writer = child.stdin.getWriter();
+                    if (dismiss) {
+                        await writer.write(new TextEncoder().encode("\n"));
+                    }
+                    await writer.close();
+                }
+            }
+            assert(sent && (await status).code === (dismiss ? code : 125));
+            assert(!await errors);
+            await Deno.remove(directory, { recursive: true });
+        }
+    }
+});

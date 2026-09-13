@@ -12,15 +12,23 @@ export const ReportFields = z.object({
     failedTests: z.array(z.string()).optional(),
 });
 
-export function captureCommand(directory: string, argv: string[]) {
+export function captureCommand(
+    directory: string,
+    argv: string[],
+    foreground = false,
+) {
     Capture.parse({ directory });
     return [
         "/bin/bash",
         "-c",
         // Literal argv remains positional. PIPESTATUS must be copied immediately;
         // tee failure must never replace the tested command's exit status.
+        (foreground ? "unset $(git rev-parse --local-env-vars)\n" : "") +
         'dir=$1; shift\n"$@" 2>&1 | tee "$dir/output" 2>"$dir/error"\n' +
         'codes=("${PIPESTATUS[@]}")\nprintf "%s %s\\n" "${codes[0]}" "${codes[1]}" >"$dir/status"\n' +
+        (foreground
+            ? 'printf "\\nTests finished (exit %s). Press Enter to return.\\n" "${codes[0]}"\nIFS= read -r dismissal || exit 125\n'
+            : "") +
         'exit "${codes[0]}"',
         "zellij-test-capture",
         directory,

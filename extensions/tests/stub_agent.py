@@ -57,10 +57,20 @@ try:
             assert sys.argv[-1] == prompt, 'resolver prompt must arrive as startup argument'
             with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'resolver-prompts.jsonl'), 'a') as log:
                 log.write(json.dumps(prompt) + '\n')
-            conflicts = subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=U', '-z']).decode().split('\0')
-            for path in filter(None, conflicts):
-                with open(path, 'w') as output: output.write('resolved ' + path + '\n')
-                subprocess.run(['git', 'add', '--', path], check=True)
+            if '--resolver-unchanged' not in sys.argv:
+                while True:
+                    conflicts = subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=U', '-z']).decode().split('\0')
+                    for path in filter(None, conflicts):
+                        with open(path, 'w') as output: output.write('resolved ' + path + '\n')
+                        subprocess.run(['git', 'add', '--', path], check=True)
+                    if not any(arg in sys.argv for arg in ('--resolver-completed', '--resolver-completed-dirty')):
+                        break
+                    result = subprocess.run(['git', '-c', 'core.editor=true', 'rebase', '--continue'])
+                    if result.returncode == 0:
+                        break
+                    assert any(subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=U']).strip())
+                if '--resolver-completed-dirty' in sys.argv or '--resolver-staged-dirty' in sys.argv:
+                    with open('resolver-extra', 'w') as output: output.write('additional resolver edit\n')
         if prompt.startswith('Fix the failed tests'):
             if not remote:
                 with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'prompt-received'), 'w') as stamp:
