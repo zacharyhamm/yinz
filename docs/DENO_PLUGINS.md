@@ -998,13 +998,18 @@ Calls resolve directly with JSON results. Remote errors, unknown methods, invali
 `request.cancel()` rejects with `AbortError` and stops the local wait. It does not stop remote execution.
 Timeouts reject with `TimeoutError`. Calls never retry automatically.
 
-Handler metadata contains `version`, `callId`, `name`, `payload`, and the host-supplied `source: {Plugin: number}`.
+Handlers can send JSON progress with `call.progress(payload)`. Callers receive it through the optional `onProgress(payload)` callback.
+Progress does not settle the call or change its deadline. A callback error rejects the local wait.
+Completion, cancellation, and errors remove the local progress callback and timer. Progress sent after a handler completes is ignored.
+
+Handler metadata contains `version`, `callId`, `name`, `payload`, `progress`, and the host-supplied `source: {Plugin: number}`.
 Client context survives `await`. Sender-supplied `source` and `reply_to` fields are ignored.
 ID-addressed calls accept replies only from that plugin ID. URL-addressed calls match the opaque call ID because the host does not return the destination ID.
 Each isolate uses a new UUID prefix, so replies from an old instance cannot settle replacement calls.
 
-RPC uses version-1 `zellij_rpc_call` and `zellij_rpc_reply` envelopes, with a 1 MiB (1,048,576-byte) limit.
-Hocus tool calls and replies retain their 64,000-byte limit.
+RPC uses version-1 `zellij_rpc_call`, `zellij_rpc_reply`, and `zellij_rpc_progress` envelopes, with a 1 MiB (1,048,576-byte) limit.
+Progress carries `{version: 1, call_id, payload}` and uses the same source validation as replies.
+Hocus tool calls, replies, and progress retain their 64,000-byte limit.
 Unsupported JSON values reject instead of losing fields. Malformed, stale, and duplicate replies are ignored.
 RPC messages stay internal. Ordinary pipe messages still reach `pipe` callbacks and `waitForPipe()`.
 
@@ -1345,6 +1350,15 @@ A workflow runs in a separate supervised command pane. Closing its view detaches
 reopens it. Cancellation is a separate action and preserves resources. The view reads Swamp history, questions,
 reports and recorded command scrollback. Terminal history has a retention limit, which the output marks. Idle
 transitions and pane closure never count as success.
+
+Showing the same directory and run or launch preserves output, cached reports, scroll position, form state, and any pending submission.
+An omitted launch reuses the known launch. An explicitly different run or launch resets the view.
+Each show requests a refresh and restores the subtitle.
+
+`zellij.swampRequest()` accepts an optional `onProgress(payload)` callback for correlated `managed.progress` frames.
+These frames do not complete the request. The bridge forwards answer-admission progress to the view.
+The view suspends its 90-second answer deadline on `waiting` or `reloading` and starts a fresh deadline on `ready`.
+Submission stays disabled until completion or error. Switching attachments cancels the local wait and removes its timer.
 
 ### Headless hooks
 

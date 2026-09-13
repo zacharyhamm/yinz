@@ -26,6 +26,7 @@ let form: FormWidget | undefined, onRestart: (() => void) | undefined, onFork: (
 let formKey: string | undefined, questionKey: string | undefined, formHeight = 1, formHasInput = false, contentHeight = 0;
 const answered = new Map<string, number>();
 let generation = 0, refreshQueued = false;
+let submission: {cancel(): void} | undefined;
 let questionReadyAt: number | undefined, renderedQuestion: string | undefined;
 function timing(phase: string, started: number, entry?: Question) {
   z.log('swamp_timing ' + JSON.stringify({layer: 'deno_view', phase, elapsedMs: z.monotonicMs() - started,
@@ -172,6 +173,15 @@ async function refresh(changed = true) {
   }
 }
 function attach(attachment: Attachment) {
+  const current = view.attachment;
+  if (current && attachment.directory === current.directory && (attachment.run || attachment.launch) &&
+    (attachment.run === undefined || attachment.run === current.run) &&
+    (attachment.launch === undefined || attachment.launch === (current.launch ?? launch))) {
+    current.launch ??= launch;
+    detached = false; setSubtitle(view.snapshot?.subtitle ?? 'Workflow · loading');
+    void refresh(); return;
+  }
+  submission?.cancel(); submission = undefined;
   generation++; reports.clear(); view.submitting = false;
   view.selecting = false; view.dirty = false; formKey = undefined; questionKey = undefined;
   watch(attachment.launch); view.attachment = {...attachment}; view.snapshot = undefined; view.pending = []; view.selected = 0; view.scroll = 0;
@@ -248,8 +258,23 @@ function update(event: Event): boolean {
 async function submit(request: Record<string, Json>, success: string, attachment: Attachment, entry?: Question) {
   const answering = request.method === 'workflow_answer';
   const operation = `${answering ? identity(entry) : request.run}: ${answering ? (request.inputs as Record<string, Json>).answer : 'cancel_run'}`;
+  let timer: {cancel(): void} | undefined, timedOut = false;
+  const startDeadline = () => {
+    timer?.cancel();
+    timer = z.after(90000, () => { timedOut = true; pending.cancel(); });
+  };
+  const pending = z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp', payload: request,
+    timeoutMs: answering ? undefined : 90000,
+    onProgress: answering ? payload => {
+      const status = (payload as {status?: string} | null)?.status;
+      if (status === 'waiting' || status === 'reloading') { timer?.cancel(); timer = undefined; }
+      else if (status === 'ready') startDeadline();
+    } : undefined});
+  const activeSubmission = {cancel() {timer?.cancel(); pending.cancel();}};
+  submission = activeSubmission;
   try {
-    await z.rpc.call({pluginUrl: 'zellij:swamp-bridge', name: 'swamp', payload: request, timeoutMs: 90000});
+    if (answering) startDeadline();
+    await pending;
     if (view.attachment !== attachment) return;
     view.noticeError = false; view.notice = success;
     if (answering && entry) {
@@ -257,8 +282,10 @@ async function submit(request: Record<string, Json>, success: string, attachment
       view.pending = view.pending.filter(pending => identity(pending) !== identity(entry));
       view.selected = Math.min(view.selected, Math.max(0, view.pending.length - 1)); controls();
     }
-  } catch (error) { if (view.attachment === attachment) { view.noticeError = true; view.notice = String(error); } }
+  } catch (error) { if (view.attachment === attachment) { view.noticeError = true; view.notice = timedOut ? 'TimeoutError: RPC timed out: swamp' : String(error); } }
   finally {
+    timer?.cancel();
+    if (submission === activeSubmission) submission = undefined;
     if (view.attachment === attachment) {
       if (view.noticeError) output(operation, 'submission error', z.encodeUtf8(view.notice!));
       view.submitting = false; repaint(); void refresh();

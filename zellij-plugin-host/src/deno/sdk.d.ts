@@ -165,7 +165,7 @@ export interface Zellij {
   runInPane(pane: AgentPane, step: PaneStep): CancellablePromise<PaneExit>;
   /** Requires RunCommands. Defaults: empty maps, /host, host output limit. Nonzero exits resolve. */
   runCommand(options: RunCommandOptions): CancellablePromise<RunCommandResult>;
-  swampRequest(options: {directory: string; operation: string; payload?: Json; id?: string; started?: boolean}): CancellablePromise<Json>;
+  swampRequest(options: {directory: string; operation: string; payload?: Json; id?: string; started?: boolean; onProgress?: (payload: Json) => void}): CancellablePromise<Json>;
   /** Requires WebAccess. Default Get. With streamId, resolves the leading response (empty body for 2xx).
    * HTTP error bodies stay buffered. cancel() stops the wait; command("CancelWebRequest", streamId) stops streaming. */
   webRequest(options: WebRequestOptions): CancellablePromise<WebRequestResult>;
@@ -678,9 +678,9 @@ export interface OutlineEntry {line: Integer; kind: 'Require' | 'Permission' | '
 export interface PluginCheckReport {diagnostics: string[]; outline: OutlineEntry[]; permissions: Permission[]; warnings: string[]}
 
 /** Tool handlers answer version-1 Hocus RPC calls. Source is supplied by the host. */
-export interface RpcCall { version: 1; callId: string; name: string; payload: Json; source: {Plugin: number}; }
+export interface RpcCall { version: 1; callId: string; name: string; payload: Json; source: {Plugin: number}; progress(payload: Json): void; }
 export type HocusToolCall = RpcCall;
-export type RpcOptions = { name: string; payload?: Json; timeoutMs?: number } & (
+export type RpcOptions = { name: string; payload?: Json; timeoutMs?: number; onProgress?: (payload: Json) => void } & (
   { pluginId: number; pluginUrl?: never; pluginConfig?: never } |
   { pluginUrl: string; pluginId?: never; pluginConfig?: Record<string, string> }
 );

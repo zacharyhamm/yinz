@@ -248,7 +248,7 @@ async function command(argv: string[], cwd = '/'): Promise<string> {
   assert(r.exitCode === 0, `Host command failed: ${encode(argv)}\nDirectory: ${cwd}\nExit status: ${r.exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   return stdout;
 }
-type SwampRequest = {operation: string; payload?: Record<string, Json>; id?: string; started?: boolean; onNotDispatched?: (error: Json) => void};
+type SwampRequest = {operation: string; payload?: Record<string, Json>; id?: string; started?: boolean; onNotDispatched?: (error: Json) => void; onProgress?: (payload: Json) => void};
 const tracked = new Map<string, string>(), watching = new Set<string>();
 const watchIds = new Map<string, {run: string; work: string}>(), notifications = new Set<string>();
 function changed(work: string) {
@@ -497,7 +497,7 @@ async function discover(work: string, root: string) {
   }
   return read(scope(work, 'runs'))[0];
 }
-async function handle(input: Partial<Request>, manualView?: number): Promise<unknown> {
+async function handle(input: Partial<Request>, manualView?: number, onProgress?: (payload: Json) => void): Promise<unknown> {
   assert(input && typeof input === 'object' && !Array.isArray(input), 'Expected a typed request');
   // Each method validates the fields it consumes; correlation keys are checked by scope().
   const args = input as Request;
@@ -522,7 +522,7 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
   }
   if (args.method === 'workflow_answer') {
     ensureOpen(args.inputs?.run as string);
-    const reply = JSON.parse(await swamp({operation: 'model.method.run', payload: {modelIdOrName: args.model, methodName: 'submit', inputs: args.inputs ?? {}}}, args.directory));
+    const reply = JSON.parse(await swamp({operation: 'model.method.run', payload: {modelIdOrName: args.model, methodName: 'submit', inputs: args.inputs ?? {}}, onProgress}, args.directory));
     if (['failed', 'cancelled'].includes(reply.run?.status)) throw Error(encode(reply.run));
     return reply.run ?? reply;
   }
@@ -869,21 +869,21 @@ function message(options: Partial<MessageToPlugin> & {message_name: string}) {
     message_args: {}, new_plugin_args: null, floating_pane_coordinates: null, ...options});
 }
 let timingAttempt = 0;
-async function invoke(args: Partial<Request>, manualView?: number): Promise<Json> {
-  if (!z.swampTiming) return invokeInner(args, manualView);
+async function invoke(args: Partial<Request>, manualView?: number, onProgress?: (payload: Json) => void): Promise<Json> {
+  if (!z.swampTiming) return invokeInner(args, manualView, onProgress);
   const attempt = ++timingAttempt, start = z.monotonicMs();
   let outcome = 'error', response: any;
-  try {response = await invokeInner(args, manualView); outcome = 'ok'; return response;}
+  try {response = await invokeInner(args, manualView, onProgress); outcome = 'ok'; return response;}
   finally {
     try {z.log('swamp_timing ' + encode({layer: 'deno', phase: 'invoke', attempt: `${z.instanceId}:${attempt}`,
       elapsedMs: z.monotonicMs() - start, outcome, method: args?.method, work: args?.work, key: args?.key,
       requestId: response?.requestId, run: response?.run}));} catch { /* Keep the operation's result. */ }
   }
 }
-async function invokeInner(args: Partial<Request>, manualView?: number): Promise<Json> {
+async function invokeInner(args: Partial<Request>, manualView?: number, onProgress?: (payload: Json) => void): Promise<Json> {
   const newLaunch = args?.method === 'workflow_run' && !read(scope(args.work!, args.key!))[0];
   let response: unknown;
-  try { response = await handle(args, manualView); } catch (error) {
+  try { response = await handle(args, manualView, onProgress); } catch (error) {
     if (args?.method === 'workflow_show') {
       for (const [work, placement] of placements) if (placement.view === manualView) unavailable(placement, work);
     }
@@ -926,7 +926,7 @@ export default definePlugin({
           present(args.work!);
         }
       }
-      return invoke(args, args.method === 'workflow_show' ? from : undefined);
+      return invoke(args, args.method === 'workflow_show' ? from : undefined, call.progress);
     });
   },
   async pipe(messageIn) {
