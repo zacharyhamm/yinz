@@ -23,8 +23,7 @@ pub fn check_plugin_report(
                 .join("\n")
         );
     }
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
+    let source = crate::deno::read_authoring_source(path)?;
     let report = check_source(
         path,
         &source,
@@ -53,6 +52,31 @@ pub fn check_source(
             ],
             ..Default::default()
         };
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if mode != zellij_types::authoring::PluginCheckMode::Syntax && !parent.exists() {
+        let checked = (|| -> anyhow::Result<_> {
+            let scratch = zellij_runtime::owned_dir::OwnedDir::new(
+                &zellij_runtime::consts::ZELLIJ_CACHE_DIR.join("authoring-tmp"),
+            )?;
+            let staged = scratch.path().join(
+                path.file_name()
+                    .ok_or_else(|| anyhow::anyhow!("missing plugin filename"))?,
+            );
+            let mut report = crate::deno::analysis::check(&staged, source, mode);
+            for diagnostic in &mut report.diagnostics {
+                *diagnostic =
+                    diagnostic.replace(&*staged.to_string_lossy(), &path.to_string_lossy());
+            }
+            Ok(report)
+        })();
+        return checked.unwrap_or_else(|error| zellij_types::authoring::PluginCheckReport {
+            diagnostics: vec![format!("{error:#}")],
+            ..Default::default()
+        });
     }
     crate::deno::analysis::check(path, source, mode)
 }
@@ -86,14 +110,27 @@ pub fn write(
     if source.trim().is_empty() {
         anyhow::bail!("the plugin source is empty");
     }
-    if check {
-        let chunk = path
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_default();
-        crate::deno::check_syntax(&path, source)
-            .map_err(|e| anyhow::anyhow!("{} does not compile: {e:#}", chunk))?;
-    }
+    let prepared;
+    let source = if check {
+        let report = check_source(
+            &path,
+            source,
+            zellij_types::authoring::PluginCheckMode::Prepare,
+        );
+        if !report.diagnostics.is_empty() {
+            anyhow::bail!(
+                "{} does not compile or pass authoring checks: {}",
+                path.display(),
+                report.diagnostics.join("\n")
+            );
+        }
+        prepared = report
+            .formatted_source
+            .ok_or_else(|| anyhow::anyhow!("authoring check returned no formatted source"))?;
+        &prepared
+    } else {
+        source
+    };
     let parent = path.parent().expect("a plugin file has a folder");
     if parent.is_symlink() {
         anyhow::bail!(
@@ -123,6 +160,42 @@ pub fn write(
     std::fs::write(&path, contents)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
     Ok(Written { path, replaced })
+}
+
+/// Format only the named file. Read-only verification never creates backups.
+pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
+    let source = crate::deno::read_authoring_source(path)?;
+    let report = check_source(
+        path,
+        &source,
+        zellij_types::authoring::PluginCheckMode::Format,
+    );
+    if !report.diagnostics.is_empty() {
+        anyhow::bail!("{}", report.diagnostics.join("\n"));
+    }
+    let formatted = report
+        .formatted_source
+        .ok_or_else(|| anyhow::anyhow!("formatter returned no source"))?;
+    if source == formatted {
+        return Ok(());
+    }
+    if check {
+        anyhow::bail!("{} needs formatting", path.display());
+    }
+    if path.is_symlink() {
+        anyhow::bail!("refusing to format a symlink");
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("invalid plugin filename"))?;
+    keep_backup(&parent.canonicalize()?, name, path, &formatted)?;
+    std::fs::write(path, formatted)?;
+    Ok(())
 }
 
 /// Copy `path` to its `.bak` sibling before it is replaced, answering with where it went.
@@ -206,7 +279,7 @@ mod tests {
         let deno = dir.path().join("computed.ts");
         std::fs::write(
             &deno,
-            "import zellij, {type Permission} from 'zellij:plugin';\nconst wanted: Permission[] = ['ReadFiles'];\nexport default { load() { zellij.requestPermission(wanted); }, render() { return ''; } };\n",
+            "import zellij, {type Permission} from 'zellij:plugin';\nconst wanted: Permission[] = ['ReadFiles'];\nexport default { load(): void { zellij.requestPermission(wanted); }, render(): string { return ''; } };\n",
         )
         .unwrap();
         let report = check_plugin_report(&deno).unwrap();
@@ -224,13 +297,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for extension in ["js", "mjs", "ts", "mts"] {
             let name = format!("app/keys.{extension}");
-            // An unresolved import is syntactically valid: writes must not require its module yet.
-            let source = "import './missing.js';\nexport default {};";
+            // Dependencies must exist before authoring their importer.
+            assert!(write(dir.path(), &name, "import './missing.js';", false, true).is_err());
+            assert!(!dir.path().join(&name).exists());
+            std::fs::create_dir_all(dir.path().join("app")).unwrap();
+            std::fs::write(
+                dir.path().join("app/dep.js"),
+                "export const dependency = 1;\n",
+            )
+            .unwrap();
+            let source = "import \"./dep.js\";\nexport default { before: true };";
             let written = write(dir.path(), &name, source, false, true).unwrap();
             assert_eq!(written.path, dir.path().join(&name));
             assert!(
-                check_plugin(&written.path).is_err(),
-                "semantic check must resolve imports"
+                check_plugin(&written.path).is_ok(),
+                "semantic check resolves existing imports"
             );
             assert!(write(dir.path(), &name, "export default {};", false, true).is_err());
             assert!(write(dir.path(), &name, "export default {", true, true).is_err());
@@ -278,6 +359,7 @@ mod tests {
                     .to_string()
                     .contains("symlink"));
                 let protected = format!("protected.{extension}");
+                std::fs::copy(dir.path().join("app/dep.js"), dir.path().join("dep.js")).unwrap();
                 let original = write(dir.path(), &protected, source, false, true).unwrap();
                 std::os::unix::fs::symlink(
                     &written.path,

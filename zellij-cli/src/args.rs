@@ -187,7 +187,7 @@ pub enum Plugins {
         #[clap(long)]
         json: bool,
     },
-    /// Write a plugin from a file or stdin, after compiling it. Refuses to replace one that
+    /// Write a plugin from a file or stdin, after formatting and strict type/lint checks. Refuses to replace one that
     /// exists unless --overwrite is given.
     Write {
         name: String,
@@ -196,15 +196,23 @@ pub enum Plugins {
         file: Option<PathBuf>,
         #[clap(long)]
         overwrite: bool,
-        /// Write even if the source does not compile.
+        /// Skip authoring formatting and checks.
         #[clap(long)]
         no_check: bool,
     },
-    /// Check a plugin in the folder, or --file: semantically check JS/TS.
+    /// Check strict JS/TS types and lint for a plugin in the folder, or --file.
     Check {
         name: Option<String>,
         #[clap(short, long, value_parser, conflicts_with = "name")]
         file: Option<PathBuf>,
+    },
+    /// Format a plugin with Oxfmt; --check only verifies formatting.
+    Format {
+        name: Option<String>,
+        #[clap(short, long, value_parser, conflicts_with = "name")]
+        file: Option<PathBuf>,
+        #[clap(long)]
+        check: bool,
     },
     /// Load or reload a plugin in the running session, opening it in a pane if it is not
     /// running.

@@ -349,7 +349,15 @@ impl State {
         let args = tools::Args::parse(&call.arguments).ok()?;
         let fs_path = tools::plugin_fs_path(args.name.as_deref()).ok()?;
         let previous = tools::plugin_fs_read(&fs_path).ok()?;
-        tools::edit_source_and_permissions(&previous, &args).err()
+        tools::edit_source_and_permissions(&previous, &args)
+            .and_then(|(edited, _)| {
+                tools::formatted_source(
+                    args.name.as_deref().unwrap_or_default(),
+                    &edited.source,
+                    zellij_tile::plugin_authoring::PluginCheckMode::Prepare,
+                )
+            })
+            .err()
     }
 
     fn plugin_edit_permissions(&self, call: &ToolCall) -> Vec<PermissionType> {
@@ -1223,6 +1231,22 @@ impl State {
                 },
             };
         }
+        if call.name == "plugin_format" && args.source.is_some() {
+            let answer = args
+                .name
+                .as_deref()
+                .ok_or_else(|| "name is required".to_owned())
+                .and_then(|name| {
+                    tools::formatted_source(
+                        name,
+                        args.source.as_deref().unwrap_or_default(),
+                        zellij_tile::plugin_authoring::PluginCheckMode::Format,
+                    )
+                });
+            self.finish_head(answer.unwrap_or_else(|error| error));
+            return true;
+        }
+
         let dir = self.user_plugin_dir.clone();
         if dir.trim().is_empty() {
             self.finish_head(tools::NO_PLUGIN_FOLDER);
@@ -1343,12 +1367,35 @@ impl State {
                         return true;
                     },
                 };
-                // Read before the write, kept after it: a backup of a write that then failed
-                // would be a file nobody asked for, and one written before the read would be
-                // a copy of the new source rather than of the version being replaced.
-                let replaced = match args.overwrite {
-                    true => tools::plugin_fs_read(&fs_path).ok(),
-                    false => None,
+                let source = match tools::formatted_source(
+                    &name,
+                    &source,
+                    zellij_tile::plugin_authoring::PluginCheckMode::Prepare,
+                ) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        self.finish_head(error);
+                        return true;
+                    },
+                };
+                // Preserve the old version only after checks pass, before replacing it.
+                let replaced = match tools::plugin_fs_exists(&fs_path) {
+                    Ok(true) if !args.overwrite => {
+                        self.finish_head(tools::exists_report(&name));
+                        return true;
+                    },
+                    Ok(true) => match tools::plugin_fs_read(&fs_path) {
+                        Ok(previous) => Some(previous),
+                        Err(error) => {
+                            self.finish_head(error);
+                            return true;
+                        },
+                    },
+                    Ok(false) => None,
+                    Err(error) => {
+                        self.finish_head(error);
+                        return true;
+                    },
                 };
                 let granted = match tools::source_permissions(&name, &source) {
                     Ok(granted) => granted,
@@ -1357,6 +1404,11 @@ impl State {
                         return true;
                     },
                 };
+                let backup = tools::keep_replaced(&name, replaced.as_deref(), &source);
+                if backup == tools::Kept::Failed {
+                    self.finish_head("backup failed; plugin source and permissions are unchanged");
+                    return true;
+                }
                 let result = match tools::plugin_fs_write(&fs_path, &source, args.overwrite) {
                     Ok(true) => {
                         // The user approved this source, and with it the permissions it asks
@@ -1365,7 +1417,6 @@ impl State {
                         if !granted.is_empty() {
                             tools::grant_permissions(&target, &granted);
                         }
-                        let backup = tools::keep_replaced(&name, replaced.as_deref(), &source);
                         tools::with_lint(
                             tools::write_report(&name, &granted, &backup),
                             &name,
@@ -1386,18 +1437,35 @@ impl State {
                         return true;
                     },
                 };
-                let (edited, granted) = match tools::edit_source_and_permissions(&previous, &args) {
-                    Ok(edit) => edit,
+                let (mut edited, granted) =
+                    match tools::edit_source_and_permissions(&previous, &args) {
+                        Ok(edit) => edit,
+                        Err(error) => {
+                            self.finish_head(error);
+                            return true;
+                        },
+                    };
+                let prepared = match tools::formatted_source(
+                    &name,
+                    &edited.source,
+                    zellij_tile::plugin_authoring::PluginCheckMode::Prepare,
+                ) {
+                    Ok(source) => source,
                     Err(error) => {
-                        self.finish_head(error);
+                        self.finish_head(tools::edit_compile_report(&name, &error));
                         return true;
                     },
                 };
-                // The same gate a write goes through, and for the same reason: an edit that
-                // breaks the file must not be what the next reload finds. The refusal is the
-                // edit's own, though - see `edit_compile_report`.
-                if let Err(error) = tools::compile_check(&name, &edited.source) {
-                    self.finish_head(tools::edit_compile_report(&name, &error));
+                if edited.source != prepared {
+                    edited.changed = vec![crate::plugin_source::LineSpan {
+                        first: 1,
+                        last: prepared.lines().count().max(1),
+                    }];
+                    edited.source = prepared;
+                }
+                let backup = tools::keep_replaced(&name, Some(&previous), &edited.source);
+                if backup == tools::Kept::Failed {
+                    self.finish_head("backup failed; plugin source and permissions are unchanged");
                     return true;
                 }
                 let result = match tools::plugin_fs_write(&fs_path, &edited.source, true) {
@@ -1405,7 +1473,6 @@ impl State {
                         if !granted.is_empty() {
                             tools::grant_permissions(&target, &granted);
                         }
-                        let backup = tools::keep_replaced(&name, Some(&previous), &edited.source);
                         tools::with_lint(
                             tools::edit_report(&name, &granted, &backup, &edited),
                             &name,
@@ -1415,6 +1482,24 @@ impl State {
                     Err(error) => error,
                 };
                 self.finish_head(result);
+                true
+            },
+            "plugin_format" => {
+                let result = (|| -> Result<String, String> {
+                    let previous = tools::plugin_fs_read(&fs_path)?;
+                    let source = tools::formatted_source(
+                        &name,
+                        &previous,
+                        zellij_tile::plugin_authoring::PluginCheckMode::Format,
+                    )?;
+                    let backup = tools::keep_replaced(&name, Some(&previous), &source);
+                    if backup == tools::Kept::Failed {
+                        return Err("backup failed; plugin source is unchanged".into());
+                    }
+                    tools::plugin_fs_write(&fs_path, &source, true)?;
+                    Ok(tools::write_report(&name, &[], &backup))
+                })();
+                self.finish_head(result.unwrap_or_else(|error| error));
                 true
             },
             "plugin_reload" => match tools::plugin_fs_exists(&fs_path) {

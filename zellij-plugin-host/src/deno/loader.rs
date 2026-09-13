@@ -61,8 +61,29 @@ impl PluginModuleLoader {
         Ok(loader)
     }
 
+    pub(super) fn checked_sources(&self) -> Result<HashMap<PathBuf, String>> {
+        self.sources
+            .borrow()
+            .iter()
+            .map(|(url, source)| {
+                let path = if url == WORKFLOW_SPECIFIER {
+                    PathBuf::from(WORKFLOW_PATH)
+                } else {
+                    ModuleSpecifier::parse(url)?
+                        .to_file_path()
+                        .map_err(|_| anyhow!("invalid checked module path"))?
+                };
+                Ok((path, source.clone()))
+            })
+            .collect()
+    }
+
     pub fn entrypoint(&self) -> &ModuleSpecifier {
         &self.entrypoint
+    }
+
+    pub(super) fn root(&self) -> &Path {
+        &self.root
     }
 
     pub(super) fn set_entry_source(&mut self, source: &str) -> Result<()> {
@@ -100,11 +121,21 @@ impl PluginModuleLoader {
     }
 
     pub(super) fn for_check(path: &Path, unsaved: bool) -> Result<Self> {
+        Self::for_check_with_root(path, unsaved, None)
+    }
+
+    pub(super) fn for_check_with_root(
+        path: &Path,
+        unsaved: bool,
+        root: Option<&Path>,
+    ) -> Result<Self> {
         media_type(path, true)?;
         let absolute = absolute_path(path)?;
-        let root = absolute
+        let parent = absolute
             .parent()
-            .context("plugin has no parent directory")?
+            .context("plugin has no parent directory")?;
+        let root = root
+            .unwrap_or(parent)
             .canonicalize()
             .context("resolve plugin directory")?;
         // Only a genuinely absent leaf may be supplied by an editor. A dangling
@@ -112,7 +143,10 @@ impl PluginModuleLoader {
         let entry = if unsaved
             && matches!(std::fs::symlink_metadata(&absolute), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         {
-            root.join(absolute.file_name().context("plugin has no filename")?)
+            parent
+                .canonicalize()
+                .context("resolve plugin directory")?
+                .join(absolute.file_name().context("plugin has no filename")?)
         } else {
             absolute
                 .canonicalize()

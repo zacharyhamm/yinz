@@ -45,7 +45,7 @@ pub fn lint(sh: &Shell, flags: flags::Lint) -> anyhow::Result<()> {
         println!("\n{}", msg);
         return Err(anyhow!("lints failed")).context(err_context);
     }
-    Ok(())
+    crate::authoring::lint(sh)
 }
 
 fn check_clippy() -> anyhow::Result<PathBuf> {

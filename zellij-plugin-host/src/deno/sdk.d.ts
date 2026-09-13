@@ -144,6 +144,10 @@ export interface Zellij {
   /** Commands retain their Rust spelling, e.g. command("RenameTab", [0, "logs"]). */
   command<K extends CommandName>(name: K, ...args: CommandArgs[K] extends undefined ? [] : [payload: CommandArgs[K]]): CommandResults[K];
   command<C extends CommandObject>(command: C & Record<Exclude<keyof C, CommandName>, never>): CommandResults[keyof C & CommandName];
+  definePlugin<D extends Record<string, string>>(plugin: Omit<Plugin, "defaults" | "load"> & {
+    defaults: D;
+    load?(configuration: Record<string, string> & {[K in keyof D]: string}): void | Promise<void>;
+  }): Plugin;
   definePlugin<T extends Plugin>(plugin: T): T;
   subscribe(events: EventType[]): void;
   unsubscribe(events: EventType[]): void;
@@ -167,7 +171,7 @@ export interface Zellij {
   runInPane(pane: AgentPane, step: PaneStep): CancellablePromise<PaneExit>;
   /** Requires RunCommands. Defaults: empty maps, /host, host output limit. Nonzero exits resolve. */
   runCommand(options: RunCommandOptions): CancellablePromise<RunCommandResult>;
-  swampRequest(options: {directory: string; operation: string; payload?: Json; id?: string; started?: boolean; onProgress?: (payload: Json) => void}): CancellablePromise<Json>;
+  swampRequest(options: {directory: string; operation: string; payload?: Json | undefined; id?: string | undefined; started?: boolean | undefined; onProgress?: ((payload: Json) => void) | undefined}): CancellablePromise<Json>;
   /** Requires WebAccess. Default Get. With streamId, resolves the leading response (empty body for 2xx).
    * HTTP error bodies stay buffered. cancel() stops the wait; command("CancelWebRequest", streamId) stops streaming. */
   webRequest(options: WebRequestOptions): CancellablePromise<WebRequestResult>;
@@ -677,14 +681,14 @@ export interface DataStore {
   watch(query: DataQuery, onChange: (snapshot: DataSnapshot, event: EventPayloads['PluginDataChanged']) => boolean | void | Promise<boolean | void>, options?: {mode?: WatchMode}): DataWatch;
 }
 
-export type PluginCheckMode = 'Syntax' | 'Semantic';
+export type PluginCheckMode = 'Syntax' | 'Semantic' | 'Format' | 'Prepare';
 export interface OutlineEntry {line: Integer; kind: 'Require' | 'Permission' | 'Function' | 'Handler' | 'Define' | 'Registration' | 'Tool'; text: string}
-export interface PluginCheckReport {diagnostics: string[]; outline: OutlineEntry[]; permissions: Permission[]; warnings: string[]}
+export interface PluginCheckReport {diagnostics: string[]; outline: OutlineEntry[]; permissions: Permission[]; warnings: string[]; formatted_source?: string}
 
 /** Tool handlers answer version-1 Hocus RPC calls. Source is supplied by the host. */
 export interface RpcCall { version: 1; callId: string; name: string; payload: Json; source: {Plugin: number}; progress(payload: Json): void; }
 export type HocusToolCall = RpcCall;
-export type RpcOptions = { name: string; payload?: Json; timeoutMs?: number; onProgress?: (payload: Json) => void } & (
+export type RpcOptions = { name: string; payload?: Json | undefined; timeoutMs?: number | undefined; onProgress?: ((payload: Json) => void) | undefined } & (
   { pluginId: number; pluginUrl?: never; pluginConfig?: never } |
   { pluginUrl: string; pluginId?: never; pluginConfig?: Record<string, string> }
 );

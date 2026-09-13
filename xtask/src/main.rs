@@ -17,6 +17,7 @@
 //! This binary is integrated into the `cargo` command line by using an alias in `.cargo/config`.
 
 // test comment
+mod authoring;
 mod bench;
 mod build;
 mod ci;

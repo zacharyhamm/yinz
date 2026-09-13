@@ -1599,22 +1599,65 @@ zellij plugins reload hello.ts
 zellij plugins log hello.ts
 ```
 
-Writes validate syntax and transpilation. They do not perform semantic checking.
+Writes validate imports, format the proposed file with Oxfmt, then check strict TypeScript and Oxlint rules.
+A failed check leaves the source, its backup, and permission grants unchanged.
+Create dependencies before writing a new file that imports them. Only the requested file is formatted.
+`zellij plugins write --no-check` is an explicit CLI escape hatch. Hocus has no equivalent.
 Use `--overwrite` to replace a file. The previous version is preserved as `hello.bak.ts`.
 The existing directory and symlink protections also apply to these filenames.
 An extensionless authoring name selects `.ts`.
 
 The SDK does not include npm, JSR, general Deno I/O, or workers.
 Hocus supports the same names through `plugin_write`, `plugin_edit`, `plugin_list`, `plugin_read`,
-`plugin_search`, `plugin_outline`, `plugin_check`, `plugin_test`, `plugin_reload`, and `plugin_log`.
-`plugin_docs` serves this guide a `##` section at a time (`section=lifecycle`, `commands`, `helpers`, `async`, `files`, `data`, and the rest the index lists), the SDK declarations in parts (`section=sdk_core` onward), and the worked examples. Writes and edits check syntax before approval;
-explicit JS/TS `plugin_check` checks types and local imports. `CheckPlugin` exposes the report as
-`{diagnostics, outline, permissions, warnings}` with `Syntax` or `Semantic` mode and requires `ReadFiles`.
+`plugin_search`, `plugin_outline`, `plugin_check`, `plugin_format`, `plugin_test`, `plugin_reload`, and `plugin_log`.
+`plugin_docs` serves this guide a `##` section at a time (`section=lifecycle`, `commands`, `helpers`, `async`, `files`, `data`, and the rest the index lists), the SDK declarations in parts (`section=sdk_core` onward), and the worked examples. Writes and edits format and check the result before approval.
+Use `plugin_check` with a name to check a saved file, or with `source` to check a draft without writing.
+Use `plugin_format` with `source` to return formatted draft text. Without `source`, it confirms and formats the saved file with a backup.
+
+```sh
+zellij plugins format hello.ts
+zellij plugins format --file ./hello.ts --check
+```
+
+`--check` verifies formatting without writing. Format and check do not execute plugin code.
+Fix the reported diagnostics, check again, then use `plugin_reload` and `plugin_log` to verify runtime behavior.
+Existing plugins can still load without authoring checks.
+
+`CheckPlugin` returns `{diagnostics, outline, permissions, warnings, formatted_source?}`.
+`Syntax` provides lightweight analysis and needs no file permission.
+`Semantic` checks the dependency graph and strict lint rules.
+`Format` returns formatted text. `Prepare` formats and performs all checks before returning the proposed source.
+These three modes require `ReadFiles`.
 
 Hocus infers grants only from literal SDK requests in the proposed entrypoint, using parsed JS/TS bindings.
 Imported default/named aliases and SDK namespace imports are recognized; comments and shadowed names grant nothing.
 Computed requests use normal runtime approval and produce warnings. Imported modules do not add inferred grants.
 The approval shows inferred grants; edits show newly requested grants. Grants are applied only after a successful write.
+
+
+### Shared authoring policy
+
+Compiler checks include strict mode, unchecked indexed access, exact optional properties, unused declarations,
+implicit returns, switch fallthrough, implicit overrides, and index-signature access.
+Oxlint enables correctness, suspicious, pedantic, restriction, and performance categories for its core,
+TypeScript, Oxc, import, and Unicorn plugins. Framework plugins and nursery rules are excluded.
+The shared preset permits SDK lifecycle exports, console logging, explicit import extensions, async/await,
+optional chaining, object spread, and nullish guards. It uses ES2022-compatible array sorting.
+The file-length limit is 10,000 code lines so embedded builtins can remain self-contained.
+The exact shared options are in the [lint preset](../zellij-plugin-host/src/deno/authoring/oxlint.json).
+
+Explicit `any`, non-null assertions, unsafe assignments/calls/returns/member access, unsafe assertions,
+unhandled or misused promises, and incomplete switches are errors.
+Use `await` or a rejection handler for SDK promises. A `void` prefix does not handle rejection.
+Only rule-named line suppressions with an explanation are accepted, for example:
+`// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper updates shared state.`
+Blanket, unexplained, unused, and compiler suppression directives are rejected.
+Plugins cannot replace the preset or load configuration code.
+
+Formatting uses two spaces, double quotes, semicolons, trailing commas, LF endings, and a 100-column width.
+Import sorting and semantic autofixes are disabled during writes.
+`cargo x lint` checks shipped plugins and reference examples with this policy.
+`cargo x format --check` verifies their formatting. Vendor compiler assets, invalid fixtures, and Swamp extensions use their own policies.
 
 
 ## Plugin tests
@@ -1725,6 +1768,12 @@ for this guide and `plugin_docs section=sdk_testing` for the test declarations.
 
 The host links `deno_core` 0.405.0, `deno_ast` 0.53.3, and their pinned V8 dependency.
 The first build downloads the V8 archive unless it is already cached.
+`cargo x build` also acquires pinned standalone Oxlint, Oxfmt, and tsgolint binaries with verified hashes.
+`cargo x install` installs them under `authoring-tools/<zellij-version>/<tool-versions>` in application data,
+independently of Wasm builtins. Installed checks need no Node, npm, Deno CLI, network, or tools on PATH.
+Missing or mismatched binaries fail authoring checks with a repair instruction.
+See [authoring provenance](../zellij-plugin-host/src/deno/authoring/provenance.json) for versions, hashes, sources, and licenses.
+TypeScript uses its bundled ES2022 declarations. tsgolint uses its own embedded ES2022 library for intrinsic type recognition.
 See [compiler provenance](../zellij-plugin-host/src/deno/compiler/provenance.json) for the bundled compiler's version, source, and checksums.
 The compiler license and third-party notices are stored beside it.
 

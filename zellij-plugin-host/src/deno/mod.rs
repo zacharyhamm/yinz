@@ -1,5 +1,6 @@
 //! A Send plugin handle with its V8 isolate confined to the pinned executor thread.
 pub(crate) mod analysis;
+mod authoring;
 mod checker;
 mod event;
 mod limits;
@@ -14,6 +15,7 @@ pub(crate) use worker::spawn_count as compilation_worker_spawn_count;
 #[cfg(test)]
 pub use checker::check_plugin;
 pub use checker::check_syntax;
+pub(crate) use limits::read_source as read_authoring_source;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};

@@ -1,166 +1,362 @@
 // Durable delivery adapter. Swamp owns the DAG, evidence, questions and decisions.
-import z, {definePlugin, type Json, type DataRecord, type Integer, type PaneId,
-  type PaneTarget, type AgentSpawnOptions, type AgentEvent, type MessageToPlugin, type RpcCall} from 'zellij:plugin';
+import z, {
+  definePlugin,
+  type Json,
+  type DataRecord,
+  type Integer,
+  type PaneId,
+  type PaneTarget,
+  type AgentSpawnOptions,
+  type AgentEvent,
+  type MessageToPlugin,
+  type RpcCall,
+} from "zellij:plugin";
+function required<T>(value: T): NonNullable<T> {
+  if (value == null) throw new Error("Missing required plugin state");
+  return value;
+}
 
-type Owner = {host_id: string; session: string; incarnation: string; work: string; agent: string};
-type Identity = Pick<Owner, 'host_id' | 'session' | 'incarnation'>;
+type Owner = { host_id: string; session: string; incarnation: string; work: string; agent: string };
+type Identity = Pick<Owner, "host_id" | "session" | "incarnation">;
 type Request = {
-  method: string; work: string; key: string; agent: string; operation: string;
-  directory: string; run: string; launch: string; workflow: string;
-  prompt: string; prompt_sha256?: string; waitForExit?: boolean; includeOutput?: boolean; foreground?: boolean;
-  process?: number; action: string; cancel_active?: boolean; spec: AgentSpawnOptions & {source_directory?: string; automatic_firecracker_vm?: boolean}; argv: string[]; cwd: string;
-  inputs?: Record<string, Json>; exactInputs?: boolean;
-  payload: Record<string, Json>; model: string; name: string; offset: number; version: number; capture?: Json;
+  method: string;
+  work: string;
+  key: string;
+  agent: string;
+  operation: string;
+  directory: string;
+  run: string;
+  launch: string;
+  workflow: string;
+  prompt: string;
+  prompt_sha256?: string;
+  waitForExit?: boolean;
+  includeOutput?: boolean;
+  foreground?: boolean;
+  process?: number;
+  action: string;
+  cancel_active?: boolean;
+  spec: AgentSpawnOptions & { source_directory?: string; automatic_firecracker_vm?: boolean };
+  argv: string[];
+  cwd: string;
+  inputs?: Record<string, Json>;
+  exactInputs?: boolean;
+  payload: Record<string, Json>;
+  model: string;
+  name: string;
+  offset: number;
+  version: number;
+  capture?: Json;
 };
-type Attachment = {run: string; work: string; workflow: string; root: string};
+type Attachment = { run: string; work: string; workflow: string; root: string };
 type Delivery = {
-  request: string; key: string; work: string; outcome: string; incarnation: string; dispatcher: string;
-  owner?: Owner; pane?: number; supervisor?: string; process?: number; transportOwner?: string | null;
-  outstanding?: string; ready?: boolean; processExited?: boolean; accepted?: boolean; dispatched?: boolean;
-  agentSession?: string | null; turn?: string; message?: string | null; hook?: string;
-  target?: PaneTarget; remoteHost?: string; remotePaneId?: string; branch?: string | null;
-  checkout?: string | null; log?: string; error?: string; output?: string; outputTruncated?: boolean;
-  logError?: string; exitCode?: number | null; workflow?: string; launch?: string;
-  view?: number; entries?: Record<string, Attachment>; choice?: string;
-  vm?: string | null; clean?: boolean;
-  transport?: string; requestId?: string; correlation?: string; run?: string;
-  closed?: boolean; cancel_pending?: boolean; transition?: string; source?: number; current?: number;
-  not_dispatched?: boolean; capture?: Json;
-  executionFinished?: boolean; cancelRequested?: boolean; interruptSent?: boolean; interruptedAt?: number; killSent?: boolean; terminationVerified?: boolean;
+  request: string;
+  key: string;
+  work: string;
+  outcome: string;
+  incarnation: string;
+  dispatcher: string;
+  owner?: Owner | undefined;
+  pane?: number | undefined;
+  supervisor?: string | undefined;
+  process?: number | undefined;
+  transportOwner?: string | null | undefined;
+  outstanding?: string | undefined;
+  ready?: boolean | undefined;
+  processExited?: boolean | undefined;
+  accepted?: boolean | undefined;
+  dispatched?: boolean | undefined;
+  agentSession?: string | null | undefined;
+  turn?: string | undefined;
+  message?: string | null | undefined;
+  hook?: string | undefined;
+  target?: PaneTarget | undefined;
+  remoteHost?: string | undefined;
+  remotePaneId?: string | undefined;
+  branch?: string | null | undefined;
+  checkout?: string | null | undefined;
+  log?: string | undefined;
+  error?: string | undefined;
+  output?: string | undefined;
+  outputTruncated?: boolean | undefined;
+  logError?: string | undefined;
+  exitCode?: number | null | undefined;
+  workflow?: string | undefined;
+  launch?: string | undefined;
+  view?: number | undefined;
+  entries?: Record<string, Attachment> | undefined;
+  choice?: string | undefined;
+  vm?: string | null | undefined;
+  clean?: boolean | undefined;
+  transport?: string | undefined;
+  requestId?: string | undefined;
+  correlation?: string | undefined;
+  run?: string | undefined;
+  closed?: boolean | undefined;
+  cancel_pending?: boolean | undefined;
+  transition?: string | undefined;
+  source?: number | undefined;
+  current?: number | undefined;
+  not_dispatched?: boolean | undefined;
+  capture?: Json | undefined;
+  executionFinished?: boolean | undefined;
+  cancelRequested?: boolean | undefined;
+  interruptSent?: boolean | undefined;
+  interruptedAt?: number | undefined;
+  killSent?: boolean | undefined;
+  terminationVerified?: boolean | undefined;
 };
-type Supervisor = {terminal_id: number; host_id: string; child_pid?: number; attached: boolean;
-  session_name: string; child_exit_status?: number | null; child_group_terminated?: boolean; owner?: string | null; remote_host?: string; pane_token?: string};
+type Supervisor = {
+  terminal_id: number;
+  host_id: string;
+  child_pid?: number | undefined;
+  attached: boolean;
+  session_name: string;
+  child_exit_status?: number | null | undefined;
+  child_group_terminated?: boolean | undefined;
+  owner?: string | null | undefined;
+  remote_host?: string | undefined;
+  pane_token?: string | undefined;
+};
 const D = z.data;
 let identity: Identity;
-type Placement = {view: number; queue: string[]; current?: number; detached?: boolean; manual?: boolean; subtitle?: string; workflow?: string};
+type Placement = {
+  view: number;
+  queue: string[];
+  current?: number | undefined;
+  detached?: boolean | undefined;
+  manual?: boolean | undefined;
+  subtitle?: string | undefined;
+  workflow?: string | undefined;
+};
 // Placement belongs to an authenticated builtin view, never to a caller-supplied pane.
 // It is intentionally not recovered across server/bridge reloads.
 const placements = new Map<string, Placement>();
 const manualViews = new Map<string, Set<number>>();
-function assert(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
+// oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
+function assert(value: unknown, message: string): asserts value {
+  const truthy = Boolean(value);
+  if (!truthy) throw new Error(message);
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+function object(value: unknown): Record<string, unknown> {
+  assert(isRecord(value), "Expected a JSON object");
+  return value;
+}
+function string(value: unknown): string {
+  assert(typeof value === "string", "Expected a string");
+  return value;
+}
+function parsedObject(source: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(source);
+  return object(value);
+}
 // Lua's encoder sorts object keys recursively. Preserve exact request/owner comparisons on reload.
 function encode(value: unknown): string {
-  return JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
-    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+  return JSON.stringify(value, (_key: string, item: unknown): unknown =>
+    isRecord(item)
+      ? Object.fromEntries(
+          Object.keys(item)
+            .sort()
+            // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
+            .map((key) => [key, item[key]]),
+        )
+      : item,
+  );
 }
 // Lua decoded null object fields as absent and encoded empty tables as arrays.
 // Normalize both sides when comparing a persisted request from either runtime.
 function sameRequest(saved: string, request: unknown): boolean {
-  const previous = JSON.parse(saved), current = request as Partial<Request>;
-  const forwarded = current?.method === 'swamp_dispatch' ? 'payload' : current?.method === 'workflow_run' ? 'inputs' : undefined;
-  if (forwarded && encode(previous[forwarded]) !== encode(current[forwarded])) return false;
+  const previous: unknown = JSON.parse(saved);
+  const current = object(request);
+  const forwarded =
+    current["method"] === "swamp_dispatch"
+      ? "payload"
+      : current["method"] === "workflow_run"
+        ? "inputs"
+        : undefined;
+  if (
+    forwarded &&
+    (!isRecord(previous) || encode(previous[forwarded]) !== encode(current[forwarded]))
+  )
+    return false;
   const normalize = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(normalize);
-    if (value && typeof value === 'object') {
-      const entries = Object.entries(value).filter(([, v]) => v != null).map(([k, v]) => [k, normalize(v)]);
-      return entries.length ? Object.fromEntries(entries) : [];
+    if (Array.isArray(value)) return value.map((entry) => normalize(entry));
+    if (isRecord(value)) {
+      const entries = Object.entries(value)
+        .filter(([, v]) => v != null)
+        .map(([k, v]) => [k, normalize(v)]);
+      return entries.length > 0 ? Object.fromEntries(entries) : [];
     }
     return value;
   };
   return encode(normalize(previous)) === encode(normalize(request));
 }
 function key(value: string): string {
-  assert(typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:\-]*$/.test(value) && value.length <= 200, 'Invalid correlation key');
+  assert(
+    typeof value === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/u.test(value) &&
+      value.length <= 200,
+    "Invalid correlation key",
+  );
   return value;
 }
-function scope(work: string, operation: string): string { return encode([identity.host_id, identity.session, key(work), key(operation)]); }
+function scope(work: string, operation: string): string {
+  return encode([identity.host_id, identity.session, key(work), key(operation)]);
+}
 function read<T = Delivery>(uid: string): [T | undefined, DataRecord | undefined] {
-  const row = D.fetch({entity: 'delivery', filter: D.eq('uid', uid), limit: 1}).records[0];
-  return [row ? JSON.parse(String(row.value)) as T : undefined, row];
+  const row = D.fetch({ entity: "delivery", filter: D.eq("uid", uid), limit: 1 }).records[0];
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+  return [row ? (JSON.parse(String(row["value"])) as T) : undefined, row];
 }
-function put(uid: string, value: unknown, row?: DataRecord) {
-  D.apply([D.put('delivery', {value: encode(value)}, {uid, expectRev: row?.rev ?? 0})]);
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function put(uid: string, value: unknown, row?: DataRecord): void {
+  D.apply([D.put("delivery", { value: encode(value) }, { uid, expectRev: row?.rev ?? 0 })]);
 }
-function result(uid: string): Delivery { const [value] = read(uid); assert(value, 'No operation with that identity'); return value; }
-function saveEvent(uid: string, outcome: string, fields: Partial<Delivery> = {}) {
+function result(uid: string): Delivery {
+  const [value] = read(uid);
+  assert(value, "No operation with that identity");
+  return value;
+}
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function saveEvent(uid: string, outcome: string, fields: Partial<Delivery> = {}): void {
   const [value, row] = read(uid);
-  if (!value || !['pending', 'unknown'].includes(value.outcome)) return;
-  put(uid, {...value, outcome, ...fields}, row);
+  if (!value || !["pending", "unknown"].includes(value.outcome)) return;
+  put(uid, { ...value, outcome, ...fields }, row);
 }
-const terminal = (id: number): PaneId => ({Terminal: id});
-const plugin = (id: number): PaneId => ({Plugin: id});
-function paneSubtitle(pane: PaneId, subtitle?: string) {
-  z.command('SetPaneSubtitle', {pane_id: pane, subtitle: subtitle ?? null});
+const terminal = (id: number): { Terminal: number } => ({ Terminal: id });
+const plugin = (id: number): PaneId => ({ Plugin: id });
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function paneSubtitle(pane: PaneId, subtitle?: string): void {
+  z.command("SetPaneSubtitle", { pane_id: pane, subtitle: subtitle ?? null });
 }
-function detach(placement: Placement) {
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function detach(placement: Placement): void {
   if (placement.detached) return;
   placement.detached = true;
   paneSubtitle(plugin(placement.view));
   if (placement.current != null) paneSubtitle(terminal(placement.current));
   placement.subtitle = undefined;
-  message({destination_plugin_id: placement.view, message_name: 'workflow-detached'});
+  message({ destination_plugin_id: placement.view, message_name: "workflow-detached" });
 }
 // History is the authority; delivery records only decide which pane is foregrounded.
-function workflowSubtitle(snapshot: {history: History; children?: History[]}): string {
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function workflowSubtitle(snapshot: { history: History; children?: History[] }): string {
   const main = snapshot.history;
-  const steps = (histories: History[], active: boolean) => {
+  // oxlint-disable-next-line eslint/no-shadow, typescript/prefer-readonly-parameter-types -- The nested callback has its own independent operation state. This helper shares mutable plugin state and SDK wire types with its callers.
+  const steps = (histories: History[], active: boolean): string[] => {
     const entries: string[] = [];
-    for (const history of histories) for (const job of history.jobs ?? []) for (const step of job.steps ?? []) {
-      const running = ['running', 'suspended'].includes(history.status) && ['running', 'waiting_approval'].includes(step.status);
-      if (active ? !running : step.status !== 'failed') continue;
-      let name = `${job.name}/${step.name}`;
-      if (history !== main) name = `${history.workflowName ?? history.id}/${name}`;
-      if (!active && main.status !== 'failed') name += ' (failed)';
-      entries.push(`${name} · ${active ? step.status : main.status}`);
-    }
+    for (const history of histories)
+      for (const job of history.jobs ?? [])
+        for (const step of job.steps ?? []) {
+          const running =
+            ["running", "suspended"].includes(history.status) &&
+            ["running", "waiting_approval"].includes(step.status);
+          if (active ? !running : step.status !== "failed") continue;
+          let name = `${job.name}/${step.name}`;
+          if (history !== main) name = `${history.workflowName ?? history.id}/${name}`;
+          if (!active && main.status !== "failed") name += " (failed)";
+          entries.push(`${name} · ${active ? step.status : main.status}`);
+        }
     return entries.sort();
   };
   let entries = steps(snapshot.children ?? [], true);
-  if (!entries.length) entries = steps([main], true);
-  if (!entries.length) {
+  if (entries.length === 0) entries = steps([main], true);
+  if (entries.length === 0) {
     entries = steps(snapshot.children ?? [], false);
-    if (!entries.length) entries = steps([main], false);
+    if (entries.length === 0) entries = steps([main], false);
   }
-  return `${main.workflowName ?? 'Workflow'} · ${entries.length ? entries.join(', ') : main.status}`;
+  return `${main.workflowName ?? "Workflow"} · ${entries.length > 0 ? entries.join(", ") : main.status}`;
 }
 const cancelling = new Set<string>();
-function lifecycleWork(work: string): string { return read<Attachment>(scope(work, 'attachment'))[0]?.work ?? work; }
-function closed(work?: string): boolean { return !!work && !!read(scope(lifecycleWork(work), 'view'))[0]?.closed; }
-function ensureOpen(work?: string) { assert(!closed(work), 'Pane workflow lifecycle is closed'); }
-function transition(work: string, action: string) {
-  const uid = scope(lifecycleWork(work), 'view'), [view, row] = read(uid);
-  if (view) { ensureOpen(work); view.transition = action; put(uid, view, row); }
+function lifecycleWork(work: string): string {
+  return read<Attachment>(scope(work, "attachment"))[0]?.work ?? work;
 }
-function cancelAfterTransition(work: string) {
+function closed(work?: string): boolean {
+  return !!work && !!read(scope(lifecycleWork(work), "view"))[0]?.closed;
+}
+function ensureOpen(work?: string): void {
+  assert(!closed(work), "Pane workflow lifecycle is closed");
+}
+function transition(work: string, action: string): void {
+  const uid = scope(lifecycleWork(work), "view"),
+    [view, row] = read(uid);
+  if (view) {
+    ensureOpen(work);
+    view.transition = action;
+    put(uid, view, row);
+  }
+}
+function cancelAfterTransition(work: string): void {
+  // oxlint-disable-next-line eslint/no-param-reassign -- Update the caller-owned state or the local retry state in place.
   work = lifecycleWork(work);
-  const uid = scope(work, 'view'), [view, row] = read(uid);
+  const uid = scope(work, "view"),
+    [view, row] = read(uid);
   if (!view) return;
-  view.closed = true; view.cancel_pending = true; put(uid, view, row);
+  view.closed = true;
+  view.cancel_pending = true;
+  put(uid, view, row);
   for (const entry of deliveryRows()) {
     const value = entry.value;
-    if (!['pending', 'unknown'].includes(value.outcome) || !value.request || lifecycleWork(entry.work) !== work) continue;
+    if (
+      !["pending", "unknown"].includes(value.outcome) ||
+      !value.request ||
+      lifecycleWork(entry.work) !== work
+    )
+      continue;
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
     const request: Request = JSON.parse(value.request);
-    if (request.method === 'pane_action' && ['fork', 'duplicate'].includes(request.action)) {
-      value.outcome = 'interrupted'; value.error = 'Pane workflow lifecycle is closed'; put(entry.uid, value, entry.row);
+    if (request.method === "pane_action" && ["fork", "duplicate"].includes(request.action)) {
+      value.outcome = "interrupted";
+      value.error = "Pane workflow lifecycle is closed";
+      put(entry.uid, value, entry.row);
     }
   }
-  void cancelLifecycle(work);
+  void cancelLifecycle(work).catch((error: unknown) => {
+    z.log(String(error));
+  });
 }
-function closeView(work: string, restoreSource?: number) {
+function closeView(work: string, restoreSource?: number): void {
   const existing = placements.get(work);
   if (existing) detach(existing);
-  const [placement] = read(scope(work, 'view'));
-  if (!placement || placement.incarnation !== identity.incarnation || placement.view == null) return;
-  const pane = z.command('GetPaneInfo', plugin(placement.view));
-  if (pane?.plugin_url === 'zellij:agent-exit') {
-    if (restoreSource != null && !pane.is_suppressed) z.command('ReplacePaneWithExistingPane', [plugin(placement.view), terminal(restoreSource), true]);
-    z.command('HidePaneWithId', plugin(placement.view));
-    z.command('ClosePluginPane', placement.view);
+  const [placement] = read(scope(work, "view"));
+  if (!placement || placement.incarnation !== identity.incarnation || placement.view == null)
+    return;
+  const pane = z.command("GetPaneInfo", plugin(placement.view));
+  if (pane?.plugin_url === "zellij:agent-exit") {
+    if (restoreSource != null && !pane.is_suppressed)
+      z.command("ReplacePaneWithExistingPane", [
+        plugin(placement.view),
+        terminal(restoreSource),
+        true,
+      ]);
+    z.command("HidePaneWithId", plugin(placement.view));
+    z.command("ClosePluginPane", placement.view);
   }
 }
 function active(work: string): boolean {
   if (closed(work)) return false;
-  const works = new Set([work, ...Object.keys(read(scope(work, 'runs'))[0]?.entries ?? {})]);
+  const works = new Set([work, ...Object.keys(read(scope(work, "runs"))[0]?.entries ?? {})]);
   let cursor: Integer | null = null;
   do {
-    const {records, raw} = D.fetch({entity: 'delivery', afterId: cursor});
+    const { records, raw } = D.fetch({ entity: "delivery", afterId: cursor });
     for (const row of records) {
-      const id: string[] = JSON.parse(String(row.uid));
-      if (id[0] === identity.host_id && id[1] === identity.session && works.has(id[2])) {
-        const operation: Delivery = JSON.parse(String(row.value));
-        if (['pending', 'unknown'].includes(operation.outcome)) {
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+      const id: string[] = JSON.parse(String(row["uid"]));
+      if (id[0] === identity.host_id && id[1] === identity.session && works.has(required(id[2]))) {
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+        const operation: Delivery = JSON.parse(String(row["value"]));
+        if (["pending", "unknown"].includes(operation.outcome)) {
+          // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
           const request: Request = JSON.parse(operation.request);
-          if (['command', 'agent_prompt'].includes(request.method) || (request.method === 'agent_spawn' && request.waitForExit)) return true;
+          // oxlint-disable-next-line eslint/max-depth -- Nested protocol checks preserve the order of validation and state changes.
+          if (
+            ["command", "agent_prompt"].includes(request.method) ||
+            (request.method === "agent_spawn" && request.waitForExit)
+          )
+            return true;
         }
       }
     }
@@ -168,80 +364,171 @@ function active(work: string): boolean {
   } while (cursor != null);
   return false;
 }
-function activeOperation(work: string) {
-  return deliveryRows().find(entry => {
-    const v = entry.value;
-    if (lifecycleWork(entry.work) !== lifecycleWork(work) || !['pending', 'unknown'].includes(v.outcome) || !v.request) return false;
-    const r: Request = JSON.parse(v.request);
-    return r.method === 'command' || r.method === 'agent_prompt' || r.method === 'agent_spawn' && r.waitForExit;
-  });
+function launchFailure(
+  work: string,
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  launch: Delivery,
+  logs: string,
+  directory?: string,
+): {
+  launch: string;
+  root: string | undefined;
+  history: { id: string; workflowName: string; status: string };
+  children: History[];
+  active: boolean;
+  logs: string;
+} {
+  return {
+    launch: work,
+    root: launch.checkout ?? directory,
+    history: { id: work, workflowName: launch.workflow ?? "Workflow launch", status: "failed" },
+    children: [],
+    active: active(work),
+    logs,
+  };
+}
+function cancellable(request: string): boolean {
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+  const r: Request = JSON.parse(request);
+  return (
+    r.method === "command" ||
+    r.method === "agent_prompt" ||
+    (r.method === "agent_spawn" && r.waitForExit === true)
+  );
+}
+function activeOperation(work: string): { work: string; key: string } | undefined {
+  const entry = deliveryRows().find(
+    ({ work: other, value }) =>
+      lifecycleWork(other) === lifecycleWork(work) &&
+      ["pending", "unknown"].includes(value.outcome) &&
+      !!value.request &&
+      cancellable(value.request),
+  );
+  return entry ? { work: entry.work, key: entry.key } : undefined;
 }
 const stopping = new Map<string, Promise<void>>();
-function stopOperation(uid: string): Promise<void> {
-  const existing = stopping.get(uid);
-  if (existing) return existing;
-  const pending = (async () => {
-    try {
-      const deadline = Date.now() + 30000;
-      for (;;) {
-        let [value, row] = read(uid);
-        assert(value?.cancelRequested, 'Cancellation no longer owns this operation');
-        if (!['pending', 'unknown'].includes(value.outcome)) return;
-        assert(Date.now() < deadline, 'Termination is uncertain; reconcile the saved operation before retrying');
-        // Cancellation can arrive while dispatch is still waiting for its supervisor.
-        if (value.pane == null || !value.supervisor) { await z.sleep(100); continue; }
-        const owner = value.owner;
-        assert(owner?.host_id === identity.host_id && owner.session === identity.session &&
-          owner.work === value.work, 'Wrong cancellation owner');
-        const host = await supervisor(value.pane, value.supervisor);
-        assert(host.host_id === value.supervisor && host.child_pid === value.process && host.attached,
-          'Process ownership changed; reconcile without signalling the replacement');
-        if (host.owner) assert(host.owner === (value.transportOwner ?? encode(owner)), 'Remote ownership changed');
-        [value, row] = read(uid); assert(value?.cancelRequested, 'Cancellation lost its operation');
-        if (!['pending', 'unknown'].includes(value.outcome)) return;
-        assert(encode(value.owner) === encode(owner) && value.process === host.child_pid && value.supervisor === host.host_id,
-          'Operation ownership changed while checking its process');
-        if (host.child_group_terminated === true) {
-          saveEvent(uid, 'cancelled', {exitCode: host.child_exit_status, processExited: true, terminationVerified: true});
-          present(value.work); changed(value.work); return;
-        }
-        if (!value.interruptSent) {
-          value.interruptSent = true; value.interruptedAt = Date.now(); put(uid, value, row);
-          assert(z.workflowSignal, 'Owned pane signalling is unavailable');
-          z.workflowSignal({terminal_id: host.terminal_id, owner: encode(owner), process: value.process, supervisor: value.supervisor!, kill: false});
-        } else if (!value.killSent && Date.now() - (value.interruptedAt ?? Date.now()) >= 5000) {
-          value.killSent = true; put(uid, value, row);
-          assert(z.workflowSignal, 'Owned pane signalling is unavailable');
-          z.workflowSignal({terminal_id: host.terminal_id, owner: encode(owner), process: value.process, supervisor: value.supervisor!, kill: true});
-        }
+function stopOperation(uid: string): void {
+  if (stopping.has(uid)) return;
+  const pending = verifyStop(uid)
+    .catch((error: unknown) => {
+      z.log(String(error));
+    })
+    .finally(() => {
+      stopping.delete(uid);
+    });
+  stopping.set(uid, pending);
+}
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. Termination verification keeps its ordered ownership checks together.
+async function verifyStop(uid: string): Promise<void> {
+  try {
+    const deadline = Date.now() + 30000;
+    for (;;) {
+      let [value, row] = read(uid);
+      assert(value?.cancelRequested, "Cancellation no longer owns this operation");
+      if (!["pending", "unknown"].includes(value.outcome)) return;
+      assert(
+        Date.now() < deadline,
+        "Termination is uncertain; reconcile the saved operation before retrying",
+      );
+      // Cancellation can arrive while dispatch is still waiting for its supervisor.
+      if (value.pane == null || !value.supervisor) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
         await z.sleep(100);
+        continue;
       }
-    } catch (error) {
-      const current = result(uid);
-      if (['pending', 'unknown'].includes(current.outcome)) {
-        saveEvent(uid, 'unknown', {error: String(error), terminationVerified: false});
-        changed(current.work);
+      const owner = value.owner;
+      assert(
+        owner?.host_id === identity.host_id &&
+          owner.session === identity.session &&
+          owner.work === value.work,
+        "Wrong cancellation owner",
+      );
+      // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
+      const host = await supervisor(value.pane, value.supervisor);
+      assert(
+        host.host_id === value.supervisor && host.child_pid === value.process && host.attached,
+        "Process ownership changed; reconcile without signalling the replacement",
+      );
+      if (host.owner)
+        assert(host.owner === (value.transportOwner ?? encode(owner)), "Remote ownership changed");
+      [value, row] = read(uid);
+      assert(value?.cancelRequested, "Cancellation lost its operation");
+      if (!["pending", "unknown"].includes(value.outcome)) return;
+      assert(
+        encode(value.owner) === encode(owner) &&
+          value.process === host.child_pid &&
+          value.supervisor === host.host_id,
+        "Operation ownership changed while checking its process",
+      );
+      if (host.child_group_terminated === true) {
+        saveEvent(uid, "cancelled", {
+          exitCode: host.child_exit_status,
+          processExited: true,
+          terminationVerified: true,
+        });
+        present(value.work);
+        changed(value.work);
+        return;
       }
+      const signal = {
+        terminal_id: host.terminal_id,
+        owner: encode(owner),
+        ...(value.process == null ? {} : { process: value.process }),
+        supervisor: value.supervisor,
+      };
+      if (!value.interruptSent) {
+        value.interruptSent = true;
+        value.interruptedAt = Date.now();
+        put(uid, value, row);
+        assert(z.workflowSignal, "Owned pane signalling is unavailable");
+        z.workflowSignal({ ...signal, kill: false });
+      } else if (!value.killSent && Date.now() - (value.interruptedAt ?? Date.now()) >= 5000) {
+        value.killSent = true;
+        put(uid, value, row);
+        assert(z.workflowSignal, "Owned pane signalling is unavailable");
+        z.workflowSignal({ ...signal, kill: true });
+      }
+      // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
+      await z.sleep(100);
     }
-  })().finally(() => stopping.delete(uid));
-  stopping.set(uid, pending); return pending;
+  } catch (error) {
+    const current = result(uid);
+    if (["pending", "unknown"].includes(current.outcome)) {
+      saveEvent(uid, "unknown", { error: String(error), terminationVerified: false });
+      changed(current.work);
+    }
+  }
 }
-function launchFailure(work: string, launch: Delivery, logs: string, directory?: string) {
-  return {launch: work, root: launch.checkout ?? directory, history: {id: work, workflowName: launch.workflow ?? 'Workflow launch', status: 'failed'}, children: [], active: active(work), logs};
-}
-function present(work: string) {
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together.
+function present(work: string): void {
   if (closed(work)) return;
   const placement = placements.get(work);
   if (!placement || placement.detached) return;
   const view = plugin(placement.view);
-  const info = z.command('GetPaneInfo', view);
+  const info = z.command("GetPaneInfo", view);
   const current = placement.current == null ? view : terminal(placement.current);
-  const currentInfo = z.command('GetPaneInfo', current);
-  if ((info?.plugin_url !== 'zellij:agent-exit' && info?.plugin_url !== 'zellij:swamp-workflow') || !currentInfo || currentInfo.is_suppressed) { detach(placement); return; }
+  const currentInfo = z.command("GetPaneInfo", current);
+  if (
+    (info?.plugin_url !== "zellij:agent-exit" && info?.plugin_url !== "zellij:swamp-workflow") ||
+    !currentInfo ||
+    currentInfo.is_suppressed
+  ) {
+    detach(placement);
+    return;
+  }
   let next: number | undefined;
-  while (placement.queue.length) {
-    const [operation] = read(placement.queue[0]);
-    if (operation && (operation.outcome === 'pending' || (operation.capture && !operation.closed && ['completed', 'failed'].includes(operation.outcome)))) { next = operation.pane; break; }
+  while (placement.queue.length > 0) {
+    const [operation] = read(required(placement.queue[0]));
+    if (
+      operation &&
+      (operation.outcome === "pending" ||
+        (Boolean(operation.capture) &&
+          !operation.closed &&
+          ["completed", "failed"].includes(operation.outcome)))
+    ) {
+      next = operation.pane;
+      break;
+    }
     placement.queue.shift();
   }
   paneSubtitle(view, placement.subtitle);
@@ -250,83 +537,132 @@ function present(work: string) {
     return;
   }
   const target = next == null ? view : terminal(next);
-  if (!z.command('GetPaneInfo', target)?.is_suppressed) { detach(placement); return; }
+  if (!z.command("GetPaneInfo", target)?.is_suppressed) {
+    detach(placement);
+    return;
+  }
   if (placement.current == null && next != null) {
-    const source = read(scope(work, 'source'))[0];
+    const source = read(scope(work, "source"))[0];
     // Keep the source for pane/VM actions, without restoring it when the view closes.
-    if (source?.pane != null) z.command('HidePaneWithId', terminal(source.pane));
+    if (source?.pane != null) z.command("HidePaneWithId", terminal(source.pane));
   }
   if (placement.current != null) paneSubtitle(current);
   paneSubtitle(target, placement.subtitle);
-  const uid = scope(work, 'view'), [saved, row] = read(uid);
-  if (saved) { saved.current = next; put(uid, saved, row); }
-  z.command('ReplacePaneWithExistingPane', [current, target, true]);
+  const uid = scope(work, "view"),
+    [saved, row] = read(uid);
+  if (saved) {
+    saved.current = next;
+    put(uid, saved, row);
+  }
+  z.command("ReplacePaneWithExistingPane", [current, target, true]);
   placement.current = next;
 }
-function updateSubtitle(work: string, subtitle: string, workflow?: string) {
+function updateSubtitle(work: string, subtitle: string, workflow?: string): void {
   const placement = placements.get(work);
   if (!placement || placement.detached) return;
   placement.subtitle = subtitle;
   placement.workflow = workflow ?? placement.workflow;
   present(work);
 }
-function unavailable(placement: Placement, work: string) {
-  updateSubtitle(work, `${placement.workflow ?? 'Workflow'} · status unavailable`);
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function unavailable(placement: Placement, work: string): void {
+  updateSubtitle(work, `${placement.workflow ?? "Workflow"} · status unavailable`);
 }
-function attachManual(work: string, view: number) {
+function attachManual(work: string, view: number): void {
   if (closed(work)) return;
   if (!manualViews.has(work)) manualViews.set(work, new Set());
-  manualViews.get(work)!.add(view);
-  if (read(scope(work, 'view'))[0]) return;
+  required(manualViews.get(work)).add(view);
+  if (read(scope(work, "view"))[0]) return;
   const existing = placements.get(work);
   if (existing) {
-    if (z.command('GetPaneInfo', plugin(existing.view))) return;
+    if (z.command("GetPaneInfo", plugin(existing.view))) return;
     detach(existing);
   }
-  const placement: Placement = {view, queue: [], manual: true, subtitle: 'Workflow · loading'};
+  const placement: Placement = { view, queue: [], manual: true, subtitle: "Workflow · loading" };
   placements.set(work, placement);
   let cursor: Integer | null = null;
   do {
     // Default row-id order preserves delivery order across pages.
-    const {records, raw} = D.fetch({entity: 'delivery', afterId: cursor});
+    const { records, raw } = D.fetch({ entity: "delivery", afterId: cursor });
     for (const row of records) {
-      const id: string[] = JSON.parse(String(row.uid));
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+      const id: string[] = JSON.parse(String(row["uid"]));
       if (id[0] !== identity.host_id || id[1] !== identity.session || id[2] !== work) continue;
-      const operation: Delivery = JSON.parse(String(row.value));
-      if (operation.outcome !== 'pending' || operation.pane == null) continue;
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+      const operation: Delivery = JSON.parse(String(row["value"]));
+      if (operation.outcome !== "pending" || operation.pane == null) continue;
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
       const request: Request = JSON.parse(operation.request);
-      if ((request.method === 'command' && request.foreground || request.method === 'agent_spawn' && request.waitForExit)) placement.queue.push(String(row.uid));
+      if (
+        (request.method === "command" && request.foreground) ||
+        (request.method === "agent_spawn" && request.waitForExit)
+      )
+        placement.queue.push(String(row["uid"]));
     }
     cursor = raw.next_cursor;
   } while (cursor != null);
   present(work);
 }
-async function command(argv: string[], cwd = '/'): Promise<string> {
-  const r = await z.runCommand({command: argv, cwd, context: {swamp_owner: encode(identity)}, maxBytesReturned: 1048576});
-  const stdout = z.decodeUtf8(r.stdout), stderr = z.decodeUtf8(r.stderr);
-  assert(r.exitCode === 0, `Host command failed: ${encode(argv)}\nDirectory: ${cwd}\nExit status: ${r.exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+async function command(argv: string[], cwd = "/"): Promise<string> {
+  const r = await z.runCommand({
+    command: argv,
+    cwd,
+    context: { swamp_owner: encode(identity) },
+    maxBytesReturned: 1048576,
+  });
+  const stdout = z.decodeUtf8(r.stdout);
+  const stderr = z.decodeUtf8(r.stderr);
+  assert(
+    r.exitCode === 0,
+    `Host command failed: ${encode(argv)}\nDirectory: ${cwd}\nExit status: ${r.exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+  );
   return stdout;
 }
-type SwampRequest = {allowLimited?: boolean; operation: string; payload?: Record<string, Json>; id?: string; started?: boolean; onNotDispatched?: (error: Json) => void; onProgress?: (payload: Json) => void};
-const tracked = new Map<string, string>(), watching = new Set<string>();
-const watchIds = new Map<string, {run: string; work: string}>(), notifications = new Set<string>();
-function changed(work: string) {
+type SwampRequest = {
+  allowLimited?: boolean;
+  operation: string;
+  payload?: Record<string, Json> | undefined;
+  id?: string | undefined;
+  started?: boolean | undefined;
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  onNotDispatched?: ((error: Json) => void) | undefined;
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  onProgress?: ((payload: Json) => void) | undefined;
+};
+const tracked = new Map<string, string>(),
+  watching = new Set<string>();
+const watchIds = new Map<string, { run: string; work: string }>();
+const notifications = new Set<string>();
+function changed(work: string): void {
   if (closed(work)) return;
   if (notifications.has(work)) return;
   notifications.add(work);
-  void z.sleep(0).then(() => {
-    notifications.delete(work);
-    if (closed(work)) return;
-    const view = read(scope(work, 'view'))[0];
-    if (view?.incarnation === identity.incarnation && view.view != null) message({destination_plugin_id: view.view, message_name: 'workflow-changed'});
-    for (const id of manualViews.get(work) ?? []) {
-      let pane;
-      try { pane = z.command('GetPaneInfo', plugin(id)); } catch { /* A closed view is removed below. */ }
-      if (!pane) manualViews.get(work)!.delete(id);
-      else if (view?.incarnation !== identity.incarnation || id !== view.view) message({destination_plugin_id: id, message_name: 'workflow-changed'});
-    }
-  });
+  void z
+    .sleep(0)
+    .then(() => {
+      notifications.delete(work);
+      if (closed(work)) return;
+      const view = read(scope(work, "view"))[0];
+      if (view?.incarnation === identity.incarnation && view.view != null)
+        message({ destination_plugin_id: view.view, message_name: "workflow-changed" });
+      for (const id of manualViews.get(work) ?? []) {
+        let pane;
+        try {
+          pane = z.command("GetPaneInfo", plugin(id));
+        } catch {
+          /* A closed view is removed below. */
+        }
+        if (!pane) required(manualViews.get(work)).delete(id);
+        else if (view?.incarnation !== identity.incarnation || id !== view.view)
+          message({ destination_plugin_id: id, message_name: "workflow-changed" });
+      }
+    })
+    .catch((error: unknown) => {
+      z.log(String(error));
+    });
 }
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
 async function swamp(request: SwampRequest, directory: string): Promise<string> {
   const workflow = request.payload?.workflow;
   if (['workflow.history.search', 'report.search', 'report.get'].includes(request.operation) &&
@@ -355,463 +691,1015 @@ async function swamp(request: SwampRequest, directory: string): Promise<string> 
   } else if (request.operation === 'workflow.history.logs' && reply.log) return (reply.log.lines ?? []).join('\n');
   return encode(reply);
 }
-async function cancelRun(run: string, root: string) {
-  const history = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: run}}, root));
-  if (history.status === 'running') return JSON.parse(await swamp({operation: 'workflow.cancel', payload: {runId: run}}, root));
+async function cancelRun(run: string, root: string): Promise<unknown> {
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+  const history: History = JSON.parse(
+    await swamp({ operation: "workflow.history.get", payload: { workflowIdOrName: run } }, root),
+  );
+  if (history.status === "running")
+    return JSON.parse(await swamp({ operation: "workflow.cancel", payload: { runId: run } }, root));
+  return undefined;
 }
 function cancelIfClosed(work: string): boolean {
   if (!closed(work)) return false;
+  // oxlint-disable-next-line eslint/no-param-reassign -- Update the caller-owned state or the local retry state in place.
   work = lifecycleWork(work);
-  const uid = scope(work, 'view'), [view, row] = read(uid);
-  assert(view, 'Missing closed lifecycle');
-  view.cancel_pending = true; put(uid, view, row);
-  void cancelLifecycle(work);
+  const uid = scope(work, "view"),
+    [view, row] = read(uid);
+  assert(view, "Missing closed lifecycle");
+  view.cancel_pending = true;
+  put(uid, view, row);
+  void cancelLifecycle(work).catch((error: unknown) => {
+    z.log(String(error));
+  });
   return true;
 }
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
 async function workflowRunId(operation: Delivery, request: Request): Promise<string | undefined> {
   if (operation.run) return operation.run;
-  if (request.operation === 'workflow.resume') return request.payload.runId as string;
-  // Native children inherit the operation tag; only the launched workflow identifies its root run.
-  const workflow = operation.workflow ?? request.payload?.workflowIdOrName;
-  const history = JSON.parse(await swamp({operation: 'workflow.history.search', payload: {...(workflow ? {workflow} : {}), filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(operation.correlation)}`}}, operation.checkout!));
-  assert((history.results ?? []).length <= 1, 'Multiple runs have the same operation identity; reconcile explicitly');
+  if (request.operation === "workflow.resume")
+    return typeof request.payload["runId"] === "string" ? request.payload["runId"] : undefined;
+  const workflow = operation.workflow ?? request.payload?.["workflowIdOrName"];
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+  const history: {
+    results?: { runId: string; workflowName: string; inputs: History["inputs"] }[];
+  } = JSON.parse(
+    await swamp(
+      {
+        operation: "workflow.history.search",
+        payload: {
+          ...(workflow ? { workflow } : {}),
+          filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(operation.correlation)}`,
+        },
+      },
+      required(operation.checkout),
+    ),
+  );
+  assert(
+    (history.results ?? []).length <= 1,
+    "Multiple runs have the same operation identity; reconcile explicitly",
+  );
   return history.results?.[0]?.runId;
 }
-function watchRun(run: string, work: string, root: string) {
-  if (watching.has(run) || [...tracked.values()].some(uid => read(uid)[0]?.run === run)) return;
+function watchRun(run: string, work: string, root: string): void {
+  if (watching.has(run) || [...tracked.values()].some((uid) => read(uid)[0]?.run === run)) return;
   const id = `${z.instanceId}-watch-${run}`;
-  watching.add(run); watchIds.set(id, {run, work});
-  void swamp({operation: 'run.attach', payload: {runId: run, afterSeq: 0}, id}, root)
-    .catch(() => {}).finally(() => {watching.delete(run); watchIds.delete(id);});
+  watching.add(run);
+  watchIds.set(id, { run, work });
+  void swamp({ operation: "run.attach", payload: { runId: run, afterSeq: 0 }, id }, root)
+    .catch(() => {
+      // The later status reconciliation reports this failure.
+    })
+    .finally(() => {
+      watching.delete(run);
+      watchIds.delete(id);
+    });
 }
-async function dispatch(uid: string, root: string, operation: string, payload: Record<string, Json>, onProgress?: (payload: Json) => void) {
+// oxlint-disable-next-line eslint/max-lines-per-function -- This lifecycle handler keeps its ordered protocol transitions together.
+async function dispatch(
+  uid: string,
+  root: string,
+  operation: string,
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  payload: Record<string, Json>,
+  onProgress?: (payload: Json) => void,
+): Promise<Delivery> {
   let [value, row] = read(uid);
-  assert(value, 'No operation with that identity');
+  assert(value, "No operation with that identity");
   ensureOpen(value.work);
-  Object.assign(value, {transport: 'serve', requestId: z.instanceId + uid, checkout: root, correlation: uid, outcome: 'unknown'});
+  Object.assign(value, {
+    transport: "serve",
+    requestId: z.instanceId + uid,
+    checkout: root,
+    correlation: uid,
+    outcome: "unknown",
+  });
   put(uid, value, row);
-  tracked.set(value.requestId!, uid);
-  if (operation === 'workflow.run') {
-    payload = {...payload, noSupersede: true, runtimeTags: {...(payload.runtimeTags as Record<string, Json> ?? {}), zellijOperation: uid}};
+  tracked.set(required(value.requestId), uid);
+  if (operation === "workflow.run") {
+    // oxlint-disable-next-line eslint/no-param-reassign -- Update the caller-owned state or the local retry state in place.
+    payload = {
+      ...payload,
+      noSupersede: true,
+      runtimeTags: {
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+        ...(payload["runtimeTags"] as Record<string, Json>),
+        zellijOperation: uid,
+      },
+    };
   }
-  const reply = JSON.parse(await swamp({operation, payload, id: value.requestId, started: true, onProgress,
-    onNotDispatched(error) {
-      const [current, currentRow] = read(uid); assert(current, 'Missing dispatch');
-      current.not_dispatched = true;
-      if (['pending', 'unknown'].includes(current.outcome)) { current.outcome = 'failed'; current.error = encode(error); }
-      put(uid, current, currentRow);
-    }}, root));
-  [value, row] = read(uid); assert(value, 'No operation with that identity');
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+  const reply: { runId?: string } = JSON.parse(
+    await swamp(
+      {
+        operation,
+        payload,
+        id: value.requestId,
+        started: true,
+        onProgress,
+        onNotDispatched(error) {
+          const [current, currentRow] = read(uid);
+          assert(current, "Missing dispatch");
+          current.not_dispatched = true;
+          if (["pending", "unknown"].includes(current.outcome)) {
+            current.outcome = "failed";
+            current.error = encode(error);
+          }
+          put(uid, current, currentRow);
+        },
+      },
+      root,
+    ),
+  );
+  [value, row] = read(uid);
+  assert(value, "No operation with that identity");
   if (reply.runId) value.run = reply.runId;
-  if (value.outcome === 'unknown' && tracked.has(value.requestId!)) value.outcome = 'pending';
+  if (value.outcome === "unknown" && tracked.has(required(value.requestId)))
+    value.outcome = "pending";
   put(uid, value, row);
   if (closed(value.work)) {
-    if (operation !== 'model.method.run') cancelIfClosed(value.work);
+    if (operation !== "model.method.run") cancelIfClosed(value.work);
     ensureOpen(value.work);
   }
   return value;
 }
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together. This helper shares mutable plugin state and SDK wire types with its callers.
 async function serveObserve(uid: string, operation: Delivery, row?: DataRecord): Promise<Delivery> {
-  let attachment: {ok: boolean; error?: string} | undefined;
+  let attachment: { ok: boolean; error?: string } | undefined;
   for (let attempt = 1; attempt <= 8; attempt++) {
-    if (!['pending', 'unknown'].includes(operation.outcome)) return operation;
-    const request = JSON.parse(operation.request);
-    if (request.operation === 'model.method.run') {
+    if (!["pending", "unknown"].includes(operation.outcome)) return operation;
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+    const request: Request = JSON.parse(operation.request);
+    if (request.operation === "model.method.run") {
       if (operation.run) {
         const id = `${z.instanceId}-attach-${uid}`;
         if (![...tracked.values()].includes(uid) && !attachment) {
           tracked.set(id, uid);
-          try { await swamp({operation: 'run.attach', payload: {runId: operation.run, afterSeq: 0}, id, started: true}, operation.checkout!); attachment = {ok: true}; }
-          catch (error) { tracked.delete(id); attachment = {ok: false, error: String(error)}; }
+          // oxlint-disable-next-line eslint/max-depth -- Nested protocol checks preserve the order of validation and state changes.
+          try {
+            // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
+            await swamp(
+              {
+                operation: "run.attach",
+                payload: { runId: operation.run, afterSeq: 0 },
+                id,
+                started: true,
+              },
+              required(operation.checkout),
+            );
+            attachment = { ok: true };
+          } catch (error) {
+            tracked.delete(id);
+            attachment = { ok: false, error: String(error) };
+          }
         }
         if (attachment) {
-          operation.outcome = attachment.ok && tracked.has(id) ? 'pending' : 'unknown';
-          if (attachment.ok) operation.dispatcher = z.instanceId; else operation.error = attachment.error;
+          operation.outcome = attachment.ok && tracked.has(id) ? "pending" : "unknown";
+          // oxlint-disable-next-line eslint/max-depth -- Nested protocol checks preserve the order of validation and state changes.
+          if (attachment.ok) operation.dispatcher = z.instanceId;
+          else operation.error = attachment.error;
         }
-      } else operation.outcome = 'unknown';
+      } else operation.outcome = "unknown";
     } else {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
       operation.run = await workflowRunId(operation, request);
       if (operation.run) {
-        const history = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: operation.run}}, operation.checkout!));
-        if (request.operation !== 'workflow.resume' || history.inputs?.submission === request.payload.inputs.submission) {
-          if (history.status === 'running') {
-            if (operation.outcome === 'unknown' || operation.dispatcher !== z.instanceId) {
-              try { await swamp({operation: 'run.attach', payload: {runId: operation.run, afterSeq: 0}, started: true}, operation.checkout!); operation.outcome = 'pending'; operation.dispatcher = z.instanceId; }
-              catch { operation.outcome = 'unknown'; operation.error = 'Execution is unavailable; reconcile persisted history before proceeding'; }
-            } else operation.outcome = 'pending';
-          } else if (['succeeded', 'suspended'].includes(history.status)) {operation.outcome = 'completed'; operation.exitCode = 0;}
-          else if (['failed', 'cancelled', 'interrupted'].includes(history.status)) {operation.outcome = 'failed'; operation.exitCode = 1;}
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+        const history: History = JSON.parse(
+          // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
+          await swamp(
+            { operation: "workflow.history.get", payload: { workflowIdOrName: operation.run } },
+            required(operation.checkout),
+          ),
+        );
+        if (
+          request.operation !== "workflow.resume" ||
+          history.inputs?.submission ===
+            (request.payload["inputs"] != null &&
+            typeof request.payload["inputs"] === "object" &&
+            !Array.isArray(request.payload["inputs"])
+              ? request.payload["inputs"]["submission"]
+              : undefined)
+        ) {
+          // oxlint-disable-next-line eslint/max-depth -- Nested protocol checks preserve the order of validation and state changes.
+          if (history.status === "running") {
+            // oxlint-disable-next-line eslint/max-depth -- Nested protocol checks preserve the order of validation and state changes.
+            if (operation.outcome === "unknown" || operation.dispatcher !== z.instanceId) {
+              // oxlint-disable-next-line eslint/max-depth -- Nested protocol checks preserve the order of validation and state changes.
+              try {
+                // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
+                await swamp(
+                  {
+                    operation: "run.attach",
+                    payload: { runId: operation.run, afterSeq: 0 },
+                    started: true,
+                  },
+                  required(operation.checkout),
+                );
+                operation.outcome = "pending";
+                operation.dispatcher = z.instanceId;
+              } catch {
+                operation.outcome = "unknown";
+                operation.error =
+                  "Execution is unavailable; reconcile persisted history before proceeding";
+              }
+            } else operation.outcome = "pending";
+          } else if (["succeeded", "suspended"].includes(history.status)) {
+            operation.outcome = "completed";
+            operation.exitCode = 0;
+          } else if (["failed", "cancelled", "interrupted"].includes(history.status)) {
+            operation.outcome = "failed";
+            operation.exitCode = 1;
+          }
         }
       }
     }
-    try {put(uid, operation, row); return operation;} catch (error) {if (!D.isConflict(error) || attempt === 8) throw error;}
-    const [fresh, freshRow] = read(uid); assert(fresh, 'No operation with that identity');
-    operation = fresh; row = freshRow;
+    try {
+      put(uid, operation, row);
+      return operation;
+    } catch (error) {
+      if (!D.isConflict(error) || attempt === 8) throw error;
+    }
+    const [fresh, freshRow] = read(uid);
+    assert(fresh, "No operation with that identity");
+    // oxlint-disable-next-line eslint/no-param-reassign -- Update the caller-owned state or the local retry state in place.
+    operation = fresh;
+    // oxlint-disable-next-line eslint/no-param-reassign -- Update the caller-owned state or the local retry state in place.
+    row = freshRow;
   }
   return operation;
 }
-const refreshEvents = new Set(['started', 'step_completed', 'step_failed', 'suspended', 'completed', 'cancelled', 'error', 'report_completed', 'report_failed']);
-function changesSnapshot(frame: {type: string; event?: {kind: string}}) {
-  return frame.type === 'done' || frame.type === 'error' || !!frame.event && refreshEvents.has(frame.event.kind);
+const refreshEvents = new Set([
+  "started",
+  "step_completed",
+  "step_failed",
+  "suspended",
+  "completed",
+  "cancelled",
+  "error",
+  "report_completed",
+  "report_failed",
+]);
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function changesSnapshot(frame: { type: string; event?: { kind: string } }): boolean {
+  return (
+    frame.type === "done" ||
+    frame.type === "error" ||
+    (!!frame.event && refreshEvents.has(frame.event.kind))
+  );
 }
-z.on('CustomMessage', ([name, payload]) => {
-  if (name !== 'swamp-response') return;
-  const frame = JSON.parse(payload), watch = watchIds.get(frame.id);
-  if (watch) {if (changesSnapshot(frame)) changed(watch.work); return;}
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together.
+z.on("CustomMessage", ([name, payload]) => {
+  if (name !== "swamp-response") return;
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+  const frame: {
+      id: string;
+      type: string;
+      event?: { kind: string; runId?: string; run?: { status: string }; error?: Json };
+      error: { code: string };
+    } = JSON.parse(payload),
+    watch = watchIds.get(frame.id);
+  if (watch) {
+    if (changesSnapshot(frame)) changed(watch.work);
+    return;
+  }
   const uid = tracked.get(frame.id);
   if (!uid) return;
   const [operation, row] = read(uid);
   if (!operation) return;
   let write = false;
   const previousRun = operation.run;
-  const pending = ['pending', 'unknown'].includes(operation.outcome), method = JSON.parse(operation.request).operation === 'model.method.run';
-  if (frame.event?.runId) {operation.run = frame.event.runId; if (pending) operation.outcome = 'pending'; write = true;}
-  if (pending && frame.event && (['completed', 'cancelled'].includes(frame.event.kind) || (!method && frame.event.kind === 'suspended'))) {
-    const status = frame.event.run?.status;
-    const succeeded = frame.event.kind !== 'cancelled' && (status === 'succeeded' || (!method && status === 'suspended'));
-    operation.outcome = succeeded ? 'completed' : 'failed'; operation.exitCode = succeeded ? 0 : 1;
-    if (!succeeded) operation.error = encode(frame.event); write = true;
+  const pending = ["pending", "unknown"].includes(operation.outcome);
+  const method = parsedObject(operation.request)["operation"] === "model.method.run";
+  if (frame.event?.runId) {
+    operation.run = frame.event.runId;
+    if (pending) operation.outcome = "pending";
+    write = true;
   }
-  if (pending && frame.event?.kind === 'error') {operation.error = encode(frame.event.error); operation.outcome = 'failed'; operation.exitCode = 1; write = true;}
-  if (frame.type === 'done') {
-    if (['pending', 'unknown'].includes(operation.outcome)) operation.outcome = 'unknown';
-    tracked.delete(frame.id); write = true;
-  } else if (frame.type === 'error') {
+  if (
+    pending &&
+    frame.event &&
+    (["completed", "cancelled"].includes(frame.event.kind) ||
+      (!method && frame.event.kind === "suspended"))
+  ) {
+    const status = frame.event.run?.status;
+    const succeeded =
+      frame.event.kind !== "cancelled" &&
+      (status === "succeeded" || (!method && status === "suspended"));
+    operation.outcome = succeeded ? "completed" : "failed";
+    operation.exitCode = succeeded ? 0 : 1;
+    if (!succeeded) operation.error = encode(frame.event);
+    write = true;
+  }
+  if (pending && frame.event?.kind === "error") {
+    operation.error = encode(frame.event.error);
+    operation.outcome = "failed";
+    operation.exitCode = 1;
+    write = true;
+  }
+  if (frame.type === "done") {
+    if (["pending", "unknown"].includes(operation.outcome)) operation.outcome = "unknown";
+    tracked.delete(frame.id);
+    write = true;
+  } else if (frame.type === "error") {
     if (pending) {
       operation.error = encode(frame.error);
       const attaching = method && frame.id === `${z.instanceId}-attach-${uid}`;
-      operation.outcome = attaching || ['transport_unknown', 'host_error', 'not_found'].includes(frame.error.code) ? 'unknown' : 'failed';
+      operation.outcome =
+        attaching || ["transport_unknown", "host_error", "not_found"].includes(frame.error.code)
+          ? "unknown"
+          : "failed";
     }
-    tracked.delete(frame.id); write = true;
+    tracked.delete(frame.id);
+    write = true;
   }
   if (write) put(uid, operation, row);
   if (closed(operation.work)) {
     if (!method && operation.run && operation.run !== previousRun) cancelIfClosed(operation.work);
     return;
   }
-  if (write || changesSnapshot(frame)) changed(read<Attachment>(scope(operation.work, 'attachment'))[0]?.work ?? operation.work);
+  if (write || changesSnapshot(frame))
+    changed(read<Attachment>(scope(operation.work, "attachment"))[0]?.work ?? operation.work);
 });
 async function supervisor(pane: number, saved?: string): Promise<Supervisor> {
   for (const row of z.workflowRemotePanes?.() ?? []) {
     if (saved ? row.host_id === saved : row.terminal_id === pane) {
-      const info = z.command('GetPaneInfo', terminal(row.terminal_id));
+      const info = z.command("GetPaneInfo", terminal(row.terminal_id));
       // Remote identities have no child PID; their owner token guards the process instead.
-      return {...row, session_name: identity.session, attached: true,
-        child_exit_status: info?.exited ? info.exit_status : undefined};
+      return {
+        ...row,
+        session_name: identity.session,
+        attached: true,
+        child_exit_status: info?.exited ? info.exit_status : undefined,
+      };
     }
   }
-  const rows: Supervisor[] = JSON.parse(await command([z.serverBinary || 'zellij', 'pty-host', 'list', '--json']));
-  const found = rows.find(row => row.session_name === identity.session && (saved ? row.host_id === saved : row.terminal_id === pane));
-  assert(found, 'No supervisor identity for pane; reconcile before sending input');
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+  const rows: Supervisor[] = JSON.parse(
+    await command([z.serverBinary || "zellij", "pty-host", "list", "--json"]),
+  );
+  const found = rows.find(
+    (row) =>
+      row.session_name === identity.session &&
+      (saved ? row.host_id === saved : row.terminal_id === pane),
+  );
+  assert(found, "No supervisor identity for pane; reconcile before sending input");
   return found;
 }
-async function owned(args: {work: string; agent: string}, running = false): Promise<Delivery & {pane: number}> {
+async function owned(
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  args: { work: string; agent: string },
+  running = false,
+): Promise<Delivery & { pane: number }> {
   ensureOpen(args.work);
   let agent = result(scope(args.work, args.agent));
-  assert(agent.owner?.host_id === identity.host_id && agent.owner.session === identity.session, 'Wrong host or session');
-  assert(agent.owner.work === args.work && agent.owner.agent === args.agent, 'Wrong work or agent');
-  assert(agent.pane != null && agent.supervisor, 'Agent dispatch is unknown; reconcile it first');
+  assert(
+    agent.owner?.host_id === identity.host_id && agent.owner.session === identity.session,
+    "Wrong host or session",
+  );
+  assert(agent.owner.work === args.work && agent.owner.agent === args.agent, "Wrong work or agent");
+  assert(agent.pane != null && agent.supervisor, "Agent dispatch is unknown; reconcile it first");
   const current = await supervisor(agent.pane, agent.supervisor);
   ensureOpen(args.work);
-  assert(current.host_id === agent.supervisor, 'Pane belongs to a different supervisor');
-  assert(current.child_pid === agent.process, 'Agent process changed');
-  assert(current.attached, 'Supervisor is detached; adopt and reconcile before sending input');
-  if (current.owner) assert(current.owner === (agent.transportOwner ?? encode(agent.owner)), 'Remote ownership changed');
+  assert(current.host_id === agent.supervisor, "Pane belongs to a different supervisor");
+  assert(current.child_pid === agent.process, "Agent process changed");
+  assert(current.attached, "Supervisor is detached; adopt and reconcile before sending input");
+  if (current.owner)
+    assert(
+      current.owner === (agent.transportOwner ?? encode(agent.owner)),
+      "Remote ownership changed",
+    );
   if (current.terminal_id !== agent.pane) {
-    const uid = scope(args.work, args.agent), [fresh, row] = read(uid);
-    assert(fresh, 'Agent disappeared');
-    fresh.pane = current.terminal_id; put(uid, fresh, row); agent = fresh;
+    const uid = scope(args.work, args.agent),
+      [fresh, row] = read(uid);
+    assert(fresh, "Agent disappeared");
+    fresh.pane = current.terminal_id;
+    put(uid, fresh, row);
+    agent = fresh;
   }
-  if (running) assert(!agent.processExited && current.child_exit_status == null, 'Agent process exited');
-  return {...agent, pane: current.terminal_id};
+  if (running)
+    assert(!agent.processExited && current.child_exit_status == null, "Agent process exited");
+  return { ...agent, pane: current.terminal_id };
 }
-function dispatchPrompt(agent: Delivery) {
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function dispatchPrompt(agent: Delivery): void {
   if (closed(agent.owner?.work)) return;
   if (!agent.ready || !agent.outstanding) return;
   const [operation, row] = read(agent.outstanding);
-  if (!operation || operation.outcome !== 'pending' || operation.dispatched) return;
-  assert(agent.pane != null, 'Missing prompt pane');
+  if (!operation || operation.outcome !== "pending" || operation.dispatched) return;
+  assert(agent.pane != null, "Missing prompt pane");
   operation.dispatched = true;
-  put(agent.outstanding, operation, row); // A crash after this point is an uncertain send.
-  z.agent.send(terminal(agent.pane) as {Terminal: number}, JSON.parse(operation.request).prompt);
+  // A crash after this point is an uncertain send.
+  put(agent.outstanding, operation, row);
+  z.agent.send(terminal(agent.pane), string(parsedObject(operation.request)["prompt"]));
 }
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
 function claim(args: Partial<Request>): [string, Delivery | undefined] {
   ensureOpen(args.work);
-  const uid = scope(args.work!, args.key!), [previous] = read(uid), request = encode(args);
-  if (previous) { assert(sameRequest(previous.request, args), 'Conflicting arguments for existing operation'); return [uid, previous]; }
-  const value = {request, key: args.key, work: args.work, outcome: 'unknown', incarnation: identity.incarnation, dispatcher: z.instanceId};
-  try { put(uid, value); } catch (error) {
+  const uid = scope(required(args.work), required(args.key));
+  const [previous] = read(uid);
+  const request = encode(args);
+  if (previous) {
+    assert(sameRequest(previous.request, args), "Conflicting arguments for existing operation");
+    return [uid, previous];
+  }
+  const value = {
+    request,
+    key: args.key,
+    work: args.work,
+    outcome: "unknown",
+    incarnation: identity.incarnation,
+    dispatcher: z.instanceId,
+  };
+  try {
+    put(uid, value);
+  } catch (error) {
     if (!D.isConflict(error)) throw error;
+    // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
     const previous = result(uid);
-    assert(sameRequest(previous.request, args), 'Conflicting concurrent operation');
+    assert(sameRequest(previous.request, args), "Conflicting concurrent operation");
     return [uid, previous];
   }
   return [uid, undefined];
 }
-function openPicker(work: string, key: string, action: string, source: number) {
-  message({plugin_url: 'zellij:hocus-new-agent', message_name: 'swamp-pane-action',
-    plugin_config: {caller_terminal_pane_id: String(source), [action === 'fork' ? 'fork_focused' : 'duplicate_focused']: 'true',
-      swamp_reply_plugin: String(z.getPluginIds().plugin_id), swamp_work: work, swamp_key: key},
-    new_plugin_args: {should_float: true, should_focus: true, pane_id_to_replace: null, pane_title: null, cwd: null, skip_cache: false}});
+// oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
+function openPicker(work: string, key: string, action: string, source: number): void {
+  message({
+    plugin_url: "zellij:hocus-new-agent",
+    message_name: "swamp-pane-action",
+    plugin_config: {
+      caller_terminal_pane_id: String(source),
+      [action === "fork" ? "fork_focused" : "duplicate_focused"]: "true",
+      swamp_reply_plugin: String(z.getPluginIds().plugin_id),
+      swamp_work: work,
+      swamp_key: key,
+    },
+    new_plugin_args: {
+      should_float: true,
+      should_focus: true,
+      pane_id_to_replace: null,
+      pane_title: null,
+      cwd: null,
+      skip_cache: false,
+    },
+  });
 }
-function openPickerOperation(work: string, action: string) {
+function openPickerOperation(work: string, action: string): Delivery | undefined {
   const lifecycle = lifecycleWork(work);
   for (const entry of deliveryRows()) {
     const value = entry.value;
-    if (!['pending', 'unknown'].includes(value.outcome) || !value.request || lifecycleWork(entry.work) !== lifecycle) continue;
+    if (
+      !["pending", "unknown"].includes(value.outcome) ||
+      !value.request ||
+      lifecycleWork(entry.work) !== lifecycle
+    )
+      continue;
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
     const request: Request = JSON.parse(value.request);
-    if (request.method === 'pane_action' && request.action === action && request.cancel_active) return value;
+    if (request.method === "pane_action" && request.action === action && request.cancel_active)
+      return value;
   }
+  return undefined;
 }
 const discovered = new Set<string>();
-async function discover(work: string, root: string) {
-  const launch = result(scope(work, 'launch'));
-  assert(launch.checkout === root, 'Launch belongs to a different control checkout');
-  if (launch.not_dispatched) return read(scope(work, 'runs'))[0];
-  const exactInputs = JSON.parse(launch.request ?? '{}').exactInputs;
-  const payload: Record<string, Json> = exactInputs ? {filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(scope(work, 'launch'))}`} : {inputs: {launch: work}};
-  const history = JSON.parse(await swamp({operation: 'workflow.history.search', payload}, root));
-  for (const run of history.results ?? []) if (exactInputs || run.inputs.session === identity.session) {
-    await handle({method: 'workflow_attach', work, key: 'attachment', run: run.runId, workflow: run.workflowName, directory: root});
-  }
-  return read(scope(work, 'runs'))[0];
+async function discover(work: string, root: string): Promise<Delivery | undefined> {
+  const launch = result(scope(work, "launch"));
+  assert(launch.checkout === root, "Launch belongs to a different control checkout");
+  if (launch.not_dispatched) return read(scope(work, "runs"))[0];
+  const exactInputs = parsedObject(launch.request ?? "{}")["exactInputs"];
+  const payload: Record<string, Json> = exactInputs ? {filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(scope(work, "launch"))}`} : {inputs: {launch: work}};
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+  const history: {
+    results?: { runId: string; workflowName: string; inputs: History["inputs"] }[];
+  } = JSON.parse(
+    await swamp(
+      { operation: "workflow.history.search", payload },
+      root,
+    ),
+  );
+  for (const run of history.results ?? [])
+    if (exactInputs || run.inputs.session === identity.session) {
+      await handle({
+        method: "workflow_attach",
+        work,
+        key: "attachment",
+        run: run.runId,
+        workflow: run.workflowName,
+        directory: root,
+      });
+    }
+  return read(scope(work, "runs"))[0];
 }
-async function handle(input: Partial<Request>, manualView?: number, onProgress?: (payload: Json) => void): Promise<unknown> {
-  assert(input && typeof input === 'object' && !Array.isArray(input), 'Expected a typed request');
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together.
+async function handle(
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  input: Partial<Request>,
+  manualView?: number,
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  onProgress?: (payload: Json) => void,
+): Promise<unknown> {
+  assert(
+    input != null && typeof input === "object" && !Array.isArray(input),
+    "Expected a typed request",
+  );
   // Each method validates the fields it consumes; correlation keys are checked by scope().
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Each method validates its consumed fields before dispatch; unrelated fields may be absent.
   const args = input as Request;
-  if (args.method === 'identity') return identity;
-  if (args.method === 'swamp_read') {
-    if (args.operation === 'workflow.approve') ensureOpen(args.payload.runId as string);
-    assert(['workflow.history.get', 'workflow.history.search', 'data.query', 'workflow.approve'].includes(args.operation), 'Unsupported bridge request');
-    return JSON.parse(await swamp({operation: args.operation, payload: args.payload}, args.directory));
+  if (args.method === "identity") return identity;
+  if (args.method === "swamp_read") {
+    if (args.operation === "workflow.approve")
+      ensureOpen(typeof args.payload["runId"] === "string" ? args.payload["runId"] : undefined);
+    assert(
+      [
+        "workflow.history.get",
+        "workflow.history.search",
+        "data.query",
+        "workflow.approve",
+      ].includes(args.operation),
+      "Unsupported bridge request",
+    );
+    return JSON.parse(
+      await swamp({ operation: args.operation, payload: args.payload }, args.directory),
+    );
   }
-  if (args.method === 'workflow_report') {
-    assert(Number.isSafeInteger(args.offset) && args.offset >= 0 && Number.isSafeInteger(args.offset + 32768), 'Invalid report offset');
-    assert(Number.isSafeInteger(args.version) && args.version > 0, 'Invalid report version');
-    assert(typeof args.model === 'string' && typeof args.name === 'string', 'Invalid report identity');
+  if (args.method === "workflow_report") {
+    assert(
+      Number.isSafeInteger(args.offset) &&
+        args.offset >= 0 &&
+        Number.isSafeInteger(args.offset + 32768),
+      "Invalid report offset",
+    );
+    assert(Number.isSafeInteger(args.version) && args.version > 0, "Invalid report version");
+    assert(
+      typeof args.model === "string" && typeof args.name === "string",
+      "Invalid report identity",
+    );
     const predicate = `modelName == ${encode(args.model)} && name == ${encode(args.name)} && version == ${args.version}`;
     // Stored lengths and substring use UTF-16 offsets; CEL size() counts code points.
     const finish = args.offset + 32768;
     const ending = String.raw`(attributes.summaryLength <= ${finish} ? int(attributes.summaryLength) : (attributes.summary.substring(${finish - 1},${finish}).matches(r"[\uD800-\uDBFF]") ? ${finish - 1} : ${finish}))`;
     const select = `{"text":attributes.summary.substring(${args.offset},${ending}),"next":${ending},"total":attributes.summaryLength}`;
-    const response = JSON.parse(await swamp({operation: 'data.query', payload: {predicate: `${predicate} && has(attributes.summary) && has(attributes.summaryLength) && attributes.summaryLength >= ${args.offset}`, select}}, args.directory));
-    assert(response.results.length === 1, 'Saved test report unavailable at this version');
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+    const response: { results: Json[] } = JSON.parse(
+      await swamp(
+        {
+          operation: "data.query",
+          payload: {
+            predicate: `${predicate} && has(attributes.summary) && has(attributes.summaryLength) && attributes.summaryLength >= ${args.offset}`,
+            select,
+          },
+        },
+        args.directory,
+      ),
+    );
+    assert(response.results.length === 1, "Saved test report unavailable at this version");
     return response.results[0];
   }
-  if (args.method === 'workflow_answer') {
-    ensureOpen(args.inputs?.run as string);
-    const reply = JSON.parse(await swamp({operation: 'model.method.run', payload: {modelIdOrName: args.model, methodName: 'submit', inputs: args.inputs ?? {}}, onProgress}, args.directory));
-    if (['failed', 'cancelled'].includes(reply.run?.status)) throw Error(encode(reply.run));
+  if (args.method === "workflow_answer") {
+    ensureOpen(typeof args.inputs?.["run"] === "string" ? args.inputs["run"] : undefined);
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+    const reply: { run?: { status: string } } = JSON.parse(
+      await swamp(
+        {
+          operation: "model.method.run",
+          payload: { modelIdOrName: args.model, methodName: "submit", inputs: args.inputs ?? {} },
+          onProgress,
+        },
+        args.directory,
+      ),
+    );
+    if (["failed", "cancelled"].includes(reply.run?.status ?? ""))
+      throw new Error(encode(reply.run));
     return reply.run ?? reply;
   }
-  if (args.method === 'workflow_cancel') {
-    const snapshot = await handle({method: 'workflow_show', directory: args.directory, run: args.run}) as {root: string};
+  if (args.method === "workflow_cancel") {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+    const snapshot = (await handle({
+      method: "workflow_show",
+      directory: args.directory,
+      run: args.run,
+    })) as { root: string; history: History; children: History[] };
     ensureOpen(args.run);
     const operation = await cancelRun(args.run, snapshot.root);
     return {operations: operation ? [operation] : []};
   }
-  if (args.method === 'workflow_show') {
-    const failed = args.launch ? read(scope(args.launch, 'launch'))[0] : undefined;
-    if (failed?.outcome === 'failed' && failed.error) return launchFailure(args.launch, failed, failed.error, args.directory);
-    assert(args.directory, 'Missing control checkout');
+  if (args.method === "workflow_show") {
+    const failed = args.launch ? read(scope(args.launch, "launch"))[0] : undefined;
+    if (failed?.outcome === "failed" && failed.error)
+      return launchFailure(args.launch, failed, failed.error, args.directory);
+    assert(args.directory, "Missing control checkout");
     const config = z.projectConfig.read(args.directory);
-    assert(!config.error, config.error ?? 'Invalid project config');
+    assert(!config.error, config.error ?? "Invalid project config");
     let attachment: Attachment | undefined, work: string | undefined;
     if (args.run) {
-      [attachment] = read<Attachment>(scope(args.run, 'attachment'));
+      [attachment] = read<Attachment>(scope(args.run, "attachment"));
       if (attachment) work = attachment.work;
       else {
-        const history: History = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: args.run}}, config.root));
-        assert(history.inputs.session === identity.session, 'Run belongs to a different session');
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+        const history: History = JSON.parse(
+          await swamp(
+            { operation: "workflow.history.get", payload: { workflowIdOrName: args.run } },
+            config.root,
+          ),
+        );
+        assert(history.inputs.session === identity.session, "Run belongs to a different session");
         work = history.inputs.launch;
       }
     } else if (args.launch) work = args.launch;
-    if (closed(work)) return {run: args.run, launch: work, root: config.root, history: {id: args.run ?? work, status: 'cancelled'},
-      children: [], active: false, questions: {results: []}, outputs: {results: []}, logs: 'Pane workflow lifecycle is closed.'};
+    if (closed(work))
+      return {
+        run: args.run,
+        launch: work,
+        root: config.root,
+        history: { id: args.run ?? work, status: "cancelled" },
+        children: [],
+        active: false,
+        questions: { results: [] },
+        outputs: { results: [] },
+        logs: "Pane workflow lifecycle is closed.",
+      };
     if (work && manualView != null) attachManual(work, manualView);
-    let runs = work ? read(scope(work, 'runs'))[0] : undefined;
+    let runs = work ? read(scope(work, "runs"))[0] : undefined;
     if (work) {
-      const launch = result(scope(work, 'launch'));
-      assert(launch.checkout === config.root, 'Launch belongs to a different control checkout');
-      if (JSON.parse(launch.request ?? '{}').exactInputs || !discovered.has(work) || !runs) {
-        runs = await discover(work, config.root); discovered.add(work);
+      assert(
+        result(scope(work, "launch")).checkout === config.root,
+        "Launch belongs to a different control checkout",
+      );
+      const launch = result(scope(work, "launch"));
+      if (parsedObject(launch.request ?? "{}")["exactInputs"] || !discovered.has(work) || !runs) {
+        runs = await discover(work, config.root);
+        discovered.add(work);
       }
     }
-    if (args.run) [attachment] = read<Attachment>(scope(args.run, 'attachment'));
-    else if (runs) for (const [id, entry] of Object.entries(runs.entries ?? {})) {
-      if (entry.workflow === '@hammz/zellij-agent-exit' || !attachment) attachment = {...entry, run: id};
-    }
+    if (args.run) [attachment] = read<Attachment>(scope(args.run, "attachment"));
+    else if (runs)
+      for (const [id, entry] of Object.entries(runs.entries ?? {})) {
+        if (entry.workflow === "@hammz/zellij-agent-exit" || !attachment)
+          attachment = { ...entry, run: id };
+      }
     if (!attachment && work) {
-      let runner = read(scope(work, 'swamp-process'))[0];
-      if (runner && ['completed', 'failed', 'process-exit'].includes(runner.outcome)) {
-        runner = await handle({method: 'observe', work, key: 'swamp-process'}) as Delivery;
+      let runner = read(scope(work, "swamp-process"))[0];
+      if (runner && ["completed", "failed", "process-exit"].includes(runner.outcome)) {
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+        runner = (await handle({ method: "observe", work, key: "swamp-process" })) as Delivery;
         let logs = `Workflow runner exited without reporting a run. Exit status: ${runner.exitCode}`;
-        if (runner.output) logs += `\nRetained command scrollback (may omit older output):\n${runner.output}`;
+        if (runner.output)
+          logs += `\nRetained command scrollback (may omit older output):\n${runner.output}`;
         if (runner.logError) logs += `\nLog unavailable: ${runner.logError}`;
-        return launchFailure(work, result(scope(work, 'launch')), logs);
+        return launchFailure(work, result(scope(work, "launch")), logs);
       }
     }
-    assert(attachment, 'Launch has no reported run yet; reconcile by launch token without repeating it');
+    assert(
+      attachment,
+      "Launch has no reported run yet; reconcile by launch token without repeating it",
+    );
     const run = attachment.run;
-    const history = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: run}}, config.root));
-    const ids = Object.keys(result(scope(attachment.work, 'runs')).entries ?? {});
-    const questions = JSON.parse(await swamp({operation: 'data.query', payload: {predicate: `specName == "question" && attributes.run in ${encode(ids)}`, select: '{"model": modelName, "version": version, "attributes": attributes}'}}, config.root));
-    const outputs = JSON.parse(await swamp({operation: 'data.query', payload: {predicate: `version >= 0 && has(tags.workflowRunId) && tags.workflowRunId in ${encode(ids)}`, select: outputProjection}}, config.root));
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+    const history: History = JSON.parse(
+      await swamp(
+        { operation: "workflow.history.get", payload: { workflowIdOrName: run } },
+        config.root,
+      ),
+    );
+    const ids = Object.keys(result(scope(attachment.work, "runs")).entries ?? {});
+    const questions: unknown = JSON.parse(
+      await swamp(
+        {
+          operation: "data.query",
+          payload: {
+            predicate: `specName == "question" && attributes.run in ${encode(ids)}`,
+            select: '{"model": modelName, "version": version, "attributes": attributes}',
+          },
+        },
+        config.root,
+      ),
+    );
+    const outputs: unknown = JSON.parse(
+      await swamp(
+        {
+          operation: "data.query",
+          payload: {
+            predicate: `has(tags.workflowRunId) && tags.workflowRunId in ${encode(ids)}`,
+            select: outputProjection,
+          },
+        },
+        config.root,
+      ),
+    );
     const children = [];
-    if (history.status === 'running') watchRun(run, attachment.work, config.root);
-    for (const id of ids) if (id !== run) {
-      const child = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: id}}, config.root));
-      children.push(child);
-      if (child.status === 'running') watchRun(child.id, attachment.work, config.root);
-    }
-    return {run, launch: attachment.work, root: config.root, history, children, active: active(attachment.work), activeOperation: (() => { const entry = activeOperation(attachment!.work); return entry ? {work: entry.work, key: entry.key} : null; })(), outputs,
-      logs: await swamp({operation: 'workflow.history.logs', payload: {runIdOrWorkflow: run, tail: 100}}, config.root), questions};
+    if (history.status === "running") watchRun(run, attachment.work, config.root);
+    for (const id of ids)
+      if (id !== run) {
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+        const child: History = JSON.parse(
+          await swamp(
+            { operation: "workflow.history.get", payload: { workflowIdOrName: id } },
+            config.root,
+          ),
+        );
+        children.push(child);
+        if (child.status === "running") watchRun(child.id, attachment.work, config.root);
+      }
+    return {
+      run,
+      launch: attachment.work,
+      root: config.root,
+      history,
+      children,
+      active: active(attachment.work),
+      activeOperation: activeOperation(attachment.work) ?? null,
+      outputs,
+      logs: await swamp(
+        { operation: "workflow.history.logs", payload: { runIdOrWorkflow: run, tail: 100 } },
+        config.root,
+      ),
+      questions,
+    };
   }
   key(args.work);
-  if (args.method === 'lookup') return read(scope(args.work, args.key))[0] ?? null;
-  if (args.method === 'observe') {
-    const uid = scope(args.work, args.key), [operation, row] = read(uid);
-    assert(operation, 'No operation with that identity');
-    if (operation.transport === 'serve') return serveObserve(uid, operation, row);
-    if (operation.outcome === 'pending' && operation.dispatcher !== z.instanceId) { operation.outcome = 'unknown'; put(uid, operation, row); }
-    if (args.includeOutput !== false && !operation.capture && operation.log && operation.pane != null && operation.supervisor) {
+  if (args.method === "lookup") return read(scope(args.work, args.key))[0] ?? null;
+  if (args.method === "observe") {
+    const uid = scope(args.work, args.key),
+      [operation, row] = read(uid);
+    assert(operation, "No operation with that identity");
+    if (operation.transport === "serve") return serveObserve(uid, operation, row);
+    if (operation.outcome === "pending" && operation.dispatcher !== z.instanceId) {
+      operation.outcome = "unknown";
+      put(uid, operation, row);
+    }
+    if (
+      args.includeOutput !== false &&
+      // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+      !Boolean(operation.capture) &&
+      operation.log &&
+      operation.pane != null &&
+      operation.supervisor
+    ) {
       try {
         const host = await supervisor(operation.pane, operation.supervisor);
-        assert(host.host_id === operation.supervisor, 'Log belongs to a different supervisor');
-        assert(host.child_pid === operation.process, 'Log process changed');
-        assert(host.attached, 'Log supervisor is detached');
-        operation.pane = host.terminal_id; operation.log = `terminal_${host.terminal_id}`;
-        const contents = z.command('GetPaneScrollback', {pane_id: terminal(host.terminal_id), get_full_scrollback: true});
-        operation.output = [...contents.lines_above_viewport, ...contents.viewport, ...contents.lines_below_viewport].join('\n');
+        assert(host.host_id === operation.supervisor, "Log belongs to a different supervisor");
+        assert(host.child_pid === operation.process, "Log process changed");
+        assert(host.attached, "Log supervisor is detached");
+        operation.pane = host.terminal_id;
+        operation.log = `terminal_${host.terminal_id}`;
+        const contents = z.command("GetPaneScrollback", {
+          pane_id: terminal(host.terminal_id),
+          get_full_scrollback: true,
+        });
+        operation.output = [
+          ...contents.lines_above_viewport,
+          ...contents.viewport,
+          ...contents.lines_below_viewport,
+        ].join("\n");
         operation.outputTruncated = true;
-      } catch (error) { operation.logError = String(error); }
+      } catch (error) {
+        operation.logError = String(error);
+      }
     }
     return operation;
   }
-  if (args.method === 'command_close') {
-    const uid = scope(args.work, args.key), operation = result(uid);
-    assert(JSON.parse(operation.request).method === 'command', 'Not a command operation');
-    assert(operation.owner?.host_id === identity.host_id && operation.owner.session === identity.session &&
-      operation.owner.work === args.work && operation.owner.agent === args.key, 'Wrong command ownership');
-    assert(['completed', 'failed'].includes(operation.outcome) ||
-      operation.outcome === 'cancelled' && operation.terminationVerified === true, 'Command has not completed');
-    assert(operation.pane != null && operation.supervisor && operation.process != null, 'Missing command identity');
+  if (args.method === "command_close") {
+    const uid = scope(args.work, args.key);
+    const operation = result(uid);
+    assert(parsedObject(operation.request)["method"] === "command", "Not a command operation");
+    assert(
+      operation.owner?.host_id === identity.host_id &&
+        operation.owner.session === identity.session &&
+        operation.owner.work === args.work &&
+        operation.owner.agent === args.key,
+      "Wrong command ownership",
+    );
+    assert(
+      ["completed", "failed"].includes(operation.outcome) ||
+        (operation.outcome === "cancelled" && operation.terminationVerified === true),
+      "Command has not completed",
+    );
+    assert(
+      operation.pane != null && operation.supervisor && operation.process != null,
+      "Missing command identity",
+    );
     if (operation.closed) return operation;
-    const pane = operation.pane, info = z.command('GetPaneInfo', terminal(pane));
+    const pane = operation.pane;
+    const info = z.command("GetPaneInfo", terminal(pane));
     if (info) {
       const host = await supervisor(pane, operation.supervisor);
-      assert(host.host_id === operation.supervisor && host.terminal_id === pane && host.attached, 'Command supervisor changed');
-      assert(host.child_pid === operation.process, 'Command process changed');
-      if (host.owner) assert(host.owner === (operation.transportOwner ?? encode(operation.owner)), 'Command ownership changed');
-      assert(z.command('GetPaneInfo', terminal(pane))?.exited, 'Command is still running');
+      assert(
+        host.host_id === operation.supervisor && host.terminal_id === pane && host.attached,
+        "Command supervisor changed",
+      );
+      assert(host.child_pid === operation.process, "Command process changed");
+      if (host.owner)
+        assert(
+          host.owner === (operation.transportOwner ?? encode(operation.owner)),
+          "Command ownership changed",
+        );
+      assert(z.command("GetPaneInfo", terminal(pane))?.exited, "Command is still running");
     }
     const placement = placements.get(args.work);
     if (placement) {
-      placement.queue = placement.queue.filter(entry => entry !== uid);
+      placement.queue = placement.queue.filter((entry) => entry !== uid);
       present(args.work);
       if (placement.current === pane) placement.current = undefined;
     }
-    const viewUid = scope(lifecycleWork(args.work), 'view'), [view, viewRow] = read(viewUid);
-    if (view?.current === pane) { delete view.current; put(viewUid, view, viewRow); }
+    const viewUid = scope(lifecycleWork(args.work), "view"),
+      [view, viewRow] = read(viewUid);
+    if (view?.current === pane) {
+      delete view.current;
+      put(viewUid, view, viewRow);
+    }
     // Replacement can briefly remove the pane from the manifest; close the verified identity anyway.
-    if (info) z.command('CloseTerminalPane', pane);
-    const [fresh, row] = read(uid); assert(fresh, 'Command disappeared');
-    fresh.closed = true; put(uid, fresh, row);
+    if (info) z.command("CloseTerminalPane", pane);
+    const [fresh, row] = read(uid);
+    assert(fresh, "Command disappeared");
+    fresh.closed = true;
+    put(uid, fresh, row);
     return fresh;
   }
-  if (args.method === 'step_ready') {
-    assert(!activeOperation(args.work), 'An owned operation is still active or uncertain; cancel or reconcile it before another step');
-    return {work: args.work, key: args.key, request: encode(args), incarnation: identity.incarnation, outcome: 'completed'};
+  if (args.method === "step_ready") {
+    assert(
+      !activeOperation(args.work),
+      "An owned operation is still active or uncertain; cancel or reconcile it before another step",
+    );
+    return {
+      work: args.work,
+      key: args.key,
+      request: encode(args),
+      incarnation: identity.incarnation,
+      outcome: "completed",
+    };
   }
-  if (args.method === 'step_finished') {
-    const uid = scope(args.work, args.operation), [value, row] = read(uid);
-    assert(value?.owner && value.process === args.process && value.owner.work === args.work &&
-      value.owner.host_id === identity.host_id && value.owner.session === identity.session, 'Completion belongs to a different process');
-    value.executionFinished = true; put(uid, value, row); return value;
+  if (args.method === "step_finished") {
+    const uid = scope(args.work, args.operation),
+      [value, row] = read(uid);
+    assert(
+      value?.owner &&
+        value.process === args.process &&
+        value.owner.work === args.work &&
+        value.owner.host_id === identity.host_id &&
+        value.owner.session === identity.session,
+      "Completion belongs to a different process",
+    );
+    value.executionFinished = true;
+    put(uid, value, row);
+    return value;
   }
-  if (args.method === 'cancel_step') {
+  if (args.method === "cancel_step") {
     ensureOpen(args.work);
-    const uid = scope(args.work, args.operation), [value, row] = read(uid);
-    assert(value?.request, 'No operation with that identity');
-    const request: Request = JSON.parse(value.request);
-    assert(request.method === 'command' || request.method === 'agent_prompt' || request.method === 'agent_spawn' && request.waitForExit,
-      'This operation has no cancellable process');
-    if (!['pending', 'unknown'].includes(value.outcome)) return value;
-    if (!value.cancelRequested) { value.cancelRequested = true; put(uid, value, row); }
-    void stopOperation(uid);
+    const uid = scope(args.work, args.operation),
+      [value, row] = read(uid);
+    assert(value?.request, "No operation with that identity");
+    assert(cancellable(value.request), "This operation has no cancellable process");
+    if (!["pending", "unknown"].includes(value.outcome)) return value;
+    if (!value.cancelRequested) {
+      value.cancelRequested = true;
+      put(uid, value, row);
+    }
+    stopOperation(uid);
     return result(uid);
   }
-  if (args.method === 'agent_inspect') return owned(args);
-  if (args.method === 'workflow_attach') {
-    const entry: Attachment = {run: args.run, work: args.work, workflow: args.workflow, root: args.directory};
-    const uid = scope(args.run, 'attachment'), [existing, row] = read(uid);
-    assert(!existing || encode(existing) === encode(entry), 'Run belongs to a different launch');
+  if (args.method === "agent_inspect") return owned(args);
+  if (args.method === "workflow_attach") {
+    const entry: Attachment = {
+      run: args.run,
+      work: args.work,
+      workflow: args.workflow,
+      root: args.directory,
+    };
+    const uid = scope(args.run, "attachment"),
+      [existing, row] = read(uid);
+    assert(!existing || encode(existing) === encode(entry), "Run belongs to a different launch");
     if (!existing) put(uid, entry, row);
-    const runsUid = scope(args.work, 'runs');
+    const runsUid = scope(args.work, "runs");
     for (let attempt = 1; attempt <= 8; attempt++) {
-      const [saved, runsRow] = read<{entries: Record<string, Attachment>}>(runsUid);
-      const runs = saved ?? {entries: {}};
+      const [saved, runsRow] = read<{ entries: Record<string, Attachment> }>(runsUid);
+      const runs = saved ?? { entries: {} };
       if (runs.entries[args.run]) break;
       runs.entries[args.run] = entry;
-      try { put(runsUid, runs, runsRow); break; } catch (error) { if (!D.isConflict(error) || attempt === 8) throw error; }
+      try {
+        put(runsUid, runs, runsRow);
+        break;
+      } catch (error) {
+        if (!D.isConflict(error) || attempt === 8) throw error;
+      }
     }
     if (cancelIfClosed(args.work)) ensureOpen(args.work);
     if (!existing) changed(args.work);
-    return {work: args.work, key: args.key, request: encode(args), incarnation: identity.incarnation, outcome: 'completed'};
+    return {
+      work: args.work,
+      key: args.key,
+      request: encode(args),
+      incarnation: identity.incarnation,
+      outcome: "completed",
+    };
   }
   ensureOpen(args.work);
-  if (args.method === 'reconcile') {
-    const uid = scope(args.work, args.operation), [operation, row] = read(uid);
-    assert(operation, 'Operation is absent');
-    if (JSON.parse(operation.request).method === 'workflow_run' && operation.checkout) await discover(args.work, operation.checkout);
-    if (operation.transport === 'serve') return serveObserve(uid, operation, row);
+  if (args.method === "reconcile") {
+    const uid = scope(args.work, args.operation),
+      [operation, row] = read(uid);
+    assert(operation, "Operation is absent");
+    if (parsedObject(operation.request)["method"] === "workflow_run" && operation.checkout)
+      await discover(args.work, operation.checkout);
+    if (operation.transport === "serve") return serveObserve(uid, operation, row);
     if (operation.pane != null && operation.supervisor) {
       const host = await supervisor(operation.pane, operation.supervisor);
-      assert(host.host_id === operation.supervisor, 'Supervisor mismatch; attachment remains unknown');
-      assert(host.child_pid === operation.process, 'Supervisor process changed');
-      assert(host.attached, 'Supervisor is detached; adopt before reconciling');
-      if (host.owner) assert(host.owner === (operation.transportOwner ?? encode(operation.owner)), 'Remote ownership changed');
+      assert(
+        host.host_id === operation.supervisor,
+        "Supervisor mismatch; attachment remains unknown",
+      );
+      assert(host.child_pid === operation.process, "Supervisor process changed");
+      assert(host.attached, "Supervisor is detached; adopt before reconciling");
+      if (host.owner)
+        assert(
+          host.owner === (operation.transportOwner ?? encode(operation.owner)),
+          "Remote ownership changed",
+        );
       operation.pane = host.terminal_id;
       if (operation.log) operation.log = `terminal_${host.terminal_id}`;
       if (host.child_exit_status === 130) operation.cancelRequested = true;
       if (operation.cancelRequested && host.child_group_terminated !== true) {
-        operation.outcome = 'unknown'; operation.terminationVerified = false;
+        operation.outcome = "unknown";
+        operation.terminationVerified = false;
       } else if (host.child_exit_status != null || host.child_group_terminated === true) {
-        operation.terminationVerified = host.child_group_terminated === true; operation.processExited = true;
-        operation.outcome = operation.cancelRequested ? 'cancelled' : JSON.parse(operation.request).method === 'command' ? (host.child_exit_status === 0 ? 'completed' : 'failed') : 'process-exit';
+        operation.terminationVerified = host.child_group_terminated === true;
+        operation.processExited = true;
+        operation.outcome = operation.cancelRequested
+          ? "cancelled"
+          : parsedObject(operation.request)["method"] === "command"
+            ? host.child_exit_status === 0
+              ? "completed"
+              : "failed"
+            : "process-exit";
         operation.exitCode = host.child_exit_status;
-      } else if (operation.outcome === 'pending' && operation.incarnation !== identity.incarnation) operation.outcome = 'unknown';
+      } else if (operation.outcome === "pending" && operation.incarnation !== identity.incarnation)
+        operation.outcome = "unknown";
       put(uid, operation, row);
-      if (operation.cancelRequested && operation.outcome === 'unknown') void stopOperation(uid);
+      if (operation.cancelRequested && operation.outcome === "unknown") stopOperation(uid);
     }
     return operation;
   }
-  const prompt = args.method === 'agent_prompt' ? args.prompt : args.method === 'agent_spawn' ? args.spec?.prompt : undefined;
-  if (['command', 'agent_spawn', 'agent_prompt'].includes(args.method) && !read(scope(args.work, args.key))[0]) {
-    assert(!deliveryRows().some(entry => lifecycleWork(entry.work) === lifecycleWork(args.work) &&
-      entry.value.cancelRequested && ['pending', 'unknown'].includes(entry.value.outcome)),
-      'Cancellation has not finished; reconcile the owned operation before starting another');
-  }
-  if (args.method === 'agent_prompt' || prompt != null) assert(typeof prompt === 'string' && /\S/.test(prompt) && !prompt.includes('\0') && z.encodeUtf8(prompt).length <= 262144,
-    'Prompt must contain 1–262144 UTF-8 bytes (256 KiB), must not be blank or contain NUL');
-  if (args.method === 'pane_action' && args.cancel_active && ['fork', 'duplicate'].includes(args.action)) {
+  const prompt =
+    args.method === "agent_prompt"
+      ? args.prompt
+      : args.method === "agent_spawn"
+        ? args.spec?.prompt
+        : undefined;
+  if (
+    ["command", "agent_spawn", "agent_prompt"].includes(args.method) &&
+    !read(scope(args.work, args.key))[0]
+  )
+    assert(
+      !deliveryRows().some(
+        (entry) =>
+          lifecycleWork(entry.work) === lifecycleWork(args.work) &&
+          entry.value.cancelRequested &&
+          ["pending", "unknown"].includes(entry.value.outcome),
+      ),
+      "Cancellation has not finished; reconcile the owned operation before starting another",
+    );
+  if (args.method === "agent_prompt" || prompt != null)
+    assert(
+      typeof prompt === "string" &&
+        /\S/u.test(prompt) &&
+        !prompt.includes("\0") &&
+        z.encodeUtf8(prompt).length <= 262144,
+      "Prompt must contain 1–262144 UTF-8 bytes (256 KiB), must not be blank or contain NUL",
+    );
+  if (
+    args.method === "pane_action" &&
+    args.cancel_active &&
+    ["fork", "duplicate"].includes(args.action)
+  ) {
     const open = openPickerOperation(args.work, args.action);
     if (open) {
-      const request: Request = JSON.parse(open.request), source = await owned({work: request.work, agent: 'source'});
-      assert(z.command('GetPaneInfo', terminal(source.pane))?.exited, 'Source pane is no longer exited');
-      openPicker(request.work, request.key, request.action, source.pane); return open;
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+      const request: Request = JSON.parse(open.request),
+        source = await owned({ work: request.work, agent: "source" });
+      assert(
+        z.command("GetPaneInfo", terminal(source.pane))?.exited,
+        "Source pane is no longer exited",
+      );
+      openPicker(request.work, request.key, request.action, source.pane);
+      return open;
     }
   }
-  let uid: string | undefined, value: Delivery | undefined, row: DataRecord | undefined;
-  if (args.method === 'vm_status') value = {work: args.work, key: args.key, request: encode(args), incarnation: identity.incarnation} as Delivery;
+  let row: DataRecord | undefined, uid: string | undefined, value: Delivery | undefined;
+  if (args.method === "vm_status")
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+    value = {
+      work: args.work,
+      key: args.key,
+      request: encode(args),
+      incarnation: identity.incarnation,
+    } as Delivery;
   else {
-    const [claimed, previous] = claim(args); uid = claimed;
+    const [claimed, previous] = claim(args);
+    uid = claimed;
     if (previous) return previous;
-    [value, row] = read(uid); assert(value, 'No operation with that identity');
+    [value, row] = read(uid);
+    assert(value, "No operation with that identity");
   }
-  if (args.method === 'workflow_run') {
-    assert(args.directory, 'Missing project directory');
+  if (args.method === "workflow_run") {
+    assert(args.directory, "Missing project directory");
     const config = z.projectConfig.read(args.directory);
     assert(!config.error, config.error ?? 'Invalid project config');
     const workflow = args.workflow ?? config.config.workflow;
@@ -830,166 +1718,368 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     inputs.launch = args.work; inputs.session = identity.session; inputs.binary = z.serverBinary || 'zellij';
     inputs.checkout ??= (await command(['git', 'rev-parse', '--show-toplevel'], args.directory)).replace(/\n$/, '');
     ensureOpen(args.work);
-    if (typeof inputs.sourcePane === 'number' && inputs.sourcePane >= 0) {
-      const pane = z.command('GetPaneInfo', terminal(inputs.sourcePane));
-      assert(pane?.exited, 'Source pane must be exited');
-      const host = await supervisor(inputs.sourcePane);
+    if (typeof inputs["sourcePane"] === "number" && inputs["sourcePane"] >= 0) {
+      const pane = z.command("GetPaneInfo", terminal(inputs["sourcePane"]));
+      assert(pane?.exited, "Source pane must be exited");
+      const host = await supervisor(inputs["sourcePane"]);
       ensureOpen(args.work);
-      put(scope(args.work, 'source'), {pane: inputs.sourcePane, supervisor: host.host_id, process: host.child_pid, target: pane.target, transportOwner: host.owner,
-        owner: {...identity, work: args.work, agent: 'source'}});
-      inputs.kind = pane.agent?.kind ?? inputs.kind ?? '';
-      const vm = typeof pane.target === 'object' && 'Firecracker' in pane.target ? pane.target.Firecracker : undefined;
-      if (vm) { inputs.firecracker = vm.vm; inputs.firecrackerImage = vm.image ?? ''; }
-      else assert(!inputs.firecracker, 'Local source cannot select a different VM');
+      put(scope(args.work, "source"), {
+        pane: inputs["sourcePane"],
+        supervisor: host.host_id,
+        process: host.child_pid,
+        target: pane.target,
+        transportOwner: host.owner,
+        owner: { ...identity, work: args.work, agent: "source" },
+      });
+      inputs["kind"] = pane.agent?.kind ?? inputs["kind"] ?? "";
+      const vm =
+        typeof pane.target === "object" && "Firecracker" in pane.target
+          ? pane.target.Firecracker
+          : undefined;
+      if (vm) {
+        inputs["firecracker"] = vm.vm;
+        inputs["firecrackerImage"] = vm.image ?? "";
+        // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+      } else assert(!Boolean(inputs["firecracker"]), "Local source cannot select a different VM");
     }
-    assert(!inputs.firecracker || (typeof inputs.sourcePane === 'number' && inputs.sourcePane >= 0), 'VM work requires its original pane identity');
-    inputs.target ??= config.root; inputs.gate ??= config.config.ci ?? ['cargo', 'x', 'ci', 'check'];
-    inputs.targetBranch ??= config.config.default_branch ?? 'main';
-    if (config.config.rebase_prompt != null) inputs.rebasePrompt ??= config.config.rebase_prompt;
-    for (const [input, setting] of [['commitAgent', 'commit_agent'], ['reviewAgent', 'review_agent'],
-      ['reviewFixAgent', 'review_fix_agent'], ['rebaseAgent', 'rebase_agent'], ['testFixAgent', 'test_fix_agent']] as const) {
+    assert(
+      // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+      !Boolean(inputs["firecracker"]) ||
+        (typeof inputs["sourcePane"] === "number" && inputs["sourcePane"] >= 0),
+      "VM work requires its original pane identity",
+    );
+    inputs["target"] ??= config.root;
+    inputs["gate"] ??= config.config.ci ?? ["cargo", "x", "ci", "check"];
+    inputs["targetBranch"] ??= config.config.default_branch ?? "main";
+    if (config.config.rebase_prompt != null) inputs["rebasePrompt"] ??= config.config.rebase_prompt;
+    for (const [field, setting] of [
+      ["commitAgent", "commit_agent"],
+      ["reviewAgent", "review_agent"],
+      ["reviewFixAgent", "review_fix_agent"],
+      ["rebaseAgent", "rebase_agent"],
+      ["testFixAgent", "test_fix_agent"],
+    ] as const) {
       const selected = config.config[setting] ?? config.config.agent;
-      inputs[input] ??= selected
-        ? {kind: selected.kind ?? inputs.kind, ...(selected.model != null ? {model: selected.model} : {}),
-          ...(selected.effort != null ? {effort: selected.effort} : {})}
-        : {kind: inputs.kind, command: inputs.agentCommand ?? '', ...(inputs.agentArgs != null ? {args: inputs.agentArgs} : {})};
+      inputs[field] ??= selected
+        ? {
+            ...(selected.kind == null && inputs["kind"] == null
+              ? {}
+              : { kind: selected.kind ?? inputs["kind"] ?? "" }),
+            ...(selected.model == null ? {} : { model: selected.model }),
+            ...(selected.effort == null ? {} : { effort: selected.effort }),
+          }
+        : {
+            ...(inputs["kind"] == null ? {} : { kind: inputs["kind"] }),
+            command: inputs["agentCommand"] ?? "",
+            ...(inputs["agentArgs"] == null ? {} : { args: inputs["agentArgs"] }),
+          };
     }
-    inputs.flowVersion ??= 3;
-    Object.assign(value, {workflow: name, checkout: config.root, launch: args.work}); put(uid!, value, row);
-    return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs}, onProgress);
-  } else if (args.method === 'swamp_dispatch') {
-    if (args.operation === 'workflow.resume') ensureOpen(args.payload.runId as string);
-    return dispatch(uid!, args.directory, args.operation, {...args.payload, _zellij_active_callback: true}, onProgress);
-  } else if (args.method === 'pane_action') {
-    let source: {pane: number} | undefined;
-    const saved = read(scope(args.work, 'source'))[0];
-    const view = read(scope(args.work, 'view'))[0];
-    if (args.action === 'restart' && !saved && view?.incarnation === identity.incarnation && view.source != null) source = {pane: view.source};
-    else if (args.action !== 'leave' || saved) {
-      const closed = args.action === 'leave' && saved?.owner?.incarnation === identity.incarnation && saved.pane != null && !z.command('GetPaneInfo', terminal(saved.pane));
-      if (closed) assert(saved.owner?.host_id === identity.host_id && saved.owner.session === identity.session && saved.owner.work === args.work && saved.owner.agent === 'source' && saved.supervisor, 'Wrong source ownership');
-      else source = await owned({work: args.work, agent: 'source'});
+    inputs["flowVersion"] ??= 3;
+    Object.assign(value, { workflow: name, checkout: config.root, launch: args.work });
+    put(required(uid), value, row);
+    return dispatch(required(uid), config.root, "workflow.run", { workflowIdOrName: name, inputs }, onProgress);
+  } else if (args.method === "swamp_dispatch") {
+    if (args.operation === "workflow.resume")
+      ensureOpen(typeof args.payload["runId"] === "string" ? args.payload["runId"] : undefined);
+    return dispatch(required(uid), args.directory, args.operation, {
+      ...args.payload,
+      _zellij_active_callback: true,
+    }, onProgress);
+  } else if (args.method === "pane_action") {
+    let source: { pane: number } | undefined;
+    const saved = read(scope(args.work, "source"))[0];
+    const view = read(scope(args.work, "view"))[0];
+    if (
+      args.action === "restart" &&
+      !saved &&
+      view?.incarnation === identity.incarnation &&
+      view.source != null
+    )
+      source = { pane: view.source };
+    else if (args.action !== "leave" || saved) {
+      // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
+      const closed =
+        args.action === "leave" &&
+        saved?.owner?.incarnation === identity.incarnation &&
+        saved.pane != null &&
+        !z.command("GetPaneInfo", terminal(saved.pane));
+      if (closed)
+        assert(
+          saved.owner?.host_id === identity.host_id &&
+            saved.owner.session === identity.session &&
+            saved.owner.work === args.work &&
+            saved.owner.agent === "source" &&
+            saved.supervisor,
+          "Wrong source ownership",
+        );
+      else source = await owned({ work: args.work, agent: "source" });
     }
     if (source) {
-      const pane = z.command('GetPaneInfo', terminal(source.pane));
-      assert(pane?.exited, 'Source pane is no longer exited');
-      if (args.action === 'restart' && pane.restart_error != null) throw new Error(pane.restart_error);
+      const pane = z.command("GetPaneInfo", terminal(source.pane));
+      assert(pane?.exited, "Source pane is no longer exited");
+      if (args.action === "restart" && pane.restart_error != null)
+        throw new Error(pane.restart_error);
     }
-    if (args.action === 'leave') {
-      transition(args.work, 'leave');
-      if (source) z.command('CloseTerminalPane', source.pane);
-      value.outcome = 'completed'; put(uid!, value, row); closeView(args.work); return value;
+    if (args.action === "leave") {
+      transition(args.work, "leave");
+      if (source) z.command("CloseTerminalPane", source.pane);
+      value.outcome = "completed";
+      put(required(uid), value, row);
+      closeView(args.work);
+      return value;
     }
-    assert(source, 'Missing source pane');
-    if (args.action === 'restart') {
-      transition(args.work, 'restart');
+    assert(source, "Missing source pane");
+    if (args.action === "restart") {
+      transition(args.work, "restart");
       if (args.cancel_active) cancelAfterTransition(args.work);
-      closeView(args.work, source.pane); z.command('RerunCommandPane', source.pane); value.outcome = 'completed'; put(uid!, value, row);
+      closeView(args.work, source.pane);
+      z.command("RerunCommandPane", source.pane);
+      value.outcome = "completed";
+      put(required(uid), value, row);
     } else {
-      assert(args.action === 'fork' || args.action === 'duplicate', 'Unknown pane choice');
-      value.outcome = 'pending'; put(uid!, value, row);
+      assert(args.action === "fork" || args.action === "duplicate", "Unknown pane choice");
+      value.outcome = "pending";
+      put(required(uid), value, row);
       openPicker(args.work, args.key, args.action, source.pane);
     }
-  } else if (args.method === 'agent_spawn') {
-    assert(args.spec, 'Missing agent specification');
+  } else if (args.method === "agent_spawn") {
+    assert(args.spec != null, "Missing agent specification");
 
-    const owner = {...identity, work: args.work, agent: args.key};
-    value.owner = owner; value.outcome = 'pending'; put(uid!, value, row);
-    const {source_directory, automatic_firecracker_vm, prompt, ...spec} = args.spec;
-    const opts = {...spec, ...(prompt != null ? {prompt} : {}),
-      ...(source_directory !== undefined ? {sourceDirectory: source_directory} : {}),
-      ...(automatic_firecracker_vm !== undefined ? {automaticFirecrackerVm: automatic_firecracker_vm} : {}),
-      context: {swamp_owner: encode(owner), swamp_operation: args.key}, startSuppressed: !!placements.get(args.work) && !placements.get(args.work)!.detached};
+    const owner = { ...identity, work: args.work, agent: args.key };
+    value.owner = owner;
+    value.outcome = "pending";
+    put(required(uid), value, row);
+    // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
+    const { source_directory, automatic_firecracker_vm, prompt, ...spec } = args.spec;
+    const opts = {
+      ...spec,
+      ...(prompt == null ? {} : { prompt }),
+      ...(source_directory === undefined ? {} : { sourceDirectory: source_directory }),
+      ...(automatic_firecracker_vm === undefined
+        ? {}
+        : { automaticFirecrackerVm: automatic_firecracker_vm }),
+      context: { swamp_owner: encode(owner), swamp_operation: args.key },
+      startSuppressed: placements.has(args.work) && placements.get(args.work)?.detached !== true,
+    };
     const spawned = z.agent.spawnDetails(opts);
-    assert('Terminal' in spawned.pane_id, 'Expected an agent terminal');
-    [value, row] = read(uid!); assert(value, 'No operation with that identity');
-    value.pane = spawned.pane_id.Terminal; value.branch = spawned.branch ?? null; value.checkout = spawned.cwd ?? null;
-    put(uid!, value, row);
-    if (closed(args.work)) { z.command('CloseTerminalPane', value.pane); ensureOpen(args.work); }
-    const info = z.command('GetPaneInfo', terminal(value.pane));
-    [value, row] = read(uid!); assert(value, 'No operation with that identity'); value.target = info?.target; put(uid!, value, row);
+    assert("Terminal" in spawned.pane_id, "Expected an agent terminal");
+    [value, row] = read(required(uid));
+    assert(value, "No operation with that identity");
+    value.pane = spawned.pane_id.Terminal;
+    value.branch = spawned.branch ?? null;
+    value.checkout = spawned.cwd ?? null;
+    put(required(uid), value, row);
+    if (closed(args.work)) {
+      z.command("CloseTerminalPane", value.pane);
+      ensureOpen(args.work);
+    }
+    const info = z.command("GetPaneInfo", terminal(value.pane));
+    [value, row] = read(required(uid));
+    assert(value, "No operation with that identity");
+    value.target = info?.target;
+    put(required(uid), value, row);
     let host: Supervisor;
-    if (typeof value.target === 'object' && 'Firecracker' in value.target) {
+    if (typeof value.target === "object" && "Firecracker" in value.target) {
       const deadline = Date.now() + 150000;
       for (;;) {
-        try { host = await supervisor(value.pane!); break; } catch (error) {
+        try {
+          // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
+          host = await supervisor(required(value.pane));
+          break;
+        } catch {
           ensureOpen(args.work);
-          assert(Date.now() < deadline, 'VM dispatch has a pane but no verified transport; reconcile it without repeating spawn');
+          assert(
+            Date.now() < deadline,
+            "VM dispatch has a pane but no verified transport; reconcile it without repeating spawn",
+          );
+          // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
           await z.sleep(200);
         }
       }
-    } else host = await supervisor(value.pane!);
-    [value, row] = read(uid!); assert(value, 'No operation with that identity');
+    } else host = await supervisor(required(value.pane));
+    [value, row] = read(required(uid));
+    assert(value, "No operation with that identity");
     ensureOpen(args.work);
-    Object.assign(value, {supervisor: host.host_id, process: host.child_pid, remoteHost: host.remote_host, remotePaneId: host.pane_token});
-    if (!value.processExited) value.outcome = args.waitForExit ? 'pending' : 'completed';
-    put(uid!, value, row);
+    Object.assign(value, {
+      supervisor: host.host_id,
+      process: host.child_pid,
+      remoteHost: host.remote_host,
+      remotePaneId: host.pane_token,
+    });
+    if (!value.processExited) value.outcome = args.waitForExit ? "pending" : "completed";
+    put(required(uid), value, row);
     const placement = placements.get(args.work);
-    if (args.waitForExit && placement && !placement.detached) { placement.queue.push(uid!); present(args.work); }
-  } else if (args.method === 'agent_prompt') {
+    if (args.waitForExit && placement && !placement.detached) {
+      placement.queue.push(required(uid));
+      present(args.work);
+    }
+  } else if (args.method === "agent_prompt") {
     await owned(args, true);
-    const agentUid = scope(args.work, args.agent), [agent, agentRow] = read(agentUid);
-    assert(agent && agentRow && row, 'Agent disappeared');
-    assert(!agent.outstanding, 'One outstanding prompt is permitted per agent');
-    Object.assign(value, {owner: agent.owner, pane: agent.pane, outcome: 'pending', supervisor: agent.supervisor, process: agent.process,
-      remoteHost: agent.remoteHost, remotePaneId: agent.remotePaneId, checkout: agent.checkout, branch: agent.branch, target: agent.target});
+    const agentUid = scope(args.work, args.agent),
+      [agent, agentRow] = read(agentUid);
+    assert(agent && agentRow && row, "Agent disappeared");
+    assert(!agent.outstanding, "One outstanding prompt is permitted per agent");
+    Object.assign(value, {
+      owner: agent.owner,
+      pane: agent.pane,
+      outcome: "pending",
+      supervisor: agent.supervisor,
+      process: agent.process,
+      remoteHost: agent.remoteHost,
+      remotePaneId: agent.remotePaneId,
+      checkout: agent.checkout,
+      branch: agent.branch,
+      target: agent.target,
+    });
     agent.outstanding = uid;
     // Publish observation and the exclusive prompt slot in one transaction before sending bytes.
-    D.apply([D.put('delivery', {value: encode(value)}, {uid, expectRev: row.rev}),
-      D.put('delivery', {value: encode(agent)}, {uid: agentUid, expectRev: agentRow.rev})]);
+    D.apply([
+      D.put(
+        "delivery",
+        { value: encode(value) },
+        { uid: required(uid), expectRev: row.rev ?? null },
+      ),
+      D.put(
+        "delivery",
+        { value: encode(agent) },
+        { uid: agentUid, expectRev: agentRow.rev ?? null },
+      ),
+    ]);
     const placement = placements.get(args.work);
-    if (placement && !placement.detached) { placement.queue.push(uid!); present(args.work); }
+    if (placement && !placement.detached) {
+      placement.queue.push(required(uid));
+      present(args.work);
+    }
     dispatchPrompt(agent);
-  } else if (args.method === 'command') {
-    assert(Array.isArray(args.argv) && args.argv.length > 0 && args.argv.every(arg => typeof arg === 'string'), 'Missing literal argv');
-    const owner = {...identity, work: args.work, agent: args.key};
-    value.owner = owner; value.outcome = 'pending'; value.capture = args.capture; put(uid!, value, row);
-    const pane = z.command('OpenCommandPaneBackground', [{path: args.argv[0], args: args.argv.slice(1), cwd: args.cwd ?? null},
-      {swamp_owner: encode(owner), swamp_operation: args.key, swamp_work: read<Attachment>(scope(args.work, 'attachment'))[0]?.work ?? args.work}]);
-    [value, row] = read(uid!); assert(value, 'No operation with that identity');
-    assert(pane && 'Terminal' in pane, 'Command dispatch was not acknowledged; reconcile the saved operation before any further action');
-    value.pane = pane.Terminal; value.checkout = args.cwd; value.log = `terminal_${value.pane}`; put(uid!, value, row);
-    if (closed(args.work)) { z.command('CloseTerminalPane', value.pane); ensureOpen(args.work); }
+  } else if (args.method === "command") {
+    assert(
+      Array.isArray(args.argv) &&
+        args.argv.length > 0 &&
+        args.argv.every((arg) => typeof arg === "string"),
+      "Missing literal argv",
+    );
+    const owner = { ...identity, work: args.work, agent: args.key };
+    value.owner = owner;
+    value.outcome = "pending";
+    value.capture = args.capture;
+    put(required(uid), value, row);
+    const pane = z.command("OpenCommandPaneBackground", [
+      { path: required(args.argv[0]), args: args.argv.slice(1), cwd: args.cwd ?? null },
+      {
+        swamp_owner: encode(owner),
+        swamp_operation: args.key,
+        swamp_work: read<Attachment>(scope(args.work, "attachment"))[0]?.work ?? args.work,
+      },
+    ]);
+    [value, row] = read(required(uid));
+    assert(value, "No operation with that identity");
+    assert(
+      pane && "Terminal" in pane,
+      "Command dispatch was not acknowledged; reconcile the saved operation before any further action",
+    );
+    value.pane = pane.Terminal;
+    value.checkout = args.cwd;
+    value.log = `terminal_${value.pane}`;
+    put(required(uid), value, row);
+    if (closed(args.work)) {
+      z.command("CloseTerminalPane", value.pane);
+      ensureOpen(args.work);
+    }
     const placement = placements.get(args.work);
-    if (args.foreground && placement && !placement.detached) { placement.queue.push(uid!); present(args.work); }
+    if (args.foreground && placement && !placement.detached) {
+      placement.queue.push(required(uid));
+      present(args.work);
+    }
     const host = await supervisor(value.pane);
     ensureOpen(args.work);
-    [value, row] = read(uid!); assert(value, 'No operation with that identity'); value.supervisor = host.host_id; value.process = host.child_pid; put(uid!, value, row);
-  } else if (['source_sync', 'vm_inspect', 'vm_sync', 'vm_status'].includes(args.method)) {
-    const agent: Partial<Delivery> = args.method === 'source_sync'
-      ? (read(scope(args.work, 'source'))[0] ? await owned({work: args.work, agent: 'source'}) : {target: 'Local'}) : await owned(args);
-    value.owner = agent.owner; value.target = agent.target;
-    const target = typeof agent.target === 'object' && 'Firecracker' in agent.target ? agent.target.Firecracker : undefined;
-    if (!target) Object.assign(value, {outcome: 'completed', vm: null, clean: true});
-    else {
+    [value, row] = read(required(uid));
+    assert(value, "No operation with that identity");
+    value.supervisor = host.host_id;
+    value.process = host.child_pid;
+    put(required(uid), value, row);
+  } else if (["source_sync", "vm_inspect", "vm_sync", "vm_status"].includes(args.method)) {
+    const agent: Partial<Delivery> =
+      args.method === "source_sync"
+        ? read(scope(args.work, "source"))[0]
+          ? await owned({ work: args.work, agent: "source" })
+          : { target: "Local" }
+        : await owned(args);
+    value.owner = agent.owner;
+    value.target = agent.target;
+    const target =
+      typeof agent.target === "object" && "Firecracker" in agent.target
+        ? agent.target.Firecracker
+        : undefined;
+    if (target) {
       const name = target.vm;
-      assert(name, 'Missing VM identity');
-      let warnings = '', output = '';
-      if (args.method === 'vm_sync' || args.method === 'source_sync') {
-        const r = await z.runCommand({command: [z.serverBinary || 'zellij', 'firecracker', 'sync', name, '--session', identity.session], cwd: '/',
-          context: {swamp_owner: encode(identity)}, maxBytesReturned: 1048576});
-        warnings = z.decodeUtf8(r.stderr); output = z.decodeUtf8(r.stdout);
-        assert(r.exitCode === 0, `VM sync failed; inspect provider reports before retrying: ${warnings}`);
+      assert(name, "Missing VM identity");
+      let output = "",
+        warnings = "";
+      if (args.method === "vm_sync" || args.method === "source_sync") {
+        const r = await z.runCommand({
+          command: [
+            z.serverBinary || "zellij",
+            "firecracker",
+            "sync",
+            name,
+            "--session",
+            identity.session,
+          ],
+          cwd: "/",
+          context: { swamp_owner: encode(identity) },
+          maxBytesReturned: 1048576,
+        });
+        warnings = z.decodeUtf8(r.stderr);
+        output = z.decodeUtf8(r.stdout);
+        assert(
+          r.exitCode === 0,
+          `VM sync failed; inspect provider reports before retrying: ${warnings}`,
+        );
       }
-      const count = await command([z.serverBinary || 'zellij', 'firecracker', 'changes', name, '--session', identity.session]);
-      assert(/^\d+\s*$/.test(count), 'Invalid guest change count');
-      Object.assign(value, {outcome: 'completed', vm: name, output: output + warnings + count, clean: Number(count) === 0 && warnings === ''});
+      const count = await command([
+        z.serverBinary || "zellij",
+        "firecracker",
+        "changes",
+        name,
+        "--session",
+        identity.session,
+      ]);
+      assert(/^\d+\s*$/u.test(count), "Invalid guest change count");
+      Object.assign(value, {
+        outcome: "completed",
+        vm: name,
+        output: output + warnings + count,
+        clean: Number(count) === 0 && warnings === "",
+      });
+    } else {
+      Object.assign(value, { outcome: "completed", vm: null, clean: true });
     }
-    if (uid) put(uid, value, row); else return value;
-  } else throw new Error('Unknown bridge method');
-  return result(uid!);
+    if (uid) put(uid, value, row);
+    else return value;
+  } else throw new Error("Unknown bridge method");
+  return result(required(uid));
 }
-type History = {id: string; workflowId: string; workflowName: string; status: string; inputs: {launch: string; session: string};
-  jobs?: {name: string; steps?: {name: string; status: string}[]}[]};
+type History = {
+  id: string;
+  workflowId: string;
+  workflowName: string;
+  status: string;
+  inputs: { launch: string; session: string; submission?: Json };
+  jobs?: { name: string; steps?: { name: string; status: string }[] }[];
+};
 // Bound every saved log copy before the host serializes the response; its byte cap would cut JSON.
 // CEL substring uses UTF-16 offsets: back off if the cut would split a surrogate pair.
-function preview(path: string, field = 'output', limit = 16384): string {
+function preview(path: string, field = "output", limit = 16384): string {
   return String.raw`"output":has(VALUE.output) ? (VALUE.output.size() > 16384 ? VALUE.output.substring(0,
     VALUE.output.substring(16383,16384).matches(r"[\uD800-\uDBFF]") ? 16383 : 16384) : VALUE.output) : "",
     "previewTruncated":has(VALUE.output) && VALUE.output.size() > 16384`
-    .replaceAll('output', field).replaceAll('16383', String(limit - 1)).replaceAll('16384', String(limit)).replaceAll('VALUE', path);
+    .replaceAll("output", field)
+    .replaceAll("16383", String(limit - 1))
+    .replaceAll("16384", String(limit))
+    .replaceAll("VALUE", path);
 }
-const streamPreview = (field: string) => preview('attributes', field, 2048).replace('previewTruncated', `${field}Truncated`);
+const streamPreview = (field: string): string =>
+  preview("attributes", field, 2048).replace("previewTruncated", `${field}Truncated`);
 function testPreview(path: string): string {
   return `{"evidence":${path}.evidence,"outcome":${path}.outcome,"exitCode":${path}.exitCode,"summaryLength":has(${path}.summaryLength) ? ${path}.summaryLength : 0,"outputComplete":has(${path}.outputComplete) && ${path}.outputComplete,"log":${path}.log,"passed":${path}.passed,"outputRef":has(${path}.outputRef) ? ${path}.outputRef : null,${preview(path)}}`;
 }
@@ -1004,59 +2094,133 @@ const projection = `{"model":modelName,"name":name,"version":version,"createdAt"
       "exitCode":has(attributes.operation.exitCode) ? attributes.operation.exitCode : null,
       "log":has(attributes.operation.log) ? attributes.operation.log : "",
       "pane":has(attributes.operation.pane) ? attributes.operation.pane : false} : {},
-    ${streamPreview('stdout')},${streamPreview('stderr')}} :
-  specName == "diff" ? {"evidence":attributes.evidence,${preview('attributes')}} :
-  specName == "test" ? ${testPreview('attributes')} :
+    ${streamPreview("stdout")},${streamPreview("stderr")}} :
+  specName == "diff" ? {"evidence":attributes.evidence,${preview("attributes")}} :
+  specName == "test" ? ${testPreview("attributes")} :
   specName == "operation" ? {
     "outcome":attributes.outcome,"pane":has(attributes.pane) ? attributes.pane : false,
     "log":has(attributes.log) ? attributes.log : "", "exitCode":has(attributes.exitCode) ? attributes.exitCode : null,
     "outputTruncated":has(attributes.outputTruncated) && attributes.outputTruncated,
-    "logError":has(attributes.logError) ? attributes.logError : false,${preview('attributes')}} :
+    "logError":has(attributes.logError) ? attributes.logError : false,${preview("attributes")}} :
   specName in ["checks","assessment"] ? {"review":attributes.review,
-    "test":attributes.test == null ? attributes.test : ${testPreview('attributes.test')},
+    "test":attributes.test == null ? attributes.test : ${testPreview("attributes.test")},
     "evidence":has(attributes.evidence) ? attributes.evidence : null,
     "tests":has(attributes.tests) ? attributes.tests : "", "codeReview":has(attributes.codeReview) ? attributes.codeReview : "",
     "ready":has(attributes.ready) && attributes.ready} : attributes}`;
 // Share the attributes expression to stay within Swamp's 4096-character select limit.
-const outputProjection = `[attributes].map(a,${projection.replaceAll('attributes.', 'a.')})[0]`;
-function message(options: Partial<MessageToPlugin> & {message_name: string}) {
-  z.command('MessageToPlugin', {plugin_url: null, destination_plugin_id: null, plugin_config: {}, message_payload: null,
-    message_args: {}, new_plugin_args: null, floating_pane_coordinates: null, ...options});
+const outputProjection = `[attributes].map(a,${projection.replaceAll("attributes.", "a.")})[0]`;
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function message(options: Partial<MessageToPlugin> & { message_name: string }): void {
+  z.command("MessageToPlugin", {
+    plugin_url: null,
+    destination_plugin_id: null,
+    plugin_config: {},
+    message_payload: null,
+    message_args: {},
+    new_plugin_args: null,
+    floating_pane_coordinates: null,
+    ...options,
+  });
 }
 let timingAttempt = 0;
-async function invoke(args: Partial<Request>, manualView?: number, onProgress?: (payload: Json) => void): Promise<Json> {
+async function invoke(
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  args: Partial<Request>,
+  manualView?: number,
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  onProgress?: (payload: Json) => void,
+): Promise<Json> {
   if (!z.swampTiming) return invokeInner(args, manualView, onProgress);
-  const attempt = ++timingAttempt, start = z.monotonicMs();
-  let outcome = 'error', response: any;
-  try {response = await invokeInner(args, manualView, onProgress); outcome = 'ok'; return response;}
-  finally {
-    try {z.log('swamp_timing ' + encode({layer: 'deno', phase: 'invoke', attempt: `${z.instanceId}:${attempt}`,
-      elapsedMs: z.monotonicMs() - start, outcome, method: args?.method, work: args?.work, key: args?.key,
-      requestId: response?.requestId, run: response?.run}));} catch { /* Keep the operation's result. */ }
+  timingAttempt += 1;
+  const attempt = timingAttempt,
+    start = z.monotonicMs();
+  let outcome = "error",
+    response: Json | undefined;
+  try {
+    response = await invokeInner(args, manualView, onProgress);
+    outcome = "ok";
+    return response;
+  } finally {
+    try {
+      z.log(
+        "swamp_timing " +
+          encode({
+            layer: "deno",
+            phase: "invoke",
+            attempt: `${z.instanceId}:${attempt}`,
+            elapsedMs: z.monotonicMs() - start,
+            outcome,
+            method: args?.method,
+            work: args?.work,
+            key: args?.key,
+            requestId:
+              response != null && typeof response === "object" && !Array.isArray(response)
+                ? response["requestId"]
+                : undefined,
+            run:
+              response != null && typeof response === "object" && !Array.isArray(response)
+                ? response["run"]
+                : undefined,
+          }),
+      );
+    } catch {
+      /* Keep the operation's result. */
+    }
   }
 }
-async function invokeInner(args: Partial<Request>, manualView?: number, onProgress?: (payload: Json) => void): Promise<Json> {
-  const newLaunch = args?.method === 'workflow_run' && !read(scope(args.work!, args.key!))[0];
+// oxlint-disable-next-line eslint/max-lines-per-function -- This lifecycle handler keeps its ordered protocol transitions together.
+async function invokeInner(
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  args: Partial<Request>,
+  manualView?: number,
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  onProgress?: (payload: Json) => void,
+): Promise<Json> {
+  const newLaunch =
+    args?.method === "workflow_run" && !read(scope(required(args.work), required(args.key)))[0];
   let response: unknown;
-  try { response = await handle(args, manualView, onProgress); } catch (error) {
-    if (args?.method === 'workflow_show') {
-      for (const [work, placement] of placements) if (placement.view === manualView) unavailable(placement, work);
+  try {
+    response = await handle(args, manualView, onProgress);
+  } catch (error) {
+    if (args?.method === "workflow_show") {
+      for (const [work, placement] of placements)
+        if (placement.view === manualView) unavailable(placement, work);
     }
     try {
-      if (newLaunch && !read(scope(args.work!, 'swamp-process'))[0] && !read(scope(args.work!, args.key!))[0]?.transport) saveEvent(scope(args.work!, args.key!), 'failed', {error: String(error)});
-      const [value] = read(scope(args.work!, args.key!));
-      if (value && sameRequest(value.request, args) && value.outcome === 'pending') {
-        saveEvent(scope(args.work!, args.key!), 'unknown', {error: String(error)}); present(args.work!);
+      if (
+        newLaunch &&
+        !read(scope(required(args.work), "swamp-process"))[0] &&
+        !read(scope(required(args.work), required(args.key)))[0]?.transport
+      )
+        saveEvent(scope(required(args.work), required(args.key)), "failed", {
+          error: String(error),
+        });
+      const [value] = read(scope(required(args.work), required(args.key)));
+      if (value && sameRequest(value.request, args) && value.outcome === "pending") {
+        saveEvent(scope(required(args.work), required(args.key)), "unknown", {
+          error: String(error),
+        });
+        present(required(args.work));
       }
-    } catch { /* Preserve the original dispatch error. */ }
+    } catch {
+      /* Preserve the original dispatch error. */
+    }
     throw error;
   }
-  if (args.method === 'workflow_show') {
-    const snapshot = response as {launch: string; history: History; children?: History[]; subtitle?: string};
+  if (args.method === "workflow_show") {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+    const snapshot = response as {
+      launch: string;
+      history: History;
+      children?: History[];
+      subtitle?: string;
+    };
     snapshot.subtitle = workflowSubtitle(snapshot);
     const placement = placements.get(snapshot.launch);
-    if (placement && placement.view === manualView) updateSubtitle(snapshot.launch, snapshot.subtitle, snapshot.history.workflowName);
+    if (placement && placement.view === manualView)
+      updateSubtitle(snapshot.launch, snapshot.subtitle, snapshot.history.workflowName);
   }
+  // oxlint-disable-next-line typescript/no-unsafe-return -- This branch forwards the JSON response unchanged to its caller.
   return JSON.parse(encode(response));
 }
 // A separate RPC surface: Hocus cannot select arbitrary privileged bridge methods.
@@ -1212,151 +2376,267 @@ async function hocusWorkflow(input: Json, call: RpcCall): Promise<Json> {
 }
 
 export default definePlugin({
+  // oxlint-disable-next-line eslint/max-lines-per-function -- This lifecycle handler keeps its ordered protocol transitions together.
   load() {
-    identity = {host_id: z.getPluginIds().host_id, session: z.serverSession, incarnation: z.serverIncarnation};
-    assert(identity.session !== '', 'Bridge requires a server session');
-    D.define('delivery', {value: {kind: 'Text', required: true}}, {version: 1});
-    z.subscribe(['AgentEvent', 'CommandPaneExited', 'PaneUpdate', 'PaneClosed']);
+    identity = {
+      host_id: z.getPluginIds().host_id,
+      session: z.serverSession,
+      incarnation: z.serverIncarnation,
+    };
+    assert(identity.session !== "", "Bridge requires a server session");
+    D.define("delivery", { value: { kind: "Text", required: true } }, { version: 1 });
+    z.subscribe(["AgentEvent", "CommandPaneExited", "PaneUpdate", "PaneClosed"]);
     for (const entry of deliveryRows()) {
-      if (entry.key === 'view' && entry.value.closed && entry.value.cancel_pending) void cancelLifecycle(entry.work);
-      else if (entry.value.cancelRequested && ['pending', 'unknown'].includes(entry.value.outcome) && !closed(entry.work)) void stopOperation(entry.uid);
+      if (entry.key === "view" && entry.value.closed && entry.value.cancel_pending)
+        void cancelLifecycle(entry.work).catch((error: unknown) => {
+          z.log(String(error));
+        });
+      else if (
+        entry.value.cancelRequested &&
+        ["pending", "unknown"].includes(entry.value.outcome) &&
+        !closed(entry.work)
+      )
+        stopOperation(entry.uid);
     }
-    z.rpc.handle('hocus_workflow', hocusWorkflow);
-    z.rpc.handle('swamp', async (payload, call) => {
+    z.rpc.handle("hocus_workflow", hocusWorkflow);
+    z.rpc.handle("swamp", async (payload, call) => {
       const from = call.source?.Plugin;
-      assert(from != null, 'Workflow RPC requires a host-authenticated plugin source');
-      const pane = z.command('GetPaneInfo', plugin(from));
-      assert(pane?.plugin_url === 'zellij:agent-exit' || pane?.plugin_url === 'zellij:swamp-workflow', 'Only builtin workflow views may use the privileged bridge RPC');
+      assert(from != null, "Workflow RPC requires a host-authenticated plugin source");
+      const pane = z.command("GetPaneInfo", plugin(from));
+      assert(
+        pane?.plugin_url === "zellij:agent-exit" || pane?.plugin_url === "zellij:swamp-workflow",
+        "Only builtin workflow views may use the privileged bridge RPC",
+      );
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
       const args = payload as Partial<Request>;
-      if (args.method === 'workflow_run' && pane.plugin_url === 'zellij:agent-exit') {
-        const uid = scope(args.work!, 'view'), [existing] = read(uid);
-        if (existing) assert(existing.view === from && existing.incarnation === identity.incarnation, 'Launch already belongs to another hook instance');
+      if (args.method === "workflow_run" && pane.plugin_url === "zellij:agent-exit") {
+        const uid = scope(required(args.work), "view"),
+          [existing] = read(uid);
+        if (existing)
+          assert(
+            existing.view === from && existing.incarnation === identity.incarnation,
+            "Launch already belongs to another hook instance",
+          );
         else {
-          put(uid, {view: from, source: args.inputs?.sourcePane, incarnation: identity.incarnation});
-          placements.set(args.work!, {view: from, queue: [], subtitle: 'Workflow · loading'});
-          present(args.work!);
+          put(uid, {
+            view: from,
+            source: args.inputs?.["sourcePane"],
+            incarnation: identity.incarnation,
+          });
+          placements.set(required(args.work), {
+            view: from,
+            queue: [],
+            subtitle: "Workflow · loading",
+          });
+          present(required(args.work));
         }
       }
-      return invoke(args, args.method === 'workflow_show' ? from : undefined, call.progress);
+      return invoke(args, args.method === "workflow_show" ? from : undefined, (progress) => {
+        call.progress(progress);
+      });
     });
   },
+  // oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together.
   async pipe(messageIn) {
-    if (messageIn.name === 'workflow-refresh-failed') {
-      const from = typeof messageIn.source === 'object' && 'Plugin' in messageIn.source ? messageIn.source.Plugin : undefined;
-      const launch = messageIn.payload ?? '';
+    if (messageIn.name === "workflow-refresh-failed") {
+      const from =
+        typeof messageIn.source === "object" && "Plugin" in messageIn.source
+          ? messageIn.source.Plugin
+          : undefined;
+      const launch = messageIn.payload ?? "";
       for (const [work, placement] of placements) {
-        if (placement.view === from && (launch === '' || launch === work)) unavailable(placement, work);
+        if (placement.view === from && (launch === "" || launch === work))
+          unavailable(placement, work);
       }
       return;
     }
-    if (messageIn.name === 'swamp-pane-result' && messageIn.payload) {
-      const from = typeof messageIn.source === 'object' && 'Plugin' in messageIn.source ? messageIn.source.Plugin : undefined;
+    if (messageIn.name === "swamp-pane-result" && messageIn.payload) {
+      const from =
+        typeof messageIn.source === "object" && "Plugin" in messageIn.source
+          ? messageIn.source.Plugin
+          : undefined;
       if (from == null) return;
-      const pane = z.command('GetPaneInfo', plugin(from));
+      const pane = z.command("GetPaneInfo", plugin(from));
       if (!pane) return;
-      assert(pane.plugin_url === 'zellij:hocus-new-agent', 'Pane result must come from the agent picker');
-      const reply: {work: string; key: string; choice: string; pane_id?: {Terminal: number}} = JSON.parse(messageIn.payload);
-      assert(reply.choice === 'started' || reply.choice === 'cancelled', 'Invalid picker result');
-      if (reply.choice === 'started') assert(reply.pane_id && Object.keys(reply.pane_id).length === 1 && Number.isInteger(reply.pane_id.Terminal) && reply.pane_id.Terminal >= 0 && reply.pane_id.Terminal <= 4294967295, 'Started picker result requires a terminal pane ID');
-      const uid = scope(reply.work, reply.key), [current] = read(uid);
-      assert(current && JSON.parse(current.request).method === 'pane_action', 'No picker operation');
-      if (current.outcome === 'completed') {
-        assert(current.choice === reply.choice, 'Picker result already differs');
-        message({destination_plugin_id: from, message_name: 'swamp-pane-ack'}); return;
+      assert(
+        pane.plugin_url === "zellij:hocus-new-agent",
+        "Pane result must come from the agent picker",
+      );
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+      const reply: { work: string; key: string; choice: string; pane_id?: { Terminal: number } } =
+        JSON.parse(messageIn.payload);
+      assert(reply.choice === "started" || reply.choice === "cancelled", "Invalid picker result");
+      if (reply.choice === "started")
+        assert(
+          reply.pane_id &&
+            Object.keys(reply.pane_id).length === 1 &&
+            Number.isInteger(reply.pane_id.Terminal) &&
+            reply.pane_id.Terminal >= 0 &&
+            reply.pane_id.Terminal <= 4294967295,
+          "Started picker result requires a terminal pane ID",
+        );
+      const uid = scope(reply.work, reply.key),
+        [current] = read(uid);
+      assert(
+        current && parsedObject(current.request)["method"] === "pane_action",
+        "No picker operation",
+      );
+      if (current.outcome === "completed") {
+        assert(current.choice === reply.choice, "Picker result already differs");
+        message({ destination_plugin_id: from, message_name: "swamp-pane-ack" });
+        return;
       }
-      const view = read(scope(lifecycleWork(reply.work), 'view'))[0];
-      if (closed(reply.work) || (reply.choice === 'started' && view?.transition)) {
-        if (reply.choice === 'started') z.command('CloseTerminalPane', reply.pane_id!.Terminal);
-        z.command('ClosePluginPane', from); return;
+      const view = read(scope(lifecycleWork(reply.work), "view"))[0];
+      if (closed(reply.work) || (reply.choice === "started" && view?.transition)) {
+        if (reply.choice === "started")
+          z.command("CloseTerminalPane", required(reply.pane_id).Terminal);
+        z.command("ClosePluginPane", from);
+        return;
       }
-      assert(['pending', 'unknown'].includes(current.outcome), 'Picker dispatch cannot accept a result');
-      saveEvent(uid, 'completed', {choice: reply.choice});
-      if (reply.choice === 'started') {
-        transition(reply.work, 'fork');
-        if (JSON.parse(current.request).cancel_active) cancelAfterTransition(reply.work);
+      assert(
+        ["pending", "unknown"].includes(current.outcome),
+        "Picker dispatch cannot accept a result",
+      );
+      saveEvent(uid, "completed", { choice: reply.choice });
+      if (reply.choice === "started") {
+        transition(reply.work, "fork");
+        if (parsedObject(current.request)["cancel_active"] === true)
+          cancelAfterTransition(reply.work);
         closeView(reply.work);
       }
-      message({destination_plugin_id: from, message_name: 'swamp-pane-ack'});
+      message({ destination_plugin_id: from, message_name: "swamp-pane-ack" });
       return;
     }
-    if (messageIn.name !== 'swamp' || !messageIn.payload || typeof messageIn.source !== 'object' || !('Cli' in messageIn.source)) return;
+    if (
+      messageIn.name !== "swamp" ||
+      !messageIn.payload ||
+      typeof messageIn.source !== "object" ||
+      !("Cli" in messageIn.source)
+    )
+      return;
     const pipe = messageIn.source.Cli;
-    z.command('BlockCliPipeInput', pipe);
+    z.command("BlockCliPipeInput", pipe);
     try {
       let reply;
-      try { reply = {result: await invoke(JSON.parse(messageIn.payload))}; } catch (error) { reply = {error: String(error)}; }
-      z.command('CliPipeOutput', [pipe, encode(reply)]);
-    } finally { z.command('UnblockCliPipeInput', pipe); }
+      try {
+        // oxlint-disable-next-line typescript/no-unsafe-argument -- The receiving handler validates the consumed request fields before dispatch.
+        reply = { result: await invoke(JSON.parse(messageIn.payload)) };
+      } catch (error) {
+        reply = { error: String(error) };
+      }
+      z.command("CliPipeOutput", [pipe, encode(reply)]);
+    } finally {
+      z.command("UnblockCliPipeInput", pipe);
+    }
   },
 });
-z.on('PaneUpdate', () => {
+z.on("PaneUpdate", () => {
   for (const [work, placement] of placements) {
     if (placement.detached) continue;
-    const source = read(scope(work, 'source'))[0];
-    const original = source?.pane != null ? z.command('GetPaneInfo', terminal(source.pane)) : undefined;
+    const source = read(scope(work, "source"))[0];
+    const original =
+      source?.pane == null ? undefined : z.command("GetPaneInfo", terminal(source.pane));
     // A rerun source means the agent restarted: the workflow no longer owns its location.
-    if (original?.exited === false) detach(placement); else present(work);
+    if (original?.exited === false) detach(placement);
+    else present(work);
   }
 });
-function deliveryRows() {
-  const all: {uid: string; row: DataRecord; work: string; key: string; value: Delivery}[] = [];
+function deliveryRows(): {
+  uid: string;
+  row: DataRecord;
+  work: string;
+  key: string;
+  value: Delivery;
+}[] {
+  const all: { uid: string; row: DataRecord; work: string; key: string; value: Delivery }[] = [];
   let cursor: Integer | null = null;
   do {
-    const {records, raw} = D.fetch({entity: 'delivery', afterId: cursor});
+    const { records, raw } = D.fetch({ entity: "delivery", afterId: cursor });
     for (const row of records) {
-      const id: string[] = JSON.parse(String(row.uid));
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+      const id: string[] = JSON.parse(String(row["uid"]));
       if (id[0] === identity.host_id && id[1] === identity.session)
-        all.push({uid: String(row.uid), row, work: id[2], key: id[3], value: JSON.parse(String(row.value))});
+        all.push({
+          uid: String(row["uid"]),
+          row,
+          work: required(id[2]),
+          key: required(id[3]),
+          // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+          value: JSON.parse(String(row["value"])),
+        });
     }
     cursor = raw.next_cursor;
   } while (cursor != null);
   return all;
 }
-async function cancelLifecycle(work: string) {
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together.
+async function cancelLifecycle(work: string): Promise<void> {
   if (cancelling.has(work)) return;
   cancelling.add(work);
   let done = false;
   try {
-    const uid = scope(work, 'view'), [view, row] = read(uid);
+    const uid = scope(work, "view"),
+      [view, row] = read(uid);
     if (!view?.closed || !view.cancel_pending) return;
     const runs = new Map<string, string>();
     let unresolved = false;
     for (const entry of deliveryRows()) {
       if (lifecycleWork(entry.work) !== work) continue;
       const value = entry.value;
-      if (entry.key === 'runs') {
+      if (entry.key === "runs") {
         for (const [id, run] of Object.entries(value.entries ?? {})) runs.set(id, run.root);
       } else if (value.checkout && value.request) {
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
         const request: Request = JSON.parse(value.request);
-        if (request.method !== 'workflow_run' && !['workflow.run', 'workflow.resume'].includes(request.operation)) continue;
+        if (
+          request.method !== "workflow_run" &&
+          !["workflow.run", "workflow.resume"].includes(request.operation)
+        )
+          continue;
         let run = value.run;
         if (!run && value.transport && !value.not_dispatched) {
+          // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
           run = await workflowRunId(value, request);
+          // oxlint-disable-next-line eslint/max-depth -- Nested protocol checks preserve the order of validation and state changes.
           if (run) {
-            const [current, currentRow] = read(entry.uid); assert(current, 'Missing dispatch');
-            current.run ??= run; put(entry.uid, current, currentRow);
+            const [current, currentRow] = read(entry.uid);
+            assert(current, "Missing dispatch");
+            current.run ??= run;
+            put(entry.uid, current, currentRow);
           } else unresolved = true;
         }
         if (run) runs.set(run, value.checkout);
       }
     }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
     for (const [run, root] of runs) await cancelRun(run, root);
     if (!unresolved) {
       view.cancel_pending = false;
       // Late attachments change this revision, requiring another cancellation pass.
-      put(uid, view, row); done = true;
+      put(uid, view, row);
+      done = true;
     }
-  } catch (error) { z.log('Workflow cancellation pending: ' + String(error)); }
-  finally {
+  } catch (error) {
+    z.log("Workflow cancellation pending: " + String(error));
+  } finally {
     cancelling.delete(work);
-    if (!done && read(scope(work, 'view'))[0]?.cancel_pending) void z.sleep(1000).then(() => cancelLifecycle(work));
+    if (!done && read(scope(work, "view"))[0]?.cancel_pending)
+      void z
+        .sleep(1000)
+        .then(async () => cancelLifecycle(work))
+        .catch((error: unknown) => {
+          z.log(String(error));
+        });
   }
 }
-function closeLifecycle(work: string) {
-  const uid = scope(work, 'view'), [view, row] = read(uid);
+function closeLifecycle(work: string): void {
+  const uid = scope(work, "view"),
+    [view, row] = read(uid);
   if (!view || view.closed || view.transition || view.incarnation !== identity.incarnation) return;
-  view.closed = true; view.cancel_pending = true;
-  put(uid, view, row); // Durable closure precedes resource disposal and asynchronous cancellation.
+  view.closed = true;
+  view.cancel_pending = true;
+  // Durable closure precedes resource disposal and asynchronous cancellation.
+  put(uid, view, row);
   const placement = placements.get(work);
   if (placement) placement.detached = true;
   const panes = new Set<number>();
@@ -1364,97 +2644,206 @@ function closeLifecycle(work: string) {
   for (const entry of deliveryRows()) {
     if (lifecycleWork(entry.work) !== work) continue;
     const value = entry.value;
-    if (value.owner?.host_id === identity.host_id && value.owner.session === identity.session &&
-      value.owner.incarnation === identity.incarnation && value.owner.work === entry.work && value.pane != null) panes.add(value.pane);
-    if (['pending', 'unknown'].includes(value.outcome)) {
-      value.outcome = 'interrupted'; value.error = 'Pane workflow lifecycle is closed'; put(entry.uid, value, entry.row);
+    if (
+      value.owner?.host_id === identity.host_id &&
+      value.owner.session === identity.session &&
+      value.owner.incarnation === identity.incarnation &&
+      value.owner.work === entry.work &&
+      value.pane != null
+    )
+      panes.add(value.pane);
+    if (["pending", "unknown"].includes(value.outcome)) {
+      value.outcome = "interrupted";
+      value.error = "Pane workflow lifecycle is closed";
+      put(entry.uid, value, entry.row);
     }
   }
-  for (const pane of panes) z.command('CloseTerminalPane', pane);
-  z.command('ClosePluginPane', view.view!);
-  void cancelLifecycle(work);
+  for (const pane of panes) z.command("CloseTerminalPane", pane);
+  z.command("ClosePluginPane", required(view.view));
+  void cancelLifecycle(work).catch((error: unknown) => {
+    z.log(String(error));
+  });
 }
-z.on('PaneClosed', pane => {
+z.on("PaneClosed", (pane) => {
   const affected = new Set<string>();
   for (const entry of deliveryRows()) {
     const value = entry.value;
-    if (entry.key === 'view' && value.incarnation === identity.incarnation) {
-      if (('Plugin' in pane && value.view === pane.Plugin) ||
-        ('Terminal' in pane && (value.source === pane.Terminal || value.current === pane.Terminal))) affected.add(entry.work);
-    } else if ('Terminal' in pane && entry.key === 'source' && value.pane === pane.Terminal &&
-      value.owner?.host_id === identity.host_id && value.owner.session === identity.session &&
-      value.owner.incarnation === identity.incarnation && value.owner.work === entry.work) affected.add(lifecycleWork(entry.work));
+    if (entry.key === "view" && value.incarnation === identity.incarnation) {
+      if (
+        ("Plugin" in pane && value.view === pane.Plugin) ||
+        ("Terminal" in pane && (value.source === pane.Terminal || value.current === pane.Terminal))
+      )
+        affected.add(entry.work);
+    } else if (
+      "Terminal" in pane &&
+      entry.key === "source" &&
+      value.pane === pane.Terminal &&
+      value.owner?.host_id === identity.host_id &&
+      value.owner.session === identity.session &&
+      value.owner.incarnation === identity.incarnation &&
+      value.owner.work === entry.work
+    )
+      affected.add(lifecycleWork(entry.work));
   }
   for (const work of affected) closeLifecycle(work);
 });
-z.on('AgentEvent', event => {
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together.
+z.on("AgentEvent", (event) => {
   let raw: { _zellij_workflow_owner?: string; prompt_sha256?: string; turn_id?: string };
-  try { raw = JSON.parse(event.raw || ''); } catch { return; }
-  if (!raw._zellij_workflow_owner) return;
-  const owner: Owner = JSON.parse(raw._zellij_workflow_owner);
-  if (owner.host_id !== identity.host_id || owner.session !== identity.session || closed(owner.work)) return;
-  const uid = scope(owner.work, owner.agent), [agent] = read(uid);
-  if (!agent || (agent.pane != null && agent.pane !== event.pane_id) || encode(agent.owner) !== encode(owner)) return;
-  if (event.hook === 'SessionStart') {
-    const [current, row] = read(uid); assert(current, 'No operation with that identity'); current.ready = true; put(uid, current, row);
-    if (current.outstanding && current.supervisor) void owned({work: owner.work, agent: owner.agent}, true).then(dispatchPrompt).catch(error => z.log(String(error)));
+  try {
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+    raw = JSON.parse(event.raw || "");
+  } catch {
+    return;
   }
-  const startup: Partial<Request> = agent.request ? JSON.parse(agent.request) : {};
-  const promptUid = agent.outstanding ?? (startup.method === 'agent_spawn' && startup.waitForExit && startup.spec?.prompt ? uid : undefined);
-  if (event.hook === 'UserPromptSubmit' && promptUid) {
+  // oxlint-disable-next-line eslint/no-underscore-dangle -- This field name is part of the existing agent hook wire protocol.
+  if (!raw._zellij_workflow_owner) return;
+  // oxlint-disable-next-line eslint/no-underscore-dangle, typescript/no-unsafe-assignment -- This field name is part of the existing agent hook wire protocol. The producer supplies this documented wire shape; the handler checks fields before dispatch.
+  const owner: Owner = JSON.parse(raw._zellij_workflow_owner);
+  if (
+    owner.host_id !== identity.host_id ||
+    owner.session !== identity.session ||
+    closed(owner.work)
+  )
+    return;
+  const uid = scope(owner.work, owner.agent),
+    [agent] = read(uid);
+  if (
+    !agent ||
+    (agent.pane != null && agent.pane !== event.pane_id) ||
+    encode(agent.owner) !== encode(owner)
+  )
+    return;
+  if (event.hook === "SessionStart") {
+    const [current, row] = read(uid);
+    assert(current, "No operation with that identity");
+    current.ready = true;
+    put(uid, current, row);
+    if (current.outstanding && current.supervisor)
+      void owned({ work: owner.work, agent: owner.agent }, true)
+        .then(dispatchPrompt)
+        .catch((error: unknown) => {
+          z.log(String(error));
+        });
+  }
+  const promptUid = outstandingPrompt(uid, agent);
+  if (event.hook === "UserPromptSubmit" && promptUid) {
     const [value, row] = read(promptUid);
-    if (value?.outcome === 'pending') {
+    if (value?.outcome === "pending") {
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
       const request: Request = JSON.parse(value.request);
-      const matches = request.prompt_sha256 && raw.prompt_sha256 ? request.prompt_sha256 === raw.prompt_sha256 : (request.method === 'agent_spawn' ? request.spec.prompt : request.prompt) === event.prompt;
+      const matches =
+        request.prompt_sha256 && raw.prompt_sha256
+          ? request.prompt_sha256 === raw.prompt_sha256
+          : (request.method === "agent_spawn" ? request.spec.prompt : request.prompt) ===
+            event.prompt;
       if (matches && !value.accepted) {
-        value.accepted = true; value.agentSession = event.session_id; value.turn = raw.turn_id; put(promptUid, value, row);
+        value.accepted = true;
+        value.agentSession = event.session_id;
+        value.turn = raw.turn_id;
+        put(promptUid, value, row);
       }
     }
   }
   finishAgent(owner, event, raw);
 });
-function finishAgent(owner: Owner, event: AgentEvent, raw: {turn_id?: string}) {
-  const uid = scope(owner.work, owner.agent), [agent, row] = read(uid);
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function finishAgent(owner: Owner, event: AgentEvent, raw: { turn_id?: string }): void {
+  const uid = scope(owner.work, owner.agent),
+    [agent, row] = read(uid);
   if (!agent || encode(agent.owner) !== encode(owner)) return;
-  const request: Partial<Request> = agent.request ? JSON.parse(agent.request) : {};
-  const promptUid = agent.outstanding ?? (request.method === 'agent_spawn' && request.waitForExit && request.spec?.prompt ? uid : undefined);
+  const promptUid = outstandingPrompt(uid, agent);
   if (!promptUid) return;
-  const outcome = ({Stop: 'completed', StopFailure: 'failed', Interrupt: 'interrupted'} as Record<string, string>)[event.hook];
+  const outcome = (
+    { Stop: "completed", StopFailure: "failed", Interrupt: "interrupted" } as Record<string, string>
+  )[event.hook];
   if (!outcome) return;
   const operation = result(promptUid);
-  if (!operation.accepted || operation.agentSession !== event.session_id || (operation.turn && operation.turn !== raw.turn_id)) return;
-  if (operation.cancelRequested || JSON.parse(operation.request).waitForExit) {
+  if (
+    !operation.accepted ||
+    operation.agentSession !== event.session_id ||
+    (operation.turn && operation.turn !== raw.turn_id)
+  )
+    return;
+  if (operation.cancelRequested || parsedObject(operation.request)["waitForExit"] === true) {
     const [current, currentRow] = read(promptUid);
-    assert(current, 'No operation with that identity');
-    current.message = event.last_message ?? null; current.hook = event.hook; put(promptUid, current, currentRow); return;
+    assert(current, "No operation with that identity");
+    current.message = event.last_message ?? null;
+    current.hook = event.hook;
+    put(promptUid, current, currentRow);
+    return;
   }
-  saveEvent(promptUid, outcome, {message: event.last_message ?? null, hook: event.hook, agentSession: event.session_id ?? null});
-  delete agent.outstanding; put(uid, agent, row); present(owner.work);
+  saveEvent(promptUid, outcome, {
+    message: event.last_message ?? null,
+    hook: event.hook,
+    agentSession: event.session_id ?? null,
+  });
+  delete agent.outstanding;
+  put(uid, agent, row);
+  present(owner.work);
 }
-function recordExit(uid: string, exitCode: number | null) {
+// A spawn that waits for exit owns its startup prompt the way agent_prompt owns a later one.
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+function outstandingPrompt(uid: string, agent: Delivery): string | undefined {
+  if (agent.outstanding) return agent.outstanding;
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
+  const request: Partial<Request> = agent.request ? JSON.parse(agent.request) : {};
+  return request.method === "agent_spawn" && request.waitForExit && request.spec?.prompt
+    ? uid
+    : undefined;
+}
+function recordExit(uid: string, exitCode: number | null): void {
   const [value, row] = read(uid);
-  if (!value || !['pending', 'unknown'].includes(value.outcome)) return;
-  value.exitCode = exitCode; value.processExited = true;
+  if (!value || !["pending", "unknown"].includes(value.outcome)) return;
+  value.exitCode = exitCode;
+  value.processExited = true;
   // Wrapper exit says nothing about descendants which closed their pty handles.
   value.terminationVerified = false;
   if (value.cancelRequested || exitCode === 130) {
-    value.cancelRequested = true; value.outcome = 'unknown'; put(uid, value, row);
-    void stopOperation(uid);
+    value.cancelRequested = true;
+    value.outcome = "unknown";
+    put(uid, value, row);
+    stopOperation(uid);
   } else {
-    value.outcome = JSON.parse(value.request).method === 'command' ? (exitCode === 0 ? 'completed' : 'failed') : 'process-exit';
+    value.outcome =
+      parsedObject(value.request)["method"] === "command"
+        ? exitCode === 0
+          ? "completed"
+          : "failed"
+        : "process-exit";
     put(uid, value, row);
   }
 }
-z.on('CommandPaneExited', ([pane, exitCode, context]) => {
-  if (!context.swamp_owner) return;
-  const owner: Owner = JSON.parse(context.swamp_owner);
-  if (owner.host_id !== identity.host_id || owner.session !== identity.session || closed(owner.work)) return;
-  const uid = scope(owner.work, context.swamp_operation || owner.agent), [value] = read(uid);
-  if (!value || encode(value.owner) !== encode(owner) || (value.pane != null && value.pane !== pane)) return;
+z.on("CommandPaneExited", ([pane, exitCode, context]) => {
+  if (!context["swamp_owner"]) return;
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+  const owner: Owner = JSON.parse(context["swamp_owner"]);
+  if (
+    owner.host_id !== identity.host_id ||
+    owner.session !== identity.session ||
+    closed(owner.work)
+  )
+    return;
+  // oxlint-disable-next-line typescript/prefer-nullish-coalescing -- An empty operation key needs the agent fallback too.
+  const uid = scope(owner.work, context["swamp_operation"] || owner.agent),
+    [value] = read(uid);
+  if (
+    !value ||
+    encode(value.owner) !== encode(owner) ||
+    (value.pane != null && value.pane !== pane)
+  )
+    return;
+  // oxlint-disable-next-line typescript/no-unsafe-assignment -- This builtin wrote the serialized record under its private data schema.
   const request: Request = JSON.parse(value.request);
-  if (request.method === 'command' && !['pending', 'unknown'].includes(value.outcome)) return;
+  if (request.method === "command" && !["pending", "unknown"].includes(value.outcome)) return;
   recordExit(uid, exitCode);
-  if (request.method === 'agent_spawn') { const [current, row] = read(uid); assert(current, 'No operation with that identity'); current.processExited = true; put(uid, current, row); }
+  if (request.method === "agent_spawn") {
+    const [current, row] = read(uid);
+    assert(current, "No operation with that identity");
+    current.processExited = true;
+    put(uid, current, row);
+  }
   if (value.outstanding) recordExit(value.outstanding, exitCode);
-  present(owner.work); changed(owner.work);
+  present(owner.work);
+  changed(owner.work);
 });

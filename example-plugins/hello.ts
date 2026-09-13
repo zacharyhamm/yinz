@@ -11,9 +11,9 @@ export default definePlugin({
     try {
       await zellij.waitForPermissions(["RunCommands", "WebAccess"]);
       const command = zellij.runCommand({
-        command: ["/usr/bin/printf", "%s", configuration.greeting],
+        command: ["/usr/bin/printf", "%s", configuration["greeting"]],
       });
-      const request = zellij.webRequest({ url: configuration.url });
+      const request = zellij.webRequest({ url: configuration["url"] });
       const timeout = zellij.after(5000, () => {
         command.cancel();
         request.cancel();
@@ -27,9 +27,10 @@ export default definePlugin({
         request.cancel();
       }
     } catch (error) {
-      greeting = error instanceof Error && error.name === "AbortError"
-        ? "Timed out waiting for results"
-        : `Failed: ${error}`;
+      greeting =
+        error instanceof Error && error.name === "AbortError"
+          ? "Timed out waiting for results"
+          : `Failed: ${String(error)}`;
     }
   },
   render(rows, columns) {

@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub enum PluginCheckMode {
     Syntax,
     Semantic,
+    Format,
+    Prepare,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +16,8 @@ pub struct PluginCheckReport {
     pub outline: Vec<OutlineEntry>,
     pub permissions: Vec<PermissionType>,
     pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatted_source: Option<String>,
 }
 
 /// What one entry of an source analysis is.
