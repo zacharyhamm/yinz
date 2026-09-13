@@ -622,6 +622,18 @@ fn running_exit_view() -> (
     zellij_integration_tests::FakePtyHandle,
     Vec<zellij_types::data::PaneListEntry>,
 ) {
+    running_exit_view_with_args(
+        "\"--model\" \"chosen\" \"--permission-mode\" \"plan\" \"original prompt\"",
+    )
+}
+
+fn running_exit_view_with_args(
+    args: &str,
+) -> (
+    TestSession,
+    zellij_integration_tests::FakePtyHandle,
+    Vec<zellij_types::data::PaneListEntry>,
+) {
     let root = zellij_integration_tests::test_env::init().join("swamp-fork");
     fs::create_dir_all(&root).unwrap();
     let path = root.join("exit.lua");
@@ -632,7 +644,7 @@ fn running_exit_view() -> (
             path.display()
         ))
         .with_layout(LayoutInfo::Stringified(
-            "layout { pane command=\"claude\" cwd=\"/tmp/fork-topic\" focus=true; pane; }".into(),
+            format!("layout {{ pane command=\"claude\" cwd=\"/tmp/fork-topic\" focus=true {{ args {args}; }}; pane; }}"),
         ))
         .start();
     let original = zellij.expect_pty_spawn();
@@ -810,5 +822,137 @@ fn refused_workflow_fork(change: &str, error: &str) {
     assert!(!after
         .iter()
         .any(|p| p.pane_info.terminal_command.as_deref() == Some("codex")));
+    zellij.quit();
+}
+
+#[test]
+fn workflow_restart_delivers_no_prompt_on_repeated_restarts() {
+    let (mut zellij, original, _) = running_exit_view();
+    let mut expected = original.run_command();
+    assert_eq!(expected.args.pop().as_deref(), Some("original prompt"));
+    for cycle in 0..2 {
+        if cycle > 0 {
+            original.exit(Some(0));
+            zellij.wait_until("next workflow exit view", |s| {
+                s.contains("Allow? (y/n)") || s.contains("Restart agent")
+            });
+            if zellij.snapshot().contains("Allow? (y/n)") {
+                zellij.send_stdin(b"y");
+            }
+        }
+        zellij.wait_until("workflow restart button", |s| s.contains("Restart agent"));
+        click(&zellij, "Restart agent");
+        zellij.wait_until("source process restarted", |_| !original.is_exited());
+        assert_eq!(original.run_command(), expected);
+        zellij.wait_until("restarted source is visible", |_| {
+            panes(&zellij).iter().any(|p| {
+                p.pane_info.id == zellij_types::pane_id::PaneId::Terminal(original.terminal_id())
+                    && !p.pane_info.exited
+                    && !p.pane_info.is_suppressed
+            })
+        });
+    }
+    zellij.quit();
+}
+
+#[test]
+fn exit_panel_restart_delivers_no_prompt_on_repeated_restarts() {
+    let root = zellij_integration_tests::test_env::init().join("plain-agent-restart");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("exit.lua");
+    fs::write(&path, format!(r#"
+local z=require('zellij')
+z.project_config.read=function() return {{config={{}}}} end
+local hook=(function()
+{}
+end)()
+local load=hook.load
+hook.load=function(config)
+  z.task(function()
+    z.await(z.async.permissions{{'read_application_state','change_application_state','run_commands'}})
+    load(config)
+  end)
+end
+return hook
+"#, zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap())).unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!("load_plugins clear-defaults=true {{}}\nhooks {{ agent_exit \"file:{}\"; }}", path.display()))
+        .with_layout(LayoutInfo::Stringified(r#"layout {
+            pane command="claude" cwd="/work" { args "--resume" "old-session" "--model" "chosen" "--permission-mode" "plan" "original prompt"; }
+        }"#.into()))
+        .start();
+    let original = zellij.expect_pty_spawn();
+    let mut expected = original.run_command();
+    assert_eq!(expected.args.pop().as_deref(), Some("original prompt"));
+    expected.args.drain(..2);
+    original.output(b"AGENT READY\r\n");
+    zellij.wait_until("initial agent pane is ready", |s| s.contains("AGENT READY"));
+    // The hook reports a real conversation identity before exit, as an agent would.
+    let payload = r#"{"hook_event_name":"SessionStart","source":"resume","session_id":"old-session","cwd":"/work"}"#;
+    let actions = zellij_types::input::actions::hook_report_actions(
+        "claude",
+        zellij_types::pane_id::PaneId::Terminal(original.terminal_id()),
+        &serde_json::from_str(payload).unwrap(),
+        payload.into(),
+    );
+    assert_eq!(zellij.run_actions_reporting(actions).0, 0);
+    assert!(panes(&zellij).iter().any(|p| p
+        .pane_info
+        .agent
+        .as_ref()
+        .is_some_and(|a| { a.session_id.as_deref() == Some("old-session") })));
+    for _ in 0..2 {
+        original.exit(Some(0));
+        zellij.wait_until("exit panel or its permissions", |s| {
+            s.contains("Allow? (y/n)") || s.contains("Enter: restart")
+        });
+        if zellij.snapshot().contains("Allow? (y/n)") {
+            zellij.send_stdin(b"y");
+        }
+        zellij.wait_until("exit panel ready", |s| s.contains("Enter: restart"));
+        zellij.send_stdin(&keys::ENTER);
+        zellij.wait_until("source process restarted", |_| !original.is_exited());
+        assert_eq!(original.run_command(), expected);
+        zellij.wait_until("fresh conversation is reported", |_| {
+            panes(&zellij).iter().any(|p| {
+                p.pane_info.agent.as_ref().is_some_and(|a| {
+                    a.state == zellij_types::agent::AgentState::Busy
+                        && a.session_id.is_none()
+                        && a.run_id.is_none()
+                }) && !p.pane_info.exited
+            })
+        });
+    }
+    zellij.quit();
+}
+
+#[test]
+fn workflow_restart_refusal_keeps_the_run_and_exit_controls_usable() {
+    let (mut zellij, original, before) =
+        running_exit_view_with_args("\"--print\" \"original prompt\"");
+    let command = original.run_command();
+    zellij.wait_until("restart control is ready", |s| s.contains("Restart agent"));
+    click(&zellij, "Restart agent");
+    zellij.wait_until("restart refusal is visible", |s| {
+        s.contains("Cannot restart agent")
+    });
+    assert!(original.is_exited());
+    assert_eq!(original.run_command(), command);
+    assert_eq!(fixture_reply(&zellij, "status"), "running");
+    let source = panes(&zellij)
+        .into_iter()
+        .find(|p| p.pane_info.id == before[0].pane_info.id)
+        .unwrap();
+    assert!(source.pane_info.is_suppressed && source.pane_info.is_held);
+    assert!(source.pane_info.restart_error.unwrap().contains("--print"));
+    click(&zellij, "Fork agent");
+    zellij.wait_until("fork remains usable after refusal", |s| {
+        s.contains("forking claude") && s.contains("Codex")
+    });
+    zellij.send_stdin(&keys::ESC);
+    zellij.wait_until("cancelled fork restores exit controls", |s| {
+        s.contains("Restart agent") && s.contains("Cancel run")
+    });
+    assert_eq!(fixture_reply(&zellij, "status"), "running");
     zellij.quit();
 }

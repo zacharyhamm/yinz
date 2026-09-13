@@ -1274,6 +1274,9 @@ pub struct PaneInfo {
     /// A "held" pane is a paused pane that is waiting for user input (eg. a command pane that
     /// exited and is waiting to be re-run or closed)
     pub is_held: bool,
+    /// Why this held agent command cannot safely restart, if applicable.
+    #[serde(default)]
+    pub restart_error: Option<String>,
     pub pane_x: Column,
     pub pane_content_x: Column,
     pub pane_y: Row,

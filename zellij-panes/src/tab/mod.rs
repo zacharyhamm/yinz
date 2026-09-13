@@ -1021,6 +1021,9 @@ pub trait Pane {
     fn serialize(&self, _scrollback_lines_to_serialize: Option<usize>) -> Option<String> {
         None
     }
+    fn restart_error(&self) -> Option<String> {
+        None
+    }
     fn rerun(&mut self) -> Option<RunCommand> {
         self.respawn(None, false)
     } // only relevant to terminal panes
@@ -10574,6 +10577,7 @@ pub fn pane_info_for_pane(
     pane_info.exited = pane.exited();
     pane_info.exit_status = pane.exit_status();
     pane_info.is_held = pane.is_held();
+    pane_info.restart_error = pane.restart_error();
     let index_in_pane_group: BTreeMap<ClientId, usize> = current_pane_group
         .iter()
         .filter_map(|(client_id, pane_ids)| {

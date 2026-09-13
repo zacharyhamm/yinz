@@ -1500,6 +1500,9 @@ impl Pane for TerminalPane {
     fn serialize(&self, scrollback_lines_to_serialize: Option<usize>) -> Option<String> {
         self.grid.serialize(scrollback_lines_to_serialize)
     }
+    fn restart_error(&self) -> Option<String> {
+        self.restart_command_args().err()
+    }
     fn respawn(
         &mut self,
         replacement: Option<RunCommand>,
@@ -1508,11 +1511,38 @@ impl Pane for TerminalPane {
         // if this is a command pane that has exited or is waiting to be rerun, will return the
         // command to spawn - its own, or the replacement - otherwise it is safe to assume this
         // is not the right sort of pane or that it is not in the right sort of state
-        self.is_held.take().map(|(_, _, run_command)| {
+        self.is_held.as_ref()?;
+        let cleaned = if replacement.is_none() {
+            match self.restart_command_args() {
+                Ok(args) => args,
+                Err(message) => {
+                    Err::<(), _>(anyhow!(message.clone())).non_fatal();
+                    self.add_red_pane_frame_color_override(Some(message));
+                    self.set_should_render(true);
+                    return None;
+                },
+            }
+        } else {
+            None
+        };
+        let fresh_agent = cleaned.is_some();
+        self.is_held.take().map(|(_, _, mut run_command)| {
+            if let Some(args) = cleaned {
+                run_command.args = args;
+                self.invoked_with = Some(Run::Command(run_command.clone()));
+            }
             self.is_held = None;
             self.suspended = false;
             if let Some(agent) = self.agent.as_mut() {
                 agent.state = AgentState::Busy;
+                if fresh_agent {
+                    agent.session_id = None;
+                    agent.run_id = None;
+                    agent.detail = None;
+                    agent.waiting_on = None;
+                    agent.wait_needs_a_person = false;
+                    agent.source = AgentSource::Spawned;
+                }
             }
             if keep_scrollback {
                 self.grid.reset_terminal_state_preserving_scrollback();
@@ -1743,6 +1773,17 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
 }
 
 impl TerminalPane {
+    fn restart_command_args(&self) -> Result<Option<Vec<String>>, String> {
+        match self.is_held.as_ref() {
+            Some((_, false, command)) if self.was_an_agent => {
+                zellij_runtime::agent::restart_args(&command.command, &command.args)
+                    .map(Some)
+                    .map_err(|error| format!("Cannot restart agent: {error}"))
+            },
+            _ => Ok(None),
+        }
+    }
+
     /// The frame's title: the pane's id, then [`Pane::display_title`].
     ///
     /// The id leads because it is how the pane is addressed from outside — a

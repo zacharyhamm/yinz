@@ -331,10 +331,10 @@ impl ServerOsApi for FakeServerOsApi {
     fn re_run_command_in_terminal(
         &self,
         terminal_id: TerminalId,
-        _run_command: RunCommand,
+        run_command: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
-        let fake_async_reader = self.shared_ptys.rerun(terminal_id, quit_cb);
+        let fake_async_reader = self.shared_ptys.rerun(terminal_id, run_command, quit_cb);
         Ok((
             fake_async_reader,
             Some(ProcessId::new(FAKE_PID_BASE + terminal_id.get())),

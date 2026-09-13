@@ -31,7 +31,10 @@ function M.load(config)
       local reply=z.await(z.rpc.call{plugin_url='zellij:swamp-bridge',name='swamp',payload={
         method='pane_action',work=M.launch,key=key,action=action,cancel_active=true}})
       M.acting=false
-      if reply.error then view.status=reply.error;z.request_render() end
+      if reply.error then
+        view.action,view.notice,view.notice_error=action,reply.error,true
+        z.request_render()
+      end
     end)
   end
   view.load{
