@@ -266,6 +266,25 @@ Deno.test("capture survives a failed evidence save; saved reports retain beginni
             saved.get("prompt-current")?.prompt ===
                 "Fix the failed tests.\n\n" + short.summary,
         );
+        const summary = "REPORT START\n" + "🙂".repeat(40000) + "\nREPORT END";
+        for (const startup of [false, true]) {
+            await methods.prepare_prompt.execute({
+                prompt: "Fix the failed tests.",
+                test: { ...short, summary },
+                startup,
+            }, c);
+            const prompt = String(saved.get("prompt-current")?.prompt);
+            assert(prompt.startsWith("Fix the failed tests.\n\nREPORT START"));
+            assert(prompt.endsWith("REPORT END") && !prompt.includes("\ufffd"));
+            if (startup) {
+                assert(new TextEncoder().encode(prompt).length <= 131071);
+                assert(
+                    prompt.includes("middle omitted to fit 131071 UTF-8 bytes"),
+                );
+            } else {
+                assert(prompt === "Fix the failed tests.\n\n" + summary);
+            }
+        }
         c.dataRepository.getContent = () =>
             Promise.resolve(new TextEncoder().encode(JSON.stringify(test)));
         await methods.prepare_prompt.execute({

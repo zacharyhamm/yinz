@@ -482,3 +482,87 @@ for _,pane in ipairs{z.null,7,{Plugin=2},{Terminal=-1},{Terminal=1.5},{Terminal=
   assert(not ok,'invalid produced pane must be rejected')
   assert(panes.t1 and panes.p2 and panes.p6 and read('work','duplicate').outcome=='pending')
 end
+
+-- Startup prompts are validated before claims and delivered only by the launcher.
+delayed=nil
+local launches,sends=0,0
+z.agent.send=function() sends=sends+1 end
+for _,prompt in ipairs{'', '  ', 'bad'..string.char(0), string.rep('x',262145), false, 7} do
+  seed()
+  z.agent.spawn_details=function() launches=launches+1;error('must not spawn') end
+  local response=call{method='agent_spawn',work='work',key='startup',spec={prompt=prompt}}
+  assert(response.ok==false and not read('work','startup'),tostring(response.value))
+end
+assert(launches==0)
+for _,immediate in ipairs{false,true} do
+  seed()
+  local prompt='Resolve "quoted" conflicts.\nStage, then exit.'
+  z.agent.spawn_details=function(opts)
+    launches=launches+1
+    local value=read('work','startup')
+    assert(value.owner.agent=='startup' and value.outcome=='pending')
+    assert(opts.prompt==prompt)
+    panes.t6={target='Local'}
+    if immediate then
+      z.__update(M,{CommandPaneExited={6,17,opts.context}})
+    end
+    return {pane_id={Terminal=6},cwd='/control'}
+  end
+  local response=call{method='agent_spawn',work='work',key='startup',waitForExit=true,spec={prompt=prompt}}
+  assert(response.ok,tostring(response.value))
+  local value=read('work','startup')
+  assert(value.outcome==(immediate and 'process-exit' or 'pending'),value.outcome)
+  local retry=call{method='agent_spawn',work='work',key='startup',waitForExit=true,spec={prompt=prompt}}
+  assert(retry.ok and retry.value.pane==6 and launches==(immediate and 2 or 1),'retry must not spawn or deliver again')
+  if not immediate then
+    z.__update(M,{CommandPaneExited={6,0,{swamp_owner=z.json.encode(value.owner),swamp_operation='startup'}}})
+  end
+  value=read('work','startup')
+  assert(value.outcome=='process-exit' and value.processExited and value.exitCode==(immediate and 17 or 0))
+end
+assert(launches==2 and sends==0)
+seed()
+z.agent.spawn_details=function(opts)
+  assert(opts.prompt==nil)
+  panes.t6={target='Local'}
+  return {pane_id={Terminal=6},cwd='/control'}
+end
+assert(call{method='agent_spawn',work='work',key='plain',spec={}}.value.outcome=='completed')
+-- Launch captures configuration once; explicit input wins, omission keeps workflow defaults.
+for _,case in ipairs{
+  {configured='Project prompt',expected='Project prompt'},
+  {configured='Project prompt',explicit='Input prompt',expected='Input prompt'},
+  {},
+} do
+  seed();rows[uid('work','launch')]=nil
+  z.project_config.read=function() return {root='/control',config={workflow='exit',rebase_prompt=case.configured}} end
+  local response=call{method='workflow_run',work='work',key='launch',directory='/control',inputs={rebasePrompt=case.explicit}}
+  assert(response.ok,tostring(response.value))
+  local found=false
+  for _,request in ipairs(requests) do
+    if request.operation=='workflow.run' then
+      found=true;assert(request.payload.inputs.rebasePrompt==case.expected)
+    end
+  end
+  assert(found)
+end
+
+-- A running startup-prompt agent occupies the same workflow placement as a prompted helper.
+seed();reload_bridge()
+z.hide_pane_with_id=function(pane) z.get_pane_info(pane).is_suppressed=true end
+z.replace_pane_with_existing_pane=function(args)
+  z.get_pane_info(args[1]).is_suppressed=true
+  z.get_pane_info(args[2]).is_suppressed=false
+end
+rows[uid('work','view')]=nil;rows[uid('work','launch')]=nil;rows[uid('work','source')]=nil
+panes.p99={plugin_url='zellij:agent-exit',is_suppressed=false}
+assert(call{method='workflow_run',work='work',key='launch',directory='/control',inputs={sourcePane=1}}.ok)
+z.agent.spawn_details=function(opts)
+  assert(opts.start_suppressed)
+  panes.t6={target='Local',is_suppressed=true}
+  return {pane_id={Terminal=6},cwd='/control'}
+end
+assert(call{method='agent_spawn',work='work',key='placed',waitForExit=true,spec={prompt='Resolve and exit'}}.ok)
+assert(read('work','view').current==6 and not panes.t6.is_suppressed)
+z.__update(M,{CommandPaneExited={6,0,{swamp_owner=z.json.encode(owner('work','placed')),swamp_operation='placed'}}})
+assert(not read('work','view').current and not panes.p99.is_suppressed)

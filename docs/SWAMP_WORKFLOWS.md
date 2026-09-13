@@ -21,8 +21,18 @@ agent_exit {
     workflow "@hammz/zellij-agent-exit"
     ci "cargo" "x" "ci" "check"
     default_branch "main"
+    rebase_prompt "Resolve and stage conflicts. Leave rebase continuation to the workflow, then exit."
 }
 ```
+
+The optional `rebase_prompt` must be a nonblank string. An explicit workflow input,
+`rebasePrompt`, overrides it. If both are absent, the existing conflict-resolution
+instructions apply. The launch captures this value and retains it through all continuations.
+
+For resolution, the prepared prompt becomes the agent's startup argument through the
+shared launcher. The bridge registers ownership before launch and waits for process exit.
+It sends no second prompt. Fix and review helpers still receive their prompts after launch.
+The resolver must stage conflicts and exit. The workflow runs `rebase --continue`.
 
 The control checkout defaults to the primary Git checkout. To use another directory,
 set `control_checkout "relative-or-absolute-path"` in the primary checkout's binding.
@@ -410,6 +420,7 @@ python3 extensions/tests/smoke.py
 python3 extensions/tests/smoke.py --exit-menu-only
 python3 extensions/tests/smoke.py --source-diff-only
 python3 extensions/tests/smoke.py --commit-rebase-only
+python3 extensions/tests/smoke.py --rebase-only
 cargo x ci check
 cargo x firecracker-test --build
 cargo x firecracker-test --test

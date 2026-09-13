@@ -523,6 +523,58 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
         for (const [key, value] of Object.entries(operation)) {
             equal(savedOperation[key], value);
         }
+        const startupPrompts = [
+            'Resolve "quoted" conflicts.\nStage, then exit.',
+            "x".repeat(131071),
+            "é".repeat(65535) + "x",
+            "界".repeat(43690) + "x",
+            "🙂".repeat(32767) + "xxx",
+        ];
+        for (const startupPrompt of startupPrompts) {
+            responses = [{
+                code: 0,
+                stdout: JSON.stringify({ result: operation }),
+                stderr: "",
+            }];
+            await model.methods.agent_spawn.execute({
+                work: "typed",
+                key: "startup",
+                waitForExit: true,
+                spec: {
+                    command: "/stub agent",
+                    args: ["--exit"],
+                    prompt: startupPrompt,
+                },
+            }, ownedContext);
+            const startupRequest = JSON.parse(calls.pop()!.at(-1)!);
+            equal(startupRequest.spec.prompt, startupPrompt);
+            equal(startupRequest.spec.args, ["--exit"]);
+            equal(startupRequest.waitForExit, true);
+            writes.pop();
+        }
+        for (
+            const prompt of [
+                "",
+                "  ",
+                "bad\0prompt",
+                ...startupPrompts.slice(1).map((prompt) => prompt + "x"),
+            ]
+        ) {
+            const count = calls.length;
+            let rejected = false;
+            try {
+                await model.methods.agent_spawn.execute({
+                    work: "typed",
+                    key: "invalid-prompt",
+                    spec: { command: "/stub", prompt },
+                }, ownedContext);
+            } catch {
+                rejected = true;
+            }
+            equal(rejected, true);
+            equal(calls.length, count);
+            equal(writes.length, 0);
+        }
         let invalid = false;
         try {
             await model.methods.command.execute({

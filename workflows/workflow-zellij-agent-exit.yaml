@@ -41,6 +41,11 @@ inputs:
     agentCommand:
       type: string
       default: ''
+    rebasePrompt:
+      type: string
+      minLength: 1
+      pattern: '\S'
+      default: "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done."
     agentArgs:
       type: array
       items:
@@ -306,6 +311,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
@@ -350,6 +356,7 @@ jobs:
           binary: "${{ inputs.binary }}"
           agentCommand: "${{ inputs.agentCommand }}"
           agentArgs: "${{ inputs.agentArgs }}"
+          rebasePrompt: "${{ inputs.rebasePrompt }}"
           firecracker: "${{ inputs.firecracker }}"
           firecrackerImage: "${{ inputs.firecrackerImage }}"
           sourcePane: "${{ inputs.sourcePane }}"
