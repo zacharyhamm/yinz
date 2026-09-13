@@ -125,6 +125,7 @@ pub fn decode_from_kdl(
         exited,
         exit_status,
         is_held,
+        restart_error: None,
         pane_x,
         pane_content_x,
         pane_y,

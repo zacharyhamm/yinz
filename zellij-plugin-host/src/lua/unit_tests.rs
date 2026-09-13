@@ -3608,6 +3608,32 @@ fn decoded(command: CommandType, bytes: &[u8], describe: &str) -> String {
 }
 
 #[test]
+fn pane_reply_exposes_restart_error() {
+    use prost::Message;
+    use zellij_plugin_api::plugin_command::ProtobufGetPaneInfoResponse;
+    for error in [None, Some("Cannot restart agent".to_owned())] {
+        let reply = ProtobufGetPaneInfoResponse {
+            pane_info: Some(
+                zellij_types::data::PaneInfo {
+                    restart_error: error.clone(),
+                    ..Default::default()
+                }
+                .try_into()
+                .unwrap(),
+            ),
+        };
+        assert_eq!(
+            decoded(
+                CommandType::GetPaneInfo,
+                &reply.encode_to_vec(),
+                "return v.restart_error or 'absent'"
+            ),
+            error.unwrap_or("absent".into())
+        );
+    }
+}
+
+#[test]
 fn focused_pane_reply_uses_tab_id() {
     use prost::Message;
     use zellij_plugin_api::plugin_command::ProtobufGetFocusedPaneInfoResponse;

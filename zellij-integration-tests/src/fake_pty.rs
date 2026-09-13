@@ -417,13 +417,25 @@ impl SharedPtys {
         })
     }
 
-    pub(crate) fn rerun(&self, terminal_id: TerminalId, quit_cb: QuitCb) -> Box<dyn AsyncReader> {
+    pub(crate) fn rerun(
+        &self,
+        terminal_id: TerminalId,
+        run_command: RunCommand,
+        quit_cb: QuitCb,
+    ) -> Box<dyn AsyncReader> {
         let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
         self.mutate(|fake_pty_registry| {
             let fake_pty_state = fake_pty_registry
                 .fake_pty_states
                 .get_mut(&terminal_id)
                 .expect("re-run for unknown terminal id");
+            fake_pty_state.process_command = Some(
+                std::iter::once(run_command.command.to_string_lossy().into_owned())
+                    .chain(run_command.args.iter().cloned())
+                    .collect(),
+            );
+            fake_pty_state.foreground_command = None;
+            fake_pty_state.terminal_action = Some(TerminalAction::RunCommand(run_command));
             fake_pty_state.output_tx = Some(output_tx);
             fake_pty_state.quit_cb = Some(quit_cb);
             fake_pty_state.exited = false;
@@ -650,6 +662,11 @@ pub struct FakePtyHandle {
 }
 
 impl FakePtyHandle {
+    /// The command received by the fake process, including its latest rerun.
+    pub fn run_command(&self) -> RunCommand {
+        self.shared_ptys.run_command_of(self.terminal_id).unwrap()
+    }
+
     pub fn terminal_id(&self) -> TerminalId {
         self.terminal_id
     }

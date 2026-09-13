@@ -382,6 +382,22 @@ for _,action in ipairs{'duplicate','fork'} do
     end
   end
 end
+-- Refusal preserves active work and the fallback view before source registration.
+for _,fallback in ipairs{false,true} do
+  seed()
+  if fallback then rows[uid('work','source')]=nil end
+  panes.t1.restart_error='Cannot restart agent: unsupported print option'
+  local view=rows[uid('work','view')].value
+  local rerun=z.rerun_command_pane
+  z.rerun_command_pane=function() error('refused restart must not rerun') end
+  local response=call{method='pane_action',work='work',key='restart',action='restart',cancel_active=true}
+  z.rerun_command_pane=rerun
+  assert(response.ok==false and tostring(response.value):find('unsupported print option'))
+  assert(rows[uid('work','view')].value==view,'refusal must not transition or close the view')
+  assert(not cancelled.run and not cancelled.child and panes.t3 and panes.t4)
+  assert(panes.t1.exited and panes.t1.is_suppressed and panes.p2)
+  assert(read('work','restart').outcome~='completed')
+end
 -- Restart or fork chosen from the view mid-workflow cancels the runs still going.
 seed()
 local restart=call{method='pane_action',work='work',key='restart',action='restart',cancel_active=true}

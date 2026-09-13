@@ -1754,3 +1754,94 @@ fn agent_double_escape_frame_prefix_restores_title_and_respects_geometry() {
     pane.set_borderless(true);
     assert!(render(&mut pane, client, frame_params(true)).is_none());
 }
+
+#[test]
+fn agent_restart_is_fresh_and_keeps_command_metadata() {
+    let mut pane = agent_pane();
+    pane.set_agent_info(Some(AgentInfo {
+        kind: "codex".into(),
+        state: AgentState::Busy,
+        source: AgentSource::Reported,
+        session_id: Some("old-session".into()),
+        run_id: Some("old-run".into()),
+        detail: Some("old task".into()),
+        waiting_on: Some("old question".into()),
+        wait_needs_a_person: true,
+        cwd: Some("/work".into()),
+    }));
+    let command = RunCommand {
+        command: "codex".into(),
+        args: vec!["--model".into(), "chosen".into(), "original prompt".into()],
+        cwd: Some("/work".into()),
+        target: zellij_types::command::PaneTarget::Ssh {
+            host: "build-box".into(),
+        },
+        ..Default::default()
+    };
+    pane.hold(None, true, command.clone());
+    assert_eq!(
+        pane.rerun(),
+        Some(command.clone()),
+        "first held launch retains its prompt"
+    );
+    let mut expected = command.clone();
+    expected.args.pop();
+    let mut held = command;
+    for _ in 0..2 {
+        pane.hold(Some(0), false, held);
+        held = pane.rerun().unwrap();
+        assert_eq!(held, expected);
+        assert_eq!(
+            pane.invoked_with,
+            Some(super::Run::Command(expected.clone()))
+        );
+        let agent = pane.agent_info().unwrap();
+        assert_eq!(agent.state, AgentState::Busy);
+        assert_eq!(agent.cwd.as_deref(), Some("/work"));
+        assert!(agent.session_id.is_none() && agent.run_id.is_none());
+        assert!(agent.detail.is_none() && agent.waiting_on.is_none());
+        assert!(!agent.wait_needs_a_person);
+    }
+}
+
+#[test]
+fn restart_refusal_keeps_held_state_and_explicit_replacements_work() {
+    let mut pane = agent_pane();
+    pane.set_agent_info(Some(AgentInfo {
+        kind: "codex".into(),
+        state: AgentState::Busy,
+        source: AgentSource::Reported,
+        session_id: Some("old-session".into()),
+        run_id: Some("old-run".into()),
+        detail: Some("old task".into()),
+        waiting_on: Some("old question".into()),
+        wait_needs_a_person: true,
+        cwd: Some("/work".into()),
+    }));
+    let command = RunCommand {
+        command: "codex".into(),
+        args: vec!["--unknown".into(), "prompt".into()],
+        ..Default::default()
+    };
+    pane.hold(Some(7), false, command.clone());
+    let held = pane.is_held.clone();
+    let agent = pane.agent.clone();
+    let info = crate::tab::pane_info_for_pane(&pane.pid(), &pane, &HashMap::new());
+    assert!(info.restart_error.as_deref().unwrap().contains("--unknown"));
+    assert_eq!(pane.is_held, held);
+    assert_eq!(pane.agent, agent);
+    assert!(pane.rerun().is_none());
+    assert_eq!(pane.agent, agent);
+    assert_eq!(pane.restart_error(), info.restart_error);
+    assert_eq!(pane.is_held, held);
+    assert_eq!(pane.exit_status(), Some(7));
+    assert!(pane.pane_frame_color_override.is_some());
+    assert_eq!(
+        pane.respawn(Some(command.clone()), false),
+        Some(command.clone())
+    );
+    pane.was_an_agent = false;
+    pane.agent = None;
+    pane.hold(Some(0), false, command.clone());
+    assert_eq!(pane.rerun(), Some(command), "ordinary reruns are unchanged");
+}

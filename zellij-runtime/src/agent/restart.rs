@@ -1,0 +1,597 @@
+use std::path::Path;
+
+/// Remove an agent's opening prompt and conversation selectors without changing its launch
+/// options. Unknown option arities and non-interactive commands must be refused: guessing
+/// could replay work or silently change the model, permissions, or working directory.
+pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, String> {
+    let name = program.file_name().and_then(|name| name.to_str());
+    if name == Some("env") {
+        let mut index = 0;
+        let mut options_done = false;
+        while let Some(arg) = args.get(index) {
+            if options_done {
+                if arg.contains('=') && !arg.starts_with('-') {
+                    index += 1;
+                    continue;
+                }
+                break;
+            }
+            index += 1;
+            match arg.as_str() {
+                "--" => options_done = true,
+                "-i" | "--ignore-environment" | "-" => {},
+                "-u" | "--unset" | "-C" | "--chdir" => {
+                    args.get(index).ok_or("incomplete env option")?;
+                    index += 1;
+                },
+                _ if arg.starts_with("--unset=") || arg.starts_with("--chdir=") => {},
+                _ if !arg.starts_with('-') && arg.contains('=') => {},
+                _ if arg.starts_with('-') => {
+                    return Err("unsupported env option for restart".into())
+                },
+                _ => {
+                    index -= 1;
+                    break;
+                },
+            }
+        }
+        let program = args.get(index).ok_or("env has no agent command")?;
+        let mut cleaned = args[..=index].to_vec();
+        cleaned.extend(restart_args(Path::new(program), &args[index + 1..])?);
+        return Ok(cleaned);
+    }
+    let kind = match name {
+        Some("claude") => "claude",
+        Some("codex") => "codex",
+        Some("cursor-agent") => "cursor",
+        Some("opencode") => "opencode",
+        _ => return Err("unsupported agent command for restart".into()),
+    };
+    // Only fixed-arity options are accepted. Variadic options must use an inline value;
+    // otherwise a following word could be either another value or the startup prompt.
+    let (values, switches, variadic, commands): (&[&str], &[&str], &[&str], &[&str]) = match kind {
+        "claude" => (
+            &[
+                "--model",
+                "--permission-mode",
+                "--effort",
+                "--settings",
+                "--setting-sources",
+                "--system-prompt",
+                "--append-system-prompt",
+                "--agent",
+                "--agents",
+                "--output-format",
+                "--input-format",
+                "--fallback-model",
+                "--max-budget-usd",
+                "--json-schema",
+                "--plugin-dir",
+                "--plugin-url",
+            ],
+            &[
+                "--dangerously-skip-permissions",
+                "--allow-dangerously-skip-permissions",
+                "--verbose",
+                "--strict-mcp-config",
+                "--no-session-persistence",
+                "--disable-slash-commands",
+                "--safe-mode",
+                "--bare",
+            ],
+            &[
+                "--add-dir",
+                "--allowedTools",
+                "--allowed-tools",
+                "--disallowedTools",
+                "--disallowed-tools",
+                "--tools",
+                "--mcp-config",
+            ],
+            &[
+                "agents",
+                "attach",
+                "auth",
+                "auto-mode",
+                "doctor",
+                "gateway",
+                "import",
+                "install",
+                "logs",
+                "mcp",
+                "plugin",
+                "plugins",
+                "project",
+                "respawn",
+                "rm",
+                "setup-token",
+                "stop",
+                "kill",
+                "ultrareview",
+                "update",
+                "upgrade",
+                "help",
+            ],
+        ),
+        "codex" => (
+            &[
+                "-m",
+                "--model",
+                "-c",
+                "--config",
+                "-a",
+                "--ask-for-approval",
+                "-s",
+                "--sandbox",
+                "-p",
+                "--profile",
+                "-C",
+                "--cd",
+                "--add-dir",
+                "--enable",
+                "--disable",
+                "--local-provider",
+                "--remote",
+                "--remote-auth-token-env",
+            ],
+            &[
+                "--full-auto",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--approve-for-me",
+                "--dangerously-bypass-hook-trust",
+                "--oss",
+                "--search",
+                "--no-alt-screen",
+                "--strict-config",
+            ],
+            &["-i", "--image"],
+            &[
+                "agents",
+                "exec",
+                "e",
+                "review",
+                "login",
+                "logout",
+                "mcp",
+                "plugin",
+                "app-server",
+                "remote-control",
+                "completion",
+                "update",
+                "doctor",
+                "sandbox",
+                "debug",
+                "apply",
+                "a",
+                "queue",
+                "archive",
+                "delete",
+                "migrate-rollouts",
+                "unarchive",
+                "cloud",
+                "exec-server",
+                "features",
+                "help",
+            ],
+        ),
+        "cursor" => (
+            &[
+                "--model",
+                "--mode",
+                "--sandbox",
+                "--workspace",
+                "--add-dir",
+                "--plugin-dir",
+                "--api-key",
+                "-H",
+                "--header",
+                "-e",
+                "--endpoint",
+                "--output-format",
+            ],
+            &[
+                "-f",
+                "--force",
+                "--yolo",
+                "--auto-review",
+                "--approve-mcps",
+                "--trust",
+                "--plan",
+                "--stream-partial-output",
+            ],
+            &[],
+            &[
+                "install-shell-integration",
+                "uninstall-shell-integration",
+                "login",
+                "logout",
+                "mcp",
+                "plugin",
+                "worker",
+                "status",
+                "whoami",
+                "models",
+                "bedrock",
+                "about",
+                "update",
+                "create-chat",
+                "generate-rule",
+                "rule",
+                "agent",
+                "ls",
+                "help",
+            ],
+        ),
+        _ => (
+            &[
+                "-m",
+                "--model",
+                "--agent",
+                "--log-level",
+                "--port",
+                "--hostname",
+                "--mdns-domain",
+                "--replay-limit",
+            ],
+            &[
+                "--auto",
+                "--print-logs",
+                "--pure",
+                "--mdns",
+                "--mini",
+                "--no-replay",
+            ],
+            &["--cors"],
+            &[
+                "completion",
+                "acp",
+                "mcp",
+                "attach",
+                "run",
+                "debug",
+                "providers",
+                "auth",
+                "agent",
+                "upgrade",
+                "uninstall",
+                "serve",
+                "web",
+                "models",
+                "stats",
+                "export",
+                "import",
+                "github",
+                "pr",
+                "session",
+                "plugin",
+                "plug",
+                "db",
+                "help",
+            ],
+        ),
+    };
+    let mut cleaned = Vec::new();
+    let mut index = 0;
+    let mut positionals = 0;
+    let mut resume = false;
+    let mut after_separator = false;
+    while let Some(arg) = args.get(index) {
+        index += 1;
+        if arg == "--" && !after_separator {
+            after_separator = true;
+            if kind == "opencode" {
+                cleaned.push(arg.clone());
+            }
+            continue;
+        }
+        if !after_separator && arg.starts_with('-') {
+            let (flag, inline) = arg
+                .split_once('=')
+                .map_or((arg.as_str(), None), |(k, v)| (k, Some(v)));
+            let remove_value = matches!(
+                (kind, flag),
+                ("claude", "--session-id" | "--resume-session-at")
+                    | ("opencode", "--prompt" | "-s" | "--session")
+            );
+            let remove_optional = matches!(
+                (kind, flag),
+                ("claude", "-r" | "--resume") | ("cursor", "--resume")
+            );
+            let remove_switch =
+                matches!(
+                    (kind, flag),
+                    ("claude", "-c" | "--continue" | "--fork-session")
+                        | ("cursor", "--continue")
+                        | ("opencode", "-c" | "--continue" | "--fork")
+                ) || (kind == "codex" && resume && matches!(flag, "--last" | "--all"));
+            if remove_optional {
+                if inline.is_none() && args.get(index).is_some_and(|next| !next.starts_with('-')) {
+                    index += 1;
+                }
+            } else if remove_value || values.contains(&flag) {
+                if !remove_value {
+                    cleaned.push(arg.clone());
+                }
+                if inline.is_none() {
+                    let value = args
+                        .get(index)
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
+                    if !remove_value {
+                        cleaned.push(value.clone());
+                    }
+                    index += 1;
+                }
+            } else if (remove_switch || switches.contains(&flag)) && inline.is_none() {
+                if !remove_switch {
+                    cleaned.push(arg.clone());
+                }
+            } else if variadic.contains(&flag) && inline.is_some() {
+                // Images are input to the old turn, not launch settings.
+                if kind != "codex" {
+                    cleaned.push(arg.clone());
+                }
+            } else {
+                return Err(format!(
+                    "unsupported or ambiguous {kind} option {flag} for restart"
+                ));
+            }
+        } else {
+            if positionals == 0 && !after_separator {
+                if (kind == "codex" && matches!(arg.as_str(), "resume" | "fork"))
+                    || (kind == "cursor" && arg == "resume")
+                {
+                    if resume {
+                        return Err("ambiguous resume command".into());
+                    }
+                    resume = true;
+                    continue;
+                }
+                if !resume && commands.contains(&arg.as_str()) {
+                    return Err(format!("unsupported {kind} subcommand for restart"));
+                }
+            }
+            positionals += 1;
+            if kind == "opencode" {
+                cleaned.push(arg.clone());
+            }
+            let limit = if kind == "cursor" {
+                usize::MAX
+            } else if kind == "codex" && resume {
+                2
+            } else {
+                1
+            };
+            if positionals > limit {
+                return Err(format!("ambiguous {kind} positional arguments for restart"));
+            }
+        }
+    }
+    Ok(cleaned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::launch::{plan, Spec};
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    #[test]
+    fn restart_preserves_planned_options_and_environment_without_prompt_or_resume() {
+        for (kind, mode) in [
+            ("claude", "skip"),
+            ("codex", "full-auto"),
+            ("cursor", "force"),
+            ("opencode", "auto"),
+        ] {
+            for resume in [None, Some("last"), Some("conversation-id")] {
+                let mut spec = Spec {
+                    kind: Some(kind.into()),
+                    model: Some("chosen-model".into()),
+                    permission_mode: Some(mode.into()),
+                    prompt: Some("original work".into()),
+                    resume: resume.map(str::to_owned),
+                    env: [("SETTING".into(), "a b=c".into())].into(),
+                    args: if kind == "opencode" {
+                        strings(&["/project with spaces"])
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                };
+                let (original, _) = plan(&spec).unwrap();
+                spec.prompt = None;
+                spec.resume = None;
+                let (expected, _) = plan(&spec).unwrap();
+                let restarted = restart_args(&original.path, &original.args).unwrap();
+                assert_eq!(restarted, expected.args, "{kind}: {resume:?}");
+                assert_eq!(restart_args(&original.path, &restarted).unwrap(), restarted);
+            }
+        }
+    }
+
+    #[test]
+    fn restart_obeys_agent_argument_arity() {
+        for (program, input, expected) in [
+            (
+                "claude",
+                vec![
+                    "--model",
+                    "resume",
+                    "prompt",
+                    "--permission-mode",
+                    "plan",
+                    "--settings",
+                    "{}",
+                ],
+                vec![
+                    "--model",
+                    "resume",
+                    "--permission-mode",
+                    "plan",
+                    "--settings",
+                    "{}",
+                ],
+            ),
+            (
+                "claude",
+                vec![
+                    "-r",
+                    "id",
+                    "-c",
+                    "--session-id=new-id",
+                    "--fork-session",
+                    "--resume-session-at",
+                    "message",
+                    "--model=sonnet",
+                    "--",
+                    "--literal prompt",
+                ],
+                vec!["--model=sonnet"],
+            ),
+            (
+                "claude",
+                vec!["--resume", "--model", "sonnet", "prompt"],
+                vec!["--model", "sonnet"],
+            ),
+            (
+                "codex",
+                vec![
+                    "-c",
+                    "model_reasoning_effort=\"high\"",
+                    "resume",
+                    "--last",
+                    "--all",
+                    "prompt",
+                    "-p",
+                    "profile",
+                    "-s",
+                    "workspace-write",
+                ],
+                vec![
+                    "-c",
+                    "model_reasoning_effort=\"high\"",
+                    "-p",
+                    "profile",
+                    "-s",
+                    "workspace-write",
+                ],
+            ),
+            (
+                "codex",
+                vec!["fork", "id", "prompt", "--model=gpt", "--image=image.png"],
+                vec!["--model=gpt"],
+            ),
+            (
+                "cursor-agent",
+                vec![
+                    "--resume=id",
+                    "--continue",
+                    "--force",
+                    "a",
+                    "multiword",
+                    "prompt",
+                    "--workspace",
+                    "/work",
+                ],
+                vec!["--force", "--workspace", "/work"],
+            ),
+            (
+                "opencode",
+                vec![
+                    "--prompt=work",
+                    "-c",
+                    "-s",
+                    "id",
+                    "--fork",
+                    "-m",
+                    "provider/model",
+                    "--",
+                    "-project",
+                ],
+                vec!["-m", "provider/model", "--", "-project"],
+            ),
+            (
+                "/usr/bin/env",
+                vec![
+                    "-i",
+                    "-u",
+                    "OLD",
+                    "-C",
+                    "/dir",
+                    "K=V",
+                    "/usr/bin/env",
+                    "--",
+                    "OTHER=1",
+                    "/opt/bin/codex",
+                    "--model",
+                    "gpt",
+                    "work",
+                ],
+                vec![
+                    "-i",
+                    "-u",
+                    "OLD",
+                    "-C",
+                    "/dir",
+                    "K=V",
+                    "/usr/bin/env",
+                    "--",
+                    "OTHER=1",
+                    "/opt/bin/codex",
+                    "--model",
+                    "gpt",
+                ],
+            ),
+        ] {
+            assert_eq!(
+                restart_args(Path::new(program), &strings(&input)).unwrap(),
+                strings(&expected),
+                "{program}: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn restart_refuses_print_mode_including_env_wrappers() {
+        for program in ["claude", "cursor-agent"] {
+            for flag in ["-p", "--print"] {
+                assert!(restart_args(Path::new(program), &strings(&[flag, "work"])).is_err());
+                assert!(restart_args(
+                    Path::new("env"),
+                    &strings(&["SETTING=1", program, flag, "work"])
+                )
+                .is_err());
+            }
+        }
+        assert_eq!(
+            restart_args(Path::new("codex"), &strings(&["-p", "profile", "work"])).unwrap(),
+            strings(&["-p", "profile"])
+        );
+    }
+
+    #[test]
+    fn restart_refuses_unknown_or_ambiguous_commands() {
+        for (program, input) in [
+            ("gemini", vec!["work"]),
+            ("sh", vec!["-c", "claude work"]),
+            ("cursor", vec!["work"]),
+            ("codex", vec!["--new-option", "value", "prompt"]),
+            ("claude", vec!["--model"]),
+            ("claude", vec!["--add-dir", "/work", "prompt"]),
+            ("codex", vec!["exec", "work"]),
+            ("opencode", vec!["run", "work"]),
+            ("opencode", vec!["/one", "/two"]),
+            ("claude", vec!["one", "two"]),
+            ("env", vec!["--split-string", "claude work"]),
+            ("env", vec!["-u"]),
+        ] {
+            assert!(
+                restart_args(Path::new(program), &strings(&input)).is_err(),
+                "{program}: {input:?}"
+            );
+        }
+    }
+}

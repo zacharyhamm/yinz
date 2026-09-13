@@ -998,7 +998,11 @@ handle = function(args, manual_view)
     elseif args.action~='leave' or fetch(scope(args.work,'source')) then
       source=owned{work=args.work,agent='source',allow_closed=args.action=='leave'}
     end
-    if source then assert(z.get_pane_info(z.terminal_pane(source.pane)).exited,'Source pane is no longer exited') end
+    if source then
+      local pane=z.get_pane_info(z.terminal_pane(source.pane))
+      assert(pane.exited,'Source pane is no longer exited')
+      if args.action=='restart' and pane.restart_error then error(pane.restart_error,0) end
+    end
     if args.action=='leave' then
       transition(args.work,'leave')
       if source then z.close_terminal_pane(source.pane) end
@@ -1170,7 +1174,7 @@ local function invoke_inner(args, manual_view)
       present(args.work)
     end
   end)
-  error(response)
+  error(response,0)
 end
 local function invoke(args, manual_view)
   if not z.swamp_timing then return invoke_inner(args,manual_view) end
@@ -1188,7 +1192,7 @@ local function invoke(args, manual_view)
     end
     z.log('swamp_timing '..encode(record))
   end)
-  if not ok then error(response) end
+  if not ok then error(response,0) end
   return response
 end
 function M.load()

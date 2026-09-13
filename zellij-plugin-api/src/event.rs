@@ -2293,6 +2293,7 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
             exited: protobuf_pane_info.exited,
             exit_status: protobuf_pane_info.exit_status,
             is_held: protobuf_pane_info.is_held,
+            restart_error: protobuf_pane_info.restart_error,
             pane_x: Column::try_from(protobuf_pane_info.pane_x)
                 .map_err(|_| "pane_x exceeds usize")?,
             pane_content_x: Column::try_from(protobuf_pane_info.pane_content_x)
@@ -2367,6 +2368,7 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             exited: pane_info.exited,
             exit_status: pane_info.exit_status,
             is_held: pane_info.is_held,
+            restart_error: pane_info.restart_error,
             pane_x: u32::try_from(pane_info.pane_x).map_err(|_| "pane_x exceeds u32")?,
             pane_content_x: u32::try_from(pane_info.pane_content_x)
                 .map_err(|_| "pane_content_x exceeds u32")?,
@@ -3404,6 +3406,7 @@ fn serialize_session_update_event_with_non_default_values() {
             title: "pane 1".to_owned(),
             exited: false,
             exit_status: None,
+            restart_error: Some("Cannot restart agent: unsupported print option".into()),
             is_held: false,
             pane_x: zellij_types::position::Column::new(0),
             pane_content_x: zellij_types::position::Column::new(1),
@@ -3435,6 +3438,7 @@ fn serialize_session_update_event_with_non_default_values() {
             title: "pane 1".to_owned(),
             exited: false,
             exit_status: None,
+            restart_error: None,
             is_held: false,
             pane_x: zellij_types::position::Column::new(0),
             pane_content_x: zellij_types::position::Column::new(1),

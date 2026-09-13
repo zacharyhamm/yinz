@@ -146,7 +146,8 @@ local extensions unpublished.
    Clean branches equal to or behind that target receive this menu.
    Otherwise, choose **Restart**, **Fork**, **Begin review**, or **Leave**.
    Inspection errors and VM context retain these existing choices. The exit check does not synchronize VMs.
-   Restart reruns the original command in the held pane. Fork opens the existing agent-kind picker in the
+   Restart starts a fresh agent conversation in the held pane, without the original prompt or
+   resume arguments. It preserves the model, permissions, environment, directory, and execution target. Fork opens the existing agent-kind picker in the
    same checkout and VM context. Cancel the picker to return to a fresh exit menu and checkout check.
    Each new exit run checks again. Its saved result determines the answers and both question and approval prompts.
    Leave closes the original exited terminal and its exit view. It preserves the
@@ -194,8 +195,9 @@ turn alone does not advance these decisions. Standalone agent-work remains avail
 to explicit callers and retains its turn-based observation.
 
 Final results and errors stay visible unless the workflow closes the exit view through
-Leave. Enter activates the selected button. **Restart agent** reruns the original
-command and **Fork agent** opens the picker for a different agent in its place; both are
+Leave. Enter activates the selected button. **Restart agent** starts a fresh conversation
+with the original launch options, without a startup prompt or resume arguments.
+**Fork agent** opens the picker for a different agent in its place; both are
 offered at every step, including while the workflow is still launching. Choosing either while
 work is active ends the lifecycle: its running runs are cancelled, a run still being dispatched
 is cancelled once it has an ID, later steps are refused, and a run that attaches afterwards is
