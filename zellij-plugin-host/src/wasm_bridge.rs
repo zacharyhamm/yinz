@@ -2990,9 +2990,7 @@ impl WasmBridge {
         };
         // A restored layout can finish loading its bridge after the first CLI
         // request loaded one. This service has one recipient, unlike view plugins.
-        if *plugin_location
-            == RunPluginLocation::Zellij(zellij_types::data::PluginTag::new("swamp-bridge"))
-        {
+        if crate::host_bridge::is_workflow_bridge(plugin_location) {
             destinations.sort_unstable();
             destinations.truncate(1);
         }
@@ -3270,6 +3268,7 @@ impl WasmBridge {
                     ) {
                         return vec![(loading_plugin_id, None)];
                     }
+                    let headless = crate::host_bridge::is_workflow_bridge(&run_plugin.location);
                     match self.load_plugin(
                         &Some(run_plugin),
                         None,
@@ -3278,6 +3277,20 @@ impl WasmBridge {
                         skip_cache,
                         cli_client_id,
                     ) {
+                        // The bridge is a service with no UI: load it headless, as a suppressed
+                        // pane, which also outlives the tab it was first addressed from.
+                        Ok((plugin_id, client_id)) if headless => {
+                            drop(
+                                self.senders
+                                    .send_to_screen(crate::add_suppressed_plugin_pane(
+                                        run_plugin_or_alias,
+                                        plugin_id,
+                                        cwd,
+                                        client_id,
+                                    )),
+                            );
+                            vec![(plugin_id, Some(client_id))]
+                        },
                         Ok((plugin_id, client_id)) => {
                             let start_suppressed = false;
                             drop(self.senders.send_to_screen(ScreenInstruction::AddPlugin(

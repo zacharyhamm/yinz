@@ -1342,7 +1342,8 @@ resolve through that control checkout.
 
 `zellij.agent.spawnDetails(options)` returns the actual `{pane_id, branch, cwd}`; `zellij.agent.spawn(options)`
 returns the pane ID. The builtin `swamp-bridge` routes typed `@hammz/zellij` operations through host
-implementations. Its durable records contain host, session, server incarnation, agent ownership, correlation keys,
+implementations. It loads headless on first use, with no pane, and survives closing the tab it was first addressed
+from. Its durable records contain host, session, server incarnation, agent ownership, correlation keys,
 dispatch claims and attachments. Pane IDs alone never prove ownership. Managed helpers report their exits to their
 operation and do not start another exit workflow.
 
