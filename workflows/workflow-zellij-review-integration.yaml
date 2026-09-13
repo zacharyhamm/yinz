@@ -552,7 +552,7 @@ jobs:
     task:
       type: assert
       expr: '(has(inputs.commitAgent.command) ? inputs.commitAgent.command : size(inputs.commitAgent) == 0 ? inputs.agentCommand : "") != "" || (has(inputs.commitAgent.kind) ? inputs.commitAgent.kind : inputs.kind) in ["codex", "claude", "cursor", "opencode"]'
-      message: Commit agent kind is unknown; configure commit_agent in .zellij/.swamp-workflows.kdl.
+      message: Commit agent kind is unknown; configure commit_agent in .zellij/swamp-workflows.kdl.
       severity: high
     dependsOn:
     - step: diff-return

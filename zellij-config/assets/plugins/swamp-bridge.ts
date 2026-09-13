@@ -695,6 +695,11 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
     inputs.target ??= config.root; inputs.gate ??= config.config.ci ?? ['cargo', 'x', 'ci', 'check'];
     inputs.targetBranch ??= config.config.default_branch ?? 'main';
     if (config.config.rebase_prompt != null) inputs.rebasePrompt ??= config.config.rebase_prompt;
+    const selected = config.config.commit_agent ?? config.config.agent;
+    inputs.commitAgent ??= selected
+      ? {kind: selected.kind ?? inputs.kind, ...(selected.model != null ? {model: selected.model} : {}),
+        ...(selected.effort != null ? {effort: selected.effort} : {})}
+      : {kind: inputs.kind, command: inputs.agentCommand ?? '', ...(inputs.agentArgs != null ? {args: inputs.agentArgs} : {})};
     Object.assign(value, {workflow: name, checkout: config.root, launch: args.work}); put(uid!, value, row);
     return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs});
   } else if (args.method === 'swamp_dispatch') {
@@ -710,7 +715,11 @@ async function handle(input: Partial<Request>, manualView?: number): Promise<unk
       if (closed) assert(saved.owner?.host_id === identity.host_id && saved.owner.session === identity.session && saved.owner.work === args.work && saved.owner.agent === 'source' && saved.supervisor, 'Wrong source ownership');
       else source = await owned({work: args.work, agent: 'source'});
     }
-    if (source) assert(z.command('GetPaneInfo', terminal(source.pane))?.exited, 'Source pane is no longer exited');
+    if (source) {
+      const pane = z.command('GetPaneInfo', terminal(source.pane));
+      assert(pane?.exited, 'Source pane is no longer exited');
+      if (args.action === 'restart' && pane.restart_error != null) throw new Error(pane.restart_error);
+    }
     if (args.action === 'leave') {
       transition(args.work, 'leave');
       if (source) z.command('CloseTerminalPane', source.pane);

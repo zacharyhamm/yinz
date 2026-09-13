@@ -1,3 +1,20 @@
+#[test]
+fn pane_reply_exposes_restart_error() {
+    use prost::Message;
+    use zellij_plugin_api::plugin_command::ProtobufGetPaneInfoResponse;
+    use zellij_types::data::{CommandType, PaneInfo};
+    let mut runtime = sdk();
+    for error in [None, Some("Cannot restart agent".to_owned())] {
+        let reply = ProtobufGetPaneInfoResponse {
+            pane_info: Some(PaneInfo { restart_error: error.clone(), ..Default::default() }.try_into().unwrap()),
+        };
+        let crate::response::DecodedResponse::Json(value) = crate::response::decode_response(CommandType::GetPaneInfo, &reply.encode_to_vec()).unwrap().unwrap() else {
+            panic!("pane reply must be JSON");
+        };
+        run(&mut runtime, &format!("check(({}).restart_error === {});", value, json!(error)));
+    }
+}
+
 fn camel(name: &str) -> String {
     let mut chars = name.chars();
     match chars.next() {

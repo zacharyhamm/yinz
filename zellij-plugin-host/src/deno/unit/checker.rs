@@ -246,6 +246,9 @@ fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
       zellij.fs.write('/host/file', file, {append:true, createDirs:true});
       const absent: import('zellij:plugin').FileMetadata | null = zellij.fs.metadata('/host/missing');
       zellij.projectConfig.write('.', 'agent_exit {}', null);
+      const commitAgent: import('zellij:plugin').AgentSpawnSpec | null = zellij.projectConfig.read('.').config.commit_agent;
+      const paneInfo = zellij.command('GetPaneInfo', {Terminal: 1});
+      if (paneInfo) { const restartError: string | null = paneInfo.restart_error; }
       const d = zellij.data;
       d.define('note', {text:'Text', score:{kind:'Real', default:d.real(1)}});
       d.apply([d.put('note', {text:'hello', bytes:new Uint8Array([255])}, {uid:'a', expectRev:1n})]);
@@ -795,6 +798,27 @@ fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
     fixture!("tabs", "Event", Event::TabUpdate(vec![TabInfo::default()]));
     fixture!("panes", "Event", Event::PaneUpdate(PaneManifest::default()));
     fixture!("pane", "PaneInfo", PaneInfo::default());
+    fixture!(
+        "pane_restart_refused",
+        "PaneInfo",
+        PaneInfo {
+            restart_error: Some("Cannot restart agent".into()),
+            ..Default::default()
+        }
+    );
+    fixture!(
+        "project_config",
+        "ProjectConfig",
+        zellij_config::project_config::parse("agent_exit {}").unwrap()
+    );
+    fixture!(
+        "project_commit_agent",
+        "ProjectConfig",
+        zellij_config::project_config::parse(
+            "agent_exit { commit_agent kind=\"codex\" model=\"commit-model\" effort=\"medium\"; }"
+        )
+        .unwrap()
+    );
     fixture!("style", "Style", zellij_types::style::Style::default());
     fixture!("layout", "TiledPaneLayout", TiledPaneLayout::default());
     fixture!(
