@@ -22,17 +22,24 @@ function M.load(config)
     return
   end
   view.active=true
-  view.load{on_restart=function()
-    if not M.busy and not view.active and not view.submitting and #view.pending==0 then
-      M.busy=true
-      z.task(function()
-        local reply=z.await(z.rpc.call{plugin_url='zellij:swamp-bridge',name='swamp',payload={
-          method='pane_action',work=M.launch,key='restart',action='restart'}})
-        M.busy=false
-        if reply.error then view.status=reply.error;z.request_render() end
-      end)
-    end
-  end}
+  -- Offered at every step, the launch included; the bridge cancels any run still going, and
+  -- one still dispatching, once the choice lands.
+  local function pane_action(action,key)
+    if M.acting or view.submitting then return end
+    M.acting=true
+    z.task(function()
+      local reply=z.await(z.rpc.call{plugin_url='zellij:swamp-bridge',name='swamp',payload={
+        method='pane_action',work=M.launch,key=key,action=action,cancel_active=true}})
+      M.acting=false
+      if reply.error then view.status=reply.error;z.request_render() end
+    end)
+  end
+  view.load{
+    on_restart=function() pane_action('restart','restart') end,
+    -- A cancelled picker must allow another fork, so each press has its own key. The bridge
+    -- folds a press into a picker still open for this pane rather than opening a second one.
+    on_fork=function() pane_action('fork','fork-'..z.monotonic_ms()) end,
+  }
   view.status='Starting workflow...'
   M.workflow=true
   M.busy=true
@@ -96,7 +103,7 @@ end
 function M.render(rows,cols)
   if M.workflow then
     return view.render(math.max(0,rows-1),cols) .. z.ui.text(z.text.truncate(
-      (M.busy or view.active or view.submitting) and 'Enter: activate button. Leave: close held pane. Cancel run: explicit cancellation.'
+      (M.busy or view.active or view.submitting) and 'Enter: activate button. Restart/Fork: cancel run and continue. Cancel run: explicit cancellation.'
       or 'Enter: activate button  Delete: leave and close held pane',cols)):dim():render{x=0,y=math.max(0,rows-1),width=cols,height=1}
   end
   local lines={}

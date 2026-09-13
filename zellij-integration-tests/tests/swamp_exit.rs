@@ -69,6 +69,10 @@ function M.pipe(message)
       local pipe=message.source.Cli
       z.cli_pipe_output(pipe,z.json.encode(result));z.unblock_cli_pipe_input(pipe)
       return
+    elseif message.payload=='status' then
+      local pipe=message.source.Cli
+      z.cli_pipe_output(pipe,status);z.unblock_cli_pipe_input(pipe)
+      return
     elseif message.payload=='agent' then
       local agent=call{method='agent_spawn',work=token,key='worker',spec={kind='claude',cwd='/host',allow_outside_worktree=true}}
       worker=agent.pane
@@ -513,9 +517,13 @@ return hook
 }
 
 fn fixture_state(zellij: &TestSession) -> serde_json::Value {
-    let (code, state) = zellij.run_cli_action_reporting(CliAction::Pipe {
+    serde_json::from_str(&fixture_reply(zellij, "state")).unwrap()
+}
+
+fn fixture_reply(zellij: &TestSession, payload: &str) -> String {
+    let (code, reply) = zellij.run_cli_action_reporting(CliAction::Pipe {
         name: Some("fixture".into()),
-        payload: Some("state".into()),
+        payload: Some(payload.into()),
         args: None,
         plugin: None,
         plugin_configuration: None,
@@ -527,10 +535,89 @@ fn fixture_state(zellij: &TestSession) -> serde_json::Value {
         plugin_title: None,
     });
     assert_eq!(code, 0);
-    serde_json::from_str(&state).unwrap()
+    reply
+}
+
+/// Clicks the first on-screen occurrence of `label`.
+fn click(zellij: &TestSession, label: &str) {
+    let screen = zellij.snapshot();
+    let (row, line) = screen
+        .lines()
+        .iter()
+        .enumerate()
+        .find(|(_, line)| line.contains(label))
+        .map(|(row, line)| (row, line.clone()))
+        .unwrap_or_else(|| panic!("{label} is not on screen"));
+    let col = line[..line.find(label).unwrap()].chars().count();
+    zellij.send_stdin(format!("\x1b[<0;{};{}M", col + 1, row + 1).as_bytes());
+    zellij.send_stdin(format!("\x1b[<0;{};{}m", col + 1, row + 1).as_bytes());
 }
 
 fn fork_picker() -> (
+    TestSession,
+    zellij_integration_tests::FakePtyHandle,
+    Vec<zellij_types::data::PaneListEntry>,
+) {
+    let (zellij, original, before) = running_exit_view();
+    advance(&zellij, "fork");
+    zellij.wait_until("fork resolves the suppressed source", |s| {
+        s.contains("forking claude in fork-topic") && s.contains("Codex")
+    });
+    (zellij, original, before)
+}
+
+#[test]
+fn restart_and_fork_are_offered_while_the_workflow_runs_and_a_started_fork_cancels_it() {
+    let (mut zellij, _original, before) = running_exit_view();
+    zellij.wait_until("a running step offers restart and fork", |s| {
+        s.contains("Cancel run") && s.contains("Restart agent") && s.contains("Fork agent")
+    });
+    click(&zellij, "Fork agent");
+    zellij.wait_until("the view's fork opens the picker", |s| {
+        s.contains("forking claude") && s.contains("Codex")
+    });
+    zellij.send_stdin(&keys::ESC);
+    zellij.wait_until("a cancelled picker returns to the running view", |_| {
+        !panes(&zellij)
+            .iter()
+            .any(|p| p.pane_info.plugin_url.as_deref() == Some("zellij:hocus-new-agent"))
+    });
+    assert_eq!(fixture_reply(&zellij, "status"), "running");
+    zellij.wait_until("the running view offers fork again", |s| {
+        s.contains("Cancel run") && s.contains("Fork agent")
+    });
+    click(&zellij, "Fork agent");
+    zellij.wait_until("a second fork opens the picker", |s| {
+        s.contains("forking claude") && s.contains("Codex")
+    });
+    zellij.send_stdin(&keys::TAB);
+    zellij.send_stdin(&keys::ENTER);
+    zellij.wait_until(
+        "the started fork runs in the source and cancels the run",
+        |_| {
+            panes(&zellij).iter().any(|p| {
+                p.pane_info.id == before[0].pane_info.id
+                    && !p.pane_info.exited
+                    && p.pane_info.terminal_command.as_deref() == Some("codex")
+            }) && fixture_reply(&zellij, "status") == "cancelled"
+        },
+    );
+    let source = panes(&zellij)
+        .into_iter()
+        .find(|p| p.pane_info.id == before[0].pane_info.id)
+        .unwrap();
+    assert_eq!(
+        source
+            .pane_info
+            .agent
+            .and_then(|agent| agent.cwd)
+            .as_deref(),
+        Some("/tmp/fork-topic")
+    );
+    zellij.quit();
+}
+
+fn running_exit_view() -> (
     TestSession,
     zellij_integration_tests::FakePtyHandle,
     Vec<zellij_types::data::PaneListEntry>,
@@ -571,10 +658,6 @@ fn fork_picker() -> (
     zellij.send_stdin(b"y");
     zellij.wait_until("exit view follows the log tail", |s| {
         s.contains("LOG 100") && s.contains("Cancel run")
-    });
-    advance(&zellij, "fork");
-    zellij.wait_until("fork resolves the suppressed source", |s| {
-        s.contains("forking claude in fork-topic") && s.contains("Codex")
     });
     (zellij, original, before)
 }

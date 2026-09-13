@@ -2,7 +2,7 @@
 local z = require('zellij')
 local M = {status='No run attached', scroll=0, pending={}, selected=1}
 local form
-local on_restart
+local on_restart,on_fork
 local function set_subtitle(subtitle)
   z.set_pane_subtitle{pane_id=z.plugin_pane(z.get_plugin_ids().plugin_id),subtitle=not M.detached and subtitle or nil}
 end
@@ -67,8 +67,15 @@ local function controls()
   end
   if #M.pending>1 then fields[#fields+1]={kind='button',id='next',label='Next question'} end
   if M.cancellable then fields[#fields+1]={kind='button',id='cancel_run',label='Cancel run'} end
-  if on_restart and not M.active and #M.pending==0 then
+  -- Offered at every step. A question that already answers with the same choice (the exit
+  -- menu) keeps its own button, so the choice is not shown twice.
+  local offered={}
+  for _,answer in ipairs(q and q.answers or {}) do offered[answer]=true end
+  if on_restart and not offered.restart then
     fields[#fields+1]={kind='button',id='restart',label='Restart agent'}
+  end
+  if on_fork and not offered.fork then
+    fields[#fields+1]={kind='button',id='fork',label='Fork agent'}
   end
   form=z.ui.form(fields)
   if focus then
@@ -213,6 +220,7 @@ function M.attach(attachment)
 end
 function M.load(options)
   on_restart=options and options.on_restart
+  on_fork=options and options.on_fork
   form_key=nil
   z.subscribe {'key','mouse','pasted_text','pane_output','command_pane_exited'}
   z.set_self_mouse_selection_support(true)
@@ -282,10 +290,8 @@ function M.update(event)
   if not action then return false end
   if action.id=='next' then M.selected=M.selected % #M.pending+1;controls();return true end
   if action.kind~='button_pressed' or M.submitting then return action.kind~='ignored' end
-  if action.id=='restart' and on_restart and not M.active and #M.pending==0 then
-    on_restart()
-    return true
-  end
+  if action.id=='restart' and on_restart then on_restart();return true end
+  if action.id=='fork' and on_fork then on_fork();return true end
   local entry=M.pending[M.selected]
   local choice=action.id and tonumber(action.id:match('^choice_(%d+)$'))
   local request,success
