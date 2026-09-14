@@ -849,3 +849,5 @@ fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
         "someone else renamed it, so the next render asserts the title again"
     );
 }
+
+mod workflow_tools;

@@ -205,6 +205,47 @@ try {
         }),
     );
     await cli("workflow", "validate", workflow.name);
+    // Native workflow tasks must carry launch ownership through every level.
+    const nested = [];
+    for (const level of ["grandchild", "child", "parent"]) {
+        const definition = await cli(
+            "workflow",
+            "create",
+            `zellij-nested-${level}`,
+        );
+        const child = nested.at(-1);
+        await Deno.writeTextFile(
+            definition.path,
+            JSON.stringify({
+                id: definition.id,
+                name: definition.name,
+                version: 1,
+                jobs: [{
+                    name: "main",
+                    steps: [{
+                        name: level,
+                        task: child
+                            ? {
+                                type: "workflow",
+                                workflowIdOrName: child.name,
+                            }
+                            : {
+                                type: "model_method",
+                                modelIdOrName: "probe",
+                                methodName: "execute",
+                                inputs: {
+                                    run: "touch nested-started; while [ ! -f nested-release ]; do sleep 0.05; done; echo nested-completed",
+                                    workingDir: root,
+                                    timeout: 60_000,
+                                },
+                            },
+                    }],
+                }],
+            }),
+        );
+        await cli("workflow", "validate", definition.name);
+        nested.push(definition);
+    }
     server = new Deno.Command(binary, {
         args: [
             "serve",
@@ -374,14 +415,176 @@ try {
         }
         return false;
     });
+    // The request validator must preserve `from`, not silently strip it.
+    const fromProbe = await cli("workflow", "create", "zellij-from-probe");
+    const fromClient = await connect(url.href);
+    async function reply(id: string) {
+        for (;;) {
+            const frame = await fromClient.next();
+            if (frame.id !== id) continue;
+            if (frame.type === "error") {
+                throw new Error(`INCOMPATIBLE: ${JSON.stringify(frame)}`);
+            }
+            return frame;
+        }
+    }
+    fromClient.send("workflow.edit", "from-edit", {
+        workflowIdOrName: fromProbe.id,
+        content: JSON.stringify({
+            id: fromProbe.id,
+            name: fromProbe.name,
+            version: 1,
+            inputs: {
+                type: "object",
+                properties: { repaired: { type: "boolean", default: false } },
+            },
+            jobs: [{
+                name: "main",
+                steps: [{
+                    name: "verify",
+                    task: {
+                        type: "assert",
+                        expr: "inputs.repaired",
+                        message: "Repair probe",
+                        severity: "high",
+                    },
+                }],
+            }],
+        }),
+    });
+    await reply("from-edit");
+    fromClient.send("workflow.validate", "from-validate", {
+        workflowIdOrName: fromProbe.id,
+    });
+    await reply("from-validate");
+    fromClient.send("workflow.run", "from-run", {
+        workflowIdOrName: fromProbe.id,
+        inputs: { repaired: false },
+        noSupersede: true,
+    });
+    let failedRun: string | undefined;
+    for (;;) {
+        const frame = await reply("from-run");
+        failedRun = frame.event?.runId ?? failedRun;
+        if (frame.type === "done") break;
+    }
+    if (
+        !failedRun ||
+        (await cli("workflow", "history", "get", failedRun)).status !== "failed"
+    ) {
+        throw new Error("Resume-from fixture did not fail as intended");
+    }
+    await cli(
+        "report",
+        "get",
+        "@swamp/workflow-summary",
+        "--workflow",
+        fromProbe.name,
+    );
+    fromClient.send("workflow.resume", "from-resume", {
+        workflowIdOrName: fromProbe.id,
+        runId: failedRun,
+        from: "verify",
+        inputs: { repaired: true },
+    });
+    for (;;) if ((await reply("from-resume")).type === "done") break;
+    if (
+        (await cli("workflow", "history", "get", failedRun)).status !==
+            "succeeded"
+    ) {
+        throw new Error(
+            "INCOMPATIBLE: resume from a failed step did not preserve input overrides",
+        );
+    }
+    const parent = nested.at(-1)!;
+    const ownership = "zellij-nested-owner";
+    fromClient.send("workflow.run", "nested-run", {
+        workflowIdOrName: parent.id,
+        noSupersede: true,
+        runtimeTags: { zellijOperation: ownership },
+    });
+    await until("native grandchild entered held step", async () => {
+        try {
+            await Deno.stat(`${root}/nested-started`);
+            return true;
+        } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+            return false;
+        }
+    });
+    const owned = await cli(
+        "workflow",
+        "history",
+        "search",
+        "--filter",
+        `has(tags.zellijOperation) && tags.zellijOperation == "${ownership}"`,
+    );
+    if (
+        owned.results.length !== 3 ||
+        nested.some((definition) =>
+            !owned.results.some((
+                run: {
+                    workflowName: string;
+                    status: string;
+                    tags?: Record<string, string>;
+                },
+            ) => run.workflowName === definition.name &&
+                run.status === "running" &&
+                run.tags?.zellijOperation === ownership
+            )
+        )
+    ) {
+        throw new Error(
+            `INCOMPATIBLE: native children lost active ownership: ${
+                JSON.stringify(owned)
+            }`,
+        );
+    }
+    await Deno.writeTextFile(`${root}/nested-release`, "");
+    for (;;) if ((await reply("nested-run")).type === "done") break;
+    for (const run of owned.results) {
+        const history = await cli("workflow", "history", "get", run.runId);
+        if (history.status !== "succeeded") {
+            await cli(
+                "report",
+                "get",
+                "@swamp/workflow-summary",
+                "--workflow",
+                run.workflowName,
+            );
+            throw new Error(`Native nested run ended with ${history.status}`);
+        }
+    }
+    // The grandchild reused the model and produced a later output version.
+    const earlierOutput = await cli(
+        "data",
+        "query",
+        `version >= 0 && modelName == "probe" && name == "result" && has(tags.workflowRunId) && tags.workflowRunId == "${runId}"`,
+    );
+    const latestOutput = await cli(
+        "data",
+        "query",
+        'modelName == "probe" && name == "result"',
+    );
+    if (
+        earlierOutput.results.length !== 1 ||
+        !latestOutput.results.some((output: { version: number }) =>
+            output.version > earlierOutput.results[0].version
+        )
+    ) {
+        throw new Error(
+            "Earlier run output was not retained after the grandchild reused its model",
+        );
+    }
     console.log(
-        "PASS: authenticated detached execution, attach/replay, suspension, and inline-type resume",
+        "PASS: authenticated detached execution, attach/replay, suspension, inline-type resume, failed-step re-entry with input overrides, active native child/grandchild ownership, and retained earlier output",
     );
 } catch (error) {
     console.error(redact(String(error)));
     Deno.exitCode = 1;
 } finally {
     await Deno.writeTextFile(`${root}/release`, "");
+    await Deno.writeTextFile(`${root}/nested-release`, "");
     for (const ws of sockets) {
         if (ws.readyState === WebSocket.OPEN) ws.close();
     }

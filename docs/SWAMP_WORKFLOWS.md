@@ -420,13 +420,16 @@ inline-type resume check: its resume handler omits the direct-type resolver. It 
 **not compatible** with these workflows. The probe passes against Swamp source commit
 `7b11196336e5f67c5f3a81f7938dedede26b406c` with
 [`swamp-serve-resume.patch`](../extensions/tests/swamp-serve-resume.patch), which reuses
-Swamp's existing execution-service factory. Apply that patch to a separate Swamp
-checkout, run `deno task compile --output /absolute/path/swamp`, and put the tested
-binary on Zellij's `PATH`. The local acceptance build is
-`/tmp/zellij-compatible-swamp-bin/swamp`; it does not replace the installed binary.
+Swamp's existing execution-service factory, and
+[`swamp-workflow-tools.patch`](../extensions/tests/swamp-workflow-tools.patch), which
+preserves the starting step in resume requests and passes runtime ownership tags to native child workflows. Apply both patches to a separate
+Swamp checkout, run `deno task compile --output /absolute/path/swamp`, and put the
+tested binary on Zellij's `PATH`. The local acceptance build is
+`/tmp/hocus-workflow-swamp-bin/swamp`. It does not replace the installed binary.
 
 The installed-binary probe covers token authentication, readiness, detached execution,
-stream reattachment, suspension, and inline-type resume. The managed lifecycle check
+stream reattachment, suspension, inline-type resume, and failed-step re-entry with
+input overrides, and inherited ownership tags while native child and grandchild workflows are active. The managed lifecycle check
 adds simultaneous startup, checkout isolation, private credentials, active stop/restart
 refusal, persisted suspension, and explicit crash recovery:
 
@@ -520,3 +523,90 @@ The final `cargo x ci check` passed formatting, lint, 7,884 unit tests, and 383
 integration tests. All 11 extension tests and all four Firecracker checks passed.
 The compatibility probe and managed lifecycle check also passed with the patched
 Swamp build described above.
+
+## Hocus workflow tools
+
+Load the `workflow` tool family in Hocus. All requests use the active project's
+control checkout and its managed Swamp server. The bridge loads when needed.
+Inspection tools are available in planning mode. Definition changes, evaluation,
+and execution controls use Hocus confirmation.
+History and report tools accept workflow names or UUIDs. Workflow, model, and history
+searches use case-insensitive substring matching and preserve additional history filters.
+
+1. Use `workflow_search`, `workflow_get`, and `workflow_schema` to inspect a definition.
+2. Use `workflow_run_get`, `workflow_logs`, and `workflow_reports` to diagnose a run.
+3. Read the relevant report with `workflow_report` before repairing a failure.
+4. Use `workflow_edit` with the complete previous `workflow_get` result as `expected`.
+5. Use `workflow_validate`, then `workflow_resume` with the exact run UUID.
+
+`workflow_create` asks Swamp to assign an ID. Read the scaffold before editing it.
+The `definition` argument to `workflow_edit` is a JSON object matching Swamp's
+workflow schema. Prepare it from `workflow_get`'s complete `source.content` text.
+Preserve its ID and all fields outside the intended change. The source revision
+hash uses the same bytes as `source.content`. Hocus rechecks the definition and source revision
+before editing or deleting. A detected concurrent change causes a refusal.
+Swamp does not provide an atomic compare-and-set API for definition files. An
+external edit after the final check can still race the write.
+
+Repository-owned extension definitions can be edited through Swamp. The current
+server saves the change as a project override with the same ID. It does not replace
+the extension source. `workflow_get` reports the source and edit behavior.
+Downloaded or external extension sources remain inspectable only. Deleting a project
+override reveals the extension again. Swamp does not delete extension source files
+through this tool. `workflow_delete` also deletes the project workflow's run history.
+
+Use `workflow_models`, `workflow_model`, `workflow_model_types`,
+`workflow_model_type`, and `workflow_model_method` to inspect step dependencies.
+Run inspection includes all retained output versions for the exact run and its owned children, including outputs superseded by later runs.
+Use `workflow_data` for versioned outputs. Its CEL predicate can select exact
+`modelName`, `name`, `version`, and `tags.workflowRunId` values. Its `select`
+expression can project fields or slice long text. `workflow_logs` accepts a bounded
+`tail` and a `contains` filter. Hocus retains complete tool results within the
+transport limit. Use `tool_result_read` to read those results without executing
+another request.
+
+`workflow_launch` validates before dispatch and returns a launch token and run ID.
+It sends inputs as supplied, with launch ownership stored separately in runtime tags.
+If `inputs.session` names the current session, a valid `inputs.launch` becomes the
+bridge launch token. Conflicting requests for that token are refused before dispatch.
+Other launches receive generated tokens. Inspection discovers child runs on each refresh.
+`workflow_resume` accepts input overrides and a `from` step. Validation failures
+return without launching work. Existing-run controls require an exact run UUID.
+Resume cannot change `launch` or `session` inputs that establish bridge ownership.
+Run controls use the recorded workflow ID, so historical names can remain visible after a rename.
+A closed pane lifecycle cannot resume or accept another answer.
+
+Use `workflow_approvals`, `workflow_approve`, and `workflow_reject` for decisions.
+`workflow_answer` uses the question's owning model. It records the answer, approves
+its step, and resumes the run through the existing submission protocol.
+`workflow_cancel` requests cancellation only for the active run identified by the supplied UUID.
+Swamp controls the effects on that execution. Descendants receive no separate cancellation requests.
+`workflow_cancel_step` takes the `work` and `key` from an owned active operation.
+It verifies host, session, supervisor, and process ownership before signalling.
+Inspect the operation until termination is verified.
+
+A lost response can mean that a mutation already occurred. Hocus does not repeat
+it automatically. A timed-out launch includes its request ID and a `history_filter`
+for `workflow_history`, so its persisted run can be found without another launch.
+Inspect the saved definition, run history, approval, or question
+submission before deciding what to do next. Failure results include report references.
+Vault administration, extension installation, trigger scheduling, unrelated model
+mutations, and server lifecycle administration are outside this tool family.
+
+The WebSocket parser in the tested Swamp base revision silently removes the `from`
+field. Apply [swamp-workflow-tools.patch](../extensions/tests/swamp-workflow-tools.patch)
+to Swamp revision `7b11196336e5f67c5f3a81f7938dedede26b406c`, alongside the existing
+resume compatibility fix, and rebuild Swamp before using failed-step re-entry or native nested workflows.
+The patch also passes runtime ownership tags into child execution at every nesting level.
+The bridge uses exact tag equality to discover children for inspection and pane lifecycle cancellation.
+An older patched binary must be rebuilt to include this change.
+The expanded compatibility probe verifies `from`, input overrides, and ownership while native children and grandchildren are active.
+Use a template step name such as `verify` for `from`, without a job prefix.
+
+The disposable managed-service test covers creation, guarded edits, invalid input,
+failure diagnostics, repair, resume, approval, rejection, cancellation, and deletion:
+
+```sh
+ZELLIJ_TEST_BINARY="$PWD/target/debug/zellij" cargo x test -p zellij-process \
+  -E 'test(hocus_workflow_definition_and_execution_lifecycle)' --run-ignored all
+```

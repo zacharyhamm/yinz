@@ -106,9 +106,10 @@ fn has_prompt(call: &ToolCall) -> bool {
 /// given. `call_needs_confirmation` is the question the tool loop actually asks;
 /// this is the part of the answer that does not depend on the arguments.
 pub fn needs_confirmation(name: &str) -> bool {
-    matches!(
-        name,
-        "rerun_pane"
+    crate::workflows::mutates(name)
+        || matches!(
+            name,
+            "rerun_pane"
             | "clear_pane"
             | "send_input"
             | "agent_send"
@@ -134,7 +135,7 @@ pub fn needs_confirmation(name: &str) -> bool {
             // also destroys the VM, and a VM is where an agent's uncommitted work is.
             | "vm_sync"
             | "vm_close"
-    )
+        )
 }
 
 /// The one-line transcript label for a call. Arguments are shown as the model
@@ -144,6 +145,18 @@ pub fn needs_confirmation(name: &str) -> bool {
 /// written would paste the plugin into the conversation on the line that says it is being
 /// written. The source is still shown, in `confirmation_detail`, where there is room for it.
 pub fn summarize(call: &ToolCall) -> String {
+    if crate::workflows::TOOLS.contains(&call.name.as_str()) {
+        let args: Value = serde_json::from_str(&call.arguments).unwrap_or_default();
+        return format!(
+            "{} {}",
+            call.name,
+            args["run"]
+                .as_str()
+                .or_else(|| args["workflow"].as_str())
+                .or_else(|| args["name"].as_str())
+                .unwrap_or("")
+        );
+    }
     let arguments = call.arguments.trim();
     if matches!(call.name.as_str(), "plugin_write" | "skill_write") {
         let args = Args::parse(&call.arguments).unwrap_or_default();
@@ -190,6 +203,22 @@ pub fn summarize(call: &ToolCall) -> String {
 /// a call whose arguments are malformed is exactly when the user most needs to
 /// see something, so this must not go quiet.
 pub fn consequence(call: &ToolCall) -> Option<String> {
+    if crate::workflows::mutates(&call.name) {
+        return Some(match call.name.as_str() {
+            "workflow_create" => "creates a Swamp workflow scaffold",
+            "workflow_edit" => "replaces the inspected workflow definition, preserving its ID; refuses stale changes",
+            "workflow_delete" => "deletes the inspected workflow definition and its run history",
+            "workflow_evaluate" => "evaluates workflow expressions and can persist evaluated state",
+            "workflow_launch" => "validates and launches the workflow, which can execute model methods",
+            "workflow_resume" => "validates and resumes the exact run with the supplied input overrides or starting step",
+            "workflow_approve" => "approves the named step on the exact run",
+            "workflow_reject" => "rejects the named step on the exact run",
+            "workflow_answer" => "records the answer, approves its question step and resumes the workflow",
+            "workflow_cancel" => "cancels only the active workflow run identified by the supplied UUID",
+            "workflow_cancel_step" => "interrupts the owned active step and verifies process termination",
+            _ => return None,
+        }.to_owned());
+    }
     let args = Args::parse(&call.arguments).unwrap_or_default();
     let pane = match args.pane_id {
         Some(pane_id) => format!("pane {pane_id}"),
@@ -772,7 +801,7 @@ pub fn specs() -> Value {
         "properties": pane_properties(),
         "required": ["pane_id", "is_plugin"],
     });
-    json!([
+    let mut specs = json!([
         tool(
             "list_session",
             "List current tabs, panes, and IDs.",
@@ -2002,7 +2031,11 @@ pub fn specs() -> Value {
                 "required": ["family"],
             }),
         ),
-    ])
+    ]);
+    if let Some(specs) = specs.as_array_mut() {
+        specs.extend(crate::workflows::specs());
+    }
+    specs
 }
 
 /// The loader's description: what it is for, then one line per deferred family.
@@ -2042,6 +2075,23 @@ fn load_tool_description() -> String {
 /// outlives the turn; and `focus`, `rename` and `scroll_pane` are harmless to
 /// the session but move the screen under someone who is reading a plan.
 pub const READ_ONLY: &[&str] = &[
+    "workflow_search",
+    "workflow_get",
+    "workflow_schema",
+    "workflow_validate",
+    "workflow_active",
+    "workflow_history",
+    "workflow_run_get",
+    "workflow_logs",
+    "workflow_reports",
+    "workflow_report",
+    "workflow_data",
+    "workflow_models",
+    "workflow_model",
+    "workflow_model_types",
+    "workflow_model_type",
+    "workflow_model_method",
+    "workflow_approvals",
     "tool_result_read",
     "project_config_read",
     // The session, as it is.
@@ -2148,6 +2198,12 @@ pub struct Family {
 /// The deferred eight are the ones a chat either uses a lot or not at all:
 /// nothing about driving panes needs Slack, Linear or the plugin authoring set.
 pub const FAMILIES: &[Family] = &[
+    Family {
+        name: "workflow",
+        summary: "Swamp definitions, diagnostics and execution controls",
+        tools: crate::workflows::TOOLS,
+        deferred: true,
+    },
     Family {
         name: "session",
         summary: "panes, tabs and sessions",

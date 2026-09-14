@@ -33,6 +33,7 @@ use zellij_types::internal_ids::SessionName;
 pub mod ui;
 mod wand;
 mod worker;
+mod workflows;
 
 pub use message::{
     Ask, Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningItem, ReasoningKey,
@@ -251,6 +252,7 @@ struct Chat {
     /// reason `plugin_load` is: two chats mid-call would otherwise share one clock, and a
     /// parked chat's call would never be given up on.
     pub(crate) extension_call_started_ms: Option<u64>,
+    pub(crate) workflow_call: Option<workflows::Pending>,
     /// What was typed but not sent, and where the cursor was. The draft rather
     /// than the whole `TextInput`: the box also owns the prompt history, which
     /// is one list for every chat.
@@ -376,6 +378,8 @@ pub struct State {
     /// `poll_extension_call` gives up on it after `extensions::CALL_TIMEOUT_MS`. Parked chats
     /// carry their own in `Chat::extension_call_started_ms`.
     extension_call_started_ms: Option<u64>,
+    workflow_call: Option<workflows::Pending>,
+    workflow_seq: u64,
     /// When to load scanned files that did not answer the discovery broadcast. The grace period
     /// lets extensions survive a Hocus reload without being duplicated.
     extension_scan_due_ms: Option<u64>,
@@ -949,6 +953,8 @@ impl Default for State {
             extension_instances: BTreeMap::new(),
             plugin_instances: BTreeMap::new(),
             extension_call_started_ms: None,
+            workflow_call: None,
+            workflow_seq: 0,
             extension_scan_due_ms: None,
             skills: skills::Registry::default(),
             skills_project_root: None,
@@ -1237,6 +1243,22 @@ impl ZellijPlugin for State {
                 return false;
             };
             return self.on_extension_registration(owner, pipe_message.payload.as_deref());
+        }
+        if matches!(
+            pipe_message.name.as_str(),
+            "zellij_rpc_reply" | "zellij_rpc_progress"
+        ) {
+            if let (PipeSource::Plugin(owner), Some(payload)) =
+                (&pipe_message.source, &pipe_message.payload)
+            {
+                if self.on_workflow_reply(
+                    *owner,
+                    payload,
+                    pipe_message.name == "zellij_rpc_progress",
+                ) {
+                    return true;
+                }
+            }
         }
         if pipe_message.name == extensions::RESULT {
             let PipeSource::Plugin(owner) = pipe_message.source else {

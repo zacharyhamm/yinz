@@ -119,6 +119,7 @@ impl State {
             plan: std::mem::take(&mut self.plan),
             plugin_load: self.plugin_load.take(),
             extension_call_started_ms: self.extension_call_started_ms.take(),
+            workflow_call: self.workflow_call.take(),
             draft: (String::new(), 0),
             jobs: std::mem::take(&mut self.jobs),
             asks: std::mem::take(&mut self.asks),
@@ -152,6 +153,7 @@ impl State {
         self.last_request_input = chat.last_request_input;
         self.plugin_load = chat.plugin_load;
         self.extension_call_started_ms = chat.extension_call_started_ms;
+        self.workflow_call = chat.workflow_call;
         self.jobs = chat.jobs;
         self.asks = chat.asks;
     }
@@ -1333,7 +1335,12 @@ impl State {
         let Some(started) = self.extension_call_started_ms else {
             return false;
         };
-        if self.mono_ms.saturating_sub(started) < extensions::CALL_TIMEOUT_MS {
+        let timeout = if self.workflow_call.is_some() {
+            120_000
+        } else {
+            extensions::CALL_TIMEOUT_MS
+        };
+        if self.mono_ms.saturating_sub(started) < timeout {
             return false;
         }
         let name = self
@@ -1343,6 +1350,15 @@ impl State {
             .unwrap_or_default();
         self.status = Status::Idle;
         self.extension_call_started_ms = None;
+        if let Some(pending) = self.workflow_call.take() {
+            self.finish_head(crate::workflows::uncertain_result(
+                self.pending.front(),
+                &pending.rpc_id,
+                "Workflow response was lost",
+            ));
+            self.pump_tools();
+            return true;
+        }
         self.finish_head(format!(
             "extension tool {name} did not answer in {}s; plugin_log its plugin for the error",
             extensions::CALL_TIMEOUT_MS / 1000
