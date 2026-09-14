@@ -363,8 +363,10 @@ async function foreground(
                 command.exitCode == null || command.exitCode === 125 ||
                 command.exitCode > 128)
         ) {
+            const tail = output.trimEnd().slice(-500);
             throw new Error(
-                "Foreground command completion is uncertain; output is saved. Reconcile before proceeding",
+                "Foreground command completion is uncertain; output is saved. Reconcile before proceeding" +
+                    (tail ? "\nLast output:\n" + tail : ""),
             );
         }
         let saved;

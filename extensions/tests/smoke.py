@@ -31,6 +31,7 @@ parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
 parser.add_argument('--commit-rebase-only', action='store_true')
 parser.add_argument('--rebase-only', action='store_true')
+parser.add_argument('--lock-only', action='store_true', help='Contended checkout lock: visible holder, release, and Ctrl-C')
 parser.add_argument('--decisions-only', action='store_true')
 parser.add_argument('--exit-only', action='store_true')
 parser.add_argument('--exit-menu-only', action='store_true')
@@ -645,6 +646,59 @@ def foreground_smoke():
     print('PASS: manual and exit-hook helpers occupy the decision location, restore it on exit, and cancelled Fork returns to the menu', flush=True)
 
 
+def lock_smoke():
+    # Another workflow's Git worker (here, this process) holds the target checkout lock
+    # under a session that no longer exists, exactly as a stranded pane would.
+    lock_path = main / '.git/zellij-workflow.lock'
+    def hold(session_name):
+        holder = lock_path.open('a+')
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        holder.seek(0)
+        holder.truncate()
+        holder.write(json.dumps(dict(pid=os.getpid(), session=session_name, work='held-elsewhere',
+                                     key='held-elsewhere-commit-and-rebase', since='2026-01-01T00:00:00.000Z')))
+        holder.flush()
+        return holder
+    def release(holder):
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        holder.close()
+    def menu(token):
+        return until(token + ': menu', lambda: pending(token, 'prepare'))
+    for variant in ('release', 'cancel'):
+        token = 'lock-' + variant
+        checkout = root / token
+        run('git', 'worktree', 'add', '-b', token, checkout)
+        (checkout / 'dirty').write_text('uncommitted\n')
+        launch(token, checkout=str(checkout))
+        q = menu(token)
+        holder = hold('vanished-session')
+        answer(q, 'commit-and-rebase', 'answer-' + q['attributes']['run'])
+        pane = until('waiting commit pane', lambda: commit_pane(token))
+        pane_id = 'terminal_' + str(pane['id'])
+        screen = lambda: zellij('action', 'dump-screen', '--pane-id', pane_id)
+        until('lock holder named on screen', lambda: all(text in screen() for text in (
+            'Waiting for checkout lock', 'vanished-session', 'no longer exists', 'Ctrl-C')))
+        assert '$ git' not in screen()
+        head = run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout
+        if variant == 'release':
+            release(holder)
+            dismiss_commit(token)
+            menu(token)
+            assert run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout != head
+            assert not run('git', 'status', '--porcelain=v1', cwd=checkout).stdout
+        else:
+            zellij('action', 'write', '--pane-id', pane_id, '3')
+            q = until('cancelled commit returns its saved output', lambda: pending(token, 'commit-output'))
+            release(holder)
+            answer(q, 'return-to-menu', 'answer-' + q['attributes']['run'])
+            menu(token)
+            assert run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout == head
+            assert run('git', 'status', '--porcelain=v1', cwd=checkout).stdout == '?? dirty\n'
+        q = menu(token)
+        answer(q, 'leave', 'answer-' + q['attributes']['run'])
+    print('PASS: a contended checkout lock names its stranded holder on screen; release proceeds and Ctrl-C cancels without mutation', flush=True)
+
+
 run(binary, 'attach', '--create-background', session)
 try:
     if args.exit_only or args.exit_menu_only:
@@ -656,6 +710,11 @@ try:
         attach_ui()
         until('terminal client has rendered', lambda: len(ui_output) > 1000)
         validation_loop_smoke()
+        raise SystemExit(0)
+    if args.lock_only:
+        attach_ui()
+        until('terminal client has rendered', lambda: len(ui_output) > 1000)
+        lock_smoke()
         raise SystemExit(0)
     if args.question_latency_only:
         attach_ui()
@@ -759,6 +818,8 @@ try:
 
         foreground_smoke()
 
+        lock_smoke()
+
         zellij('workflow', 'run', '@hammz/zellij-question', '--launch', 'recovery', '--no-view', '--input', json.dumps(dict(kind='text', prompt='Instructions?', answers=[])))
         question = until('text question', lambda: pending('recovery', 'question'))
         (root / 'interrupt-after-approval').touch()
@@ -830,7 +891,11 @@ try:
     assert not [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('plugin_url') == 'zellij:agent-exit']
     print('PASS: server crash/adoption retains ownership, resumes verified work, and delivers managed process exit', flush=True)
 finally:
-    (root / 'hold-review').unlink(missing_ok=True)
+    # Python 3.7 has no missing_ok; a crash here would skip the session teardown below.
+    try:
+        (root / 'hold-review').unlink()
+    except FileNotFoundError:
+        pass
     (root / 'release-live-command').touch()
     (root / 'release-server-survival').touch()
     # Runs outlive the session; stop the fixture service separately once idle.

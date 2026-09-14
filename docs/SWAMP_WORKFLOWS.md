@@ -177,6 +177,14 @@ Each completed action returns to this menu. Repairs, retries, and later checks r
 Commands and helpers occupy the existing workflow location for exit-hook and manual interactive launches.
 Command output remains visible until dismissal. Press Enter after a command completes to restore the decision view.
 
+Git commands run under kernel locks on both checkouts (`zellij-workflow.lock` in each Git directory), held
+through dismissal so the developer sees the outcome before another mutation. The pane always prints a
+header first; if the lock is held elsewhere it names the holder's pid, session and step after two seconds
+(and says so when that session no longer exists), and fails after ten minutes without a lock. Ctrl-C while
+waiting cancels the step. A worker whose own session disappears releases its locks instead of waiting for a
+dismissal that can never come. `ZELLIJ_COMMIT_LOCK_WAIT_SECONDS`, `ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS` and
+`ZELLIJ_COMMIT_SESSION_POLL_SECONDS` shorten these for tests.
+
 **Cancel step** targets the active owned operation and preserves the workflow.
 Ctrl-C in a foreground command requests the same cancellation.
 The bridge verifies ownership before sending an interrupt. After five seconds, it sends a kill signal if execution continues.
@@ -452,6 +460,7 @@ python3 extensions/tests/smoke.py --source-diff-only
 python3 extensions/tests/smoke.py --commit-rebase-only
 python3 extensions/tests/smoke.py --rebase-only
 python3 extensions/tests/smoke.py --cancellation-only
+python3 extensions/tests/smoke.py --lock-only
 cargo x ci check
 cargo x firecracker-test --build
 cargo x firecracker-test --test
@@ -465,6 +474,7 @@ The printed fixture directory contains its command transcript and terminal captu
 - `--validation-loop-only` runs the review, repair, commit, test, merge, cancellation, and conflict scenarios.
 - `--cancellation-only` runs real command and child-process interruption, escalation, output retention, and retry.
 - `--rebase-only` runs explicit continuation through repeated conflicts.
+- `--lock-only` holds the target checkout lock under a vanished session, then checks the visible holder, release, and Ctrl-C.
 - `--exit-only` or `--exit-menu-only` verifies manual and exit-hook helper placement, restoration, and Fork cancellation.
 - `--source-diff-only` adds direct viewer checks for checkout isolation, staged changes, nested repositories, and temporary-file cleanup.
 - `--commit-rebase-only` adds a configured commit-agent role to the full run.

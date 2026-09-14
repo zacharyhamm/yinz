@@ -189,11 +189,104 @@ export async function evidence(
         vmSync: args.vmSync,
     });
 }
+/** Identity a lock holder leaves in the lock file so waiters can name it. */
+export const LockHolder = z.object({
+    pid: z.number().int().positive(),
+    session: z.string(),
+    work: z.string(),
+    key: z.string(),
+    since: z.string(),
+});
+export type LockWait = {
+    path: string;
+    holder: z.infer<typeof LockHolder> | null;
+};
+export type LockOptions = {
+    /** Recorded in the lock file while held; absent holders stay anonymous. */
+    identity?: Omit<z.infer<typeof LockHolder>, "since">;
+    /** Called once the lock is still contended after `noticeSeconds`, then every 30s. */
+    onWait?: (wait: LockWait) => void | Promise<void>;
+    /** Give up with `LockTimeout` after this long; unbounded when absent. */
+    waitSeconds?: number;
+    noticeSeconds?: number;
+};
+export class LockTimeout extends Error {
+    constructor(readonly wait: LockWait, seconds: number) {
+        super(
+            `Checkout lock ${wait.path} still held after ${seconds}s` +
+                (wait.holder
+                    ? ` by pid ${wait.holder.pid} (session ${wait.holder.session}, step ${wait.holder.key})`
+                    : "") + "; dismiss or terminate that worker before retrying",
+        );
+    }
+}
+/** Lock file contents are advisory; partial writes and legacy empty files read as anonymous. */
+export async function readLockHolder(path: string) {
+    try {
+        return LockHolder.parse(JSON.parse(await Deno.readTextFile(path)));
+    } catch {
+        return null;
+    }
+}
+async function writeAll(file: Deno.FsFile, bytes: Uint8Array) {
+    let written = 0;
+    while (written < bytes.length) {
+        written += await file.write(bytes.subarray(written));
+    }
+}
+/** A cancellable pause, so an uncontended lock leaves no timer behind. */
+function pause(ms: number, signal: AbortSignal) {
+    let cancel = () => {};
+    const promise = new Promise<"tick">((resolve, reject) => {
+        const stop = () => {
+            clearTimeout(timer);
+            reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+            signal.removeEventListener("abort", stop);
+            resolve("tick");
+        }, ms);
+        signal.addEventListener("abort", stop, { once: true });
+        if (signal.aborted) stop();
+        cancel = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", stop);
+            resolve("tick");
+        };
+    });
+    return { promise, cancel };
+}
+async function acquire(
+    file: Deno.FsFile,
+    path: string,
+    options: LockOptions,
+    signal: AbortSignal,
+) {
+    const lock = file.lock(true).then(() => "locked" as const);
+    const deadline = options.waitSeconds == null
+        ? Infinity
+        : Date.now() + options.waitSeconds * 1000;
+    let notice = (options.noticeSeconds ?? 2) * 1000;
+    while (true) {
+        const wait = Math.max(0, Math.min(notice, deadline - Date.now()));
+        const timer = pause(wait, signal);
+        const won = await Promise.race([lock, timer.promise]);
+        timer.cancel();
+        if (won === "locked") return;
+        const holder = await readLockHolder(path);
+        if (Date.now() >= deadline) {
+            throw new LockTimeout({ path, holder }, options.waitSeconds!);
+        }
+        await options.onWait?.({ path, holder });
+        notice = 30_000;
+    }
+}
 /** Kernel locks release on process death; never unlink their inodes. */
 export async function locked<T>(
     c: Pick<Context, "signal">,
     paths: string[],
     action: () => Promise<T>,
+    options: LockOptions = {},
 ) {
     const locks: Deno.FsFile[] = [];
     try {
@@ -203,13 +296,21 @@ export async function locked<T>(
             ),
         );
         for (const dir of [...new Set(dirs)].sort()) {
-            const file = await Deno.open(`${dir}/zellij-workflow.lock`, {
-                create: true,
-                write: true,
-            });
+            const path = `${dir}/zellij-workflow.lock`;
+            const file = await Deno.open(path, { create: true, write: true });
             locks.push(file);
-            await file.lock(true);
+            await acquire(file, path, options, c.signal);
             c.signal.throwIfAborted();
+            await file.truncate(0);
+            if (options.identity) {
+                await writeAll(
+                    file,
+                    new TextEncoder().encode(JSON.stringify(LockHolder.parse({
+                        ...options.identity,
+                        since: new Date().toISOString(),
+                    }))),
+                );
+            }
         }
         return await action();
     } finally {
