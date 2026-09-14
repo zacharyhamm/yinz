@@ -76,6 +76,7 @@ function zellijCheck({ entry, sdk, testing, strictOptions, diagnostics }) {
     function visit(node) {
       if (ts.isStringLiteralLike(node) && (
         ((ts.isImportDeclaration(node.parent) || ts.isExportDeclaration(node.parent)) && node.parent.moduleSpecifier === node) ||
+        (ts.isJSDocImportTag(node.parent) && node.parent.moduleSpecifier === node) ||
         (ts.isLiteralTypeNode(node.parent) && ts.isImportTypeNode(node.parent.parent)) ||
         (ts.isCallExpression(node.parent) && node.parent.expression.kind === ts.SyntaxKind.ImportKeyword && node.parent.arguments[0] === node)
       )) {
@@ -83,6 +84,7 @@ function zellijCheck({ entry, sdk, testing, strictOptions, diagnostics }) {
         imports.push({start, end: node.end,
           target: ops.op_zellij_check_resolve(node.text, name)});
       }
+      for (const jsDoc of node.jsDoc || []) visit(jsDoc);
       ts.forEachChild(node, visit);
     }
     visit(source);
