@@ -37,7 +37,6 @@ pub(super) fn run(path: &Path, source: &str, mode: PluginCheckMode) -> Result<Op
         Ok(source_root.join(relative))
     };
     let mut mappings = Vec::new();
-    let mut lint_files = Vec::new();
     for (original, contents) in &graph.files {
         let staged = stage_path(original)?;
         std::fs::create_dir_all(staged.parent().context("staged file has no directory")?)?;
@@ -46,9 +45,6 @@ pub(super) fn run(path: &Path, source: &str, mode: PluginCheckMode) -> Result<Op
             bail!("{}", report.diagnostics.join("\n"));
         }
         std::fs::write(&staged, contents)?;
-        if original != Path::new(loader::WORKFLOW_PATH) {
-            lint_files.push(staged.clone());
-        }
         mappings.push((staged, original.clone()));
     }
     // Preserve in-root symlink import semantics without exposing any original filesystem path.
@@ -139,7 +135,7 @@ pub(super) fn run(path: &Path, source: &str, mode: PluginCheckMode) -> Result<Op
     if mode != PluginCheckMode::Format {
         // TypeScript's established checker remains authoritative alongside tsgolint.
         // A symlinked entrypoint can sit below the original loader root; keep that boundary.
-        checker::authoring_graph(
+        let checked = checker::authoring_graph(
             &entry,
             formatted.as_deref().unwrap_or(source),
             true,
@@ -156,6 +152,85 @@ pub(super) fn run(path: &Path, source: &str, mode: PluginCheckMode) -> Result<Op
             }
             anyhow!(message)
         })?;
+        // Separate directories prevent TypeScript's extension substitution from choosing
+        // foo.ts (or foo.d.ts) when the runtime loaded foo.js.
+        let native_paths: std::collections::HashMap<_, _> = checked
+            .files
+            .keys()
+            .enumerate()
+            .map(|(index, path)| {
+                (
+                    path.clone(),
+                    root.join("native")
+                        .join(index.to_string())
+                        .join(path.file_name().expect("module filename")),
+                )
+            })
+            .collect();
+        let mut native_mappings = Vec::new();
+        let mut native_files = Vec::new();
+        let mut lint_files = Vec::new();
+        for (path, contents) in &checked.files {
+            let native = &native_paths[path];
+            let mut rewritten = contents.clone();
+            let mut edits = Vec::new();
+            for import in checked.imports.get(path).into_iter().flatten().rev() {
+                // The SDK is a virtual runtime module backed by declarations through paths.
+                // A literal .d.ts value import is illegal in TypeScript.
+                if import.target == Path::new("/$zellij/sdk.d.ts") {
+                    continue;
+                }
+                let target = native_paths
+                    .get(&import.target)
+                    .context("missing resolved native import")?;
+                let relative = target
+                    .strip_prefix(root)
+                    .context("native import escapes scratch")?;
+                let replacement = serde_json::to_string(&format!("../../{}", relative.display()))?;
+                let byte_offset = |offset| {
+                    contents
+                        .char_indices()
+                        .scan(0, |units, (byte, ch)| {
+                            let previous = *units;
+                            *units += ch.len_utf16();
+                            Some((previous, byte))
+                        })
+                        .find(|(units, _)| *units == offset)
+                        .map(|(_, byte)| byte)
+                        .unwrap_or(contents.len())
+                };
+                rewritten.replace_range(
+                    byte_offset(import.start)..byte_offset(import.end),
+                    &replacement,
+                );
+                // TypeScript spans use UTF-16; Oxlint's unix reporter uses byte columns.
+                edits.push((
+                    byte_offset(import.start),
+                    byte_offset(import.end) - byte_offset(import.start),
+                    replacement.len(),
+                ));
+            }
+            edits.reverse();
+            std::fs::create_dir_all(native.parent().context("native file has no parent")?)?;
+            std::fs::write(native, &rewritten)?;
+            let original = mappings
+                .iter()
+                .find(|(staged, _)| staged == path)
+                .map(|(_, original)| original)
+                .unwrap_or(path);
+            native_mappings.push((native.clone(), original.clone(), contents, rewritten, edits));
+            native_files.push(native.clone());
+            if original != Path::new(loader::WORKFLOW_PATH) {
+                lint_files.push(native.clone());
+            }
+        }
+        config["files"] = serde_json::to_value(
+            native_files
+                .iter()
+                .chain(std::iter::once(&root.join("sdk/sdk.d.ts")))
+                .collect::<Vec<_>>(),
+        )?;
+        std::fs::write(root.join("tsconfig.json"), serde_json::to_vec(&config)?)?;
         execute(
             "oxlint",
             &[
@@ -174,7 +249,76 @@ pub(super) fn run(path: &Path, source: &str, mode: PluginCheckMode) -> Result<Op
                 "unix",
             ],
             &lint_files,
-        )?;
+        )
+        .map_err(|error| {
+            let mut message = format!("{error:#}");
+            for (native, original, contents, rewritten, edits) in &native_mappings {
+                for name in [
+                    native.to_string_lossy().into_owned(),
+                    native
+                        .strip_prefix(root)
+                        .expect("native root")
+                        .to_string_lossy()
+                        .into_owned(),
+                ] {
+                    message = message
+                        .lines()
+                        .map(|line| {
+                            if let Some(rest) = line.strip_prefix(&format!("{name}:")) {
+                                let mut parts = rest.splitn(3, ':');
+                                if let (Some(row), Some(column), Some(tail)) =
+                                    (parts.next(), parts.next(), parts.next())
+                                {
+                                    if let (Ok(row), Ok(mut column)) =
+                                        (row.parse::<usize>(), column.parse::<usize>())
+                                    {
+                                        let mut offset = rewritten
+                                            .split_inclusive('\n')
+                                            .take(row.saturating_sub(1))
+                                            .map(str::len)
+                                            .sum::<usize>()
+                                            + column.saturating_sub(1);
+                                        let mut delta: isize = 0;
+                                        for &(start, old, new) in edits {
+                                            let staged_start = start.saturating_add_signed(delta);
+                                            if offset < staged_start {
+                                                break;
+                                            }
+                                            if offset < staged_start + new {
+                                                offset = start
+                                                    + (offset - staged_start)
+                                                        .min(old.saturating_sub(1));
+                                                delta = 0;
+                                                break;
+                                            }
+                                            delta += new as isize - old as isize;
+                                        }
+                                        offset = offset.saturating_add_signed(-delta);
+                                        let mut row = 1;
+                                        column = 1;
+                                        for line in contents.split_inclusive('\n') {
+                                            if offset < line.len() {
+                                                column = offset + 1;
+                                                break;
+                                            }
+                                            offset -= line.len();
+                                            row += 1;
+                                        }
+                                        return format!(
+                                            "{}:{row}:{column}:{tail}",
+                                            original.display()
+                                        );
+                                    }
+                                }
+                            }
+                            line.replace(&name, &original.to_string_lossy())
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                }
+            }
+            anyhow!(message)
+        })?;
     }
     Ok(formatted)
 }

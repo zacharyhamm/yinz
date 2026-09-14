@@ -70,6 +70,24 @@ function zellijCheck({ entry, sdk, testing, strictOptions, diagnostics }) {
     resolveTypeReferenceDirectives: names => names.map(() => undefined),
   };
   const program = ts.createProgram([entry, sdkPath], options, host);
+  for (const [name, source] of sources) {
+    if (name.startsWith(prefix)) continue;
+    const imports = [];
+    function visit(node) {
+      if (ts.isStringLiteralLike(node) && (
+        ((ts.isImportDeclaration(node.parent) || ts.isExportDeclaration(node.parent)) && node.parent.moduleSpecifier === node) ||
+        (ts.isLiteralTypeNode(node.parent) && ts.isImportTypeNode(node.parent.parent)) ||
+        (ts.isCallExpression(node.parent) && node.parent.expression.kind === ts.SyntaxKind.ImportKeyword && node.parent.arguments[0] === node)
+      )) {
+        const start = node.getStart(source);
+        imports.push({start, end: node.end,
+          target: ops.op_zellij_check_resolve(node.text, name)});
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    ops.op_zellij_check_imports(name, imports);
+  }
   const findings = diagnostics ? ts.getPreEmitDiagnostics(program) : program.getSyntacticDiagnostics();
   if (findings.length) {
     throw new Error(ts.formatDiagnostics(findings, host));

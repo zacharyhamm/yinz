@@ -530,9 +530,9 @@ function pipe(message: PipeMessage): void {
     typeof value.directory !== "string"
   )
     throw new Error("Invalid workflow attachment");
-  const run = "run" in value ? value.run : undefined;
+  const run = "run" in value ? (value.run ?? undefined) : undefined;
   // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
-  const launch = "launch" in value ? value.launch : undefined;
+  const launch = "launch" in value ? (value.launch ?? undefined) : undefined;
   if (
     (run !== undefined && typeof run !== "string") ||
     (launch !== undefined && typeof launch !== "string")
