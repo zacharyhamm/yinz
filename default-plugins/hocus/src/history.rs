@@ -22,7 +22,7 @@ use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::*;
 
 use crate::tools::ToolCall;
-use crate::{Message, Reasoning, ReasoningKey, Role, TokenUsage};
+use crate::{Message, Plan, Reasoning, ReasoningKey, Role, TokenUsage};
 
 /// The directory the archive used to live in. Read once, by the import.
 #[cfg(target_family = "wasm")]
@@ -167,6 +167,7 @@ fn message_mutation(chat_id: u64, seq: usize, message: &Message) -> Mutation {
 /// typed tool mid-reply, which is the case `mutable_len` exists for. Rewriting a
 /// row that did not change is free; missing one that did loses the reply, so
 /// this errs long.
+#[allow(clippy::too_many_arguments)]
 pub fn save(
     backend: &impl Backend,
     host_id: &HostId,
@@ -175,8 +176,14 @@ pub fn save(
     saved_len: usize,
     reply_at: Option<usize>,
     usage: Option<TokenUsage>,
+    plan: Plan,
 ) -> Result<usize, String> {
     let title = title(messages);
+    let plan = match plan {
+        Plan::Off => "Off",
+        Plan::Planning => "Planning",
+        Plan::AwaitingApproval => "AwaitingApproval",
+    };
     let chat_id = match *id {
         Some(existing) => existing,
         None => {
@@ -191,6 +198,7 @@ pub fn save(
             // single-writer problem per chat.
             let mut chat = Mutation::put("chat")
                 .set("title", title.clone())
+                .set("plan", plan)
                 .set("host_id", host_id);
             for (column, value) in usage.into_iter().flat_map(usage_columns) {
                 chat = chat.set(column, value);
@@ -211,7 +219,9 @@ pub fn save(
     // only ever grows, so a chat with none to report has nothing to say about
     // the columns, and `set(None)` would write NULL over totals archived by
     // an earlier run.
-    let mut chat = Mutation::update("chat", Pred::eq("id", chat_id as i64)).set("title", title);
+    let mut chat = Mutation::update("chat", Pred::eq("id", chat_id as i64))
+        .set("title", title)
+        .set("plan", plan);
     for (column, value) in usage.into_iter().flat_map(usage_columns) {
         chat = chat.set(column, value);
     }
@@ -296,6 +306,25 @@ pub fn load_usage(backend: &impl Backend, id: u64) -> Result<Option<TokenUsage>,
             },
         ),
     )
+}
+
+/// Missing state predates planning persistence. Any unreadable state must fail closed.
+pub fn load_plan(backend: &impl Backend, id: u64) -> Result<Plan, String> {
+    let rows = backend.fetch(
+        &FetchRequest::entity("chat")
+            .filter(Pred::eq("id", id))
+            .limit(1)
+            .select(["plan"]),
+    )?;
+    let row = rows.rows.first().ok_or("the archived chat is missing")?;
+    match rows.get(row, "plan") {
+        Some(DataValue::Null) => Ok(Plan::Off),
+        Some(DataValue::Text(text)) => {
+            serde_json::from_value(serde_json::Value::String(text.clone()))
+                .map_err(|error| format!("invalid archived planning state: {error}"))
+        },
+        _ => Err("the archived planning state is unreadable".to_owned()),
+    }
 }
 
 /// Read one transcript back.
@@ -554,7 +583,18 @@ pub fn import_legacy(backend: &impl Backend, host_id: &HostId) {
             continue;
         };
         let mut id = None;
-        if save(backend, host_id, &mut id, &messages, 0, None, None).is_err() {
+        if save(
+            backend,
+            host_id,
+            &mut id,
+            &messages,
+            0,
+            None,
+            None,
+            Plan::Off,
+        )
+        .is_err()
+        {
             continue;
         }
         if let Some(id) = id {
@@ -690,6 +730,7 @@ mod tests {
             0,
             None,
             None,
+            Plan::Off,
         )
         .unwrap_err();
         assert_eq!(error, "the store returned a negative chat id");
@@ -816,6 +857,7 @@ mod tests {
             0,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved");
         let id = id.expect("an id was allocated");
@@ -836,6 +878,7 @@ mod tests {
             0,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved old chat");
         assert_eq!(load_usage(&backend, old_id.expect("old id")), Ok(None));
@@ -854,6 +897,7 @@ mod tests {
             0,
             None,
             Some(usage),
+            Plan::Off,
         )
         .expect("saved usage");
         assert_eq!(load_usage(&backend, id.expect("id")), Ok(Some(usage)));
@@ -880,6 +924,7 @@ mod tests {
             0,
             None,
             Some(usage),
+            Plan::Off,
         )
         .expect("saved");
         let id = id.expect("id");
@@ -893,6 +938,7 @@ mod tests {
             saved,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved again");
 
@@ -913,6 +959,7 @@ mod tests {
             messages.len(),
             None,
             Some(tokens_only),
+            Plan::Off,
         )
         .expect("saved without a cost");
         assert_eq!(
@@ -970,12 +1017,14 @@ mod tests {
             0,
             None,
             Some(usage),
+            Plan::Off,
         )
         .expect("saved");
         let id = id.expect("id");
 
         let unreadable = UnreadableStore(&backend);
         assert!(load_usage(&unreadable, id).is_err());
+        assert!(load_plan(&unreadable, id).is_err());
         assert_eq!(
             load_usage(&backend, id),
             Ok(Some(usage)),
@@ -996,6 +1045,7 @@ mod tests {
             0,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved");
         let first = id.expect("an id");
@@ -1009,6 +1059,7 @@ mod tests {
             saved,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved");
         assert_eq!(id, Some(first), "the id must not move");
@@ -1030,6 +1081,7 @@ mod tests {
             0,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved");
 
@@ -1043,6 +1095,7 @@ mod tests {
                 saved,
                 None,
                 None,
+                Plan::Off,
             )
             .expect("saved");
         }
@@ -1064,6 +1117,7 @@ mod tests {
             0,
             Some(1),
             None,
+            Plan::Off,
         )
         .expect("saved");
 
@@ -1076,6 +1130,7 @@ mod tests {
             saved,
             Some(1),
             None,
+            Plan::Off,
         )
         .expect("saved");
 
@@ -1098,6 +1153,7 @@ mod tests {
             0,
             Some(1),
             None,
+            Plan::Off,
         )
         .expect("saved");
 
@@ -1111,6 +1167,7 @@ mod tests {
             saved,
             Some(1),
             None,
+            Plan::Off,
         )
         .expect("saved");
 
@@ -1139,6 +1196,7 @@ mod tests {
             0,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved");
 
@@ -1151,6 +1209,7 @@ mod tests {
             saved,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved");
 
@@ -1170,6 +1229,7 @@ mod tests {
                 0,
                 None,
                 None,
+                Plan::Off,
             )
             .expect("saved");
         }
@@ -1193,6 +1253,7 @@ mod tests {
             0,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved");
         assert_eq!(list(&backend)[0].title, "(empty)");
@@ -1206,6 +1267,7 @@ mod tests {
             saved,
             None,
             None,
+            Plan::Off,
         )
         .expect("saved");
         assert_eq!(list(&backend)[0].title, "the question");

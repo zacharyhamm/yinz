@@ -233,7 +233,7 @@ struct Chat {
     pub(crate) owes_reply: bool,
     pub(crate) manual_head: bool,
     pub(crate) chat_id: Option<u64>,
-    pub(crate) saved: (usize, usize, Option<TokenUsage>),
+    pub(crate) saved: (usize, usize, Option<TokenUsage>, Plan),
     pub(crate) view: View,
     pub(crate) scheduled_run: Option<ScheduledRun>,
     /// A rate-limited request waiting to go out again. Travels with the chat for the reason
@@ -497,7 +497,7 @@ pub struct State {
     chat_id: Option<u64>,
     /// `fingerprint()` as of the last save, so an event that changed nothing
     /// doesn't rewrite the file.
-    saved: (usize, usize, Option<TokenUsage>),
+    saved: (usize, usize, Option<TokenUsage>, Plan),
     /// Every open conversation other than the one on screen, in the order the
     /// tab bar shows them, with the foreground one spliced in at `chat_tab`.
     /// A parked chat keeps receiving its reply, running its tools and firing
@@ -988,7 +988,7 @@ impl Default for State {
             usage: None,
             last_request_input: None,
             chat_id: None,
-            saved: (0, 0, None),
+            saved: (0, 0, None, Plan::Off),
             parked: Vec::new(),
             chat_tab: 0,
             chat_tab_focus: None,

@@ -9,7 +9,7 @@ use zellij_tile::prelude::*;
 
 /// What autosave watches. Only one message is ever mutated in place, so a
 /// count and that message's length between them catch every transcript change;
-/// the usage pair catches an accounting-only change.
+/// usage and planning state catch changes outside the transcript.
 ///
 /// The one that can change without the count changing is the streaming
 /// placeholder at `reply_at`, which `append_to_reply` grows in place. The last
@@ -27,8 +27,9 @@ pub(crate) fn fingerprint(
     messages: &[Message],
     reply_at: Option<usize>,
     usage: Option<TokenUsage>,
-) -> (usize, usize, Option<TokenUsage>) {
-    (messages.len(), mutable_len(messages, reply_at), usage)
+    plan: Plan,
+) -> (usize, usize, Option<TokenUsage>, Plan) {
+    (messages.len(), mutable_len(messages, reply_at), usage, plan)
 }
 
 /// The length of the message `fingerprint` watches. See there.
@@ -39,8 +40,8 @@ pub(crate) fn mutable_len(messages: &[Message], reply_at: Option<usize>) -> usiz
 
 impl State {
     /// `fingerprint` for the foreground chat.
-    pub(crate) fn fingerprint(&self) -> (usize, usize, Option<TokenUsage>) {
-        fingerprint(&self.messages, self.reply_at, self.usage)
+    pub(crate) fn fingerprint(&self) -> (usize, usize, Option<TokenUsage>, Plan) {
+        fingerprint(&self.messages, self.reply_at, self.usage, self.plan)
     }
 
     /// `mutable_len` for the foreground chat.
@@ -56,7 +57,7 @@ impl State {
     /// being closed, and `BeforeClose`, which has no later. A partial reply
     /// archived beats one lost. Forced or not, a chat whose fingerprint has
     /// not moved is not rewritten: every row written is a function of its
-    /// messages and usage, so there is nothing new to say.
+    /// messages, usage and planning state, so there is nothing new to say.
     ///
     /// An empty transcript is never written, so a pane you only opened leaves
     /// nothing behind.
@@ -86,6 +87,7 @@ impl State {
             saved_len,
             self.reply_at,
             self.usage,
+            self.plan,
         );
         self.chat_id = id;
         if written.is_err() {
@@ -502,6 +504,9 @@ impl State {
         let Ok(usage) = history::load_usage(&self.private_store(), id) else {
             return;
         };
+        let Ok(plan) = history::load_plan(&self.private_store(), id) else {
+            return;
+        };
         // The jobs the chat was armed with when hocus last ran come back with
         // it, and start counting down again from here.
         let jobs = self.take_held_jobs(id);
@@ -516,6 +521,7 @@ impl State {
             messages,
             chat_id: Some(id),
             usage,
+            plan,
             jobs,
             ..Chat::default()
         });

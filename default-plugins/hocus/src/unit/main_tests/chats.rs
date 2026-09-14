@@ -10,7 +10,11 @@ fn a_new_chat_detaches_from_the_archived_file_rather_than_deleting_it() {
     state.new_chat();
 
     assert_eq!(state.chat_id, None, "the next save opens a new file");
-    assert_eq!(state.saved, (0, 0, None), "and is not skipped as unchanged");
+    assert_eq!(
+        state.saved,
+        (0, 0, None, Plan::Off),
+        "and is not skipped as unchanged"
+    );
 }
 
 /// The symptom this all started from: Enter on a slash command mid-reply did
@@ -168,7 +172,7 @@ fn autosave_holds_off_until_the_reply_has_landed() {
     let mut state = ready_state();
     state.messages = vec![Message::user("hi"), Message::assistant("partial")];
     state.autosave();
-    assert_eq!(state.saved, (0, 0, None), "still streaming");
+    assert_eq!(state.saved, (0, 0, None, Plan::Off), "still streaming");
 
     settle(&mut state);
     state.autosave();
