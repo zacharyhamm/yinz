@@ -25,6 +25,10 @@
 #[path = "./unit/instruction_context_tests.rs"]
 mod instruction_context_tests;
 
+#[cfg(test)]
+#[path = "./unit/pty_exit_tests.rs"]
+mod pty_exit_tests;
+
 #[path = "os_input_output_unix.rs"]
 pub mod os_input_output_unix;
 

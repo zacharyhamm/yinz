@@ -651,6 +651,10 @@ pub(crate) fn route_thread_main(
                                 .with_context(err_context)?;
                         },
                         ClientToServerMsg::ClientExited => return Ok(true),
+                        ClientToServerMsg::KillSessionWithCompletion => {
+                            to_server.send(ServerInstruction::KillSessionWithCompletion(client_id))
+                                .with_context(err_context)?;
+                        },
                         ClientToServerMsg::KillSession => {
                             to_server
                                 .send(ServerInstruction::KillSession)

@@ -112,6 +112,7 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
     let dismissal = Promise.withResolvers<void>();
     let atDismissal = Promise.withResolvers<void>();
     let outputDirectory = "";
+    const outputDirectories = new Set<string>();
     let pane: Deno.ChildProcess;
     let current: Record<string, unknown>;
     let completion: Promise<void>;
@@ -158,6 +159,18 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
                                 };
                                 outputDirectory =
                                     JSON.parse(request.argv.at(-1)).directory;
+                                outputDirectories.add(outputDirectory);
+                                if (
+                                    ["early abort", "bridge failure"].includes(
+                                        fault,
+                                    )
+                                ) {
+                                    completion = Promise.resolve();
+                                    if (fault === "early abort") {
+                                        controller.abort(new Error(fault));
+                                    }
+                                    throw new Error(fault);
+                                }
                                 if (forcedOutcome) {
                                     current.outcome = forcedOutcome;
                                     current.exitCode =
@@ -424,7 +437,8 @@ for path in sys.argv[2:]:
                     "run",
                     "--no-config",
                     "--allow-all",
-                    new URL("./_lib/commit_worker.ts", import.meta.url).pathname,
+                    new URL("./_lib/commit_worker.ts", import.meta.url)
+                        .pathname,
                     JSON.stringify({
                         ...args,
                         mode: "commit",
@@ -489,7 +503,10 @@ for path in sys.argv[2:]:
             const text = visible.output();
             assert(text.startsWith("Commit and rebase: " + source), text);
             assert(text.includes(`held by pid ${Deno.pid} since`), text);
-            assert(text.includes("session other-session, step other-key"), text);
+            assert(
+                text.includes("session other-session, step other-key"),
+                text,
+            );
             assert(text.includes("press Ctrl-C to cancel this step"), text);
             assert(!/\$ git/.test(text), text);
         }, {
@@ -540,7 +557,10 @@ for path in sys.argv[2:]:
             });
             await expired.waitFor("Press Enter to return.");
         });
-        assert(expired.output().includes("still held after 1s"), expired.output());
+        assert(
+            expired.output().includes("still held after 1s"),
+            expired.output(),
+        );
         assert(expired.output().includes("no holder record"), expired.output());
         assert(!expired.output().includes("by pid"), expired.output());
         assert(
@@ -560,9 +580,10 @@ for path in sys.argv[2:]:
         );
         // Output written so far is readable while the worker is still alive.
         assert(
-            (await Deno.readTextFile(expiredDirectory + "/output.log")).includes(
-                "still held after 1s",
-            ),
+            (await Deno.readTextFile(expiredDirectory + "/output.log"))
+                .includes(
+                    "still held after 1s",
+                ),
         );
         // Session probes resolve the binary from repoDir, even in a different cwd.
         const strandedDirectory = dir + "/stranded-worker";
@@ -753,6 +774,12 @@ for path in sys.argv[2:]:
             await checkLocks(false);
             assert(saved.get("claim-" + key)?.outcome === "unknown");
             await Deno.remove(release);
+            // The worker wrote while its outcome was uncertain, so its output is
+            // retained for reconciliation rather than removed with the run.
+            assert(
+                (await Deno.stat(outputDirectory + "/output.log")).isFile,
+                "uncertain worker output must be retained",
+            );
             await Deno.remove(outputDirectory, { recursive: true });
             if (await git(source, "diff", "--name-only", "--diff-filter=U")) {
                 await git(source, "rebase", "--abort");
@@ -785,6 +812,51 @@ for path in sys.argv[2:]:
         );
         assert(claim.stdout === preview && !claim.operation.output);
         assert(new TextEncoder().encode(JSON.stringify(claim)).length < 24000);
+        await rejects(() => Deno.stat(outputDirectory), /NotFound/);
+        for (const reason of ["early abort", "bridge failure"]) {
+            fault = reason;
+            controller = new AbortController();
+            c.signal = controller.signal;
+            await rejects(
+                () => run(reason.replace(" ", "-")),
+                new RegExp(reason),
+            );
+            assert(
+                (await Array.fromAsync(Deno.readDir(outputDirectory)))
+                    .length === 0,
+            );
+            // A worker can start writing after the caller has already failed.
+            await Deno.writeTextFile(
+                outputDirectory + "/output.log",
+                "late worker output",
+            );
+            assert(
+                await Deno.readTextFile(outputDirectory + "/output.log") ===
+                    "late worker output",
+            );
+        }
+        fault = "";
+        controller = new AbortController();
+        c.signal = controller.signal;
+        const readTextFile = Deno.readTextFile;
+        try {
+            Deno.readTextFile = async (path, options) => {
+                const text = await readTextFile(path, options);
+                if (path === outputDirectory + "/result.json") {
+                    controller.abort(new Error("final abort"));
+                }
+                return text;
+            };
+            await rejects(() => run("final-abort"), /final abort/);
+        } finally {
+            Deno.readTextFile = readTextFile;
+            c.signal = new AbortController().signal;
+        }
+        assert(
+            JSON.parse(
+                await Deno.readTextFile(outputDirectory + "/result.json"),
+            ).exitCode === 0,
+        );
         forcedOutcome = "unknown";
         await rejects(() => run("unknown"), /completion is uncertain/);
         const count: number = dispatches;
@@ -847,7 +919,8 @@ for path in sys.argv[2:]:
                 const beforeRetry: number = dispatches;
                 await rejects(execute, /is unknown/);
                 assert(dispatches === beforeRetry);
-                await Deno.remove(outputDirectory, { recursive: true });
+                // An uncertain dispatch must leave room for later worker writes.
+                assert((await Deno.stat(outputDirectory)).isDirectory);
             }
         }
         forcedOutcome = "";
@@ -908,6 +981,11 @@ for path in sys.argv[2:]:
             } catch { /* Already exited. */ }
         }
         await completion!;
+        for (const directory of outputDirectories) {
+            await Deno.remove(directory, { recursive: true }).catch((error) => {
+                if (!(error instanceof Deno.errors.NotFound)) throw error;
+            });
+        }
         await Deno.remove(dir, { recursive: true });
     }
 });

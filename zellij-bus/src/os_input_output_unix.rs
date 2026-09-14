@@ -413,6 +413,8 @@ impl PaneTransport {
 /// The Unix PTY backend. Manages native PTY file descriptors and signals.
 #[derive(Clone)]
 pub(crate) struct UnixPtyBackend {
+    // Serialize ownership changes through publication of a renamed session.
+    ownership: Arc<Mutex<()>>,
     orig_termios: Arc<Mutex<Option<termios::Termios>>>,
     terminal_id_to_transport: Arc<Mutex<BTreeMap<TerminalId, PaneTransport>>>,
     next_terminal_id_counter: Arc<AtomicU32>,
@@ -428,6 +430,8 @@ pub(crate) struct UnixPtyBackend {
     /// once for local supervisors, which have no controlling terminal to sample.
     wire_termios: Option<WireTermios>,
     terminal_id_to_host: Arc<Mutex<BTreeMap<TerminalId, PtyHostHandle>>>,
+    /// Populated only during an acknowledged shutdown, then consumed by its waiter.
+    shutdown_processes: Arc<Mutex<Option<Vec<ProcessId>>>>,
     /// Told when any pane's root process stops or resumes. Registered once by the
     /// pty thread rather than passed per pane — see `ChildStateCb`.
     child_state_cb: Arc<Mutex<Option<ChildStateCb>>>,
@@ -488,6 +492,7 @@ impl UnixPtyBackend {
         let wire_termios = current_termios.as_ref().map(WireTermios::from_termios);
         let host_bin = server_binary().cloned();
         Ok(Self {
+            ownership: Arc::new(Mutex::new(())),
             orig_termios: Arc::new(Mutex::new(current_termios)),
             terminal_id_to_transport: Arc::new(Mutex::new(BTreeMap::new())),
             next_terminal_id_counter: Arc::new(AtomicU32::new(0)),
@@ -495,6 +500,7 @@ impl UnixPtyBackend {
             host_bin,
             wire_termios,
             terminal_id_to_host: Arc::new(Mutex::new(BTreeMap::new())),
+            shutdown_processes: Arc::new(Mutex::new(None)),
             child_state_cb: Arc::new(Mutex::new(None)),
             agent_report_cb: Arc::new(Mutex::new(None)),
         })
@@ -526,21 +532,103 @@ impl UnixPtyBackend {
             .ok()
             .and_then(|mut hosts| hosts.remove(&terminal_id));
         if let Some(mut handle) = handle {
+            self.record_shutdown_processes(&handle).non_fatal();
             handle.terminate();
         }
     }
 
-    /// Terminate every supervisor this server owns. Belt and braces for session
-    /// shutdown: `clear_terminal_id` already covers each pane individually, but a
-    /// leaked supervisor is a leaked user process, so sweep before exiting.
+    /// Track only this shutdown, including panes still being spawned during teardown.
+    pub fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {
+        let hosts = self.terminal_id_to_host.lock().to_anyhow()?;
+        *self.shutdown_processes.lock().to_anyhow()? = Some(
+            hosts
+                .values()
+                .flat_map(|host| [host.host_pid, host.child_pid])
+                .collect(),
+        );
+        Ok(())
+    }
+
+    fn record_shutdown_processes(&self, handle: &PtyHostHandle) -> Result<()> {
+        if let Some(processes) = self.shutdown_processes.lock().to_anyhow()?.as_mut() {
+            processes.extend([handle.host_pid, handle.child_pid]);
+        }
+        Ok(())
+    }
+
+    pub fn confirm_pty_host_shutdown(&self) -> Result<()> {
+        let mut pending = self
+            .shutdown_processes
+            .lock()
+            .to_anyhow()?
+            .take()
+            .unwrap_or_default();
+        pending.sort_unstable();
+        pending.dedup();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !pending.is_empty() {
+            pending.retain(|pid| {
+                crate::pty_host::process_pid(*pid)
+                    .map(|pid| nix::sys::signal::kill(pid, None) != Err(nix::errno::Errno::ESRCH))
+                    .unwrap_or(true)
+            });
+            if pending.is_empty() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                bail!("owned pane teardown unconfirmed for processes {pending:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
+    /// Terminate every supervisor this server still owns after pane teardown.
     pub fn shutdown_pty_hosts(&self) {
+        let Ok(_ownership) = self.ownership.lock() else {
+            return;
+        };
         let handles: Vec<PtyHostHandle> = match self.terminal_id_to_host.lock() {
             Ok(mut hosts) => std::mem::take(&mut *hosts).into_values().collect(),
             Err(_) => return,
         };
         for mut handle in handles {
+            self.record_shutdown_processes(&handle).non_fatal();
             handle.terminate();
         }
+    }
+
+    pub fn rename_pty_host_session(
+        &self,
+        old: &zellij_types::internal_ids::SessionName,
+        new: &zellij_types::internal_ids::SessionName,
+    ) -> Result<()> {
+        self.rename_pty_host_session_in(&crate::pty_host::protocol::socket_dir(), old, new)
+    }
+
+    fn rename_pty_host_session_in(
+        &self,
+        dir: &std::path::Path,
+        old: &zellij_types::internal_ids::SessionName,
+        new: &zellij_types::internal_ids::SessionName,
+    ) -> Result<()> {
+        let _ownership = self.ownership.lock().to_anyhow()?;
+        let owned = self
+            .terminal_id_to_host
+            .lock()
+            .to_anyhow()?
+            .values()
+            .map(|handle| {
+                handle.control_socket.clone().with_context(|| {
+                    format!("supervisor {} has no socket for relabeling", handle.host_id)
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        crate::pty_host::cli::relabel_session_in(dir, &owned, old, new)?;
+        // Spawn and adoption read this under the same lock. Publishing later on
+        // the screen thread would leave a gap for a pane with the old name.
+        zellij_runtime::envs::set_session_name(new.clone());
+        Ok(())
     }
 
     fn spawn_via_pty_host(
@@ -615,6 +703,7 @@ impl UnixPtyBackend {
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         terminal_id: TerminalId,
     ) -> Result<(Box<dyn AsyncReader>, ProcessId)> {
+        let _ownership = self.ownership.lock().to_anyhow()?;
         // A re-run reuses the terminal_id, so an earlier supervisor for it would
         // otherwise be orphaned with nobody left holding its control channel.
         self.terminate_host(terminal_id);
@@ -1025,6 +1114,7 @@ impl UnixPtyBackend {
     }
 
     pub fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
+        let _ownership = self.ownership.lock().to_anyhow()?;
         // The single funnel for pane teardown: `Pty::close_pane` calls this, and
         // every path that closes a pane — ClosePane, CloseTab, spawn failures,
         // `Drop for Pty` at session shutdown — goes through it. Terminating here
@@ -1086,6 +1176,7 @@ impl UnixPtyBackend {
             return self.release_remote_terminal_for_warp(terminal_id, conn, budget);
         }
 
+        let _ownership = self.ownership.lock().to_anyhow()?;
         let handle = self
             .terminal_id_to_host
             .lock()
@@ -1246,6 +1337,7 @@ impl UnixPtyBackend {
         terminal_id: TerminalId,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<AdoptedTerminal> {
+        let _ownership = self.ownership.lock().to_anyhow()?;
         let pending = pty_host_client::attach(pty_host_client::AttachParams {
             control_socket,
             terminal_id,
@@ -1309,9 +1401,108 @@ mod tests {
     #[test]
     fn termios_supervisor_entry() {
         if std::env::var_os("ZELLIJ_TEST_TERMIOS_SUPERVISOR").is_some() {
+            if let Some(gate) = std::env::var_os("ZELLIJ_TEST_SPAWN_GATE") {
+                use std::io::Write;
+                let mut gate = std::os::unix::net::UnixStream::connect(gate).unwrap();
+                gate.set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                gate.write_all(b"ready").unwrap();
+                gate.read_exact(&mut [0]).unwrap();
+            }
             crate::pty_host::run_pty_host("termios-test/0".to_owned());
         }
         // Otherwise this is the suite proper, and the test below is what exercises this path.
+    }
+
+    #[test]
+    fn a_spawn_overlapping_rename_is_registered_before_the_new_name_is_published() {
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+        use zellij_runtime::envs;
+        let dir = tempfile::tempdir().unwrap();
+        let socket_root = dir.path().join("sock");
+        let gate_path = dir.path().join("gate");
+        let gate = UnixListener::bind(&gate_path).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let wrapper = dir.path().join("supervisor");
+        zellij_test_support::write_warm_script(&wrapper, &format!(
+            "ZELLIJ_SOCKET_DIR='{}' ZELLIJ_TEST_SPAWN_GATE='{}' ZELLIJ_TEST_TERMIOS_SUPERVISOR=1 exec '{}' --exact os_input_output_unix::tests::termios_supervisor_entry --nocapture\n",
+            socket_root.display(), gate_path.display(), exe.display(),
+        ));
+        let previous_name = envs::get_session_name().ok();
+        envs::set_session_name("spawn-old".into());
+        let mut backend = UnixPtyBackend::with_termios(None).unwrap();
+        backend.host_bin = Some(wrapper);
+        backend.pty_host_enabled.store(true, Ordering::SeqCst);
+        let spawning = backend.clone();
+        let spawn = thread::spawn(move || {
+            spawning.spawn_terminal(
+                RunCommand {
+                    command: PathBuf::from("/bin/sh"),
+                    args: vec!["-c".into(), "read line".into()],
+                    ..Default::default()
+                },
+                None,
+                Box::new(|_, _, _| {}),
+                TerminalId::new(0),
+            )
+        });
+        let (mut gate, _) = gate.accept().unwrap();
+        gate.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        gate.read_exact(&mut [0; 5]).unwrap();
+        // The real spawn is in flight, before the supervisor handshake and
+        // registration. Rename must use this exact lock, across backend clones.
+        assert!(matches!(
+            backend.ownership.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+        assert!(backend.terminal_id_to_host.lock().unwrap().is_empty());
+        let renaming = backend.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let started = barrier.clone();
+        let rename = thread::spawn(move || {
+            started.wait();
+            renaming.rename_pty_host_session_in(
+                &socket_root.join("pty"),
+                &"spawn-old".into(),
+                &"spawn-new".into(),
+            )
+        });
+        barrier.wait();
+        assert_eq!(envs::get_session_name().unwrap().as_str(), "spawn-old");
+        gate.write_all(b"go").unwrap();
+        let (_reader, child) = spawn.join().unwrap().unwrap();
+        let result = rename.join().unwrap();
+        let socket = backend
+            .terminal_id_to_host
+            .lock()
+            .unwrap()
+            .get(&TerminalId::new(0))
+            .unwrap()
+            .control_socket
+            .clone()
+            .unwrap();
+        let status = pty_host_client::query(&socket).unwrap();
+        let rejected = backend.rename_pty_host_session_in(
+            socket.parent().unwrap(),
+            &"spawn-old".into(),
+            &"must-not-publish".into(),
+        );
+        backend.begin_confirmed_pty_host_shutdown().unwrap();
+        backend.shutdown_pty_hosts();
+        backend.confirm_pty_host_shutdown().unwrap();
+        let published = envs::get_session_name().unwrap();
+        match previous_name {
+            Some(name) => envs::set_session_name(name),
+            None => std::env::remove_var(envs::SESSION_NAME_ENV_KEY),
+        }
+        result.unwrap();
+        assert!(rejected.is_err(), "a stale old name must reject rename");
+        assert_eq!(published.as_str(), "spawn-new");
+        assert_eq!(status.session_name.unwrap(), published);
+        assert_eq!(status.child_pid, Some(child));
+        assert!(status.attached);
     }
 
     #[tokio::test]

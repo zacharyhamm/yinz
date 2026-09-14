@@ -113,6 +113,7 @@ impl PendingHost {
             handle: PtyHostHandle {
                 host_id: std::mem::take(&mut self.host_id),
                 host_pid: self.host_pid,
+                child_pid: self.child_pid,
                 control_socket: self.control_socket.take(),
                 control: self.control.take().expect("control taken twice"),
                 reported,
@@ -143,6 +144,7 @@ pub struct SpawnedHost {
 /// The server's end of one supervisor. Dropping it does **not** kill the pane —
 /// that is the whole point. Only `terminate()` does.
 pub struct PtyHostHandle {
+    pub child_pid: ProcessId,
     pub host_id: SupervisorId,
     pub host_pid: ProcessId,
     pub control_socket: Option<PathBuf>,
@@ -261,6 +263,7 @@ impl PtyHostHandle {
         Self {
             host_id: SupervisorId::new("test"),
             host_pid: ProcessId::new(std::process::id()),
+            child_pid: ProcessId::new(std::process::id()),
             control_socket: None,
             control,
             reported: Arc::new(AtomicBool::new(false)),
@@ -593,6 +596,7 @@ impl PendingAttach {
             handle: PtyHostHandle {
                 host_id: std::mem::take(&mut self.host_id),
                 host_pid: self.host_pid,
+                child_pid: self.child_pid,
                 control_socket: Some(std::mem::take(&mut self.control_socket)),
                 control: self.control.take().expect("control taken twice"),
                 reported,
@@ -934,6 +938,42 @@ pub fn query(socket: &Path) -> Result<super::protocol::HostStatus> {
         Some(HostToServerMsg::Status(status)) => Ok(status),
         Some(other) => Err(anyhow!("expected Status, got {other:?}")),
         None => Err(anyhow!("pty-host closed the connection without replying")),
+    }
+}
+
+/// Relabel on a separate connection so the lifecycle reader cannot consume the ack.
+/// The caller must preflight `supports_relabel` before sending this message.
+pub fn relabel_via_socket(
+    socket: &Path,
+    expected_session: &SessionName,
+    session_name: &SessionName,
+    detached_only: bool,
+) -> Result<()> {
+    let mut stream = UnixStream::connect(socket)
+        .with_context(|| format!("failed to connect to {}", socket.display()))?;
+    stream
+        .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
+        .context("relabel read timeout")?;
+    stream
+        .set_write_timeout(Some(HANDSHAKE_TIMEOUT))
+        .context("relabel write timeout")?;
+    write_msg(
+        &mut stream,
+        &ServerToHostMsg::Relabel {
+            expected_session: expected_session.clone(),
+            session_name: session_name.clone(),
+            detached_only,
+        },
+    )
+    .context("failed to send Relabel")?;
+    match read_msg::<HostToServerMsg, _>(&mut stream)
+        .context("failed to read relabel acknowledgement; ownership may have changed")?
+    {
+        Some(HostToServerMsg::Relabelled) => Ok(()),
+        Some(HostToServerMsg::RelabelRefused { message }) => Err(anyhow!(message)),
+        other => Err(anyhow!(
+            "expected relabel acknowledgement, got {other:?}; ownership may have changed"
+        )),
     }
 }
 

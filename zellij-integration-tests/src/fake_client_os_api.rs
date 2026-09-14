@@ -23,6 +23,7 @@ type ServerSpawner = Box<dyn FnOnce(PathBuf) + Send>;
 fn server_message_name(msg: &ServerToClientMsg) -> String {
     match msg {
         ServerToClientMsg::AgentReportAccepted { .. } => "AgentReportAccepted",
+        ServerToClientMsg::KillSessionComplete { .. } => "KillSessionComplete",
         ServerToClientMsg::Render { .. } => "Render",
         ServerToClientMsg::UnblockInputThread => "UnblockInputThread",
         ServerToClientMsg::Exit { .. } => "Exit",

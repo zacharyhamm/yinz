@@ -6,6 +6,7 @@ socket environment. All Git changes and approvals are confined to a fresh /tmp r
 The repository and command transcripts remain available after the session stops.
 """
 import argparse
+import atexit
 import hashlib
 import fcntl
 import pty
@@ -135,6 +136,135 @@ def bridge(**request):
     if 'error' in result:
         raise RuntimeError(result['error'])
     return result['result']
+
+
+def fixture_processes():
+    """Every live process that runs this fixture's binary or names its root on its command line.
+
+    Supervisors are `setsid`'d and outlive the server on purpose, the managed Swamp
+    server is its own session, and stub agents fork sleepers: none of them are
+    reachable by parent pid, so the fixture root is the only thing they share."""
+    found = []
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit() or int(proc.name) == os.getpid(): continue
+        try:
+            argv = (proc / 'cmdline').read_bytes()
+            exe = os.readlink(str(proc / 'exe'))
+        except OSError:
+            continue
+        if exe.startswith(str(root) + os.sep) or str(root).encode() in argv:
+            found.append((int(proc.name), argv.replace(b'\0', b' ').decode(errors='replace').strip()))
+    return found
+
+
+def signal_until_gone(pids, grace):
+    """SIGTERM every pid (its whole process group when it leads one), then SIGKILL survivors."""
+    def deliver(pid, sig):
+        try:
+            target = -pid if os.getpgid(pid) == pid else pid
+        except OSError:
+            return
+        try:
+            os.kill(target, sig)
+        except OSError:
+            pass
+    for pid in pids: deliver(pid, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline and any(Path('/proc/' + str(pid)).exists() for pid in pids):
+        time.sleep(0.1)
+    for pid in pids:
+        if Path('/proc/' + str(pid)).exists(): deliver(pid, signal.SIGKILL)
+
+
+teardown_done = False
+ui_pid = ui_fd = None
+
+
+def teardown():
+    """Leave no fixture process behind, whatever state the run reached.
+
+    Each step stands alone: the server may be gone, the Swamp service may refuse to
+    stop while an execution is held. `kill-session` closes attached panes and sweeps
+    detached supervisors left by earlier incarnations of this session. Verify that
+    shutdown before fallback cleanup can hide any leaked processes."""
+    global teardown_done
+    if teardown_done: return
+    teardown_done = True
+    steps = []
+    def step(label, action):
+        try:
+            action()
+        except Exception as error:
+            steps.append((label, error))
+            transcript.write('teardown {}: {!r}\n'.format(label, error))
+            transcript.flush()
+    def release_files():
+        try:
+            (root / 'hold-review').unlink()
+        except FileNotFoundError:
+            pass
+        (root / 'release-live-command').touch()
+        (root / 'release-server-survival').touch()
+    def reap_ui():
+        global ui_pid, ui_fd
+        if ui_pid:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and os.waitpid(ui_pid, os.WNOHANG) == (0, 0):
+                time.sleep(0.1)
+            if Path('/proc/' + str(ui_pid)).exists():
+                try:
+                    os.kill(ui_pid, signal.SIGKILL)
+                    os.waitpid(ui_pid, 0)
+                except OSError:
+                    pass
+            ui_pid = 0
+        if ui_fd is not None:
+            os.close(ui_fd)
+            ui_fd = None
+    clean = False
+    try:
+        step('release', release_files)
+        step('kill-session', lambda: run(binary, 'kill-session', session))
+        step('workflow server stop', lambda: run(binary, 'workflow', 'server', 'stop'))
+        deadline = time.monotonic() + 10
+        while True:
+            survivors = fixture_processes()
+            supervisors = json.loads(run(binary, 'pty-host', 'list', '--json').stdout)
+            if not isinstance(supervisors, list):
+                raise ValueError('supervisor listing must be a JSON array')
+            if not survivors and not supervisors or time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+        # Capture the verification result before any forced cleanup.
+        clean = not (steps or survivors or supervisors)
+        if not clean:
+            print('FAIL: normal shutdown left processes or reported errors:', flush=True)
+            for pid, argv in survivors: print('  {} {}'.format(pid, argv[:160]), flush=True)
+            for host in supervisors: print('  supervisor {}'.format(host), flush=True)
+    except Exception as error:
+        steps.append(('verification', error))
+        transcript.write('teardown verification: {!r}\n'.format(error))
+        transcript.flush()
+    finally:
+        step('pty-host kill-all', lambda: run(binary, 'pty-host', 'kill-all'))
+        step('client', reap_ui)
+        step('sweep', lambda: signal_until_gone([pid for pid, _ in fixture_processes()], 5))
+    if steps: print('teardown steps failed:', steps, flush=True)
+    if clean: print('PASS: normal shutdown left no fixture processes', flush=True)
+    return clean
+
+
+atexit.register(teardown)
+
+
+def teardown_on_signal(signum, frame):
+    teardown()
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+for signum in (signal.SIGTERM, signal.SIGHUP):
+    signal.signal(signum, teardown_on_signal)
 
 
 def attached_pane(resource):
@@ -672,28 +802,32 @@ def lock_smoke():
         launch(token, checkout=str(checkout))
         q = menu(token)
         holder = hold('vanished-session')
-        answer(q, 'commit-and-rebase', 'answer-' + q['attributes']['run'])
-        pane = until('waiting commit pane', lambda: commit_pane(token))
-        pane_id = 'terminal_' + str(pane['id'])
-        screen = lambda: zellij('action', 'dump-screen', '--pane-id', pane_id)
-        until('lock holder named on screen', lambda: all(text in screen() for text in (
-            'Waiting for checkout lock', 'vanished-session', 'no longer exists', 'Ctrl-C')))
-        assert '$ git' not in screen()
-        head = run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout
-        if variant == 'release':
-            release(holder)
-            dismiss_commit(token)
-            menu(token)
-            assert run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout != head
-            assert not run('git', 'status', '--porcelain=v1', cwd=checkout).stdout
-        else:
-            zellij('action', 'write', '--pane-id', pane_id, '3')
-            q = until('cancelled commit returns its saved output', lambda: pending(token, 'commit-output'))
-            release(holder)
-            answer(q, 'return-to-menu', 'answer-' + q['attributes']['run'])
-            menu(token)
-            assert run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout == head
-            assert run('git', 'status', '--porcelain=v1', cwd=checkout).stdout == '?? dirty\n'
+        try:
+            answer(q, 'commit-and-rebase', 'answer-' + q['attributes']['run'])
+            pane = until('waiting commit pane', lambda: commit_pane(token))
+            pane_id = 'terminal_' + str(pane['id'])
+            screen = lambda: zellij('action', 'dump-screen', '--pane-id', pane_id)
+            until('lock holder named on screen', lambda: all(text in screen() for text in (
+                'Waiting for checkout lock', 'vanished-session', 'no longer exists', 'Ctrl-C')))
+            assert '$ git' not in screen()
+            head = run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout
+            if variant == 'release':
+                release(holder)
+                dismiss_commit(token)
+                menu(token)
+                assert run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout != head
+                assert not run('git', 'status', '--porcelain=v1', cwd=checkout).stdout
+            else:
+                zellij('action', 'write', '--pane-id', pane_id, '3')
+                q = until('cancelled commit returns its saved output', lambda: pending(token, 'commit-output'))
+                release(holder)
+                answer(q, 'return-to-menu', 'answer-' + q['attributes']['run'])
+                menu(token)
+                assert run('git', 'rev-parse', 'HEAD', cwd=checkout).stdout == head
+                assert run('git', 'status', '--porcelain=v1', cwd=checkout).stdout == '?? dirty\n'
+        finally:
+            # A failed assertion must not hold the target checkout lock until exit.
+            if not holder.closed: release(holder)
         q = menu(token)
         answer(q, 'leave', 'answer-' + q['attributes']['run'])
     print('PASS: a contended checkout lock names its stranded holder on screen; release proceeds and Ctrl-C cancels without mutation', flush=True)
@@ -845,15 +979,7 @@ try:
     survivor = bridge(method='agent_spawn', work='server-restart', key='worker', spec=dict(command='/usr/bin/python3', args=[str(main / 'extensions/tests/stub_agent.py')], cwd=str(topic), source_directory=str(topic)))
     bridge(method='agent_prompt', work='server-restart', key='before', agent='worker', prompt='Before restart')
     until('completion before server restart', lambda: bridge(method='observe', work='server-restart', key='before')['outcome'] == 'completed')
-    server_pids = []
-    for proc in Path('/proc').iterdir():
-        if not proc.name.isdigit(): continue
-        try:
-            argv = (proc / 'cmdline').read_bytes().split(b'\0')
-            if os.path.samefile(str(proc / 'exe'), str(binary)) and b'--server' in argv and any(str(root).encode() in arg for arg in argv):
-                server_pids.append(int(proc.name))
-        except OSError:
-            pass
+    server_pids = [pid for pid, argv in fixture_processes() if argv.split(' ')[:2] == [str(binary), '--server']]
     assert len(server_pids) == 1, 'Identify exactly the fixture server before interruption'
     held_workflow=swamp('workflow', 'create', 'server-survival')
     held_release=root / 'release-server-survival'
@@ -891,21 +1017,11 @@ try:
     assert not [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('plugin_url') == 'zellij:agent-exit']
     print('PASS: server crash/adoption retains ownership, resumes verified work, and delivers managed process exit', flush=True)
 finally:
-    # Python 3.7 has no missing_ok; a crash here would skip the session teardown below.
-    try:
-        (root / 'hold-review').unlink()
-    except FileNotFoundError:
-        pass
-    (root / 'release-live-command').touch()
-    (root / 'release-server-survival').touch()
-    # Runs outlive the session; stop the fixture service separately once idle.
-    run(binary, 'workflow', 'server', 'stop', check=False)
-    run(binary, 'kill-session', session, check=False)
-    if ui_pid: os.waitpid(ui_pid, 0)
-    if ui_fd is not None: os.close(ui_fd)
+    clean = teardown()
     transcript.close()
+    print('Retained evidence:', root, flush=True)
     launches=[json.loads(line) for line in (root / 'swamp-processes.jsonl').read_text().splitlines()]
     operations=[entry for entry in launches if entry['parent'] in ('zellij', 'swamp') and entry['command'][0] in ('workflow', 'model', 'data')]
     assert not operations, operations
     print('PASS: zero per-operation Swamp CLI launches from Zellij or Swamp', flush=True)
-    print('Retained evidence:', root, flush=True)
+    assert clean, 'the fixture must leave no processes behind'

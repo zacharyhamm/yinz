@@ -468,6 +468,18 @@ impl TestSession {
         self.fake_server_os_api.firecracker_session_stops()
     }
 
+    /// The session names whose orphaned pane supervisors the server asked to
+    /// have swept on its way out — one entry per `KillSession` exit, none for
+    /// any other exit. `quit` joins the server thread, so the list read after it
+    /// is final.
+    pub fn set_orphan_sweep_error(&self, error: String) {
+        self.fake_server_os_api.set_orphan_sweep_error(error);
+    }
+
+    pub fn orphan_sweeps(&self) -> Vec<String> {
+        self.fake_server_os_api.orphan_sweeps()
+    }
+
     /// How many of those stops happened while a pane was still open.
     pub fn firecracker_stops_with_live_panes(&self) -> usize {
         self.fake_server_os_api.firecracker_stops_with_live_panes()

@@ -25,6 +25,7 @@ pub enum ServerInstruction {
     RemoveClient(ClientId),
     Error(String),
     KillSession,
+    KillSessionWithCompletion(ClientId),
     DetachSession(Vec<ClientId>, Option<NotificationEnd>),
     AttachClient(
         CliAssets,
@@ -97,6 +98,7 @@ impl From<&ServerInstruction> for ServerContext {
             ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,
             ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
             ServerInstruction::ResolveLockedEscape(..) => ServerContext::ChangeMode,
+            ServerInstruction::KillSessionWithCompletion(..) => ServerContext::KillSession,
             other => {
                 let name: &'static str = other.into();
                 ServerContext::from_str(name).unwrap_or_else(|_| {

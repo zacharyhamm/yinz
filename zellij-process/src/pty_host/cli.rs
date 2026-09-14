@@ -2,12 +2,14 @@
 //! session.
 //!
 //! Not a nicety. A server that is `kill -9`'d (or OOM-killed) deliberately leaves
-//! its supervisors running, and nothing else will ever reclaim them, so without
-//! this the only evidence a pane survived is a stray process in `ps`.
+//! its supervisors running. Only two things reclaim them: these commands, and
+//! `zellij kill-session <name>`, which sweeps the unattached supervisors labelled
+//! with the session it kills (`terminate_orphans_of_session`). Without those the
+//! only evidence a pane survived is a stray process in `ps`.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use zellij_types::internal_ids::SupervisorId;
+use zellij_types::internal_ids::{SessionName, SupervisorId};
 use zellij_types::units::UnixSeconds;
 
 use zellij_runtime::errors::prelude::*;
@@ -35,6 +37,10 @@ fn collect() -> Result<Vec<Entry>> {
 /// enumerating — and garbage collecting — the sockets of whatever sessions the
 /// developer running the suite happens to have open.
 fn collect_from(dir: &Path) -> Result<Vec<Entry>> {
+    collect_from_checked(dir, false)
+}
+
+fn collect_from_checked(dir: &Path, strict: bool) -> Result<Vec<Entry>> {
     let read_dir = match std::fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -58,6 +64,7 @@ fn collect_from(dir: &Path) -> Result<Vec<Entry>> {
             continue;
         }
         match client::query(&path) {
+            Err(e) if strict => return Err(e),
             Ok(status) => entries.push(Entry { path, status }),
             Err(e) => {
                 // Logged rather than printed: this also runs inside the server,
@@ -493,6 +500,201 @@ pub fn kill_all() -> Result<()> {
     }
     println!("Terminated {killed} pane supervisor(s).");
     Ok(())
+}
+
+/// Relabel this server's supervisors and the old session's orphans as one batch.
+/// The backend holds its ownership lock until it publishes the new session name.
+pub fn relabel_session_in(
+    dir: &Path,
+    owned: &[PathBuf],
+    old: &SessionName,
+    new: &SessionName,
+) -> Result<()> {
+    let mut entries = collect_from_checked(dir, true)?;
+    // Owned supervisors need not live in the discovery directory. Missing or
+    // unqueryable owned sockets must fail preflight rather than skip a pane.
+    for path in owned {
+        if !entries.iter().any(|entry| &entry.path == path) {
+            entries.push(Entry {
+                path: path.clone(),
+                status: client::query(path)?,
+            });
+        }
+    }
+    entries.retain(|entry| {
+        owned.contains(&entry.path)
+            || (!entry.status.attached && entry.status.session_name.as_ref() == Some(old))
+    });
+    for entry in &entries {
+        if !entry.status.supports_relabel {
+            bail!(
+                "supervisor {} does not support session relabeling",
+                entry.status.host_id
+            );
+        }
+        if entry.status.session_name.as_ref() != Some(old) {
+            bail!(
+                "supervisor {} no longer belongs to {old}",
+                entry.status.host_id
+            );
+        }
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        if let Err(error) =
+            client::relabel_via_socket(&entry.path, old, new, !owned.contains(&entry.path))
+        {
+            let mut message = format!(
+                "failed to relabel supervisor {}: {error:#}",
+                entry.status.host_id
+            );
+            for changed in entries[..index].iter().rev() {
+                if let Err(rollback) = client::relabel_via_socket(
+                    &changed.path,
+                    new,
+                    old,
+                    !owned.contains(&changed.path),
+                ) {
+                    message.push_str(&format!(
+                        "; rollback failed for supervisor {}: {rollback:#}",
+                        changed.status.host_id
+                    ));
+                }
+            }
+            bail!(message);
+        }
+    }
+    Ok(())
+}
+
+/// Terminate every unattached supervisor that labels itself with `session`.
+///
+/// This is what `kill-session` reaches for after its own panes are closed: a
+/// server that died without shutting down left its supervisors detached, and
+/// killing the session by name is the user saying those panes are done too. The
+/// `attached` check is the whole safety of it — a supervisor another live server
+/// holds is never touched, whatever it is called.
+pub fn terminate_orphans_of_session(session: &str) -> Result<Vec<HostStatus>> {
+    terminate_orphans_of_session_in(&protocol::socket_dir(), session)
+}
+
+pub(crate) fn terminate_orphans_of_session_in(
+    dir: &Path,
+    session: &str,
+) -> Result<Vec<HostStatus>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to start orphan cleanup runtime")?;
+    runtime.block_on(async {
+        use futures_util::{stream, StreamExt};
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut terminated = Vec::new();
+        let mut errors = Vec::new();
+        let mut unresolved = std::collections::BTreeSet::new();
+        let sweep = async {
+            let mut paths = Vec::new();
+            let mut dir = match tokio::fs::read_dir(dir).await {
+                Ok(dir) => dir,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(e).context("failed to discover supervisors"),
+            };
+            while let Some(entry) = dir
+                .next_entry()
+                .await
+                .context("incomplete supervisor discovery")?
+            {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("sock") {
+                    unresolved.insert(path.clone());
+                    paths.push(path);
+                }
+            }
+            let mut pending = stream::iter(paths.into_iter().map(|path| async move {
+                let result = sweep_socket(&path, session)
+                    .await
+                    .with_context(|| format!("unresolved supervisor {}", path.display()));
+                (path, result)
+            }))
+            .buffer_unordered(32);
+            while let Some((path, result)) = pending.next().await {
+                unresolved.remove(&path);
+                match result {
+                    Ok(Some(status)) => terminated.push(status),
+                    Ok(None) => {},
+                    Err(e) => errors.push(format!("{e:#}")),
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        };
+        match tokio::time::timeout_at(deadline, sweep).await {
+            Ok(Ok(())) => {},
+            Ok(Err(e)) => errors.push(format!("{e:#}")),
+            Err(_) => errors.push(format!(
+                "five-second orphan sweep deadline exceeded; discovery or cleanup incomplete; unresolved supervisors: {unresolved:?}"
+            )),
+        }
+        if !errors.is_empty() {
+            bail!("incomplete orphan cleanup: {}", errors.join("; "));
+        }
+        Ok(terminated)
+    })
+}
+
+async fn supervisor_request(
+    path: &Path,
+    request: &protocol::ServerToHostMsg,
+) -> Result<protocol::HostToServerMsg> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::UnixStream::connect(path)
+        .await
+        .context("failed to connect")?;
+    let mut request_bytes = Vec::new();
+    protocol::write_msg(&mut request_bytes, request)?;
+    stream
+        .write_all(&request_bytes)
+        .await
+        .context("failed to send supervisor request")?;
+    let len = stream
+        .read_u32_le()
+        .await
+        .context("supervisor did not confirm operation (EOF or unsupported protocol)")?;
+    if len > protocol::MAX_FRAME_LEN {
+        bail!("oversized supervisor reply");
+    }
+    let mut body = vec![0; len as usize];
+    stream
+        .read_exact(&mut body)
+        .await
+        .context("incomplete supervisor reply")?;
+    serde_json::from_slice(&body).context("unsupported supervisor reply")
+}
+
+async fn sweep_socket(path: &Path, session: &str) -> Result<Option<HostStatus>> {
+    use protocol::{HostToServerMsg, ServerToHostMsg};
+    let HostToServerMsg::Status(status) = supervisor_request(path, &ServerToHostMsg::Query).await?
+    else {
+        bail!("supervisor did not answer discovery query");
+    };
+    if status.attached || status.session_name.as_ref().map(SessionName::as_str) != Some(session) {
+        return Ok(None);
+    }
+    match supervisor_request(
+        path,
+        &ServerToHostMsg::TerminateDetached {
+            expected_session: session.to_owned().into(),
+        },
+    )
+    .await?
+    {
+        HostToServerMsg::TerminationComplete {
+            error: Some(error), ..
+        } => bail!(error),
+        HostToServerMsg::TerminationComplete {
+            terminated,
+            error: None,
+        } => Ok(terminated.then_some(status)),
+        _ => bail!("supervisor cannot confirm conditional termination; cleanup incomplete"),
+    }
 }
 
 #[cfg(test)]

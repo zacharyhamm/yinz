@@ -398,7 +398,7 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape"];
+    special: ["FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "KillSessionWithCompletion"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
         (
@@ -410,6 +410,11 @@ pin_context_to_instruction! {
             "AttachWatcherClient",
             ServerInstruction::AttachWatcherClient(ClientId::new(1), Size::default()),
             "AttachClient"
+        ),
+        (
+            "KillSessionWithCompletion",
+            ServerInstruction::KillSessionWithCompletion(ClientId::new(1)),
+            "KillSession"
         ),
         (
             "ResolveLockedEscape",

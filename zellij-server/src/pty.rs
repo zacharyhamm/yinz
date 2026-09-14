@@ -597,17 +597,12 @@ fn terminal_quit_callback(
                 )]));
             }
         }
-        if hold_on_close {
-            let _ =
-                senders.send_to_screen(ScreenInstruction::HoldPane(pane_id, exit_status, command));
-        } else {
-            let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
-                pane_id,
-                None,
-                None,
-                exit_status,
-            ));
-        }
+        let _ = senders.send_to_screen(terminal_exit_instruction(
+            pane_id,
+            exit_status,
+            command,
+            hold_on_close,
+        ));
         if let PaneId::Terminal(terminal_id) = pane_id {
             if let Some(plugin) = command_plugin.as_ref() {
                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
@@ -2250,7 +2245,8 @@ impl Pty {
 
         // Behind the `ApplyLayout` on the same channel, so the panes exist by
         // the time these land. An adopted pane whose child is already gone is
-        // then held, showing the status it exited with.
+        // then held, showing the status it exited with, or closed if it would
+        // not have been held in its old session either.
         if let Some((tiled, floating)) = adopted_panes {
             for terminal in tiled.into_iter().chain(floating) {
                 if !terminal.replay.is_empty() {
@@ -2272,13 +2268,17 @@ impl Pty {
                         .with_context(err_context)?;
                 }
                 if let Some(exit_status) = terminal.child_exit_status {
+                    let pane_id = PaneId::Terminal(terminal.terminal_id);
+                    let hold_on_close = terminal.cmd.hold_on_close;
+                    let instruction = terminal_exit_instruction(
+                        pane_id,
+                        exit_status,
+                        terminal.cmd,
+                        hold_on_close,
+                    );
                     self.bus
                         .senders
-                        .send_to_screen(ScreenInstruction::HoldPane(
-                            PaneId::Terminal(terminal.terminal_id),
-                            exit_status,
-                            terminal.cmd,
-                        ))
+                        .send_to_screen(instruction)
                         .with_context(err_context)?;
                 }
             }
@@ -3122,11 +3122,8 @@ impl Pty {
             ),
         };
 
-        // Built before the attach, because `adopt_terminal` hands it to the
-        // reader thread. `hold_on_close` is the only thing that varies, and it
-        // comes from the supervisor — which we have not asked yet — so this
-        // closure reads it from a cell the attach fills in. Simpler: attach
-        // first is impossible, so the callback consults the command it is given.
+        // The supervisor supplies the command during attach, so the callback uses
+        // the received command's hold policy.
         let senders = self.bus.senders.clone();
         let quit_cb = Box::new(move |pane_id, exit_status, command: RunCommand| {
             // Deliberately no `CommandPaneExited`/`EditPaneExited`: an
@@ -3148,20 +3145,13 @@ impl Pty {
                     Event::CommandPaneExited(terminal_id, exit_status, context),
                 )]));
             }
-            if command.hold_on_close {
-                let _ = senders.send_to_screen(ScreenInstruction::HoldPane(
-                    pane_id,
-                    exit_status,
-                    command,
-                ));
-            } else {
-                let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
-                    pane_id,
-                    None,
-                    None,
-                    exit_status,
-                ));
-            }
+            let hold_on_close = command.hold_on_close;
+            let _ = senders.send_to_screen(terminal_exit_instruction(
+                pane_id,
+                exit_status,
+                command,
+                hold_on_close,
+            ));
         });
 
         let adopted = self

@@ -137,7 +137,10 @@ impl From<ServerToClientMsg> for ClientInstruction {
             // Subscribe-only messages — not handled by regular interactive clients
             ServerToClientMsg::PaneRenderUpdate { .. } => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::SubscribedPaneClosed { .. } => ClientInstruction::UnblockInputThread,
-            ServerToClientMsg::AgentReportAccepted { .. } => ClientInstruction::UnblockInputThread,
+            ServerToClientMsg::AgentReportAccepted { .. }
+            | ServerToClientMsg::KillSessionComplete { .. } => {
+                ClientInstruction::UnblockInputThread
+            },
             ServerToClientMsg::EventUpdate { .. } => ClientInstruction::UnblockInputThread,
         }
     }

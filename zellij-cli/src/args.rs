@@ -630,6 +630,9 @@ pub enum Sessions {
     },
 
     /// Kill a specific session
+    ///
+    /// Also terminates any detached pane supervisors an earlier crash of that session
+    /// left behind (see `zellij pty-host list`).
     #[clap(visible_alias = "k")]
     KillSession {
         /// Name of target session

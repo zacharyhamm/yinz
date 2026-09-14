@@ -18,6 +18,7 @@ message ClientToServerMsg {
     KeyMsg key = 10;
     ClientExitedMsg client_exited = 11;
     KillSessionMsg kill_session = 12;
+    KillSessionMsg kill_session_with_completion = 32;
     ConnStatusMsg conn_status = 13;
     AttachWatcherClientMsg attach_watcher_client = 16;
     SubscribeToPaneRendersMsg subscribe_to_pane_renders = 17;

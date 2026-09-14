@@ -28,7 +28,6 @@ use zellij_config::config::Config;
 use zellij_ipc::get_mode_info;
 use zellij_ipc::nested_session;
 use zellij_ipc::nested_session::NestedSessionMessage;
-use zellij_runtime::envs::set_session_name;
 use zellij_types::diagnostics::ContextType;
 use zellij_types::pane_size::Size;
 use zellij_types::style::HostTerminalThemeMode;
@@ -4527,6 +4526,26 @@ pub(crate) fn screen_thread_main(
                         let err_context = || "Failed to rename session".to_string();
                         let old_session_name = screen.session_name.clone();
 
+                        if let Some(os_input) = &screen.bus.os_input {
+                            if let Err(error) =
+                                os_input.rename_pty_host_session(&old_session_name, &name)
+                            {
+                                let error_text = format!("Failed to rename session: {error:#}");
+                                os_input
+                                    .send_to_client(
+                                        client_id,
+                                        ServerToClientMsg::LogError {
+                                            lines: vec![error_text],
+                                        },
+                                    )
+                                    .non_fatal();
+                                Err::<(), _>(error)
+                                    .context("Failed to rename session")
+                                    .non_fatal();
+                                break 'instruction;
+                            }
+                        }
+
                         // update state
                         screen.session_name = name.clone();
                         screen.default_mode_info.session_name = Some(name.clone());
@@ -4562,8 +4581,6 @@ pub(crate) fn screen_thread_main(
                             .log_and_report_session_state()
                             .with_context(err_context)?;
 
-                        // set the env variable
-                        set_session_name(name.clone());
                         if let Some(os_input) = &screen.bus.os_input {
                             os_input.rename_firecracker_session(name.to_string());
                         }

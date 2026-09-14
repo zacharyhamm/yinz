@@ -1,8 +1,8 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::type_complexity)]
 use crate::{ClientId, PaneId};
-use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
+use zellij_types::internal_ids::{ProcessId, SessionName};
 use zellij_types::style::default_palette;
 
 use interprocess::local_socket::Stream as LocalSocketStream;
@@ -1094,6 +1094,24 @@ pub trait ServerOsApi: Send + Sync {
     fn begin_firecracker_shutdown(&self) {}
     /// Terminate every pty-host supervisor this server owns, on the way out.
     fn shutdown_pty_hosts(&self) {}
+    fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {
+        Ok(())
+    }
+    fn confirm_pty_host_shutdown(&self) -> Result<()> {
+        Ok(())
+    }
+    /// Relabel local supervisors before publishing a session rename.
+    fn rename_pty_host_session(&self, _old: &SessionName, new: &SessionName) -> Result<()> {
+        zellij_runtime::envs::set_session_name(new.clone());
+        Ok(())
+    }
+    /// Terminate the unattached supervisors labelled with `session`, on the way
+    /// out of a `KillSession` only. They are what an earlier incarnation of this
+    /// session left behind when it died without shutting down; killing the
+    /// session by name is the user saying those panes are done too.
+    fn terminate_orphaned_pty_hosts(&self, _session: &str) -> Result<()> {
+        Ok(())
+    }
     /// Wait for queued client messages to reach their sockets, on the way out.
     ///
     /// `send_to_client` only queues; a per-client writer thread does the actual
@@ -1667,6 +1685,12 @@ impl ServerOsApi for ServerOsInputOutput {
         self.firecracker_renames.close();
     }
     #[cfg(not(windows))]
+    fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {
+        self.pty_backend.begin_confirmed_pty_host_shutdown()
+    }
+    fn confirm_pty_host_shutdown(&self) -> Result<()> {
+        self.pty_backend.confirm_pty_host_shutdown()
+    }
     fn shutdown_pty_hosts(&self) {
         self.pty_backend.shutdown_pty_hosts();
         // The ssh forwards go with them. The brokers and their panes on the far
@@ -1675,6 +1699,14 @@ impl ServerOsApi for ServerOsInputOutput {
         // with the session — but leaving forwards behind would leak ssh
         // processes and bound sockets on the way out.
         self.remote_hosts.shutdown();
+    }
+    #[cfg(not(windows))]
+    fn rename_pty_host_session(&self, old: &SessionName, new: &SessionName) -> Result<()> {
+        self.pty_backend.rename_pty_host_session(old, new)
+    }
+    #[cfg(not(windows))]
+    fn terminate_orphaned_pty_hosts(&self, session: &str) -> Result<()> {
+        crate::pty_host::cli::terminate_orphans_of_session(session).map(|_| ())
     }
 
     fn flush_client_writers(&self, deadline: Duration) {

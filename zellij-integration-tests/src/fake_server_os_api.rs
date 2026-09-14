@@ -71,9 +71,22 @@ pub struct FakeServerOsApi {
     /// and nothing else observes it; a stop counted here happened too early.
     firecracker_stops_with_live_panes: Arc<AtomicUsize>,
     firecracker_provider_lock: Arc<Mutex<Option<PathBuf>>>,
+    /// The session names the server asked to have their orphaned supervisors
+    /// swept, on its way out. Only a `KillSession` exit asks; the fake records
+    /// rather than sweeps, since a fake pane has no supervisor process.
+    orphan_sweeps: Arc<Mutex<Vec<String>>>,
+    orphan_sweep_error: Arc<Mutex<Option<String>>>,
 }
 
 impl FakeServerOsApi {
+    pub fn set_orphan_sweep_error(&self, error: String) {
+        *self.orphan_sweep_error.lock().unwrap() = Some(error);
+    }
+
+    pub fn orphan_sweeps(&self) -> Vec<String> {
+        self.orphan_sweeps.lock().unwrap().clone()
+    }
+
     pub fn written_files(&self) -> HashMap<String, String> {
         self.fake_filesystem.lock().unwrap().clone()
     }
@@ -366,6 +379,13 @@ impl ServerOsApi for FakeServerOsApi {
         }
         self.firecracker_session_stops
             .fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    fn terminate_orphaned_pty_hosts(&self, session: &str) -> Result<()> {
+        self.orphan_sweeps.lock().unwrap().push(session.to_owned());
+        if let Some(error) = self.orphan_sweep_error.lock().unwrap().as_ref() {
+            bail!("{error}");
+        }
         Ok(())
     }
     fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {

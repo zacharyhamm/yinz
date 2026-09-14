@@ -4046,6 +4046,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::ClientExited);
     test_client_roundtrip!(ClientToServerMsg::KillSession);
+    test_client_roundtrip!(ClientToServerMsg::KillSessionWithCompletion);
     test_client_roundtrip!(ClientToServerMsg::ConnStatus);
     test_client_roundtrip!(ClientToServerMsg::RequestSessionList);
     test_client_roundtrip!(ClientToServerMsg::HostTerminalFocusChanged { focused: true });
@@ -4413,6 +4414,10 @@ fn test_client_messages() {
 }
 
 fn test_server_messages() {
+    test_server_roundtrip!(ServerToClientMsg::KillSessionComplete { error: None });
+    test_server_roundtrip!(ServerToClientMsg::KillSessionComplete {
+        error: Some("cleanup failed".into())
+    });
     test_server_roundtrip!(ServerToClientMsg::AgentReportAccepted {
         report_id: "00000000-0000-4000-8000-000000000001".into(),
     });
