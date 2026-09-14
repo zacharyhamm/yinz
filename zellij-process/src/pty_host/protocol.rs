@@ -31,7 +31,7 @@ pub const PROTOCOL_VERSION: u32 = 2;
 pub const CONTROL_FD: std::os::unix::io::RawFd = 3;
 
 /// Refuse absurd frames rather than allocating whatever a peer claims.
-const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
+pub(super) const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerToHostMsg {
@@ -91,7 +91,18 @@ pub enum ServerToHostMsg {
     /// Kill the child and exit. Nothing else ends a supervisor — a dropped
     /// control connection means "detached", not "shut down".
     Terminate,
+    /// Atomically check ownership; reply only after child teardown.
+    TerminateDetached {
+        expected_session: SessionName,
+    },
     Query,
+    /// Change ownership labels without releasing the master or consuming output.
+    /// Callers must first check `HostStatus::supports_relabel`.
+    Relabel {
+        expected_session: SessionName,
+        session_name: SessionName,
+        detached_only: bool,
+    },
     /// Give the pane up without killing it, so someone else can take it.
     ///
     /// A dropped control channel already means "detached", so this carries no
@@ -156,6 +167,14 @@ pub enum HostToServerMsg {
     /// it — an external `kill -CONT` clears the pane's suspended state too.
     ChildContinued,
     Status(HostStatus),
+    Relabelled,
+    TerminationComplete {
+        terminated: bool,
+        error: Option<String>,
+    },
+    RelabelRefused {
+        message: String,
+    },
     /// Sent with the pty master fd as `SCM_RIGHTS` ancillary data, exactly like
     /// `Spawned`. The connection this arrives on is the new control channel.
     AttachAck {
@@ -219,6 +238,8 @@ pub struct HostStatus {
     pub host_pid: ProcessId,
     pub started_at_unix: UnixSeconds,
     pub attached: bool,
+    #[serde(default)]
+    pub supports_relabel: bool,
     /// `Some(status)` once the child has exited; `None` while it is running.
     pub child_exit_status: Option<Option<i32>>,
     /// The whole owned process group is gone, including children of an exited wrapper.

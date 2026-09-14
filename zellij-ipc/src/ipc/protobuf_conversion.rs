@@ -39,6 +39,7 @@ use {
     crate::client_server_contract::client_server_contract::HostTerminalThemeIndication as ProtoHostTerminalThemeIndication,
     crate::client_server_contract::client_server_contract::InputMode as ProtoInputMode,
     crate::client_server_contract::client_server_contract::KeyMsg,
+    crate::client_server_contract::client_server_contract::KillSessionCompleteMsg,
     crate::client_server_contract::client_server_contract::KillSessionMsg,
     crate::client_server_contract::client_server_contract::KittyGraphicsSupportMsg,
     crate::client_server_contract::client_server_contract::LayoutMetadata as ProtoLayoutMetadata,
@@ -169,6 +170,9 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             }),
             ClientToServerMsg::ClientExited => {
                 client_to_server_msg::Message::ClientExited(ClientExitedMsg {})
+            },
+            ClientToServerMsg::KillSessionWithCompletion => {
+                client_to_server_msg::Message::KillSessionWithCompletion(KillSessionMsg {})
             },
             ClientToServerMsg::KillSession => {
                 client_to_server_msg::Message::KillSession(KillSessionMsg {})
@@ -372,6 +376,9 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             Some(client_to_server_msg::Message::ClientExited(_)) => {
                 Ok(ClientToServerMsg::ClientExited)
             },
+            Some(client_to_server_msg::Message::KillSessionWithCompletion(_)) => {
+                Ok(ClientToServerMsg::KillSessionWithCompletion)
+            },
             Some(client_to_server_msg::Message::KillSession(_)) => {
                 Ok(ClientToServerMsg::KillSession)
             },
@@ -454,6 +461,9 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
 impl From<ServerToClientMsg> for ProtoServerToClientMsg {
     fn from(msg: ServerToClientMsg) -> Self {
         let message = match msg {
+            ServerToClientMsg::KillSessionComplete { error } => {
+                server_to_client_msg::Message::KillSessionComplete(KillSessionCompleteMsg { error })
+            },
             ServerToClientMsg::AgentReportAccepted { report_id } => {
                 server_to_client_msg::Message::AgentReportAccepted(AgentReportAcceptedMsg {
                     report_id,
@@ -563,6 +573,9 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
 
     fn try_from(msg: ProtoServerToClientMsg) -> Result<Self> {
         match msg.message {
+            Some(server_to_client_msg::Message::KillSessionComplete(msg)) => {
+                Ok(ServerToClientMsg::KillSessionComplete { error: msg.error })
+            },
             Some(server_to_client_msg::Message::AgentReportAccepted(msg)) => {
                 Ok(ServerToClientMsg::AgentReportAccepted {
                     report_id: msg.report_id,

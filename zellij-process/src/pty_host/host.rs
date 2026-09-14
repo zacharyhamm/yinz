@@ -421,6 +421,24 @@ struct HostContext {
 }
 
 impl HostContext {
+    fn relabel(
+        &mut self,
+        expected_session: SessionName,
+        session_name: SessionName,
+        detached_only: bool,
+    ) -> HostToServerMsg {
+        if self.session_name.as_ref() != Some(&expected_session)
+            || (detached_only && self.state == State::Attached)
+        {
+            return HostToServerMsg::RelabelRefused {
+                message: format!("supervisor {} ownership changed", self.host_id),
+            };
+        }
+        self.label = format!("{session_name}/{}", self.terminal_id);
+        self.session_name = Some(session_name);
+        HostToServerMsg::Relabelled
+    }
+
     fn status(&self) -> HostStatus {
         HostStatus {
             host_id: self.host_id.clone(),
@@ -432,6 +450,7 @@ impl HostContext {
             host_pid: self.host_pid,
             started_at_unix: self.started_at_unix,
             attached: self.state == State::Attached,
+            supports_relabel: true,
             child_exit_status: self.session.as_ref().and_then(|s| s.exit_status),
             child_group_terminated: self
                 .session
@@ -577,6 +596,21 @@ fn event_loop(
                         match listener.accept() {
                             Ok((stream, _)) => match serve_cli_connection(ctx, stream) {
                                 CliOutcome::Done => {},
+                                CliOutcome::TerminateWithCompletion(mut stream) => {
+                                    let child_pid = ctx.session.as_ref().map(|s| s.child_pid);
+                                    terminate(ctx, &event_rx);
+                                    let error = child_pid
+                                        .filter(|pid| {
+                                            kill(super::kernel_pid(*pid), None) != Err(Errno::ESRCH)
+                                        })
+                                        .map(|_| "child teardown unconfirmed".to_owned());
+                                    let reply = HostToServerMsg::TerminationComplete {
+                                        terminated: true,
+                                        error,
+                                    };
+                                    let _ = write_msg(&mut stream, &reply);
+                                    return Ok(());
+                                },
                                 CliOutcome::Terminate => {
                                     terminate(ctx, &event_rx);
                                     return Ok(());
@@ -627,6 +661,15 @@ fn handle_server_msg(
     event_rx: &Receiver<HostEvent>,
 ) -> Result<ControlOutcome> {
     match msg {
+        ServerToHostMsg::Relabel {
+            expected_session,
+            session_name,
+            detached_only,
+        } => {
+            let reply = ctx.relabel(expected_session, session_name, detached_only);
+            write_msg(control, &reply).context("failed to acknowledge relabel")?;
+            Ok(ControlOutcome::Continue)
+        },
         ServerToHostMsg::Terminate => {
             terminate(ctx, event_rx);
             Ok(ControlOutcome::Exit)
@@ -644,7 +687,7 @@ fn handle_server_msg(
             );
             Ok(ControlOutcome::Detach)
         },
-        ServerToHostMsg::Attach { .. } => {
+        ServerToHostMsg::TerminateDetached { .. } | ServerToHostMsg::Attach { .. } => {
             // An `Attach` only makes sense from someone who is *not* already the
             // control channel, and the accepted connection has to become the new
             // channel, which a message here cannot do.
@@ -776,6 +819,7 @@ enum CliOutcome {
     /// Answered in place; the connection is finished with.
     Done,
     Terminate,
+    TerminateWithCompletion(UnixStream),
     /// The connection has become our new control channel.
     Attached(UnixStream),
 }
@@ -786,9 +830,33 @@ fn serve_cli_connection(ctx: &mut HostContext, mut stream: UnixStream) -> CliOut
     let _ = stream.set_read_timeout(Some(CLI_CONNECTION_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CLI_CONNECTION_TIMEOUT));
     match read_msg::<ServerToHostMsg, _>(&mut stream) {
+        Ok(Some(ServerToHostMsg::Relabel {
+            expected_session,
+            session_name,
+            detached_only,
+        })) => {
+            let reply = ctx.relabel(expected_session, session_name, detached_only);
+            let _ = write_msg(&mut stream, &reply);
+            CliOutcome::Done
+        },
         Ok(Some(ServerToHostMsg::Query)) => {
             let _ = write_msg(&mut stream, &HostToServerMsg::Status(ctx.status()));
             CliOutcome::Done
+        },
+        Ok(Some(ServerToHostMsg::TerminateDetached { expected_session })) => {
+            if ctx.state == State::Detached && ctx.session_name.as_ref() == Some(&expected_session)
+            {
+                CliOutcome::TerminateWithCompletion(stream)
+            } else {
+                let _ = write_msg(
+                    &mut stream,
+                    &HostToServerMsg::TerminationComplete {
+                        terminated: false,
+                        error: None,
+                    },
+                );
+                CliOutcome::Done
+            }
         },
         Ok(Some(ServerToHostMsg::Terminate)) => {
             let _ = write_msg(&mut stream, &HostToServerMsg::Status(ctx.status()));

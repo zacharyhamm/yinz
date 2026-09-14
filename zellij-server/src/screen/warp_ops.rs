@@ -7,7 +7,8 @@ use super::{PreparedTabWarp, Screen, ScreenInstruction, WarpAddress};
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::pty::{
-    AdoptedPane, AdoptedTabPanes, AdoptedTabTerminal, ClientTabIndexOrPaneId, PtyInstruction,
+    held_command_on_exit, terminal_exit_instruction, AdoptedPane, AdoptedTabPanes,
+    AdoptedTabTerminal, ClientTabIndexOrPaneId, PtyInstruction,
 };
 use crate::pty_host::client::ReleasedPane;
 use crate::session_layout_metadata::PaneLayoutMetadata;
@@ -797,8 +798,10 @@ impl Screen {
         let pane_id = PaneId::Terminal(terminal_id);
         let invoked_with = Some(Run::Command(cmd.clone()));
         // A pane whose child is already gone should arrive held, showing its exit
-        // status, rather than pretending to run.
-        let hold_for_command = child_exit_status.map(|_| cmd.clone());
+        // status, rather than pretending to run — but only if it would have been
+        // held in the session it came from. Otherwise it is closed below, exactly
+        // as the supervisor's replayed exit would close it through `quit_cb`.
+        let hold_for_command = held_command_on_exit(&cmd, child_exit_status);
         let focus_client = match placement {
             WarpPlacement::FocusedTab => self.connected_client_to_act_for(client_id),
             _ => None,
@@ -893,9 +896,11 @@ impl Screen {
                 .with_context(err_context)?;
         }
         if let Some(exit_status) = child_exit_status {
+            let hold_on_close = cmd.hold_on_close;
+            let instruction = terminal_exit_instruction(pane_id, exit_status, cmd, hold_on_close);
             self.bus
                 .senders
-                .send_to_screen(ScreenInstruction::HoldPane(pane_id, exit_status, cmd))
+                .send_to_screen(instruction)
                 .with_context(err_context)?;
         }
         Ok(())

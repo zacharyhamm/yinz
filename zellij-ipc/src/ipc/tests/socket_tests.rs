@@ -884,3 +884,62 @@ fn a_backlog_that_frees_up_is_waited_out_rather_than_failed() {
         connected.err()
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn acknowledged_kill_waits_for_completion_and_rejects_eof_and_cleanup_errors() {
+    use crate::ipc::{async_kill_session_with_completion, ExitReason};
+    for reply in [
+        Some(ServerToClientMsg::KillSessionComplete { error: None }),
+        Some(ServerToClientMsg::KillSessionComplete {
+            error: Some("cleanup failed".into()),
+        }),
+        Some(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        }),
+        None,
+    ] {
+        let (_dir, name) = new_ipc();
+        let listener = bind_listener(&name);
+        let (received_tx, received_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let success = matches!(
+            reply,
+            Some(ServerToClientMsg::KillSessionComplete { error: None })
+        );
+        let server = std::thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            let mut sender = IpcSenderWithContext::<ServerToClientMsg>::new(stream);
+            let mut receiver = sender.get_receiver::<ClientToServerMsg>();
+            assert!(matches!(
+                receiver.recv_client_msg(),
+                IpcRecv::Msg(ClientToServerMsg::KillSessionWithCompletion, _)
+            ));
+            received_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            if let Some(reply) = reply {
+                sender
+                    .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                    .unwrap();
+                sender.send_server_msg(reply).unwrap();
+            }
+        });
+        let client = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async_kill_session_with_completion(&name))
+        });
+        received_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            !client.is_finished(),
+            "delivery was mistaken for completion"
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(client.join().unwrap().is_ok(), success);
+        server.join().unwrap();
+    }
+}

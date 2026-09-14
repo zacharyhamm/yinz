@@ -393,12 +393,29 @@ impl SharedPtys {
         fake_pty_state.output_tx = Some(output_tx);
         fake_pty_state.quit_cb = Some(quit_cb);
         let terminal_id = self.next_terminal_id();
+        // A child that exited while nobody was attached is reported again to the
+        // adopting server, exactly as a real supervisor does after `AttachAck`
+        // (`pty_host::host::serve_attach`). From another thread, as the real
+        // report arrives on the reader thread rather than inside the adoption.
+        let already_exited = if fake_pty_state.exited {
+            fake_pty_state
+                .quit_cb
+                .take()
+                .map(|quit_cb| (quit_cb, fake_pty_state.run_command()))
+        } else {
+            None
+        };
         self.mutate(|fake_pty_registry| {
             fake_pty_registry
                 .fake_pty_states
                 .insert(terminal_id, fake_pty_state);
             fake_pty_registry.adopted_queue.push_back(terminal_id);
         });
+        if let Some((quit_cb, run_command)) = already_exited {
+            std::thread::spawn(move || {
+                quit_cb(PaneId::Terminal(terminal_id), None, run_command);
+            });
+        }
         Some(AdoptedFakePty {
             terminal_id,
             reader: Box::new(FakeAsyncReader {

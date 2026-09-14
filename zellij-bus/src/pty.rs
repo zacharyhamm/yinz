@@ -1,5 +1,6 @@
 use crate::os_input_output::AsyncReader;
 use crate::route::NotificationEnd;
+use crate::screen::ScreenInstruction;
 use crate::{
     plugins::{DumpSessionLayoutResponse, PluginId},
     session_layout_metadata::SessionLayoutMetadata,
@@ -32,6 +33,30 @@ use {
 };
 
 pub type VteBytes = Vec<u8>;
+
+/// Build the screen update using the caller's exit policy (editors always close).
+pub fn terminal_exit_instruction(
+    pane_id: PaneId,
+    exit_status: Option<i32>,
+    command: RunCommand,
+    hold_on_close: bool,
+) -> ScreenInstruction {
+    if hold_on_close {
+        ScreenInstruction::HoldPane(pane_id, exit_status, command)
+    } else {
+        ScreenInstruction::ClosePane(pane_id, None, None, exit_status)
+    }
+}
+
+/// A running child has no exit status; an exited child may lack a numeric status.
+pub fn held_command_on_exit(
+    command: &RunCommand,
+    child_exit_status: Option<Option<i32>>,
+) -> Option<RunCommand> {
+    child_exit_status
+        .filter(|_| command.hold_on_close)
+        .map(|_| command.clone())
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientTabIndexOrPaneId {
@@ -102,8 +127,11 @@ pub struct AdoptedTabTerminal {
 }
 
 impl AdoptedTabTerminal {
+    /// The command to hold the pane for on arrival: only a pane whose child has
+    /// exited *and* that would have been held in its old session. One that would
+    /// have closed there is closed here too (`Pty::apply_layout`).
     pub fn hold_for_command(&self) -> Option<RunCommand> {
-        self.child_exit_status.map(|_| self.cmd.clone())
+        held_command_on_exit(&self.cmd, self.child_exit_status)
     }
 }
 

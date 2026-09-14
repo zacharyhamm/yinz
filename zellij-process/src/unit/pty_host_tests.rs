@@ -1783,3 +1783,98 @@ fn terminating_a_stopped_child_still_waits_for_its_real_exit() {
         "the stopped child to be reaped by Terminate",
     );
 }
+
+fn conditional_terminate(socket: &std::path::Path, session: &str) -> HostToServerMsg {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+    write_msg(
+        &mut stream,
+        &ServerToHostMsg::TerminateDetached {
+            expected_session: session.to_owned().into(),
+        },
+    )
+    .unwrap();
+    read_msg(&mut stream).unwrap().unwrap()
+}
+
+#[test]
+fn conditional_termination_checks_current_ownership_and_confirms_child_teardown() {
+    let (mut host, _, socket) = TestHost::start();
+    let socket = socket.unwrap();
+    let (pid, _master) = host.spawn(sh("exec sleep 60"));
+    assert!(matches!(
+        conditional_terminate(&socket, "pty-host-tests"),
+        HostToServerMsg::TerminationComplete {
+            terminated: false,
+            error: None
+        }
+    ));
+    host.send(&ServerToHostMsg::Release);
+    wait_until(|| !query_status(&socket).attached, "detachment");
+    assert!(matches!(
+        conditional_terminate(&socket, "unrelated"),
+        HostToServerMsg::TerminationComplete {
+            terminated: false,
+            error: None
+        }
+    ));
+    assert!(process_alive(pid));
+    crate::pty_host::client::relabel_via_socket(
+        &socket,
+        &"pty-host-tests".into(),
+        &"renamed".into(),
+        true,
+    )
+    .unwrap();
+    assert!(matches!(
+        conditional_terminate(&socket, "pty-host-tests"),
+        HostToServerMsg::TerminationComplete {
+            terminated: false,
+            error: None
+        }
+    ));
+    assert!(matches!(
+        conditional_terminate(&socket, "renamed"),
+        HostToServerMsg::TerminationComplete {
+            terminated: true,
+            error: None
+        }
+    ));
+    assert!(!process_alive(pid), "completion preceded child teardown");
+    host.join();
+}
+
+#[test]
+fn adoption_before_conditional_termination_keeps_the_pane_alive() {
+    let (mut host, _, socket) = TestHost::start();
+    let socket = socket.unwrap();
+    let (pid, _master) = host.spawn(sh("exec sleep 60"));
+    host.send(&ServerToHostMsg::Release);
+    wait_until(|| !query_status(&socket).attached, "detachment");
+    let mut adopted = UnixStream::connect(&socket).unwrap();
+    write_msg(
+        &mut adopted,
+        &ServerToHostMsg::Attach {
+            protocol_version: PROTOCOL_VERSION,
+            zellij_version: VERSION.to_owned(),
+            terminal_id: 3,
+            session_name: Some("pty-host-tests".into()),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        read_msg::<HostToServerMsg, _>(&mut adopted).unwrap(),
+        Some(HostToServerMsg::AttachAck { .. })
+    ));
+    let _adopted_master = recv_fd(&adopted).unwrap();
+    assert!(matches!(
+        conditional_terminate(&socket, "pty-host-tests"),
+        HostToServerMsg::TerminationComplete {
+            terminated: false,
+            error: None
+        }
+    ));
+    assert!(process_alive(pid));
+    write_msg(&mut adopted, &ServerToHostMsg::Terminate).unwrap();
+    host.join();
+}

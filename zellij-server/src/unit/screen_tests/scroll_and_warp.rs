@@ -689,6 +689,81 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
     ));
 }
 
+/// An adopted pane whose child already exited takes the branch its old session
+/// would have: held only if `hold_on_close`, otherwise closed. The supervisor
+/// replays the same exit through the pty's `quit_cb`, which takes that branch
+/// too — so the two never disagree, and no `HoldPane` is left waiting for a pane
+/// that was closed.
+#[test]
+fn an_adopted_pane_that_already_exited_is_held_or_closed_as_its_command_says() {
+    for hold_on_close in [true, false] {
+        let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        let (to_screen, receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
+        screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+        screen
+            .place_adopted_pane(
+                crate::TerminalId::new(50),
+                WarpedPane::default(),
+                zellij_types::data::WarpPlacement::FocusedTab,
+                crate::ClientId::new(1),
+                RunCommand {
+                    command: PathBuf::from("worker"),
+                    hold_on_close,
+                    ..Default::default()
+                },
+                vec![],
+                Some(Some(3)),
+            )
+            .expect("TEST");
+        let instructions: Vec<_> = receiver
+            .try_iter()
+            .map(|(instruction, _)| instruction)
+            .collect();
+        let held_on_arrival = instructions
+            .iter()
+            .find_map(|instruction| match instruction {
+                ScreenInstruction::NewPane(PaneId::Terminal(TERMINAL_50), _, hold, ..) => {
+                    Some(hold.is_some())
+                },
+                _ => None,
+            });
+        assert_eq!(
+            held_on_arrival,
+            Some(hold_on_close),
+            "hold_on_close={hold_on_close}: the pane should arrive held exactly when it would have been held"
+        );
+        let holds = instructions
+            .iter()
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    ScreenInstruction::HoldPane(PaneId::Terminal(TERMINAL_50), Some(3), _)
+                )
+            })
+            .count();
+        let closes = instructions
+            .iter()
+            .filter(|instruction| {
+                matches!(
+                    instruction,
+                    ScreenInstruction::ClosePane(
+                        PaneId::Terminal(TERMINAL_50),
+                        None,
+                        None,
+                        Some(3)
+                    )
+                )
+            })
+            .count();
+        assert_eq!(
+            (holds, closes),
+            if hold_on_close { (1, 0) } else { (0, 1) },
+            "hold_on_close={hold_on_close}: exactly one of hold or close, carrying the exit status"
+        );
+    }
+}
+
 #[test]
 fn an_adopted_agent_pane_lands_in_the_focused_tab_however_crowded_it_is() {
     // The user asked for the focused tab. `agent_pane_target` moves a

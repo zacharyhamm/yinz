@@ -309,116 +309,136 @@ async function foreground(
             );
         const worker = `${c.repoDir}/extensions/models/_lib/commit_worker.ts`;
         await Deno.stat(worker);
-        // Retain files on uncertain observation: the independent worker may still be writing.
+        // After a dispatch attempt, retain the directory until completion is
+        // verified and the final abort check passes: the worker may still write.
         const directory = await Deno.makeTempDir({
             prefix: "zellij-commit-",
         });
-        const request = {
-            work: args.work,
-            key: args.key,
-            session: args.session,
-            binary: args.binary,
-        };
-        await operation(c, {
-            ...request,
-            method: "command",
-            foreground: true,
-            cwd: mode === "cleanup" ? args.target : args.source,
-            argv: [
-                denoPath,
-                "run",
-                "--no-config",
-                "--allow-all",
-                worker,
-                JSON.stringify({
-                    ...args,
-                    mode,
-                    author,
-                    directory,
-                    repoDir: c.repoDir,
-                }),
-            ],
-        });
-        const command = await observe(c, request, 3600, false);
-        let output = "";
+        let dispatchAttempted = false;
+        let verified = false;
         try {
-            output = await Deno.readTextFile(`${directory}/output.log`);
-        } catch (error) {
-            if (!(error instanceof Deno.errors.NotFound)) throw error;
-        }
-        const handle = await c.writeResource(
-            "commandOutput",
-            `command-output-${args.key}`,
-            { output },
-        );
-        const outputRef = OutputRef.parse({
-            modelType: c.modelType.normalized,
-            modelId: c.modelId,
-            ...handle,
-        });
-        const cancelled = command.outcome === "cancelled" &&
-            command.terminationVerified === true;
-        if (
-            !cancelled && (!["completed", "failed"].includes(command.outcome) ||
-                command.exitCode == null || command.exitCode === 125 ||
-                command.exitCode > 128)
-        ) {
-            const tail = output.trimEnd().slice(-500);
-            throw new Error(
-                "Foreground command completion is uncertain; output is saved. Reconcile before proceeding" +
-                    (tail ? "\nLast output:\n" + tail : ""),
-            );
-        }
-        let saved;
-        try {
-            saved = JSON.parse(
-                await Deno.readTextFile(`${directory}/result.json`),
-            );
-        } catch (error) {
-            if (!cancelled) throw error;
-        }
-        if (cancelled) {
-            saved = {
-                ...saved,
-                exitCode: command.exitCode ?? 130,
-                ...(mode !== "cleanup"
-                    ? { evidence: await evidence(c, args) }
-                    : {}),
-                ...(mode === "integrate"
-                    ? {
-                        integrated: saved?.integrated === true,
-                        reason:
-                            "Merge interrupted; checkout inspected. No rollback implied.",
-                    }
-                    : {}),
+            const request = {
+                work: args.work,
+                key: args.key,
+                session: args.session,
+                binary: args.binary,
             };
-        }
-        const completed = z.object({ exitCode: z.number().int() }).passthrough()
-            .parse(saved);
-        if (!cancelled && completed.exitCode !== command.exitCode) {
-            throw new Error(
-                "Worker exit status does not match its saved result",
-            );
-        }
-        if (saved.error && mode === "integrate") {
-            Object.assign(completed, {
-                integrated: false,
-                reason: saved.error,
+            dispatchAttempted = true;
+            await operation(c, {
+                ...request,
+                method: "command",
+                foreground: true,
+                cwd: mode === "cleanup" ? args.target : args.source,
+                argv: [
+                    denoPath,
+                    "run",
+                    "--no-config",
+                    "--allow-all",
+                    worker,
+                    JSON.stringify({
+                        ...args,
+                        mode,
+                        author,
+                        directory,
+                        repoDir: c.repoDir,
+                    }),
+                ],
             });
+            const command = await observe(c, request, 3600, false);
+            let output = "";
+            try {
+                output = await Deno.readTextFile(`${directory}/output.log`);
+            } catch (error) {
+                if (!(error instanceof Deno.errors.NotFound)) throw error;
+            }
+            const handle = await c.writeResource(
+                "commandOutput",
+                `command-output-${args.key}`,
+                { output },
+            );
+            const outputRef = OutputRef.parse({
+                modelType: c.modelType.normalized,
+                modelId: c.modelId,
+                ...handle,
+            });
+            const cancelled = command.outcome === "cancelled" &&
+                command.terminationVerified === true;
+            if (
+                !cancelled &&
+                (!["completed", "failed"].includes(command.outcome) ||
+                    command.exitCode == null || command.exitCode === 125 ||
+                    command.exitCode > 128)
+            ) {
+                const tail = output.trimEnd().slice(-500);
+                throw new Error(
+                    "Foreground command completion is uncertain; output is saved in " +
+                        directory + ". Reconcile before proceeding" +
+                        (tail ? "\nLast output:\n" + tail : ""),
+                );
+            }
+            let saved;
+            try {
+                saved = JSON.parse(
+                    await Deno.readTextFile(`${directory}/result.json`),
+                );
+            } catch (error) {
+                if (!cancelled) throw error;
+            }
+            if (cancelled) {
+                saved = {
+                    ...saved,
+                    exitCode: command.exitCode ?? 130,
+                    ...(mode !== "cleanup"
+                        ? { evidence: await evidence(c, args) }
+                        : {}),
+                    ...(mode === "integrate"
+                        ? {
+                            integrated: saved?.integrated === true,
+                            reason:
+                                "Merge interrupted; checkout inspected. No rollback implied.",
+                        }
+                        : {}),
+                };
+            }
+            const completed = z.object({ exitCode: z.number().int() })
+                .passthrough()
+                .parse(saved);
+            if (!cancelled && completed.exitCode !== command.exitCode) {
+                throw new Error(
+                    "Worker exit status does not match its saved result",
+                );
+            }
+            if (saved.error && mode === "integrate") {
+                Object.assign(completed, {
+                    integrated: false,
+                    reason: saved.error,
+                });
+            }
+            delete command.output;
+            const result = {
+                ...completed,
+                stdout: outputPreview(output),
+                stderr: saved.error ?? "",
+                outputRef,
+                operation: command,
+            };
+            c.signal.throwIfAborted();
+            verified = true;
+            return result;
+        } finally {
+            if (!dispatchAttempted || verified) {
+                await Deno.remove(directory, { recursive: true }).catch(
+                    (error) => {
+                        if (!(error instanceof Deno.errors.NotFound)) {
+                            throw error;
+                        }
+                    },
+                );
+            }
         }
-        delete command.output;
-        const result = {
-            ...completed,
-            stdout: outputPreview(output),
-            stderr: saved.error ?? "",
-            outputRef,
-            operation: command,
-        };
-        c.signal.throwIfAborted();
-        await Deno.remove(directory, { recursive: true });
-        return result;
     });
 }
+
 /** Additional methods; the official commit and non-force cleanup remain available. */
 export const extension = {
     type: "@swamp/git",

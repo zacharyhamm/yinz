@@ -544,6 +544,7 @@ fn a_supervisor_that_will_not_take_a_message_is_killed() {
         .expect("shutdown failed");
 
     let mut handle = PtyHostHandle {
+        child_pid: host_pid,
         host_id: SupervisorId::new("abcdef012345".to_owned()),
         host_pid,
         control_socket: None,
@@ -624,6 +625,7 @@ fn fake_supervisor_socket(
 
 fn a_status() -> HostStatus {
     HostStatus {
+        supports_relabel: true,
         child_group_terminated: false,
         host_id: SupervisorId::new("abcdef012345".to_owned()),
         session_name: Some("client-tests".to_owned().into()),
@@ -646,8 +648,10 @@ fn legacy_supervisor_status_does_not_verify_group_termination() {
         .as_object_mut()
         .unwrap()
         .remove("child_group_terminated");
+    legacy.as_object_mut().unwrap().remove("supports_relabel");
     let status: HostStatus = serde_json::from_value(legacy).unwrap();
     assert!(!status.child_group_terminated);
+    assert!(!status.supports_relabel);
 }
 
 /// The classification that decides whether `pty-host list` unlinks a socket. A
@@ -844,12 +848,24 @@ fn a_control_fd_that_is_already_fd_three_still_has_close_on_exec_cleared() {
 /// `Command::spawn` returned. `sh` does not close fd 3 across the exec, so the
 /// control socket `place_control_fd` put there survives into the test binary.
 fn write_host_wrapper(dir: &Path) -> PathBuf {
+    write_host_wrapper_with_socket_dir(dir, None)
+}
+
+/// A wrapper that also points the supervisor's named socket at `socket_dir`.
+///
+/// `ZELLIJ_SOCK_DIR` is resolved once per process, so the only way to keep a
+/// test's supervisors out of the developer's real socket directory is to set the
+/// variable in the supervisor's own environment, which the wrapper can do.
+fn write_host_wrapper_with_socket_dir(dir: &Path, socket_dir: Option<&Path>) -> PathBuf {
     let test_bin = std::env::current_exe().expect("failed to find the test binary");
     let path = dir.join("host.sh");
+    let socket_dir = socket_dir
+        .map(|socket_dir| format!("ZELLIJ_SOCKET_DIR='{}' ", socket_dir.display()))
+        .unwrap_or_default();
     std::fs::write(
         &path,
         format!(
-            "#!/bin/sh\n{REEXEC_ENV}=1 exec '{}' '{}' --exact\n",
+            "#!/bin/sh\n{socket_dir}{REEXEC_ENV}=1 exec '{}' '{}' --exact\n",
             test_bin.display(),
             REEXEC_HELPER,
         ),
@@ -899,11 +915,15 @@ impl Drop for KillOnDrop {
 /// and these tests are not serialized.
 fn spawn_real_host(dir: &Path, cmd: RunCommand) -> Result<PendingHost> {
     let wrapper = write_host_wrapper(dir);
+    spawn_real_host_via(&wrapper, "client-tests", cmd)
+}
+
+fn spawn_real_host_via(wrapper: &Path, session_name: &str, cmd: RunCommand) -> Result<PendingHost> {
     let params = |cmd: RunCommand| SpawnParams {
         job_control: true,
-        host_bin: &wrapper,
+        host_bin: wrapper,
         terminal_id: TerminalId::new(7),
-        session_name: Some("client-tests".to_owned().into()),
+        session_name: Some(session_name.to_owned().into()),
         cmd,
         failover_cmd: None,
         termios: None,
@@ -1048,6 +1068,284 @@ fn a_pane_survives_the_server_that_started_it() {
         || !process_alive(child_pid),
         "the orphaned pane to be killed",
     );
+}
+
+/// `kill-session <name>` reaches the supervisors an earlier `<name>` orphaned.
+///
+/// Two supervisors lose their server; only the one labelled with the swept session
+/// is terminated, child and all, and the other still answers on its socket. The
+/// socket directory is the test's own, through the wrapper's environment, so the
+/// sweep cannot see — or touch — anything the developer has open.
+#[test]
+fn sweeping_a_session_terminates_only_the_orphans_labelled_with_it() {
+    let dir = tempfile::tempdir().expect("failed to create a temp dir");
+    let socket_root = dir.path().join("sock");
+    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), Some(&socket_root));
+
+    let mut hosts = Vec::new();
+    for session in ["swept", "other"] {
+        let pending = spawn_real_host_via(&wrapper, session, sh("sleep 60"))
+            .expect("spawning a real supervisor failed");
+        let guard = KillOnDrop(pending.host_pid);
+        let control_socket = pending
+            .control_socket
+            .clone()
+            .expect("the supervisor should have bound a socket");
+        assert!(
+            control_socket.starts_with(&socket_root),
+            "the wrapper should have put the socket under the test's own directory: {}",
+            control_socket.display()
+        );
+        let reports: Reports = Arc::default();
+        let spawned = pending.finish(recording_quit_cb(&reports), None);
+        let child_pid = spawned.child_pid;
+        // The server lets go without terminating anything. A release rather than
+        // a drop: in-process the reader thread keeps the control socket open, so
+        // only a release makes the supervisor see itself as detached here — the
+        // state a crashed server's supervisors are in.
+        let SpawnedHost { handle, master, .. } = spawned;
+        let _released = handle.release();
+        drop(master);
+        hosts.push((session, guard, control_socket, child_pid));
+    }
+    let socket_dir = hosts[0]
+        .2
+        .parent()
+        .expect("a socket has a directory")
+        .to_owned();
+    wait_until(
+        || {
+            hosts
+                .iter()
+                .all(|(_, _, socket, _)| query(socket).is_ok_and(|status| !status.attached))
+        },
+        "both supervisors to notice they are detached",
+    );
+
+    let terminated = crate::pty_host::cli::terminate_orphans_of_session_in(&socket_dir, "swept")
+        .expect("the sweep should succeed");
+    assert_eq!(
+        terminated
+            .iter()
+            .map(|status| status.session_name.as_ref().map(|s| s.as_str().to_owned()))
+            .collect::<Vec<_>>(),
+        vec![Some("swept".to_owned())],
+        "exactly the swept session's orphan should have been terminated"
+    );
+
+    let (_, swept_guard, swept_socket, swept_child) = &hosts[0];
+    wait_until(
+        || !process_alive(*swept_child) && !process_alive(swept_guard.0),
+        "the swept supervisor and its pane to be killed",
+    );
+    assert!(
+        query(swept_socket).is_err(),
+        "the swept supervisor's socket should be gone"
+    );
+
+    let (_, other_guard, other_socket, other_child) = &hosts[1];
+    assert!(
+        process_alive(other_guard.0),
+        "the other session's supervisor died"
+    );
+    assert!(process_alive(*other_child), "the other session's pane died");
+    let status = query(other_socket).expect("the other session's supervisor should still answer");
+    assert_eq!(status.child_pid, Some(*other_child));
+
+    terminate_via_socket(other_socket).expect("failed to terminate the remaining supervisor");
+    wait_until(
+        || !process_alive(*other_child),
+        "the remaining pane to be killed",
+    );
+}
+
+/// The sweep is by name, but only of what nobody holds: a supervisor a live server
+/// is attached to keeps its pane whatever session it is labelled with.
+#[test]
+fn sweeping_a_session_leaves_its_attached_supervisors_alone() {
+    let dir = tempfile::tempdir().expect("failed to create a temp dir");
+    let socket_root = dir.path().join("sock");
+    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), Some(&socket_root));
+    let pending = spawn_real_host_via(&wrapper, "held", sh("sleep 60"))
+        .expect("spawning a real supervisor failed");
+    let guard = KillOnDrop(pending.host_pid);
+    let control_socket = pending
+        .control_socket
+        .clone()
+        .expect("the supervisor should have bound a socket");
+    let socket_dir = control_socket
+        .parent()
+        .expect("a socket has a directory")
+        .to_owned();
+    let reports: Reports = Arc::default();
+    let mut spawned = pending.finish(recording_quit_cb(&reports), None);
+    let child_pid = spawned.child_pid;
+    assert!(
+        query(&control_socket)
+            .expect("the supervisor should answer")
+            .attached
+    );
+
+    let terminated = crate::pty_host::cli::terminate_orphans_of_session_in(&socket_dir, "held")
+        .expect("the sweep should succeed");
+    assert!(
+        terminated.is_empty(),
+        "an attached supervisor was swept: {terminated:?}"
+    );
+    assert!(process_alive(guard.0), "the attached supervisor died");
+    assert!(process_alive(child_pid), "the attached pane died");
+
+    spawned.handle.terminate();
+    wait_until(
+        || !process_alive(child_pid),
+        "the pane to be killed on terminate",
+    );
+}
+
+#[test]
+fn relabeling_preserves_attached_and_detached_panes_across_repeated_renames() {
+    let dir = tempfile::tempdir().unwrap();
+    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), Some(&dir.path().join("sock")));
+    let pending = spawn_real_host_via(&wrapper, "old", sh(
+        "stty -echo; printf 'ready\\n'; IFS= read -r line; printf 'buffered-marker'; IFS= read -r line"
+    )).unwrap();
+    let guard = KillOnDrop(pending.host_pid);
+    let socket = pending.control_socket.clone().unwrap();
+    let socket_dir = socket.parent().unwrap();
+    let reports: Reports = Arc::default();
+    let spawned = pending.finish(recording_quit_cb(&reports), None);
+    let mut master = std::fs::File::from(spawned.master);
+    read_until(&mut master, "ready");
+    let original = query(&socket).unwrap();
+    assert!(original.supports_relabel);
+    let mut old: SessionName = "old".into();
+    for new in ["middle", "new"] {
+        let new: SessionName = new.into();
+        crate::pty_host::cli::relabel_session_in(
+            socket_dir,
+            std::slice::from_ref(&socket),
+            &old,
+            &new,
+        )
+        .unwrap();
+        let status = query(&socket).unwrap();
+        assert_eq!(status.session_name.as_ref(), Some(&new));
+        assert_eq!(status.host_id, original.host_id);
+        assert_eq!(status.host_pid, original.host_pid);
+        assert_eq!(status.child_pid, original.child_pid);
+        assert_eq!(status.terminal_id, original.terminal_id);
+        assert!(status.attached);
+        assert!(
+            relabel_via_socket(&socket, &new, &old, true).is_err(),
+            "orphan relabel must refuse an attached pane"
+        );
+        old = new;
+    }
+    assert!(relabel_via_socket(&socket, &"old".into(), &"wrong".into(), false).is_err());
+    spawned.handle.release();
+    wait_until(|| query(&socket).is_ok_and(|s| !s.attached), "detach");
+    master.write_all(b"go\n").unwrap();
+    wait_until(
+        || query(&socket).is_ok_and(|s| s.buffered_bytes >= "buffered-marker".len()),
+        "buffered output",
+    );
+    let buffered = query(&socket).unwrap().buffered_bytes;
+    for new in ["orphan-middle", "orphan-new"] {
+        let new = new.into();
+        crate::pty_host::cli::relabel_session_in(socket_dir, &[], &old, &new).unwrap();
+        let status = query(&socket).unwrap();
+        assert_eq!(status.session_name.as_ref(), Some(&new));
+        assert_eq!(status.host_pid, original.host_pid);
+        assert_eq!(status.child_pid, original.child_pid);
+        assert_eq!(status.buffered_bytes, buffered);
+        assert!(!status.attached);
+        assert!(
+            crate::pty_host::cli::terminate_orphans_of_session_in(socket_dir, old.as_str())
+                .unwrap()
+                .is_empty()
+        );
+        old = new;
+    }
+    // Adoption must receive exactly what was buffered before the relabels.
+    let attached = attach(AttachParams {
+        control_socket: &socket,
+        terminal_id: TerminalId::new(7),
+        session_name: Some(old.clone()),
+    })
+    .unwrap();
+    assert!(String::from_utf8_lossy(&attached.buffered).contains("buffered-marker"));
+    let attached = attached.finish(recording_quit_cb(&reports), None);
+    assert_eq!(attached.child_pid, original.child_pid.unwrap());
+    attached.handle.release();
+    drop(attached.master);
+    drop(master);
+    wait_until(
+        || query(&socket).is_ok_and(|s| !s.attached),
+        "detach after replay",
+    );
+    assert_eq!(
+        crate::pty_host::cli::terminate_orphans_of_session_in(socket_dir, old.as_str())
+            .unwrap()
+            .len(),
+        1
+    );
+    wait_until(
+        || !process_alive(original.child_pid.unwrap()) && !process_alive(guard.0),
+        "renamed orphan termination",
+    );
+    assert!(
+        reports.lock().unwrap().is_empty(),
+        "relabel must not emit a pane exit"
+    );
+}
+
+#[test]
+fn renaming_leaves_other_servers_and_adopted_panes_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let wrapper = write_host_wrapper_with_socket_dir(dir.path(), Some(&dir.path().join("sock")));
+    let reports: Reports = Arc::default();
+    let mut hosts = Vec::new();
+    for session in ["old", "old", "unrelated", "old"] {
+        let pending = spawn_real_host_via(&wrapper, session, sh("sleep 60")).unwrap();
+        let guard = KillOnDrop(pending.host_pid);
+        let socket = pending.control_socket.clone().unwrap();
+        hosts.push((
+            pending.finish(recording_quit_cb(&reports), None),
+            socket,
+            guard,
+        ));
+    }
+    let (adopted, adopted_socket, adopted_guard) = hosts.pop().unwrap();
+    adopted.handle.release();
+    let adopted = attach(AttachParams {
+        control_socket: &adopted_socket,
+        terminal_id: TerminalId::new(9),
+        session_name: Some("adopter".into()),
+    })
+    .unwrap();
+    let mut adopted = adopted.finish(recording_quit_cb(&reports), None);
+    let socket_dir = hosts[0].1.parent().unwrap();
+    crate::pty_host::cli::relabel_session_in(
+        socket_dir,
+        std::slice::from_ref(&hosts[0].1),
+        &"old".into(),
+        &"new".into(),
+    )
+    .unwrap();
+    for ((host, socket, _), expected) in hosts.iter().zip(["new", "old", "unrelated"]) {
+        let status = query(socket).unwrap();
+        assert_eq!(status.session_name.unwrap().as_str(), expected);
+        assert_eq!(status.child_pid, Some(host.child_pid));
+        assert!(status.attached);
+    }
+    let status = query(&adopted_socket).unwrap();
+    assert_eq!(status.session_name.unwrap().as_str(), "adopter");
+    assert_eq!(status.host_pid, adopted_guard.0);
+    assert!(status.attached);
+    adopted.handle.terminate();
+    for (mut host, _, _) in hosts {
+        host.handle.terminate();
+    }
 }
 
 /// Read from a pty master until `needle` shows up, or fail the test.
@@ -1379,4 +1677,110 @@ fn a_host_binary_that_does_not_exist_fails_the_spawn() {
         err.downcast_ref::<ZellijError>().is_none(),
         "this has to stay a fallback, not a pane failure: {err:#}"
     );
+}
+
+// A scripted supervisor lets failures happen at exact protocol boundaries.
+fn relabel_peer(path: &Path, replies: Vec<HostToServerMsg>) -> JoinHandle<Vec<ServerToHostMsg>> {
+    let listener = UnixListener::bind(path).unwrap();
+    std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for reply in replies {
+            loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+                let Some(request) = read_msg::<ServerToHostMsg, _>(&mut stream).unwrap() else {
+                    // Discovery probes connectivity before it sends Query.
+                    continue;
+                };
+                requests.push(request);
+                write_msg(&mut stream, &reply).unwrap();
+                break;
+            }
+        }
+        requests
+    })
+}
+
+#[test]
+fn unsupported_supervisors_reject_the_entire_rename_before_any_relabel() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut supported = a_status();
+    supported.terminal_id = 1;
+    let mut legacy = a_status();
+    legacy.terminal_id = 2;
+    legacy.supports_relabel = false;
+    let first = relabel_peer(
+        &dir.path().join("a.sock"),
+        vec![HostToServerMsg::Status(supported)],
+    );
+    let second = relabel_peer(
+        &dir.path().join("b.sock"),
+        vec![HostToServerMsg::Status(legacy)],
+    );
+    let error = crate::pty_host::cli::relabel_session_in(
+        dir.path(),
+        &[],
+        &"client-tests".into(),
+        &"new".into(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("does not support"), "{error:#}");
+    for requests in [first.join().unwrap(), second.join().unwrap()] {
+        assert_eq!(requests.len(), 1);
+        assert!(matches!(requests[0], ServerToHostMsg::Query));
+    }
+}
+
+#[test]
+fn failed_relabels_roll_back_acknowledged_changes_and_report_rollback_failures() {
+    for rollback_fails in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first_status = a_status();
+        first_status.terminal_id = 1;
+        let mut second_status = a_status();
+        second_status.terminal_id = 2;
+        let first = relabel_peer(
+            &dir.path().join("a.sock"),
+            vec![
+                HostToServerMsg::Status(first_status),
+                HostToServerMsg::Relabelled,
+                if rollback_fails {
+                    HostToServerMsg::RelabelRefused {
+                        message: "rollback refused".into(),
+                    }
+                } else {
+                    HostToServerMsg::Relabelled
+                },
+            ],
+        );
+        let second = relabel_peer(
+            &dir.path().join("b.sock"),
+            vec![
+                HostToServerMsg::Status(second_status),
+                HostToServerMsg::RelabelRefused {
+                    message: "relabel refused".into(),
+                },
+            ],
+        );
+        let error = crate::pty_host::cli::relabel_session_in(
+            dir.path(),
+            &[],
+            &"client-tests".into(),
+            &"new".into(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("relabel refused"), "{error}");
+        assert_eq!(error.contains("rollback failed"), rollback_fails, "{error}");
+        let requests = first.join().unwrap();
+        assert!(
+            matches!(&requests[1], ServerToHostMsg::Relabel { expected_session, session_name, detached_only: true }
+            if expected_session.as_str() == "client-tests" && session_name.as_str() == "new")
+        );
+        assert!(
+            matches!(&requests[2], ServerToHostMsg::Relabel { expected_session, session_name, detached_only: true }
+            if expected_session.as_str() == "new" && session_name.as_str() == "client-tests")
+        );
+        assert_eq!(second.join().unwrap().len(), 2);
+    }
 }

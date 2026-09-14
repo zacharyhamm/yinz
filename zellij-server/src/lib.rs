@@ -1045,6 +1045,8 @@ pub fn start_server_impl(
     // nothing in the log at all, and "the session died" is indistinguishable
     // from "the session was closed" after the fact.
     let exit_reason: &str;
+    let mut kill_session = false;
+    let mut kill_completion_client = None;
     // Whether the socket file was already unlinked by a `break` path below. It must not be
     // unlinked twice: between the two would be the thread joins, long enough for a new server
     // to bind the same path, and the second unlink would then delete *its* socket.
@@ -1625,9 +1627,15 @@ pub fn start_server_impl(
                         .unwrap();
                 }
             },
-            ServerInstruction::KillSession => {
+            ServerInstruction::KillSession | ServerInstruction::KillSessionWithCompletion(_) => {
+                if let ServerInstruction::KillSessionWithCompletion(client_id) = instruction {
+                    kill_completion_client = Some(client_id);
+                }
                 let client_ids = session_state.read().unwrap().client_ids();
                 for client_id in client_ids {
+                    if Some(client_id) == kill_completion_client {
+                        continue;
+                    }
                     let _ = os_input.send_to_client(
                         client_id,
                         ServerToClientMsg::Exit {
@@ -1636,6 +1644,7 @@ pub fn start_server_impl(
                     );
                     remove_client!(client_id, os_input, session_state, session_data);
                 }
+                kill_session = true;
                 exit_reason = "KillSession";
                 break;
             },
@@ -2244,6 +2253,11 @@ pub fn start_server_impl(
     // the teardown in the loop above: those joins must not run with the write
     // lock held, or route threads still blocked on `session_data.read()` stay
     // blocked for the whole shutdown instead of seeing the socket close.
+    let tracking = if kill_completion_client.is_some() {
+        os_input.begin_confirmed_pty_host_shutdown()
+    } else {
+        Ok(())
+    };
     os_input.begin_firecracker_shutdown();
     let session_metadata = session_data.write().unwrap().take();
     drop(session_metadata);
@@ -2251,11 +2265,34 @@ pub fn start_server_impl(
     // Belt and braces. A supervisor that outlived the sweep above would be a
     // leaked user process holding a live shell, invisible until `pty-host list`.
     os_input.shutdown_pty_hosts();
+    // A kill by name also reaches what an earlier incarnation of this session
+    // left detached when it died without shutting down. Only on a kill: a detach
+    // or a last-client exit is not the user saying those panes are done.
+    let owned_teardown = tracking.and_then(|_| os_input.confirm_pty_host_shutdown());
+    let cleanup = if kill_session {
+        envs::get_session_name()
+            .context("missing session name during shutdown")
+            .and_then(|name| os_input.terminate_orphaned_pty_hosts(name.as_str()))
+    } else {
+        Ok(())
+    };
     // On every exit path, the fatal-error one included: the pty thread has been
     // joined and every pane closed by now, so nothing in this server still needs
     // its VMs. Only a server that never reaches here — killed, or crashed — leaves
     // them running, which is what `zellij firecracker list` is for.
     os_input.stop_firecracker_session().non_fatal();
+
+    if let Some(client_id) = kill_completion_client {
+        let error = owned_teardown
+            .and(cleanup)
+            .err()
+            .map(|e| format!("shutdown incomplete: {e:#}"));
+        os_input
+            .send_to_client(client_id, ServerToClientMsg::KillSessionComplete { error })
+            .non_fatal();
+    } else {
+        owned_teardown.and(cleanup).non_fatal();
+    }
 
     // Every break above sends the clients an `Exit` first, but sending only
     // queues it — the writer threads are detached, so without this wait the

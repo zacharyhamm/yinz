@@ -160,6 +160,7 @@ fn an_age_from_the_future_is_reported_as_zero_rather_than_underflowing() {
 #[hegel::composite]
 fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
     HostStatus {
+        supports_relabel: true,
         child_group_terminated: false,
         host_id: SupervisorId::new(tc.draw(generators::text())),
         session_name: tc
@@ -417,4 +418,86 @@ fn a_recovered_panes_command_is_reconstructed_by_splitting_on_spaces() {
         "a quoted argument comes back split, which is what flattening it lost",
     );
     assert_eq!(cmd.target.ssh_host(), Some("build-box"));
+}
+
+#[test]
+fn orphan_sweep_reaches_responsive_targets_within_one_shared_deadline() {
+    use protocol::{HostToServerMsg, ServerToHostMsg};
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let _silent: Vec<_> = (0..4)
+        .map(|i| UnixListener::bind(dir.path().join(format!("silent-{i}.sock"))).unwrap())
+        .collect();
+    let listener = UnixListener::bind(dir.path().join("target.sock")).unwrap();
+    let target = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        assert!(matches!(
+            protocol::read_msg::<ServerToHostMsg, _>(&mut stream).unwrap(),
+            Some(ServerToHostMsg::Query)
+        ));
+        let status: HostStatus = serde_json::from_value(serde_json::json!({
+            "host_id": "target", "session_name": "wanted", "terminal_id": 0,
+            "command": "sleep", "cwd": null, "child_pid": null, "host_pid": 1,
+            "started_at_unix": 0, "attached": false, "child_exit_status": null, "buffered_bytes": 0
+        }))
+        .unwrap();
+        protocol::write_msg(&mut stream, &HostToServerMsg::Status(status)).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        assert!(
+            matches!(protocol::read_msg::<ServerToHostMsg, _>(&mut stream).unwrap(),
+            Some(ServerToHostMsg::TerminateDetached { expected_session }) if expected_session.as_str() == "wanted")
+        );
+        protocol::write_msg(
+            &mut stream,
+            &HostToServerMsg::TerminationComplete {
+                terminated: true,
+                error: None,
+            },
+        )
+        .unwrap();
+    });
+    let start = std::time::Instant::now();
+    let error = terminate_orphans_of_session_in(dir.path(), "wanted").unwrap_err();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(7),
+        "sweep used per-socket deadlines"
+    );
+    assert!(format!("{error:#}").contains("unresolved supervisors"));
+    assert!(
+        target.is_finished(),
+        "silent supervisors blocked the responsive target"
+    );
+    target.join().unwrap();
+}
+
+#[test]
+fn unsupported_conditional_termination_is_incomplete_cleanup() {
+    use protocol::{HostToServerMsg, ServerToHostMsg};
+    let dir = tempfile::tempdir().unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(dir.path().join("old.sock")).unwrap();
+    let host = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        assert!(matches!(
+            protocol::read_msg::<ServerToHostMsg, _>(&mut stream).unwrap(),
+            Some(ServerToHostMsg::Query)
+        ));
+        let status: HostStatus = serde_json::from_value(serde_json::json!({
+            "host_id": "old", "session_name": "wanted", "terminal_id": 0,
+            "command": "sleep", "cwd": null, "child_pid": null, "host_pid": 1,
+            "started_at_unix": 0, "attached": false, "child_exit_status": null, "buffered_bytes": 0
+        }))
+        .unwrap();
+        protocol::write_msg(&mut stream, &HostToServerMsg::Status(status)).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = protocol::read_msg::<ServerToHostMsg, _>(&mut stream).unwrap();
+        // An old supervisor closes a connection carrying an unknown request.
+    });
+    let error = terminate_orphans_of_session_in(dir.path(), "wanted").unwrap_err();
+    assert!(format!("{error:#}").contains("unsupported protocol"));
+    host.join().unwrap();
+    assert!(
+        terminate_orphans_of_session_in(&dir.path().join("absent"), "wanted")
+            .unwrap()
+            .is_empty()
+    );
 }

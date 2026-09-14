@@ -166,6 +166,7 @@ pub enum ClientToServerMsg {
     },
     ClientExited,
     KillSession,
+    KillSessionWithCompletion,
     ConnStatus,
     SubscribeToPaneRenders {
         pane_ids: Vec<PaneId>,
@@ -226,6 +227,9 @@ pub enum ClientToServerMsg {
     strum_macros::VariantNames,
 )]
 pub enum ServerToClientMsg {
+    KillSessionComplete {
+        error: Option<String>,
+    },
     AgentReportAccepted {
         report_id: String,
     },
@@ -663,4 +667,46 @@ pub async fn async_send_kill_and_await(path: &std::path::Path) -> io::Result<()>
     let mut len_buf = [0u8; 4];
     let _ = stream.read_exact(&mut len_buf).await;
     Ok(())
+}
+
+/// Unlike the legacy kill, only a post-teardown reply confirms completion.
+#[cfg(unix)]
+pub async fn async_kill_session_with_completion(path: &std::path::Path) -> io::Result<()> {
+    use interprocess::local_socket::traits::tokio::Stream as _;
+    use interprocess::local_socket::{prelude::*, GenericFilePath};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream: interprocess::local_socket::tokio::Stream =
+        interprocess::local_socket::tokio::Stream::connect(path.to_fs_name::<GenericFilePath>()?)
+            .await?;
+    let request: ProtoClientToServerMsg =
+        ClientToServerMsg::KillSessionWithCompletion
+            .try_into()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let body = request.encode_to_vec();
+    stream.write_all(&(body.len() as u32).to_le_bytes()).await?;
+    stream.write_all(&body).await?;
+    stream.flush().await?;
+    loop {
+        let len = stream.read_u32_le().await? as usize;
+        if len > MAX_IPC_FRAME_LEN {
+            return Err(io::Error::other("oversized kill completion response"));
+        }
+        let mut body = vec![0; len];
+        stream.read_exact(&mut body).await?;
+        let response = ProtoServerToClientMsg::decode(body.as_slice())?;
+        match ServerToClientMsg::try_from(response).map_err(io::Error::other)? {
+            ServerToClientMsg::KillSessionComplete { error: None } => return Ok(()),
+            ServerToClientMsg::KillSessionComplete { error: Some(error) } => {
+                return Err(io::Error::other(error))
+            },
+            ServerToClientMsg::Exit { .. } => {
+                return Err(io::Error::other(
+                    "server exited without confirming shutdown completion",
+                ))
+            },
+            // Broadcasts queued before the kill can still arrive on this socket.
+            _ => {},
+        }
+    }
 }
