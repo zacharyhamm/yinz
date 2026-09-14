@@ -1110,11 +1110,11 @@ fn title_note(state: &State) -> Option<String> {
 fn usage_note(state: &State) -> String {
     let mut fields = Vec::new();
     if let Some(last) = state.last_request_input {
-        fields.push(format!("last request input {}", format_tokens(last)));
+        fields.push(format!("last in {}", format_tokens(last)));
     }
     if let Some(usage) = state.usage {
         fields.push(format!(
-            "{} total input · {} total output",
+            "{} in · {} out",
             format_tokens(usage.input_tokens),
             format_tokens(usage.output_tokens)
         ));
@@ -3449,9 +3449,9 @@ mod tests {
         let mut state = tabs_state(2);
         assert_eq!(usage_note(&state), "");
         state.last_request_input = Some(0);
-        assert_eq!(usage_note(&state), "last request input 0");
+        assert_eq!(usage_note(&state), "last in 0");
         state.last_request_input = Some(400);
-        assert_eq!(usage_note(&state), "last request input 400");
+        assert_eq!(usage_note(&state), "last in 400");
         state.usage = Some(crate::TokenUsage {
             input_tokens: 1200,
             output_tokens: 34,
@@ -3459,21 +3459,15 @@ mod tests {
         });
         assert_eq!(
             usage_note(&state),
-            "last request input 400 · 1.2k total input · 34 total output · $0.0123"
+            "last in 400 · 1.2k in · 34 out · $0.0123"
         );
         assert!(usage_note(&state).width() < 80);
         state.last_request_input = None;
-        assert_eq!(
-            usage_note(&state),
-            "1.2k total input · 34 total output · $0.0123"
-        );
+        assert_eq!(usage_note(&state), "1.2k in · 34 out · $0.0123");
         state.usage.as_mut().unwrap().cost_nanos = None;
-        assert_eq!(usage_note(&state), "1.2k total input · 34 total output");
+        assert_eq!(usage_note(&state), "1.2k in · 34 out");
         state.usage.as_mut().unwrap().cost_nanos = Some(0);
-        assert_eq!(
-            usage_note(&state),
-            "1.2k total input · 34 total output · $0"
-        );
+        assert_eq!(usage_note(&state), "1.2k in · 34 out · $0");
         render_title(&mut state, 80);
         assert_eq!(state.chat_tab_width, 80);
     }
