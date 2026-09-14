@@ -256,6 +256,7 @@ pub fn chat_def() -> EntityDef {
         // single-writer problem per chat. This is so the archive can say where a conversation
         // happened once the archive spans machines.
         .attr(AttrDef::text("host_id").indexed().required().default(""))
+        .attr(AttrDef::text("plan"))
         .attr(AttrDef::int("legacy_id"))
         .attr(AttrDef::int("input_tokens"))
         .attr(AttrDef::int("output_tokens"))
@@ -850,6 +851,26 @@ pub use local::{Joined, Local, LOCAL_WATCH_ID};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_plan_is_an_additive_migration() {
+        let backend = Local::private("hocus");
+        let mut old = chat_def();
+        old.attrs.retain(|attr| attr.name != "plan");
+        backend.define(&old).expect("old schema");
+        backend
+            .apply(vec![Mutation::put("chat").set("title", "old chat").build()])
+            .expect("old archive");
+        backend.define(&chat_def()).expect("additive migration");
+        let rows = backend
+            .fetch(&FetchRequest::entity("chat"))
+            .expect("read migrated chat");
+        assert_eq!(
+            rows.get(&rows.rows[0], "title"),
+            Some(&DataValue::Text("old chat".to_owned()))
+        );
+        assert_eq!(rows.get(&rows.rows[0], "plan"), Some(&DataValue::Null));
+    }
 
     /// Every definition has to survive the same validation the host applies, or
     /// the failure would land at plugin load with no test having noticed.

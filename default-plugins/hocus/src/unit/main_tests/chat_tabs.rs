@@ -347,6 +347,11 @@ fn opening_a_chat_that_is_already_open_switches_to_its_tab() {
 #[test]
 fn opening_an_archived_chat_adds_a_tab_on_the_end() {
     let mut state = three_tabs();
+    // These tabs normally use synthetic IDs; archive restoration needs real rows.
+    state.chat_id = None;
+    for chat in &mut state.parked {
+        chat.chat_id = None;
+    }
     state.messages = vec![Message::user("was here"), Message::assistant("yes")];
     state.flush_save();
     let saved = state.chat_id.expect("the flush allocated an id");
@@ -374,6 +379,11 @@ fn opening_an_archived_chat_adds_a_tab_on_the_end() {
 #[test]
 fn opening_an_archived_chat_from_a_used_tab_keeps_the_tab() {
     let mut state = three_tabs();
+    // These tabs normally use synthetic IDs; archive restoration needs real rows.
+    state.chat_id = None;
+    for chat in &mut state.parked {
+        chat.chat_id = None;
+    }
     state.messages = vec![Message::user("was here"), Message::assistant("yes")];
     state.flush_save();
     let saved = state.chat_id.expect("the flush allocated an id");
@@ -597,6 +607,7 @@ fn save_parked_skips_empty_and_unchanged_chats() {
             &state.parked[0].messages,
             state.parked[0].reply_at,
             state.parked[0].usage,
+            state.parked[0].plan,
         ),
         "a written one is recorded as such"
     );

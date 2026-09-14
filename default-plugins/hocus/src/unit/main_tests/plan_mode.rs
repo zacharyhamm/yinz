@@ -940,3 +940,108 @@ fn a_toast_from_a_parked_chat_names_the_parked_chat() {
     );
     assert_eq!(state.chat_id, Some(1), "which is still where it was");
 }
+
+#[test]
+fn archived_planning_states_restore_without_resuming_requests() {
+    for plan in [Plan::Off, Plan::Planning, Plan::AwaitingApproval] {
+        let mut state = idle_state();
+        state.messages = vec![Message::user("make a plan"), Message::assistant("the plan")];
+        state.plan = plan;
+        state.flush_save();
+        let id = state.chat_id.expect("saved");
+        state.close_tab(0);
+        assert!(state.parked.is_empty());
+        assert!(state.messages.is_empty());
+        state.switch_to_chat(id);
+        assert_eq!(state.chat_id, Some(id));
+        assert_eq!(state.plan, plan);
+        assert!(!state.is_in_flight(), "restoring never sends a request");
+        assert_eq!(state.is_planning(), plan == Plan::Planning);
+        assert_eq!(
+            state.confirmation_prompt().map(|prompt| prompt.kind),
+            (plan == Plan::AwaitingApproval).then_some(PromptKind::Plan)
+        );
+    }
+}
+
+#[test]
+fn mode_only_changes_save_in_foreground_and_parked_chats_on_close() {
+    let mut state = idle_state();
+    state.messages.push(Message::user("make a plan"));
+    state.autosave();
+    let id = state.chat_id.expect("saved");
+    for plan in [Plan::Planning, Plan::AwaitingApproval, Plan::Off] {
+        state.plan = plan;
+        state.autosave();
+        assert_eq!(history::load_plan(&state.private_store(), id), Ok(plan));
+    }
+    state.new_chat();
+    state.parked[0].plan = Plan::AwaitingApproval;
+    // BeforeClose uses this same flush for every parked chat.
+    state.save_parked();
+    state.parked.clear();
+    state.chat_tab = 0;
+    state.switch_to_chat(id);
+    assert_eq!(state.plan, Plan::AwaitingApproval);
+    state.new_chat();
+    state.parked[0].plan = Plan::Planning;
+    state.close_tab(0);
+    state.switch_to_chat(id);
+    assert_eq!(state.plan, Plan::Planning);
+}
+
+#[test]
+fn leaving_plan_mode_is_preserved_in_the_archive() {
+    for command in ["/plan off", "/execute"] {
+        let mut state = idle_state();
+        state.messages = vec![Message::user("make a plan"), Message::assistant("the plan")];
+        state.plan = Plan::AwaitingApproval;
+        state.flush_save();
+        let id = state.chat_id.expect("saved");
+        state.input.set_text(command.to_owned());
+        state.submit();
+        state.close_tab(0);
+        state.switch_to_chat(id);
+        assert_eq!(state.plan, Plan::Off, "{command}");
+        assert!(!state.is_in_flight());
+    }
+}
+
+#[test]
+fn legacy_planning_state_opens_but_invalid_or_missing_state_does_not() {
+    let mut state = idle_state();
+    state.messages.push(Message::user("archived"));
+    state.flush_save();
+    let id = state.chat_id.expect("saved");
+    state.close_tab(0);
+    state
+        .private_store()
+        .apply(vec![Mutation::update("chat", Pred::eq("id", id))
+            .set("plan", DataValue::Null)
+            .build()])
+        .expect("legacy row");
+    state.switch_to_chat(id);
+    assert_eq!(state.chat_id, Some(id));
+    assert_eq!(state.plan, Plan::Off);
+    state.close_tab(0);
+    state.messages.push(Message::user("stay here"));
+    let before = state.messages.clone();
+    for invalid in ["", "planning", "unknown"] {
+        state
+            .private_store()
+            .apply(vec![Mutation::update("chat", Pred::eq("id", id))
+                .set("plan", invalid)
+                .build()])
+            .expect("invalid state");
+        state.switch_to_chat(id);
+        assert_eq!(state.chat_id, None);
+        assert_eq!(state.messages, before);
+    }
+    state
+        .private_store()
+        .apply(vec![Mutation::delete("chat", Pred::eq("id", id))])
+        .expect("remove metadata but keep transcript");
+    state.switch_to_chat(id);
+    assert_eq!(state.chat_id, None);
+    assert_eq!(state.messages, before);
+}
