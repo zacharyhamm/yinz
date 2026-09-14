@@ -1164,3 +1164,30 @@ fn deno_hocus_workflow_rpc_is_scoped_validated_and_preserves_owned_controls() {
     for _ in 0..100 { run(&mut runtime, "if(failure)throw Error(failure);"); }
     run(&mut runtime, "check(done);");
 }
+
+#[test]
+fn workflow_cli_attachments_accept_null_ids_and_acknowledge() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.commands=[];
+      globalThis.mock={...zellij,subscribe(){},every(){},requestRender(){},getPluginIds:()=>({plugin_id:1}),
+        command(name,args){commands.push([name,args]);},rpc:{call:()=>new Promise(()=>{})}};
+    "#);
+    consumer(&mut runtime, "workflow-view");
+    run(&mut runtime, r#"
+      for (const ids of [{run:'run',launch:null},{run:null,launch:'launch'},{run:null,launch:null}]) {
+        commands.length=0;
+        M.pipe({name:'show',source:{Cli:'pipe'},payload:JSON.stringify({directory:'/work',...ids})});
+        check(M.attachment.run===(ids.run??undefined) && M.attachment.launch===(ids.launch??undefined));
+        check(commands.some(([name,args])=>name==='CliPipeOutput' && args[0]==='pipe' && JSON.parse(args[1]).attached));
+        check(commands.some(([name,args])=>name==='UnblockCliPipeInput' && args==='pipe'));
+      }
+      for (const ids of [{run:1},{launch:false},{run:{}},{launch:[]}]) {
+        commands.length=0;
+        let refused=false;
+        try { M.pipe({name:'show',source:{Cli:'pipe'},payload:JSON.stringify({directory:'/work',...ids})}); }
+        catch { refused=true; }
+        check(refused && !commands.some(([name])=>name==='CliPipeOutput'));
+      }
+    "#);
+}

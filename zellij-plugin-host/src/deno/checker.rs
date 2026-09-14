@@ -45,6 +45,14 @@ pub fn check_semantic_source(path: &Path, source: &str) -> Result<()> {
 struct CompilerFiles {
     loader: PluginModuleLoader,
     aliases: RefCell<Vec<(PathBuf, PathBuf)>>,
+    imports: RefCell<HashMap<PathBuf, Vec<Import>>>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub(super) struct Import {
+    pub start: usize,
+    pub end: usize,
+    pub target: PathBuf,
 }
 
 pub(super) struct Graph {
@@ -52,6 +60,7 @@ pub(super) struct Graph {
     pub root: PathBuf,
     pub files: HashMap<PathBuf, String>,
     pub aliases: Vec<(PathBuf, PathBuf)>,
+    pub imports: HashMap<PathBuf, Vec<Import>>,
 }
 
 pub(super) fn authoring_graph(
@@ -136,9 +145,26 @@ fn op_zellij_check_resolve(
     resolve().map_err(|e| JsErrorBox::generic(format!("{referrer}: import {name:?}: {e:#}")))
 }
 
+#[op2]
+fn op_zellij_check_imports(
+    state: &mut OpState,
+    #[string] name: String,
+    #[serde] imports: Vec<Import>,
+) {
+    state
+        .borrow::<CompilerFiles>()
+        .imports
+        .borrow_mut()
+        .insert(PathBuf::from(name), imports);
+}
+
 deno_core::extension!(
     zellij_checker,
-    ops = [op_zellij_check_read, op_zellij_check_resolve]
+    ops = [
+        op_zellij_check_read,
+        op_zellij_check_resolve,
+        op_zellij_check_imports
+    ]
 );
 
 #[cfg(test)]
@@ -210,6 +236,7 @@ fn check_loader(
     runtime.op_state().borrow_mut().put(CompilerFiles {
         loader,
         aliases: RefCell::default(),
+        imports: RefCell::default(),
     });
     let result = with_deadline(&mut runtime, Duration::from_secs(30), |runtime| {
         runtime
@@ -241,11 +268,13 @@ fn check_loader(
     let state = state.borrow();
     let files = state.borrow::<CompilerFiles>();
     let aliases = files.aliases.borrow().clone();
+    let imports = files.imports.borrow().clone();
     Ok(Graph {
         entry: PathBuf::from(entry),
         root: files.loader.root().to_owned(),
         files: files.loader.checked_sources()?,
         aliases,
+        imports,
     })
 }
 

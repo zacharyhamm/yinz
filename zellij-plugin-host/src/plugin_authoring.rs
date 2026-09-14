@@ -154,7 +154,7 @@ pub fn write(
     // destroys the old version, so a backup that silently did not happen would be worse than no
     // backup at all - the file it was meant to hold would already be gone.
     let replaced = match path.is_file() {
-        true => keep_backup(dir, name, &path, &contents)?,
+        true => keep_backup(&path, &contents)?,
         false => None,
     };
     std::fs::write(&path, contents)
@@ -164,6 +164,9 @@ pub fn write(
 
 /// Format only the named file. Read-only verification never creates backups.
 pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
+    if path.is_symlink() || path.parent().is_some_and(Path::is_symlink) {
+        anyhow::bail!("refusing to format through a symlink");
+    }
     let source = crate::deno::read_authoring_source(path)?;
     let report = check_source(
         path,
@@ -182,18 +185,7 @@ pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
     if check {
         anyhow::bail!("{} needs formatting", path.display());
     }
-    if path.is_symlink() {
-        anyhow::bail!("refusing to format a symlink");
-    }
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow::anyhow!("invalid plugin filename"))?;
-    keep_backup(&parent.canonicalize()?, name, path, &formatted)?;
+    keep_backup(path, &formatted)?;
     std::fs::write(path, formatted)?;
     Ok(())
 }
@@ -205,18 +197,20 @@ pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
 /// differed. Anything else that stops the copy - a `.bak` that is a symlink, an unwritable
 /// folder - is an error rather than a shrug, because the caller is about to overwrite the only
 /// copy of the file.
-fn keep_backup(
-    dir: &Path,
-    name: &str,
-    path: &Path,
-    contents: &str,
-) -> anyhow::Result<Option<PathBuf>> {
+fn keep_backup(path: &Path, contents: &str) -> anyhow::Result<Option<PathBuf>> {
     if std::fs::read_to_string(path).is_ok_and(|previous| previous == contents) {
         return Ok(None);
     }
-    let backup = zellij_plugin_api::authoring::backup_name(name);
-    let backup = zellij_plugin_api::authoring::resolve_plugin_file(dir, &backup)
-        .map_err(|e| anyhow::anyhow!("failed to name a backup of {}: {e}", path.display()))?;
+    let mut name = path
+        .file_stem()
+        .ok_or_else(|| anyhow::anyhow!("missing filename"))?
+        .to_os_string();
+    name.push(".bak");
+    if let Some(extension) = path.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    let backup = path.with_file_name(name);
     if backup.is_symlink() {
         anyhow::bail!(
             "{} is a symlink; refusing to keep a backup through it",

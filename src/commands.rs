@@ -1506,12 +1506,20 @@ pub(crate) fn pty_host_adopt(
 pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> anyhow::Result<()> {
     use zellij_cli::args::Plugins as PluginsCli;
     let config = zellij_cli::setup::load_config(opts).ok();
-    let plugin_dir = zellij_runtime::home::user_plugin_dir_or_default(
-        config
-            .as_ref()
-            .and_then(|config| config.options.user_plugin_dir.clone()),
-        opts.config_dir.clone(),
-    );
+    let plugin_dir = || {
+        zellij_runtime::home::user_plugin_dir_or_default(
+            config
+                .as_ref()
+                .and_then(|config| config.options.user_plugin_dir.clone()),
+            opts.config_dir.clone(),
+        )
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no plugin folder is configured; set `user_plugin_dir` in the config or pass \
+             --config-dir"
+            )
+        })
+    };
     if let PluginsCli::Test {
         name,
         file,
@@ -1534,7 +1542,8 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
         let report = match (name, file) {
             (_, Some(path)) => zellij_server::plugin_testing::run(&path, &options, None, &cancel)?,
             (Some(name), None) => {
-                let directory = plugin_dir.as_deref().unwrap_or(std::path::Path::new(""));
+                let directory = plugin_dir().ok();
+                let directory = directory.as_deref().unwrap_or(std::path::Path::new(""));
                 zellij_server::plugin_testing::run_named(directory, &name, &options, None, &cancel)?
             },
             _ => anyhow::bail!("give a plugin name or --file"),
@@ -1557,16 +1566,10 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
         }
         return Ok(());
     }
-    let plugin_dir = plugin_dir.ok_or_else(|| {
-        anyhow::anyhow!(
-            "no plugin folder is configured; set `user_plugin_dir` in the config or pass \
-             --config-dir"
-        )
-    })?;
     match command {
         PluginsCli::Test { .. } => unreachable!("tests return above"),
         PluginsCli::Dir => {
-            println!("{}", plugin_dir.display());
+            println!("{}", plugin_dir()?.display());
             Ok(())
         },
         PluginsCli::Write {
@@ -1577,7 +1580,7 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
         } => {
             let source = read_source(file.as_deref())?;
             let written = zellij_server::plugin_authoring::write(
-                &plugin_dir,
+                &plugin_dir()?,
                 &name,
                 &source,
                 overwrite,
@@ -1604,7 +1607,7 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             let path = match (name, file) {
                 (_, Some(file)) => file,
                 (Some(name), None) => {
-                    zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
+                    zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
                         .map_err(|e| anyhow::anyhow!(e))?
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
@@ -1618,7 +1621,7 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             let path = match (name, file) {
                 (_, Some(file)) => file,
                 (Some(name), None) => {
-                    zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
+                    zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
                         .map_err(|e| anyhow::anyhow!(e))?
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
@@ -1628,7 +1631,7 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             Ok(())
         },
         PluginsCli::Reload { name } => {
-            let path = zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
+            let path = zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
                 .map_err(|e| anyhow::anyhow!(e))?;
             if !path.is_file() {
                 anyhow::bail!("{} is not there; write it first", path.display());
@@ -1644,7 +1647,7 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             Ok(())
         },
         PluginsCli::Log { name, lines } => {
-            let path = zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
+            let path = zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
                 .map_err(|e| anyhow::anyhow!(e))?;
             let log_file = zellij_runtime::consts::ZELLIJ_TMP_LOG_FILE.clone();
             print!(

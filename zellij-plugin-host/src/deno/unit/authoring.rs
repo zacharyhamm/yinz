@@ -204,6 +204,8 @@ fn bare_relative_and_absolute_files_check_and_format_sibling_imports() {
         ] {
             let output = Command::new(std::env::var_os("ZELLIJ_COMPILATION_WORKER").unwrap())
                 .current_dir(dir.path())
+                .env("HOME", dir.path().join("empty-home"))
+                .env("XDG_CONFIG_HOME", dir.path().join("empty-config"))
                 .args(args)
                 .arg(&path)
                 .output()
@@ -343,5 +345,96 @@ fn failed_write_preserves_source_and_backup() {
     assert_eq!(
         std::fs::read_to_string(&backup).unwrap(),
         "export const original = 1;\n"
+    );
+}
+
+#[test]
+fn native_resolution_preserves_exact_extensions_and_import_locations() {
+    let dir = tempfile::tempdir().unwrap();
+    for (extension, value) in [("js", "1"), ("ts", "'ts'"), ("mjs", "2"), ("mts", "'mts'")] {
+        std::fs::write(
+            dir.path().join(format!("foo.{extension}")),
+            format!("export const value = {value};\n"),
+        )
+        .unwrap();
+    }
+    std::os::unix::fs::symlink("foo.js", dir.path().join("alias.js")).unwrap();
+    let source = r#"import { value as js } from "./alias.js";
+import { value as ts } from "./foo.ts";
+import { value as mjs } from "./foo.mjs";
+import { value as mts } from "./foo.mts";
+export { value } from "./foo.js";
+export const values: [number, string, number, string] = [js, ts, mjs, mts];
+export const typed: typeof import("./foo.js").value = 1;
+"#;
+    for mode in [Semantic, Prepare] {
+        let result = report(dir.path(), source, mode);
+        assert!(
+            result.diagnostics.is_empty(),
+            "{mode:?}: {:?}",
+            result.diagnostics
+        );
+        if mode == Prepare {
+            assert_eq!(result.formatted_source.as_deref(), Some(source));
+        }
+    }
+    for source in [
+        "import './foo.js'; export const λ = JSON.parse('1');",
+        "import './foo.\\\njs'; export const λ = JSON.parse('1');",
+        "export const emoji = '😀'; import './foo.js'; export const λ = JSON.parse('1');",
+    ] {
+        let result = report(dir.path(), source, Semantic);
+        let diagnostic = result.diagnostics.join("\n");
+        let before = source.split('λ').next().unwrap();
+        let row = before.chars().filter(|&ch| ch == '\n').count() + 1;
+        let column = before.rsplit('\n').next().unwrap().len() + 1;
+        assert!(
+            diagnostic.contains(&format!("main.ts:{row}:{column}:")),
+            "{diagnostic}"
+        );
+        assert!(!diagnostic.contains("authoring-tmp"), "{diagnostic}");
+    }
+}
+
+#[test]
+fn formatting_accepts_filesystem_names_and_refuses_symlinks() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "export const value=1";
+    for name in ["space name".to_owned(), "λ插件".to_owned(), "x".repeat(200)] {
+        let file = dir.path().join(format!("{name}.ts"));
+        let backup = dir.path().join(format!("{name}.bak.ts"));
+        std::fs::write(&file, source).unwrap();
+        crate::plugin_authoring::format_file(&file, false).unwrap();
+        crate::plugin_authoring::format_file(&file, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), source);
+        std::fs::remove_file(&backup).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("untouched"), &backup).unwrap();
+        std::fs::write(&file, source).unwrap();
+        assert!(crate::plugin_authoring::format_file(&file, false)
+            .unwrap_err()
+            .to_string()
+            .contains("symlink"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), source);
+        assert!(!dir.path().join("untouched").exists());
+    }
+    let outside = tempfile::tempdir().unwrap();
+    let file = outside.path().join("main.ts");
+    std::fs::write(&file, source).unwrap();
+    std::fs::write(outside.path().join("main.bak.ts"), "previous").unwrap();
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+    std::os::unix::fs::symlink(&file, dir.path().join("linked.ts")).unwrap();
+    for path in [
+        dir.path().join("linked/main.ts"),
+        dir.path().join("linked.ts"),
+    ] {
+        assert!(crate::plugin_authoring::format_file(&path, false)
+            .unwrap_err()
+            .to_string()
+            .contains("symlink"));
+    }
+    assert_eq!(std::fs::read_to_string(file).unwrap(), source);
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("main.bak.ts")).unwrap(),
+        "previous"
     );
 }
