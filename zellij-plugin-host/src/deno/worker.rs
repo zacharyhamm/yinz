@@ -185,7 +185,8 @@ pub(crate) fn exchange_cancel<T: serde::de::DeserializeOwned>(
             String::from_utf8_lossy(&errors)
         );
     }
-    let response: std::result::Result<T, String> = serde_json::from_slice(&output).context("invalid worker response")?;
+    let response: std::result::Result<T, String> =
+        serde_json::from_slice(&output).context("invalid worker response")?;
     response.map_err(|error| anyhow!(error))
 }
 
@@ -207,7 +208,11 @@ fn supervise_cancel(
         bail!("worker request exceeds frame limit");
     }
     let deadline = Instant::now() + timeout;
-    let owns_group = !inside_worker();
+    // Compilation inside a test stays in the test worker's group so cancellation
+    // reaps the complete test tree, including any compiler descendants.
+    let owns_group = !inside_worker()
+        && std::env::args_os().nth(1).as_deref()
+            != Some(std::ffi::OsStr::new("--plugin-test-worker"));
     if owns_group {
         command.process_group(0);
     }

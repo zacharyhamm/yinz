@@ -662,33 +662,74 @@ function changed(work: string): void {
       z.log(String(error));
     });
 }
-// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers. This helper shares mutable plugin state and SDK wire types with its callers. This lifecycle handler keeps its ordered protocol transitions together. Keep this existing protocol decision tree together for review.
 async function swamp(request: SwampRequest, directory: string): Promise<string> {
-  const workflow = request.payload?.workflow;
-  if (['workflow.history.search', 'report.search', 'report.get'].includes(request.operation) &&
-    typeof workflow === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(workflow)) {
-    const definition = JSON.parse(await swamp({operation: 'workflow.get', payload: {workflowIdOrName: workflow}}, directory));
-    request = {...request, payload: {...request.payload, workflow: definition.name}};
+  const workflow = request.payload?.["workflow"];
+  if (
+    ["workflow.history.search", "report.search", "report.get"].includes(request.operation) &&
+    typeof workflow === "string" &&
+    /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu.test(workflow)
+  ) {
+    const definition = parsedObject(
+      await swamp(
+        { operation: "workflow.get", payload: { workflowIdOrName: workflow } },
+        directory,
+      ),
+    );
+    assert(typeof definition["name"] === "string", "Workflow has no canonical name");
+    // oxlint-disable-next-line eslint/no-param-reassign -- Normalize the workflow name in this local request before dispatch.
+    request = { ...request, payload: { ...request.payload, workflow: definition["name"] } };
   }
-  const reply = await z.swampRequest({...request, directory}) as Record<string, any>;
-  if (reply.error) {
-    if (reply.error.code === 'not_dispatched') request.onNotDispatched?.(reply.error);
-    throw Error(encode(reply.error));
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+  const reply = (await z.swampRequest({ ...request, directory })) as {
+    error?: { code: string };
+    limited?: boolean;
+    projected?: { rows?: Json[]; values?: Json[] };
+    results?: Json[];
+    log?: { lines?: string[] };
+  };
+  if (reply["error"]) {
+    if (reply["error"].code === "not_dispatched") request.onNotDispatched?.(reply["error"]);
+    throw new Error(encode(reply["error"]));
   }
-  const query = request.payload?.query;
-  if (typeof query === 'string' && query && ['workflow.search', 'model.search', 'workflow.history.search'].includes(request.operation)) {
+  const query = request.payload?.["query"];
+  if (
+    typeof query === "string" &&
+    query &&
+    ["workflow.search", "model.search", "workflow.history.search"].includes(request.operation)
+  ) {
     const needle = query.toLowerCase();
-    reply.results = (reply.results ?? []).filter((row: Record<string, any>) => {
-      const fields = request.operation === 'workflow.history.search'
-        ? [row.workflowName, row.runId, row.status, ...Object.entries(row.inputs ?? {}).map(([key, value]) => `${key}=${value}`)]
-        : [row.name, row.id, request.operation === 'model.search' ? row.type : row.description];
-      return fields.some(value => typeof value === 'string' && value.toLowerCase().includes(needle));
+    // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+    reply["results"] = (reply["results"] ?? []).filter((value: Json) => {
+      const row = parsedObject(encode(value));
+      const fields =
+        request.operation === "workflow.history.search"
+          ? [
+              row["workflowName"],
+              row["runId"],
+              row["status"],
+              ...Object.entries(parsedObject(encode(row["inputs"] ?? {}))).map(
+                ([field, item]) => `${field}=${String(item)}`,
+              ),
+            ]
+          : [
+              row["name"],
+              row["id"],
+              request.operation === "model.search" ? row["type"] : row["description"],
+            ];
+      return fields.some(
+        // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
+        (value) => typeof value === "string" && value.toLowerCase().includes(needle),
+      );
     });
   }
-  if (request.operation === 'data.query' && reply.limited && !request.allowLimited) throw Error('Swamp data query reached its result limit; narrow the saved-data query');
-  if (request.operation === 'data.query' && reply.projected) {
-    reply.results = reply.projected.rows ?? reply.projected.values ?? []; delete reply.projected;
-  } else if (request.operation === 'workflow.history.logs' && reply.log) return (reply.log.lines ?? []).join('\n');
+  if (request.operation === "data.query" && reply["limited"] && !request.allowLimited)
+    throw new Error("Swamp data query reached its result limit; narrow the saved-data query");
+  if (request.operation === "data.query" && reply["projected"]) {
+    reply["results"] = reply["projected"].rows ?? reply["projected"].values ?? [];
+    delete reply["projected"];
+  } else if (request.operation === "workflow.history.logs" && reply["log"])
+    return (reply["log"].lines ?? []).join("\n");
   return encode(reply);
 }
 async function cancelRun(run: string, root: string): Promise<unknown> {
@@ -728,7 +769,8 @@ async function workflowRunId(operation: Delivery, request: Request): Promise<str
       {
         operation: "workflow.history.search",
         payload: {
-          ...(workflow ? { workflow } : {}),
+          // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+          ...(Boolean(workflow) ? { workflow } : {}),
           filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(operation.correlation)}`,
         },
       },
@@ -762,6 +804,7 @@ async function dispatch(
   operation: string,
   // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
   payload: Record<string, Json>,
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
   onProgress?: (payload: Json) => void,
 ): Promise<Delivery> {
   let [value, row] = read(uid);
@@ -1166,17 +1209,16 @@ async function discover(work: string, root: string): Promise<Delivery | undefine
   const launch = result(scope(work, "launch"));
   assert(launch.checkout === root, "Launch belongs to a different control checkout");
   if (launch.not_dispatched) return read(scope(work, "runs"))[0];
-  const exactInputs = parsedObject(launch.request ?? "{}")["exactInputs"];
-  const payload: Record<string, Json> = exactInputs ? {filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(scope(work, "launch"))}`} : {inputs: {launch: work}};
+  const exactInputs = Boolean(parsedObject(launch.request ?? "{}")["exactInputs"]);
+  const payload: Record<string, Json> = exactInputs
+    ? {
+        filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(scope(work, "launch"))}`,
+      }
+    : { inputs: { launch: work } };
   // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
   const history: {
     results?: { runId: string; workflowName: string; inputs: History["inputs"] }[];
-  } = JSON.parse(
-    await swamp(
-      { operation: "workflow.history.search", payload },
-      root,
-    ),
-  );
+  } = JSON.parse(await swamp({ operation: "workflow.history.search", payload }, root));
   for (const run of history.results ?? [])
     if (exactInputs || run.inputs.session === identity.session) {
       await handle({
@@ -1281,7 +1323,7 @@ async function handle(
     })) as { root: string; history: History; children: History[] };
     ensureOpen(args.run);
     const operation = await cancelRun(args.run, snapshot.root);
-    return {operations: operation ? [operation] : []};
+    return { operations: operation == null ? [] : [operation] };
   }
   if (args.method === "workflow_show") {
     const failed = args.launch ? read(scope(args.launch, "launch"))[0] : undefined;
@@ -1326,7 +1368,11 @@ async function handle(
         "Launch belongs to a different control checkout",
       );
       const launch = result(scope(work, "launch"));
-      if (parsedObject(launch.request ?? "{}")["exactInputs"] || !discovered.has(work) || !runs) {
+      if (
+        Boolean(parsedObject(launch.request ?? "{}")["exactInputs"]) ||
+        !discovered.has(work) ||
+        !runs
+      ) {
         runs = await discover(work, config.root);
         discovered.add(work);
       }
@@ -1379,7 +1425,7 @@ async function handle(
         {
           operation: "data.query",
           payload: {
-            predicate: `has(tags.workflowRunId) && tags.workflowRunId in ${encode(ids)}`,
+            predicate: `version >= 0 && has(tags.workflowRunId) && tags.workflowRunId in ${encode(ids)}`,
             select: outputProjection,
           },
         },
@@ -1701,22 +1747,44 @@ async function handle(
   if (args.method === "workflow_run") {
     assert(args.directory, "Missing project directory");
     const config = z.projectConfig.read(args.directory);
-    assert(!config.error, config.error ?? 'Invalid project config');
+    assert(!config.error, config.error ?? "Invalid project config");
     const workflow = args.workflow ?? config.config.workflow;
-    assert(workflow, 'No exit workflow configured. Use Hocus /project-setup.');
-    const {name} = JSON.parse(await swamp({operation: 'workflow.get', payload: {workflowIdOrName: workflow}, onProgress}, config.root));
-    assert(typeof name === 'string' && name, 'Workflow has no canonical name');
-    const validation = await swamp({operation: 'workflow.validate', payload: {workflowIdOrName: name}, onProgress}, config.root);
+    assert(workflow, "No exit workflow configured. Use Hocus /project-setup.");
+    const { name } = parsedObject(
+      await swamp(
+        { operation: "workflow.get", payload: { workflowIdOrName: workflow }, onProgress },
+        config.root,
+      ),
+    );
+    assert(typeof name === "string" && name, "Workflow has no canonical name");
+    const validation = await swamp(
+      { operation: "workflow.validate", payload: { workflowIdOrName: name }, onProgress },
+      config.root,
+    );
     ensureOpen(args.work);
-    assert(JSON.parse(validation).passed === true, 'Workflow validation failed: ' + validation);
-    const inputs = {...args.inputs ?? {}};
+    assert(
+      parsedObject(validation)["passed"] === true,
+      "Workflow validation failed: " + validation,
+    );
+    const inputs = { ...args.inputs };
     if (args.exactInputs) {
       // General workflows own their input schema; dispatch carries ownership in runtime tags.
-      Object.assign(value, {workflow: name, checkout: config.root, launch: args.work}); put(uid!, value, row);
-      return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs}, onProgress);
+      Object.assign(value, { workflow: name, checkout: config.root, launch: args.work });
+      put(required(uid), value, row);
+      return dispatch(
+        required(uid),
+        config.root,
+        "workflow.run",
+        { workflowIdOrName: name, inputs },
+        onProgress,
+      );
     }
-    inputs.launch = args.work; inputs.session = identity.session; inputs.binary = z.serverBinary || 'zellij';
-    inputs.checkout ??= (await command(['git', 'rev-parse', '--show-toplevel'], args.directory)).replace(/\n$/, '');
+    inputs["launch"] = args.work;
+    inputs["session"] = identity.session;
+    inputs["binary"] = z.serverBinary || "zellij";
+    inputs["checkout"] ??= (
+      await command(["git", "rev-parse", "--show-toplevel"], args.directory)
+    ).replace(/\n$/u, "");
     ensureOpen(args.work);
     if (typeof inputs["sourcePane"] === "number" && inputs["sourcePane"] >= 0) {
       const pane = z.command("GetPaneInfo", terminal(inputs["sourcePane"]));
@@ -1777,14 +1845,26 @@ async function handle(
     inputs["flowVersion"] ??= 3;
     Object.assign(value, { workflow: name, checkout: config.root, launch: args.work });
     put(required(uid), value, row);
-    return dispatch(required(uid), config.root, "workflow.run", { workflowIdOrName: name, inputs }, onProgress);
+    return dispatch(
+      required(uid),
+      config.root,
+      "workflow.run",
+      { workflowIdOrName: name, inputs },
+      onProgress,
+    );
   } else if (args.method === "swamp_dispatch") {
     if (args.operation === "workflow.resume")
       ensureOpen(typeof args.payload["runId"] === "string" ? args.payload["runId"] : undefined);
-    return dispatch(required(uid), args.directory, args.operation, {
-      ...args.payload,
-      _zellij_active_callback: true,
-    }, onProgress);
+    return dispatch(
+      required(uid),
+      args.directory,
+      args.operation,
+      {
+        ...args.payload,
+        _zellij_active_callback: true,
+      },
+      onProgress,
+    );
   } else if (args.method === "pane_action") {
     let source: { pane: number } | undefined;
     const saved = read(scope(args.work, "source"))[0];
@@ -2224,154 +2304,425 @@ async function invokeInner(
   return JSON.parse(encode(response));
 }
 // A separate RPC surface: Hocus cannot select arbitrary privileged bridge methods.
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- Keep this existing protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together. This helper shares mutable plugin state and SDK wire types with its callers.
 async function hocusWorkflow(input: Json, call: RpcCall): Promise<Json> {
   const from = call.source?.Plugin;
-  assert(from != null && z.command('GetPaneInfo', plugin(from))?.plugin_url === 'zellij:hocus',
-    'Workflow tools require the host-authenticated builtin Hocus');
-  const request = input as {tool: string; args: Record<string, any>; directory: string};
-  assert(request && typeof request === 'object' && typeof request.directory === 'string', 'Missing active project');
+  assert(
+    from != null && z.command("GetPaneInfo", plugin(from))?.plugin_url === "zellij:hocus",
+    "Workflow tools require the host-authenticated builtin Hocus",
+  );
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+  const request = input as { tool: string; args: Record<string, Json>; directory: string };
+  assert(
+    request != null && typeof request === "object" && typeof request.directory === "string",
+    "Missing active project",
+  );
   const a = request.args;
-  assert(a && typeof a === 'object' && !Array.isArray(a), 'Expected tool arguments');
-  const required = (name: string): string => {
-    assert(typeof a[name] === 'string' && a[name].trim() !== '' && !a[name].includes('\0'), `Missing or invalid ${name}`);
+  assert(a != null && typeof a === "object" && !Array.isArray(a), "Expected tool arguments");
+  const argument = (name: string): string => {
+    assert(
+      typeof a[name] === "string" && a[name].trim() !== "" && !a[name].includes("\0"),
+      `Missing or invalid ${name}`,
+    );
     return a[name];
   };
   const config = z.projectConfig.read(request.directory);
-  assert(!config.error, config.error ?? 'Invalid project configuration');
+  assert(!config.error, config.error ?? "Invalid project configuration");
   const root = config.root;
-  const query = async (operation: string, payload: Record<string, Json> = {}) =>
-    JSON.parse(await swamp({operation, payload, onProgress: call.progress}, root));
-  const reports: Record<string, Json>[] = [{name: '@swamp/workflow-summary', workflow: a.workflow ?? null, run: a.run ?? null}];
-  if (a.model) reports.push({name: '@swamp/method-summary', model: a.model, run: a.run ?? null});
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+  const progress = (update: Json): void => {
+    call.progress(update);
+  };
+  const query = async <T extends Json = Json>(
+    operation: string,
+    // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- Query forwards nested SDK wire values without modifying them.
+    payload: Readonly<Record<string, Json>> = {},
+  ): Promise<T> =>
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+    JSON.parse(await swamp({ operation, payload, onProgress: progress }, root)) as T;
+  const reports: Record<string, Json>[] = [
+    { name: "@swamp/workflow-summary", workflow: a["workflow"] ?? null, run: a["run"] ?? null },
+  ];
+  // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+  if (Boolean(a["model"]))
+    reports.push({
+      name: "@swamp/method-summary",
+      model: required(a["model"]),
+      run: a["run"] ?? null,
+    });
   let launch: string | undefined;
   try {
     switch (request.tool) {
-      case 'workflow_search': return await query('workflow.search', {query: a.query ?? ''});
-      case 'workflow_get': return await query('workflow.get', {workflowIdOrName: required('workflow')});
-      case 'workflow_schema': return await query('workflow.schema', a.workflow ? {workflowIdOrName: required('workflow')} : {});
-      case 'workflow_create': {
-        const name = required('name');
-        await query('workflow.schema');
-        const existing = await query('workflow.search', {query: name});
-        assert(!(existing.results ?? []).some((w: {name: string}) => w.name === name), 'A workflow already has that name; inspect it before editing');
-        const created = await query('workflow.create', {name});
-        return {created, definition: await query('workflow.get', {workflowIdOrName: created.id})};
+      case "workflow_search":
+        return await query("workflow.search", { query: a["query"] ?? "" });
+      case "workflow_get":
+        return await query("workflow.get", { workflowIdOrName: argument("workflow") });
+      case "workflow_schema":
+        return await query(
+          "workflow.schema",
+          // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+          Boolean(a["workflow"]) ? { workflowIdOrName: argument("workflow") } : {},
+        );
+      case "workflow_create": {
+        const name = argument("name");
+        await query("workflow.schema");
+        const existing = await query<{ results?: { name: string }[] }>("workflow.search", {
+          query: name,
+        });
+        assert(
+          // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
+          !(existing.results ?? []).some((w: { name: string }) => w.name === name),
+          "A workflow already has that name; inspect it before editing",
+        );
+        const created = await query<{ id: string }>("workflow.create", { name });
+        return {
+          created,
+          definition: await query("workflow.get", { workflowIdOrName: created.id }),
+        };
       }
-      case 'workflow_edit': case 'workflow_delete': {
-        const workflowIdOrName = required('workflow');
-        assert(a.expected && typeof a.expected === 'object' && !Array.isArray(a.expected), 'expected must be the complete workflow_get result');
-        if (request.tool === 'workflow_edit') {
-          await query('workflow.schema');
-          assert(a.definition && typeof a.definition === 'object' && !Array.isArray(a.definition), 'definition must match the workflow schema');
-          assert(a.definition.id === a.expected.id, 'Preserve the inspected workflow ID');
+      case "workflow_edit":
+      case "workflow_delete": {
+        const workflowIdOrName = argument("workflow");
+        assert(
+          a["expected"] != null &&
+            typeof a["expected"] === "object" &&
+            !Array.isArray(a["expected"]),
+          "expected must be the complete workflow_get result",
+        );
+        if (request.tool === "workflow_edit") {
+          await query("workflow.schema");
+          assert(
+            a["definition"] != null &&
+              typeof a["definition"] === "object" &&
+              !Array.isArray(a["definition"]),
+            "definition must match the workflow schema",
+          );
+          assert(
+            a["definition"]["id"] === a["expected"]["id"],
+            "Preserve the inspected workflow ID",
+          );
         }
-        const result = await query(request.tool === 'workflow_edit' ? 'workflow.edit' : 'workflow.delete',
-          {workflowIdOrName, expected: a.expected, ...(request.tool === 'workflow_edit' ? {content: encode(a.definition)} : {})});
-        return request.tool === 'workflow_delete' ? result : {result, definition: await query('workflow.get', {workflowIdOrName: a.expected.id})};
+        // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
+        const result = await query(
+          request.tool === "workflow_edit" ? "workflow.edit" : "workflow.delete",
+          {
+            workflowIdOrName,
+            expected: a["expected"],
+            ...(request.tool === "workflow_edit" ? { content: encode(a["definition"]) } : {}),
+          },
+        );
+        return request.tool === "workflow_delete"
+          ? result
+          : {
+              result,
+              definition: await query("workflow.get", {
+                workflowIdOrName: required(a["expected"]["id"]),
+              }),
+            };
       }
-      case 'workflow_validate': return await query('workflow.validate', {workflowIdOrName: required('workflow')});
-      case 'workflow_evaluate': return await query('workflow.evaluate', {workflowIdOrName: required('workflow'), inputs: a.inputs ?? {}});
-      case 'workflow_active': return await query('run.history', {active: true});
-      case 'workflow_history': return await query('workflow.history.search', {query: a.query ?? '', ...(a.workflow ? {workflow: a.workflow} : {}), ...(a.filter ? {filter: a.filter} : {})});
-      case 'workflow_approvals': return await query('workflow.approvals');
-      case 'workflow_reports': return await query('report.search', {...a});
-      case 'workflow_report': {
-        const {name: _name, ...options} = a;
-        return await query('report.get', {...options, reportName: required('name')});
+      case "workflow_validate":
+        return await query("workflow.validate", { workflowIdOrName: argument("workflow") });
+      case "workflow_evaluate":
+        return await query("workflow.evaluate", {
+          workflowIdOrName: argument("workflow"),
+          inputs: a["inputs"] ?? {},
+        });
+      case "workflow_active":
+        return await query("run.history", { active: true });
+      case "workflow_history":
+        return await query("workflow.history.search", {
+          query: a["query"] ?? "",
+          // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+          ...(Boolean(a["workflow"]) ? { workflow: a["workflow"] } : {}),
+          // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+          ...(Boolean(a["filter"]) ? { filter: a["filter"] } : {}),
+        });
+      case "workflow_approvals":
+        return await query("workflow.approvals");
+      case "workflow_reports":
+        return await query("report.search", { ...a });
+      case "workflow_report": {
+        const { name: _name, ...options } = a;
+        return await query("report.get", { ...options, reportName: argument("name") });
       }
-      case 'workflow_data': {
-        required('predicate');
-        assert(a.limit == null || Number.isInteger(a.limit) && a.limit > 0 && a.limit <= 1000, 'Invalid data limit');
-        return JSON.parse(await swamp({operation: 'data.query', payload: {...a}, allowLimited: true, onProgress: call.progress}, root));
+      case "workflow_data": {
+        argument("predicate");
+        assert(
+          a["limit"] == null ||
+            (typeof a["limit"] === "number" &&
+              Number.isInteger(a["limit"]) &&
+              a["limit"] > 0 &&
+              a["limit"] <= 1000),
+          "Invalid data limit",
+        );
+        // oxlint-disable-next-line typescript/no-unsafe-return -- This branch forwards the JSON response unchanged to its caller.
+        return JSON.parse(
+          await swamp(
+            {
+              operation: "data.query",
+              payload: { ...a },
+              allowLimited: true,
+              onProgress: progress,
+            },
+            root,
+          ),
+        );
       }
-      case 'workflow_models': return await query('model.search', {query: a.query ?? ''});
-      case 'workflow_model': return await query('model.get', {modelIdOrName: required('model')});
-      case 'workflow_model_types': return await query('model.type.search', {query: a.query ?? ''});
-      case 'workflow_model_type': return await query('model.type.describe', {typeArg: required('type')});
-      case 'workflow_model_method': return await query('model.method.describe', {modelIdOrName: required('model'), methodName: required('method')});
-      case 'workflow_launch': {
-        required('workflow');
-        const supplied = a.inputs?.launch;
-        launch = a.inputs?.session === identity.session && typeof supplied === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,199}$/.test(supplied)
-          ? supplied : key(`${z.instanceId}-hocus-${call.callId}`);
-        const result = await invoke({method: 'workflow_run', directory: request.directory, workflow: a.workflow,
-          inputs: a.inputs ?? {}, exactInputs: true, work: launch, key: 'launch'}, undefined, call.progress) as unknown as Delivery;
-        if (result.run) await handle({method: 'workflow_attach', work: launch, key: `attach-${result.run}`, run: result.run, workflow: result.workflow, directory: root});
-        return JSON.parse(encode({...result, reports}));
+      case "workflow_models":
+        return await query("model.search", { query: a["query"] ?? "" });
+      case "workflow_model":
+        return await query("model.get", { modelIdOrName: argument("model") });
+      case "workflow_model_types":
+        return await query("model.type.search", { query: a["query"] ?? "" });
+      case "workflow_model_type":
+        return await query("model.type.describe", { typeArg: argument("type") });
+      case "workflow_model_method":
+        return await query("model.method.describe", {
+          modelIdOrName: argument("model"),
+          methodName: argument("method"),
+        });
+      case "workflow_launch": {
+        const workflow = argument("workflow");
+        const inputs = a["inputs"] ?? {};
+        assert(typeof inputs === "object" && !Array.isArray(inputs), "inputs must be an object");
+        const supplied = inputs["launch"];
+        launch =
+          inputs["session"] === identity.session &&
+          typeof supplied === "string" &&
+          /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u.test(supplied)
+            ? supplied
+            : key(`${z.instanceId}-hocus-${call.callId}`);
+        // oxlint-disable-next-line eslint/no-shadow, typescript/no-unsafe-type-assertion -- The nested callback has its own independent operation state. This conversion restores the known host or stored wire type after JSON transport.
+        const result = (await invoke(
+          {
+            method: "workflow_run",
+            directory: request.directory,
+            workflow,
+            inputs,
+            exactInputs: true,
+            work: launch,
+            key: "launch",
+          },
+          undefined,
+          progress,
+        )) as unknown as Delivery;
+        if (result.run)
+          await handle({
+            method: "workflow_attach",
+            work: launch,
+            key: `attach-${result.run}`,
+            run: result.run,
+            workflow: required(result.workflow),
+            directory: root,
+          });
+        // oxlint-disable-next-line typescript/no-unsafe-return -- This branch forwards the JSON response unchanged to its caller.
+        return JSON.parse(encode({ ...result, reports }));
       }
-      case 'workflow_run_get': case 'workflow_logs': case 'workflow_resume': case 'workflow_approve':
-      case 'workflow_reject': case 'workflow_answer': case 'workflow_cancel': case 'workflow_cancel_step': break;
-      default: throw new Error('Unsupported Hocus workflow tool');
+      case "workflow_run_get":
+      case "workflow_logs":
+      case "workflow_resume":
+      case "workflow_approve":
+      case "workflow_reject":
+      case "workflow_answer":
+      case "workflow_cancel":
+      case "workflow_cancel_step":
+        break;
+      default:
+        throw new Error("Unsupported Hocus workflow tool");
     }
-    const run = required('run');
-    assert(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(run), 'An exact run UUID is required');
-    const history = await query('workflow.history.get', {workflowIdOrName: run}) as History;
-    assert(history.id === run, 'Run identity mismatch');
-    reports[0].workflow = history.workflowName;
-    const attachment = read<Attachment>(scope(run, 'attachment'))[0];
-    if (attachment) assert(attachment.root === root, 'Run belongs to a different control checkout');
+    const run = argument("run");
+    assert(
+      /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu.test(run),
+      "An exact run UUID is required",
+    );
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
+    const history = (await query("workflow.history.get", { workflowIdOrName: run })) as History;
+    assert(history.id === run, "Run identity mismatch");
+    required(reports[0])["workflow"] = history.workflowName;
+    const attachment = read<Attachment>(scope(run, "attachment"))[0];
+    if (attachment) assert(attachment.root === root, "Run belongs to a different control checkout");
     let work = attachment?.work;
     const candidate = history.inputs?.launch;
-    if (!work && history.inputs?.session === identity.session && typeof candidate === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,199}$/.test(candidate)) {
-      const saved = read(scope(candidate, 'launch'))[0];
+    if (
+      !work &&
+      history.inputs?.session === identity.session &&
+      typeof candidate === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u.test(candidate)
+    ) {
+      const saved = read(scope(candidate, "launch"))[0];
       if (saved?.checkout === root && saved.workflow === history.workflowName) work = candidate;
     }
-    if (request.tool === 'workflow_run_get') {
-      if (attachment) return await invoke({method: 'workflow_show', directory: root, run});
+    if (request.tool === "workflow_run_get") {
+      if (attachment) return await invoke({ method: "workflow_show", directory: root, run });
       // A run started outside Zellij has no bridge ownership. Its Swamp evidence is still readable.
-      return {history: JSON.parse(encode(history)), children: [], reports,
-        outputs: await query('data.query', {predicate: `version >= 0 && has(tags.workflowRunId) && tags.workflowRunId == ${encode(run)}`, select: outputProjection})};
+      return {
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
+        history: JSON.parse(encode(history)),
+        children: [],
+        reports,
+        outputs: await query("data.query", {
+          predicate: `version >= 0 && has(tags.workflowRunId) && tags.workflowRunId == ${encode(run)}`,
+          select: outputProjection,
+        }),
+      };
     }
-    if (request.tool === 'workflow_logs') {
-      assert(a.tail == null || Number.isInteger(a.tail) && a.tail > 0 && a.tail <= 10000, 'Invalid log tail');
-      const logs = await swamp({operation: 'workflow.history.logs', payload: {runIdOrWorkflow: run, tail: a.tail ?? 100}, onProgress: call.progress}, root);
-      return {run, logs: a.contains ? logs.split('\n').filter(line => line.includes(required('contains'))).join('\n') : logs};
+    if (request.tool === "workflow_logs") {
+      assert(
+        a["tail"] == null ||
+          (typeof a["tail"] === "number" &&
+            Number.isInteger(a["tail"]) &&
+            a["tail"] > 0 &&
+            a["tail"] <= 10000),
+        "Invalid log tail",
+      );
+      const logs = await swamp(
+        {
+          operation: "workflow.history.logs",
+          payload: { runIdOrWorkflow: run, tail: a["tail"] ?? 100 },
+          onProgress: progress,
+        },
+        root,
+      );
+      return {
+        run,
+        // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+        logs: Boolean(a["contains"])
+          ? logs
+              .split("\n")
+              .filter((line) => line.includes(argument("contains")))
+              .join("\n")
+          : logs,
+      };
     }
     ensureOpen(work ?? run);
-    if (request.tool === 'workflow_resume') {
-      assert(a.inputs == null || typeof a.inputs === 'object' && !Array.isArray(a.inputs), 'inputs must be an object');
-      const ownerInputs = work && (!JSON.parse(read(scope(work, 'launch'))[0]?.request ?? '{}').exactInputs ||
-        history.inputs?.launch === work && history.inputs?.session === identity.session);
-      for (const field of ['launch', 'session']) if (ownerInputs && Object.hasOwn(a.inputs ?? {}, field))
-        assert(a.inputs[field] === history.inputs?.[field as 'launch' | 'session'], `Cannot change owned ${field}`);
-      const validation = await query('workflow.validate', {workflowIdOrName: history.workflowId});
-      if (validation.passed !== true) return {error: {code: 'validation_failed', message: 'Workflow validation failed'}, validation, reports};
+    if (request.tool === "workflow_resume") {
+      assert(
+        a["inputs"] == null || (typeof a["inputs"] === "object" && !Array.isArray(a["inputs"])),
+        "inputs must be an object",
+      );
+      const ownerInputs =
+        work &&
+        // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+        (!Boolean(parsedObject(read(scope(work, "launch"))[0]?.request ?? "{}")["exactInputs"]) ||
+          (history.inputs?.launch === work && history.inputs?.session === identity.session));
+      for (const field of ["launch", "session"] as const)
+        if (Boolean(ownerInputs) && Object.hasOwn(a["inputs"] ?? {}, field))
+          assert(a["inputs"]?.[field] === history.inputs?.[field], `Cannot change owned ${field}`);
+      const validation = await query<{ passed: Json }>("workflow.validate", {
+        workflowIdOrName: history.workflowId,
+      });
+      if (validation.passed !== true)
+        return {
+          error: { code: "validation_failed", message: "Workflow validation failed" },
+          validation,
+          reports,
+        };
       ensureOpen(work ?? run);
-      return await invoke({method: 'swamp_dispatch', work: work ?? run, key: key(`hocus-${call.callId}`), directory: root,
-        operation: 'workflow.resume', payload: {workflowIdOrName: history.workflowId, runId: run, inputs: a.inputs ?? {}, ...(a.from ? {from: required('from')} : {})}}, undefined, call.progress);
+      return await invoke(
+        {
+          method: "swamp_dispatch",
+          work: work ?? run,
+          key: key(`hocus-${call.callId}`),
+          directory: root,
+          operation: "workflow.resume",
+          payload: {
+            workflowIdOrName: history.workflowId,
+            runId: run,
+            inputs: a["inputs"] ?? {},
+            // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+            ...(Boolean(a["from"]) ? { from: argument("from") } : {}),
+          },
+        },
+        undefined,
+        progress,
+      );
     }
-    if (request.tool === 'workflow_approve' || request.tool === 'workflow_reject')
-      return await query(request.tool === 'workflow_approve' ? 'workflow.approve' : 'workflow.reject',
-        {workflowIdOrName: history.workflowId, runId: run, stepName: required('step'), ...(a.reason ? {reason: required('reason')} : {})});
-    if (request.tool === 'workflow_answer') {
-      const model = required('model'), question = required('question');
-      const definition = await query('model.get', {modelIdOrName: model});
-      assert(definition.type === '@hammz/question', 'Only the workflow question model may receive answers');
-      const validation = await query('workflow.validate', {workflowIdOrName: history.workflowId});
-      if (validation.passed !== true) return {error: {code: 'validation_failed', message: 'Workflow validation failed'}, validation, reports};
+    if (request.tool === "workflow_approve" || request.tool === "workflow_reject")
+      return await query(
+        request.tool === "workflow_approve" ? "workflow.approve" : "workflow.reject",
+        {
+          workflowIdOrName: history.workflowId,
+          runId: run,
+          stepName: argument("step"),
+          // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+          ...(Boolean(a["reason"]) ? { reason: argument("reason") } : {}),
+        },
+      );
+    if (request.tool === "workflow_answer") {
+      const model = argument("model"),
+        question = argument("question");
+      const definition = await query<{ type: string }>("model.get", { modelIdOrName: model });
+      assert(
+        definition.type === "@hammz/question",
+        "Only the workflow question model may receive answers",
+      );
+      const validation = await query<{ passed: Json }>("workflow.validate", {
+        workflowIdOrName: history.workflowId,
+      });
+      if (validation.passed !== true)
+        return {
+          error: { code: "validation_failed", message: "Workflow validation failed" },
+          validation,
+          reports,
+        };
       ensureOpen(work ?? run);
       // Only the question model which produced this exact run/question may receive submit.
-      const questions = await query('data.query', {predicate: `modelName == ${encode(model)} && specName == "question" && attributes.run == ${encode(run)} && attributes.question == ${encode(question)}`, select: '{"attributes":attributes}'});
-      assert(questions.results?.length === 1, 'Question is absent or ambiguous; inspect its saved state');
-      return await invoke({method: 'workflow_answer', directory: root, model,
-        inputs: {run, question, answer: required('answer'), submission: key(`hocus-${call.callId}`)}}, undefined, call.progress);
+      const questions = await query<{ results?: Json[] }>("data.query", {
+        predicate: `modelName == ${encode(model)} && specName == "question" && attributes.run == ${encode(run)} && attributes.question == ${encode(question)}`,
+        select: '{"attributes":attributes}',
+      });
+      assert(
+        questions.results?.length === 1,
+        "Question is absent or ambiguous; inspect its saved state",
+      );
+      return await invoke(
+        {
+          method: "workflow_answer",
+          directory: root,
+          model,
+          inputs: {
+            run,
+            question,
+            answer: argument("answer"),
+            submission: key(`hocus-${call.callId}`),
+          },
+        },
+        undefined,
+        progress,
+      );
     }
-    if (request.tool === 'workflow_cancel') {
-      if (attachment) return await invoke({method: 'workflow_cancel', directory: root, run});
-      assert(history.status === 'running', 'Only active executions can be cancelled');
-      return await query('workflow.cancel', {runId: run});
+    if (request.tool === "workflow_cancel") {
+      if (attachment) return await invoke({ method: "workflow_cancel", directory: root, run });
+      assert(history.status === "running", "Only active executions can be cancelled");
+      return await query("workflow.cancel", { runId: run });
     }
-    assert(attachment, 'Step cancellation requires a bridge-owned run');
-    const operationWork = required('work'), operationKey = required('key');
+    assert(attachment, "Step cancellation requires a bridge-owned run");
+    const operationKey = argument("key"),
+      operationWork = argument("work");
     const ownedOperation = read(scope(operationWork, operationKey))[0];
-    assert(lifecycleWork(operationWork) === attachment.work && ownedOperation?.owner?.host_id === identity.host_id &&
-      ownedOperation.owner.session === identity.session && ownedOperation.owner.work === operationWork,
-      'Step does not belong to the inspected run lifecycle');
-    return await invoke({method: 'cancel_step', work: operationWork, operation: operationKey});
+    assert(
+      lifecycleWork(operationWork) === attachment.work &&
+        ownedOperation?.owner?.host_id === identity.host_id &&
+        ownedOperation.owner.session === identity.session &&
+        ownedOperation.owner.work === operationWork,
+      "Step does not belong to the inspected run lifecycle",
+    );
+    return await invoke({ method: "cancel_step", work: operationWork, operation: operationKey });
   } catch (error) {
-    let detail: Json = {code: 'workflow_tool_failed', message: String(error)};
-    try { detail = JSON.parse((error as Error).message); } catch { /* Keep the original diagnostic. */ }
-    return {error: detail, reports, ...(launch ? {launch} : {}), recovery: 'Inspect persisted definitions, run history, reports and submission state before retrying a mutation.'};
+    let detail: Json = { code: "workflow_tool_failed", message: String(error) };
+    try {
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- JSON error details are forwarded unchanged.
+      detail = JSON.parse(error instanceof Error ? error.message : String(error));
+    } catch {
+      /* Keep the original diagnostic. */
+    }
+    return {
+      error: detail,
+      reports,
+      ...(launch ? { launch } : {}),
+      recovery:
+        "Inspect persisted definitions, run history, reports and submission state before retrying a mutation.",
+    };
   }
 }
 

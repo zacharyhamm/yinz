@@ -136,6 +136,10 @@ pub fn lint(sh: &Shell) -> Result<()> {
     let binary = crate::project_root().join("target/debug/zellij");
     let mut failed = false;
     for file in plugin_files()? {
+        // Test modules use zellij:testing and are checked by the embedded test runner.
+        if file.to_string_lossy().ends_with(".test.ts") {
+            continue;
+        }
         if cmd!(sh, "{binary} plugins check --file {file}")
             .run()
             .is_err()
