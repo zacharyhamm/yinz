@@ -1477,6 +1477,9 @@ impl State {
             Event::PaneUpdate(manifest) => self.on_panes(manifest),
             // Somebody clicked a toast hocus raised. The host has already focused our pane; this
             // arm is what makes the click land on the conversation the toast was actually about.
+            Event::CustomMessage(name, payload) if name.starts_with("__zellij_plugin_test:") => {
+                self.on_plugin_test_result(&name["__zellij_plugin_test:".len()..], &payload)
+            },
             Event::CustomMessage(name, payload) if name == wire::TOAST_CLICK => {
                 self.on_toast_click(payload.parse::<u64>().ok())
             },

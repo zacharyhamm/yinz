@@ -104,6 +104,14 @@ pub(crate) fn spawn_count() -> usize {
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
+        // Test workers start a private process group, including their compilation children.
+        // Compilation workers used by normal plugins retain their caller's group.
+        let pid = self.0.id() as libc::pid_t;
+        if unsafe { libc::getpgid(pid) } == pid {
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
@@ -145,6 +153,15 @@ fn drain(pipe: &mut impl Read, bytes: &mut Vec<u8>) -> Result<bool> {
 }
 
 fn exchange(command: &mut Command, input: &[u8], timeout: Duration) -> Result<Output> {
+    exchange_cancel(command, input, timeout, None)
+}
+
+pub(crate) fn exchange_cancel<T: serde::de::DeserializeOwned>(
+    command: &mut Command,
+    input: &[u8],
+    timeout: Duration,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<T> {
     if input.len() > MAX {
         bail!("worker request exceeds frame limit");
     }
@@ -170,6 +187,9 @@ fn exchange(command: &mut Command, input: &[u8], timeout: Duration) -> Result<Ou
     let (mut output, mut errors) = (Vec::new(), Vec::new());
     let (mut stdout_done, mut stderr_done) = (false, false);
     loop {
+        if cancel.is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Acquire)) {
+            bail!("test run cancelled");
+        }
         if Instant::now() >= deadline {
             bail!("worker exceeded {} second deadline", timeout.as_secs_f64());
         }
@@ -205,7 +225,7 @@ fn exchange(command: &mut Command, input: &[u8], timeout: Duration) -> Result<Ou
                 if !remaining.is_empty() {
                     bail!("worker exited before reading request");
                 }
-                let response: Response =
+                let response: std::result::Result<T, String> =
                     serde_json::from_slice(&output).context("invalid worker response")?;
                 return response.map_err(|error| anyhow!(error));
             }
@@ -224,18 +244,7 @@ pub fn run_compilation_worker() {
         close_fds::close_open_fds(3, &[]);
     }
     let result = (|| -> Result<()> {
-        // Linux core_pattern pipe handlers can ignore RLIMIT_CORE.
-        #[cfg(target_os = "linux")]
-        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
-            return Err(std::io::Error::last_os_error()).context("disable worker dumpability");
-        }
-        let limit = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } != 0 {
-            return Err(std::io::Error::last_os_error()).context("disable worker core dumps");
-        }
+        disable_core_dumps()?;
         let mut input = Vec::new();
         std::io::stdin()
             .take((MAX + 1) as u64)
@@ -274,6 +283,22 @@ pub fn run_compilation_worker() {
         std::process::exit(1);
     }
     std::process::exit(0);
+}
+
+pub(super) fn disable_core_dumps() -> Result<()> {
+    // Linux core_pattern pipe handlers can ignore RLIMIT_CORE.
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("disable worker dumpability");
+    }
+    let limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("disable worker core dumps");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

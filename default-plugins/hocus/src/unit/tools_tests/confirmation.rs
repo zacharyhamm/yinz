@@ -83,6 +83,7 @@ fn confirmation_policy_lists_tools_correctly() {
         // Finding a line in a plugin is reading it.
         "plugin_search",
         "plugin_outline",
+        "plugin_test",
         // Loading a family changes nothing but what the next request advertises.
         LOAD_TOOL,
         "tool_result_read",
@@ -102,7 +103,7 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 91);
+    assert_eq!(names.len(), 92);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
     assert_eq!(confirmed, 15);
 }

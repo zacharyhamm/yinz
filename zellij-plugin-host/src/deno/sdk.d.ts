@@ -123,6 +123,7 @@ export interface WebRequestResult {
   context: Record<string, string>;
 }
 export interface Zellij {
+  testPlugin(name: string, options?: PluginTestOptions): CancellablePromise<PluginTestReport>;
   readonly serverBinary: string;
   readonly serverSession: string;
   readonly serverIncarnation: string;
@@ -232,6 +233,8 @@ export type StringMap = Record<string, string>;
 type Tagged<M> = { [K in keyof M]: { [P in K]: M[K] } }[keyof M];
 /** Raw command payloads retain Rust field names and tuple positions. */
 export interface CommandArgs {
+  TestPlugin: {name: string; options: PluginTestOptions; request_id: string};
+  CancelPluginTest: string;
   CheckPlugin: {name: string; source: string; mode: PluginCheckMode};
   SwampRequest: {directory: string; id: string; operation: string; payload: string};
   Subscribe: EventType[]; Unsubscribe: EventType[]; SetSelectable: boolean;
@@ -838,3 +841,7 @@ export interface PaneSequence {
   readonly paneId: PaneId | null; readonly status: 'running' | 'cancelling' | PaneSequenceOutcome;
   readonly done: Promise<PaneSequenceResult>; push(step: PaneStep): void; cancel(): void;
 }
+
+export interface PluginTestOptions {kind?: "unit" | "integration" | "all"; filter?: string; timeout_ms?: number}
+export interface PluginTestResult {name: string; kind: "unit" | "integration" | "all"; status: "passed" | "failed"; duration_ms: number; error: string | null; output: string}
+export interface PluginTestReport {tests: PluginTestResult[]}

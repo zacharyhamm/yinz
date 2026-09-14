@@ -1191,6 +1191,28 @@ impl State {
             return true;
         }
 
+        if call.name == "plugin_test" {
+            let Some(name) = args.name.as_deref() else {
+                self.finish_head("name is required");
+                return true;
+            };
+            let options = serde_json::from_value::<zellij_tile::plugin_authoring::PluginTestOptions>(
+                serde_json::json!({
+                    "kind": args.kind.as_deref().unwrap_or("all"), "filter": args.filter, "timeout_ms": args.timeout_ms.unwrap_or(30_000)
+                }),
+            );
+            return match options {
+                Ok(options) => {
+                    zellij_tile::shim::test_plugin(name, options, &call.id);
+                    self.status = Status::AwaitingPluginTest;
+                    false
+                },
+                Err(error) => {
+                    self.finish_head(error.to_string());
+                    true
+                },
+            };
+        }
         let dir = self.user_plugin_dir.clone();
         if dir.trim().is_empty() {
             self.finish_head(tools::NO_PLUGIN_FOLDER);
@@ -3599,6 +3621,11 @@ impl State {
     /// follow-up. Shared by the two exits that end a turn early — a decline and
     /// an abort — so that neither can drift into pumping the queue.
     fn halt_tools(&mut self, head_result: &str, rest_result: &str) {
+        if self.status == Status::AwaitingPluginTest {
+            if let Some(call) = self.pending.front() {
+                zellij_tile::shim::cancel_plugin_test(&call.id);
+            }
+        }
         self.drop_spotlight();
         self.status = Status::Idle;
         // The model asked, but it is not getting an answer — the results are

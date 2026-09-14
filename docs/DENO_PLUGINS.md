@@ -1594,6 +1594,7 @@ Names without an extension select TypeScript. Use an explicit extension to selec
 ```sh
 zellij plugins write hello.ts < ./hello.ts
 zellij plugins check hello.ts
+zellij plugins test hello.ts
 zellij plugins reload hello.ts
 zellij plugins log hello.ts
 ```
@@ -1605,7 +1606,7 @@ An extensionless authoring name selects `.ts`.
 
 The SDK does not include npm, JSR, general Deno I/O, or workers.
 Hocus supports the same names through `plugin_write`, `plugin_edit`, `plugin_list`, `plugin_read`,
-`plugin_search`, `plugin_outline`, `plugin_check`, `plugin_reload`, and `plugin_log`.
+`plugin_search`, `plugin_outline`, `plugin_check`, `plugin_test`, `plugin_reload`, and `plugin_log`.
 `plugin_docs` serves this guide a `##` section at a time (`section=lifecycle`, `commands`, `helpers`, `async`, `files`, `data`, and the rest the index lists), the SDK declarations in parts (`section=sdk_core` onward), and the worked examples. Writes and edits check syntax before approval;
 explicit JS/TS `plugin_check` checks types and local imports. `CheckPlugin` exposes the report as
 `{diagnostics, outline, permissions, warnings}` with `Syntax` or `Semantic` mode and requires `ReadFiles`.
@@ -1615,6 +1616,110 @@ Imported default/named aliases and SDK namespace imports are recognized; comment
 Computed requests use normal runtime approval and produce warnings. Imported modules do not add inferred grants.
 The approval shows inferred grants; edits show newly requested grants. Grants are applied only after a successful write.
 
+
+## Plugin tests
+
+The installed binary runs TypeScript tests with its embedded runtime, checker, and SDK.
+You do not need a Rust checkout, Node, or Deno. Tests run only when you request them.
+Test before you reload a changed plugin.
+
+```sh
+zellij plugins test hello
+zellij plugins test --file ./plugins --kind unit --filter timer --json
+zellij plugins test --file ./hello.integration.test.ts --timeout-ms 60000
+zellij plugins test agent-exit
+```
+
+A plugin name selects adjacent `hello.test.ts` and `hello.integration.test.ts` files.
+An explicit directory selects matching files recursively. Hidden directories and symlinks are excluded.
+Local imports must stay inside the selected directory, or the selected file's parent directory.
+Builtin names select the test sources packaged in the binary. `workflow-view` selects shared unit tests;
+its integration coverage runs through `agent-exit` and `swamp-workflow`.
+
+`--kind` accepts `unit`, `integration`, or `all` (the default). `--filter` matches a substring in the test name.
+`--timeout-ms` sets the deadline for each discovery process and each case; the default is 30000.
+A failed assertion, type error, crash, timeout, cancellation, or empty selection fails the command.
+`--json` prints `{tests: [...]}`. Each result has `name`, `kind`, `status`, `duration_ms`, `error`, and `output`.
+Errors include source locations. Diagnostic output is limited to 32 KiB per case.
+
+### Unit cases
+
+Import `test`, `assert`, `assertEquals`, `assertThrows`, and `assertRejects` from `zellij:testing`.
+This module is available only in test workers and their checker. Register tests at module initialization.
+Each case gets a fresh isolate; async callbacks are awaited.
+
+```ts
+import {test, assertEquals, assertRejects} from 'zellij:testing';
+test('async result', async () => {
+  assertEquals(await Promise.resolve({answer: 42}), {answer: 42});
+  await assertRejects(async () => { throw Error('expected failure'); }, 'expected failure');
+});
+```
+
+`loadPlugin('./hello.ts', {configuration, replies})` loads one plugin per case through the production
+SDK lifecycle bridge. `replies` maps host command names to replies or synchronous functions of their arguments.
+Unstubbed host commands fail. Subscription and SDK timer bookkeeping have inert default replies.
+No host operation from a unit plugin runs against your session.
+
+Use `await harness.event(event)` and `await harness.pipe(message)` to deliver input in order.
+Use `await harness.advance(milliseconds)` to advance SDK timers and `Date.now()`.
+`await harness.render(rows, columns)` returns screen text parsed by Zellij's terminal grid.
+`harness.commands`, `.logs`, and `.renders` expose captured effects; `.stub(name, reply)` changes a reply.
+For imported render functions, `renderText(raw, rows, columns)` decodes their UI output.
+
+### Integration cases
+
+Name these files `*.integration.test.ts`. Each case owns a real server process and a noninteractive IPC client.
+The controller uses normal input routing, plugin loading, hooks, permission checks, and SQLite storage.
+
+```ts
+import {test, session, assert} from 'zellij:testing';
+test('fallback closes', async () => {
+  session.start();
+  session.loadPlugin('zellij:agent-exit');
+  await session.waitForText('restart agent');
+  session.resize(30, 100);
+  session.key('Esc');
+  await session.waitFor('fallback closed', () => !session.screen.includes('restart agent'));
+  assert(!session.screen.includes('restart agent'));
+});
+```
+
+Use `session.start({hooks: {session_start: './hook.ts'}, backgroundPlugins: ['./service.ts']})`
+for headless plugins. Trigger hooks with real session actions. `session.loadPlugin(path, {headless: true})`
+loads another background plugin. Visible loads accept `{configuration: {key: 'value'}}`.
+`session.text`, `.key`, `.mouse`, `.resize`, `.pipe`, and `.reload` drive the session.
+`await session.rpc(plugin, name, payload, timeoutMs)` calls a real SDK RPC handler through an ordinary
+file plugin. Declare `ReadCliPipes` and `MessageAndLaunchOtherPlugins` for this control. The helper has
+its own authenticated identity; it cannot impersonate a builtin. RPC replies are limited to 32 KiB.
+`session.action(kdl)` accepts local pane, tab, focus, resize, and mode actions.
+Inspect `.screen`, `.panes`, `.events`, `.logs`, `.catalog()`, or `.data(plugin, entity)`.
+Use `await session.waitFor(description, predicate, timeoutMs)` for an observable effect; use
+`await session.waitForText(text, timeoutMs)` for rendered content. Waits default to 10 seconds and
+remain subject to the case deadline. Failure output includes recent screen content, logs, and the pending wait.
+
+Each case gets temporary home, configuration, data, cache, socket, and storage directories.
+It does not inherit your hooks, background plugins, Postgres configuration, or active-session identity.
+Declare plugin grants with `test('name', {grants: ['ReadApplicationState']}, async () => {...})`.
+Grants have their normal host-access meaning. Temporary directories do not sandbox a granted external command
+or network request. Use deterministic fixtures for external tools and services.
+Before `session.start()`, `session.fixture(files, commands)` writes relative files under the test home
+and returns its absolute path. Each `commands` entry installs a shell script at the front of the
+session's `PATH`; executable fixtures require `RunCommands`. Files and scripts are limited to 1 MiB.
+Use this to replace Swamp or agent commands at the external-process boundary.
+The runner shuts down and reaps its server after success, failure, timeout, or cancellation.
+
+### SDK and Hocus
+
+`await zellij.testPlugin('hello', {kind: 'all', filter: 'timer', timeout_ms: 30000})` returns the same report.
+The returned promise has `.cancel()`. The `TestPlugin` command starts the run asynchronously and returns its
+result in a correlated `CustomMessage`; `CancelPluginTest` cancels a request. Both require `AuthorPlugins`.
+API callers can grant only permissions they hold. Integration controls additionally require `RunActionsAsUser`.
+The production plugin dispatcher remains active while the test subprocess runs.
+
+In Hocus, call `plugin_test name=hello`, optionally with `kind`, `filter`, or `timeout_ms`.
+Hocus returns the same per-case JSON and can cancel an active run. Read `plugin_docs section=testing`
+for this guide and `plugin_docs section=sdk_testing` for the test declarations.
 
 ## Build inputs
 

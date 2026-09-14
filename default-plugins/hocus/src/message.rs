@@ -263,6 +263,7 @@ pub enum Status {
     /// A reload is fire-and-forget on the host, so the only way to say whether it worked is to
     /// read the pane afterwards; this is the state between asking and looking.
     AwaitingPluginLoad,
+    AwaitingPluginTest,
     /// The endpoint turned the last request away for a reason that will pass — a spent
     /// per-minute token budget, most often — and the same request is waiting on the clock to
     /// go out again. See [`Retry`].

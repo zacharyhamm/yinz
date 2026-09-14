@@ -938,3 +938,24 @@ fn saved_file_checks_use_original_file_and_keep_draft_validation() {
         .contains("file does not exist"));
     tools::test_seams::reset();
 }
+
+#[test]
+fn plugin_tests_deliver_the_structured_report_only_to_the_waiting_call() {
+    let mut state = plugin_state();
+    state.pending.push_back(ToolCall {
+        id: "tests-1".into(),
+        name: "plugin_test".into(),
+        arguments: r#"{"name":"clock"}"#.into(),
+    });
+    state.status = Status::AwaitingPluginTest;
+    let report = serde_json::json!({"tests":[{"name":"clock advances","kind":"unit","status":"passed","duration_ms":4,"error":null,"output":""}]});
+    let payload = serde_json::json!({"Ok":report}).to_string();
+    assert!(!state.on_plugin_test_result("other", &payload));
+    assert!(matches!(state.status, Status::AwaitingPluginTest));
+    assert!(state.on_plugin_test_result("tests-1", &payload));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&tool_results(&state)[0].content).unwrap(),
+        report
+    );
+    assert!(!state.on_plugin_test_result("tests-1", &payload));
+}

@@ -426,6 +426,14 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::GenerateRandomName => generate_random_name(env),
             PluginCommand::DumpLayout(layout_name) => dump_layout(env, layout_name),
             PluginCommand::ParseLayout(layout_string) => parse_layout(env, layout_string),
+            PluginCommand::TestPlugin {
+                name,
+                options,
+                request_id,
+            } => {
+                crate::deno::testing::start(env, name, options, request_id)?;
+            },
+            PluginCommand::CancelPluginTest(id) => crate::deno::testing::cancel(env, &id),
             PluginCommand::CheckPlugin { name, source, mode } => {
                 check_plugin(env, name, source, mode)
             },
@@ -8184,6 +8192,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         // Nominal: the handler refuses anything that is not a builtin, and a builtin is never
         // asked. Listed so that the command is not permissionless on paper.
         CommandType::GrantPluginPermissions => PermissionType::ChangeApplicationState,
+        CommandType::TestPlugin | CommandType::CancelPluginTest => PermissionType::AuthorPlugins,
         CommandType::ProjectConfigRead
         | CommandType::CheckPlugin
         | CommandType::FsRead

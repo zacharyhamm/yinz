@@ -1,19 +1,19 @@
 # Test inventory
 
-Generated 2026-09-12 from `6767be45a` by `scripts/test-inventory.sh`.
+Generated 2026-09-14 from `b26bb6fe3` by `scripts/test-inventory.sh`.
 One item per automated test; the heading above each block is the gate that runs it.
 
 ## Totals
 
 | gate | tests | ignored |
 |---|---:|---:|
-| `cargo x test` | 8058 | 4 |
-| `cargo x integration-test` | 414 | 0 |
+| `cargo x test` | 8192 | 4 |
+| `cargo x integration-test` | 430 | 0 |
 | `cargo x ci e2e --test` | 5 | 5 |
 | `cargo x remote-test --build && cargo x remote-test --test` | 41 | 41 |
 | `cargo x firecracker-test --build && cargo x firecracker-test --test` | 4 | 4 |
 | `cargo x postgres-test --build && cargo x postgres-test --test` | 108 | 0 |
-| **total** | **8630** | **54** |
+| **total** | **8780** | **54** |
 
 ## configuration (bin/configuration)
 
@@ -78,6 +78,7 @@ Run: `cargo x test`
 
 - [ ] `api::api_tests::config::a_missing_linear_key_is_not_a_configuration_error`
 - [ ] `api::api_tests::config::an_empty_linear_key_reads_as_absent`
+- [ ] `api::api_tests::config::context_bytes_default_and_override_are_positive`
 - [ ] `api::api_tests::config::dobbs_env_carries_a_remote_daemon_and_nothing_otherwise`
 - [ ] `api::api_tests::config::resolve_errors_when_the_key_is_missing_and_names_the_variable`
 - [ ] `api::api_tests::config::resolve_expands_a_tilde_in_the_dobbs_path`
@@ -98,6 +99,10 @@ Run: `cargo x test`
 - [ ] `api::api_tests::config::resolve_treats_an_empty_key_as_missing`
 - [ ] `api::api_tests::config::resolve_trims_the_key`
 - [ ] `api::api_tests::config::the_linear_key_is_read_from_the_variable_the_config_names`
+- [ ] `api::api_tests::context_budget::authoring_replay_is_bounded_on_both_transports_and_measurably_cheaper`
+- [ ] `api::api_tests::context_budget::logged_sizes_and_breakdown_follow_the_selected_wire_format`
+- [ ] `api::api_tests::context_budget::old_completed_batches_mask_source_strings_but_preserve_pending_calls_and_reasoning`
+- [ ] `api::api_tests::context_budget::original_results_and_arguments_page_exactly_with_unicode_and_escaping`
 - [ ] `api::api_tests::elision::a_batch_edit_is_the_newest_statement_about_a_file`
 - [ ] `api::api_tests::elision::a_call_with_unparseable_arguments_is_left_alone`
 - [ ] `api::api_tests::elision::a_check_does_not_supersede_the_write_it_is_checking`
@@ -607,6 +612,7 @@ Run: `cargo x test`
 - [ ] `main_tests::plan_mode::a_turn_that_ended_in_tool_calls_keeps_planning`
 - [ ] `main_tests::plan_mode::a_typed_tool_still_runs_while_planning`
 - [ ] `main_tests::plan_mode::a_waiting_plan_asks_through_a_plan_box`
+- [ ] `main_tests::plan_mode::archived_planning_states_restore_without_resuming_requests`
 - [ ] `main_tests::plan_mode::ctrl_c_declines_the_plan_and_aborts_nothing`
 - [ ] `main_tests::plan_mode::empty_enter_does_not_dismiss_the_approval_prompt`
 - [ ] `main_tests::plan_mode::esc_hides_and_leaves_the_plan_waiting`
@@ -618,6 +624,9 @@ Run: `cargo x test`
 - [ ] `main_tests::plan_mode::execute_leaves_the_mode_and_carries_the_plan_out`
 - [ ] `main_tests::plan_mode::execute_without_a_waiting_plan_is_an_error`
 - [ ] `main_tests::plan_mode::help_does_not_displace_a_waiting_plan`
+- [ ] `main_tests::plan_mode::leaving_plan_mode_is_preserved_in_the_archive`
+- [ ] `main_tests::plan_mode::legacy_planning_state_opens_but_invalid_or_missing_state_does_not`
+- [ ] `main_tests::plan_mode::mode_only_changes_save_in_foreground_and_parked_chats_on_close`
 - [ ] `main_tests::plan_mode::n_answers_the_plan_only_on_an_empty_box`
 - [ ] `main_tests::plan_mode::n_keeps_planning`
 - [ ] `main_tests::plan_mode::on_is_an_error_not_a_prompt`
@@ -656,6 +665,9 @@ Run: `cargo x test`
 - [ ] `main_tests::plugin_tools::extension_reload_refuses_duplicate_namespaces_across_languages`
 - [ ] `main_tests::plugin_tools::folder_search_reports_caps_failed_reads_and_oversize_files`
 - [ ] `main_tests::plugin_tools::folder_search_skips_invalid_names_but_named_search_rejects_them`
+- [ ] `main_tests::plugin_tools::plugin_tests_deliver_the_structured_report_only_to_the_waiting_call`
+- [ ] `main_tests::plugin_tools::plugin_write_confirmations_reuse_permission_analysis`
+- [ ] `main_tests::plugin_tools::saved_file_checks_use_original_file_and_keep_draft_validation`
 - [ ] `main_tests::plugin_tools::the_docs_answer_even_with_no_plugin_folder`
 - [ ] `main_tests::plugin_tools::the_file_tools_and_the_log_answer_at_once`
 - [ ] `main_tests::project_assignment::a_firecracker_agent_joins_the_project_of_the_worktree_its_vm_mirrors`
@@ -804,8 +816,11 @@ Run: `cargo x test`
 - [ ] `main_tests::streaming::an_idle_pane_shows_no_loader`
 - [ ] `main_tests::streaming::an_idle_timer_tick_stops_without_repainting`
 - [ ] `main_tests::streaming::cancelling_a_stream_revokes_job_authority_immediately`
+- [ ] `main_tests::streaming::cancelling_h2_retries_and_their_resends_prevents_late_errors_from_rearming_them`
 - [ ] `main_tests::streaming::chunks_from_a_superseded_stream_are_ignored`
 - [ ] `main_tests::streaming::finishing_swallows_the_terminator_without_a_second_outcome`
+- [ ] `main_tests::streaming::h2_errors_back_off_four_times_then_show_the_final_error`
+- [ ] `main_tests::streaming::h2_recovery_discards_only_the_failed_attempt_and_accounts_for_its_usage`
 - [ ] `main_tests::streaming::streamed_deltas_accumulate_into_the_placeholder`
 - [ ] `main_tests::streaming::the_countdown_is_in_the_loader`
 - [ ] `main_tests::streaming::the_countdown_stops_once_the_resend_is_out`
@@ -856,6 +871,7 @@ Run: `cargo x test`
 - [ ] `main_tests::todo_tools::a_write_to_a_list_whose_project_is_gone_still_lands`
 - [ ] `main_tests::todo_tools::an_undo_opens_the_item_and_the_item_above_it`
 - [ ] `main_tests::todo_tools::crossing_an_item_off_crosses_off_the_items_below_it`
+- [ ] `main_tests::token_usage::a_budget_refused_retry_preserves_a_pending_command_on_both_transports`
 - [ ] `main_tests::token_usage::a_reported_cost_accumulates_beside_the_tokens`
 - [ ] `main_tests::token_usage::a_request_without_a_cost_leaves_the_total_alone`
 - [ ] `main_tests::token_usage::a_resend_banks_what_the_attempt_it_supersedes_cost`
@@ -863,8 +879,12 @@ Run: `cargo x test`
 - [ ] `main_tests::token_usage::costs_are_shown_at_title_width`
 - [ ] `main_tests::token_usage::counts_are_shown_at_title_width`
 - [ ] `main_tests::token_usage::every_request_accumulates_separate_input_and_output_totals`
+- [ ] `main_tests::token_usage::last_request_input_is_reported_separately_and_isolated_per_chat`
+- [ ] `main_tests::token_usage::protected_context_is_refused_before_starting_a_stream_on_both_transports`
 - [ ] `main_tests::token_usage::repeated_usage_chunks_contribute_once_per_stream`
 - [ ] `main_tests::token_usage::reported_usage_survives_cancelling_the_stream`
+- [ ] `main_tests::token_usage::retries_send_the_same_bounded_body_and_clear_last_request_input`
+- [ ] `main_tests::token_usage::retrieval_follows_chat_switches_and_reopened_original_messages`
 - [ ] `main_tests::token_usage::usage_travels_with_its_chat_and_a_new_chat_starts_empty`
 - [ ] `main_tests::tool_families::a_new_chat_advertises_only_the_always_on_families`
 - [ ] `main_tests::tool_families::a_refused_load_widens_nothing`
@@ -1289,6 +1309,7 @@ Run: `cargo x test`
 - [ ] `tools::tools_tests::plugin_tools::replacing_a_plugin_says_so_rather_than_saying_it_writes_one`
 - [ ] `tools::tools_tests::plugin_tools::script_load_diagnostics_beyond_the_success_allowance_survive`
 - [ ] `tools::tools_tests::plugin_tools::search_options_clamp_context_and_max_results_and_refuse_an_empty_query`
+- [ ] `tools::tools_tests::plugin_tools::source_permission_cache_tracks_names_source_and_errors`
 - [ ] `tools::tools_tests::plugin_tools::span_list_names_a_deletion_by_its_line_and_caps_at_five`
 - [ ] `tools::tools_tests::plugin_tools::the_chunk_name_is_the_file_the_loader_would_name`
 - [ ] `tools::tools_tests::plugin_tools::the_final_page_reports_the_real_last_line`
@@ -1458,6 +1479,7 @@ Run: `cargo x test`
 - [ ] `ui::tests::transcript_right_aligns_user_turns`
 - [ ] `ui::tests::transcript_still_labels_the_asides`
 - [ ] `ui::tests::transcript_survives_a_pane_too_narrow_to_wrap_into`
+- [ ] `ui::tests::usage_distinguishes_last_request_from_totals_without_spending_tab_width`
 - [ ] `ui::tests::without_an_anchor_the_window_is_the_requested_offset_clamped`
 - [ ] `vm_panel::tests::vm_panel_announcements_are_discovery_until_the_host_verifies_the_companion`
 - [ ] `vm_panel::tests::vm_panel_argv_keeps_the_original_identity_for_every_guarded_command`
@@ -1790,6 +1812,16 @@ Run: `cargo x test`
 - [ ] `tests::walking_into_an_agent_pane_moves_the_selection_onto_it`
 - [ ] `tests::walking_off_the_question_drops_it_and_still_walks`
 - [ ] `tests::y_copies_the_fold_under_the_cursor_and_the_whole_event_otherwise`
+- [ ] `todos::tests::a_vanished_selection_moves_to_its_nearest_surviving_neighbour`
+- [ ] `todos::tests::completed_subtrees_are_hidden_and_move_targets_exclude_the_source_subtree`
+- [ ] `todos::tests::completing_the_selected_todo_keeps_the_cursor_in_place`
+- [ ] `todos::tests::delete_confirmation_keeps_its_plan_across_watch_updates`
+- [ ] `todos::tests::delete_planning_errors_do_not_open_confirmation`
+- [ ] `todos::tests::items_render_as_markdown_and_wrap_under_their_text`
+- [ ] `todos::tests::picker_navigation_restores_cursor_scrolling_even_at_boundaries`
+- [ ] `todos::tests::project_picker_preserves_a_root_across_rename`
+- [ ] `todos::tests::todo_modes_capture_the_item_and_accept_shifted_text`
+- [ ] `todos::tests::wrapped_items_scroll_by_row_and_click_through_continuations`
 - [ ] `vms::tests::vm_confirmations_name_the_lease_and_do_not_follow_a_changed_selection`
 - [ ] `vms::tests::vm_delayed_failure_preserves_a_newer_operation_and_requires_matching_identity`
 - [ ] `vms::tests::vm_list_focus_controls_navigation_and_enter_with_a_retained_pane_cursor`
@@ -1819,6 +1851,7 @@ Run: `cargo x test`
 - [ ] `tests::cancelled_pickers_ignore_late_snapshots_and_wait_for_their_bridge_ack`
 - [ ] `tests::choosing_firecracker_keeps_host_worktree_setup`
 - [ ] `tests::defaults_create_a_codex_worktree_from_main`
+- [ ] `tests::duplicate_fallback_keeps_its_source_until_the_picker_finishes`
 - [ ] `tests::duplicate_uses_the_agent_kind_and_exact_location_without_old_args`
 - [ ] `tests::enter_in_the_first_field_opens_its_list_instead_of_creating`
 - [ ] `tests::explicit_hidden_sources_keep_their_agent_and_launch_context`
@@ -1841,6 +1874,7 @@ Run: `cargo x test`
 - [ ] `tests::the_project_field_is_first_and_defaults_to_the_active_project`
 - [ ] `tests::the_prompt_is_handed_to_the_agent_as_it_starts`
 - [ ] `tests::the_worktree_suggestions_are_the_directories_the_linked_checkouts_live_in`
+- [ ] `tests::workflow_picker_cancels_when_its_source_is_rerun_elsewhere`
 
 ## hocus-proto (lib/hocus_proto)
 
@@ -2098,6 +2132,7 @@ Run: `cargo x test`
 - [ ] `llm::tests::retry_delay_reads_the_wait_openai_names`
 - [ ] `llm::tests::retry_hint_declines_what_is_not_a_duration`
 - [ ] `llm::tests::retry_hint_reads_every_duration_openai_writes`
+- [ ] `llm::tests::streamed_errors_retry_only_rate_limits_and_h2_protocol_errors`
 - [ ] `llm::tests::summaries_are_on_unless_switched_off_in_so_many_words`
 - [ ] `llm::tests::the_summary_model_falls_back_to_the_chat_model`
 - [ ] `location::tests::a_folder_is_inside_another_only_on_the_same_machine`
@@ -2247,6 +2282,7 @@ Run: `cargo x test`
 - [ ] `store::tests::a_private_namespace_is_not_shared`
 - [ ] `store::tests::a_second_plugin_declaring_the_same_entities_changes_nothing`
 - [ ] `store::tests::an_import_marker_written_before_the_host_key_still_counts_and_is_claimed`
+- [ ] `store::tests::chat_plan_is_an_additive_migration`
 - [ ] `store::tests::claiming_one_marker_leaves_the_other_alone`
 - [ ] `store::tests::declaring_the_shared_entities_creates_them`
 - [ ] `store::tests::define_all_names_the_entity_that_failed`
@@ -2644,6 +2680,13 @@ Run: `cargo x test`
 - [ ] `firecracker_test::tests::temporary_network_names_fit_linux_interfaces_and_use_a_process_subnet`
 - [ ] `firecracker_test::tests::temporary_network_never_shares_the_users_pool_subnet`
 - [ ] `metadata::tests::boundaries_cover_all_dependency_kinds_targets_and_aliases`
+- [ ] `owned_dir::tests::concurrent_creation_preserves_live_roots_and_reclaims_killed_owners`
+- [ ] `owned_dir::tests::externally_removed_directories_are_already_clean`
+- [ ] `owned_dir::tests::inherited_lease_protects_children_after_runner_disappears`
+- [ ] `owned_dir::tests::last_user_removes_child_then_host_even_during_unwinding`
+- [ ] `owned_dir::tests::reclamation_does_not_follow_symlinks_or_sweep_unmarked_directories`
+- [ ] `owned_dir::tests::registry_symlinks_and_writable_shared_parents_are_refused`
+- [ ] `owned_dir::tests::subprocess_owner`
 - [ ] `pipelines::tests::provider_args_tests::a_bin_filter_naming_the_provider_does_not`
 - [ ] `pipelines::tests::provider_args_tests::a_bin_filter_without_the_provider_excludes_it`
 - [ ] `pipelines::tests::provider_args_tests::a_plain_install_builds_the_provider`
@@ -2657,6 +2700,8 @@ Run: `cargo x test`
 - [ ] `test::tests::output_and_concurrency_flags_do_not_narrow`
 - [ ] `test::tests::package_names_are_read_out_of_the_selectors`
 - [ ] `test::tests::package_selectors_carry_over`
+- [ ] `test_run::tests::removes_artifacts_after_passing_failing_and_killed_children`
+- [ ] `test_run::tests::test_child`
 - [ ] `tests::a_bare_command_is_left_alone`
 - [ ] `tests::a_bare_filter_is_forwarded`
 - [ ] `tests::a_package_selector_is_forwarded`
@@ -3525,8 +3570,10 @@ Run: `cargo x test`
 - [ ] `project_config::tests::config_writes_recover_after_process_exit_without_worktree_artifacts`
 - [ ] `project_config::tests::invalid_configuration_can_be_corrected_without_losing_concurrent_edits`
 - [ ] `project_config::tests::nested_config_ignores_legacy_and_rejects_unsafe_directories`
+- [ ] `project_config::tests::rebase_prompt_is_optional_literal_nonblank_text`
 - [ ] `project_config::tests::stale_writes_and_symlinks_are_refused`
 - [ ] `project_config::tests::validates_workflow_settings_without_executing_them`
+- [ ] `project_config::tests::workflow_roles_use_shared_agent_validation_without_inheriting_fields`
 - [ ] `project_layout::tests::geometry_only`
 - [ ] `theme::theme_test::a_malformed_hex_color_is_a_serde_error_not_a_panic`
 - [ ] `theme::theme_test::dracula_theme_from_file`
@@ -3679,10 +3726,12 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_side_resize_stops_at_the_partner_s_floor`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_side_shrink_moves_the_seam_the_other_way`
 - [ ] `panes::overlay_panes::overlay_panes_tests::after_an_override_the_next_plain_placement_moves_the_overlay_again`
+- [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_divider_drags_from_either_column_and_restores_the_new_split`
+- [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_divider_keeps_minimum_widths_and_returns_under_the_pointer`
+- [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_overlay_cannot_move_or_resize_its_outer_rectangle`
 - [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_overlay_does_not_cover_a_live_modal`
 - [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_overlay_fills_the_viewport_and_leaves_the_chrome`
 - [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_overlay_is_not_carried_by_a_drag_that_outlived_the_press`
-- [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_overlay_is_not_dragged_resized_or_seam_dragged`
 - [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_overlay_reports_the_rectangle_underneath_it`
 - [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_overlay_stops_offering_a_resize`
 - [ ] `panes::overlay_panes::overlay_panes_tests::an_expanded_panel_keeps_an_uneven_split_in_proportion`
@@ -3705,19 +3754,22 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::an_undirected_shrink_stops_at_the_halves_floor`
 - [ ] `panes::overlay_panes::overlay_panes_tests::awaiting_placement_survives_a_move_between_collections`
 - [ ] `panes::overlay_panes::overlay_panes_tests::changing_an_overlay_s_coordinates_keeps_it_an_overlay_of_the_same_kind`
+- [ ] `panes::overlay_panes::overlay_panes_tests::changing_fullscreen_releases_a_seam_drag_in_flight`
 - [ ] `panes::overlay_panes::overlay_panes_tests::closing_a_half_ends_the_seam_drag_and_the_link`
 - [ ] `panes::overlay_panes::overlay_panes_tests::closing_an_expanded_overlay_ends_the_expansion`
 - [ ] `panes::overlay_panes::overlay_panes_tests::closing_an_overlay_mid_drag_releases_the_mouse`
 - [ ] `panes::overlay_panes::overlay_panes_tests::closing_the_focused_overlay_falls_through_to_the_one_below_it`
 - [ ] `panes::overlay_panes::overlay_panes_tests::closing_the_other_half_of_an_expanded_panel_ends_the_expansion`
+- [ ] `panes::overlay_panes::overlay_panes_tests::dragging_a_rounded_fullscreen_divider_back_restores_the_split`
 - [ ] `panes::overlay_panes::overlay_panes_tests::dragging_an_overlay_edge_outward_on_the_boundary_does_not_invert`
 - [ ] `panes::overlay_panes::overlay_panes_tests::dragging_the_seam_moves_the_divider_and_nothing_else`
-- [ ] `panes::overlay_panes::overlay_panes_tests::expanding_a_panel_releases_a_seam_drag_and_refuses_the_next_step`
 - [ ] `panes::overlay_panes::overlay_panes_tests::expanding_an_overlay_releases_a_drag_in_flight`
 - [ ] `panes::overlay_panes::overlay_panes_tests::expanding_an_overlay_tells_its_pty_the_viewport_size`
 - [ ] `panes::overlay_panes::overlay_panes_tests::focusing_a_hidden_modal_by_id_reveals_it_and_still_reports_it_is_ours`
 - [ ] `panes::overlay_panes::overlay_panes_tests::focusing_a_hidden_overlay_by_id_reveals_it`
 - [ ] `panes::overlay_panes::overlay_panes_tests::focusing_an_overlay_under_a_live_modal_leaves_the_keyboard_where_it_is`
+- [ ] `panes::overlay_panes::overlay_panes_tests::fullscreen_divider_after_terminal_shrink_partitions_the_base_union`
+- [ ] `panes::overlay_panes::overlay_panes_tests::fullscreen_preserves_borderless_panes_and_no_ui_has_no_divider_frame`
 - [ ] `panes::overlay_panes::overlay_panes_tests::growing_an_overlay_that_is_already_on_the_boundary_inverts`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_a_half_ends_the_seam_drag_and_keeps_the_link`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_a_half_of_an_expanded_panel_leaves_the_survivor_filling_the_screen`
@@ -3726,6 +3778,7 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_an_overlay_mid_drag_releases_the_mouse`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_an_overlay_moves_its_clients_to_the_one_below_it`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_and_showing_an_overlay_repaints_the_others`
+- [ ] `panes::overlay_panes::overlay_panes_tests::pressing_a_rounded_fullscreen_divider_does_not_change_the_split`
 - [ ] `panes::overlay_panes::overlay_panes_tests::reapplying_coordinates_re_resolves_against_the_surface_as_it_is_now`
 - [ ] `panes::overlay_panes::overlay_panes_tests::removing_a_pane_drops_it_from_the_stack_as_well_as_the_map`
 - [ ] `panes::overlay_panes::overlay_panes_tests::replacing_a_pane_keeps_its_slot_its_kind_and_its_coordinates`
@@ -3753,6 +3806,7 @@ Run: `cargo x test`
 - [ ] `panes::plugin_pane::tests::cursor_coordinates_are_none_past_the_content_area`
 - [ ] `panes::plugin_pane::tests::cursor_coordinates_are_shown_on_the_last_content_column_with_a_left_offset`
 - [ ] `panes::plugin_pane::tests::cursor_coordinates_are_shown_on_the_last_content_row_with_a_top_offset`
+- [ ] `panes::plugin_pane::tests::subtitle_resizes_plugin_content_and_omits_small_or_borderless_panes`
 - [ ] `panes::terminal_pane::grid_tests::a_character_cell_size_change_rescales_kitty_images_without_a_geometry_change`
 - [ ] `panes::terminal_pane::grid_tests::a_forward_interrupting_the_flush_after_a_batched_run_requeues_from_the_escape`
 - [ ] `panes::terminal_pane::grid_tests::a_framed_title_leads_with_the_pane_id`
@@ -3766,6 +3820,7 @@ Run: `cargo x test`
 - [ ] `panes::terminal_pane::grid_tests::a_title_prefix_stays_out_of_the_raw_title`
 - [ ] `panes::terminal_pane::grid_tests::a_title_prefix_survives_every_kind_of_title`
 - [ ] `panes::terminal_pane::grid_tests::agent_double_escape_frame_prefix_restores_title_and_respects_geometry`
+- [ ] `panes::terminal_pane::grid_tests::agent_restart_is_fresh_and_keeps_command_metadata`
 - [ ] `panes::terminal_pane::grid_tests::an_ordinary_held_command_still_drops_to_a_shell_on_escape`
 - [ ] `panes::terminal_pane::grid_tests::bell_notification_state_set_and_cleared`
 - [ ] `panes::terminal_pane::grid_tests::changing_character_cell_size_with_sixel_images`
@@ -3796,6 +3851,7 @@ Run: `cargo x test`
 - [ ] `panes::terminal_pane::grid_tests::pty_ingest_is_identical_however_the_bytes_are_chunked`
 - [ ] `panes::terminal_pane::grid_tests::pty_ingest_puts_the_expected_text_on_the_grid`
 - [ ] `panes::terminal_pane::grid_tests::resizing_pane_with_sixel_images`
+- [ ] `panes::terminal_pane::grid_tests::restart_refusal_keeps_held_state_and_explicit_replacements_work`
 - [ ] `panes::terminal_pane::grid_tests::scrolling_inside_a_pane`
 - [ ] `panes::terminal_pane::grid_tests::scrolling_through_a_sixel_image`
 - [ ] `panes::terminal_pane::grid_tests::sixel_image_inside_terminal_pane`
@@ -4053,6 +4109,7 @@ Run: `cargo x test`
 - [ ] `tab::tab_integration_tests::mouse::alt_wheel_over_a_mouse_tracking_pane_is_forwarded_instead_of_jumping_prompts`
 - [ ] `tab::tab_integration_tests::mouse::alt_wheel_up_is_forwarded_to_a_pane_the_client_is_descended_into`
 - [ ] `tab::tab_integration_tests::mouse::configured_word_separators_reach_the_pane_on_double_click`
+- [ ] `tab::tab_integration_tests::mouse::fullscreen_overlay_divider_drags_with_complete_borders_under_title_only_frames`
 - [ ] `tab::tab_integration_tests::mouse::hidden_surface_overlay_owns_mouse_events`
 - [ ] `tab::tab_integration_tests::mouse::in_place_pane_with_close_replaced_pane_false_restores_original`
 - [ ] `tab::tab_integration_tests::mouse::in_place_pane_with_close_replaced_pane_true_closes_original`
@@ -4153,6 +4210,8 @@ Run: `cargo x test`
 - [ ] `tab::tab_integration_tests::rendering::dump_screen`
 - [ ] `tab::tab_integration_tests::rendering::increase_tiled_pane_sizes_with_stacked_resizes`
 - [ ] `tab::tab_integration_tests::rendering::increase_tiled_pane_sizes_with_stacked_resizes_into_uneven_panes`
+- [ ] `tab::tab_integration_tests::rendering::pane_subtitle_reserves_content_and_clearing_restores_it`
+- [ ] `tab::tab_integration_tests::rendering::pane_subtitles_only_occupy_the_expanded_stack_content`
 - [ ] `tab::tab_integration_tests::rendering::render_stacks_without_pane_frames`
 - [ ] `tab::tab_integration_tests::rendering::split_stack_horizontally`
 - [ ] `tab::tab_integration_tests::rendering::split_stack_vertically`
@@ -4238,6 +4297,14 @@ Run: `cargo x test`
 - [ ] `tab::tab_tests::closing::close_pane_with_multiple_panes_to_the_left_away_from_screen_edges`
 - [ ] `tab::tab_tests::closing::close_pane_with_multiple_panes_to_the_right`
 - [ ] `tab::tab_tests::closing::close_pane_with_multiple_panes_to_the_right_away_from_screen_edges`
+- [ ] `tab::tab_tests::closing::exiting_fullscreen_editor_restoring_nonselectable_plugin_keeps_usable_focus`
+- [ ] `tab::tab_tests::closing::exiting_last_tiled_pane_reveals_and_focuses_hidden_floating_panes`
+- [ ] `tab::tab_tests::closing::exiting_parked_replacement_parks_every_predecessor_without_dangling_links`
+- [ ] `tab::tab_tests::closing::explicit_close_destroys_the_entire_live_replacement_chain`
+- [ ] `tab::tab_tests::closing::focus_repair_preserves_a_modal_until_it_closes`
+- [ ] `tab::tab_tests::closing::fullscreen_hidden_replacement_survives_natural_exit_and_explicit_close`
+- [ ] `tab::tab_tests::closing::middle_replacement_exit_preserves_restoration_and_explicit_chain_destruction`
+- [ ] `tab::tab_tests::closing::no_ui_fullscreen_editor_exit_reveals_floating_survivor`
 - [ ] `tab::tab_tests::closing::workflow_takeover_keeps_the_original_suppressed_until_explicit_restart`
 - [ ] `tab::tab_tests::floating_fullscreen::adding_floating_pane_while_fullscreen_unsets_fullscreen`
 - [ ] `tab::tab_tests::floating_fullscreen::closing_floating_fullscreen_pane_clears_state`
@@ -4296,8 +4363,8 @@ Run: `cargo x test`
 - [ ] `tab::tab_tests::pane_id_api::bell_in_unfocused_pane_sets_notification`
 - [ ] `tab::tab_tests::pane_id_api::clear_screen_by_pane_id`
 - [ ] `tab::tab_tests::pane_id_api::clearing_last_pane_bell_clears_tab_bell`
-- [ ] `tab::tab_tests::pane_id_api::close_pane_by_pane_id`
 - [ ] `tab::tab_tests::pane_id_api::correctly_resize_frameless_panes_on_pane_close`
+- [ ] `tab::tab_tests::pane_id_api::explicitly_close_pane_by_id`
 - [ ] `tab::tab_tests::pane_id_api::floating_pane_z_index_is_tracked`
 - [ ] `tab::tab_tests::pane_id_api::get_pane_z_index_returns_none_for_nonexistent_pane`
 - [ ] `tab::tab_tests::pane_id_api::half_page_scroll_down_by_pane_id`
@@ -4504,6 +4571,8 @@ Run: `cargo x test`
 - [ ] `ui::pane_boundaries_frame::tests::opening_ripple_halves_sample_the_same_travelling_wave`
 - [ ] `ui::pane_boundaries_frame::tests::opening_ripple_only_changes_border_strokes_and_handles_narrow_frames`
 - [ ] `ui::pane_boundaries_frame::tests::overlay_and_modal_frame_indicators`
+- [ ] `ui::pane_boundaries_frame::tests::subtitle_fits_unicode_columns_without_touching_content_or_borders`
+- [ ] `ui::pane_boundaries_frame::tests::subtitle_moves_the_floating_pin_hit_target_with_the_title`
 - [ ] `ui::pane_contents_and_ui::frame_color_tests::a_fading_override_settles_back_onto_the_tint`
 - [ ] `ui::pane_contents_and_ui::frame_color_tests::a_group_beats_related`
 - [ ] `ui::pane_contents_and_ui::frame_color_tests::a_related_pane_is_coloured_where_an_ordinary_one_is_not`
@@ -4572,6 +4641,7 @@ Run: `cargo x test`
 - [ ] `plugin_command::tests::reveal_pane_with_id_protobuf_round_trip`
 - [ ] `plugin_command::tests::run_command_output_limit_protobuf_round_trip`
 - [ ] `plugin_command::tests::set_pane_frame_style_protobuf_round_trip`
+- [ ] `plugin_command::tests::set_pane_subtitle_protobuf_round_trip`
 - [ ] `plugin_command::tests::set_pane_title_prefix_protobuf_round_trip`
 - [ ] `plugin_command::tests::set_related_panes_protobuf_round_trip`
 - [ ] `plugin_command::tests::spawn_agent_survives_the_wire`
@@ -4640,6 +4710,8 @@ Run: `cargo x test`
 - [ ] `deno::builtin_tests::every_embedded_typescript_builtin_loads_and_renders`
 - [ ] `deno::builtin_tests::shipped_bridge_reads_legacy_delivery_rows_after_reload_without_dispatching_again`
 - [ ] `deno::builtin_tests::shipped_context_menu_passes_the_typescript_checker`
+- [ ] `deno::builtin_tests::swamp_subtitle_loading_refresh_failure_and_detachment_reach_the_view`
+- [ ] `deno::builtin_tests::swamp_subtitle_uses_history_and_clears_placement_on_restart_or_close`
 - [ ] `deno::builtin_tests::the_shipped_agent_policy_hook_notifies_when_an_agent_waits`
 - [ ] `deno::builtin_tests::the_shipped_context_menu_hook_filters_the_items_it_is_given`
 - [ ] `deno::builtin_tests::the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has`
@@ -4649,8 +4721,10 @@ Run: `cargo x test`
 - [ ] `deno::builtin_tests::the_typescript_playground_example_runs_every_key_it_advertises`
 - [ ] `deno::builtin_tests::the_typescript_workflow_example_runs_on_r`
 - [ ] `deno::builtin_tests::typescript_reference_examples_load_and_render_in_deno`
+- [ ] `deno::builtin_tests::workflow_manual_scrolling_only_resumes_following_the_final_stream`
 - [ ] `deno::builtin_tests::workflow_query_is_private_and_rechecks_host_location`
 - [ ] `deno::builtin_tests::workflow_query_reports_transport_disconnect_and_timeout`
+- [ ] `deno::builtin_tests::workflow_signal_is_private_and_delivers_owned_process_identity`
 - [ ] `deno::checker::tests::bundled_compiler_matches_its_provenance_hashes`
 - [ ] `deno::checker::tests::checker_cannot_read_through_symlinks_or_reference_paths`
 - [ ] `deno::checker::tests::checker_watchdog_interrupts_v8`
@@ -4710,21 +4784,32 @@ Run: `cargo x test`
 - [ ] `deno::sdk_tests::completion_validates_before_dispatch_and_handles_discovery_and_dispatch_errors`
 - [ ] `deno::sdk_tests::default_keybindings_emit_stable_kdl_and_dispatch_reserved_pipes`
 - [ ] `deno::sdk_tests::defaults_options_and_utf8_validate_without_mutating_inputs`
+- [ ] `deno::sdk_tests::deno_agent_exit_actions_are_available_during_launch_and_ignore_duplicate_presses`
 - [ ] `deno::sdk_tests::deno_agent_exit_preserves_output_before_successful_and_rejected_launch_replies`
 - [ ] `deno::sdk_tests::deno_agent_harness_spawns_with_defaults_and_a_configured_branch`
 - [ ] `deno::sdk_tests::deno_bridge_background_commands_correlate_parent_work`
+- [ ] `deno::sdk_tests::deno_bridge_cancellation_kills_redirected_descendants_before_the_next_step`
+- [ ] `deno::sdk_tests::deno_bridge_closure_cancellation_and_picker_races`
 - [ ] `deno::sdk_tests::deno_bridge_commands_use_sdk_validation_with_optional_cwd`
 - [ ] `deno::sdk_tests::deno_bridge_foreground_commands_restore_manual_views_in_dispatch_order`
+- [ ] `deno::sdk_tests::deno_bridge_forwards_answer_admission_progress`
 - [ ] `deno::sdk_tests::deno_bridge_guards_claims_callers_turns_and_reload_recovery`
 - [ ] `deno::sdk_tests::deno_bridge_pairs_values_with_revisions_and_retries_from_concurrent_fields`
+- [ ] `deno::sdk_tests::deno_bridge_refresh_reuses_dispatch_and_notifies_all_manual_views`
+- [ ] `deno::sdk_tests::deno_bridge_report_queries_pin_versions_and_preserve_captured_output`
 - [ ] `deno::sdk_tests::deno_bridge_spawn_options_use_sdk_validation_and_defaults`
 - [ ] `deno::sdk_tests::deno_dialog_rendering_matches_rust_and_reports_intent`
 - [ ] `deno::sdk_tests::deno_hocus_registration_replacement_rpc_provenance_and_async_clients`
+- [ ] `deno::sdk_tests::deno_padding_preserves_long_combining_sequences_that_fit`
 - [ ] `deno::sdk_tests::deno_swamp_dispatch_keeps_terminal_outcomes_and_recovers_method_attachments`
+- [ ] `deno::sdk_tests::deno_swamp_progress_callbacks_stop_on_cancellation_and_errors`
 - [ ] `deno::sdk_tests::deno_swamp_requests_match_ids_and_wait_for_terminal_frames`
 - [ ] `deno::sdk_tests::deno_widget_cursors_belong_only_to_accepted_client_frames`
 - [ ] `deno::sdk_tests::deno_widgets_match_shared_rust_controls_and_markdown`
+- [ ] `deno::sdk_tests::deno_workflow_admission_deadlines_and_same_run_show_preserve_pending_state`
 - [ ] `deno::sdk_tests::deno_workflow_live_output_and_attachment_submissions_are_isolated`
+- [ ] `deno::sdk_tests::deno_workflow_refresh_coalesces_changes_without_queueing_polls`
+- [ ] `deno::sdk_tests::deno_workflow_reports_are_complete_scrollable_cached_and_attachment_scoped`
 - [ ] `deno::sdk_tests::deno_workflow_view_keeps_restart_explicit_and_all_details_reachable`
 - [ ] `deno::sdk_tests::deno_workflow_view_preserves_question_races_focus_previews_and_scrolling`
 - [ ] `deno::sdk_tests::dispatch_failures_remove_async_listeners_and_timers`
@@ -4742,6 +4827,7 @@ Run: `cargo x test`
 - [ ] `deno::sdk_tests::pane_exit_cancellation_query_failure_and_event_exit_release_observers`
 - [ ] `deno::sdk_tests::pane_exit_initial_query_handles_recorded_exits_missing_and_other_panes`
 - [ ] `deno::sdk_tests::pane_exit_observes_broadcast_metadata_and_cleans_up_once`
+- [ ] `deno::sdk_tests::pane_reply_exposes_restart_error`
 - [ ] `deno::sdk_tests::pane_sequence_close_policies_and_exits_cancel_remaining_signals`
 - [ ] `deno::sdk_tests::pane_sequence_cwd_preserves_targets_and_resolves_only_at_dispatch`
 - [ ] `deno::sdk_tests::pane_sequence_reuses_pane_matches_fast_and_stale_events_and_appends`
@@ -4756,7 +4842,9 @@ Run: `cargo x test`
 - [ ] `deno::sdk_tests::resize_and_state_changes_discard_pending_frames_but_keep_the_last_frame`
 - [ ] `deno::sdk_tests::rpc_bounds_error_replies_even_with_a_full_size_call_id`
 - [ ] `deno::sdk_tests::rpc_calls_correlate_validate_cancel_timeout_and_release_timers`
+- [ ] `deno::sdk_tests::rpc_carries_report_chunks_and_large_snapshots_without_raising_hocus_limits`
 - [ ] `deno::sdk_tests::rpc_dispatches_general_handlers_and_keeps_pipes_public`
+- [ ] `deno::sdk_tests::rpc_progress_is_correlated_nonterminal_bounded_and_keeps_the_deadline`
 - [ ] `deno::sdk_tests::rpc_replacement_isolates_have_distinct_call_ids`
 - [ ] `deno::sdk_tests::small_helpers_match_the_prelude_and_the_shim`
 - [ ] `deno::sdk_tests::stale_timer_dispatch_failure_rejects_sleep_and_cleans_up`
@@ -4767,6 +4855,10 @@ Run: `cargo x test`
 - [ ] `deno::sdk_tests::trace_watch_disposal_and_disabled_completions`
 - [ ] `deno::sdk_tests::typescript_pane_sequence_reuses_scrollback_and_escalates_cancellation`
 - [ ] `deno::sdk_tests::update_snapshots_listeners_and_payload_before_starting_new_event_waits`
+- [ ] `deno::testing::unit::installed_builtin_unit_suites`
+- [ ] `deno::testing::unit::installed_runner_reports_type_errors_empty_filters_source_lines_and_hangs`
+- [ ] `deno::testing::unit::installed_tests_confine_imports_and_bound_api_grants`
+- [ ] `deno::testing::unit::installed_unit_assertions_imports_timers_and_unstubbed_operations`
 - [ ] `deno::transport::tests::deno_byte_conversion_preserves_the_hosts_file_limit`
 - [ ] `deno::transport::tests::deno_transport_accepts_data_and_refuses_executable_objects`
 - [ ] `deno::transport::tests::deno_transport_preserves_exact_integers_and_rejects_invalid_guards`
@@ -4912,6 +5004,7 @@ Run: `cargo x test`
 - [ ] `plugin_tests::deno_plugins::deno_plugin_is_found_in_the_user_plugin_dir_by_name`
 - [ ] `plugin_tests::deno_plugins::deno_plugin_receives_its_configuration_unnormalized`
 - [ ] `plugin_tests::deno_plugins::deno_post_message_to_never_reaches_the_host`
+- [ ] `plugin_tests::deno_plugins::deno_redirected_project_configuration_requires_authorization_for_both_checkouts`
 - [ ] `plugin_tests::deno_plugins::deno_rejected_promise_reports_the_original_typescript_dependency_line`
 - [ ] `plugin_tests::deno_plugins::deno_reload_by_absolute_path_reloads_a_plugin_started_by_name`
 - [ ] `plugin_tests::deno_plugins::deno_reload_by_url_delivers_idle_before_close_before_loading_the_replacement`
@@ -5060,11 +5153,13 @@ Run: `cargo x test`
 - [ ] `plugin_tests::plugin_lifecycle_commands::send_sigint_to_pane_id_plugin_command`
 - [ ] `plugin_tests::plugin_lifecycle_commands::send_sigkill_to_pane_id_plugin_command`
 - [ ] `plugin_tests::plugin_lifecycle_commands::show_cursor_plugin_command`
+- [ ] `plugin_tests::queues::a_cli_pipe_loads_the_swamp_bridge_headless`
 - [ ] `plugin_tests::queues::a_job_is_one_instance_no_matter_how_many_clients_are_attached`
 - [ ] `plugin_tests::queues::a_job_runs_headless_and_reports_back`
 - [ ] `plugin_tests::queues::a_job_that_closes_itself_is_aborted_and_frees_its_slot`
 - [ ] `plugin_tests::queues::a_job_that_fails_to_load_is_reported_failed_and_the_next_one_runs`
 - [ ] `plugin_tests::queues::a_job_that_raises_is_reported_failed_and_frees_its_slot`
+- [ ] `plugin_tests::queues::a_plugin_message_loads_the_swamp_bridge_headless`
 - [ ] `plugin_tests::queues::a_wasm_plugin_can_enqueue_and_be_a_job`
 - [ ] `plugin_tests::queues::cancelling_a_job_before_its_loader_ran_leaves_no_orphan`
 - [ ] `plugin_tests::queues::cancelling_a_pending_job_reports_cancelled_and_never_starts_it`
@@ -5161,10 +5256,24 @@ Run: `cargo x test`
 - [ ] `wasm_bridge::wasm_bridge_tests::deno_cli_pipe_error_releases_its_registration_owner_after_a_queued_rekey`
 - [ ] `wasm_bridge::wasm_bridge_tests::deno_cli_pipe_render_releases_its_registration_owner_after_a_queued_rekey`
 - [ ] `wasm_bridge::wasm_bridge_tests::deno_cli_pipe_without_render_releases_its_registration_owner_after_a_queued_rekey`
+- [ ] `wasm_bridge::wasm_bridge_tests::deno_reload_recovers_by_id_after_load_failure`
+- [ ] `wasm_bridge::wasm_bridge_tests::deno_reload_recovers_by_url_after_load_failure`
 - [ ] `wasm_bridge::wasm_bridge_tests::deno_startup_instance_is_cancelled_and_recreated_on_reattach`
 - [ ] `wasm_bridge::wasm_bridge_tests::deno_tagged_output_batch_renders_once_per_client_and_replays_cached_identities`
+- [ ] `wasm_bridge::wasm_bridge_tests::departing_client_releases_its_data_while_another_client_stays`
+- [ ] `wasm_bridge::wasm_bridge_tests::failed_loads_and_cancelled_loading_contexts_release_temporary_data`
+- [ ] `wasm_bridge::wasm_bridge_tests::outstanding_work_keeps_data_alive_after_host_drop`
+- [ ] `wasm_bridge::wasm_bridge_tests::reconnecting_before_client_cleanup_keeps_the_live_instance`
+- [ ] `wasm_bridge::wasm_bridge_tests::reload_retains_temporary_data_and_old_users_cannot_remove_it`
+- [ ] `wasm_bridge::wasm_bridge_tests::removing_an_instance_retains_latest_values_and_url_lookup_deduplicates_ids`
 - [ ] `wasm_bridge::wasm_bridge_tests::shutting_down_after_screen_exit_cancels_a_plugin_that_is_still_loading`
 - [ ] `wasm_bridge::wasm_bridge_tests::shutting_down_cancels_a_plugin_that_is_still_loading`
+- [ ] `wasm_bridge::wasm_bridge_tests::temporary_data_lasts_through_before_close_and_cache_survives_shutdown`
+- [ ] `wasm_bridge::wasm_bridge_tests::unload_cancels_a_queued_recovery_after_load_failure`
+- [ ] `wasm_bridge::wasm_bridge_tests::unload_cancels_a_queued_reload_and_client_load`
+- [ ] `wasm_bridge::wasm_bridge_tests::wasm_reload_recovers_by_id_after_load_failure`
+- [ ] `wasm_bridge::wasm_bridge_tests::wasm_reload_recovers_by_url_after_load_failure`
+- [ ] `wasm_bridge::wasm_bridge_tests::wasm_workers_release_their_shared_temporary_data_after_unload`
 - [ ] `watch_filesystem::tests::multi_path_filesystem_events_keep_every_path`
 - [ ] `zellij_exports::permission_tests::a_branch_checked_out_elsewhere_answers_with_that_worktree`
 - [ ] `zellij_exports::permission_tests::a_branch_cut_inside_a_linked_worktree_passes_the_guard`
@@ -5398,6 +5507,7 @@ Run: `cargo x test`
 - [ ] `pty_host::client::pty_host_client_tests::attaching_to_a_pane_someone_else_holds_is_refused`
 - [ ] `pty_host::client::pty_host_client_tests::dropping_a_pending_host_without_finishing_it_kills_the_supervisor`
 - [ ] `pty_host::client::pty_host_client_tests::finishing_a_pending_host_leaves_its_supervisor_alone`
+- [ ] `pty_host::client::pty_host_client_tests::legacy_supervisor_status_does_not_verify_group_termination`
 - [ ] `pty_host::client::pty_host_client_tests::placing_the_control_fd_moves_it_to_fd_three`
 - [ ] `pty_host::client::pty_host_client_tests::query_rejects_a_reply_that_is_not_a_status`
 - [ ] `pty_host::client::pty_host_client_tests::query_returns_the_status_the_supervisor_reports`
@@ -5541,6 +5651,7 @@ Run: `cargo x test`
 - [ ] `pty_host::remote::protocol::pty_host_remote_protocol_tests::any_byte_payload_survives_the_frame_round_trip`
 - [ ] `pty_host::remote::protocol::pty_host_remote_protocol_tests::control_messages_round_trip_in_both_directions`
 - [ ] `pty_host::remote::protocol::pty_host_remote_protocol_tests::frames_read_back_the_same_through_a_one_byte_at_a_time_reader`
+- [ ] `pty_host::remote::protocol::pty_host_remote_protocol_tests::legacy_remote_status_does_not_verify_group_termination`
 - [ ] `pty_host::remote::protocol::pty_host_remote_protocol_tests::legacy_spawn_frame_preserves_numeric_ids`
 - [ ] `pty_host::remote::protocol::pty_host_remote_protocol_tests::the_remote_protocol_versions_independently_of_the_supervisor_protocol`
 - [ ] `pty_host::remote::reader::pty_host_remote_reader_tests::a_child_exit_is_reported_to_the_pty_thread`
@@ -5559,6 +5670,7 @@ Run: `cargo x test`
 - [ ] `pty_host::remote::reader::pty_host_remote_reader_tests::output_frames_arrive_as_plain_pty_bytes`
 - [ ] `pty_host::remote::reader::pty_host_remote_reader_tests::output_larger_than_the_callers_buffer_is_not_truncated`
 - [ ] `pty_host::remote::reader::pty_host_remote_reader_tests::the_end_of_a_pane_is_reported_only_once`
+- [ ] `pty_host::remote::reader::pty_host_remote_reader_tests::workflow_reader_observes_group_termination_after_wrapper_exit`
 - [ ] `pty_host::remote::session::pty_host_remote_session_tests::a_caught_up_peer_is_given_nothing`
 - [ ] `pty_host::remote::session::pty_host_remote_session_tests::a_gap_longer_than_the_buffer_is_reported_as_dropped`
 - [ ] `pty_host::remote::session::pty_host_remote_session_tests::a_peer_claiming_impossible_progress_is_treated_as_caught_up`
@@ -5681,12 +5793,17 @@ Run: `cargo x test`
 - [ ] `agent::launch::tests::nothing_else_declares_a_sandbox`
 - [ ] `agent::launch::tests::opencode_takes_its_prompt_as_a_flag_and_resumes_by_session`
 - [ ] `agent::launch::tests::the_model_flag_comes_before_the_prompt`
+- [ ] `agent::restart::tests::restart_obeys_agent_argument_arity`
+- [ ] `agent::restart::tests::restart_preserves_planned_options_and_environment_without_prompt_or_resume`
+- [ ] `agent::restart::tests::restart_refuses_print_mode_including_env_wrappers`
+- [ ] `agent::restart::tests::restart_refuses_unknown_or_ambiguous_commands`
 - [ ] `common_path::tests::common_path_all_is_a_prefix_of_every_input`
 - [ ] `common_path::tests::common_path_all_is_order_independent`
 - [ ] `common_path::tests::common_path_is_symmetric`
 - [ ] `common_path::tests::compare_all_paths`
 - [ ] `common_path::tests::compare_paths`
 - [ ] `common_path::tests::no_common_path`
+- [ ] `consts::tests::test_cache_override_precedes_platform_cache_initialization`
 - [ ] `downloader::tests::body_longer_than_the_declared_range_is_rejected`
 - [ ] `downloader::tests::cached_file_is_returned_without_a_client_or_request`
 - [ ] `downloader::tests::client_construction_failure_is_an_error`
@@ -5739,6 +5856,13 @@ Run: `cargo x test`
 - [ ] `keys::compatibility_tests::escape_is_disambiguated_only_in_kitty_mode`
 - [ ] `keys::compatibility_tests::terminal_keys_preserve_bytes_and_binding_precedence`
 - [ ] `keys::tests::modified_backtab_keeps_implicit_shift`
+- [ ] `owned_dir::tests::concurrent_creation_preserves_live_roots_and_reclaims_killed_owners`
+- [ ] `owned_dir::tests::externally_removed_directories_are_already_clean`
+- [ ] `owned_dir::tests::inherited_lease_protects_children_after_runner_disappears`
+- [ ] `owned_dir::tests::last_user_removes_child_then_host_even_during_unwinding`
+- [ ] `owned_dir::tests::reclamation_does_not_follow_symlinks_or_sweep_unmarked_directories`
+- [ ] `owned_dir::tests::registry_symlinks_and_writable_shared_parents_are_refused`
+- [ ] `owned_dir::tests::subprocess_owner`
 - [ ] `plugin_location::remote_script_tests::remote_script_urls_are_refused_before_download`
 - [ ] `plugin_location::retired_script_tests::lua_urls_fail_before_aliases_or_downloads`
 - [ ] `session_checkpoint::tests::a_sync_failure_after_publication_keeps_both_complete_snapshots`
@@ -5915,6 +6039,8 @@ Run: `cargo x test`
 - [ ] `pty::pty_tests::remote_subagent_hooks_broadcast_without_writing_parent_state`
 - [ ] `pty::pty_tests::sigint_to_a_remote_pane_does_not_signal_a_local_process`
 - [ ] `pty::pty_tests::sigkill_to_a_remote_pane_does_not_signal_a_local_process`
+- [ ] `pty::pty_tests::workflow_ownership_follows_spawn_rerun_and_removal`
+- [ ] `pty::pty_tests::workflow_signals_refuse_changed_ownership_and_replacement_processes`
 - [ ] `screen::screen_tests::agent_placement::a_failed_layout_override_clears_the_pending_tab`
 - [ ] `screen::screen_tests::agent_placement::a_fullscreen_tab_is_not_a_candidate`
 - [ ] `screen::screen_tests::agent_placement::a_pane_a_plugin_marked_as_an_agent_is_placed_like_a_named_agent`
@@ -6425,6 +6551,9 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::quit::all_tab_close_instructions_confirm_before_destroying_the_last_tab`
 - [ ] `screen::screen_tests::quit::automatic_replacement_preserves_guarding_plugins_in_every_layer`
 - [ ] `screen::screen_tests::quit::background_tab_overlays_skip_pending_destinations`
+- [ ] `screen::screen_tests::quit::buffered_explicit_and_self_closes_keep_their_order_and_complete_once`
+- [ ] `screen::screen_tests::quit::cli_and_ctrl_c_closes_destroy_replacement_chains_and_preserve_input`
+- [ ] `screen::screen_tests::quit::close_notification_releases_requests_buffered_for_a_discarded_pane`
 - [ ] `screen::screen_tests::quit::closing_a_guarding_plugin_pane_by_keybinding_drops_its_guard`
 - [ ] `screen::screen_tests::quit::closing_a_hook_pane_over_a_dead_terminal_clears_the_terminals_guest_state`
 - [ ] `screen::screen_tests::quit::closing_a_hook_pane_over_a_dead_terminal_closes_the_last_tab`
@@ -6436,16 +6565,20 @@ Run: `cargo x test`
 - [ ] `screen::screen_tests::quit::confirming_a_plain_quit_launches_the_modal_with_no_configuration`
 - [ ] `screen::screen_tests::quit::deferred_focus_uses_stable_ids_after_earlier_tab_removal`
 - [ ] `screen::screen_tests::quit::disconnected_pty_does_not_interrupt_tab_teardown`
+- [ ] `screen::screen_tests::quit::explicit_close_before_creation_waits_for_removal_and_completion`
 - [ ] `screen::screen_tests::quit::explicit_last_tab_close_checks_guards_and_preserves_hidden_work`
 - [ ] `screen::screen_tests::quit::failed_pending_destination_does_not_block_internal_tab_closure`
 - [ ] `screen::screen_tests::quit::focused_last_tab_confirmation_goes_to_the_requesting_client`
 - [ ] `screen::screen_tests::quit::hidden_only_non_last_tab_keeps_its_identity_and_terminal`
 - [ ] `screen::screen_tests::quit::homeless_plugin_drops_its_notice_before_settlement`
 - [ ] `screen::screen_tests::quit::internal_tab_closure_waits_for_a_loaded_destination`
+- [ ] `screen::screen_tests::quit::last_pane_exit_returns_each_client_to_the_previous_usable_tab`
 - [ ] `screen::screen_tests::quit::notices_from_several_plugins_are_joined_in_a_stable_order`
 - [ ] `screen::screen_tests::quit::pending_tabs_are_not_relocation_destinations_and_cancel_obsolete_confirmation`
 - [ ] `screen::screen_tests::quit::quit_action_asks_the_screen_to_confirm`
 - [ ] `screen::screen_tests::quit::replacement_exit_buffered_before_layout_is_held_after_settlement`
+- [ ] `screen::screen_tests::quit::settlement_repairs_floating_focus_after_last_tiled_exit_alone_or_beside_another_tab`
+- [ ] `screen::screen_tests::quit::tab_teardown_records_destruction_but_not_held_or_relocated_panes`
 - [ ] `screen::screen_tests::quit::the_confirmation_is_raised_once_and_not_once_per_pass`
 - [ ] `screen::screen_tests::quit::the_last_pane_closing_confirms_when_a_plugin_guards`
 - [ ] `screen::screen_tests::quit::the_last_pane_closing_exits_with_nobody_attached`
@@ -8226,6 +8359,7 @@ Run: `cargo x test`
 Run: `cargo x test`
 
 - [ ] `/home/zacharyhamm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deno_core-0.405.0/extensions.rs - deno::checker::zellij_checker (line 483)`
+- [ ] `/home/zacharyhamm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deno_core-0.405.0/extensions.rs - deno::testing::test_host (line 483)`
 - [ ] `/home/zacharyhamm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deno_core-0.405.0/extensions.rs - deno::zellij_host (line 483)`
 - [ ] `zellij-runtime/src/common_path.rs - common_path::common_path (line 61)`
 - [ ] `zellij-runtime/src/common_path.rs - common_path::common_path_all (line 33)`
@@ -8758,6 +8892,7 @@ Run: `cargo x integration-test`
 - [ ] `key_after_mode_switch_is_interpreted_in_new_mode_not_leaked_to_pane`
 - [ ] `last_terminal_exit_ends_session_with_background_plugins`
 - [ ] `last_terminal_exit_ends_session_without_plugin_renders`
+- [ ] `last_tiled_exit_reveals_hidden_floating_pane_and_delivers_keyboard_input`
 - [ ] `move_focus_down_in_pane_mode`
 - [ ] `move_focus_left_in_pane_mode`
 - [ ] `move_focus_or_tab_moves_focus_between_panes`
@@ -8785,6 +8920,18 @@ Run: `cargo x integration-test`
 - [ ] `toggle_pane_fullscreen`
 - [ ] `toggle_pane_pinned`
 - [ ] `undo_rename_pane`
+
+## zellij-integration-tests (test/plugin_testing)
+
+Run: `cargo x integration-test`
+
+- [ ] `installed_async_plugin_api_returns_results_and_cancels_while_input_continues`
+- [ ] `installed_builtin_typescript_integration_suites`
+- [ ] `installed_cli_runs_builtin_tests_without_a_configured_plugin_directory`
+- [ ] `installed_controller_routes_input_enforces_permissions_and_isolates_storage`
+- [ ] `installed_integration_failure_and_timeout_reap_the_owned_session`
+- [ ] `installed_integration_server_crash_is_a_failure_and_is_reaped`
+- [ ] `installed_session_rpc_uses_real_headless_routing_storage_and_caller_identity`
 
 ## zellij-integration-tests (test/plugins)
 
@@ -8911,12 +9058,20 @@ Run: `cargo x integration-test`
 
 Run: `cargo x integration-test`
 
+- [ ] `closing_a_workflow_helper_removes_its_source_and_restores_input_and_chrome`
+- [ ] `closing_during_workflow_launch_cancels_the_late_result`
+- [ ] `closing_the_exit_question_ends_the_suspended_lifecycle`
+- [ ] `exit_panel_restart_delivers_no_prompt_on_repeated_restarts`
+- [ ] `manual_picker_source_closure_completes_without_a_persisted_view`
+- [ ] `restart_and_fork_are_offered_while_the_workflow_runs_and_a_started_fork_cancels_it`
 - [ ] `swamp_exit_keeps_status_agent_question_and_result_in_the_original_location`
 - [ ] `swamp_exit_status_bar_tracks_mode_changes_while_the_workflow_view_is_active`
 - [ ] `workflow_fork_cancellation_returns_to_the_exit_menu_without_starting_an_agent`
 - [ ] `workflow_fork_rechecks_a_closed_source_before_confirmation`
 - [ ] `workflow_fork_rechecks_a_restarted_source_before_confirmation`
 - [ ] `workflow_fork_reuses_the_source_layout_scrollback_directory_and_focus`
+- [ ] `workflow_restart_delivers_no_prompt_on_repeated_restarts`
+- [ ] `workflow_restart_refusal_keeps_the_run_and_exit_controls_usable`
 
 ## zellij-integration-tests (test/tabs)
 
@@ -9182,5 +9337,5 @@ which appear under `cargo x integration-test` above.
 
 None: every `#[test]` function in the sources appears in the listing above.
 
-Scanned 8312 source test functions; 0 unmatched.
+Scanned 8454 source test functions; 0 unmatched.
 

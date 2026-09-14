@@ -267,6 +267,8 @@ enum CommandName {
   SwampRequest = 287;
   SetPaneSubtitle = 288;
   CheckPlugin = 289;
+  TestPlugin = 290;
+  CancelPluginTest = 291;
 }
 
 message PluginCommand {
@@ -465,6 +467,8 @@ message PluginCommand {
     SetContextMenuPayload set_context_menu_payload = 211;
     string register_default_keybindings_payload = 212;
     CheckPluginPayload check_plugin_payload = 230;
+    TestPluginPayload test_plugin_payload = 231;
+    string cancel_plugin_test_payload = 232;
     SetPaneAgentPayload set_pane_agent_payload = 214;
     string reload_plugin_by_url_payload = 215;
     ReadPluginLogPayload read_plugin_log_payload = 216;
@@ -2062,4 +2066,10 @@ message CheckPluginResponse {
     string report_json = 1;
     string error = 2;
   }
+}
+
+message TestPluginPayload {
+  string name = 1;
+  string options_json = 2;
+  string request_id = 3;
 }

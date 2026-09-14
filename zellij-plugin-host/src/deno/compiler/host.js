@@ -1,5 +1,5 @@
 // Runs only in the isolated compiler runtime. Never evaluates a plugin buffer.
-function zellijCheck({ entry, sdk }) {
+function zellijCheck({ entry, sdk, testing }) {
   const prefix = "/$zellij/";
   const sdkPath = prefix + "sdk.d.ts";
   const ops = Deno.core.ops;
@@ -21,6 +21,7 @@ function zellijCheck({ entry, sdk }) {
   };
   function readFile(name) {
     if (name === sdkPath) return sdk;
+    if (name === prefix + "testing.d.ts" && testing) return testing;
     if (name.startsWith(prefix)) return __zellijLibs[name.slice(prefix.length)];
     return ops.op_zellij_check_read(name);
   }
