@@ -9,6 +9,25 @@ fn report(
     crate::plugin_authoring::check_source(&dir.join("main.ts"), source, mode)
 }
 
+fn check_and_write(dir: &Path, name: &str, source: &str) {
+    let entry = dir.join(name);
+    for mode in [Semantic, Prepare] {
+        let result = crate::plugin_authoring::check_source(&entry, source, mode);
+        assert!(
+            result.diagnostics.is_empty(),
+            "{name}, {mode:?}: {:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            result.formatted_source.as_deref(),
+            (mode == Prepare).then_some(source)
+        );
+        assert!(!entry.exists());
+    }
+    crate::plugin_authoring::write(dir, name, source, false, true).unwrap();
+    assert_eq!(std::fs::read_to_string(entry).unwrap(), source);
+}
+
 #[test]
 fn formats_drafts_without_writing_and_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
@@ -397,31 +416,83 @@ export const typed: typeof import("./foo.js").value = 1;
 }
 
 #[test]
+fn native_resolution_rewrites_module_augmentations_and_path_references() {
+    for source in [
+        r#"import type { Label as ImportedLabel } from "./dep.ts";
+declare module "./dep.ts" {
+  interface Label {
+    count: number;
+  }
+}
+export const label: ImportedLabel = { text: "ok", count: 1 };
+"#,
+        r#"// oxlint-disable-next-line typescript/triple-slash-reference -- Verify path reference staging.
+/// <reference path='./dep.ts' />
+// oxlint-disable-next-line typescript/triple-slash-reference -- Verify path reference staging.
+/// <reference path="./types.d.ts" />
+import type { Label } from "./dep.ts";
+export const label: Label = { text: "ok" };
+export const count: Count = 1;
+"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let dependency = "export interface Label {text:string}";
+        let declaration = "type Count=number";
+        std::fs::write(dir.path().join("dep.ts"), dependency).unwrap();
+        std::fs::write(dir.path().join("types.d.ts"), declaration).unwrap();
+        check_and_write(dir.path(), "main.ts", source);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dep.ts")).unwrap(),
+            dependency
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("types.d.ts")).unwrap(),
+            declaration
+        );
+    }
+}
+
+#[test]
+fn native_resolution_ignores_typescript_jsdoc_imports() {
+    let dir = tempfile::tempdir().unwrap();
+    // Inactive comments must neither load this invalid dependency nor resolve the missing one.
+    let dependency = "export const invalid: string = 1;";
+    std::fs::write(dir.path().join("dep.ts"), dependency).unwrap();
+    let source = r#"/** @import { Label } from "./dep.ts" */
+/** @type {import("./dep.ts").Label} */
+export const present = 1;
+/** @import { Missing } from "./missing.ts" */
+/** @type {import("./missing.ts").Missing} */
+export const missing = 2;
+"#;
+    for name in ["main.ts", "main.mts"] {
+        check_and_write(dir.path(), name, source);
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("dep.ts")).unwrap(),
+        dependency
+    );
+    assert!(!dir.path().join("missing.ts").exists());
+}
+
+#[test]
 fn native_resolution_rewrites_javascript_jsdoc_imports() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("dep.d.ts"),
-        "export interface Label { text: string; }\n",
-    )
-    .unwrap();
+    let dependency = "export interface Label { text: string; }\n";
+    std::fs::write(dir.path().join("dep.d.ts"), dependency).unwrap();
     let source = r#"/** @import { Label } from "./dep.d.ts" */
 /** @type {Label} */
 export const importedLabel = { text: "ok" };
 /** @type {import("./dep.d.ts").Label} */
 export const label = { text: "ok" };
 "#;
-    for mode in [Semantic, Prepare] {
-        let result =
-            crate::plugin_authoring::check_source(&dir.path().join("main.js"), source, mode);
-        assert!(
-            result.diagnostics.is_empty(),
-            "{mode:?}: {:?}",
-            result.diagnostics
-        );
-        if mode == Prepare {
-            assert_eq!(result.formatted_source.as_deref(), Some(source));
-        }
+    for name in ["main.js", "main.mjs"] {
+        check_and_write(dir.path(), name, source);
     }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("dep.d.ts")).unwrap(),
+        dependency
+    );
 }
 
 #[test]

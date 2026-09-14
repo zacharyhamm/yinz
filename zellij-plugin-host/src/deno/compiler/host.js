@@ -73,9 +73,11 @@ function zellijCheck({ entry, sdk, testing, strictOptions, diagnostics }) {
   for (const [name, source] of sources) {
     if (name.startsWith(prefix)) continue;
     const imports = [];
+    const isJavaScript = ts.isSourceFileJS(source);
     function visit(node) {
       if (ts.isStringLiteralLike(node) && (
         ((ts.isImportDeclaration(node.parent) || ts.isExportDeclaration(node.parent)) && node.parent.moduleSpecifier === node) ||
+        (ts.isModuleDeclaration(node.parent) && node.parent.name === node) ||
         (ts.isJSDocImportTag(node.parent) && node.parent.moduleSpecifier === node) ||
         (ts.isLiteralTypeNode(node.parent) && ts.isImportTypeNode(node.parent.parent)) ||
         (ts.isCallExpression(node.parent) && node.parent.expression.kind === ts.SyntaxKind.ImportKeyword && node.parent.arguments[0] === node)
@@ -84,10 +86,18 @@ function zellijCheck({ entry, sdk, testing, strictOptions, diagnostics }) {
         imports.push({start, end: node.end,
           target: ops.op_zellij_check_resolve(node.text, name)});
       }
-      for (const jsDoc of node.jsDoc || []) visit(jsDoc);
+      if (isJavaScript) {
+        for (const jsDoc of node.jsDoc || []) visit(jsDoc);
+      }
       ts.forEachChild(node, visit);
     }
     visit(source);
+    for (const ref of source.referencedFiles) {
+      // Reference spans exclude quotes; native rewrites replace the whole literal.
+      imports.push({start: ref.pos - 1, end: ref.end + 1,
+        target: ops.op_zellij_check_resolve(ref.fileName, name)});
+    }
+    imports.sort((a, b) => a.start - b.start);
     ops.op_zellij_check_imports(name, imports);
   }
   const findings = diagnostics ? ts.getPreEmitDiagnostics(program) : program.getSyntacticDiagnostics();
