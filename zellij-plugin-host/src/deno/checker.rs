@@ -197,7 +197,7 @@ fn check_inner(
     if let Some(source) = source {
         loader.set_entry_source(source)?;
     }
-    check_loader(path, loader, limits)
+    check_loader(path, loader, limits, strict, diagnostics)
 }
 
 pub(super) fn check_tests(path: &Path, root: &Path) -> Result<()> {
@@ -205,14 +205,19 @@ pub(super) fn check_tests(path: &Path, root: &Path) -> Result<()> {
         path,
         PluginModuleLoader::for_tests(path, root)?,
         Limits::new("test checker".into()),
+        false,
+        true,
     )
+    .map(|_| ())
 }
 
 fn check_loader(
     path: &Path,
     loader: PluginModuleLoader,
     limits: std::sync::Arc<Limits>,
-) -> Result<()> {
+    strict: bool,
+    diagnostics: bool,
+) -> Result<Graph> {
     let entry = loader
         .entrypoint()
         .to_file_path()

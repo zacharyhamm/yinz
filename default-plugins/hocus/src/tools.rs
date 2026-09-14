@@ -1904,7 +1904,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_check",
-            "Check saved JS/TS by name, or pass source for an unwritten draft, without execution; JS/TS includes types and local imports. Report diagnostics, literal permissions and warnings. Writes/edits format and require strict types and lint before confirmation. Fix diagnostics, check again, then reload.",
+            "Check saved JS/TS by name or draft source without execution: strict types, local imports and lint. Reports diagnostics, literal permissions and warnings. Writes/edits format and check before confirmation. Fix diagnostics before reload.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1916,7 +1916,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_format",
-            "Format JS/TS with the shared two-space Oxfmt policy. Pass source to return formatted draft text without writing. Omit source to format a saved plugin after confirmation, preserving its previous version as a backup. Formats only the named file.",
+            "Format one JS/TS file with Oxfmt. With source: return formatted draft. Without: confirm, back up and format the saved file.",
             json!({"type":"object", "properties":{"name":{"type":"string"}, "source":{"type":"string"}}, "required":["name"]}),
         ),
         tool(

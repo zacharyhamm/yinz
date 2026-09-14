@@ -72,7 +72,10 @@ fn installed_runner_reports_type_errors_empty_filters_source_lines_and_hangs() {
         ("export const noTests = true;", "no matching tests"),
     ] {
         std::fs::write(&path, source).unwrap();
-        let report = run(&path, &PluginTestOptions {timeout_ms: 3000, ..Default::default()}, None, &AtomicBool::new(false)).unwrap();
+        // Compiler startup under the full gate is not the behavior under test.
+        // Deliberate hangs still need a bounded, shorter deadline.
+        let timeout_ms = if expected == "deadline" { 10_000 } else { 30_000 };
+        let report = run(&path, &PluginTestOptions {timeout_ms, ..Default::default()}, None, &AtomicBool::new(false)).unwrap();
         assert!(!report.passed(), "{report:#?}");
         if source.contains("before timeout") { assert!(report.tests[0].output.contains("before timeout"), "{report:#?}"); }
         assert!(report.tests.iter().any(|test| test.error.as_ref().is_some_and(|error| error.contains(expected))), "expected {expected}: {report:#?}");
