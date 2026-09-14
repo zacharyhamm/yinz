@@ -5,7 +5,7 @@ const uid=(work,key)=>JSON.stringify(['host','session',work,key]);
 const read=(work,key)=>rows.has(uid(work,key))?JSON.parse(rows.get(uid(work,key)).value):undefined;
 const save=(work,key,value)=>rows.set(uid(work,key),{rev:(rows.get(uid(work,key))?.rev??0)+1,value:JSON.stringify(value)});
 const owner=(work,agent)=>({host_id:'host',session:'session',incarnation:'incarnation',work,agent});
-let requests=[],cancelled={},timers=[],delayed,release,panemap={},acks=0,transientRestore=false,missingPane;
+let requests=[],cancelled={},timers=[],delayed,release,panemap={},acks=0,transientRestore=false,missingPane,returned=[],scrolled=[];
 const flush=async()=>{for(let i=0;i<50;i++)await Promise.resolve();};
 const tick=async()=>{const pending=timers;timers=[];pending.forEach(resolve=>resolve());await flush();};
 const close=pane=>handlers.PaneClosed(pane);
@@ -27,7 +27,8 @@ mock.command=(name,args)=>{
   }
   if(name==='RerunCommandPane'){panemap['t'+args].exited=false;return;}
   if(name==='SetPaneSubtitle')return;
-  if(name==='MessageToPlugin'){if(args.message_name==='swamp-pane-ack'){check(!panemap.p2);acks++;}return;}
+  if(name==='MessageToPlugin'){if(args.message_name==='swamp-pane-ack'){check(!panemap.p2);acks++;}if(args.message_name==='workflow-returned')returned.push(args.destination_plugin_id);return;}
+  if(name==='ScrollToBottomInPaneId'){scrolled.push(args);return;}
   if(name==='OpenCommandPaneBackground')return {Terminal:3};
   throw Error('Unexpected command '+name);
 };
@@ -46,7 +47,7 @@ mock.swampRequest=async opts=>{
 };
 function reload(){timers=[];handlers={};reloadConsumer();M.load();}
 function seed(){
-  rows.clear();timers=[];requests=[];cancelled={};delayed=undefined;release=undefined;acks=0;transientRestore=false;missingPane=undefined;
+  rows.clear();timers=[];requests=[];cancelled={};delayed=undefined;release=undefined;acks=0;transientRestore=false;missingPane=undefined;returned=[];scrolled=[];
   panemap={p99:{plugin_url:'zellij:swamp-workflow'},p2:{plugin_url:'zellij:agent-exit',is_suppressed:false},
     t1:{target:'Local',exited:true,is_suppressed:true},t3:{target:'Local',is_suppressed:true},t4:{target:'Local',is_suppressed:true},t5:{target:'Local'}};
   save('work','view',{view:2,source:1,current:3,incarnation:'incarnation'});
@@ -97,6 +98,7 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     transientRestore=!detached;
     await call({method:'command_close',work:'work',key:'tests'});await call({method:'command_close',work:'work',key:'tests'});await flush();
     check(!panemap.t3&&panemap.p99.is_suppressed===detached&&!read('work','view').closed);
+    check(JSON.stringify(returned)===(detached?'[]':'[99]'),'only a restored view is told it returned');
     check(!Object.keys(cancelled).length);
   }
   for(const pane of [{Plugin:2},{Terminal:1},{Terminal:3}]){
@@ -151,6 +153,7 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     seed();await call({method:'pane_action',work:'work',key:action,action});await flush();
     check(!read('work','view').closed&&read('work','view').transition===action&&!cancelled.run);
     check(!!panemap.t1===(action==='restart'));
+    check(JSON.stringify(scrolled)===(action==='restart'?'[{"Terminal":1}]':'[]'),'restart restores the source at the bottom');
   }
   seed();rows.delete(uid('work','source'));await call({method:'pane_action',work:'work',key:'restart',action:'restart'});
   for(const field of ['host_id','session','incarnation']){
