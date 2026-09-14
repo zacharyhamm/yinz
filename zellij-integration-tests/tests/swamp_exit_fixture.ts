@@ -25,6 +25,7 @@ const z: any = {...real,
   },
   async swampRequest(opts: any) {
     const op = opts.operation, p = opts.payload;
+    if (op === 'workflow.get') return {name: 'fixture'};
     if (op === 'workflow.validate') return {passed: true};
     if (op === 'workflow.run') return {runId: 'run'};
     if (op === 'model.method.run') {

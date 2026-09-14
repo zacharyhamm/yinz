@@ -3695,7 +3695,15 @@ fn swamp_request(
             if let Some(error) = config.error { return Err(anyhow!(error)); }
             let root = config.root;
             let payload: serde_json::Value = serde_json::from_str(&payload).context("invalid Swamp request payload")?;
-            if operation == "workflow.cancel" {
+            let progress = |payload| emit(serde_json::json!({"type":"managed.progress","id":id,"payload":payload}));
+            if operation == "workflow.get" {
+                let workflow = payload["workflowIdOrName"].as_str().context("workflow is required")?;
+                let value = zellij_process::swamp::definitions::get(root, workflow, &progress).await?;
+                emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));
+            } else if matches!(operation.as_str(), "workflow.edit" | "workflow.delete") {
+                let value = zellij_process::swamp::definitions::change(root, &operation, payload, &progress).await?;
+                emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));
+            } else if operation == "workflow.cancel" {
                 let warm = root.clone();
                 let warm_id = id.clone();
                 tokio::task::spawn_blocking(move || zellij_process::swamp::prewarm_request(&warm, &warm_id)).await.context("Swamp startup failed")??;
@@ -3709,7 +3717,11 @@ fn swamp_request(
             Ok(())
         }.await;
         if let Err(error) = result {
-            emit(serde_json::json!({"type":"error", "id":id, "error":{"code":"host_error", "message":error.to_string()}}));
+            let message = error.to_string();
+            let detail = serde_json::from_str::<serde_json::Value>(&message).ok()
+                .filter(|value| value["code"].is_string() && value["message"].is_string())
+                .unwrap_or_else(|| serde_json::json!({"code":"host_error","message":message}));
+            emit(serde_json::json!({"type":"error", "id":id, "error":detail}));
         }
     });
 }

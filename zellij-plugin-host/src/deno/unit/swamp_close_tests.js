@@ -37,6 +37,7 @@ mock.swampRequest=async opts=>{
   requests.push(opts);
   if(delayed===opts.operation)return new Promise(resolve=>{release=resolve;});
   if(opts.operation==='workflow.cancel'){check(read('work','view').closed);cancelled[opts.payload.runId]=true;}
+  if(opts.operation==='workflow.get')return {name:'exit'};
   if(opts.operation==='workflow.validate')return {passed:true};
   if(opts.operation==='workflow.run')return {runId:'run'};
   if(opts.operation==='workflow.history.search')return {results:[]};

@@ -53,6 +53,12 @@ impl State {
                 self.finish_head(refusal);
                 continue;
             }
+            if crate::workflows::TOOLS.contains(&call.name.as_str()) {
+                if let Err(error) = crate::workflows::arguments(&call) {
+                    self.finish_head(format!("invalid workflow arguments: {error}"));
+                    continue;
+                }
+            }
             let needs_confirmation = self.call_needs_confirmation(&call);
             // A scheduled run with no authority of its own does not park: nobody
             // may be there to press `y`, and a parked run would hold every other
@@ -172,6 +178,9 @@ impl State {
     /// Dispatch the head. Returns whether the queue advanced — `false` means the
     /// result is deferred and `pump_tools` must stop and wait.
     pub(crate) fn run_head(&mut self, call: &ToolCall) -> bool {
+        if crate::workflows::TOOLS.contains(&call.name.as_str()) {
+            return self.start_workflow_tool(call);
+        }
         if matches!(
             call.name.as_str(),
             "project_config_read" | "project_config_write"
@@ -662,6 +671,7 @@ impl State {
     /// Record a result for the head call and drop it from the queue.
     pub(crate) fn finish_head<S: Into<String>>(&mut self, result: S) {
         if let Some(call) = self.pending.pop_front() {
+            self.workflow_call = None;
             let result_str = result.into();
             // Cleared with the head it belongs to: whatever is behind it in the
             // queue came from the model and is elided as usual.

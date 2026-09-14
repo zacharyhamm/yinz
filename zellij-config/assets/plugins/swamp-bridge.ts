@@ -1,6 +1,6 @@
 // Durable delivery adapter. Swamp owns the DAG, evidence, questions and decisions.
 import z, {definePlugin, type Json, type DataRecord, type Integer, type PaneId,
-  type PaneTarget, type AgentSpawnOptions, type AgentEvent, type MessageToPlugin} from 'zellij:plugin';
+  type PaneTarget, type AgentSpawnOptions, type AgentEvent, type MessageToPlugin, type RpcCall} from 'zellij:plugin';
 
 type Owner = {host_id: string; session: string; incarnation: string; work: string; agent: string};
 type Identity = Pick<Owner, 'host_id' | 'session' | 'incarnation'>;
@@ -9,7 +9,7 @@ type Request = {
   directory: string; run: string; launch: string; workflow: string;
   prompt: string; prompt_sha256?: string; waitForExit?: boolean; includeOutput?: boolean; foreground?: boolean;
   process?: number; action: string; cancel_active?: boolean; spec: AgentSpawnOptions & {source_directory?: string; automatic_firecracker_vm?: boolean}; argv: string[]; cwd: string;
-  inputs?: Record<string, Json>;
+  inputs?: Record<string, Json>; exactInputs?: boolean;
   payload: Record<string, Json>; model: string; name: string; offset: number; version: number; capture?: Json;
 };
 type Attachment = {run: string; work: string; workflow: string; root: string};
@@ -307,7 +307,7 @@ async function command(argv: string[], cwd = '/'): Promise<string> {
   assert(r.exitCode === 0, `Host command failed: ${encode(argv)}\nDirectory: ${cwd}\nExit status: ${r.exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   return stdout;
 }
-type SwampRequest = {operation: string; payload?: Record<string, Json>; id?: string; started?: boolean; onNotDispatched?: (error: Json) => void; onProgress?: (payload: Json) => void};
+type SwampRequest = {allowLimited?: boolean; operation: string; payload?: Record<string, Json>; id?: string; started?: boolean; onNotDispatched?: (error: Json) => void; onProgress?: (payload: Json) => void};
 const tracked = new Map<string, string>(), watching = new Set<string>();
 const watchIds = new Map<string, {run: string; work: string}>(), notifications = new Set<string>();
 function changed(work: string) {
@@ -328,12 +328,28 @@ function changed(work: string) {
   });
 }
 async function swamp(request: SwampRequest, directory: string): Promise<string> {
+  const workflow = request.payload?.workflow;
+  if (['workflow.history.search', 'report.search', 'report.get'].includes(request.operation) &&
+    typeof workflow === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(workflow)) {
+    const definition = JSON.parse(await swamp({operation: 'workflow.get', payload: {workflowIdOrName: workflow}}, directory));
+    request = {...request, payload: {...request.payload, workflow: definition.name}};
+  }
   const reply = await z.swampRequest({...request, directory}) as Record<string, any>;
   if (reply.error) {
     if (reply.error.code === 'not_dispatched') request.onNotDispatched?.(reply.error);
     throw Error(encode(reply.error));
   }
-  if (request.operation === 'data.query' && reply.limited) throw Error('Swamp data query reached its result limit; narrow the saved-data query');
+  const query = request.payload?.query;
+  if (typeof query === 'string' && query && ['workflow.search', 'model.search', 'workflow.history.search'].includes(request.operation)) {
+    const needle = query.toLowerCase();
+    reply.results = (reply.results ?? []).filter((row: Record<string, any>) => {
+      const fields = request.operation === 'workflow.history.search'
+        ? [row.workflowName, row.runId, row.status, ...Object.entries(row.inputs ?? {}).map(([key, value]) => `${key}=${value}`)]
+        : [row.name, row.id, request.operation === 'model.search' ? row.type : row.description];
+      return fields.some(value => typeof value === 'string' && value.toLowerCase().includes(needle));
+    });
+  }
+  if (request.operation === 'data.query' && reply.limited && !request.allowLimited) throw Error('Swamp data query reached its result limit; narrow the saved-data query');
   if (request.operation === 'data.query' && reply.projected) {
     reply.results = reply.projected.rows ?? reply.projected.values ?? []; delete reply.projected;
   } else if (request.operation === 'workflow.history.logs' && reply.log) return (reply.log.lines ?? []).join('\n');
@@ -355,7 +371,9 @@ function cancelIfClosed(work: string): boolean {
 async function workflowRunId(operation: Delivery, request: Request): Promise<string | undefined> {
   if (operation.run) return operation.run;
   if (request.operation === 'workflow.resume') return request.payload.runId as string;
-  const history = JSON.parse(await swamp({operation: 'workflow.history.search', payload: {filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(operation.correlation)}`}}, operation.checkout!));
+  // Native children inherit the operation tag; only the launched workflow identifies its root run.
+  const workflow = operation.workflow ?? request.payload?.workflowIdOrName;
+  const history = JSON.parse(await swamp({operation: 'workflow.history.search', payload: {...(workflow ? {workflow} : {}), filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(operation.correlation)}`}}, operation.checkout!));
   assert((history.results ?? []).length <= 1, 'Multiple runs have the same operation identity; reconcile explicitly');
   return history.results?.[0]?.runId;
 }
@@ -366,7 +384,7 @@ function watchRun(run: string, work: string, root: string) {
   void swamp({operation: 'run.attach', payload: {runId: run, afterSeq: 0}, id}, root)
     .catch(() => {}).finally(() => {watching.delete(run); watchIds.delete(id);});
 }
-async function dispatch(uid: string, root: string, operation: string, payload: Record<string, Json>) {
+async function dispatch(uid: string, root: string, operation: string, payload: Record<string, Json>, onProgress?: (payload: Json) => void) {
   let [value, row] = read(uid);
   assert(value, 'No operation with that identity');
   ensureOpen(value.work);
@@ -376,7 +394,7 @@ async function dispatch(uid: string, root: string, operation: string, payload: R
   if (operation === 'workflow.run') {
     payload = {...payload, noSupersede: true, runtimeTags: {...(payload.runtimeTags as Record<string, Json> ?? {}), zellijOperation: uid}};
   }
-  const reply = JSON.parse(await swamp({operation, payload, id: value.requestId, started: true,
+  const reply = JSON.parse(await swamp({operation, payload, id: value.requestId, started: true, onProgress,
     onNotDispatched(error) {
       const [current, currentRow] = read(uid); assert(current, 'Missing dispatch');
       current.not_dispatched = true;
@@ -550,8 +568,10 @@ async function discover(work: string, root: string) {
   const launch = result(scope(work, 'launch'));
   assert(launch.checkout === root, 'Launch belongs to a different control checkout');
   if (launch.not_dispatched) return read(scope(work, 'runs'))[0];
-  const history = JSON.parse(await swamp({operation: 'workflow.history.search', payload: {inputs: {launch: work}}}, root));
-  for (const run of history.results ?? []) if (run.inputs.session === identity.session) {
+  const exactInputs = JSON.parse(launch.request ?? '{}').exactInputs;
+  const payload: Record<string, Json> = exactInputs ? {filter: `has(tags.zellijOperation) && tags.zellijOperation == ${encode(scope(work, 'launch'))}`} : {inputs: {launch: work}};
+  const history = JSON.parse(await swamp({operation: 'workflow.history.search', payload}, root));
+  for (const run of history.results ?? []) if (exactInputs || run.inputs.session === identity.session) {
     await handle({method: 'workflow_attach', work, key: 'attachment', run: run.runId, workflow: run.workflowName, directory: root});
   }
   return read(scope(work, 'runs'))[0];
@@ -586,13 +606,10 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     return reply.run ?? reply;
   }
   if (args.method === 'workflow_cancel') {
-    const snapshot = await handle({method: 'workflow_show', directory: args.directory, run: args.run}) as {root: string; history: History; children: History[]};
-    const operations = [];
-    for (const history of [snapshot.history, ...snapshot.children]) {
-      const operation = await cancelRun(history.id, snapshot.root);
-      if (operation) operations.push(operation);
-    }
-    return {operations};
+    const snapshot = await handle({method: 'workflow_show', directory: args.directory, run: args.run}) as {root: string};
+    ensureOpen(args.run);
+    const operation = await cancelRun(args.run, snapshot.root);
+    return {operations: operation ? [operation] : []};
   }
   if (args.method === 'workflow_show') {
     const failed = args.launch ? read(scope(args.launch, 'launch'))[0] : undefined;
@@ -615,8 +632,11 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     if (work && manualView != null) attachManual(work, manualView);
     let runs = work ? read(scope(work, 'runs'))[0] : undefined;
     if (work) {
-      assert(result(scope(work, 'launch')).checkout === config.root, 'Launch belongs to a different control checkout');
-      if (!discovered.has(work) || !runs) { runs = await discover(work, config.root); discovered.add(work); }
+      const launch = result(scope(work, 'launch'));
+      assert(launch.checkout === config.root, 'Launch belongs to a different control checkout');
+      if (JSON.parse(launch.request ?? '{}').exactInputs || !discovered.has(work) || !runs) {
+        runs = await discover(work, config.root); discovered.add(work);
+      }
     }
     if (args.run) [attachment] = read<Attachment>(scope(args.run, 'attachment'));
     else if (runs) for (const [id, entry] of Object.entries(runs.entries ?? {})) {
@@ -637,7 +657,7 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     const history = JSON.parse(await swamp({operation: 'workflow.history.get', payload: {workflowIdOrName: run}}, config.root));
     const ids = Object.keys(result(scope(attachment.work, 'runs')).entries ?? {});
     const questions = JSON.parse(await swamp({operation: 'data.query', payload: {predicate: `specName == "question" && attributes.run in ${encode(ids)}`, select: '{"model": modelName, "version": version, "attributes": attributes}'}}, config.root));
-    const outputs = JSON.parse(await swamp({operation: 'data.query', payload: {predicate: `has(tags.workflowRunId) && tags.workflowRunId in ${encode(ids)}`, select: outputProjection}}, config.root));
+    const outputs = JSON.parse(await swamp({operation: 'data.query', payload: {predicate: `version >= 0 && has(tags.workflowRunId) && tags.workflowRunId in ${encode(ids)}`, select: outputProjection}}, config.root));
     const children = [];
     if (history.status === 'running') watchRun(run, attachment.work, config.root);
     for (const id of ids) if (id !== run) {
@@ -794,12 +814,19 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     assert(args.directory, 'Missing project directory');
     const config = z.projectConfig.read(args.directory);
     assert(!config.error, config.error ?? 'Invalid project config');
-    const name = args.workflow ?? config.config.workflow;
-    assert(name, 'No exit workflow configured. Use Hocus /project-setup.');
-    const validation = await swamp({operation: 'workflow.validate', payload: {workflowIdOrName: name}}, config.root);
+    const workflow = args.workflow ?? config.config.workflow;
+    assert(workflow, 'No exit workflow configured. Use Hocus /project-setup.');
+    const {name} = JSON.parse(await swamp({operation: 'workflow.get', payload: {workflowIdOrName: workflow}, onProgress}, config.root));
+    assert(typeof name === 'string' && name, 'Workflow has no canonical name');
+    const validation = await swamp({operation: 'workflow.validate', payload: {workflowIdOrName: name}, onProgress}, config.root);
     ensureOpen(args.work);
     assert(JSON.parse(validation).passed === true, 'Workflow validation failed: ' + validation);
     const inputs = {...args.inputs ?? {}};
+    if (args.exactInputs) {
+      // General workflows own their input schema; dispatch carries ownership in runtime tags.
+      Object.assign(value, {workflow: name, checkout: config.root, launch: args.work}); put(uid!, value, row);
+      return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs}, onProgress);
+    }
     inputs.launch = args.work; inputs.session = identity.session; inputs.binary = z.serverBinary || 'zellij';
     inputs.checkout ??= (await command(['git', 'rev-parse', '--show-toplevel'], args.directory)).replace(/\n$/, '');
     ensureOpen(args.work);
@@ -829,10 +856,10 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     }
     inputs.flowVersion ??= 3;
     Object.assign(value, {workflow: name, checkout: config.root, launch: args.work}); put(uid!, value, row);
-    return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs});
+    return dispatch(uid!, config.root, 'workflow.run', {workflowIdOrName: name, inputs}, onProgress);
   } else if (args.method === 'swamp_dispatch') {
     if (args.operation === 'workflow.resume') ensureOpen(args.payload.runId as string);
-    return dispatch(uid!, args.directory, args.operation, {...args.payload, _zellij_active_callback: true});
+    return dispatch(uid!, args.directory, args.operation, {...args.payload, _zellij_active_callback: true}, onProgress);
   } else if (args.method === 'pane_action') {
     let source: {pane: number} | undefined;
     const saved = read(scope(args.work, 'source'))[0];
@@ -952,7 +979,7 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
   } else throw new Error('Unknown bridge method');
   return result(uid!);
 }
-type History = {id: string; workflowName: string; status: string; inputs: {launch: string; session: string};
+type History = {id: string; workflowId: string; workflowName: string; status: string; inputs: {launch: string; session: string};
   jobs?: {name: string; steps?: {name: string; status: string}[]}[]};
 // Bound every saved log copy before the host serializes the response; its byte cap would cut JSON.
 // CEL substring uses UTF-16 offsets: back off if the cut would split a surrogate pair.
@@ -1032,6 +1059,158 @@ async function invokeInner(args: Partial<Request>, manualView?: number, onProgre
   }
   return JSON.parse(encode(response));
 }
+// A separate RPC surface: Hocus cannot select arbitrary privileged bridge methods.
+async function hocusWorkflow(input: Json, call: RpcCall): Promise<Json> {
+  const from = call.source?.Plugin;
+  assert(from != null && z.command('GetPaneInfo', plugin(from))?.plugin_url === 'zellij:hocus',
+    'Workflow tools require the host-authenticated builtin Hocus');
+  const request = input as {tool: string; args: Record<string, any>; directory: string};
+  assert(request && typeof request === 'object' && typeof request.directory === 'string', 'Missing active project');
+  const a = request.args;
+  assert(a && typeof a === 'object' && !Array.isArray(a), 'Expected tool arguments');
+  const required = (name: string): string => {
+    assert(typeof a[name] === 'string' && a[name].trim() !== '' && !a[name].includes('\0'), `Missing or invalid ${name}`);
+    return a[name];
+  };
+  const config = z.projectConfig.read(request.directory);
+  assert(!config.error, config.error ?? 'Invalid project configuration');
+  const root = config.root;
+  const query = async (operation: string, payload: Record<string, Json> = {}) =>
+    JSON.parse(await swamp({operation, payload, onProgress: call.progress}, root));
+  const reports: Record<string, Json>[] = [{name: '@swamp/workflow-summary', workflow: a.workflow ?? null, run: a.run ?? null}];
+  if (a.model) reports.push({name: '@swamp/method-summary', model: a.model, run: a.run ?? null});
+  let launch: string | undefined;
+  try {
+    switch (request.tool) {
+      case 'workflow_search': return await query('workflow.search', {query: a.query ?? ''});
+      case 'workflow_get': return await query('workflow.get', {workflowIdOrName: required('workflow')});
+      case 'workflow_schema': return await query('workflow.schema', a.workflow ? {workflowIdOrName: required('workflow')} : {});
+      case 'workflow_create': {
+        const name = required('name');
+        await query('workflow.schema');
+        const existing = await query('workflow.search', {query: name});
+        assert(!(existing.results ?? []).some((w: {name: string}) => w.name === name), 'A workflow already has that name; inspect it before editing');
+        const created = await query('workflow.create', {name});
+        return {created, definition: await query('workflow.get', {workflowIdOrName: created.id})};
+      }
+      case 'workflow_edit': case 'workflow_delete': {
+        const workflowIdOrName = required('workflow');
+        assert(a.expected && typeof a.expected === 'object' && !Array.isArray(a.expected), 'expected must be the complete workflow_get result');
+        if (request.tool === 'workflow_edit') {
+          await query('workflow.schema');
+          assert(a.definition && typeof a.definition === 'object' && !Array.isArray(a.definition), 'definition must match the workflow schema');
+          assert(a.definition.id === a.expected.id, 'Preserve the inspected workflow ID');
+        }
+        const result = await query(request.tool === 'workflow_edit' ? 'workflow.edit' : 'workflow.delete',
+          {workflowIdOrName, expected: a.expected, ...(request.tool === 'workflow_edit' ? {content: encode(a.definition)} : {})});
+        return request.tool === 'workflow_delete' ? result : {result, definition: await query('workflow.get', {workflowIdOrName: a.expected.id})};
+      }
+      case 'workflow_validate': return await query('workflow.validate', {workflowIdOrName: required('workflow')});
+      case 'workflow_evaluate': return await query('workflow.evaluate', {workflowIdOrName: required('workflow'), inputs: a.inputs ?? {}});
+      case 'workflow_active': return await query('run.history', {active: true});
+      case 'workflow_history': return await query('workflow.history.search', {query: a.query ?? '', ...(a.workflow ? {workflow: a.workflow} : {}), ...(a.filter ? {filter: a.filter} : {})});
+      case 'workflow_approvals': return await query('workflow.approvals');
+      case 'workflow_reports': return await query('report.search', {...a});
+      case 'workflow_report': {
+        const {name: _name, ...options} = a;
+        return await query('report.get', {...options, reportName: required('name')});
+      }
+      case 'workflow_data': {
+        required('predicate');
+        assert(a.limit == null || Number.isInteger(a.limit) && a.limit > 0 && a.limit <= 1000, 'Invalid data limit');
+        return JSON.parse(await swamp({operation: 'data.query', payload: {...a}, allowLimited: true, onProgress: call.progress}, root));
+      }
+      case 'workflow_models': return await query('model.search', {query: a.query ?? ''});
+      case 'workflow_model': return await query('model.get', {modelIdOrName: required('model')});
+      case 'workflow_model_types': return await query('model.type.search', {query: a.query ?? ''});
+      case 'workflow_model_type': return await query('model.type.describe', {typeArg: required('type')});
+      case 'workflow_model_method': return await query('model.method.describe', {modelIdOrName: required('model'), methodName: required('method')});
+      case 'workflow_launch': {
+        required('workflow');
+        const supplied = a.inputs?.launch;
+        launch = a.inputs?.session === identity.session && typeof supplied === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,199}$/.test(supplied)
+          ? supplied : key(`${z.instanceId}-hocus-${call.callId}`);
+        const result = await invoke({method: 'workflow_run', directory: request.directory, workflow: a.workflow,
+          inputs: a.inputs ?? {}, exactInputs: true, work: launch, key: 'launch'}, undefined, call.progress) as unknown as Delivery;
+        if (result.run) await handle({method: 'workflow_attach', work: launch, key: `attach-${result.run}`, run: result.run, workflow: result.workflow, directory: root});
+        return JSON.parse(encode({...result, reports}));
+      }
+      case 'workflow_run_get': case 'workflow_logs': case 'workflow_resume': case 'workflow_approve':
+      case 'workflow_reject': case 'workflow_answer': case 'workflow_cancel': case 'workflow_cancel_step': break;
+      default: throw new Error('Unsupported Hocus workflow tool');
+    }
+    const run = required('run');
+    assert(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(run), 'An exact run UUID is required');
+    const history = await query('workflow.history.get', {workflowIdOrName: run}) as History;
+    assert(history.id === run, 'Run identity mismatch');
+    reports[0].workflow = history.workflowName;
+    const attachment = read<Attachment>(scope(run, 'attachment'))[0];
+    if (attachment) assert(attachment.root === root, 'Run belongs to a different control checkout');
+    let work = attachment?.work;
+    const candidate = history.inputs?.launch;
+    if (!work && history.inputs?.session === identity.session && typeof candidate === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,199}$/.test(candidate)) {
+      const saved = read(scope(candidate, 'launch'))[0];
+      if (saved?.checkout === root && saved.workflow === history.workflowName) work = candidate;
+    }
+    if (request.tool === 'workflow_run_get') {
+      if (attachment) return await invoke({method: 'workflow_show', directory: root, run});
+      // A run started outside Zellij has no bridge ownership. Its Swamp evidence is still readable.
+      return {history: JSON.parse(encode(history)), children: [], reports,
+        outputs: await query('data.query', {predicate: `version >= 0 && has(tags.workflowRunId) && tags.workflowRunId == ${encode(run)}`, select: outputProjection})};
+    }
+    if (request.tool === 'workflow_logs') {
+      assert(a.tail == null || Number.isInteger(a.tail) && a.tail > 0 && a.tail <= 10000, 'Invalid log tail');
+      const logs = await swamp({operation: 'workflow.history.logs', payload: {runIdOrWorkflow: run, tail: a.tail ?? 100}, onProgress: call.progress}, root);
+      return {run, logs: a.contains ? logs.split('\n').filter(line => line.includes(required('contains'))).join('\n') : logs};
+    }
+    ensureOpen(work ?? run);
+    if (request.tool === 'workflow_resume') {
+      assert(a.inputs == null || typeof a.inputs === 'object' && !Array.isArray(a.inputs), 'inputs must be an object');
+      const ownerInputs = work && (!JSON.parse(read(scope(work, 'launch'))[0]?.request ?? '{}').exactInputs ||
+        history.inputs?.launch === work && history.inputs?.session === identity.session);
+      for (const field of ['launch', 'session']) if (ownerInputs && Object.hasOwn(a.inputs ?? {}, field))
+        assert(a.inputs[field] === history.inputs?.[field as 'launch' | 'session'], `Cannot change owned ${field}`);
+      const validation = await query('workflow.validate', {workflowIdOrName: history.workflowId});
+      if (validation.passed !== true) return {error: {code: 'validation_failed', message: 'Workflow validation failed'}, validation, reports};
+      ensureOpen(work ?? run);
+      return await invoke({method: 'swamp_dispatch', work: work ?? run, key: key(`hocus-${call.callId}`), directory: root,
+        operation: 'workflow.resume', payload: {workflowIdOrName: history.workflowId, runId: run, inputs: a.inputs ?? {}, ...(a.from ? {from: required('from')} : {})}}, undefined, call.progress);
+    }
+    if (request.tool === 'workflow_approve' || request.tool === 'workflow_reject')
+      return await query(request.tool === 'workflow_approve' ? 'workflow.approve' : 'workflow.reject',
+        {workflowIdOrName: history.workflowId, runId: run, stepName: required('step'), ...(a.reason ? {reason: required('reason')} : {})});
+    if (request.tool === 'workflow_answer') {
+      const model = required('model'), question = required('question');
+      const definition = await query('model.get', {modelIdOrName: model});
+      assert(definition.type === '@hammz/question', 'Only the workflow question model may receive answers');
+      const validation = await query('workflow.validate', {workflowIdOrName: history.workflowId});
+      if (validation.passed !== true) return {error: {code: 'validation_failed', message: 'Workflow validation failed'}, validation, reports};
+      ensureOpen(work ?? run);
+      // Only the question model which produced this exact run/question may receive submit.
+      const questions = await query('data.query', {predicate: `modelName == ${encode(model)} && specName == "question" && attributes.run == ${encode(run)} && attributes.question == ${encode(question)}`, select: '{"attributes":attributes}'});
+      assert(questions.results?.length === 1, 'Question is absent or ambiguous; inspect its saved state');
+      return await invoke({method: 'workflow_answer', directory: root, model,
+        inputs: {run, question, answer: required('answer'), submission: key(`hocus-${call.callId}`)}}, undefined, call.progress);
+    }
+    if (request.tool === 'workflow_cancel') {
+      if (attachment) return await invoke({method: 'workflow_cancel', directory: root, run});
+      assert(history.status === 'running', 'Only active executions can be cancelled');
+      return await query('workflow.cancel', {runId: run});
+    }
+    assert(attachment, 'Step cancellation requires a bridge-owned run');
+    const operationWork = required('work'), operationKey = required('key');
+    const ownedOperation = read(scope(operationWork, operationKey))[0];
+    assert(lifecycleWork(operationWork) === attachment.work && ownedOperation?.owner?.host_id === identity.host_id &&
+      ownedOperation.owner.session === identity.session && ownedOperation.owner.work === operationWork,
+      'Step does not belong to the inspected run lifecycle');
+    return await invoke({method: 'cancel_step', work: operationWork, operation: operationKey});
+  } catch (error) {
+    let detail: Json = {code: 'workflow_tool_failed', message: String(error)};
+    try { detail = JSON.parse((error as Error).message); } catch { /* Keep the original diagnostic. */ }
+    return {error: detail, reports, ...(launch ? {launch} : {}), recovery: 'Inspect persisted definitions, run history, reports and submission state before retrying a mutation.'};
+  }
+}
+
 export default definePlugin({
   load() {
     identity = {host_id: z.getPluginIds().host_id, session: z.serverSession, incarnation: z.serverIncarnation};
@@ -1042,6 +1221,7 @@ export default definePlugin({
       if (entry.key === 'view' && entry.value.closed && entry.value.cancel_pending) void cancelLifecycle(entry.work);
       else if (entry.value.cancelRequested && ['pending', 'unknown'].includes(entry.value.outcome) && !closed(entry.work)) void stopOperation(entry.uid);
     }
+    z.rpc.handle('hocus_workflow', hocusWorkflow);
     z.rpc.handle('swamp', async (payload, call) => {
       const from = call.source?.Plugin;
       assert(from != null, 'Workflow RPC requires a host-authenticated plugin source');

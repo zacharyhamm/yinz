@@ -18,6 +18,8 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use zellij_runtime::errors::prelude::*;
 
+pub mod definitions;
+
 pub const SUPERVISOR_FLAG: &str = "--swamp-server";
 const SERVICE: &str = "zellij-service";
 const MAX_OUTPUT: usize = 1_048_576;
@@ -878,7 +880,23 @@ pub fn prewarm_request(root: &Path, id: &str) -> Result<()> {
 fn allowed(operation: &str) -> bool {
     matches!(
         operation,
-        "workflow.validate"
+        "workflow.search"
+            | "workflow.get"
+            | "workflow.schema"
+            | "workflow.create"
+            | "workflow.edit"
+            | "workflow.delete"
+            | "workflow.evaluate"
+            | "workflow.approvals"
+            | "workflow.reject"
+            | "report.search"
+            | "report.get"
+            | "model.search"
+            | "model.get"
+            | "model.type.search"
+            | "model.type.describe"
+            | "model.method.describe"
+            | "workflow.validate"
             | "workflow.run"
             | "workflow.history.get"
             | "workflow.history.search"
@@ -894,7 +912,18 @@ fn allowed(operation: &str) -> bool {
 fn read_request(operation: &str) -> bool {
     matches!(
         operation,
-        "workflow.validate"
+        "workflow.search"
+            | "workflow.get"
+            | "workflow.schema"
+            | "workflow.approvals"
+            | "report.search"
+            | "report.get"
+            | "model.search"
+            | "model.get"
+            | "model.type.search"
+            | "model.type.describe"
+            | "model.method.describe"
+            | "workflow.validate"
             | "workflow.history.get"
             | "workflow.history.search"
             | "workflow.history.logs"
@@ -1340,10 +1369,20 @@ async fn connection(root: PathBuf, mut incoming: mpsc::Receiver<Request>) {
 }
 
 pub async fn call(root: PathBuf, operation: &str, payload: Value) -> Result<Value> {
+    call_with_progress(root, operation, payload, &|_| {}).await
+}
+
+pub async fn call_with_progress(
+    root: PathBuf,
+    operation: &str,
+    payload: Value,
+    progress: &(impl Fn(Value) + Sync),
+) -> Result<Value> {
     let id = uuid::Uuid::new_v4().to_string();
     let mut events = request(root, id, operation.to_owned(), payload).await?;
     while let Some(frame) = events.recv().await {
         if frame["type"] == "managed.progress" {
+            progress(frame["payload"].clone());
             continue;
         }
         if frame["type"] == "error" {
@@ -1986,7 +2025,46 @@ export const schema = z.string();"#;
         }
         assert!(allowed("workflow.run"));
         assert!(!allowed("vault.read"));
-        assert!(!read_request("workflow.resume"));
+        for operation in [
+            "workflow.create",
+            "workflow.edit",
+            "workflow.delete",
+            "workflow.evaluate",
+            "workflow.resume",
+            "workflow.approve",
+            "workflow.reject",
+        ] {
+            assert!(allowed(operation));
+            assert!(
+                !read_request(operation),
+                "{operation} must never replay after a lost acknowledgement"
+            );
+        }
+        for operation in [
+            "workflow.get",
+            "workflow.search",
+            "workflow.schema",
+            "workflow.approvals",
+            "report.get",
+            "report.search",
+            "model.get",
+            "model.search",
+            "model.type.search",
+            "model.type.describe",
+            "model.method.describe",
+        ] {
+            assert!(allowed(operation));
+            assert!(read_request(operation));
+        }
+        for operation in [
+            "vault.get",
+            "extension.pull",
+            "workflow.trigger.set",
+            "model.delete",
+            "serve.stop",
+        ] {
+            assert!(!allowed(operation));
+        }
         let frame = bound_frame(
             json!({"id":"history","type":"workflow.history.get","payload":{"data":{"inputs":{"state":{"test":{"output":"large","log":"exact-version"}}}}}}),
         );

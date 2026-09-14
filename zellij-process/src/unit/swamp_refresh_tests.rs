@@ -327,3 +327,160 @@ fn external_source_fingerprints_track_configured_directories_and_membership() {
     std::fs::write(custom.join("added.ts"), "export const value = 3;").unwrap();
     assert_ne!(before, extension_fingerprint(root).unwrap());
 }
+
+#[tokio::test]
+#[ignore = "requires a built Zellij and compatible Swamp; see docs/SWAMP_WORKFLOWS.md"]
+async fn hocus_workflow_definition_and_execution_lifecycle() {
+    assert!(std::env::var_os("ZELLIJ_TEST_BINARY").is_some());
+    let root = tempfile::tempdir()
+        .unwrap()
+        .into_path()
+        .canonicalize()
+        .unwrap();
+    eprintln!("Hocus workflow fixture: {}", root.display());
+    let cleanup = ServiceCleanup(root.clone());
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .status()
+        .unwrap()
+        .success());
+    cli(
+        &root,
+        &["repo", "init", root.to_str().unwrap(), "--tool", "none"],
+    )
+    .unwrap();
+    cli(&root, &["model", "create", "command/shell", "probe"]).unwrap();
+    // Seed a repository-owned extension through a Swamp-assigned scaffold.
+    let extension = cli(&root, &["workflow", "create", "owned-probe"]).unwrap();
+    let extension_path = root.join("extensions/workflows/owned.yaml");
+    std::fs::create_dir_all(extension_path.parent().unwrap()).unwrap();
+    std::fs::rename(extension["path"].as_str().unwrap(), &extension_path).unwrap();
+    std::fs::create_dir_all(root.join("workflows/owned-probe")).unwrap();
+    std::os::unix::fs::symlink(
+        &extension_path,
+        root.join("workflows/owned-probe/workflow.yaml"),
+    )
+    .unwrap();
+    let extension_source = std::fs::read(&extension_path).unwrap();
+    let path = root.clone();
+    tokio::task::spawn_blocking(move || prewarm(&path))
+        .await
+        .unwrap()
+        .unwrap();
+    async fn execution(root: &Path, operation: &str, payload: Value) -> Result<String> {
+        let mut events = request(
+            root.into(),
+            uuid::Uuid::new_v4().to_string(),
+            operation.into(),
+            payload,
+        )
+        .await?;
+        let mut run = None;
+        loop {
+            let event = frame(&mut events).await;
+            assert_ne!(event["type"], "error", "{event}");
+            if let Some(id) = event["event"]["runId"].as_str() {
+                run = Some(id.to_owned());
+            }
+            if event["type"] == "done" {
+                return run.context("no run ID");
+            }
+        }
+    }
+    let result = async {
+        call(root.clone(), "workflow.schema", json!({})).await?;
+        let created = call(root.clone(), "workflow.create", json!({"name":"hocus-probe"})).await?;
+        let id = created["id"].as_str().context("no workflow ID")?;
+        let mut expected = definitions::get(root.clone(), id, &|_| {}).await?;
+        let definition = |command: &str, approval: bool| {
+            let mut steps = vec![json!({"name":"probe","task":{"type":"model_method","modelIdOrName":"probe","methodName":"execute","inputs":{"run":command}}})];
+            if approval { steps.push(json!({"name":"approval","dependsOn":[{"step":"probe","condition":{"type":"succeeded"}}],"task":{"type":"manual_approval","prompt":"Probe approval"}})); }
+            json!({"id":id,"name":"hocus-probe","version":1,"inputs":{"type":"object","properties":{},"additionalProperties":false},"jobs":[{"name":"main","steps":steps}]})
+        };
+        let mut complete = definition("true", false);
+        complete["jobs"][0]["concurrency"] = json!(2);
+        complete["jobs"][0]["steps"][0]["guard"] = json!("${{ true }}");
+        complete["jobs"][0]["steps"][0]["forEach"] = json!({"item":"target","in":"${{ [1] }}"});
+        complete["jobs"][0]["steps"][0]["allowFailure"] = json!(true);
+        definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":complete.to_string()}), &|_| {}).await?;
+        expected = definitions::get(root.clone(), id, &|_| {}).await?;
+        let mut replacement: Value = serde_saphyr::from_str(expected["source"]["content"].as_str().context("missing source content")?)?;
+        assert_eq!(replacement["jobs"][0]["concurrency"], 2);
+        for field in ["guard", "forEach", "allowFailure"] {
+            assert_eq!(replacement["jobs"][0]["steps"][0][field], complete["jobs"][0]["steps"][0][field]);
+        }
+        replacement["description"] = json!("Keep all other source fields");
+        definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":replacement.to_string()}), &|_| {}).await?;
+        let stale = definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":complete.to_string()}), &|_| {}).await.unwrap_err();
+        assert!(stale.to_string().contains("stale_definition"));
+        expected = definitions::get(root.clone(), id, &|_| {}).await?;
+        let retained: Value = serde_saphyr::from_str(expected["source"]["content"].as_str().unwrap())?;
+        assert_eq!(retained["jobs"], replacement["jobs"]);
+        definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":definition("echo retained-output; exit 7", false).to_string()}), &|_| {}).await?;
+        // An already-consumed inspection must not overwrite a later definition.
+        let stale = definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":definition("true", false).to_string()}), &|_| {}).await.unwrap_err();
+        assert!(stale.to_string().contains("stale_definition"));
+        expected = definitions::get(root.clone(), id, &|_| {}).await?;
+        let mut invalid = definition("true", false); invalid["id"] = json!("changed");
+        assert!(definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":invalid.to_string()}), &|_| {}).await.is_err());
+        assert!(definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":json!({"id":id,"name":"hocus-probe","jobs":"invalid"}).to_string()}), &|_| {}).await.is_err());
+        assert_eq!(definitions::get(root.clone(), id, &|_| {}).await?, expected);
+        assert_eq!(call(root.clone(), "workflow.validate", json!({"workflowIdOrName":id})).await?["passed"], true);
+        let run = execution(&root, "workflow.run", json!({"workflowIdOrName":id,"noSupersede":true})).await?;
+        assert_eq!(call(root.clone(), "workflow.history.get", json!({"workflowIdOrName":run})).await?["status"], "failed");
+        // Inspect generated reports and output before repairing the failed definition.
+        let reports = call(root.clone(), "report.get", json!({"reportName":"@swamp/workflow-summary","workflow":"hocus-probe"})).await?;
+        assert!(!reports.is_null());
+        let outputs = call(root.clone(), "data.query", json!({"predicate":format!("has(tags.workflowRunId) && tags.workflowRunId == {}", json!(run)),"select":"{\"name\":name,\"version\":version}"})).await?;
+        assert!(!outputs.is_null());
+        call(root.clone(), "workflow.history.logs", json!({"runIdOrWorkflow":run,"tail":10})).await?;
+        definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":definition("echo repaired", false).to_string()}), &|_| {}).await?;
+        call(root.clone(), "workflow.validate", json!({"workflowIdOrName":id})).await?;
+        execution(&root, "workflow.resume", json!({"workflowIdOrName":id,"runId":run,"from":"probe","inputs":{}})).await?;
+        assert_eq!(call(root.clone(), "workflow.history.get", json!({"workflowIdOrName":run})).await?["status"], "succeeded");
+        expected = definitions::get(root.clone(), id, &|_| {}).await?;
+        definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":definition("true", true).to_string()}), &|_| {}).await?;
+        for decision in ["workflow.approve", "workflow.reject"] {
+            call(root.clone(), "workflow.validate", json!({"workflowIdOrName":id})).await?;
+            let run = execution(&root, "workflow.run", json!({"workflowIdOrName":id,"noSupersede":true})).await?;
+            assert_eq!(call(root.clone(), "workflow.history.get", json!({"workflowIdOrName":run})).await?["status"], "suspended");
+            call(root.clone(), "workflow.approvals", json!({})).await?;
+            call(root.clone(), decision, json!({"workflowIdOrName":id,"runId":run,"stepName":"approval"})).await?;
+            if decision == "workflow.approve" {
+                execution(&root, "workflow.resume", json!({"workflowIdOrName":id,"runId":run})).await?;
+                assert_eq!(call(root.clone(), "workflow.history.get", json!({"workflowIdOrName":run})).await?["status"], "succeeded");
+            }
+        }
+        expected = definitions::get(root.clone(), id, &|_| {}).await?;
+        definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":definition("sleep 60", false).to_string()}), &|_| {}).await?;
+        call(root.clone(), "workflow.validate", json!({"workflowIdOrName":id})).await?;
+        let mut events = request(root.clone(), "cancel-probe".into(), "workflow.run".into(), json!({"workflowIdOrName":id,"noSupersede":true})).await?;
+        let run = loop { let event = frame(&mut events).await; assert_ne!(event["type"], "error", "{event}"); if let Some(id) = event["event"]["runId"].as_str() {break id.to_owned();} };
+        cancel(root.clone(), run.clone()).await?;
+        loop { let event = frame(&mut events).await; if event["type"] == "done" {break;} }
+        assert_eq!(call(root.clone(), "workflow.history.get", json!({"workflowIdOrName":run})).await?["status"], "cancelled");
+        expected = definitions::get(root.clone(), id, &|_| {}).await?;
+        definitions::change(root.clone(), "workflow.delete", json!({"workflowIdOrName":id,"expected":expected}), &|_| {}).await?;
+        assert!(definitions::get(root.clone(), id, &|_| {}).await.is_err());
+        let inspected = definitions::get(root.clone(), "owned-probe", &|_| {}).await?;
+        assert_eq!(inspected["source"]["extension"], true);
+        assert_eq!(inspected["source"]["editable"], true);
+        let mut updated = inspected.clone();
+        updated.as_object_mut().unwrap().remove("source");
+        updated.as_object_mut().unwrap().remove("path");
+        updated["description"] = json!("Project override");
+        definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":"owned-probe","expected":inspected,"content":updated.to_string()}), &|_| {}).await?;
+        let overridden = definitions::get(root.clone(), "owned-probe", &|_| {}).await?;
+        assert_eq!(overridden["id"], extension["id"]);
+        assert_eq!(overridden["source"]["extension"], false);
+        assert_eq!(overridden["description"], "Project override");
+        assert_eq!(std::fs::read(&extension_path).unwrap(), extension_source);
+        definitions::change(root.clone(), "workflow.delete", json!({"workflowIdOrName":"owned-probe","expected":overridden}), &|_| {}).await?;
+        assert_eq!(definitions::get(root.clone(), "owned-probe", &|_| {}).await?["source"]["extension"], true);
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    lifecycle(root.clone(), "stop").await.unwrap();
+    drop(cleanup);
+    result.unwrap();
+}

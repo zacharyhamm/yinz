@@ -73,10 +73,10 @@ fn deno_swamp_dispatch_keeps_terminal_outcomes_and_recovers_method_attachments()
           operations.push(opts.operation);
           check(!Object.hasOwn(opts.payload,'_zellij_active_callback'));
           check(opts.payload.workflowIdOrName==='test');
-          return opts.operation==='workflow.validate'?{passed:true}:{runId:'fresh'};
+          return opts.operation==='workflow.get'?{name:'test'}:opts.operation==='workflow.validate'?{passed:true}:{runId:'fresh'};
         };
         await handler({method:'workflow_run',work:'fresh',key:'launch',workflow:'test',directory:'/work',inputs:{checkout:'/work'}},{source:{Plugin:1}});
-        check(JSON.stringify(operations)===JSON.stringify(['workflow.validate','workflow.run']));
+        check(JSON.stringify(operations)===JSON.stringify(['workflow.get','workflow.validate','workflow.run']));
         const args={method:'swamp_dispatch',work:'work',key:'recover',directory:'/control',operation:'model.method.run',payload:{}};
         mock.swampRequest=async()=>({runId:'recover'});
         await handler(args,{source:{Plugin:1}});
@@ -761,7 +761,7 @@ fn deno_bridge_foreground_commands_restore_manual_views_in_dispatch_order() {
         exit(lateSecond.pane);check(swaps.at(-1)[1].Plugin===1);
         info.set(JSON.stringify({Plugin:1}),{plugin_url:'zellij:agent-exit',is_suppressed:false});
         mock.projectConfig={read:()=>({root:'/work',config:{}})};
-        mock.swampRequest=async opts=>opts.operation==='workflow.validate'?{passed:true}:{runId:'hook'};
+        mock.swampRequest=async opts=>opts.operation==='workflow.get'?{name:'test'}:opts.operation==='workflow.validate'?{passed:true}:{runId:'hook'};
         await call({method:'workflow_run',work:'hook',key:'launch',workflow:'test',directory:'/work',inputs:{checkout:'/work'}});
         const hookCommand=await call(commandArgs('hook','foreground',true));
         check(swaps.at(-1)[1].Terminal===hookCommand.pane);
@@ -1117,6 +1117,7 @@ fn deno_bridge_refresh_reuses_dispatch_and_notifies_all_manual_views() {
       mock.projectConfig={read:()=>({root:'/work',config:{workflow:'exit'}})};
       mock.swampRequest=async request=>{
         requests.push(request);
+        if(request.operation==='workflow.get')return {name:'exit'};
         if(request.operation==='workflow.validate')return {passed:true};
         if(request.operation==='workflow.run')return {runId:'run'};
         if(request.operation==='workflow.history.get')return {id:request.payload.workflowIdOrName,status:'running'};
@@ -1152,4 +1153,14 @@ fn deno_bridge_refresh_reuses_dispatch_and_notifies_all_manual_views() {
       })().catch(e=>failure=String(e.stack));
     "#);
     run(&mut runtime, "if(failure)throw Error(failure);check(done);");
+}
+
+#[test]
+fn deno_hocus_workflow_rpc_is_scoped_validated_and_preserves_owned_controls() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, include_str!("hocus_workflow_tests.js"));
+    for _ in 0..100 { run(&mut runtime, "if(failure)throw Error(failure);"); }
+    run(&mut runtime, "check(done);");
 }

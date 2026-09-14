@@ -32,6 +32,7 @@ const z: any = {...real,
   },
   async swampRequest(opts: any) {
     const op = opts.operation, p = opts.payload;
+    if (op === 'workflow.get') return {name: 'fixture'};
     if (op === 'workflow.validate') return {passed: true};
     if (op === 'workflow.run') return delayed ? new Promise(resolve => {release = resolve;}) : {runId: 'run'};
     if (op === 'workflow.cancel') {cancelled[p.runId] = true; status = 'cancelled';}
