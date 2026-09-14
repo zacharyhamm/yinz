@@ -277,6 +277,8 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
         }
     }
     Deno.Command = PaneCommand;
+    // Fixture workers name no live session; only the stranded scenario may notice.
+    Deno.env.set("ZELLIJ_COMMIT_SESSION_POLL_SECONDS", "3600");
     try {
         await Deno.mkdir(main);
         await git(main, "init", "-b", "main");
@@ -363,7 +365,10 @@ await import(${
             await Deno.readTextFile(cancelledDirectory + "/result.json"),
         );
         assert(cancelledResult.cancelled && cancelledResult.exitCode === 130);
-        assert(String(cancelledResult.error).includes("Step cancelled"));
+        assert(
+            String(cancelledResult.error).includes("Step cancelled"),
+            JSON.stringify(cancelledResult),
+        );
         assert(
             !/\$ git (add|commit|rebase)\b/.test(cancelledOutput),
             cancelledOutput,
@@ -373,6 +378,222 @@ await import(${
         assert(await git(source, "diff", "--cached") === "");
         assert(await Deno.readTextFile(source + "/file") === "topic\n");
         assert(!Evidence.parse(cancelledResult.evidence).source.rebasing);
+        const lockPaths = await Promise.all(
+            [source, main].map(async (path) =>
+                (await gitWithFreshSignal(
+                    path,
+                    "rev-parse",
+                    "--absolute-git-dir",
+                )) + "/zellij-workflow.lock"
+            ),
+        );
+        // A released waiter's kernel request can be granted and dropped a moment
+        // later, so the expectation is polled rather than sampled once.
+        const checkLocks = async (held: boolean) => {
+            let check!: Deno.CommandOutput;
+            for (let attempt = 0; attempt < 50; attempt++) {
+                check = await new originalCommand("python3", {
+                    args: [
+                        "-c",
+                        `import fcntl,sys
+for path in sys.argv[2:]:
+    with open(path, 'a') as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = False
+        except BlockingIOError:
+            locked = True
+        assert locked == (sys.argv[1] == 'true'), path
+`,
+                        String(held),
+                        ...lockPaths,
+                    ],
+                }).output();
+                if (check.success) return;
+                await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            assert(check.success, new TextDecoder().decode(check.stderr));
+        };
+        const spawnWorker = (
+            directory: string,
+            extra: Record<string, unknown>,
+            env: Record<string, string>,
+        ) => {
+            const child = new originalCommand(Deno.execPath(), {
+                args: [
+                    "run",
+                    "--no-config",
+                    "--allow-all",
+                    new URL("./_lib/commit_worker.ts", import.meta.url).pathname,
+                    JSON.stringify({
+                        ...args,
+                        mode: "commit",
+                        binary: "/usr/bin/true",
+                        author: [],
+                        directory,
+                        repoDir: Deno.cwd(),
+                        ...extra,
+                    }),
+                ],
+                cwd: source,
+                stdin: "piped",
+                stdout: "piped",
+                stderr: "inherit",
+                env,
+            }).spawn();
+            const timeout = setTimeout(() => child.kill("SIGKILL"), 60000);
+            let output = "";
+            const reading = (async () => {
+                try {
+                    for await (
+                        const text of child.stdout.pipeThrough(
+                            new TextDecoderStream(),
+                        )
+                    ) output += text;
+                } finally {
+                    clearTimeout(timeout);
+                }
+            })();
+            const waitFor = async (text: string) => {
+                for (let attempt = 0; attempt < 300; attempt++) {
+                    if (output.includes(text)) return;
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                }
+                throw new Error(`Worker never printed ${text}:\n${output}`);
+            };
+            const dismiss = async () => {
+                const writer = child.stdin.getWriter();
+                await writer.write(new TextEncoder().encode("\n"));
+                await writer.close();
+                await reading;
+                return (await child.status).code;
+            };
+            return { child, waitFor, dismiss, reading, output: () => output };
+        };
+        await methods.verify_checkout.execute(args, c);
+        const current = Evidence.parse(saved.get("evidence-current"));
+        // A mismatch refuses the mutation after the lock, keeping later checks intact.
+        const staleEvidence = {
+            ...current,
+            source: { ...current.source, contents: "0".repeat(64) },
+        };
+        // A contended lock names its holder on screen and is never a blank pane.
+        const visibleDirectory = dir + "/visible-worker";
+        await Deno.mkdir(visibleDirectory);
+        let visible!: ReturnType<typeof spawnWorker>;
+        await locked(c, [source, main], async () => {
+            visible = spawnWorker(visibleDirectory, {
+                expectedEvidence: staleEvidence,
+            }, { ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS: "0" });
+            await visible.waitFor("no longer exists");
+            const text = visible.output();
+            assert(text.startsWith("Commit and rebase: " + source), text);
+            assert(text.includes(`held by pid ${Deno.pid} since`), text);
+            assert(text.includes("session other-session, step other-key"), text);
+            assert(text.includes("press Ctrl-C to cancel this step"), text);
+            assert(!/\$ git/.test(text), text);
+        }, {
+            identity: {
+                pid: Deno.pid,
+                session: "other-session",
+                work: "other-work",
+                key: "other-key",
+            },
+        });
+        await visible.waitFor("Press Enter to return.");
+        for (const path of lockPaths) {
+            const holder = JSON.parse(await Deno.readTextFile(path));
+            assert(
+                holder.pid === visible.child.pid &&
+                    holder.session === args.session &&
+                    holder.work === args.work && holder.key === args.key,
+                path,
+            );
+        }
+        await checkLocks(true);
+        assert(await visible.dismiss() === 124, visible.output());
+        const visibleResult = JSON.parse(
+            await Deno.readTextFile(visibleDirectory + "/result.json"),
+        );
+        assert(
+            String(visibleResult.error).includes("Checkout changed since"),
+            JSON.stringify(visibleResult),
+        );
+        assert(!/\$ git/.test(visible.output()), visible.output());
+        await checkLocks(false);
+        assert(
+            (await Deno.readTextFile(visibleDirectory + "/output.log")) ===
+                visible.output(),
+        );
+        // A holder that never yields fails the step without leaving a lock behind.
+        const expiredDirectory = dir + "/expired-worker";
+        await Deno.mkdir(expiredDirectory);
+        let expired!: ReturnType<typeof spawnWorker>;
+        await locked(c, [source, main], async () => {
+            // Anonymous acquisition clears the previous worker's identity.
+            for (const path of lockPaths) {
+                assert(await Deno.readTextFile(path) === "", path);
+            }
+            expired = spawnWorker(expiredDirectory, {}, {
+                ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS: "0",
+                ZELLIJ_COMMIT_LOCK_WAIT_SECONDS: "1",
+            });
+            await expired.waitFor("Press Enter to return.");
+        });
+        assert(expired.output().includes("still held after 1s"), expired.output());
+        assert(expired.output().includes("no holder record"), expired.output());
+        assert(!expired.output().includes("by pid"), expired.output());
+        assert(
+            !expired.output().includes("no longer exists"),
+            expired.output(),
+        );
+        assert(!/\$ git/.test(expired.output()), expired.output());
+        await checkLocks(false);
+        assert(await expired.dismiss() === 124, expired.output());
+        const expiredResult = JSON.parse(
+            await Deno.readTextFile(expiredDirectory + "/result.json"),
+        );
+        assert(
+            expiredResult.exitCode === 124 &&
+                /Checkout lock .* still held/.test(String(expiredResult.error)),
+            JSON.stringify(expiredResult),
+        );
+        // Output written so far is readable while the worker is still alive.
+        assert(
+            (await Deno.readTextFile(expiredDirectory + "/output.log")).includes(
+                "still held after 1s",
+            ),
+        );
+        // Session probes resolve the binary from repoDir, even in a different cwd.
+        const strandedDirectory = dir + "/stranded-worker";
+        await Deno.mkdir(strandedDirectory);
+        await Deno.symlink("/usr/bin/true", strandedDirectory + "/zellij");
+        const stranded = spawnWorker(strandedDirectory, {
+            binary: "./zellij",
+            repoDir: strandedDirectory,
+            expectedEvidence: staleEvidence,
+        }, { ZELLIJ_COMMIT_SESSION_POLL_SECONDS: "0.2" });
+        await stranded.waitFor("is gone; releasing checkout locks");
+        await stranded.reading;
+        assert((await stranded.child.status).code === 124, stranded.output());
+        assert(stranded.output().includes("Press Enter to return."));
+        await checkLocks(false);
+        // Through the model method, an expired lock wait is an ordinary failed result.
+        Deno.env.set("ZELLIJ_COMMIT_LOCK_WAIT_SECONDS", "1");
+        Deno.env.set("ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS", "0");
+        try {
+            await locked(c, [source, main], () => run("lock-expired"));
+        } finally {
+            Deno.env.delete("ZELLIJ_COMMIT_LOCK_WAIT_SECONDS");
+            Deno.env.delete("ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS");
+        }
+        assert(
+            result().exitCode === 124 &&
+                /still held after 1s/.test(String(result().stderr)) &&
+                String(result().stdout).includes("Waiting for checkout lock"),
+            JSON.stringify(result()),
+        );
+        const dispatchesBeforeDirty: number = dispatches;
         await run("dirty");
         assert(result().exitCode === 0);
         assert(String(result().stdout).includes("$ git add -A"));
@@ -396,7 +617,10 @@ await import(${
         assert(!await Deno.stat(source + "/INJECTED").catch(() => null));
         const head = await git(source, "rev-parse", "HEAD");
         await run("dirty");
-        assert(dispatches === 1, "Repeated a completed mutation");
+        assert(
+            dispatches === dispatchesBeforeDirty + 1,
+            "Repeated a completed mutation",
+        );
         await run("clean");
         assert(await git(source, "rev-parse", "HEAD") === head);
         assert(String(result().stdout).includes("No changes to commit."));
@@ -516,35 +740,6 @@ await import(${
             await Deno.writeTextFile(source + "/new-file", reason);
             const key = "failure-" + reason.replaceAll(" ", "-");
             await rejects(() => run(key), new RegExp(reason));
-            const lockPaths = await Promise.all(
-                [source, main].map(async (path) =>
-                    (await gitWithFreshSignal(
-                        path,
-                        "rev-parse",
-                        "--absolute-git-dir",
-                    )) + "/zellij-workflow.lock"
-                ),
-            );
-            const checkLocks = async (held: boolean) => {
-                const check = await new originalCommand("python3", {
-                    args: [
-                        "-c",
-                        `import fcntl,sys
-for path in sys.argv[2:]:
-    with open(path, 'a') as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            locked = False
-        except BlockingIOError:
-            locked = True
-        assert locked == (sys.argv[1] == 'true'), path
-`,
-                        String(held),
-                        ...lockPaths,
-                    ],
-                }).output();
-                assert(check.success, new TextDecoder().decode(check.stderr));
-            };
             await checkLocks(true);
             const count: number = dispatches;
             c.signal = new AbortController().signal;
@@ -705,6 +900,7 @@ for path in sys.argv[2:]:
         );
     } finally {
         Deno.Command = originalCommand;
+        Deno.env.delete("ZELLIJ_COMMIT_SESSION_POLL_SECONDS");
         dismissal.resolve();
         if (pane!) {
             try {
