@@ -433,6 +433,10 @@ impl HostContext {
             started_at_unix: self.started_at_unix,
             attached: self.state == State::Attached,
             child_exit_status: self.session.as_ref().and_then(|s| s.exit_status),
+            child_group_terminated: self
+                .session
+                .as_ref()
+                .is_some_and(|s| super::process_group_terminated(s.child_pid)),
             buffered_bytes: self.ring.len(),
         }
     }

@@ -91,6 +91,7 @@ struct MockOsApi {
     /// `fail_local_spawns` makes them fail, so a test can spawn a pane for real
     /// and then break the one after it.
     local_spawns_to_allow: Arc<Mutex<usize>>,
+    adopted_command: Arc<Mutex<Option<RunCommand>>>,
 }
 
 impl MockOsApi {
@@ -123,6 +124,7 @@ impl MockOsApi {
             firecracker_panes: Arc::new(Mutex::new(std::collections::HashSet::new())),
             fail_local_spawns: Arc::new(Mutex::new(false)),
             local_spawns_to_allow: Arc::new(Mutex::new(0)),
+            adopted_command: Arc::new(Mutex::new(None)),
         }
     }
     fn mark_firecracker(&self, terminal_id: TerminalId) {
@@ -470,6 +472,20 @@ impl ServerOsApi for MockOsApi {
             },
         }
         Ok((Box::new(crate::os_input_output::NullAsyncReader), None))
+    }
+    fn adopt_terminal(
+        &self,
+        _: &std::path::Path,
+        _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<crate::os_input_output::AdoptedTerminal> {
+        Ok(crate::os_input_output::AdoptedTerminal {
+            terminal_id: TerminalId::new(7),
+            reader: Box::new(crate::os_input_output::NullAsyncReader),
+            child_pid: Some(ProcessId::new(4242)),
+            cmd: self.adopted_command.lock().unwrap().take().unwrap(),
+            buffered: vec![],
+            child_exit_status: None,
+        })
     }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> anyhow::Result<()> {
         self.cleared_terminal_ids.lock().unwrap().push(terminal_id);
@@ -2160,6 +2176,7 @@ fn a_remote_panes_foreground_command_is_reported_like_any_other() {
     let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: Some(vec!["claude".to_owned(), "--resume".to_owned()]),
@@ -2185,6 +2202,7 @@ fn a_remote_pane_with_no_foreground_falls_back_to_its_own_command() {
     let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            child_group_terminated: false,
             cwd: None,
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: None,
@@ -2205,6 +2223,7 @@ fn a_remote_panes_cwd_is_reported_unchanged() {
     let (mut pty, _mock, _plugin_rx, screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            child_group_terminated: false,
             cwd: Some("/srv/build/project".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: None,
@@ -2233,6 +2252,7 @@ fn a_silent_remote_pane_is_still_polled() {
     let (mut pty, mock, plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: Some(vec!["claude".to_owned()]),
@@ -2247,6 +2267,7 @@ fn a_silent_remote_pane_is_still_polled() {
     mock.set_remote_status(
         crate::TerminalId::new(7),
         RemoteStatus {
+            child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: Some(vec!["vim".to_owned()]),
@@ -2264,6 +2285,7 @@ fn an_unchanged_remote_pane_emits_nothing_further() {
     let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: Some(vec!["claude".to_owned()]),
@@ -2287,6 +2309,7 @@ fn a_remote_pane_answers_the_plugin_facing_accessors() {
     let (pty, _mock, _plugin_rx, _screen_rx) = remote_pane(
         crate::TerminalId::new(7),
         RemoteStatus {
+            child_group_terminated: false,
             cwd: Some("/srv/build/project".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: Some(vec!["claude".to_owned()]),
@@ -2377,6 +2400,7 @@ fn a_remote_panes_host_is_announced_to_screen() {
     mock.set_remote_status(
         crate::TerminalId::new(7),
         RemoteStatus {
+            child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: None,
@@ -3193,15 +3217,28 @@ fn a_respawn_without_a_context_falls_back_to_the_panes_original() {
 #[test]
 fn workflow_signals_refuse_changed_ownership_and_replacement_processes() {
     let mock = MockOsApi::new();
-    let (mut pty, _) = make_pty_with_plugin_receiver(mock);
+    *mock.adopted_command.lock().unwrap() = Some(RunCommand {
+        workflow_owner: Some("original-owner".into()),
+        ..Default::default()
+    });
+    let (mut pty, _) = make_pty_with_plugin_receiver(mock.clone());
     let terminal = crate::TerminalId::new(7);
     let process = zellij_types::internal_ids::ProcessId::new(4242);
-    pty.id_to_child_pid.insert(terminal, process);
-    let mut origin = step_origin("workflow");
-    origin
-        .context
-        .insert("swamp_owner".into(), "original-owner".into());
-    pty.originating_plugins.insert(terminal, origin);
+    let adopted = pty
+        .adopt_terminal(&WarpedPane {
+            group: None,
+            host_id: SupervisorId::new("supervisor"),
+            control_socket: PathBuf::from("/unused"),
+            title: None,
+            caption: None,
+            contents: None,
+            borderless: false,
+            remote: None,
+            agent: None,
+        })
+        .unwrap();
+    assert!(adopted.cmd.originating_plugin.is_none());
+    assert!(!pty.originating_plugins.contains_key(&terminal));
     assert!(pty
         .workflow_signal(
             terminal,
@@ -3233,4 +3270,70 @@ fn workflow_signals_refuse_changed_ownership_and_replacement_processes() {
             ChildSignal::Kill
         )
         .is_err());
+    assert!(mock.local_signals.lock().unwrap().is_empty());
+    pty.workflow_signal(
+        terminal,
+        "original-owner",
+        Some(process),
+        "supervisor",
+        ChildSignal::Kill,
+    )
+    .unwrap();
+    assert_eq!(
+        *mock.local_signals.lock().unwrap(),
+        vec![(process, "SIGKILL")]
+    );
+    pty.forget_released_terminal(terminal);
+    assert!(!pty.workflow_owners.contains_key(&terminal));
+}
+
+#[test]
+fn workflow_ownership_follows_spawn_rerun_and_removal() {
+    let mock = MockOsApi::new();
+    *mock.local_spawns_to_allow.lock().unwrap() = 1;
+    let (mut pty, _) = make_pty_with_plugin_receiver(mock.clone());
+    let mut origin = step_origin("workflow");
+    origin
+        .context
+        .insert("swamp_owner".into(), "spawn-owner".into());
+    let (id, _) = pty
+        .spawn_terminal(
+            Some(TerminalAction::RunCommand(RunCommand {
+                originating_plugin: Some(origin),
+                ..Default::default()
+            })),
+            ClientTabIndexOrPaneId::ClientId(CLIENT_1),
+        )
+        .unwrap();
+    assert_eq!(pty.workflow_owners[&id], "spawn-owner");
+    let rerun = RunCommand {
+        workflow_owner: Some("adopted-owner".into()),
+        ..Default::default()
+    };
+    pty.rerun_command_in_pane(PaneId::Terminal(id), rerun.clone())
+        .unwrap();
+    assert_eq!(pty.workflow_owners[&id], "adopted-owner");
+    pty.originating_plugins.remove(&id);
+    pty.rerun_command_in_pane(PaneId::Terminal(id), rerun)
+        .unwrap();
+    assert_eq!(pty.workflow_owners[&id], "adopted-owner");
+    assert!(mock
+        .rerun_commands()
+        .last()
+        .unwrap()
+        .originating_plugin
+        .is_none());
+    pty.rerun_command_in_pane(PaneId::Terminal(id), RunCommand::default())
+        .unwrap();
+    assert!(!pty.workflow_owners.contains_key(&id));
+    pty.rerun_command_in_pane(
+        PaneId::Terminal(id),
+        RunCommand {
+            workflow_owner: Some("replacement-owner".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    pty.close_pane(PaneId::Terminal(id)).unwrap();
+    assert!(!pty.workflow_owners.contains_key(&id));
 }

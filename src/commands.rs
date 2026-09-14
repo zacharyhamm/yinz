@@ -1817,6 +1817,7 @@ mod tests {
 
     fn pane_status(attached: bool) -> HostStatus {
         HostStatus {
+            child_group_terminated: false,
             host_id: zellij_types::internal_ids::SupervisorId::new("abcdef012345"),
             session_name: Some("after-warp".to_owned().into()),
             terminal_id: 42,

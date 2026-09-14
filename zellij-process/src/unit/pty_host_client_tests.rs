@@ -624,6 +624,7 @@ fn fake_supervisor_socket(
 
 fn a_status() -> HostStatus {
     HostStatus {
+        child_group_terminated: false,
         host_id: SupervisorId::new("abcdef012345".to_owned()),
         session_name: Some("client-tests".to_owned().into()),
         terminal_id: 7,
@@ -636,6 +637,17 @@ fn a_status() -> HostStatus {
         child_exit_status: None,
         buffered_bytes: 4096,
     }
+}
+
+#[test]
+fn legacy_supervisor_status_does_not_verify_group_termination() {
+    let mut legacy = serde_json::to_value(a_status()).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("child_group_terminated");
+    let status: HostStatus = serde_json::from_value(legacy).unwrap();
+    assert!(!status.child_group_terminated);
 }
 
 /// The classification that decides whether `pty-host list` unlinks a socket. A

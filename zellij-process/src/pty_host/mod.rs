@@ -42,6 +42,12 @@ pub(crate) fn kernel_pid(pid: ProcessId) -> nix::unistd::Pid {
     nix::unistd::Pid::from_raw(raw as i32)
 }
 
+/// Only ESRCH proves the owned group is gone. Permission and probe errors do not.
+pub(crate) fn process_group_terminated(child_pid: ProcessId) -> bool {
+    let group = nix::unistd::Pid::from_raw(-kernel_pid(child_pid).as_raw());
+    nix::sys::signal::kill(group, None) == Err(nix::errno::Errno::ESRCH)
+}
+
 pub(crate) fn ensure_secure_dir(
     path: &std::path::Path,
 ) -> zellij_runtime::errors::prelude::Result<()> {

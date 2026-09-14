@@ -148,16 +148,19 @@ fn probing_a_process_that_is_gone_reports_nothing() {
 #[test]
 fn a_probe_becomes_the_report_it_claims_to() {
     let probe = Probe {
+        child_group_terminated: false,
         cwd: Some("/home/me/work".to_owned()),
         shell_argv: Some(vec!["/bin/zsh".to_owned()]),
         foreground_argv: Some(vec!["claude".to_owned()]),
     };
     match probe.into_report() {
         BrokerToServerMsg::StatusReport {
+            child_group_terminated,
             cwd,
             shell_argv,
             foreground_argv,
         } => {
+            assert!(!child_group_terminated);
             assert_eq!(cwd.as_deref(), Some("/home/me/work"));
             assert_eq!(shell_argv, Some(vec!["/bin/zsh".to_owned()]));
             assert_eq!(foreground_argv, Some(vec!["claude".to_owned()]));

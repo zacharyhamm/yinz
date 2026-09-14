@@ -1,5 +1,20 @@
 use super::*;
 
+#[test]
+fn legacy_remote_status_does_not_verify_group_termination() {
+    let status: BrokerToServerMsg = serde_json::from_str(
+        r#"{"StatusReport":{"cwd":null,"shell_argv":null,"foreground_argv":null}}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        status,
+        BrokerToServerMsg::StatusReport {
+            child_group_terminated: false,
+            ..
+        }
+    ));
+}
+
 use hegel::generators;
 use std::io::Cursor;
 
@@ -86,11 +101,13 @@ fn broker_messages() -> Vec<BrokerToServerMsg> {
         BrokerToServerMsg::ChildExited { status: Some(130) },
         BrokerToServerMsg::ChildExited { status: None },
         BrokerToServerMsg::StatusReport {
+            child_group_terminated: false,
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: Some(vec!["claude".to_owned(), "--resume".to_owned()]),
         },
         BrokerToServerMsg::StatusReport {
+            child_group_terminated: false,
             cwd: None,
             shell_argv: None,
             foreground_argv: None,

@@ -274,6 +274,9 @@ pub enum BrokerToServerMsg {
     /// the local server would otherwise get from `sysinfo` and `tcgetpgrp`, and
     /// cannot, because the process is not local.
     StatusReport {
+        /// Absent on older brokers; only true verifies cancellation.
+        #[serde(default)]
+        child_group_terminated: bool,
         cwd: Option<String>,
         /// The argv of the pane's own process.
         shell_argv: Option<Vec<String>>,

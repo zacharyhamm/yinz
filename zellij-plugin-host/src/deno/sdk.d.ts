@@ -131,7 +131,7 @@ export interface Zellij {
   readonly instanceId: string;
   /** Internal: available only to the trusted zellij:swamp-bridge builtin. */
   readonly workflowSignal?: (request: {terminal_id: number; owner: string; process?: number; supervisor: string; kill: boolean}) => void;
-  readonly workflowRemotePanes?: () => {terminal_id: number; host_id: string; remote_host: string; pane_token: string; owner: string | null}[];
+  readonly workflowRemotePanes?: () => {terminal_id: number; host_id: string; remote_host: string; pane_token: string; owner: string | null; child_group_terminated?: boolean}[];
   readonly agent: Agents;
   readonly hocus: HocusExtensions;
   readonly rpc: Rpc;

@@ -297,6 +297,7 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
         const cancelledDirectory = dir + "/cancelled-worker";
         await Deno.mkdir(cancelledDirectory);
         const beforeCancelled = await git(source, "rev-parse", "HEAD");
+        const targetBeforeCancelled = await git(main, "rev-parse", "HEAD");
         const waiting = Promise.withResolvers<void>();
         const interrupted = Promise.withResolvers<void>();
         let cancelledOutput = "";
@@ -368,6 +369,7 @@ await import(${
             cancelledOutput,
         );
         assert(await git(source, "rev-parse", "HEAD") === beforeCancelled);
+        assert(await git(main, "rev-parse", "HEAD") === targetBeforeCancelled);
         assert(await git(source, "diff", "--cached") === "");
         assert(await Deno.readTextFile(source + "/file") === "topic\n");
         assert(!Evidence.parse(cancelledResult.evidence).source.rebasing);

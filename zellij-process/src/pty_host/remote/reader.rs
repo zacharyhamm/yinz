@@ -321,7 +321,7 @@ impl RemoteReader {
         match msg {
             BrokerToServerMsg::ChildExited { status } => {
                 self.conn.set_child_exit(status);
-                true
+                self.cmd.workflow_owner().is_none() || self.conn.status().child_group_terminated
             },
             BrokerToServerMsg::GitProbe {
                 refresh_token,
@@ -344,16 +344,18 @@ impl RemoteReader {
                 false
             },
             BrokerToServerMsg::StatusReport {
+                child_group_terminated,
                 cwd,
                 shell_argv,
                 foreground_argv,
             } => {
                 self.conn.set_status(RemoteStatus {
+                    child_group_terminated,
                     cwd,
                     shell_argv,
                     foreground_argv,
                 });
-                false
+                child_group_terminated && self.conn.child_exit().is_some()
             },
             // An event, not state: handed on at once rather than cached, or a
             // burst of them would collapse to whichever came last.
@@ -410,6 +412,10 @@ impl RemoteReader {
             if !self.decoded.is_empty() {
                 return Ok(self.drain_into(buf));
             }
+            // Keep receiving group status and accepting escalation after wrapper exit.
+            if let Some(status) = self.conn.child_exit() {
+                self.report_exit(status);
+            }
             if self.finished {
                 return Ok(0);
             }
@@ -435,11 +441,14 @@ impl RemoteReader {
                 // The socket hit EOF. What that means depends entirely on
                 // whether the broker told us why.
                 match self.conn.child_exit() {
-                    Some(_) => {
+                    Some(_)
+                        if self.cmd.workflow_owner().is_none()
+                            || self.conn.status().child_group_terminated =>
+                    {
                         self.finished = true;
                         return Ok(0);
                     },
-                    None => {
+                    _ => {
                         // The pane is still running on the other machine; only
                         // the path to it is gone. Go and get it back rather than
                         // reporting an end that has not happened.

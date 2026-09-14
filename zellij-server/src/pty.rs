@@ -625,6 +625,7 @@ pub(crate) struct Pty {
     pub bus: Bus<PtyInstruction>,
     pub id_to_child_pid: HashMap<TerminalId, ProcessId>, // terminal_id => child pid
     originating_plugins: HashMap<TerminalId, OriginatingPlugin>,
+    workflow_owners: HashMap<TerminalId, String>,
     debug_to_file: bool,
     task_handles: HashMap<TerminalId, JoinHandle<()>>, // terminal_id to join-handle
     default_editor: Option<PathBuf>,
@@ -1374,6 +1375,7 @@ impl Pty {
             task_handles: HashMap::new(),
             default_editor,
             originating_plugins: HashMap::new(),
+            workflow_owners: HashMap::new(),
             post_command_discovery_hook,
             plugin_cwds: HashMap::new(),
             terminal_cwds: HashMap::new(),
@@ -1637,6 +1639,7 @@ impl Pty {
                     self.originating_plugins.get(&terminal_id).cloned();
             },
         }
+        self.track_workflow_owner(terminal_id, &run_command);
         let _ = self.task_handles.remove(&terminal_id);
         let _ = self.id_to_child_pid.remove(&terminal_id);
         let generation = self.next_rerun_generation;
@@ -1957,6 +1960,9 @@ impl Pty {
             reader,
             child_pid,
         } = spawned;
+        if let TerminalAction::RunCommand(command) = terminal_action {
+            self.track_workflow_owner(terminal_id, command);
+        }
         let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_bytes = async_runtime().spawn({
             let err_context = |terminal_id: TerminalId| {
@@ -2855,8 +2861,15 @@ impl Pty {
             Some(Run::Plugin(_)) => Ok(None),
         }
     }
+    fn track_workflow_owner(&mut self, terminal_id: TerminalId, command: &RunCommand) {
+        if let Some(owner) = command.workflow_owner() {
+            self.workflow_owners.insert(terminal_id, owner.to_owned());
+        } else {
+            self.workflow_owners.remove(&terminal_id);
+        }
+    }
+
     /// Deliver a signal to a pane's child, wherever that child lives.
-    ///
     fn workflow_signal(
         &self,
         terminal_id: TerminalId,
@@ -2865,14 +2878,11 @@ impl Pty {
         supervisor: &str,
         signal: ChildSignal,
     ) -> Result<()> {
-        let context = self
-            .originating_plugins
+        let current_owner = self
+            .workflow_owners
             .get(&terminal_id)
             .context("Workflow pane has no owner")?;
-        anyhow::ensure!(
-            context.context.get("swamp_owner").map(String::as_str) == Some(owner),
-            "Workflow pane owner changed"
-        );
+        anyhow::ensure!(current_owner == owner, "Workflow pane owner changed");
         let os = self.bus.os_input.as_ref().context("No OS interface")?;
         if os.is_remote_pane(terminal_id) {
             anyhow::ensure!(
@@ -2950,6 +2960,7 @@ impl Pty {
                 // a remote pane there is no pid to forget in the first place.
                 self.signal_pane_child(id, ChildSignal::Hup);
                 self.id_to_child_pid.remove(&id);
+                self.workflow_owners.remove(&id);
                 self.pane_activity_flags.remove(&id);
                 self.forget_terminal_cwd(id);
                 self.forget_terminal_host(id);
@@ -3084,6 +3095,7 @@ impl Pty {
         // The plugin that spawned this pane lives in *this* session, so it does
         // not follow the pane out.
         self.originating_plugins.remove(&terminal_id);
+        self.workflow_owners.remove(&terminal_id);
     }
 
     /// Take a supervisor over from another session (or from a server that died)
@@ -3165,6 +3177,7 @@ impl Pty {
 
         let terminal_id = adopted.terminal_id;
         let child_pid = adopted.child_pid;
+        self.track_workflow_owner(terminal_id, &adopted.cmd);
         let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_bytes = async_runtime().spawn({
             let err_context = |terminal_id: TerminalId| {
@@ -3305,6 +3318,7 @@ impl Pty {
                         }
                     },
                 }
+                self.track_workflow_owner(id, &run_command);
                 let _ = self.task_handles.remove(&id); // if all is well, this shouldn't be here
                 let _ = self.id_to_child_pid.remove(&id); // if all is wlel, this shouldn't be here
                 let previous_host = self.host_of_pane(&PaneId::Terminal(id));

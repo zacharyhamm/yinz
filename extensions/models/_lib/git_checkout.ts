@@ -208,7 +208,7 @@ export async function locked<T>(
                 write: true,
             });
             locks.push(file);
-            await file.lock();
+            await file.lock(true);
             c.signal.throwIfAborted();
         }
         return await action();
