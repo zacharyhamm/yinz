@@ -1023,7 +1023,12 @@ fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
         );
     }
     if layout.chrome.rules {
-        let usage = format!("─ {} ", usage_note(state));
+        let usage = usage_note(state);
+        let usage = if usage.is_empty() {
+            usage
+        } else {
+            format!("─ {usage} ")
+        };
         let rule = format!(
             "{}{}",
             truncate_to_width(&usage, cols),
@@ -1103,22 +1108,21 @@ fn title_note(state: &State) -> Option<String> {
 
 /// Provider-reported last-request input and cumulative totals, never estimates.
 fn usage_note(state: &State) -> String {
-    let last = state
-        .last_request_input
-        .map(format_tokens)
-        .unwrap_or_else(|| "unknown".into());
-    let mut note = format!("last request input {last}");
+    let mut fields = Vec::new();
+    if let Some(last) = state.last_request_input {
+        fields.push(format!("last request input {}", format_tokens(last)));
+    }
     if let Some(usage) = state.usage {
-        note.push_str(&format!(
-            " · {} total input · {} total output",
+        fields.push(format!(
+            "{} total input · {} total output",
             format_tokens(usage.input_tokens),
             format_tokens(usage.output_tokens)
         ));
         if let Some(cost) = usage.cost_nanos {
-            note.push_str(&format!(" · {}", format_cost(cost)));
+            fields.push(format_cost(cost));
         }
     }
-    note
+    fields.join(" · ")
 }
 
 /// A nano-USD amount at title width: `$0`, `<$0.0001`, `$0.0123`, `$1.23`.
@@ -3443,8 +3447,11 @@ mod tests {
     #[test]
     fn usage_distinguishes_last_request_from_totals_without_spending_tab_width() {
         let mut state = tabs_state(2);
-        assert_eq!(usage_note(&state), "last request input unknown");
+        assert_eq!(usage_note(&state), "");
+        state.last_request_input = Some(0);
+        assert_eq!(usage_note(&state), "last request input 0");
         state.last_request_input = Some(400);
+        assert_eq!(usage_note(&state), "last request input 400");
         state.usage = Some(crate::TokenUsage {
             input_tokens: 1200,
             output_tokens: 34,
@@ -3455,6 +3462,18 @@ mod tests {
             "last request input 400 · 1.2k total input · 34 total output · $0.0123"
         );
         assert!(usage_note(&state).width() < 80);
+        state.last_request_input = None;
+        assert_eq!(
+            usage_note(&state),
+            "1.2k total input · 34 total output · $0.0123"
+        );
+        state.usage.as_mut().unwrap().cost_nanos = None;
+        assert_eq!(usage_note(&state), "1.2k total input · 34 total output");
+        state.usage.as_mut().unwrap().cost_nanos = Some(0);
+        assert_eq!(
+            usage_note(&state),
+            "1.2k total input · 34 total output · $0"
+        );
         render_title(&mut state, 80);
         assert_eq!(state.chat_tab_width, 80);
     }
