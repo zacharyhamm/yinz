@@ -28,6 +28,26 @@ fn check_and_write(dir: &Path, name: &str, source: &str) {
     assert_eq!(std::fs::read_to_string(entry).unwrap(), source);
 }
 
+fn reject_check_and_write(dir: &Path, source: &str, expected: &str) {
+    let file = dir.join("main.ts");
+    let backup = dir.join("main.bak.ts");
+    let original = "export const original = 1;\n";
+    std::fs::write(&file, original).unwrap();
+    std::fs::write(&backup, "previous backup").unwrap();
+    let checked = report(dir, source, Semantic);
+    assert!(
+        checked.diagnostics.join("\n").contains(expected),
+        "{source}: {checked:?}"
+    );
+    let error = crate::plugin_authoring::write(dir, "main.ts", source, true, true).unwrap_err();
+    assert!(
+        format!("{error:#}").contains(expected),
+        "{source}: {error:#}"
+    );
+    assert_eq!(std::fs::read_to_string(file).unwrap(), original);
+    assert_eq!(std::fs::read_to_string(backup).unwrap(), "previous backup");
+}
+
 #[test]
 fn formats_drafts_without_writing_and_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
@@ -270,6 +290,130 @@ fn suppression_policy_rejects_blanket_unexplained_and_unused_directives() {
 }
 
 #[test]
+fn explained_typescript_exceptions_check_and_write_entrypoints_and_dependencies() {
+    for prefix in ["//", "///"] {
+        let dir = tempfile::tempdir().unwrap();
+        // Even a one-character explanation is nonempty. @ts-check remains permitted.
+        let source = format!(
+            "{prefix} @ts-check\n{prefix} @ts-expect-error -- x\nexport const value: string = 1;\n"
+        );
+        check_and_write(dir.path(), "dep.ts", &source);
+        check_and_write(
+            dir.path(),
+            "main.ts",
+            "export { value } from \"./dep.ts\";\n",
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dep.ts")).unwrap(),
+            source
+        );
+    }
+}
+
+const FORBIDDEN_COMPILER_DIRECTIVES: &[&str] = &[
+    "// @ts-nocheck",
+    "/// @ts-nocheck",
+    "///@ts-nocheck",
+    "// @TS-NoCheck",
+    "///\u{feff}@ts-nocheck",
+    "// @ts-ignore",
+    "/// @ts-ignore -- Still forbidden.",
+    "// @ts-expect-error",
+    "/// @ts-expect-error",
+    "// @ts-expect-error --",
+    "/// @ts-expect-error -- \t ",
+    "// @ts-expect-error -- \u{a0} ",
+    "// @ts-expect-error An explanation without the separator.",
+    "/* @ts-expect-error -- Block comments are forbidden. */",
+    "/** @ts-expect-error -- JSDoc is a block comment. */",
+    "/* Explanation\n * @ts-expect-error -- Last-line directives also suppress errors. */",
+    "/* Explanation\r * @ts-ignore */",
+    "/* Explanation\u{2028} * @ts-ignore */",
+    "/* @ts-nocheck */",
+];
+
+#[test]
+fn compiler_suppression_spellings_cannot_bypass_entrypoint_checks_or_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    for directive in FORBIDDEN_COMPILER_DIRECTIVES {
+        let source = format!("{directive}\nexport const value: string = 1;\n");
+        let checked = report(dir.path(), &source, Syntax);
+        assert!(
+            checked.diagnostics.join("\n").contains("only explained"),
+            "{source}: {checked:?}"
+        );
+        reject_check_and_write(dir.path(), &source, "only explained");
+    }
+}
+
+#[test]
+fn compiler_suppression_spellings_cannot_bypass_dependency_checks_or_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let dependency = dir.path().join("dep.ts");
+    for directive in FORBIDDEN_COMPILER_DIRECTIVES {
+        let source = format!("{directive}\nexport const value: string = 1;\n");
+        std::fs::write(&dependency, &source).unwrap();
+        reject_check_and_write(
+            dir.path(),
+            "export { value } from \"./dep.ts\";\n",
+            "dep.ts: only explained",
+        );
+        assert_eq!(std::fs::read_to_string(&dependency).unwrap(), source);
+        assert!(!dir.path().join("dep.bak.ts").exists());
+    }
+}
+
+#[test]
+fn unused_typescript_exceptions_fail_semantics_and_writes_but_not_syntax_or_format() {
+    for prefix in ["//", "///"] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = format!(
+            "{prefix} @ts-expect-error -- This line has no type error.\nexport const value = 1;\n"
+        );
+        for mode in [Syntax, Format] {
+            let checked = report(dir.path(), &source, mode);
+            assert!(checked.diagnostics.is_empty(), "{mode:?}: {checked:?}");
+        }
+        reject_check_and_write(dir.path(), &source, "Unused '@ts-expect-error' directive");
+        std::fs::write(dir.path().join("dep.ts"), &source).unwrap();
+        reject_check_and_write(
+            dir.path(),
+            "export { value } from \"./dep.ts\";\n",
+            "Unused '@ts-expect-error' directive",
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dep.ts")).unwrap(),
+            source
+        );
+    }
+}
+
+#[test]
+fn typescript_exceptions_leave_other_type_errors_and_lint_findings() {
+    let dir = tempfile::tempdir().unwrap();
+    for (body, expected) in [
+        (
+            "export const value: string = 1;\nexport const other: number = 'wrong';\n",
+            "not assignable to type 'number'",
+        ),
+        ("export const value: any[] = 1;\n", "no-explicit-any"),
+    ] {
+        let source = format!("// @ts-expect-error -- Deliberate type mismatch.\n{body}");
+        reject_check_and_write(dir.path(), &source, expected);
+    }
+}
+
+#[test]
+fn compiler_directive_text_in_strings_is_harmless() {
+    let dir = tempfile::tempdir().unwrap();
+    check_and_write(
+        dir.path(),
+        "main.ts",
+        "export const text = \"// @ts-ignore; /// @ts-nocheck; /* @ts-expect-error */\";\n",
+    );
+}
+
+#[test]
 fn saved_format_check_is_read_only_and_format_keeps_the_previous_version() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("main.ts");
@@ -334,21 +478,11 @@ fn failed_write_preserves_source_and_backup() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("main.ts");
     let backup = dir.path().join("main.bak.ts");
-    std::fs::write(&file, "export const original = 1;\n").unwrap();
-    std::fs::write(&backup, "previous backup").unwrap();
-    let result = crate::plugin_authoring::write(
+    reject_check_and_write(
         dir.path(),
-        "main.ts",
         "export const broken: string = 1;",
-        true,
-        true,
+        "not assignable to type 'string'",
     );
-    assert!(result.is_err());
-    assert_eq!(
-        std::fs::read_to_string(&file).unwrap(),
-        "export const original = 1;\n"
-    );
-    assert_eq!(std::fs::read_to_string(&backup).unwrap(), "previous backup");
     crate::plugin_authoring::write(
         dir.path(),
         "main.ts",

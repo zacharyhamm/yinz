@@ -2,7 +2,7 @@
 use super::loader;
 use deno_ast::swc::{
     ast::*,
-    common::{Span, SyntaxContext},
+    common::{comments::CommentKind, Span, SyntaxContext},
     ecma_visit::{Visit, VisitWith},
 };
 use deno_ast::{SourceRangedForSpanned, SourceTextInfo};
@@ -65,6 +65,7 @@ pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
         },
     };
     for comment in parsed.comments().get_vec() {
+        let line_comment = comment.kind == CommentKind::Line;
         let text = comment.text.trim();
         let directive = text.trim_start_matches('*').trim();
         let lint_directive = [
@@ -78,10 +79,30 @@ pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
         ]
         .iter()
         .any(|prefix| directive.starts_with(prefix));
-        let compiler_directive = ["@ts-ignore", "@ts-nocheck", "@ts-expect-error"]
-            .iter()
-            .any(|prefix| directive.starts_with(prefix));
-        if lint_directive || compiler_directive {
+        // SWC removes the opening // or /*. TypeScript also recognizes /// and
+        // directives on the last line of a block comment. Reject them anywhere in a block.
+        let compiler_whitespace = |c: char| c.is_whitespace() || c == '\u{feff}';
+        let compiler_directive = comment
+            .text
+            .split(['\n', '\r', '\u{2028}', '\u{2029}'])
+            .map(|line| {
+                let line = if line_comment {
+                    line.strip_prefix('/').unwrap_or(line)
+                } else {
+                    line.trim_start_matches(compiler_whitespace)
+                        .trim_start_matches(['/', '*'])
+                };
+                line.trim_start_matches(compiler_whitespace)
+            })
+            .find(|directive| {
+                directive.starts_with("@ts-ignore")
+                    || directive.starts_with("@ts-expect-error")
+                    // TypeScript's file-wide pragmas are case-insensitive.
+                    || directive
+                        .get(.."@ts-nocheck".len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@ts-nocheck"))
+            });
+        if lint_directive || compiler_directive.is_some() {
             let allowed = [
                 "oxlint-disable-next-line ",
                 "oxlint-disable-line ",
@@ -100,9 +121,11 @@ pub(super) fn analyze_native(path: &Path, source: &str) -> PluginCheckReport {
                                 .chars()
                                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-'))
                     })
-            });
-            if !allowed || comment.kind != deno_ast::swc::common::comments::CommentKind::Line {
-                report.diagnostics.push(format!("{}: only rule-named line-level lint suppressions with an explanation (`// oxlint-disable-next-line plugin/rule -- reason`) are allowed", path.display()));
+            }) || compiler_directive
+                .and_then(|directive| directive.strip_prefix("@ts-expect-error -- "))
+                .is_some_and(|reason| !reason.trim().is_empty());
+            if !allowed || !line_comment {
+                report.diagnostics.push(format!("{}: only explained line-level suppressions (`// oxlint-disable-next-line plugin/rule -- reason` or `// @ts-expect-error -- reason`, also `/// @ts-expect-error -- reason`) are allowed; @ts-ignore, @ts-nocheck, and block-comment suppressions are forbidden", path.display()));
             }
         }
     }
