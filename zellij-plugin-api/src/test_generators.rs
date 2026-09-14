@@ -1602,6 +1602,12 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         })),
         CommandType::GetPluginIds => PluginCommand::GetPluginIds,
         CommandType::GetZellijVersion => PluginCommand::GetZellijVersion,
+        CommandType::TestPlugin => PluginCommand::TestPlugin {
+            name: "fixture.ts".into(),
+            options: Default::default(),
+            request_id: "test-1".into(),
+        },
+        CommandType::CancelPluginTest => PluginCommand::CancelPluginTest("test-1".into()),
         CommandType::CheckPlugin => PluginCommand::CheckPlugin {
             name: strings(tc),
             source: strings(tc),

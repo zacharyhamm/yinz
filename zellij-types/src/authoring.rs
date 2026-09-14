@@ -48,3 +48,46 @@ pub struct OutlineEntry {
     /// with the one literal that says what it is about.
     pub text: String,
 }
+
+/// Installed TypeScript test runner input. `name` is resolved inside the plugin folder.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PluginTestOptions {
+    pub kind: PluginTestKind,
+    pub filter: Option<String>,
+    pub timeout_ms: u64,
+}
+impl Default for PluginTestOptions {
+    fn default() -> Self {
+        Self {
+            kind: PluginTestKind::All,
+            filter: None,
+            timeout_ms: 30_000,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginTestKind {
+    Unit,
+    Integration,
+    All,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PluginTestResult {
+    pub name: String,
+    pub kind: PluginTestKind,
+    pub status: String,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+    pub output: String,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PluginTestReport {
+    pub tests: Vec<PluginTestResult>,
+}
+impl PluginTestReport {
+    pub fn passed(&self) -> bool {
+        !self.tests.is_empty() && self.tests.iter().all(|test| test.status == "passed")
+    }
+}

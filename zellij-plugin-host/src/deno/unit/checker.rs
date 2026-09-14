@@ -313,7 +313,12 @@ fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
 fn shim_reply_readers_independently_require_decoder_entries() {
     use std::collections::{BTreeMap, BTreeSet};
     use zellij_types::data::CommandType;
-    let source = include_str!("../../../../zellij-tile/src/shim.rs");
+    // The trailing native test module calls reply readers itself; it is not part of
+    // the last shim's body and must not classify a fire-and-forget command as a reader.
+    let source = include_str!("../../../../zellij-tile/src/shim.rs")
+        .split("\n#[cfg(test)]\nmod tests {")
+        .next()
+        .unwrap();
     let comments = regex::Regex::new(r"(?m)//[^\n]*").unwrap();
     let source = comments.replace_all(source, "");
     let functions = regex::Regex::new(r"(?m)^(?:pub )?fn (\w+)").unwrap();
@@ -686,7 +691,13 @@ fn guide_code_blocks_typecheck_offline() {
         };
         let name = format!("block_at_line_{start}.ts");
         std::fs::write(dir.path().join(&name), source).unwrap();
-        main.push_str(&format!("import './{name}';\n"));
+        if body.contains("zellij:testing") {
+            check_tests(&dir.path().join(&name), dir.path()).unwrap_or_else(|error| {
+                panic!("test documentation block at line {start}: {error:#}")
+            });
+        } else {
+            main.push_str(&format!("import './{name}';\n"));
+        }
     }
     if let Err(error) = check_semantic_source(&dir.path().join("main.ts"), &main) {
         panic!(

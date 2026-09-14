@@ -19,7 +19,7 @@ Consumers import shared code from its owning crate. The workspace has fourteen s
 | `zellij-bus` | The server's thread bus: `ThreadSenders`/`Bus`, the six instruction enums and their payload types, `ServerOsApi`, warps, background jobs, the session recorder and layout metadata | Types, Runtime, Storage, Config, IPC, Session, Terminal, Process |
 | `zellij-routing` | Synchronous action dispatch, dispatch helpers and completion waits | Bus, Types, Runtime, IPC |
 | `zellij-panes` | The `Pane` trait, `TerminalPane` and `PluginPane`, the tiled, floating and overlay pane managers, frames and boundaries, `Tab` and its layout applier, pane groups | Types, Runtime, Config, IPC, Terminal, Bus, Tile Utils |
-| `zellij-plugin-host` | The plugin host: Wasm and Deno plugin loading, the plugin thread, host functions, pipes, job queues, workers, the plugin log pipe, plugin authoring helpers | Types, Runtime, Storage, Config, Plugin API, IPC, Session, Process, Bus, Routing, Tile, Tile Markdown |
+| `zellij-plugin-host` | The plugin host: Wasm and Deno plugin loading, the plugin thread, host functions, pipes, job queues, workers, the plugin log pipe, plugin authoring helpers | Types, Runtime, Storage, Config, Plugin API, IPC, Session, Process, Bus, Routing, Tile, Tile Markdown, Terminal (installed test controller) |
 
 These lists permit dependencies. They do not require every listed dependency.
 `cargo x ci check` enforces them for normal, optional, target-specific, build, and development dependencies.

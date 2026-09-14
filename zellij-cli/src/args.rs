@@ -172,6 +172,21 @@ pub enum Recordings {
 /// Extensionless names select TypeScript; explicit .js, .mjs, .ts and .mts names select Deno.
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Plugins {
+    /// Run adjacent TypeScript unit and integration tests using the installed runtime.
+    Test {
+        #[clap(required_unless_present = "file")]
+        name: Option<String>,
+        #[clap(long, conflicts_with = "name")]
+        file: Option<PathBuf>,
+        #[clap(long, default_value = "all", value_parser = ["unit", "integration", "all"])]
+        kind: String,
+        #[clap(long)]
+        filter: Option<String>,
+        #[clap(long, default_value_t = 30_000)]
+        timeout_ms: u64,
+        #[clap(long)]
+        json: bool,
+    },
     /// Write a plugin from a file or stdin, after compiling it. Refuses to replace one that
     /// exists unless --overwrite is given.
     Write {

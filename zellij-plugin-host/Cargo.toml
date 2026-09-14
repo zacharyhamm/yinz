@@ -9,6 +9,8 @@ description = "The zellij server's plugin host: Wasm and Deno plugin loading, ex
 workspace = true
 
 [dependencies]
+zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
+vte = { workspace = true }
 zellij-routing = { path = "../zellij-routing", version = "0.45.0" }
 zellij-bus = { path = "../zellij-bus", version = "0.45.0" }
 zellij-config = { workspace = true }

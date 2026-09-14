@@ -297,8 +297,30 @@ impl State {
             .position(|chat| chat.stream.as_ref().is_some_and(|s| s.id == stream_id))
     }
 
-    /// Which parked chat is waiting on this tool call. Only the head can be:
-    /// the queue runs one at a time.
+    /// Route an asynchronous test report to the chat and call that requested it.
+    pub(crate) fn on_plugin_test_result(&mut self, id: &str, payload: &str) -> bool {
+        if let Some(index) = self.parked_with_call(id) {
+            return self.with_parked(index, |state| state.on_plugin_test_result(id, payload));
+        }
+        if self.status != Status::AwaitingPluginTest
+            || !self.pending.front().is_some_and(|call| call.id == id)
+        {
+            return false;
+        }
+        let answer = match serde_json::from_str::<
+            Result<zellij_tile::plugin_authoring::PluginTestReport, String>,
+        >(payload)
+        {
+            Ok(Ok(report)) => serde_json::to_string(&report).unwrap_or_default(),
+            Ok(Err(error)) => error,
+            Err(error) => format!("Invalid plugin test response: {error}"),
+        };
+        self.finish_head(answer);
+        self.pump_tools();
+        true
+    }
+
+    /// Which parked chat is waiting on this tool call. Only its queue head can be.
     pub(crate) fn parked_with_call(&self, call_id: &str) -> Option<usize> {
         self.parked
             .iter()
@@ -424,6 +446,7 @@ impl State {
             | Status::AwaitingLinear
             | Status::AwaitingExtension
             | Status::AwaitingPluginLoad
+            | Status::AwaitingPluginTest
             | Status::AwaitingRetry => true,
             // A confirmation prompt is waiting on the user rather than on us,
             // so the only thing left to be waiting on is the reply — for as
@@ -1735,6 +1758,11 @@ impl State {
     /// Unloading a plugin does not cancel its in-flight streams host-side, so
     /// the shutdown path has to.
     pub(crate) fn cancel_in_flight(&mut self) {
+        if self.status == Status::AwaitingPluginTest {
+            if let Some(call) = self.pending.front() {
+                zellij_tile::shim::cancel_plugin_test(&call.id);
+            }
+        }
         if let Some(stream_id) = self.active_stream_id() {
             cancel_web_request(stream_id);
         }

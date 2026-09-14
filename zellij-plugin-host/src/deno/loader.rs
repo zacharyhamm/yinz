@@ -29,6 +29,7 @@ pub struct PluginModuleLoader {
     source_maps: RefCell<HashMap<String, Vec<u8>>>,
     sources: RefCell<HashMap<String, String>>,
     entry_source: Option<String>,
+    testing: bool,
 }
 
 impl PluginModuleLoader {
@@ -54,6 +55,7 @@ impl PluginModuleLoader {
             source_maps: RefCell::new(HashMap::new()),
             sources: RefCell::new(HashMap::new()),
             entry_source: None,
+            testing: false,
         };
         loader.set_entry_source(source)?;
         Ok(loader)
@@ -130,6 +132,7 @@ impl PluginModuleLoader {
             source_maps: RefCell::new(HashMap::new()),
             sources: RefCell::new(HashMap::new()),
             entry_source: None,
+            testing: false,
         })
     }
 
@@ -168,12 +171,31 @@ impl PluginModuleLoader {
         Ok(canonical)
     }
 
+    pub(super) fn for_tests(path: &Path, root: &Path) -> Result<Self> {
+        let mut loader = Self::for_check(path, false)?;
+        loader.root = root.canonicalize().context("resolve test root")?;
+        loader.local_path(loader.entrypoint(), true)?;
+        loader.testing = true;
+        Ok(loader)
+    }
+
+    pub(super) fn testing(&self) -> bool {
+        self.testing
+    }
+
     pub(super) fn resolve_local(
         &self,
         specifier: &str,
         referrer: &str,
         declarations: bool,
     ) -> Result<ModuleSpecifier> {
+        if self.testing && specifier.starts_with("file:") {
+            let url = ModuleSpecifier::parse(specifier).context("resolve test module")?;
+            return file_specifier(&self.local_path(&url, declarations)?);
+        }
+        if specifier == "zellij:testing" && self.testing {
+            return ModuleSpecifier::parse(specifier).context("resolve testing SDK");
+        }
         if specifier == WORKFLOW_SPECIFIER {
             return ModuleSpecifier::parse(WORKFLOW_SPECIFIER)
                 .context("resolve embedded workflow view");
@@ -204,6 +226,8 @@ impl PluginModuleLoader {
     fn load_source(&self, url: &ModuleSpecifier) -> Result<ModuleSource> {
         let code = if url.as_str() == SDK_SPECIFIER {
             super::SDK_MODULE.to_owned()
+        } else if url.as_str() == "zellij:testing" && self.testing {
+            include_str!("testing/module.js").to_owned()
         } else {
             // Resolve again at load time: a symlink may have changed since resolve.
             let path = if url.as_str() == WORKFLOW_SPECIFIER {

@@ -73,7 +73,7 @@ fn sdk_part(name: &str) -> Option<&'static str> {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing a guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 56] = [
+pub const SECTIONS: [&str; 58] = [
     "index",
     "quickstart",
     "overview",
@@ -106,6 +106,8 @@ pub const SECTIONS: [&str; 56] = [
     "restrictions",
     "porting",
     "authoring",
+    "testing",
+    "sdk_testing",
     "build",
     "sdk_core",
     "sdk_commands",
@@ -157,6 +159,7 @@ fn heading(section: &str) -> Option<&'static str> {
         "restrictions" => Some("What TypeScript plugins may not do"),
         "porting" => Some("Porting a Lua plugin"),
         "authoring" => Some("Authoring loop"),
+        "testing" => Some("Plugin tests"),
         "build" => Some("Build inputs"),
         _ => None,
     }
@@ -313,7 +316,9 @@ fn index() -> String {
             "errors" => "exceptions, the log, console",
             "restrictions" => "what a TypeScript plugin may not do",
             "porting" => "migration from the removed Lua runtime",
-            "authoring" => "the write/check/reload loop and inferred grants",
+            "authoring" => "the write/check/test/reload loop and inferred grants",
+            "testing" => "installed unit and integration tests",
+            "sdk_testing" => "declarations: assertions, harness, disposable sessions",
             "build" => "build inputs and binary size",
             "sdk_core" => "declarations: events, Plugin, the Zellij interface",
             "sdk_commands" => "declarations: every command's arguments",
@@ -359,6 +364,7 @@ fn index() -> String {
 pub fn section(name: &str) -> Option<String> {
     match name {
         "index" => Some(index()),
+        "sdk_testing" => Some(fenced(include_str!("../../../zellij-plugin-host/src/deno/testing/testing.d.ts"))),
         "quickstart" => Some(format!("Write `clock.ts` with `plugin_write`, then call `plugin_reload name=clock.ts`. Use explicit `.ts` filenames. Extensionless names select TypeScript.\n\n```ts\n{EXAMPLE_CLOCK}\n```\n\nRead `overview` and `lifecycle` for the SDK and module rules.")),
         "overview" => Some(overview()),
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),

@@ -202,7 +202,10 @@ fn edit_distance(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
-pub use zellij_types::authoring::{OutlineEntry, OutlineKind, PluginCheckMode, PluginCheckReport};
+pub use zellij_types::authoring::{
+    OutlineEntry, OutlineKind, PluginCheckMode, PluginCheckReport, PluginTestKind,
+    PluginTestOptions, PluginTestReport, PluginTestResult,
+};
 
 #[cfg(test)]
 mod tests {

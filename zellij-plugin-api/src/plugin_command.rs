@@ -178,7 +178,7 @@ pub use super::generated_api::api::{
         ShowFloatingPanesResponse as ProtobufShowFloatingPanesResponse, ShowPaneWithIdPayload,
         SpawnAgentPayload, SpawnAgentResponse as ProtobufSpawnAgentResponse, StackPanesPayload,
         SubscribePayload, SwitchSessionPayload, SwitchTabToIdPayload, SwitchTabToPayload,
-        TabProject, ToggleFloatingPanesPayload, TogglePaneBorderlessPayload,
+        TabProject, TestPluginPayload, ToggleFloatingPanesPayload, TogglePaneBorderlessPayload,
         TogglePaneEmbedOrEjectForPaneIdPayload, TogglePaneIdFullscreenPayload, UnsubscribePayload,
         WarpPaneFromSessionPayload, WarpPaneResponse as ProtobufWarpPaneResponse,
         WarpPaneToSessionPayload, WarpPlacement as ProtobufWarpPlacement,
@@ -2990,6 +2990,21 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }),
                 _ => Err("Mismatched payload for SetQuitNotice"),
             },
+            Some(CommandName::TestPlugin) => match protobuf_plugin_command.payload {
+                Some(Payload::TestPluginPayload(payload)) => Ok(PluginCommand::TestPlugin {
+                    name: payload.name,
+                    options: serde_json::from_str(&payload.options_json)
+                        .map_err(|_| "invalid test options")?,
+                    request_id: payload.request_id,
+                }),
+                _ => Err("Mismatched TestPlugin payload"),
+            },
+            Some(CommandName::CancelPluginTest) => match protobuf_plugin_command.payload {
+                Some(Payload::CancelPluginTestPayload(id)) => {
+                    Ok(PluginCommand::CancelPluginTest(id))
+                },
+                _ => Err("Mismatched CancelPluginTest payload"),
+            },
             Some(CommandName::CheckPlugin) => match protobuf_plugin_command.payload {
                 Some(Payload::CheckPluginPayload(payload)) => Ok(PluginCommand::CheckPlugin {
                     name: payload.name,
@@ -5369,6 +5384,23 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     notice,
                     guard,
                 })),
+            }),
+            PluginCommand::TestPlugin {
+                name,
+                options,
+                request_id,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::TestPlugin as i32,
+                payload: Some(Payload::TestPluginPayload(TestPluginPayload {
+                    name,
+                    options_json: serde_json::to_string(&options)
+                        .map_err(|_| "invalid test options")?,
+                    request_id,
+                })),
+            }),
+            PluginCommand::CancelPluginTest(id) => Ok(ProtobufPluginCommand {
+                name: CommandName::CancelPluginTest as i32,
+                payload: Some(Payload::CancelPluginTestPayload(id)),
             }),
             PluginCommand::CheckPlugin { name, source, mode } => Ok(ProtobufPluginCommand {
                 name: CommandName::CheckPlugin as i32,
@@ -7859,6 +7891,8 @@ mod tests {
             Some(match command {
                 carried @ (PluginCommand::Subscribe(_)
                 | PluginCommand::CheckPlugin { .. }
+                | PluginCommand::TestPlugin { .. }
+                | PluginCommand::CancelPluginTest(_)
                 | PluginCommand::SetPaneAgent { .. }
                 | PluginCommand::SetPaneAgentRun { .. }
                 | PluginCommand::SpawnAgent { .. }

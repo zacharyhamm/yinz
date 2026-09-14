@@ -4308,6 +4308,33 @@ fn project_config_response(
     }
 }
 
+/// Start installed TypeScript tests. Subscribe to CustomMessage before calling; the result is
+/// JSON Result<PluginTestReport, String> under `__zellij_plugin_test:<request_id>`.
+pub fn test_plugin(
+    name: &str,
+    options: zellij_types::authoring::PluginTestOptions,
+    request_id: &str,
+) {
+    let command = PluginCommand::TestPlugin {
+        name: name.to_owned(),
+        options,
+        request_id: request_id.to_owned(),
+    };
+    let protobuf_command = ProtobufPluginCommand::try_from(command).unwrap();
+    object_to_stdout(&protobuf_command.encode_to_vec());
+    unsafe {
+        host_run_plugin_command();
+    }
+}
+pub fn cancel_plugin_test(request_id: &str) {
+    let command = PluginCommand::CancelPluginTest(request_id.to_owned());
+    let protobuf_command = ProtobufPluginCommand::try_from(command).unwrap();
+    object_to_stdout(&protobuf_command.encode_to_vec());
+    unsafe {
+        host_run_plugin_command();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1536,14 +1536,60 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             .as_ref()
             .and_then(|config| config.options.user_plugin_dir.clone()),
         opts.config_dir.clone(),
-    )
-    .ok_or_else(|| {
+    );
+    if let PluginsCli::Test {
+        name,
+        file,
+        kind,
+        filter,
+        timeout_ms,
+        json,
+    } = command
+    {
+        let options = zellij_types::authoring::PluginTestOptions {
+            kind: serde_json::from_value(serde_json::Value::String(kind))?,
+            filter,
+            timeout_ms,
+        };
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signals = [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]
+            .map(|signal| signal_hook::flag::register(signal, cancel.clone()))
+            .into_iter()
+            .collect::<std::io::Result<Vec<_>>>()?;
+        let report = match (name, file) {
+            (_, Some(path)) => zellij_server::plugin_testing::run(&path, &options, None, &cancel)?,
+            (Some(name), None) => {
+                let directory = plugin_dir.as_deref().unwrap_or(std::path::Path::new(""));
+                zellij_server::plugin_testing::run_named(directory, &name, &options, None, &cancel)?
+            },
+            _ => anyhow::bail!("give a plugin name or --file"),
+        };
+        for signal in signals {
+            signal_hook::low_level::unregister(signal);
+        }
+        if json {
+            println!("{}", serde_json::to_string(&report)?);
+        } else {
+            for test in &report.tests {
+                println!("{} {} ({}ms)", test.status, test.name, test.duration_ms);
+                if let Some(error) = &test.error {
+                    eprintln!("{error}\n{}", test.output);
+                }
+            }
+        }
+        if !report.passed() {
+            anyhow::bail!("plugin tests failed");
+        }
+        return Ok(());
+    }
+    let plugin_dir = plugin_dir.ok_or_else(|| {
         anyhow::anyhow!(
             "no plugin folder is configured; set `user_plugin_dir` in the config or pass \
              --config-dir"
         )
     })?;
     match command {
+        PluginsCli::Test { .. } => unreachable!("tests return above"),
         PluginsCli::Dir => {
             println!("{}", plugin_dir.display());
             Ok(())

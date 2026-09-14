@@ -31,6 +31,32 @@ fn main() {
         return;
     }
     zellij_server::run_compilation_worker();
+    zellij_server::plugin_testing::run_worker();
+    if std::env::args().nth(1).as_deref() == Some("--plugin-test-server") {
+        zellij_runtime::logging::configure_logger();
+        let socket: std::path::PathBuf = std::env::args_os()
+            .nth(2)
+            .expect("test server socket")
+            .into();
+        let os = zellij_server::os_input_output::get_server_os_input().expect("test server OS");
+        let owner_socket = socket.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let _ = std::io::stdin().read(&mut [0]);
+            loop {
+                if let Ok(stream) = zellij_ipc::consts::ipc_connect(&owner_socket) {
+                    let _ = zellij_ipc::ipc::IpcSenderWithContext::<
+                        zellij_ipc::ipc::ClientToServerMsg,
+                    >::new(stream)
+                    .send_client_msg(zellij_ipc::ipc::ClientToServerMsg::KillSession);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        });
+        zellij_server::start_server_impl(Box::new(os), socket, true);
+        return;
+    }
     let process_started = std::time::Instant::now();
     // A pty-host supervisor is spawned once per pane, so it branches before the
     // logger, the cache-folder setup and the clap builder — none of which it

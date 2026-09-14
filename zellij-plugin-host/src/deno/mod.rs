@@ -43,6 +43,8 @@ use ui::{op_zellij_ui_call, op_zellij_ui_create, op_zellij_ui_pure};
 use zellij_bus::global_async_runtime::get_tokio_runtime;
 use zellij_bus::{thread_bus::ThreadSenders, ClientId};
 
+pub mod testing;
+
 const SDK: &str = include_str!("sdk.js");
 pub(crate) const SDK_MODULE: &str = "export const zellij = globalThis.zellij; export const definePlugin = zellij.definePlugin; export default zellij;";
 
@@ -586,6 +588,7 @@ impl DenoPlugin {
         if self.disposed {
             return;
         }
+        testing::cancel_instance(self.env());
         self.disposed = true;
         self.wake.stopped.store(true, Ordering::Release);
         self.terminate.terminate_execution();

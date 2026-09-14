@@ -99,6 +99,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     (
         "zellij-plugin-host",
         &[
+            "zellij-terminal",
             "zellij-types",
             "zellij-runtime",
             "zellij-storage",

@@ -688,6 +688,7 @@ impl RunningPlugin {
 
     /// Release thread-bound runtime state while still on the assigned executor.
     pub fn dispose(&mut self) {
+        crate::deno::testing::cancel_instance(self.env());
         if let PluginBackend::Deno(deno) = &mut self.backend {
             deno.dispose();
         }

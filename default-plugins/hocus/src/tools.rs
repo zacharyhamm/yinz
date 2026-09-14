@@ -1863,6 +1863,14 @@ pub fn specs() -> Value {
             }),
         ),
         tool(
+            "plugin_test",
+            "Run adjacent TypeScript unit and integration tests before plugin_reload. Explicitly invoked; returns per-test JSON results from disposable sessions. Test grants have their usual host authority.",
+            json!({"type":"object", "properties":{
+                "name":{"type":"string"}, "kind":{"type":"string", "enum":["unit","integration","all"]},
+                "filter":{"type":"string"}, "timeout_ms":{"type":"integer"}
+            }, "required":["name"]}),
+        ),
+        tool(
             "plugin_check",
             "Check saved JS/TS by name, or pass source for an unwritten draft, without execution; JS/TS includes types and local imports. Report diagnostics, literal permissions and warnings. Writes/edits check syntax before confirmation.",
             json!({
@@ -2250,6 +2258,7 @@ pub const FAMILIES: &[Family] = &[
             "plugin_outline",
             "plugin_search",
             "plugin_check",
+            "plugin_test",
             "plugin_write",
             "plugin_edit",
             "plugin_reload",
@@ -2714,6 +2723,8 @@ pub struct Args {
     pub show: bool,
     pub auto_confirm: bool,
     pub kind: Option<String>,
+    pub filter: Option<String>,
+    pub timeout_ms: Option<u64>,
     // Starting an agent. `command`, `args`, `cwd`, `project`, `kind` and `prompt`
     // above are `agent_spawn`'s too — `prompt` is `schedule`'s, reused rather than
     // shadowed. `worktree_dir` is spelled out because `path` is the file tools'.
@@ -3317,11 +3328,12 @@ pub const SKILL_FILE_TOOLS: [&str; 4] =
 /// `get_user_plugin_dir`, for the reload URL and the permission grant). None runs a command;
 /// every one but `plugin_reload` answers at once - a reload is fire-and-forget on the host, so
 /// that one defers until the pane has had time to show what happened.
-pub const PLUGIN_TOOLS: [&str; 12] = [
+pub const PLUGIN_TOOLS: [&str; 13] = [
     "project_config_read",
     "project_config_write",
     "plugin_docs",
     "plugin_check",
+    "plugin_test",
     "plugin_list",
     "plugin_read",
     "plugin_outline",

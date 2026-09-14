@@ -32,6 +32,7 @@ pub use zellij_bus::nested_guest;
 pub mod notifications;
 pub(crate) use zellij_panes::pane_groups;
 pub(crate) use zellij_plugin_host as plugins;
+pub use zellij_plugin_host::deno::testing as plugin_testing;
 use zellij_plugin_host::get_engine;
 #[doc(hidden)]
 pub use zellij_plugin_host::run_compilation_worker;

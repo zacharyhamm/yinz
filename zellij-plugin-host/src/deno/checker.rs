@@ -82,6 +82,9 @@ fn op_zellij_check_resolve(
             bail!("embedded modules may import only registered modules");
         }
         let files = state.borrow::<CompilerFiles>();
+        if name == "zellij:testing" && files.loader.testing() {
+            return Ok("/$zellij/testing.d.ts".to_owned());
+        }
         let referrer = file_specifier(Path::new(referrer))?;
         let url = files.loader.resolve_local(name, referrer.as_str(), true)?;
         let path = url
@@ -116,6 +119,22 @@ pub(super) fn check_with_limits(
     if let Some(source) = source {
         loader.set_entry_source(source)?;
     }
+    check_loader(path, loader, limits)
+}
+
+pub(super) fn check_tests(path: &Path, root: &Path) -> Result<()> {
+    check_loader(
+        path,
+        PluginModuleLoader::for_tests(path, root)?,
+        Limits::new("test checker".into()),
+    )
+}
+
+fn check_loader(
+    path: &Path,
+    loader: PluginModuleLoader,
+    limits: std::sync::Arc<Limits>,
+) -> Result<()> {
     let entry = loader
         .entrypoint()
         .to_file_path()
@@ -124,6 +143,7 @@ pub(super) fn check_with_limits(
     let input = serde_json::json!({
         "entry": entry,
         "sdk": include_str!("sdk.d.ts"),
+        "testing": loader.testing().then_some(include_str!("testing/testing.d.ts")),
     });
     // A fresh runtime has no plugin extensions, filesystem/network runtime,
     // package resolver or module loader. The two ops enforce the loader root.
