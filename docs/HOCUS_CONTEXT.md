@@ -29,7 +29,7 @@ Search documentation before reading a section. Use outlines, searches, and range
 
 Use `plugin_check name=clock.ts` to check a saved file. Give `source` only for an unwritten draft. Writes and edits already check syntax. An additional check is useful for types and imports.
 
-The lower input border shows **last request input** only when the provider reports it, including zero. This count includes conversation context sent with that request. Available cumulative **total input**, **total output**, and cost remain visible even when the latest request has no input count. When no usage is available, the border is a plain line.
+The lower input border shows **last in** (the last request's input) only when the provider reports it, including zero. This count includes conversation context sent with that request. Available cumulative **in** and **out** totals and cost remain visible even when the latest request has no input count. When no usage is available, the border is a plain line.
 
 Switching chats keeps each chat's measurement separate. Reopened chats omit last-request input until another request reports it. The usage note uses the existing input border and leaves chat-tab space unchanged. Very narrow panes clip the note.
 
