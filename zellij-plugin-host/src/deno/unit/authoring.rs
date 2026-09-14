@@ -397,6 +397,34 @@ export const typed: typeof import("./foo.js").value = 1;
 }
 
 #[test]
+fn native_resolution_rewrites_javascript_jsdoc_imports() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("dep.d.ts"),
+        "export interface Label { text: string; }\n",
+    )
+    .unwrap();
+    let source = r#"/** @import { Label } from "./dep.d.ts" */
+/** @type {Label} */
+export const importedLabel = { text: "ok" };
+/** @type {import("./dep.d.ts").Label} */
+export const label = { text: "ok" };
+"#;
+    for mode in [Semantic, Prepare] {
+        let result =
+            crate::plugin_authoring::check_source(&dir.path().join("main.js"), source, mode);
+        assert!(
+            result.diagnostics.is_empty(),
+            "{mode:?}: {:?}",
+            result.diagnostics
+        );
+        if mode == Prepare {
+            assert_eq!(result.formatted_source.as_deref(), Some(source));
+        }
+    }
+}
+
+#[test]
 fn formatting_accepts_filesystem_names_and_refuses_symlinks() {
     let dir = tempfile::tempdir().unwrap();
     let source = "export const value=1";
