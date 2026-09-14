@@ -22,6 +22,7 @@ use super::protocol::BrokerToServerMsg;
 /// A pane's cwd and commands, as of now.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Probe {
+    pub child_group_terminated: bool,
     pub cwd: Option<String>,
     /// The argv of the process the pane was started with.
     pub shell_argv: Option<Vec<String>>,
@@ -33,6 +34,7 @@ pub struct Probe {
 impl Probe {
     pub fn into_report(self) -> BrokerToServerMsg {
         BrokerToServerMsg::StatusReport {
+            child_group_terminated: self.child_group_terminated,
             cwd: self.cwd,
             shell_argv: self.shell_argv,
             foreground_argv: self.foreground_argv,
@@ -93,6 +95,7 @@ pub fn probe(master_fd: RawFd, child_pid: ProcessId) -> Probe {
         .and_then(|p| p.cwd().map(|c| c.to_string_lossy().to_string()));
 
     Probe {
+        child_group_terminated: crate::pty_host::process_group_terminated(child_pid),
         cwd,
         shell_argv: argv_of(child_pid),
         foreground_argv: foreground.and_then(argv_of),

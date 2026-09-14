@@ -42,6 +42,7 @@ const OUTBOUND_CAPACITY: usize = 256 * 1024;
 /// pty thread. A stale-but-plausible answer is the better failure mode.
 #[derive(Debug, Clone, Default)]
 pub struct RemoteStatus {
+    pub child_group_terminated: bool,
     pub cwd: Option<String>,
     pub shell_argv: Option<Vec<String>>,
     pub foreground_argv: Option<Vec<String>>,

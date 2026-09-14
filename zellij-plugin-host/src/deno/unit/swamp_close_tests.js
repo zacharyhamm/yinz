@@ -32,7 +32,7 @@ mock.command=(name,args)=>{
   throw Error('Unexpected command '+name);
 };
 mock.runCommand=async opts=>({exitCode:0,stderr:new Uint8Array(),stdout:zellij.encodeUtf8(opts.command[0]==='git'?'/control\n':JSON.stringify(
-  Object.keys(panemap).filter(p=>p[0]==='t').map(p=>({terminal_id:Number(p.slice(1)),attached:true,session_name:'session',host_id:'supervisor-'+p.slice(1),child_pid:panemap[p].process??100+Number(p.slice(1)),child_exit_status:panemap[p].exited?(panemap[p].exit_status===undefined?0:panemap[p].exit_status):null}))))});
+  Object.keys(panemap).filter(p=>p[0]==='t').map(p=>({terminal_id:Number(p.slice(1)),attached:true,session_name:'session',host_id:'supervisor-'+p.slice(1),child_pid:panemap[p].process??100+Number(p.slice(1)),child_group_terminated:panemap[p].child_group_terminated,child_exit_status:panemap[p].exited?(panemap[p].exit_status===undefined?0:panemap[p].exit_status):null}))))});
 mock.swampRequest=async opts=>{
   requests.push(opts);
   if(delayed===opts.operation)return new Promise(resolve=>{release=resolve;});
@@ -58,11 +58,12 @@ function seed(){
 }
 const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').length;
 (async()=>{
-  for(const state of ['completed','failed','signal','running','replaced','wrong-owner','missing','detached']) {
+  for(const state of ['completed','failed','signal','cancelled','unverified-cancel','running','replaced','wrong-owner','missing','detached']) {
     seed();
     const operation=read('work','worker');
     operation.outcome=state==='failed'?'failed':'completed';operation.exitCode=state==='failed'?7:0;
     if(state==='signal'){operation.outcome='failed';operation.exitCode=null;panemap.t3.exit_status=null;}
+    if(state==='cancelled'||state==='unverified-cancel'){operation.outcome='cancelled';operation.terminationVerified=state==='cancelled';}
     if(state==='wrong-owner')operation.owner.agent='someone-else';
     save('work','worker',operation);
     panemap.t3.exited=state!=='running';
@@ -70,7 +71,7 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     if(state==='missing')delete panemap.t3;
     if(state==='detached')delete panemap.p2;
     const args={method:'command_close',work:'work',key:'worker'};
-    if(['running','replaced','wrong-owner'].includes(state)) {
+    if(['running','replaced','wrong-owner','unverified-cancel'].includes(state)) {
       await rejected(()=>call(args));check(panemap.t3&&!read('work','worker').closed);
     } else {
       await call(args);await call(args);await flush();
@@ -368,7 +369,7 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
 
   // Cancellation is idempotent across dispatch, completion, and reload. It never
   // permits new execution while ownership or termination remains uncertain.
-  for (const race of ['dispatch', 'replacement', 'completion', 'reload', 'adopted', 'changed-row']) {
+  for (const race of ['dispatch', 'replacement', 'completion', 'exit', 'signal-exit', 'reconcile', 'deadline', 'reload', 'adopted', 'changed-row']) {
     seed();let signals=[];mock.workflowSignal=request=>signals.push(request);
     const work='cancel-test', key='worker';
     const value={work,key,request:JSON.stringify({method:'command',work,key}),owner:owner(work,key),
@@ -395,13 +396,55 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
       await call({method:'cancel_step',work,operation:key});await flush();check(signals.length===1);
       if(race==='reload'){reload();await flush();check(signals.length===1);}
       if(race==='completion')await call({method:'step_finished',work,operation:key,process:103});
-      const originalNow=Date.now;Date.now=()=>originalNow()+6000;await tick();Date.now=originalNow;
-      check(signals.length===(race==='completion'?1:2));
-      if(signals.length===2)check(signals[1].kill);
+      if(['exit','signal-exit','reconcile','deadline'].includes(race)){
+        panemap.t3.exited=true;panemap.t3.exit_status=race==='signal-exit'?null:130;
+        handlers.CommandPaneExited([3,panemap.t3.exit_status,{swamp_owner:JSON.stringify(value.owner),swamp_operation:key}]);
+        await flush();check(read(work,key).outcome==='unknown'&&!read(work,key).terminationVerified);
+        if(race==='reconcile')check((await call({method:'reconcile',work,operation:key})).outcome==='unknown');
+        check((await rejected(()=>call({method:'step_ready',work,key:'ready'}))).includes('uncertain'));
+      }
+      const originalNow=Date.now;
+      Date.now=()=>originalNow()+4000;await tick();check(signals.length===1);
+      Date.now=()=>originalNow()+6000;await tick();Date.now=originalNow;
+      check(signals.length===2&&signals[1].kill);
       handlers.CommandPaneExited([3,130,{swamp_owner:JSON.stringify(value.owner),swamp_operation:key}]);
+      await tick();check(read(work,key).outcome==='unknown'&&!read(work,key).terminationVerified);
+      if(race==='deadline'){
+        Date.now=()=>originalNow()+31000;await tick();Date.now=originalNow;
+        check(read(work,key).error.includes('Termination is uncertain'));
+        check((await rejected(()=>call({method:'step_ready',work,key:'ready'}))).includes('uncertain'));
+        continue;
+      }
+      panemap.t3.exited=true;panemap.t3.child_group_terminated=true;
       await tick();check(read(work,key).outcome==='cancelled'&&read(work,key).terminationVerified);
       check((await call({method:'step_ready',work,key:'ready'})).outcome==='completed');
+      await call({method:'command_close',work,key});check(!panemap.t3&&read(work,key).closed);
     }
+  }
+  // Remote exit status has the same rule, including legacy brokers without evidence.
+  for (const changedOwner of [false, true]) {
+    seed();const work='remote-cancel',key='worker',own=owner(work,key),signals=[];
+    const host={terminal_id:3,host_id:'remote:host:token',owner:'transport-owner'};
+    mock.workflowRemotePanes=()=>[host];mock.workflowSignal=args=>signals.push(args);
+    save(work,key,{work,key,request:JSON.stringify({method:'command'}),owner:own,transportOwner:changedOwner?'other':'transport-owner',
+      pane:3,supervisor:host.host_id,outcome:'pending'});
+    panemap.t3.exited=true;panemap.t3.exit_status=130;
+    if(changedOwner) {
+      await call({method:'cancel_step',work,operation:key});await flush();
+      check(signals.length===0&&read(work,key).outcome==='unknown');
+    } else {
+      check((await call({method:'reconcile',work,operation:key})).outcome==='unknown');await flush();
+      check(signals.length===1&&!signals[0].kill&&signals[0].process===undefined);
+      handlers.CommandPaneExited([3,130,{swamp_owner:JSON.stringify(own)}]);await tick();
+      check(read(work,key).outcome==='unknown'&&!read(work,key).terminationVerified);
+      check((await rejected(()=>call({method:'step_ready',work,key:'next'}))).includes('uncertain'));
+      const originalNow=Date.now;Date.now=()=>originalNow()+6000;await tick();Date.now=originalNow;
+      check(signals.length===2&&signals[1].kill);
+      host.child_group_terminated=true;await tick();
+      check(read(work,key).outcome==='cancelled'&&read(work,key).terminationVerified);
+      check((await call({method:'step_ready',work,key:'next'})).outcome==='completed');
+    }
+    mock.workflowRemotePanes=()=>[];
   }
   done=true;
 })().catch(error=>{failure=error.stack;});

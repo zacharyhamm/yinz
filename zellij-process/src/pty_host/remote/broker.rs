@@ -843,7 +843,10 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
             let mut git = GitProbePump::new(git_refresh_interval());
             loop {
                 thread::sleep(STATUS_INTERVAL);
-                if session.is_terminated() || session.child_exit().is_some() {
+                if session.is_terminated()
+                    || (session.child_exit().is_some()
+                        && last.as_ref().is_some_and(|p| p.child_group_terminated))
+                {
                     return;
                 }
                 let probe = super::status::probe(session.master_fd(), session.child_pid);
@@ -877,6 +880,9 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
                         session.detach_if(generation);
                         continue;
                     }
+                }
+                if probe.child_group_terminated && session.child_exit().is_some() {
+                    return;
                 }
                 last = Some(probe);
             }

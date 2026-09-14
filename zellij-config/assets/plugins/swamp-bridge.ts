@@ -29,7 +29,7 @@ type Delivery = {
   executionFinished?: boolean; cancelRequested?: boolean; interruptSent?: boolean; interruptedAt?: number; killSent?: boolean; terminationVerified?: boolean;
 };
 type Supervisor = {terminal_id: number; host_id: string; child_pid?: number; attached: boolean;
-  session_name: string; child_exit_status?: number | null; owner?: string | null; remote_host?: string; pane_token?: string};
+  session_name: string; child_exit_status?: number | null; child_group_terminated?: boolean; owner?: string | null; remote_host?: string; pane_token?: string};
 const D = z.data;
 let identity: Identity;
 type Placement = {view: number; queue: string[]; current?: number; detached?: boolean; manual?: boolean; subtitle?: string; workflow?: string};
@@ -186,7 +186,7 @@ function stopOperation(uid: string): Promise<void> {
       for (;;) {
         let [value, row] = read(uid);
         assert(value?.cancelRequested, 'Cancellation no longer owns this operation');
-        if (!['pending', 'unknown'].includes(value.outcome) || value.executionFinished) return;
+        if (!['pending', 'unknown'].includes(value.outcome)) return;
         assert(Date.now() < deadline, 'Termination is uncertain; reconcile the saved operation before retrying');
         // Cancellation can arrive while dispatch is still waiting for its supervisor.
         if (value.pane == null || !value.supervisor) { await z.sleep(100); continue; }
@@ -198,10 +198,10 @@ function stopOperation(uid: string): Promise<void> {
           'Process ownership changed; reconcile without signalling the replacement');
         if (host.owner) assert(host.owner === (value.transportOwner ?? encode(owner)), 'Remote ownership changed');
         [value, row] = read(uid); assert(value?.cancelRequested, 'Cancellation lost its operation');
-        if (!['pending', 'unknown'].includes(value.outcome) || value.executionFinished) return;
+        if (!['pending', 'unknown'].includes(value.outcome)) return;
         assert(encode(value.owner) === encode(owner) && value.process === host.child_pid && value.supervisor === host.host_id,
           'Operation ownership changed while checking its process');
-        if (host.child_exit_status != null) {
+        if (host.child_group_terminated === true) {
           saveEvent(uid, 'cancelled', {exitCode: host.child_exit_status, processExited: true, terminationVerified: true});
           present(value.work); changed(value.work); return;
         }
@@ -218,7 +218,7 @@ function stopOperation(uid: string): Promise<void> {
       }
     } catch (error) {
       const current = result(uid);
-      if (['pending', 'unknown'].includes(current.outcome) && !current.executionFinished) {
+      if (['pending', 'unknown'].includes(current.outcome)) {
         saveEvent(uid, 'unknown', {error: String(error), terminationVerified: false});
         changed(current.work);
       }
@@ -674,7 +674,8 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     assert(JSON.parse(operation.request).method === 'command', 'Not a command operation');
     assert(operation.owner?.host_id === identity.host_id && operation.owner.session === identity.session &&
       operation.owner.work === args.work && operation.owner.agent === args.key, 'Wrong command ownership');
-    assert(['completed', 'failed'].includes(operation.outcome), 'Command has not completed');
+    assert(['completed', 'failed'].includes(operation.outcome) ||
+      operation.outcome === 'cancelled' && operation.terminationVerified === true, 'Command has not completed');
     assert(operation.pane != null && operation.supervisor && operation.process != null, 'Missing command identity');
     if (operation.closed) return operation;
     const pane = operation.pane, info = z.command('GetPaneInfo', terminal(pane));
@@ -716,7 +717,7 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
     const request: Request = JSON.parse(value.request);
     assert(request.method === 'command' || request.method === 'agent_prompt' || request.method === 'agent_spawn' && request.waitForExit,
       'This operation has no cancellable process');
-    if (!['pending', 'unknown'].includes(value.outcome) || value.executionFinished) return value;
+    if (!['pending', 'unknown'].includes(value.outcome)) return value;
     if (!value.cancelRequested) { value.cancelRequested = true; put(uid, value, row); }
     void stopOperation(uid);
     return result(uid);
@@ -749,14 +750,20 @@ async function handle(input: Partial<Request>, manualView?: number, onProgress?:
       const host = await supervisor(operation.pane, operation.supervisor);
       assert(host.host_id === operation.supervisor, 'Supervisor mismatch; attachment remains unknown');
       assert(host.child_pid === operation.process, 'Supervisor process changed');
+      assert(host.attached, 'Supervisor is detached; adopt before reconciling');
+      if (host.owner) assert(host.owner === (operation.transportOwner ?? encode(operation.owner)), 'Remote ownership changed');
       operation.pane = host.terminal_id;
       if (operation.log) operation.log = `terminal_${host.terminal_id}`;
-      if (host.child_exit_status != null) {
-        operation.terminationVerified = true; operation.processExited = true;
+      if (host.child_exit_status === 130) operation.cancelRequested = true;
+      if (operation.cancelRequested && host.child_group_terminated !== true) {
+        operation.outcome = 'unknown'; operation.terminationVerified = false;
+      } else if (host.child_exit_status != null || host.child_group_terminated === true) {
+        operation.terminationVerified = host.child_group_terminated === true; operation.processExited = true;
         operation.outcome = operation.cancelRequested ? 'cancelled' : JSON.parse(operation.request).method === 'command' ? (host.child_exit_status === 0 ? 'completed' : 'failed') : 'process-exit';
         operation.exitCode = host.child_exit_status;
       } else if (operation.outcome === 'pending' && operation.incarnation !== identity.incarnation) operation.outcome = 'unknown';
       put(uid, operation, row);
+      if (operation.cancelRequested && operation.outcome === 'unknown') void stopOperation(uid);
     }
     return operation;
   }
@@ -1236,13 +1243,27 @@ function finishAgent(owner: Owner, event: AgentEvent, raw: {turn_id?: string}) {
   if (!outcome) return;
   const operation = result(promptUid);
   if (!operation.accepted || operation.agentSession !== event.session_id || (operation.turn && operation.turn !== raw.turn_id)) return;
-  if (JSON.parse(operation.request).waitForExit) {
+  if (operation.cancelRequested || JSON.parse(operation.request).waitForExit) {
     const [current, currentRow] = read(promptUid);
     assert(current, 'No operation with that identity');
     current.message = event.last_message ?? null; current.hook = event.hook; put(promptUid, current, currentRow); return;
   }
   saveEvent(promptUid, outcome, {message: event.last_message ?? null, hook: event.hook, agentSession: event.session_id ?? null});
   delete agent.outstanding; put(uid, agent, row); present(owner.work);
+}
+function recordExit(uid: string, exitCode: number | null) {
+  const [value, row] = read(uid);
+  if (!value || !['pending', 'unknown'].includes(value.outcome)) return;
+  value.exitCode = exitCode; value.processExited = true;
+  // Wrapper exit says nothing about descendants which closed their pty handles.
+  value.terminationVerified = false;
+  if (value.cancelRequested || exitCode === 130) {
+    value.cancelRequested = true; value.outcome = 'unknown'; put(uid, value, row);
+    void stopOperation(uid);
+  } else {
+    value.outcome = JSON.parse(value.request).method === 'command' ? (exitCode === 0 ? 'completed' : 'failed') : 'process-exit';
+    put(uid, value, row);
+  }
 }
 z.on('CommandPaneExited', ([pane, exitCode, context]) => {
   if (!context.swamp_owner) return;
@@ -1252,8 +1273,8 @@ z.on('CommandPaneExited', ([pane, exitCode, context]) => {
   if (!value || encode(value.owner) !== encode(owner) || (value.pane != null && value.pane !== pane)) return;
   const request: Request = JSON.parse(value.request);
   if (request.method === 'command' && !['pending', 'unknown'].includes(value.outcome)) return;
-  saveEvent(uid, (value.cancelRequested || exitCode === 130) ? 'cancelled' : request.method === 'command' ? (exitCode === 0 ? 'completed' : 'failed') : 'process-exit', {exitCode, processExited: true, terminationVerified: true});
+  recordExit(uid, exitCode);
   if (request.method === 'agent_spawn') { const [current, row] = read(uid); assert(current, 'No operation with that identity'); current.processExited = true; put(uid, current, row); }
-  if (value.outstanding) { const op = result(value.outstanding); saveEvent(value.outstanding, op.cancelRequested ? 'cancelled' : 'process-exit', {exitCode, processExited: true, terminationVerified: true}); }
+  if (value.outstanding) recordExit(value.outstanding, exitCode);
   present(owner.work); changed(owner.work);
 });

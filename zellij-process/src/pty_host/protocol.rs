@@ -221,6 +221,9 @@ pub struct HostStatus {
     pub attached: bool,
     /// `Some(status)` once the child has exited; `None` while it is running.
     pub child_exit_status: Option<Option<i32>>,
+    /// The whole owned process group is gone, including children of an exited wrapper.
+    #[serde(default)]
+    pub child_group_terminated: bool,
     pub buffered_bytes: usize,
 }
 

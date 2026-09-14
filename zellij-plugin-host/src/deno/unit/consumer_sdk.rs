@@ -835,6 +835,119 @@ fn deno_bridge_closure_cancellation_and_picker_races() {
     run(&mut runtime, "if(failure) throw Error(failure); check(done);");
 }
 
+// Linux's subreaper lets the test reap the orphan itself instead of relying on PID 1.
+#[cfg(target_os = "linux")]
+#[test]
+fn deno_bridge_cancellation_kills_redirected_descendants_before_the_next_step() {
+    use nix::sys::{signal::{killpg, Signal}, wait::{waitpid, WaitStatus}};
+    use nix::unistd::Pid;
+    use std::io::{BufRead, BufReader};
+    use std::os::fd::{FromRawFd, IntoRawFd};
+    use std::os::unix::net::UnixStream;
+    use zellij_process::pty_host::{self, protocol::{self, HostToServerMsg, ServerToHostMsg}};
+    use zellij_types::input::command::RunCommand;
+
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    consumer(&mut runtime, "swamp-bridge");
+    nix::sys::prctl::set_child_subreaper(true).unwrap();
+    let (mut control, host_control) = UnixStream::pair().unwrap();
+    control.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+    let host = std::thread::spawn(move || pty_host::serve(host_control, pty_host::ServeConfig {
+        label: "workflow-cancel-test".into(), handle_signals: false,
+    }).unwrap());
+    protocol::write_msg(&mut control, &ServerToHostMsg::Hello {
+        protocol_version: protocol::PROTOCOL_VERSION,
+        zellij_version: zellij_runtime::consts::VERSION.into(),
+    }).unwrap();
+    let Some(HostToServerMsg::HelloAck {control_socket: Some(socket), ..}) = protocol::read_msg(&mut control).unwrap() else {panic!("no supervisor socket")};
+    protocol::write_msg(&mut control, &ServerToHostMsg::Spawn {
+        terminal_id: 7, session_name: Some("session".into()),
+        cmd: RunCommand {
+            command: "python3".into(), hold_on_close: true,
+            args: vec!["-c".into(), r#"
+import os, signal, sys
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+r, w = os.pipe()
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    null = os.open('/dev/null', os.O_RDWR)
+    for fd in range(3): os.dup2(null, fd)
+    os.write(w, b'ready')
+    while True: signal.pause()
+os.close(w)
+os.read(r, 5)
+signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
+print(child, flush=True)
+while True: signal.pause()
+"#.into()], ..Default::default()
+        },
+        failover_cmd: None, termios: None, initial_size: None, arg0: None,
+        env: vec![], login_session: false, job_control: true,
+    }).unwrap();
+    let Some(HostToServerMsg::Spawned {child_pid}) = protocol::read_msg(&mut control).unwrap() else {panic!("child did not spawn")};
+    let master = pty_host::fdpass::recv_fd(&control).unwrap();
+    let master = unsafe {std::fs::File::from_raw_fd(master.into_raw_fd())};
+    let mut pid_line = String::new();
+    BufReader::new(master).read_line(&mut pid_line).unwrap();
+    let descendant = Pid::from_raw(pid_line.trim().parse().unwrap());
+    let group = Pid::from_raw(i32::try_from(child_pid).unwrap());
+    struct Cleanup {group: Pid, descendant: Pid, control: UnixStream}
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = killpg(self.group, Signal::SIGKILL);
+            let _ = waitpid(self.descendant, None);
+            let _ = protocol::write_msg(&mut self.control, &ServerToHostMsg::Terminate);
+            let _ = nix::sys::prctl::set_child_subreaper(false);
+        }
+    }
+    let cleanup = Cleanup {group, descendant, control: control.try_clone().unwrap()};
+    let status = pty_host::client::query(&socket).unwrap();
+    assert!(!status.child_group_terminated);
+    run(&mut runtime, &format!("globalThis.hostStatus={};", serde_json::to_string(&status).unwrap()));
+    run(&mut runtime, r#"
+      M.load(); globalThis.now=0; Date.now=()=>now;
+      globalThis.timers=[]; globalThis.signals=[]; globalThis.failed=null;
+      mock.sleep=()=>new Promise(resolve=>timers.push(resolve));
+      mock.workflowSignal=args=>signals.push(args);
+      mock.runCommand=async()=>({exitCode:0,stderr:new Uint8Array(),stdout:mock.encodeUtf8(JSON.stringify([hostStatus]))});
+      globalThis.owner={host_id:'host',session:'session',incarnation:'incarnation',work:'work',agent:'worker'};
+      globalThis.uid=JSON.stringify(['host','session','work','worker']);
+      globalThis.saved=()=>JSON.parse(rows.get(uid).value);
+      rows.set(uid,{rev:1,value:JSON.stringify({work:'work',key:'worker',request:JSON.stringify({method:'command'}),
+        owner,pane:7,process:hostStatus.child_pid,supervisor:hostStatus.host_id,outcome:'pending'})});
+      globalThis.call=args=>handler({work:'work',...args},{source:{Plugin:7}});
+      call({method:'cancel_step',operation:'worker'}).catch(e=>failed=String(e));
+    "#);
+    run(&mut runtime, "check(!failed&&signals.length===1&&!signals[0].kill);");
+    killpg(group, Signal::SIGINT).unwrap();
+    assert!(matches!(protocol::read_msg::<HostToServerMsg, _>(&mut control).unwrap(), Some(HostToServerMsg::ChildExited {status: Some(130)})));
+    let status = pty_host::client::query(&socket).unwrap();
+    assert!(!status.child_group_terminated, "the redirected descendant is still running");
+    run(&mut runtime, &format!("hostStatus={};", serde_json::to_string(&status).unwrap()));
+    run(&mut runtime, r#"
+      call({method:'step_finished',operation:'worker',process:hostStatus.child_pid}).catch(e=>failed=String(e));
+      handlers.CommandPaneExited([7,130,{swamp_owner:JSON.stringify(owner)}]);
+      globalThis.blocked=false;
+      call({method:'step_ready',key:'next'}).catch(()=>blocked=true);
+      now=6000;timers.splice(0).forEach(resolve=>resolve());
+    "#);
+    run(&mut runtime, "check(!failed&&blocked&&signals.length===2&&signals[1].kill&&!saved().terminationVerified);");
+    killpg(group, Signal::SIGKILL).unwrap();
+    assert!(matches!(waitpid(descendant, None).unwrap(), WaitStatus::Signaled(_, Signal::SIGKILL, _)));
+    let status = pty_host::client::query(&socket).unwrap();
+    assert!(status.child_group_terminated);
+    run(&mut runtime, &format!("hostStatus={};timers.splice(0).forEach(resolve=>resolve());", serde_json::to_string(&status).unwrap()));
+    run(&mut runtime, r#"
+      check(saved().outcome==='cancelled'&&saved().terminationVerified);
+      globalThis.ready=false;call({method:'step_ready',key:'next'}).then(()=>ready=true).catch(e=>failed=String(e));
+    "#);
+    run(&mut runtime, "check(!failed&&ready);");
+    drop(cleanup);
+    host.join().unwrap();
+}
+
 #[test]
 fn deno_workflow_reports_are_complete_scrollable_cached_and_attachment_scoped() {
     let mut runtime = sdk();

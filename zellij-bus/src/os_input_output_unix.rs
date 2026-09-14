@@ -926,6 +926,7 @@ impl UnixPtyBackend {
                     "host_id": format!("remote:{}:{}", conn.host(), conn.pane_token()),
                     "remote_host": conn.host(), "pane_token": conn.pane_token(),
                     "owner": conn.cmd().workflow_owner(),
+                    "child_group_terminated": conn.status().child_group_terminated,
                 }))
             })
             .collect()

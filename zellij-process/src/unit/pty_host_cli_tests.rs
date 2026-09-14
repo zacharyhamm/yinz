@@ -160,6 +160,7 @@ fn an_age_from_the_future_is_reported_as_zero_rather_than_underflowing() {
 #[hegel::composite]
 fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
     HostStatus {
+        child_group_terminated: false,
         host_id: SupervisorId::new(tc.draw(generators::text())),
         session_name: tc
             .draw(generators::optional(generators::text()))

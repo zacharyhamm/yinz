@@ -243,6 +243,7 @@ fn wire_winsizes(tc: &hegel::TestCase) -> WireWinsize {
 #[hegel::composite]
 fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
     HostStatus {
+        child_group_terminated: false,
         host_id: SupervisorId::new(tc.draw(generators::text())),
         session_name: tc
             .draw(generators::optional(generators::text()))
@@ -693,6 +694,7 @@ fn a_full_ring_fits_in_one_frame() {
             remote_default_shell: false,
         },
         status: HostStatus {
+            child_group_terminated: false,
             host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
             session_name: Some("a-session-with-a-name".to_owned().into()),
             terminal_id: u32::MAX,
