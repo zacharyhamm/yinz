@@ -28,6 +28,7 @@ pub enum KeyAction {
     Move,
     Tmux,
     Agent,
+    Notifications,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -60,6 +61,7 @@ impl KeyShortcut {
             KeyAction::Move => String::from("MOVE"),
             KeyAction::Tmux => String::from("TMUX"),
             KeyAction::Agent => String::from("AGENT"),
+            KeyAction::Notifications => String::from("NOTIFY"),
         }
     }
     pub fn with_shortened_modifiers(&self, common_modifiers: &[KeyModifier]) -> String {
@@ -116,6 +118,7 @@ impl KeyShortcut {
             KeyAction::Move => String::from("Mo"),
             KeyAction::Tmux => String::from("Tm"),
             KeyAction::Agent => String::from("Ag"),
+            KeyAction::Notifications => String::from("No"),
         }
     }
 }
@@ -579,7 +582,9 @@ fn get_key_shortcut_for_mode<'a>(
     mode: &InputMode,
 ) -> Option<&'a mut KeyShortcut> {
     let key_action = match mode {
-        InputMode::Normal | InputMode::Prompt | InputMode::Tmux => return None,
+        InputMode::Normal | InputMode::Prompt | InputMode::Tmux | InputMode::Notifications => {
+            return None
+        },
         InputMode::Locked => KeyAction::Lock,
         InputMode::Pane | InputMode::RenamePane | InputMode::Select => KeyAction::Pane,
         InputMode::Tab | InputMode::RenameTab => KeyAction::Tab,
@@ -717,6 +722,16 @@ pub fn first_line(
         ));
     }
 
+    if help.mode == InputMode::Notifications {
+        // Hidden like Tmux: the mode is entered from Session mode, so the ribbon has no tile to
+        // spare for it until it is the mode being shown
+        default_keys.push(KeyShortcut::new(
+            KeyMode::Selected,
+            KeyAction::Notifications,
+            to_char(action_key(binds, &[TO_NORMAL])),
+        ));
+    }
+
     let mut key_indicators =
         key_indicators(max_len, &default_keys, colored_elements, separator, help);
     if key_indicators.len < max_len {
@@ -774,6 +789,7 @@ mod tests {
             InputMode::Tmux,
             InputMode::Agent,
             InputMode::Select,
+            InputMode::Notifications,
         ]
     }
 

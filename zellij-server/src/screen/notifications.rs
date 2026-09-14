@@ -215,7 +215,10 @@ impl Screen {
         // Almost every frame in a session's life has no toast anywhere near it. Bail before
         // touching the client list or solving any geometry, but only once the *last* frame had no
         // toasts either - the frame after the final one still has damage to repair.
-        if self.notifications.is_empty() && self.last_notification_fill.is_empty() {
+        if self.notifications.is_empty()
+            && self.notification_browsers.is_empty()
+            && self.last_notification_fill.is_empty()
+        {
             return vec![];
         }
         let regular_client_ids: Vec<ClientId> = self
@@ -248,10 +251,21 @@ impl Screen {
                 cols: tab_size.cols,
                 rows: tab_size.rows,
             };
-            let painted = self.notification_cell_rects(viewport, now);
+            let toast_rects = if self.notifications.is_empty() {
+                vec![]
+            } else {
+                self.notification_cell_rects(viewport, now)
+            };
 
             let mut damage: Vec<CellRect> = vec![];
             for client_id in &client_ids {
+                // a browsing client is shown its browser instead of the toasts, so that is what
+                // its cells are diffed against
+                let painted = if self.notification_browsers.contains_key(client_id) {
+                    self.notification_browser_rects(*client_id, viewport)
+                } else {
+                    toast_rects.clone()
+                };
                 // remove rather than insert an empty vec when nothing is painted, so the map
                 // empties out again once the last toast is gone and the early-out above can fire
                 let previous = if painted.is_empty() {
@@ -281,6 +295,25 @@ impl Screen {
         damage_by_tab
     }
 
+    /// Every cell a toast or an open browser paints this frame, for the cursor occlusion in
+    /// `Output`. One set for the whole session, so a browser hides the cursor for every client
+    /// under it - a cell or two too cautious for the clients that are not browsing, never too few.
+    pub(super) fn notification_occlusion_rects(
+        &self,
+        viewport: Viewport,
+        now: Instant,
+    ) -> Vec<CellRect> {
+        let mut rects = if self.notifications.is_empty() {
+            vec![]
+        } else {
+            self.notification_cell_rects(viewport, now)
+        };
+        for client_id in self.notification_browsers.keys() {
+            rects.extend(self.notification_browser_rects(*client_id, viewport));
+        }
+        rects
+    }
+
     pub(super) fn render_notifications(
         &self,
         output: &mut Output,
@@ -288,13 +321,26 @@ impl Screen {
         client_ids: &[ClientId],
         now: Instant,
     ) -> Result<()> {
-        if self.notifications.is_empty() || client_ids.is_empty() {
+        if client_ids.is_empty()
+            || (self.notifications.is_empty() && self.notification_browsers.is_empty())
+        {
             return Ok(());
         }
-        let layouts = self.notification_layout(viewport, now);
+        let (browsing_clients, toast_clients): (Vec<ClientId>, Vec<ClientId>) = client_ids
+            .iter()
+            .copied()
+            .partition(|client_id| self.notification_browsers.contains_key(client_id));
+        let layouts = if toast_clients.is_empty() {
+            vec![]
+        } else {
+            self.notification_layout(viewport, now)
+        };
 
         let previous_stack = output.set_floating_panes_stack(None);
         let result = (|| -> Result<()> {
+            for client_id in &browsing_clients {
+                self.render_notification_browser(output, viewport, *client_id)?;
+            }
             for layout in layouts {
                 let chunks = notification_chunks(
                     &layout.lines,
@@ -313,7 +359,7 @@ impl Screen {
                 );
                 output.add_character_chunks_to_multiple_clients(
                     chunks,
-                    client_ids.iter().copied(),
+                    toast_clients.iter().copied(),
                     None,
                 )?;
             }
@@ -404,8 +450,34 @@ impl Screen {
         else {
             return false;
         };
+        self.activate_notification(notification_id, pane_id, on_click, client_id, now);
+        true
+    }
 
+    /// Do what clicking a notification's toast does: dismiss the toast if it is still up, bring
+    /// back the pane it names, and tell the plugin that raised it. The notification is consumed,
+    /// so the browser stops listing it.
+    ///
+    /// Shared by a click on a toast and by the notification browser, which is what makes Enter on
+    /// an entry "exactly a click". A notification with neither a pane nor a plugin is only
+    /// dismissed and consumed.
+    pub(super) fn activate_notification(
+        &mut self,
+        notification_id: NotificationId,
+        pane_id: Option<PaneId>,
+        on_click: Option<NotificationClick>,
+        client_id: ClientId,
+        now: Instant,
+    ) {
         self.dismiss_notification(notification_id, now).non_fatal();
+        if let Some(record) = self
+            .notification_history
+            .iter_mut()
+            .rev()
+            .find(|record| record.info.id == notification_id)
+        {
+            record.consumed = true;
+        }
         if let Some(pane_id) =
             pane_id.filter(|pane_id| self.tab_containing_pane(*pane_id).is_some())
         {
@@ -439,7 +511,6 @@ impl Screen {
         }
         self.notify_plugins_of_input(client_id);
         self.render(None).non_fatal();
-        true
     }
 
     /// Drop any toast that has finished sliding out, gliding the survivors into the gap it leaves.

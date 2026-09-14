@@ -119,6 +119,7 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
     let session_binds = &help.get_keybinds_for_mode(InputMode::Session);
     let agent_binds = &help.get_keybinds_for_mode(InputMode::Agent);
     let select_binds = &help.get_keybinds_for_mode(InputMode::Select);
+    let notifications_binds = &help.get_keybinds_for_mode(InputMode::Notifications);
     HashMap::from([
         (
             InputMode::Locked,
@@ -266,6 +267,31 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                     KeyAction::Pane,
                     to_char(action_key(
                         pane_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Normal,
+                        }],
+                    )),
+                ),
+            ],
+        ),
+        (
+            InputMode::Notifications,
+            vec![
+                KeyShortcut::new(
+                    KeyMode::Selected,
+                    KeyAction::Unlock,
+                    to_char(action_key(
+                        notifications_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Locked,
+                        }],
+                    )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::Selected,
+                    KeyAction::Notifications,
+                    to_char(action_key(
+                        notifications_binds,
                         &[Action::SwitchToMode {
                             input_mode: InputMode::Normal,
                         }],
@@ -437,6 +463,7 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
     let session_binds = &help.get_keybinds_for_mode(InputMode::Session);
     let agent_binds = &help.get_keybinds_for_mode(InputMode::Agent);
     let select_binds = &help.get_keybinds_for_mode(InputMode::Select);
+    let notifications_binds = &help.get_keybinds_for_mode(InputMode::Notifications);
     HashMap::from([
         (
             InputMode::Locked,
@@ -566,6 +593,31 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                     }],
                 )),
             )],
+        ),
+        (
+            InputMode::Notifications,
+            vec![
+                KeyShortcut::new(
+                    KeyMode::Selected,
+                    KeyAction::Unlock,
+                    to_char(action_key(
+                        notifications_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Locked,
+                        }],
+                    )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::Selected,
+                    KeyAction::Notifications,
+                    to_char(action_key(
+                        notifications_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Normal,
+                        }],
+                    )),
+                ),
+            ],
         ),
         (
             InputMode::Select,

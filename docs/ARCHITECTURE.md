@@ -346,6 +346,11 @@ Every tick asks for a frame, *including* the one that finds everything settled. 
 
 Anything drawn *over* a pane — currently just toasts — needs one more thing. A pane only emits cells its own grid thinks are dirty, so the moment a moving overlay stops covering a cell, that cell keeps whatever the overlay last drew there. `zellij-terminal/src/ui/damage.rs` diffs what the overlay painted last frame against what it is painting now, and `render_to_clients` repairs the difference *before* the panes render, narrowed to the panes actually overlapping it. An overlay that is only growing produces no damage at all, so arriving is free and only leaving costs repaints.
 
+## Notification browser (zellij-server/src/screen/notification_browser.rs)
+`InputMode::Notifications` (`Ctrl o` then `n` by default) turns a client's toast corner into a list of every notification the session has received, newest first. `Screen::notification_history` keeps a `NotificationRecord` per notification — its text, plus the pane and plugin click target its toast carried — so a notification stays actionable after its toast has timed out. The list is per client (`Screen::notification_browsers`), opened and closed by `Screen::change_mode`, and drawn in place of that client's toasts by `render_notifications`, reusing the toast box and stacking from `zellij-panes/src/ui/notification.rs`. Its cells feed the same damage diff and cursor occlusion as the toasts.
+
+`MoveNotificationSelection`, `ToggleNotificationDetail` and `ActivateNotification` drive it. Activating an entry, by Enter or by a click, goes through `Screen::activate_notification`, the same path a click on a toast takes: dismiss the toast, focus its pane, send `PluginInstruction::NotificationClicked`. The record is then marked consumed, so it drops out of the list; `ListNotifications` still reports it. After activating, the screen sends `ServerInstruction::ChangeMode` back to the client's base mode, so leaving the mode needs no keybinding of its own.
+
 ## Process ownership (zellij-process/)
 
 `zellij-process` owns pane supervisors, local and remote protocols, SSH transport, the broker, and the Firecracker provider.

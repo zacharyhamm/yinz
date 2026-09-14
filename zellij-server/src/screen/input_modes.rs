@@ -49,6 +49,13 @@ impl Screen {
             active_tab!(self, client_id, |tab: &mut Tab| tab.clear_search(client_id));
         }
 
+        if new_mode == InputMode::Notifications && previous_mode != InputMode::Notifications {
+            self.open_notification_browser(client_id);
+        } else if previous_mode == InputMode::Notifications && new_mode != InputMode::Notifications
+        {
+            self.close_notification_browser(client_id);
+        }
+
         if mode_info.mode == InputMode::RenameTab && previous_mode != InputMode::RenameTab {
             if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
                 active_tab.start_rename();

@@ -758,6 +758,7 @@ pub fn input_mode_parser() -> impl TypedValueParser<Value = InputMode> {
         "tmux",
         "agent",
         "select",
+        "notifications",
     ])
     .map(|value| match value.to_ascii_lowercase().as_str() {
         "normal" => InputMode::Normal,
@@ -776,6 +777,7 @@ pub fn input_mode_parser() -> impl TypedValueParser<Value = InputMode> {
         "tmux" => InputMode::Tmux,
         "agent" => InputMode::Agent,
         "select" => InputMode::Select,
+        "notifications" => InputMode::Notifications,
         _ => unreachable!("possible values parser validated the value"),
     })
 }

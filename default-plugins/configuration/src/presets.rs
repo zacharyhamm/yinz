@@ -80,13 +80,32 @@ fn agent_keybinds(entry_key: &str, exit_mode: &str, plain_entry: bool) -> String
     )
 }
 
+/// The Notifications-mode fragment shared by every preset: the browser's own keys. It is entered
+/// with `n` from Session mode, bound in each preset's `session` block. Enter needs no mode switch:
+/// the server leaves the mode itself once a notification is activated.
+fn notifications_keybinds(exit_mode: &str) -> String {
+    format!(
+        r#"
+    notifications {{
+        bind "Esc" {{ SwitchToMode "{exit_mode}"; }}
+        bind "Down" "j" {{ MoveNotificationSelection "Down"; }}
+        bind "Up" "k" {{ MoveNotificationSelection "Up"; }}
+        bind "Space" {{ ToggleNotificationDetail; }}
+        bind "Enter" {{ ActivateNotification; }}
+    }}
+"#
+    )
+}
+
 pub fn unlock_first_keybinds(primary_modifier: String, secondary_modifier: String) -> String {
     let agent_keybinds = agent_keybinds("e", "Locked", true);
+    let notifications_keybinds = notifications_keybinds("Locked");
     format!(
         r#"
 default_mode "locked"
 keybinds clear-defaults=true {{
 {agent_keybinds}
+{notifications_keybinds}
     normal {{
     }}
     locked {{
@@ -221,6 +240,7 @@ keybinds clear-defaults=true {{
         bind "Esc" {{ UndoRenamePane; SwitchToMode "Pane"; }}
     }}
     session {{
+        bind "n" {{ SwitchToMode "Notifications"; }}
         bind "o" {{ SwitchToMode "Normal"; }}
         bind "d" {{ Detach; }}
         bind "]" {{ FocusHostSession; SwitchToMode "Locked"; }}
@@ -266,7 +286,7 @@ keybinds clear-defaults=true {{
         bind "{primary_modifier} g" {{ SwitchToMode "Locked"; }}
         bind "{primary_modifier} q" {{ Quit; }}
     }}
-    shared_except "renamepane" "renametab" "entersearch" "locked" {{
+    shared_except "renamepane" "renametab" "entersearch" "locked" "notifications" {{
         bind "esc" {{ SwitchToMode "locked"; }}
     }}
     shared_among "normal" "locked" {{
@@ -285,7 +305,7 @@ keybinds clear-defaults=true {{
         bind "{secondary_modifier} p" {{ TogglePaneInGroup; }}
         bind "{secondary_modifier} Shift p" {{ ToggleGroupMarking; }}
     }}
-    shared_except "locked" "renametab" "renamepane" {{
+    shared_except "locked" "renametab" "renamepane" "notifications" {{
         bind "Enter" {{ SwitchToMode "Locked"; }}
     }}
     shared_except "pane" "locked" "renametab" "renamepane" "entersearch" {{
@@ -321,11 +341,13 @@ pub fn default_keybinds(primary_modifier: String, secondary_modifier: String) ->
         return default_keybinds_no_secondary_modifier(primary_modifier);
     }
     let agent_keybinds = agent_keybinds(&format!("{primary_modifier} e"), "Normal", false);
+    let notifications_keybinds = notifications_keybinds("Normal");
     format!(
         r#"
 default_mode "normal"
 keybinds clear-defaults=true {{
 {agent_keybinds}
+{notifications_keybinds}
     normal {{}}
     locked {{
         bind "{primary_modifier} g" {{ SwitchToMode "Normal"; }}
@@ -460,6 +482,7 @@ keybinds clear-defaults=true {{
         bind "Esc" {{ UndoRenamePane; SwitchToMode "Pane"; }}
     }}
     session {{
+        bind "n" {{ SwitchToMode "Notifications"; }}
         bind "{primary_modifier} o" {{ SwitchToMode "Normal"; }}
         bind "{primary_modifier} s" {{ SwitchToMode "Scroll"; }}
         bind "d" {{ Detach; }}
@@ -543,7 +566,7 @@ keybinds clear-defaults=true {{
         bind "{secondary_modifier} p" {{ TogglePaneInGroup; }}
         bind "{secondary_modifier} Shift p" {{ ToggleGroupMarking; }}
     }}
-    shared_except "normal" "locked" {{
+    shared_except "normal" "locked" "notifications" {{
         bind "Enter" "Esc" {{ SwitchToMode "Normal"; }}
     }}
     shared_except "pane" "locked" {{
@@ -574,11 +597,13 @@ keybinds clear-defaults=true {{
 
 pub fn default_keybinds_no_primary_modifier(secondary_modifier: String) -> String {
     let agent_keybinds = agent_keybinds("e", "Normal", true);
+    let notifications_keybinds = notifications_keybinds("Normal");
     format!(
         r#"
 default_mode "normal"
 keybinds clear-defaults=true {{
 {agent_keybinds}
+{notifications_keybinds}
     normal {{}}
     locked {{}}
     resize {{
@@ -702,6 +727,7 @@ keybinds clear-defaults=true {{
         bind "Esc" {{ UndoRenamePane; SwitchToMode "Pane"; }}
     }}
     session {{
+        bind "n" {{ SwitchToMode "Notifications"; }}
         bind "d" {{ Detach; }}
         bind "]" {{ FocusHostSession; SwitchToMode "Normal"; }}
         bind "[" {{ FocusGuestSession; SwitchToMode "Normal"; }}
@@ -780,7 +806,7 @@ keybinds clear-defaults=true {{
         bind "{secondary_modifier} p" {{ TogglePaneInGroup; }}
         bind "{secondary_modifier} Shift p" {{ ToggleGroupMarking; }}
     }}
-    shared_except "normal" "locked" {{
+    shared_except "normal" "locked" "notifications" {{
         bind "Enter" "Esc" {{ SwitchToMode "Normal"; }}
     }}
 }}
@@ -790,11 +816,13 @@ keybinds clear-defaults=true {{
 
 pub fn default_keybinds_no_secondary_modifier(primary_modifier: String) -> String {
     let agent_keybinds = agent_keybinds(&format!("{primary_modifier} e"), "Normal", false);
+    let notifications_keybinds = notifications_keybinds("Normal");
     format!(
         r#"
 default_mode "normal"
 keybinds clear-defaults=true {{
 {agent_keybinds}
+{notifications_keybinds}
     normal {{}}
     locked {{
         bind "{primary_modifier} g" {{ SwitchToMode "Normal"; }}
@@ -921,6 +949,7 @@ keybinds clear-defaults=true {{
         bind "Esc" {{ UndoRenamePane; SwitchToMode "Pane"; }}
     }}
     session {{
+        bind "n" {{ SwitchToMode "Notifications"; }}
         bind "{primary_modifier} o" {{ SwitchToMode "Normal"; }}
         bind "{primary_modifier} s" {{ SwitchToMode "Scroll"; }}
         bind "d" {{ Detach; }}
@@ -990,7 +1019,7 @@ keybinds clear-defaults=true {{
         bind "{primary_modifier} g" {{ SwitchToMode "Locked"; }}
         bind "{primary_modifier} q" {{ Quit; }}
     }}
-    shared_except "normal" "locked" {{
+    shared_except "normal" "locked" "notifications" {{
         bind "Enter" "Esc" {{ SwitchToMode "Normal"; }}
     }}
     shared_except "pane" "locked" {{
@@ -1026,6 +1055,7 @@ default_mode "normal"
 keybinds clear-defaults=true {
 "#,
         &agent_keybinds("e", "Normal", true),
+        &notifications_keybinds("Normal"),
         r#"    normal {}
     locked {}
     resize {
@@ -1144,6 +1174,7 @@ keybinds clear-defaults=true {
         bind "Esc" { UndoRenamePane; SwitchToMode "Pane"; }
     }
     session {
+        bind "n" { SwitchToMode "Notifications"; }
         bind "d" { Detach; }
         bind "]" { FocusHostSession; SwitchToMode "Normal"; }
         bind "[" { FocusGuestSession; SwitchToMode "Normal"; }
@@ -1206,7 +1237,7 @@ keybinds clear-defaults=true {
         bind "Space" { NextSwapLayout; }
         bind "x" { CloseFocus; SwitchToMode "Normal"; }
     }
-    shared_except "normal" "locked" {
+    shared_except "normal" "locked" "notifications" {
         bind "Enter" "Esc" { SwitchToMode "Normal"; }
     }
 }
@@ -1220,11 +1251,13 @@ pub fn non_colliding_default_keybinds(
     secondary_modifier: String,
 ) -> String {
     let agent_keybinds = agent_keybinds(&format!("{primary_modifier} e"), "Normal", false);
+    let notifications_keybinds = notifications_keybinds("Normal");
     format!(
         r#"
 default_mode "normal"
 keybinds clear-defaults=true {{
 {agent_keybinds}
+{notifications_keybinds}
     normal {{}}
     locked {{
         bind "{primary_modifier} g" {{ SwitchToMode "Normal"; }}
@@ -1359,6 +1392,7 @@ keybinds clear-defaults=true {{
         bind "Esc" {{ UndoRenamePane; SwitchToMode "Pane"; }}
     }}
     session {{
+        bind "n" {{ SwitchToMode "Notifications"; }}
         bind "{primary_modifier} o" {{ SwitchToMode "Normal"; }}
         bind "{primary_modifier} s" {{ SwitchToMode "Scroll"; }}
         bind "d" {{ Detach; }}
@@ -1442,7 +1476,7 @@ keybinds clear-defaults=true {{
         bind "{secondary_modifier} p" {{ TogglePaneInGroup; }}
         bind "{secondary_modifier} Shift p" {{ ToggleGroupMarking; }}
     }}
-    shared_except "normal" "locked" {{
+    shared_except "normal" "locked" "notifications" {{
         bind "Enter" "Esc" {{ SwitchToMode "Normal"; }}
     }}
     shared_except "pane" "locked" {{
@@ -1498,6 +1532,80 @@ mod tests {
             default_keybinds("Ctrl".into(), "Ctrl".into()),
         ] {
             assert_selection_bindings(config, "Normal");
+        }
+    }
+
+    #[test]
+    fn every_preset_and_the_default_config_bind_the_notification_browser() {
+        use zellij_config::config::Config;
+        use zellij_types::data::{InputMode, KeyWithModifier};
+        use zellij_types::geometry::Direction;
+        use zellij_types::input::actions::Action;
+
+        let canonical_text = include_str!("../../../zellij-config/assets/config/default.kdl");
+        let canonical = Config::from_kdl(canonical_text, None).unwrap();
+        for (text, exit_mode) in [
+            (canonical_text.to_owned(), InputMode::Normal),
+            (
+                unlock_first_keybinds("Ctrl".into(), "Alt".into()),
+                InputMode::Locked,
+            ),
+            (
+                default_keybinds("Ctrl".into(), "Alt".into()),
+                InputMode::Normal,
+            ),
+            (default_keybinds("".into(), "Alt".into()), InputMode::Normal),
+            (
+                default_keybinds("Ctrl".into(), "".into()),
+                InputMode::Normal,
+            ),
+            (default_keybinds("".into(), "".into()), InputMode::Normal),
+            (
+                default_keybinds("Ctrl".into(), "Ctrl".into()),
+                InputMode::Normal,
+            ),
+        ] {
+            let config = Config::from_kdl(&text, Some(canonical.clone())).unwrap();
+            let reparsed = Config::from_kdl(&config.to_string(false), None).unwrap();
+            for config in [&config, &reparsed] {
+                let key = |key: &str| -> KeyWithModifier { key.parse().unwrap() };
+                assert_eq!(
+                    config.keybinds.0[&InputMode::Session][&key("n")],
+                    vec![Action::SwitchToMode {
+                        input_mode: InputMode::Notifications
+                    }]
+                );
+                let browser = &config.keybinds.0[&InputMode::Notifications];
+                for (keys, action) in [
+                    (
+                        ["j", "Down"],
+                        Action::MoveNotificationSelection {
+                            direction: Direction::Down,
+                        },
+                    ),
+                    (
+                        ["k", "Up"],
+                        Action::MoveNotificationSelection {
+                            direction: Direction::Up,
+                        },
+                    ),
+                ] {
+                    for bound in keys {
+                        assert_eq!(browser[&key(bound)], vec![action.clone()], "{bound}");
+                    }
+                }
+                assert_eq!(
+                    browser[&key("Space")],
+                    vec![Action::ToggleNotificationDetail]
+                );
+                assert_eq!(browser[&key("Enter")], vec![Action::ActivateNotification]);
+                assert_eq!(
+                    browser[&key("Esc")],
+                    vec![Action::SwitchToMode {
+                        input_mode: exit_mode
+                    }]
+                );
+            }
         }
     }
 

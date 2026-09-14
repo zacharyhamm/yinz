@@ -191,6 +191,9 @@ pub enum ScreenInstruction {
     CopyLastCommandOutput(ClientId, Option<NotificationEnd>),
     MoveTextSelection(Direction, ClientId, Option<NotificationEnd>),
     SwapTextSelectionEnds(ClientId, Option<NotificationEnd>),
+    MoveNotificationSelection(Direction, ClientId, Option<NotificationEnd>),
+    ActivateNotification(ClientId, Option<NotificationEnd>),
+    ToggleNotificationDetail(ClientId, Option<NotificationEnd>),
     /// The feedback flash `CopyLastCommandOutput` painted has run its course.
     ClearCommandOutputFlash(PaneId),
     PageScrollUp(ClientId, Option<NotificationEnd>),

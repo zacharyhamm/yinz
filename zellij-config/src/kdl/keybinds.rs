@@ -292,6 +292,7 @@ pub fn to_kdl(value: &Keybinds, should_clear_defaults: bool) -> KdlNode {
     encode_single_input_mode!(Search);
     encode_single_input_mode!(Session);
     encode_single_input_mode!(Agent);
+    encode_single_input_mode!(Notifications);
 
     for (input_modes, keybinds) in minimized {
         if input_modes.is_empty() {

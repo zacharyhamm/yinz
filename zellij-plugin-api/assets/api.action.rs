@@ -311,7 +311,7 @@ pub struct OverrideLayoutPayload {
 pub struct Action {
     #[prost(enumeration="ActionName", tag="1")]
     pub name: i32,
-    #[prost(oneof="action::OptionalPayload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 64, 65")]
+    #[prost(oneof="action::OptionalPayload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 64, 65, 66")]
     pub optional_payload: ::core::option::Option<action::OptionalPayload>,
 }
 /// Nested message and enum types in `Action`.
@@ -439,6 +439,8 @@ pub mod action {
         NotifyPayload(::prost::alloc::string::String),
         #[prost(enumeration="super::super::resize::ResizeDirection", tag="65")]
         MoveTextSelectionPayload(i32),
+        #[prost(enumeration="super::super::resize::ResizeDirection", tag="66")]
+        MoveNotificationSelectionPayload(i32),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -1184,6 +1186,9 @@ pub enum ActionName {
     MoveTextSelection = 116,
     SwapTextSelectionEnds = 117,
     ArrangePanesByProject = 118,
+    MoveNotificationSelection = 119,
+    ActivateNotification = 120,
+    ToggleNotificationDetail = 121,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1307,6 +1312,9 @@ impl ActionName {
             ActionName::MoveTextSelection => "MoveTextSelection",
             ActionName::SwapTextSelectionEnds => "SwapTextSelectionEnds",
             ActionName::ArrangePanesByProject => "ArrangePanesByProject",
+            ActionName::MoveNotificationSelection => "MoveNotificationSelection",
+            ActionName::ActivateNotification => "ActivateNotification",
+            ActionName::ToggleNotificationDetail => "ToggleNotificationDetail",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1427,6 +1435,9 @@ impl ActionName {
             "MoveTextSelection" => Some(Self::MoveTextSelection),
             "SwapTextSelectionEnds" => Some(Self::SwapTextSelectionEnds),
             "ArrangePanesByProject" => Some(Self::ArrangePanesByProject),
+            "MoveNotificationSelection" => Some(Self::MoveNotificationSelection),
+            "ActivateNotification" => Some(Self::ActivateNotification),
+            "ToggleNotificationDetail" => Some(Self::ToggleNotificationDetail),
             _ => None,
         }
     }

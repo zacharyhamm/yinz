@@ -732,6 +732,11 @@ the waiting pane, so a left-click dismisses the toast, focuses that pane — swi
 unsuppressing it if need be — and clears its bell. A toast that carries nothing is decoration: the
 click falls through to the pane underneath rather than being swallowed.
 
+A toast that has already timed out can still be clicked. `Ctrl o` then `n` opens Notifications mode, which lists this
+session's notifications, newest first, where the toasts render. `j`/`k` or the arrow keys move
+through the list and `Space` shows an entry's full text. `Enter` or a click activates the selected
+entry exactly as clicking its toast would, then leaves the mode. `Esc` leaves without activating.
+
 hocus's own two toasts — a tool call awaiting y/n, and a plan awaiting approval — carry hocus's
 pane *and* a message back to hocus naming the chat that raised them. So the click reveals the
 panel (both halves, through `show_panel`, which flips the hidden/pending intent at the source

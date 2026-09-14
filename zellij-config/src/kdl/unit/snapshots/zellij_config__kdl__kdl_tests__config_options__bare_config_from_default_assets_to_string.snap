@@ -129,6 +129,7 @@ keybinds clear-defaults=true {
             }
             SwitchToMode "normal"
         }
+        bind "n" { SwitchToMode "notifications"; }
         bind "Ctrl o" { SwitchToMode "normal"; }
         bind "p" {
             LaunchOrFocusPlugin "plugin-manager" {
@@ -193,6 +194,14 @@ keybinds clear-defaults=true {
             SwitchToMode "normal"
         }
     }
+    notifications {
+        bind "down" { MoveNotificationSelection "down"; }
+        bind "up" { MoveNotificationSelection "up"; }
+        bind "space" { ToggleNotificationDetail; }
+        bind "j" { MoveNotificationSelection "down"; }
+        bind "k" { MoveNotificationSelection "up"; }
+        bind "enter" { ActivateNotification; }
+    }
     shared_except "locked" "select" {
         bind "Alt left" { MoveFocusOrTab "left"; }
         bind "Alt down" { MoveFocus "down"; }
@@ -247,7 +256,7 @@ keybinds clear-defaults=true {
     shared_except "locked" "resize" {
         bind "Ctrl n" { SwitchToMode "resize"; }
     }
-    shared_except "normal" "locked" "entersearch" "select" {
+    shared_except "normal" "locked" "entersearch" "select" "notifications" {
         bind "enter" { SwitchToMode "normal"; }
     }
     shared_except "normal" "locked" "entersearch" "renametab" "renamepane" {

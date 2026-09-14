@@ -41,4 +41,6 @@ enum InputMode {
     Agent = 14;
     /// `Select` mode extends a text selection in the focused pane.
     Select = 15;
+    /// `Notifications` mode browses the session's notifications in place.
+    Notifications = 16;
 }

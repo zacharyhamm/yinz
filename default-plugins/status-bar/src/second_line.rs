@@ -351,6 +351,7 @@ mod tests {
                 InputMode::Tmux,
                 InputMode::Agent,
                 InputMode::Select,
+                InputMode::Notifications,
             ]
         }
 

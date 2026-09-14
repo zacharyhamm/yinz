@@ -1422,6 +1422,7 @@ impl TryFrom<zellij_types::input::actions::Action>
     fn try_from(action: zellij_types::input::actions::Action) -> Result<Self> {
         use crate::client_server_contract::client_server_contract::{
             action::ActionType,
+            ActivateNotificationAction,
             AdoptPaneAction,
             AreFloatingPanesVisibleAction,
             ArrangePanesByProjectAction,
@@ -1476,6 +1477,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             MouseEventAction,
             MoveFocusAction,
             MoveFocusOrTabAction,
+            MoveNotificationSelectionAction,
             MovePaneAction,
             MovePaneBackwardsAction,
             MovePaneBackwardsByPaneIdAction,
@@ -1562,6 +1564,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             ToggleHostFullscreenAction,
             ToggleMouseModeAction,
             ToggleNoUiFullscreenByPaneIdAction,
+            ToggleNotificationDetailAction,
             TogglePaneBorderlessAction,
             TogglePaneEmbedOrFloatingAction,
             TogglePaneEmbedOrFloatingByPaneIdAction,
@@ -1738,6 +1741,17 @@ impl TryFrom<zellij_types::input::actions::Action>
             },
             zellij_types::input::actions::Action::SwapTextSelectionEnds => {
                 ActionType::SwapTextSelectionEnds(SwapTextSelectionEndsAction {})
+            },
+            zellij_types::input::actions::Action::MoveNotificationSelection { direction } => {
+                ActionType::MoveNotificationSelection(MoveNotificationSelectionAction {
+                    direction: direction_to_proto_i32(direction),
+                })
+            },
+            zellij_types::input::actions::Action::ActivateNotification => {
+                ActionType::ActivateNotification(ActivateNotificationAction {})
+            },
+            zellij_types::input::actions::Action::ToggleNotificationDetail => {
+                ActionType::ToggleNotificationDetail(ToggleNotificationDetailAction {})
             },
             zellij_types::input::actions::Action::PageScrollUp => {
                 ActionType::PageScrollUp(PageScrollUpAction {})
@@ -2803,6 +2817,17 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::SwapTextSelectionEnds(_) => {
                 Ok(zellij_types::input::actions::Action::SwapTextSelectionEnds)
+            },
+            ActionType::MoveNotificationSelection(action) => Ok(
+                zellij_types::input::actions::Action::MoveNotificationSelection {
+                    direction: proto_i32_to_direction(action.direction)?,
+                },
+            ),
+            ActionType::ActivateNotification(_) => {
+                Ok(zellij_types::input::actions::Action::ActivateNotification)
+            },
+            ActionType::ToggleNotificationDetail(_) => {
+                Ok(zellij_types::input::actions::Action::ToggleNotificationDetail)
             },
             ActionType::PageScrollUp(_) => Ok(zellij_types::input::actions::Action::PageScrollUp),
             ActionType::PageScrollDown(_) => {
@@ -4070,6 +4095,7 @@ fn input_mode_to_proto_i32(mode: InputMode) -> i32 {
         InputMode::Tmux => ProtoInputMode::Tmux as i32,
         InputMode::Agent => ProtoInputMode::Agent as i32,
         InputMode::Select => ProtoInputMode::Select as i32,
+        InputMode::Notifications => ProtoInputMode::Notifications as i32,
     }
 }
 
@@ -4091,6 +4117,7 @@ fn proto_i32_to_input_mode(i: i32) -> Result<InputMode> {
         Ok(ProtoInputMode::Tmux) => Ok(InputMode::Tmux),
         Ok(ProtoInputMode::Agent) => Ok(InputMode::Agent),
         Ok(ProtoInputMode::Select) => Ok(InputMode::Select),
+        Ok(ProtoInputMode::Notifications) => Ok(InputMode::Notifications),
         _ => Err(anyhow!("Invalid InputMode value: {}", i)),
     }
 }

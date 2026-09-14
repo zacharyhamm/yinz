@@ -301,6 +301,9 @@ message Action {
     SwapTextSelectionEndsAction swap_text_selection_ends = 162;
     AgentEventAction agent_event = 163;
     ArrangePanesByProjectAction arrange_panes_by_project = 164;
+    MoveNotificationSelectionAction move_notification_selection = 165;
+    ActivateNotificationAction activate_notification = 166;
+    ToggleNotificationDetailAction toggle_notification_detail = 167;
   }
 }
 
@@ -334,6 +337,11 @@ message MoveTextSelectionAction {
   Direction direction = 1;
 }
 message SwapTextSelectionEndsAction {}
+message MoveNotificationSelectionAction {
+  Direction direction = 1;
+}
+message ActivateNotificationAction {}
+message ToggleNotificationDetailAction {}
 message PageScrollUpAction {}
 message PageScrollDownAction {}
 message HalfPageScrollUpAction {}
@@ -856,6 +864,7 @@ enum InputMode {
   INPUT_MODE_TMUX = 14;
   INPUT_MODE_AGENT = 15;
   INPUT_MODE_SELECT = 16;
+  INPUT_MODE_NOTIFICATIONS = 17;
 }
 
 enum Direction {
