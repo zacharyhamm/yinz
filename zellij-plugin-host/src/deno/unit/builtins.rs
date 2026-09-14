@@ -1000,6 +1000,56 @@ function scenario() {
 }
 
 #[test]
+fn workflow_reports_and_returning_from_a_step_land_at_the_bottom() {
+    let view = builtin_body(include_str!(
+        "../../../../zellij-config/assets/plugins/workflow-view.ts"
+    ));
+    let source = r#"
+import real, {definePlugin} from 'zellij:plugin';
+const report = 'REPORT\n'.repeat(30);
+let snapshot: any = {launch: 'launch', run: 'run', root: '/work', history: {workflowName: 'exit', status: 'running'}};
+const z: any = {...real, command() {}, subscribe() {}, every() {}, requestRender() {},
+  rpc: {call: async ({payload}: any) => payload.method === 'workflow_report'
+    ? {text: report, next: report.length, total: report.length}
+    : snapshot},
+};
+const view: any = (() => {/*BODY*/
+return view;})();
+async function settle() { for (let i = 0; i < 50; i++) await null; }
+async function scenario() {
+  view.load();
+  const render = () => view.render(8, 80);
+  const key = (bare_key: string) => {view.update({Key: {bare_key, key_modifiers: []}}); render();};
+  view.attach({directory: '/work', run: 'run'});
+  await settle(); render();
+  const before = view.scroll;
+  snapshot = {...snapshot, outputs: {results: [
+    {model: 'tests', name: 'report', version: 1, createdAt: '1', attributes: {summaryLength: report.length, passed: true}},
+  ]}};
+  await view.refresh(); await settle(); render();
+  check(view.scroll > before && view.scroll >= 30, 'a new test report keeps the view at the bottom');
+
+  key('Home');
+  eq(view.scroll, 0);
+  view.update({PaneOutput: {pane_id: 3, context: {swamp_work: 'launch'}, data: real.encodeUtf8('LIVE\n'.repeat(20))}});
+  render();
+  eq(view.scroll, 0, 'output does not move a scrolled-up view');
+  view.pipe({name: 'workflow-returned'}); render();
+  const returned = view.scroll;
+  key('End');
+  eq(returned, view.scroll, 'returning from a step lands at the bottom');
+  key('Home');
+  view.pipe({name: 'workflow-returned'}); render();
+  view.update({PaneOutput: {pane_id: 3, context: {swamp_work: 'launch'}, data: real.encodeUtf8('MORE\n'.repeat(5))}});
+  render();
+  check(view.scroll > returned, 'the returned view follows new output');
+}
+"#
+    .replace("/*BODY*/", &view);
+    run_scenario("swamp-workflow", &source);
+}
+
+#[test]
 fn typescript_reference_examples_load_and_render_in_deno() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins");
     let store = tempfile::tempdir().unwrap();

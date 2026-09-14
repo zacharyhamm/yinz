@@ -176,6 +176,7 @@ Each completed action returns to this menu. Repairs, retries, and later checks r
 
 Commands and helpers occupy the existing workflow location for exit-hook and manual interactive launches.
 Command output remains visible until dismissal. Press Enter after a command completes to restore the decision view.
+The restored view, like the agent terminal restored by Restart, is at the bottom of its scrollback.
 
 Git commands run under kernel locks on both checkouts (`zellij-workflow.lock` in each Git directory), held
 through dismissal so the developer sees the outcome before another mutation. The pane always prints a

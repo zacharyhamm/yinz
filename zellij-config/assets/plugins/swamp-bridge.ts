@@ -326,12 +326,14 @@ function closeView(work: string, restoreSource?: number): void {
     return;
   const pane = z.command("GetPaneInfo", plugin(placement.view));
   if (pane?.plugin_url === "zellij:agent-exit") {
-    if (restoreSource != null && !pane.is_suppressed)
+    if (restoreSource != null && !pane.is_suppressed) {
       z.command("ReplacePaneWithExistingPane", [
         plugin(placement.view),
         terminal(restoreSource),
         true,
       ]);
+      z.command("ScrollToBottomInPaneId", terminal(restoreSource));
+    }
     z.command("HidePaneWithId", plugin(placement.view));
     z.command("ClosePluginPane", placement.view);
   }
@@ -555,6 +557,9 @@ function present(work: string): void {
     put(uid, saved, row);
   }
   z.command("ReplacePaneWithExistingPane", [current, target, true]);
+  // The view keeps its own scroll; a step handing the pane back returns it to the bottom.
+  if (next == null && placement.current != null)
+    message({ destination_plugin_id: placement.view, message_name: "workflow-returned" });
   placement.current = next;
 }
 function updateSubtitle(work: string, subtitle: string, workflow?: string): void {

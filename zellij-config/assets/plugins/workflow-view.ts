@@ -163,15 +163,19 @@ function reportEntries(): ReportEntry[] {
         reportKey(b).localeCompare(reportKey(a)),
     );
 }
-function loadReports(revision: number): void {
+// A view opened on a run starts at its reports; one that was already showing the run stays at the
+// bottom, which is where a workflow step that produced the report hands it back.
+function loadReports(revision: number, initial: boolean): void {
   for (const entry of reportEntries()) {
     const key = reportKey(entry);
     let report = reports.get(key);
     if (!report) {
       report = { chunks: [], offset: 0, total: required(entry.attributes.summaryLength) };
       reports.set(key, report);
-      followLive = false;
-      view.scroll = 0;
+      if (initial) {
+        followLive = false;
+        view.scroll = 0;
+      }
     }
     if (!report.loading && report.offset < report.total)
       void loadReport(entry, report, revision, required(view.snapshot).root).catch(
@@ -392,6 +396,7 @@ async function refresh(changed = true): Promise<void> {
     })) as unknown as Snapshot;
     if (revision !== generation) return;
     view.refreshError = undefined;
+    const initial = view.snapshot === undefined;
     view.snapshot = snapshot;
     view.cancellable = [snapshot.history, ...(snapshot.children ?? [])].some(
       (h) => h.status === "running",
@@ -423,7 +428,7 @@ async function refresh(changed = true): Promise<void> {
     if (index >= 0) view.selected = index;
     questionReadyAt = z.swampTiming ? z.monotonicMs() : undefined;
     controls();
-    loadReports(revision);
+    loadReports(revision, initial);
   } catch (error) {
     if (revision === generation) view.refreshError = String(error);
   } finally {
@@ -513,6 +518,13 @@ function pipe(message: PipeMessage): void {
   if (message.name === "workflow-detached") {
     detached = true;
     setSubtitle();
+    return;
+  }
+  if (message.name === "workflow-returned") {
+    // A workflow step handed the pane back: show the tail, following it when End would.
+    view.scroll = Infinity;
+    followLive = latestStream === streams.at(-1);
+    repaint();
     return;
   }
   if (message.name === "workflow-changed") {
