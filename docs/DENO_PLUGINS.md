@@ -1649,9 +1649,13 @@ The exact shared options are in the [lint preset](../zellij-plugin-host/src/deno
 Explicit `any`, non-null assertions, unsafe assignments/calls/returns/member access, unsafe assertions,
 unhandled or misused promises, and incomplete switches are errors.
 Use `await` or a rejection handler for SDK promises. A `void` prefix does not handle rejection.
-Only rule-named line suppressions with an explanation are accepted, for example:
+Lint suppressions must name a rule and explain the exception, for example:
 `// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper updates shared state.`
-Blanket, unexplained, unused, and compiler suppression directives are rejected.
+For a TypeScript exception, use `// @ts-expect-error -- reason` or `/// @ts-expect-error -- reason` with a nonempty explanation.
+This suppresses TypeScript errors on the following line. It does not suppress lint findings or errors on other lines.
+Semantic checks and checked writes reject an unused `@ts-expect-error`. Syntax analysis and format-only operations do not check whether it is used.
+These rules also apply to imported files. `@ts-ignore`, file-wide `@ts-nocheck`, block-comment suppressions, and blanket, unexplained, or unused lint suppressions are rejected.
+`@ts-check` is permitted.
 Plugins cannot replace the preset or load configuration code.
 
 Formatting uses two spaces, double quotes, semicolons, trailing commas, LF endings, and a 100-column width.

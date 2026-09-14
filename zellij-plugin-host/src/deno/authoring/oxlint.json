@@ -30,6 +30,17 @@
     "import/no-default-export": "off",
     "import/no-relative-parent-imports": "off",
     "import/no-unassigned-import": "off",
+    "typescript/ban-ts-comment": [
+      "error",
+      {
+        "ts-expect-error": {
+          "descriptionFormat": "^ -- \\s*\\S.*$"
+        },
+        "ts-ignore": true,
+        "ts-nocheck": true,
+        "ts-check": false
+      }
+    ],
     "typescript/no-explicit-any": "error",
     "typescript/no-non-null-assertion": "error",
     "typescript/no-unsafe-assignment": "error",
