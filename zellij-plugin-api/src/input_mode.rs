@@ -25,6 +25,7 @@ impl TryFrom<ProtobufInputMode> for InputMode {
             ProtobufInputMode::Tmux => Ok(InputMode::Tmux),
             ProtobufInputMode::Agent => Ok(InputMode::Agent),
             ProtobufInputMode::Select => Ok(InputMode::Select),
+            ProtobufInputMode::Notifications => Ok(InputMode::Notifications),
         }
     }
 }
@@ -49,6 +50,7 @@ impl TryFrom<InputMode> for ProtobufInputMode {
             InputMode::Tmux => ProtobufInputMode::Tmux,
             InputMode::Agent => ProtobufInputMode::Agent,
             InputMode::Select => ProtobufInputMode::Select,
+            InputMode::Notifications => ProtobufInputMode::Notifications,
         })
     }
 }

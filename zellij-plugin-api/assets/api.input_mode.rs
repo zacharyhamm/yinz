@@ -42,6 +42,8 @@ pub enum InputMode {
     Agent = 14,
     /// / `Select` mode extends a text selection in the focused pane.
     Select = 15,
+    /// / `Notifications` mode browses the session's notifications in place.
+    Notifications = 16,
 }
 impl InputMode {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -66,6 +68,7 @@ impl InputMode {
             InputMode::Tmux => "Tmux",
             InputMode::Agent => "Agent",
             InputMode::Select => "Select",
+            InputMode::Notifications => "Notifications",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -87,6 +90,7 @@ impl InputMode {
             "Tmux" => Some(Self::Tmux),
             "Agent" => Some(Self::Agent),
             "Select" => Some(Self::Select),
+            "Notifications" => Some(Self::Notifications),
             _ => None,
         }
     }

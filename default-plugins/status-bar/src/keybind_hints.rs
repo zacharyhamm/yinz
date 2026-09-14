@@ -127,6 +127,29 @@ fn back_to_base_mode_key(
     }
 }
 
+/// The key that leaves a mode back to the base mode, preferring Esc when it does.
+///
+/// For a mode whose Enter is taken by something else (the notification browser activates with it),
+/// Esc is the key worth showing - otherwise any shared leader that also reaches the base mode, such
+/// as the lock key under a locked base mode, could be picked in its place.
+fn escape_to_base_mode_key(
+    mi: &ModeInfo,
+    keymap: &[(KeyWithModifier, Vec<Action>)],
+) -> Vec<KeyWithModifier> {
+    let esc = KeyWithModifier::new(BareKey::Esc);
+    let keys = action_key(
+        keymap,
+        &[Action::SwitchToMode {
+            input_mode: mi.base_mode.unwrap_or(InputMode::Normal),
+        }],
+    );
+    if keys.contains(&esc) {
+        vec![esc]
+    } else {
+        keys.into_iter().take(1).collect()
+    }
+}
+
 /// Collect all relevant keybindings and hints to display for the current [`InputMode`].
 ///
 /// Each [`Hint`] is found by searching the mode's keybindings for a pre-defined pattern of
@@ -155,6 +178,7 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
 
     // Find the key that leaves the mode. Do it here before we dedupe the keymap below!
     let to_base_mode = back_to_base_mode_key(mi, &old_keymap);
+    let escape_to_base_mode = escape_to_base_mode_key(mi, &old_keymap);
     let copy_and_exit = match key_doing(&old_keymap, &A::Copy) {
         keys if !keys.is_empty() => keys,
         _ => to_base_mode.clone(),
@@ -304,7 +328,16 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         hint("Layout Manager", "Layouts", plugin_launch_key(&km, "zellij:layout-manager")),
         hint("Plugin Manager", "Plugins", plugin_launch_key(&km, "plugin-manager")),
         hint("About", "About", plugin_launch_key(&km, "zellij:about")),
+        hint("Notifications", "Notif",
+            action_key(&km, &[A::SwitchToMode{input_mode: IM::Notifications}])),
         hint("Select pane", "Select", to_base_mode),
+    ]} else if mi.mode == IM::Notifications { vec![
+        hint("Select", "Select", action_key_group(&km, &[
+            &[A::MoveNotificationSelection{direction: Dir::Down}],
+            &[A::MoveNotificationSelection{direction: Dir::Up}]])),
+        hint("Open", "Open", key_doing(&km, &A::ActivateNotification)),
+        hint("Full text", "Full", key_doing(&km, &A::ToggleNotificationDetail)),
+        hint("Exit", "Exit", escape_to_base_mode),
     ]} else if mi.mode == IM::Agent { vec![
         hint("New agent", "New", plugin_launch_key(&km, "hocus-new-agent")),
         hint("Duplicate agent", "Duplicate", plugin_launch_key(&km, "hocus-duplicate-agent")),
@@ -345,6 +378,7 @@ mod tests {
             InputMode::EnterSearch,
             InputMode::Search,
             InputMode::Session,
+            InputMode::Notifications,
             InputMode::Agent,
             InputMode::Select,
             InputMode::Tmux,

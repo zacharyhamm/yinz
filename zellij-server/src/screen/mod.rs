@@ -153,6 +153,7 @@ mod host_query;
 mod input_modes;
 mod mouse;
 mod nested;
+mod notification_browser;
 mod notifications;
 mod plugin_state;
 mod render;
@@ -669,7 +670,10 @@ pub(crate) struct Screen {
     /// Every toast received by this live session. Dismissal only affects `notifications` above.
     /// ponytail: intentionally unbounded because the feature promises "all" notifications;
     /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
-    notification_history: Vec<NotificationInfo>,
+    notification_history: Vec<NotificationRecord>,
+    /// The open notification browser per client in `Notifications` mode. See
+    /// `screen::notification_browser`.
+    notification_browsers: HashMap<ClientId, notification_browser::NotificationBrowser>,
     next_notification_id: NotificationId,
     notification_position: NotificationPosition,
     notification_timeout_secs: ElapsedSeconds,
@@ -1030,6 +1034,18 @@ impl Screen {
     }
 }
 
+/// A notification this session received, kept after its toast is gone so the notification browser
+/// can list it and activate it later.
+#[derive(Debug, Clone)]
+struct NotificationRecord {
+    info: NotificationInfo,
+    pane_id: Option<PaneId>,
+    on_click: Option<NotificationClick>,
+    /// Activated, from its toast or from the browser. The browser stops listing it;
+    /// `ListNotifications` still reports it, because that promises every notification received.
+    consumed: bool,
+}
+
 #[derive(Debug, Clone)]
 struct Notification {
     id: NotificationId,
@@ -1289,6 +1305,7 @@ impl Screen {
             next_context_menu_request_id: ContextMenuRequestId::new(0),
             context_menu,
             notification_history: vec![],
+            notification_browsers: HashMap::new(),
             next_notification_id: NotificationId::new(0),
             notification_position,
             notification_timeout_secs,
@@ -2097,6 +2114,7 @@ impl Screen {
         let err_context = || format!("failed to remove client {client_id}");
 
         self.notification_mouse_captures.remove(&client_id);
+        self.close_notification_browser(client_id);
         // No force-render: the client is going, and the cells its menu occupied belong to a screen
         // nobody is looking at any more.
         self.context_menus.remove(&client_id);

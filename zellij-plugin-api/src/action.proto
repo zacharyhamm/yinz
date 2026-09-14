@@ -256,6 +256,7 @@ message Action {
     NewStackedPanePayload new_stacked_pane_payload = 62;
     string notify_payload = 64;
     resize.ResizeDirection move_text_selection_payload = 65;
+    resize.ResizeDirection move_notification_selection_payload = 66;
   }
   reserved 63;
 }
@@ -534,6 +535,9 @@ enum ActionName {
     MoveTextSelection = 116;
     SwapTextSelectionEnds = 117;
     ArrangePanesByProject = 118;
+    MoveNotificationSelection = 119;
+    ActivateNotification = 120;
+    ToggleNotificationDetail = 121;
     reserved 110;
 }
 

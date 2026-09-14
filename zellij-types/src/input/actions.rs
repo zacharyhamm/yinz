@@ -231,6 +231,16 @@ pub enum Action {
     /// Swap the anchor and the moving end of the active text selection, so that subsequent
     /// `MoveTextSelection`s move what used to be the anchor.
     SwapTextSelectionEnds,
+    /// Move the selection in the notification browser (`Notifications` mode). Only `Up` and
+    /// `Down` move it; `Left` and `Right` are accepted and do nothing.
+    MoveNotificationSelection {
+        direction: Direction,
+    },
+    /// Activate the notification selected in the browser exactly as clicking its toast would, and
+    /// leave `Notifications` mode.
+    ActivateNotification,
+    /// Show or hide the full, unelided text of the notification selected in the browser.
+    ToggleNotificationDetail,
     /// Scroll up one page in focus pane.
     PageScrollUp,
     /// Scroll down one page in focus pane.

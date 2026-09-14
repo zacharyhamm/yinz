@@ -610,6 +610,31 @@ pub fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::MoveNotificationSelection { direction } => {
+            senders
+                .send_to_screen(ScreenInstruction::MoveNotificationSelection(
+                    direction,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::ActivateNotification => {
+            senders
+                .send_to_screen(ScreenInstruction::ActivateNotification(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::ToggleNotificationDetail => {
+            senders
+                .send_to_screen(ScreenInstruction::ToggleNotificationDetail(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::PageScrollUp => {
             senders
                 .send_to_screen(ScreenInstruction::PageScrollUp(

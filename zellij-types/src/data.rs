@@ -650,6 +650,9 @@ pub enum InputMode {
     /// `Select` mode extends a text selection in the focused pane.
     #[serde(alias = "select")]
     Select,
+    /// `Notifications` mode browses the session's notifications in place, where the toasts render.
+    #[serde(alias = "notifications")]
+    Notifications,
 }
 
 pub use crate::style::ThemeHue;
@@ -863,6 +866,7 @@ impl FromStr for InputMode {
             "tmux" | "Tmux" => Ok(InputMode::Tmux),
             "agent" | "Agent" => Ok(InputMode::Agent),
             "select" | "Select" => Ok(InputMode::Select),
+            "notifications" | "Notifications" => Ok(InputMode::Notifications),
             "entersearch" | "Entersearch" | "EnterSearch" => Ok(InputMode::EnterSearch),
             e => Err(ConversionError::UnknownInputMode(e.into())),
         }

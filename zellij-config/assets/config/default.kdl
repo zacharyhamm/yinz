@@ -138,6 +138,7 @@ keybinds {
     session {
         bind "Ctrl o" { SwitchToMode "Normal"; }
         bind "Ctrl s" { SwitchToMode "Scroll"; }
+        bind "n" { SwitchToMode "Notifications"; }
         bind "d" { Detach; }
         bind "]" { FocusHostSession; SwitchToMode "Normal"; }
         bind "[" { FocusGuestSession; SwitchToMode "Normal"; }
@@ -247,6 +248,14 @@ keybinds {
             SwitchToMode "Normal"
         }
     }
+    notifications {
+        bind "Esc" { SwitchToMode "Normal"; }
+        bind "Down" "j" { MoveNotificationSelection "Down"; }
+        bind "Up" "k" { MoveNotificationSelection "Up"; }
+        bind "Space" { ToggleNotificationDetail; }
+        // Activating a notification leaves the mode on its own, so Enter needs no SwitchToMode
+        bind "Enter" { ActivateNotification; }
+    }
     tmux {
         bind "[" { SwitchToMode "Scroll"; }
         bind "Ctrl b" { Write 2; SwitchToMode "Normal"; }
@@ -298,7 +307,7 @@ keybinds {
         bind "Alt p" { TogglePaneInGroup; }
         bind "Alt Shift p" { ToggleGroupMarking; }
     }
-    shared_except "normal" "locked" {
+    shared_except "normal" "locked" "notifications" {
         bind "Enter" "Esc" { SwitchToMode "Normal"; }
     }
     shared_except "pane" "locked" {

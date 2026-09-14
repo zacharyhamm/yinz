@@ -416,7 +416,7 @@ export type MouseSummary = {kind: 'LeftClick' | 'RightClick' | 'Hold' | 'Release
 export type Direction = 'Left' | 'Right' | 'Up' | 'Down';
 export type Resize = 'Increase' | 'Decrease';
 export type PaneFrameStyle = 'Full' | 'Titles' | 'None';
-export type InputMode = 'Normal' | 'Locked' | 'Resize' | 'Pane' | 'Tab' | 'Scroll' | 'EnterSearch' | 'Search' | 'RenameTab' | 'RenamePane' | 'Session' | 'Move' | 'Prompt' | 'Tmux' | 'Agent' | 'Select';
+export type InputMode = 'Normal' | 'Locked' | 'Resize' | 'Pane' | 'Tab' | 'Scroll' | 'EnterSearch' | 'Search' | 'RenameTab' | 'RenamePane' | 'Session' | 'Move' | 'Prompt' | 'Tmux' | 'Agent' | 'Select' | 'Notifications';
 export type KeyModifier = 'Ctrl' | 'Alt' | 'Shift' | 'Super';
 export type BareKey = 'PageDown' | 'PageUp' | 'Left' | 'Down' | 'Up' | 'Right' | 'Home' | 'End' | 'Backspace' | 'Delete' | 'Insert' | 'Tab' | 'Esc' | 'Enter' | 'CapsLock' | 'ScrollLock' | 'NumLock' | 'PrintScreen' | 'Pause' | 'Menu' | {F: number} | {Char: string};
 export interface KeyWithModifier {bare_key: BareKey; key_modifiers: KeyModifier[];}
@@ -585,7 +585,7 @@ export interface ActionPayloads {
   SwitchToMode: {input_mode: InputMode}; SwitchModeForAllClients: {input_mode: InputMode}; Resize: {resize: Resize; direction: Direction | null};
   MoveFocus: {direction: Direction}; MoveFocusOrTab: {direction: Direction}; MovePane: {direction: Direction | null};
   DumpScreen: {file_path: string | null; include_scrollback: boolean; pane_id: PaneId | null; ansi: boolean}; EditScrollback: {ansi: boolean};
-  ScrollUpAt: {position: Position}; ScrollDownAt: {position: Position}; MoveTextSelection: {direction: Direction}; SetPaneFrameStyle: PaneFrameStyle;
+  ScrollUpAt: {position: Position}; ScrollDownAt: {position: Position}; MoveTextSelection: {direction: Direction}; MoveNotificationSelection: {direction: Direction}; SetPaneFrameStyle: PaneFrameStyle;
   NewPane: {direction: Direction | null; pane_name: string | null; start_suppressed: boolean};
   NewBlockingPane: CommandPaneLaunch & {placement: NewPanePlacement; unblock_condition: UnblockCondition | null};
   EditFile: {payload: OpenFilePayload; direction: Direction | null; floating: boolean; in_place: boolean; close_replaced_pane: boolean; start_suppressed: boolean; placement: NewPanePlacement; near_current_pane: boolean; no_focus: boolean; tab_id: number | null};
@@ -627,7 +627,7 @@ export interface ActionPayloads {
 }
 export type UnitAction = 'Quit' | 'FocusNextPane' | 'FocusPreviousPane' | 'FocusLastPane' | 'SwitchFocus' | 'MovePaneBackwards' | 'ClearScreen'
   | 'DumpLayout' | 'SaveSession' | 'ScrollUp' | 'ScrollDown' | 'ScrollToBottom' | 'ScrollToTop' | 'ScrollToPreviousPrompt' | 'ScrollToNextPrompt'
-  | 'SelectCommandAtScrollPosition' | 'CopyLastCommandOutput' | 'SwapTextSelectionEnds' | 'PageScrollUp' | 'PageScrollDown' | 'HalfPageScrollUp' | 'HalfPageScrollDown'
+  | 'SelectCommandAtScrollPosition' | 'CopyLastCommandOutput' | 'SwapTextSelectionEnds' | 'ActivateNotification' | 'ToggleNotificationDetail' | 'PageScrollUp' | 'PageScrollDown' | 'HalfPageScrollUp' | 'HalfPageScrollDown'
   | 'ToggleFocusFullscreen' | 'ToggleFocusNoUiFullscreen' | 'TogglePaneFrames' | 'ToggleActiveSyncTab' | 'TogglePaneEmbedOrFloating' | 'ToggleFloatingPanes'
   | 'CloseFocus' | 'UndoRenamePane' | 'NoOp' | 'GoToNextTab' | 'GoToPreviousTab' | 'CloseTab' | 'ToggleTab' | 'UndoRenameTab' | 'Detach'
   | 'SetDarkTheme' | 'SetLightTheme' | 'ToggleTheme' | 'Copy' | 'Confirm' | 'Deny' | 'ToggleMouseMode' | 'PreviousSwapLayout' | 'NextSwapLayout' | 'QueryTabNames'

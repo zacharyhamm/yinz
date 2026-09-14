@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use zellij_types::animation::{blend, Easing};
 use zellij_types::input::options::NotificationPosition;
 use zellij_types::pane_size::Viewport;
-use zellij_types::style::Style;
+use zellij_types::style::{Style, StyleDeclaration};
 
 use crate::output::CharacterChunk;
 use crate::panes::terminal_character::{
@@ -82,6 +82,16 @@ pub fn notification_width(text: &str, viewport_cols: usize) -> Option<usize> {
 /// Never returns an empty `Vec` - empty text is one empty row, which paints the same box a
 /// one-line message does.
 pub fn notification_lines(text: &str, width: usize) -> Vec<String> {
+    notification_lines_capped(text, width, MAX_NOTIFICATION_TEXT_ROWS)
+}
+
+/// [`notification_lines`] with a caller-chosen row cap instead of [`MAX_NOTIFICATION_TEXT_ROWS`].
+///
+/// The notification browser uses it both ways: a collapsed entry is cut shorter than a toast, and
+/// the entry whose full text was asked for is allowed as many rows as the viewport holds. A cap of
+/// zero is treated as one, so the result is never empty.
+pub fn notification_lines_capped(text: &str, width: usize, max_rows: usize) -> Vec<String> {
+    let max_rows = max_rows.max(1);
     let text_width = width.saturating_sub(CHROME_COLS);
     // `notification_width` never returns a box this small, but a caller passing a raw width must
     // not be able to make the wrapping below loop forever.
@@ -93,7 +103,7 @@ pub fn notification_lines(text: &str, width: usize) -> Vec<String> {
     let mut overflowed = false;
     'segments: for segment in text.split('\n') {
         for row in wrap_segment(&sanitize(segment), text_width) {
-            if rows.len() == MAX_NOTIFICATION_TEXT_ROWS {
+            if rows.len() == max_rows {
                 overflowed = true;
                 break 'segments;
             }
@@ -319,6 +329,105 @@ pub fn settled_row_delta(
     })
 }
 
+/// The most text rows a collapsed entry in the notification browser shows before it is elided.
+///
+/// Shorter than a toast's cap: the browser is a list to scan, and the full text of any one entry
+/// is a keypress away.
+pub const BROWSER_COLLAPSED_TEXT_ROWS: usize = 2;
+
+/// One entry of the notification browser as it lands on screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrowserEntryLayout {
+    /// Index into the entries the layout was given.
+    pub index: usize,
+    pub lines: Vec<String>,
+    pub x: usize,
+    pub y: usize,
+}
+
+/// The notification browser laid out over `viewport`: which entries are visible, where, and at
+/// what shared width.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrowserLayout {
+    pub width: usize,
+    /// The first entry shown. The caller keeps it and hands it back as the next `first` hint, so
+    /// the list only scrolls when the selection would otherwise leave the screen.
+    pub first: usize,
+    pub entries: Vec<BrowserEntryLayout>,
+}
+
+/// Lay out the notification browser: `texts` newest first, stacked from `position`'s corner the
+/// same way the toasts stack.
+///
+/// Every entry is cut to [`BROWSER_COLLAPSED_TEXT_ROWS`] except the selected one when `expanded`,
+/// which gets as many rows as the viewport can hold. The window starts at `first` if the selection
+/// fits from there, and otherwise moves the least distance that brings the whole selected box into
+/// view. Returns `None` when the viewport cannot hold even a minimal box.
+pub fn notification_browser_layout(
+    viewport: Viewport,
+    position: NotificationPosition,
+    texts: &[&str],
+    selected: usize,
+    expanded: bool,
+    first: usize,
+) -> Option<BrowserLayout> {
+    let width = texts
+        .iter()
+        .filter_map(|text| notification_width(text, viewport.cols))
+        .max()?;
+    let selected = selected.min(texts.len().saturating_sub(1));
+    let expanded_rows = viewport.rows.saturating_sub(NOTIFICATION_BORDER_ROWS);
+    let lines: Vec<Vec<String>> = texts
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let max_rows = if expanded && index == selected {
+                expanded_rows
+            } else {
+                BROWSER_COLLAPSED_TEXT_ROWS
+            };
+            notification_lines_capped(text, width, max_rows)
+        })
+        .collect();
+    let heights: Vec<usize> = lines
+        .iter()
+        .map(|lines| notification_height(lines.len()))
+        .collect();
+    let first = browser_first_visible(&heights, viewport.rows, first, selected);
+    let origins = notification_origins(viewport, position, &heights[first..], width);
+    let entries = origins
+        .into_iter()
+        .enumerate()
+        .map(|(offset, (x, y))| BrowserEntryLayout {
+            index: first + offset,
+            lines: lines[first + offset].clone(),
+            x,
+            y,
+        })
+        .collect();
+    Some(BrowserLayout {
+        width,
+        first,
+        entries,
+    })
+}
+
+/// The first entry to show so that `selected` is wholly visible in `rows`, starting from `hint`.
+///
+/// Scrolls towards the selection only as far as needed: back to it when it sits before the
+/// window, forward one entry at a time while it hangs off the far end. A selected box taller than
+/// the viewport is shown from its own top edge.
+fn browser_first_visible(heights: &[usize], rows: usize, hint: usize, selected: usize) -> usize {
+    if heights.is_empty() {
+        return 0;
+    }
+    let mut first = hint.min(selected);
+    while first < selected && heights[first..=selected].iter().sum::<usize>() > rows {
+        first += 1;
+    }
+    first
+}
+
 /// The chunks for one toast, its top-left corner at (`x`, `y`) and `width` columns wide.
 ///
 /// `lines` comes from [`notification_lines`] called with the same `width`.
@@ -330,7 +439,19 @@ pub fn notification_chunks(
     style: &Style,
     fade: f32,
 ) -> Vec<CharacterChunk> {
-    let declaration = style.colors.text_unselected;
+    notification_box_chunks(lines, x, y, width, style.colors.text_unselected, fade)
+}
+
+/// [`notification_chunks`] painted in an explicit colour declaration, so the notification browser
+/// can draw its selected entry in `text_selected` with the same box everything else uses.
+pub fn notification_box_chunks(
+    lines: &[String],
+    x: usize,
+    y: usize,
+    width: usize,
+    declaration: StyleDeclaration,
+    fade: f32,
+) -> Vec<CharacterChunk> {
     // The box paints as a solid slab of its own background from its very first frame, and its
     // border and text resolve out of that background as `fade` climbs - so a toast materialises
     // rather than snapping into existence, and dissolves rather than blinking out.
@@ -1182,6 +1303,105 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    const LONG: &str = "one two three four five six seven eight nine ten eleven twelve thirteen \
+        fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two \
+        twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight";
+
+    #[test]
+    fn a_collapsed_browser_entry_is_cut_to_two_rows_and_elided() {
+        let layout = notification_browser_layout(
+            viewport(),
+            NotificationPosition::TopRight,
+            &[LONG, "short"],
+            1,
+            false,
+            0,
+        )
+        .expect("the viewport holds the browser");
+        let long = &layout.entries[0];
+        assert_eq!(long.lines.len(), BROWSER_COLLAPSED_TEXT_ROWS);
+        assert!(
+            long.lines.last().unwrap().ends_with('…'),
+            "{:?}",
+            long.lines
+        );
+        assert_eq!(layout.entries[1].lines, vec!["short".to_owned()]);
+    }
+
+    #[test]
+    fn the_expanded_browser_entry_shows_its_whole_text() {
+        let layout = notification_browser_layout(
+            viewport(),
+            NotificationPosition::TopRight,
+            &[LONG, "short"],
+            0,
+            true,
+            0,
+        )
+        .expect("the viewport holds the browser");
+        let expanded = &layout.entries[0];
+        assert!(expanded.lines.len() > MAX_NOTIFICATION_TEXT_ROWS.min(3));
+        assert!(!expanded.lines.iter().any(|line| line.ends_with('…')));
+        let text: Vec<&str> = expanded
+            .lines
+            .iter()
+            .flat_map(|line| line.split_whitespace())
+            .collect();
+        assert_eq!(text, LONG.split_whitespace().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_browser_scrolls_only_as_far_as_the_selection_needs() {
+        // every entry is one text row, so three rows tall; ten rows hold three of them
+        let viewport = Viewport {
+            x: 0,
+            y: 0,
+            rows: 10,
+            cols: 80,
+        };
+        let texts = ["a", "b", "c", "d", "e", "f"];
+        let shown = |selected: usize, first: usize| {
+            let layout = notification_browser_layout(
+                viewport,
+                NotificationPosition::TopRight,
+                &texts,
+                selected,
+                false,
+                first,
+            )
+            .unwrap();
+            let indices: Vec<usize> = layout.entries.iter().map(|entry| entry.index).collect();
+            (layout.first, indices)
+        };
+        assert_eq!(shown(2, 0), (0, vec![0, 1, 2]));
+        // moving past the bottom scrolls by one
+        assert_eq!(shown(3, 0), (1, vec![1, 2, 3]));
+        // moving back up inside the window keeps it where it is
+        assert_eq!(shown(2, 1), (1, vec![1, 2, 3]));
+        // moving above the window scrolls back to the selection
+        assert_eq!(shown(0, 1), (0, vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn the_browser_stacks_from_the_configured_corner() {
+        let viewport = viewport();
+        for position in [
+            NotificationPosition::TopLeft,
+            NotificationPosition::BottomRight,
+        ] {
+            let layout =
+                notification_browser_layout(viewport, position, &["a", "b"], 0, false, 0).unwrap();
+            let (newest, older) = (&layout.entries[0], &layout.entries[1]);
+            if position.is_top() {
+                assert_eq!(newest.y, viewport.y);
+                assert!(older.y > newest.y);
+            } else {
+                assert_eq!(newest.y, viewport.y + viewport.rows - 3);
+                assert!(older.y < newest.y);
             }
         }
     }

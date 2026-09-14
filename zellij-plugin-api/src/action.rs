@@ -336,6 +336,31 @@ impl TryFrom<ProtobufAction> for Action {
                     None => Ok(Action::SwapTextSelectionEnds),
                 }
             },
+            Some(ProtobufActionName::MoveNotificationSelection) => {
+                match protobuf_action.optional_payload {
+                    Some(OptionalPayload::MoveNotificationSelectionPayload(direction)) => {
+                        let direction = ProtobufResizeDirection::try_from(direction)
+                            .map_err(|_| {
+                                "Malformed direction for Action::MoveNotificationSelection"
+                            })?
+                            .try_into()?;
+                        Ok(Action::MoveNotificationSelection { direction })
+                    },
+                    _ => Err("Wrong payload for Action::MoveNotificationSelection"),
+                }
+            },
+            Some(ProtobufActionName::ActivateNotification) => {
+                match protobuf_action.optional_payload {
+                    Some(_) => Err("ActivateNotification should not have a payload"),
+                    None => Ok(Action::ActivateNotification),
+                }
+            },
+            Some(ProtobufActionName::ToggleNotificationDetail) => {
+                match protobuf_action.optional_payload {
+                    Some(_) => Err("ToggleNotificationDetail should not have a payload"),
+                    None => Ok(Action::ToggleNotificationDetail),
+                }
+            },
             Some(ProtobufActionName::PageScrollUp) => match protobuf_action.optional_payload {
                 Some(_) => Err("PageScrollUp should not have a payload"),
                 None => Ok(Action::PageScrollUp),
@@ -1504,6 +1529,23 @@ impl TryFrom<Action> for ProtobufAction {
             },
             Action::SwapTextSelectionEnds => Ok(ProtobufAction {
                 name: ProtobufActionName::SwapTextSelectionEnds as i32,
+                optional_payload: None,
+            }),
+            Action::MoveNotificationSelection { direction } => {
+                let direction: ProtobufResizeDirection = direction.try_into()?;
+                Ok(ProtobufAction {
+                    name: ProtobufActionName::MoveNotificationSelection as i32,
+                    optional_payload: Some(OptionalPayload::MoveNotificationSelectionPayload(
+                        direction as i32,
+                    )),
+                })
+            },
+            Action::ActivateNotification => Ok(ProtobufAction {
+                name: ProtobufActionName::ActivateNotification as i32,
+                optional_payload: None,
+            }),
+            Action::ToggleNotificationDetail => Ok(ProtobufAction {
+                name: ProtobufActionName::ToggleNotificationDetail as i32,
                 optional_payload: None,
             }),
             Action::PageScrollUp => Ok(ProtobufAction {
@@ -3842,6 +3884,9 @@ pub(crate) mod tests {
                 | Action::CopyLastCommandOutput
                 | Action::MoveTextSelection { .. }
                 | Action::SwapTextSelectionEnds
+                | Action::MoveNotificationSelection { .. }
+                | Action::ActivateNotification
+                | Action::ToggleNotificationDetail
                 | Action::PageScrollUp
                 | Action::PageScrollDown
                 | Action::HalfPageScrollUp

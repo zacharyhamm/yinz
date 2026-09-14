@@ -373,6 +373,85 @@ fn notification_browser_keeps_dismissed_session_history() {
     zellij.quit();
 }
 
+/// Notifications mode lists the session's notifications where the toasts render, and keeps them
+/// actionable after the toasts have timed out.
+#[test]
+fn notifications_mode_browses_dismissed_toasts_in_place() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("notification_position \"top-right\"\nnotification_timeout 1")
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    notify(&zellij, "browse older");
+    let newest = format!("{} detail tail", "newest ".repeat(20));
+    notify(&zellij, &newest);
+    zellij.wait_until("the toasts dismiss", |grid_snapshot| {
+        !grid_snapshot.contains("browse older") && !grid_snapshot.contains("newest")
+    });
+
+    zellij.send_stdin(&keys::ctrl('o'));
+    zellij.send_stdin(&keys::key('n'));
+    let list = zellij.wait_until("the browser lists both notifications", |grid_snapshot| {
+        grid_snapshot.contains("browse older") && grid_snapshot.contains("newest")
+    });
+    let row_of = |text: &str| {
+        list.lines()
+            .iter()
+            .position(|line| line.contains(text))
+            .unwrap_or_else(|| panic!("{text:?} is listed"))
+    };
+    assert!(
+        row_of("newest") < row_of("browse older"),
+        "the newest notification sits nearest the top corner"
+    );
+    let text_column = list.lines()[row_of("browse older")]
+        .find("browse older")
+        .unwrap();
+    assert!(
+        text_column > TERMINAL_SIZE.cols / 2,
+        "the list renders where the top-right toasts do"
+    );
+    assert!(
+        !list.contains("detail tail"),
+        "a long notification is elided in the list"
+    );
+
+    zellij.send_stdin(&keys::SPACE);
+    zellij.wait_until(
+        "the selected notification shows its full text",
+        |grid_snapshot| grid_snapshot.contains("detail tail"),
+    );
+
+    zellij.send_stdin(&keys::key('j'));
+    zellij.wait_until("moving collapses the entry it left", |grid_snapshot| {
+        !grid_snapshot.contains("detail tail") && grid_snapshot.contains("browse older")
+    });
+
+    zellij.send_stdin(&keys::ENTER);
+    zellij.wait_until("activating leaves the mode", |grid_snapshot| {
+        !grid_snapshot.contains("browse older")
+            && !grid_snapshot.contains("newest")
+            && grid_snapshot.status_bar_appears()
+    });
+
+    zellij.send_stdin(&keys::ctrl('o'));
+    zellij.send_stdin(&keys::key('n'));
+    let list = zellij.wait_until("the browser reopens", |grid_snapshot| {
+        grid_snapshot.contains("newest")
+    });
+    assert!(
+        !list.contains("browse older"),
+        "an activated notification is consumed"
+    );
+
+    zellij.send_stdin(&keys::ESC);
+    zellij.wait_until("Esc leaves the mode", |grid_snapshot| {
+        !grid_snapshot.contains("newest") && grid_snapshot.status_bar_appears()
+    });
+
+    zellij.quit();
+}
+
 /// Text wraps into a taller box now, so it takes a message past the row cap - not merely past one
 /// row - to reach the ellipsis.
 #[test]

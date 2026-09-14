@@ -779,6 +779,29 @@ impl KeybindProcessor {
                 ];
                 Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
             },
+            InputMode::Notifications => {
+                let ordered_predicates = vec![
+                    |action: &Action| {
+                        matches!(
+                            action,
+                            Action::MoveNotificationSelection {
+                                direction: Direction::Down
+                            }
+                        )
+                    },
+                    |action: &Action| {
+                        matches!(
+                            action,
+                            Action::MoveNotificationSelection {
+                                direction: Direction::Up
+                            }
+                        )
+                    },
+                    |action: &Action| matches!(action, Action::ActivateNotification),
+                    |action: &Action| matches!(action, Action::ToggleNotificationDetail),
+                ];
+                Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
+            },
             InputMode::Agent => {
                 let ordered_predicates = vec![
                     |action: &Action| action.launches_plugin("hocus-new-agent"),

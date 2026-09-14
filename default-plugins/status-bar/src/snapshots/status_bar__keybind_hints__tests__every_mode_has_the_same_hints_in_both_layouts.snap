@@ -66,7 +66,14 @@ Configure (Config): c
 Layout Manager (Layouts): l
 Plugin Manager (Plugins): p
 About (About): a
+Notifications (Notif): n
 Select pane (Select): ENTER
+
+== Notifications
+Select (Select): ↓ ↑
+Open (Open): ENTER
+Full text (Full): SPACE
+Exit (Exit): ESC
 
 == Agent
 New agent (New): n

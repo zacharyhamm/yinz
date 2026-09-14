@@ -102,6 +102,8 @@ macro_rules! parse_kdl_action_arguments {
                 "EditScrollback" => Ok(Action::EditScrollback { ansi: false }),
                 "ScrollUp" => Ok(Action::ScrollUp),
                 "SwapTextSelectionEnds" => Ok(Action::SwapTextSelectionEnds),
+                "ActivateNotification" => Ok(Action::ActivateNotification),
+                "ToggleNotificationDetail" => Ok(Action::ToggleNotificationDetail),
                 "ScrollDown" => Ok(Action::ScrollDown),
                 "ScrollToBottom" => Ok(Action::ScrollToBottom),
                 "ScrollToTop" => Ok(Action::ScrollToTop),

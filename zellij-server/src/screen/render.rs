@@ -139,16 +139,14 @@ impl Screen {
             // The toasts are drawn above every pane, so nothing may put a cursor - real or the
             // fake one standing in for another client - on a cell they cover. Told to the output
             // before anything renders, because the fake cursors are decided while the panes draw.
-            output.set_notification_rects(if self.notifications.is_empty() {
-                vec![]
-            } else {
-                self.notification_cell_rects(session_surface, now)
-            });
+            output.set_notification_rects(self.notification_occlusion_rects(session_surface, now));
 
             // Wanted twice below - once for the menu geometry, once when the overlays paint - and
             // on almost every frame there is neither a toast nor a menu, so it is not worth
             // walking the client list to find out.
-            let has_overlays = !self.notifications.is_empty() || !self.context_menus.is_empty();
+            let has_overlays = !self.notifications.is_empty()
+                || !self.notification_browsers.is_empty()
+                || !self.context_menus.is_empty();
             let regular_client_ids: Vec<ClientId> = if has_overlays {
                 self.connected_clients
                     .borrow()

@@ -2784,6 +2784,7 @@ SetPaneFrameStylePayload set_pane_frame_style_payload = 61;
 NewStackedPanePayload new_stacked_pane_payload = 62;
 string notify_payload = 64;
 resize.ResizeDirection move_text_selection_payload = 65;
+resize.ResizeDirection move_notification_selection_payload = 66;
 }
 reserved 63;
 }
@@ -3034,6 +3035,9 @@ CopyLastCommandOutput = 115;
 MoveTextSelection = 116;
 SwapTextSelectionEnds = 117;
 ArrangePanesByProject = 118;
+MoveNotificationSelection = 119;
+ActivateNotification = 120;
+ToggleNotificationDetail = 121;
 reserved 110;
 }
 message Position {

@@ -7,8 +7,8 @@ use super::warp_ops::{PANE_WARP_SCREEN_RESERVE, TAB_WARP_SCREEN_RESERVE};
 use super::{
     active_tab, active_tab_and_connected_client_id,
     active_tab_and_connected_client_id_with_first_tab_fallback, denormalize_notification_response,
-    get_default_editor, replay_pending_plugin_events, CopyOptions, Notification, Screen,
-    ScreenInstruction,
+    get_default_editor, replay_pending_plugin_events, CopyOptions, Notification,
+    NotificationRecord, Screen, ScreenInstruction,
 };
 use crate::background_jobs::BackgroundJob;
 use crate::os_input_output::ResizeCache;
@@ -1404,7 +1404,13 @@ pub(crate) fn screen_thread_main(
                     let _ = response_channel.send(pane_entries);
                 },
                 ScreenInstruction::ListNotifications { response_channel } => {
-                    let _ = response_channel.send(screen.notification_history.clone());
+                    let _ = response_channel.send(
+                        screen
+                            .notification_history
+                            .iter()
+                            .map(|record| record.info.clone())
+                            .collect(),
+                    );
                 },
                 ScreenInstruction::ListTabs {
                     client_id,
@@ -1747,6 +1753,24 @@ pub(crate) fn screen_thread_main(
                             .swap_text_selection_ends(client_id)
                     );
                     screen.render(None)?;
+                },
+                ScreenInstruction::MoveNotificationSelection(
+                    direction,
+                    client_id,
+                    _completion_tx,
+                ) => {
+                    if screen.move_notification_selection(direction, client_id) {
+                        screen.render(None)?;
+                    }
+                },
+                ScreenInstruction::ActivateNotification(client_id, _completion_tx) => {
+                    screen.activate_selected_notification(client_id, Instant::now());
+                    screen.render(None)?;
+                },
+                ScreenInstruction::ToggleNotificationDetail(client_id, _completion_tx) => {
+                    if screen.toggle_notification_detail(client_id) {
+                        screen.render(None)?;
+                    }
                 },
                 ScreenInstruction::ClearCommandOutputFlash(pane_id) => {
                     if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
@@ -4414,11 +4438,17 @@ pub(crate) fn screen_thread_main(
                             .as_millis(),
                     )
                     .unwrap_or_else(|_| zellij_types::units::UnixMillis::new(u64::MAX));
-                    screen.notification_history.push(NotificationInfo {
-                        id,
-                        message: text.clone(),
-                        received_at_unix_ms,
+                    screen.notification_history.push(NotificationRecord {
+                        info: NotificationInfo {
+                            id,
+                            message: text.clone(),
+                            received_at_unix_ms,
+                        },
+                        pane_id,
+                        on_click: on_click.clone(),
+                        consumed: false,
                     });
+                    screen.notification_browsers_saw_arrival();
                     // the survivors are about to be pushed away from the corner - bracketing the
                     // insert is what glides them there instead of letting them jump
                     screen.with_notification_stack_change(now, |screen| {
