@@ -1243,6 +1243,7 @@ pub fn specs() -> Value {
                 "properties": {
                     "name": { "type": "string" },
                     "root": { "type": "string", "description": "Absolute; required when new." },
+                    "worktree_dir": { "type": "string", "description": "Empty clears." },
                     "tab_id": { "type": "integer", "description": "Defaults to the focused agent's tab, else the active tab." },
                 },
                 "required": ["name"],
@@ -1267,6 +1268,7 @@ pub fn specs() -> Value {
                 "properties": {
                     "name": { "type": "string" },
                     "root": { "type": "string", "description": "Absolute; required when new." },
+                    "worktree_dir": { "type": "string", "description": "Empty clears." },
                     "firecracker_image": {
                         "type": "string",
                         "description": "The project's default Firecracker image; \
@@ -1591,11 +1593,7 @@ pub fn specs() -> Value {
                     },
                     "worktree_dir": {
                         "type": "string",
-                        "description": format!(
-                            "The directory the worktree is placed in, from the repo root. \
-                             Defaults to {}. The worktree itself is always named for the branch.",
-                            launch::WORKTREE_PREFIX,
-                        ),
+                        "description": "Overrides saved default.",
                     },
                     "reuse": {
                         "type": "boolean",
@@ -5317,6 +5315,7 @@ pub fn spawn_agent(
     test_seams::SPAWN_AGENT_CALLS.with_borrow_mut(|calls| {
         calls.push(test_seams::SpawnAgentCall {
             firecracker: spec.firecracker.clone(),
+            worktree_dir: spec.worktree_dir.clone(),
             automatic_firecracker_vm,
         })
     });
@@ -5343,11 +5342,11 @@ pub mod test_seams {
     use super::PermissionType;
     use std::cell::{Cell, RefCell};
 
-    /// The Firecracker half of one `spawn_agent` ask: the VM the spec named, and whether the
-    /// host was told to name it after the folder instead.
+    /// Saved launch defaults and Firecracker placement passed to the host.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct SpawnAgentCall {
         pub firecracker: Option<String>,
+        pub worktree_dir: Option<String>,
         pub automatic_firecracker_vm: bool,
     }
 

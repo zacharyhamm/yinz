@@ -9,6 +9,7 @@ description = "The zellij server's plugin host: Wasm and Deno plugin loading, ex
 workspace = true
 
 [dependencies]
+hocus-proto = { path = "../default-plugins/hocus-proto" }
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 vte = { workspace = true }
 zellij-routing = { path = "../zellij-routing", version = "0.45.0" }
@@ -65,7 +66,6 @@ nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "sign
 
 [dev-dependencies]
 regex = { workspace = true }
-hocus-proto = { path = "../default-plugins/hocus-proto" }
 hegeltest = "0.29.3"
 insta = "1.48"
 # The plugin tests share process-global state (`ZELLIJ_SESSION_NAME` and the directories derived

@@ -1677,9 +1677,19 @@ impl State {
         };
         // Read before `adopt` replaces the entry: a project remembered again with
         // its root and nothing else keeps the image it already had.
+        if args
+            .worktree_dir
+            .as_deref()
+            .is_some_and(|dir| dir.contains('\0'))
+        {
+            return Err("worktree_dir must not contain NUL bytes".to_owned());
+        }
         let stored = self.projects.get(name).cloned();
         if let Some(root) = args.root.as_deref() {
             let mut project = projects::validate(name, root)?;
+            project.worktree_dir = stored
+                .as_ref()
+                .and_then(|project| project.worktree_dir.clone());
             let image_explicit = image.is_some();
             project.firecracker_image = match image {
                 Some(image) => image,
@@ -1689,8 +1699,14 @@ impl State {
             // The user just gave this folder a better name than a poll could.
             // What comes back is the project as stored, which a rename may have
             // filled in from the discovered entry.
-            let projects::Adopted { project, replaced } =
-                projects::adopt(&mut self.projects, project, image_explicit);
+            let projects::Adopted {
+                mut project,
+                replaced,
+            } = projects::adopt(&mut self.projects, project, image_explicit);
+            if let Some(dir) = &args.worktree_dir {
+                project.worktree_dir = (!dir.is_empty()).then(|| dir.clone());
+                self.projects.insert(project.name.clone(), project.clone());
+            }
             if let Some(gone) = replaced {
                 self.rename_project(&gone, &project.name);
             }
@@ -1706,12 +1722,17 @@ impl State {
             let mut project = stored.ok_or_else(|| {
                 format!("unknown project {name}; root is required for a new project")
             })?;
-            let Some(image) = image else {
+            if image.is_none() && args.worktree_dir.is_none() {
                 return Ok(project);
-            };
+            }
             // The image alone, on a project already known: an update in place,
             // written the same way a new project is.
-            project.firecracker_image = image;
+            if let Some(image) = image {
+                project.firecracker_image = image;
+            }
+            if let Some(dir) = &args.worktree_dir {
+                project.worktree_dir = (!dir.is_empty()).then(|| dir.clone());
+            }
             let before = self.projects.clone();
             self.projects.insert(project.name.clone(), project.clone());
             let mutations = projects::diff_mutations(&before, &self.projects);
@@ -1743,6 +1764,7 @@ impl State {
                     "name": project.name,
                     "root": project.root,
                     "firecracker_image": project.firecracker_image,
+                    "worktree_dir": project.worktree_dir,
                     "remote": project.remote,
                     "worktree_status": project.worktree_status,
                     "discovered": project.discovered,
@@ -2963,6 +2985,15 @@ impl State {
             },
             None => None,
         };
+        if spec.worktree_dir.is_none()
+            && spec
+                .branch
+                .as_deref()
+                .is_some_and(|branch| !branch.trim().is_empty())
+            && spec.worktree != Some(false)
+        {
+            spec.worktree_dir = project.and_then(|project| project.worktree_dir.clone());
+        }
         if args.firecracker {
             spec.firecracker = Some(launch::unique_firecracker_vm());
         }

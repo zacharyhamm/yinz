@@ -2805,7 +2805,7 @@ fn spawn_agent(
             }
             context.insert("agent_workflow_owner".into(), env.plugin_id.to_string());
         }
-        let (mut command, checkout) = zellij_runtime::agent::launch::plan(&spec)?;
+        let (mut command, mut checkout) = zellij_runtime::agent::launch::plan(&spec)?;
         // The marker's value is the agent's kind - the program - which is what the pane's
         // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
         let kind = zellij_types::agent::agent_kind_of(&command.path, &command.args)
@@ -2822,6 +2822,12 @@ fn spawn_agent(
                 }
             })
             .unwrap_or_else(|| env.plugin_cwd.clone());
+        apply_project_worktree_dir(&mut checkout, spec.worktree_dir.as_deref(), &source, || {
+            env.data_access.plugin_data().fetch(
+                hocus_proto::store::SHARED,
+                &FetchRequest::entity("project").limit(hocus_proto::store::LIST_FETCH_LIMIT),
+            )
+        })?;
         let cwd = cwd.map(|path| {
             if host_paths && path.is_absolute() {
                 path
@@ -2887,6 +2893,64 @@ fn spawn_agent(
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write spawn_agent response".to_string())
         .non_fatal();
+}
+
+/// Read saved defaults only for a new worktree with no launch override. Fetching all
+/// columns also works before the nullable setting has been added to an old registry.
+fn apply_project_worktree_dir(
+    checkout: &mut GitCheckout,
+    explicit: Option<&str>,
+    source: &std::path::Path,
+    fetch: impl FnOnce() -> Result<zellij_types::data::DataRows, DataError>,
+) -> Result<(), String> {
+    let GitCheckout::NewWorktree { branch, path, .. } = checkout else {
+        return Ok(());
+    };
+    if explicit.is_some() {
+        return Ok(());
+    }
+    let rows = match fetch() {
+        Ok(rows) => rows,
+        Err(DataError::UnknownEntity(_)) => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "could not read project worktree directory: {error}"
+            ))
+        },
+    };
+    let projects = hocus_proto::projects::from_rows(&rows);
+    let location = hocus_proto::location::Location::local(source.to_string_lossy());
+    let project = match hocus_proto::projects::for_cwd(&projects, &location) {
+        Some(project) => Some(project),
+        None if projects.is_empty() => None,
+        None => {
+            let checkouts = worktrees(source)?;
+            let (primary, linked) = checkouts
+                .split_first()
+                .ok_or_else(|| "git could not find the primary worktree".to_owned())?;
+            hocus_proto::projects::for_cwd(
+                &projects,
+                &hocus_proto::location::Location::local(primary.path.to_string_lossy()),
+            )
+            .or_else(|| {
+                let mut matches = projects.values().filter(|project| {
+                    linked.iter().any(|checkout| {
+                        same_path(std::path::Path::new(&project.root), &checkout.path)
+                    })
+                });
+                let project = matches.next()?;
+                // Several linked roots can be registered with different defaults.
+                matches.next().is_none().then_some(project)
+            })
+        },
+    };
+    if let Some(dir) = project.and_then(|project| project.worktree_dir.as_deref()) {
+        if dir.contains('\0') {
+            return Err("worktree_dir must not contain NUL bytes".to_owned());
+        }
+        *path = zellij_runtime::agent::launch::worktree_path_in(Some(dir), branch).into();
+    }
+    Ok(())
 }
 
 /// Where a spawned agent's pane runs. A branch means git work in `source`, the repository, and
@@ -8510,6 +8574,217 @@ mod permission_tests {
 
         symlink(&outside, layout_dir.join("safe.swap.kdl")).unwrap();
         assert!(validate_plugin_layout_path("safe", Some(&layout_dir)).is_err());
+    }
+
+    #[test]
+    fn project_worktree_defaults_apply_from_primary_and_external_checkouts() {
+        use hocus_proto::{projects, store};
+        let first = repository();
+        let second = repository();
+        let external = tempfile::tempdir().unwrap();
+        let linked = external.path().join("linked source");
+        run_git(
+            first.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "external",
+                linked.to_str().unwrap(),
+            ],
+            "link",
+        )
+        .unwrap();
+        let mut a = projects::validate("a", resolved(first.path()).to_str().unwrap()).unwrap();
+        let relative = format!(
+            "../{}/relative trees",
+            external.path().file_name().unwrap().to_str().unwrap()
+        );
+        a.worktree_dir = Some(relative.clone());
+        let mut b = projects::validate("b", resolved(second.path()).to_str().unwrap()).unwrap();
+        b.worktree_dir = Some(
+            external
+                .path()
+                .join("absolute trees")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let registry: projects::Registry = [(a.name.clone(), a), (b.name.clone(), b)]
+            .into_iter()
+            .collect();
+        // The host reads the real shared store, including when the caller is a direct plugin.
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = plugin_data_store::PluginDataStore::new(db_dir.path());
+        db.define_entity(store::SHARED, "hocus", &store::project_def(), false)
+            .unwrap();
+        for project in registry.values() {
+            db.apply(store::SHARED, &[projects::to_mutation(project)])
+                .unwrap();
+        }
+        for (source, branch, expected) in [
+            (
+                first.path(),
+                "primary-default",
+                first.path().join(&relative).join("primary-default"),
+            ),
+            (
+                linked.as_path(),
+                "linked-default",
+                first.path().join(&relative).join("linked-default"),
+            ),
+            (
+                second.path(),
+                "absolute-default",
+                external.path().join("absolute trees/absolute-default"),
+            ),
+        ] {
+            let mut checkout = GitCheckout::NewWorktree {
+                branch: branch.into(),
+                base: "main".into(),
+                path: format!(".worktrees/{branch}").into(),
+            };
+            apply_project_worktree_dir(&mut checkout, None, source, || {
+                db.fetch(store::SHARED, &FetchRequest::entity("project"))
+            })
+            .unwrap();
+            let made = agent_folder(
+                checkout,
+                None,
+                source.into(),
+                false,
+                WorktreeGuard::Required,
+            )
+            .unwrap();
+            assert_eq!(resolved(&made.path), resolved(&expected));
+        }
+    }
+
+    #[test]
+    fn project_worktree_linked_defaults_follow_repository_membership() {
+        use hocus_proto::projects;
+        let repo = repository();
+        let unrelated = repository();
+        let external = tempfile::tempdir().unwrap();
+        let linked = external.path().join("registered");
+        let sibling = external.path().join("sibling");
+        for (branch, path) in [("linked", &linked), ("sibling", &sibling)] {
+            run_git(
+                repo.path(),
+                &["worktree", "add", "-b", branch, path.to_str().unwrap()],
+                "link",
+            )
+            .unwrap();
+        }
+        let mut registry = projects::Registry::new();
+        // Each stage adds a competing registration. Direct matches win, then the
+        // primary root; otherwise linked roots must identify exactly one project.
+        for (stage, root, dir, sources) in [
+            (
+                "linked",
+                linked.as_path(),
+                "saved",
+                vec![
+                    (repo.path(), "saved"),
+                    (linked.as_path(), "saved"),
+                    (sibling.as_path(), "saved"),
+                    (unrelated.path(), ".worktrees"),
+                ],
+            ),
+            (
+                "ambiguous",
+                sibling.as_path(),
+                "sibling-saved",
+                vec![
+                    (repo.path(), ".worktrees"),
+                    (linked.as_path(), "saved"),
+                    (sibling.as_path(), "sibling-saved"),
+                ],
+            ),
+            (
+                "primary",
+                repo.path(),
+                "primary-saved",
+                vec![
+                    (repo.path(), "primary-saved"),
+                    (linked.as_path(), "saved"),
+                    (sibling.as_path(), "sibling-saved"),
+                ],
+            ),
+        ] {
+            let mut project = projects::validate(stage, resolved(root).to_str().unwrap()).unwrap();
+            project.worktree_dir = Some(dir.into());
+            registry.insert(project.name.clone(), project);
+            for (index, (source, expected_dir)) in sources.into_iter().enumerate() {
+                let branch = format!("{stage}-{index}");
+                let mut checkout = GitCheckout::NewWorktree {
+                    branch: branch.clone(),
+                    base: "main".into(),
+                    path: format!(".worktrees/{branch}").into(),
+                };
+                apply_project_worktree_dir(&mut checkout, None, source, || {
+                    Ok(projects::to_rows(&registry))
+                })
+                .unwrap();
+                let made = agent_folder(
+                    checkout,
+                    None,
+                    source.into(),
+                    false,
+                    WorktreeGuard::Required,
+                )
+                .unwrap();
+                let primary = if source == unrelated.path() {
+                    unrelated.path()
+                } else {
+                    repo.path()
+                };
+                assert_eq!(
+                    resolved(&made.path),
+                    resolved(&primary.join(expected_dir).join(branch)),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn project_worktree_lookup_preserves_overrides_and_surfaces_store_errors() {
+        let mut checkout = GitCheckout::NewWorktree {
+            branch: "topic".into(),
+            base: "main".into(),
+            path: "/explicit/topic".into(),
+        };
+        apply_project_worktree_dir(&mut checkout, Some("/explicit"), "/unused".as_ref(), || {
+            panic!("explicit launch must not read projects")
+        })
+        .unwrap();
+        assert!(
+            matches!(&checkout, GitCheckout::NewWorktree { path, .. } if path == std::path::Path::new("/explicit/topic"))
+        );
+        for mut unchanged in [
+            GitCheckout::Current,
+            GitCheckout::NewBranch {
+                branch: "topic".into(),
+                base: "main".into(),
+            },
+        ] {
+            apply_project_worktree_dir(&mut unchanged, None, "/unused".as_ref(), || {
+                panic!("no worktree must not read projects")
+            })
+            .unwrap();
+        }
+        apply_project_worktree_dir(&mut checkout, None, "/unused".as_ref(), || {
+            Err(DataError::UnknownEntity("project".into()))
+        })
+        .unwrap();
+        let error = apply_project_worktree_dir(&mut checkout, None, "/unused".as_ref(), || {
+            Err(DataError::Storage("offline".into()))
+        })
+        .unwrap_err();
+        assert!(error.contains("offline"));
+        apply_project_worktree_dir(&mut checkout, None, "/unused".as_ref(), || {
+            Ok(hocus_proto::projects::to_rows(&Default::default()))
+        })
+        .unwrap();
     }
 
     #[test]

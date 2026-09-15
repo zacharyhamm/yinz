@@ -72,6 +72,7 @@ pub fn project_def() -> EntityDef {
         .attr(AttrDef::text("name").required())
         .attr(AttrDef::text("root").indexed().required())
         .attr(AttrDef::text("firecracker_image"))
+        .attr(AttrDef::text("worktree_dir"))
         .attr(AttrDef::text("remote"))
         // The snake_case strings serde already emits, rather than an integer
         // that would need a mapping table to read in the file.
@@ -1109,6 +1110,44 @@ mod tests {
         assert!(
             error.contains("discard the stored values"),
             "the refusal should say what is at stake, got: {error}"
+        );
+    }
+
+    #[test]
+    fn project_worktree_directory_migrates_and_round_trips() {
+        let store = Local::shared("hocus");
+        let mut legacy = project_def();
+        legacy.attrs.retain(|attr| attr.name != "worktree_dir");
+        store.define(&legacy).unwrap();
+        store
+            .apply(vec![Mutation::put("project")
+                .uid("old")
+                .set("name", "old")
+                .set("root", "/old")
+                .build()])
+            .unwrap();
+        store.define(&project_def()).unwrap();
+        let rows = store.fetch(&FetchRequest::entity("project")).unwrap();
+        let mut projects = crate::projects::from_rows(&rows);
+        assert_eq!(projects["old"].worktree_dir, None);
+        projects.get_mut("old").unwrap().worktree_dir = Some("../trees with spaces".into());
+        store
+            .apply(vec![crate::projects::to_mutation(&projects["old"])])
+            .unwrap();
+        let loaded =
+            crate::projects::from_rows(&store.fetch(&FetchRequest::entity("project")).unwrap());
+        assert_eq!(loaded, projects);
+        assert_eq!(
+            crate::projects::from_rows(&crate::projects::to_rows(&projects)),
+            projects
+        );
+        projects.get_mut("old").unwrap().worktree_dir = None;
+        store
+            .apply(vec![crate::projects::to_mutation(&projects["old"])])
+            .unwrap();
+        assert_eq!(
+            crate::projects::from_rows(&store.fetch(&FetchRequest::entity("project")).unwrap()),
+            projects
         );
     }
 

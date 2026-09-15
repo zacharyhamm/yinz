@@ -667,3 +667,33 @@ fn a_registered_kind_survives_open_store() {
         .expect("fetched");
     assert!(agents::rows::latches_from_rows(&rows).is_empty());
 }
+
+#[test]
+fn project_worktree_defaults_reach_the_host_only_for_worktrees() {
+    let mut state = idle_state();
+    let mut project = projects::validate("trees", "/work/trees").unwrap();
+    project.worktree_dir = Some("../saved trees".into());
+    state.projects.insert(project.name.clone(), project);
+    state.active_project = Some("trees".into());
+    tools::test_seams::reset();
+    for args in [
+        r#"{"agent":"codex","branch":"topic"}"#,
+        r#"{"agent":"codex","branch":"other","worktree_dir":"/override"}"#,
+        r#"{"agent":"codex","branch":"local","worktree":false}"#,
+        r#"{"agent":"codex"}"#,
+    ] {
+        assert_eq!(
+            state.run_local(&agent_call("agent_spawn", args)),
+            Some("tools are unavailable outside zellij".into())
+        );
+    }
+    tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| {
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.worktree_dir.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("../saved trees"), Some("/override"), None, None]
+        );
+    });
+}
