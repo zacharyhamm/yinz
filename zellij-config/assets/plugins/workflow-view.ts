@@ -245,8 +245,11 @@ type Stream = {
 let streams: Stream[] = [];
 let latestStream: Stream | undefined;
 let launch: string | undefined;
+// pinBottom keeps a returned view at the bottom while reports still loading grow above it, until
+// the developer scrolls.
 let detached = false,
   followLive = true,
+  pinBottom = false,
   scrollLimit = 0;
 function setSubtitle(subtitle?: string): void {
   z.command("SetPaneSubtitle", {
@@ -491,6 +494,7 @@ function attach(attachment: Attachment): void {
   view.pending = [];
   view.selected = 0;
   view.scroll = 0;
+  pinBottom = false;
   view.action = undefined;
   view.notice = undefined;
   view.noticeError = false;
@@ -524,6 +528,7 @@ function pipe(message: PipeMessage): void {
     // A workflow step handed the pane back: show the tail, following it when End would.
     view.scroll = Infinity;
     followLive = latestStream === streams.at(-1);
+    pinBottom = true;
     repaint();
     return;
   }
@@ -576,21 +581,25 @@ function update(event: Event): boolean {
     return false;
   }
   if ("Key" in event && event.Key.bare_key === "End" && required(form).focusedId() !== "answer") {
+    pinBottom = false;
     followLive = true;
     view.scroll = Infinity;
     return true;
   }
   if ("Key" in event && event.Key.bare_key === "Home" && required(form).focusedId() !== "answer") {
+    pinBottom = false;
     followLive = false;
     view.scroll = 0;
     return true;
   }
   if ("Key" in event && event.Key.bare_key === "PageUp") {
+    pinBottom = false;
     followLive = false;
     view.scroll = Math.max(0, view.scroll - contentHeight);
     return true;
   }
   if ("Key" in event && event.Key.bare_key === "PageDown") {
+    pinBottom = false;
     view.scroll += contentHeight;
     followLive = view.scroll >= scrollLimit && latestStream === streams.at(-1);
     return true;
@@ -598,11 +607,13 @@ function update(event: Event): boolean {
   if ("Mouse" in event) {
     const mouse = event.Mouse;
     if ("ScrollUp" in mouse) {
+      pinBottom = false;
       followLive = false;
       view.scroll = Math.max(0, view.scroll - Math.min(Number(mouse.ScrollUp), contentHeight));
       return true;
     }
     if ("ScrollDown" in mouse) {
+      pinBottom = false;
       view.scroll += Math.min(Number(mouse.ScrollDown), contentHeight);
       followLive = view.scroll >= scrollLimit && latestStream === streams.at(-1);
       return true;
@@ -910,7 +921,7 @@ function render(rows: number, cols: number): string {
       if (block.live) break;
     }
     view.scroll = Math.max(0, end - page);
-  }
+  } else if (pinBottom) view.scroll = scrollLimit;
   view.scroll = Math.max(0, Math.min(view.scroll, scrollLimit));
   const frame: string[] = [];
   // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
