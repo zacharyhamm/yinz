@@ -1050,6 +1050,56 @@ async function scenario() {
 }
 
 #[test]
+fn a_returned_view_stays_at_the_bottom_while_a_report_loads_above_it() {
+    let view = builtin_body(include_str!(
+        "../../../../zellij-config/assets/plugins/workflow-view.ts"
+    ));
+    let source = r#"
+import real, {definePlugin} from 'zellij:plugin';
+const report = 'REPORT\n'.repeat(30);
+let snapshot: any = {launch: 'launch', run: 'run', root: '/work', history: {workflowName: 'exit', status: 'running'}};
+const z: any = {...real, command() {}, subscribe() {}, every() {}, requestRender() {},
+  rpc: {call: async ({payload}: any) => payload.method === 'workflow_report'
+    ? {text: report, next: report.length, total: report.length}
+    : snapshot},
+};
+const view: any = (() => {/*BODY*/
+return view;})();
+async function settle() { for (let i = 0; i < 50; i++) await null; }
+const output = (pane_id: number, text: string) => view.update({PaneOutput: {pane_id,
+  context: {swamp_work: 'launch', swamp_operation: `op${pane_id}`}, data: real.encodeUtf8(text)}});
+// Widget text arrives as UTF-8 byte lists; this is "↓", which marks content below the page.
+const below = '226,134,147';
+async function scenario() {
+  view.load();
+  const render = () => String(view.render(8, 80));
+  view.attach({directory: '/work', run: 'run'});
+  await settle();
+  output(3, 'FIRST\n'.repeat(10));
+  output(4, 'SECOND\n'.repeat(10));
+  output(3, 'AGAIN\n');
+  view.update({Key: {bare_key: 'Home', key_modifiers: []}});
+  render();
+  view.pipe({name: 'workflow-returned'});
+  check(!render().includes(below), 'returning from a step lands at the bottom');
+  snapshot = {...snapshot, outputs: {results: [
+    {model: 'tests', name: 'report', version: 1, createdAt: '1', attributes: {summaryLength: report.length, passed: true}},
+  ]}};
+  await view.refresh(); await settle();
+  check(!render().includes(below), 'a report loading above keeps the returned view at the bottom');
+  view.update({Key: {bare_key: 'Home', key_modifiers: []}});
+  render();
+  output(3, 'LATER\n');
+  eq(view.scroll, 0, 'scrolling releases the bottom');
+  render();
+  eq(view.scroll, 0, 'scrolling releases the bottom');
+}
+"#
+    .replace("/*BODY*/", &view);
+    run_scenario("swamp-workflow", &source);
+}
+
+#[test]
 fn typescript_reference_examples_load_and_render_in_deno() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins");
     let store = tempfile::tempdir().unwrap();
