@@ -599,3 +599,51 @@ fn forgetting_the_project_withdraws_the_relayed_assignment() {
 
     assert!(state.sent_tab_projects.is_empty());
 }
+
+#[test]
+fn project_worktree_directory_can_be_set_preserved_and_cleared() {
+    let mut state = idle_state();
+    state.tabs = vec![TabInfo {
+        active: true,
+        tab_id: TabId::new(9),
+        ..Default::default()
+    }];
+    for tool in ["project_open", "project_assign"] {
+        let args = tools::Args {
+            name: Some("trees".into()),
+            root: Some("/work/trees".into()),
+            worktree_dir: Some("../trees with spaces".into()),
+            ..Default::default()
+        };
+        let call = agent_call(
+            tool,
+            &serde_json::json!({
+                "name": args.name, "root": args.root, "worktree_dir": args.worktree_dir
+            })
+            .to_string(),
+        );
+        state.run_local(&call);
+        assert_eq!(
+            state.projects["trees"].worktree_dir.as_deref(),
+            Some("../trees with spaces")
+        );
+        state.run_local(&agent_call(
+            tool,
+            r#"{"name":"trees","root":"/work/trees"}"#,
+        ));
+        assert_eq!(
+            state.projects["trees"].worktree_dir.as_deref(),
+            Some("../trees with spaces")
+        );
+        let list: serde_json::Value = serde_json::from_str(&state.project_list()).unwrap();
+        assert_eq!(list["projects"][0]["worktree_dir"], "../trees with spaces");
+        state.run_local(&agent_call(tool, r#"{"name":"trees","worktree_dir":""}"#));
+        assert_eq!(state.projects["trees"].worktree_dir, None);
+        let result = state.run_local(&agent_call(
+            tool,
+            r#"{"name":"trees","worktree_dir":"bad\u0000path"}"#,
+        ));
+        assert!(result.unwrap().contains("NUL"));
+        assert_eq!(state.projects["trees"].worktree_dir, None);
+    }
+}

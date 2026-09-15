@@ -706,6 +706,7 @@ fn a_scan_overtaken_by_a_later_one_is_ignored() {
             name: "other".to_owned(),
             root: "/work/other".to_owned(),
             firecracker_image: None,
+            worktree_dir: None,
             remote: None,
             worktree_status: None,
             common_dir: None,

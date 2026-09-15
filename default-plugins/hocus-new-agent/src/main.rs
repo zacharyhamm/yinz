@@ -106,6 +106,7 @@ struct State {
     plugin_id: zellij_tile::prelude::PluginId,
     job: Job,
     firecracker_image_edited: bool,
+    worktree_dir_edited: bool,
     error: Option<String>,
     /// What the fork modal is forking, for its status row. Outlived by the error, which
     /// takes the same row when there is one.
@@ -203,6 +204,7 @@ impl Default for State {
             plugin_id: zellij_tile::prelude::PluginId::new(0),
             job: Job::New,
             firecracker_image_edited: false,
+            worktree_dir_edited: false,
             error: None,
             note: None,
             requested_size: None,
@@ -582,6 +584,7 @@ impl State {
             // `CURRENT_DIRECTORY`.
             select.select_index(selected);
         }
+        self.fill_worktree_default();
     }
 
     /// Ask Git what this project already has, for the three combos to suggest.
@@ -660,6 +663,24 @@ impl State {
                 true
             },
             WORKTREES_PROBE => {
+                if !self.worktree_dir_edited
+                    && selected_project(self.dialog.form(), &self.projects).is_none()
+                {
+                    if let Some(primary) = stdout
+                        .lines()
+                        .find_map(|line| line.strip_prefix("worktree "))
+                    {
+                        let dir = projects::for_cwd(
+                            &self.projects,
+                            &Location::local(self.source_directory.to_string_lossy()),
+                        )
+                        .or_else(|| projects::for_cwd(&self.projects, &Location::local(primary)))
+                        .and_then(|project| project.worktree_dir.clone());
+                        if let Some(dir) = dir {
+                            self.set_text(PATH, &dir);
+                        }
+                    }
+                }
                 let paths = worktree_suggestions(stdout);
                 if let Some(combo) = self.dialog.form_mut().combo_by_id_mut(PATH) {
                     combo.set_suggestions(paths);
@@ -938,7 +959,11 @@ impl State {
         }
         // The branches and worktrees on offer are the selected project's, so a
         // different project means a different list.
+        if id == PATH {
+            self.worktree_dir_edited = true;
+        }
         if id == PROJECT {
+            self.fill_worktree_default();
             self.refresh_git_suggestions();
             self.fill_firecracker_image_default();
         }
@@ -971,6 +996,20 @@ impl State {
         if let Some(checkbox) = self.dialog.form_mut().checkbox_by_id_mut(id) {
             checkbox.set_checked(checked);
         }
+    }
+
+    fn fill_worktree_default(&mut self) {
+        self.worktree_dir_edited = false;
+        let dir = selected_project(self.dialog.form(), &self.projects)
+            .or_else(|| {
+                projects::for_cwd(
+                    &self.projects,
+                    &Location::local(self.source_directory.to_string_lossy()),
+                )
+            })
+            .and_then(|project| project.worktree_dir.clone())
+            .unwrap_or_else(|| launch::WORKTREE_PREFIX.to_owned());
+        self.set_text(PATH, &dir);
     }
 
     fn fill_firecracker_image_default(&mut self) {
@@ -1056,7 +1095,15 @@ impl State {
             return true;
         }
         let source = source_directory(self.dialog.form(), &self.projects, &self.source_directory);
-        match launch::open(&spec(self.dialog.form()), source) {
+        let mut spec = spec(self.dialog.form());
+        // The primary-checkout probe may still be in flight. Let the host resolve
+        // the current directory's saved default unless the user edited it.
+        if !self.worktree_dir_edited
+            && selected_project(self.dialog.form(), &self.projects).is_none()
+        {
+            spec.worktree_dir = None;
+        }
+        match launch::open(&spec, source) {
             Ok(agent) => {
                 self.finish_launch(agent.pane_id);
                 false
@@ -1175,6 +1222,7 @@ mod tests {
                 name: name.to_owned(),
                 root: root.to_owned(),
                 firecracker_image: None,
+                worktree_dir: None,
                 remote: None,
                 worktree_status: None,
                 common_dir: None,
@@ -1256,6 +1304,62 @@ mod tests {
         let state = State::default();
         assert_eq!(modal_height(&state.dialog), "20");
         assert_eq!(state.dialog.height() + FRAME_ROWS, 20);
+    }
+
+    #[test]
+    fn project_worktree_defaults_reset_on_selection_and_allow_overrides() {
+        let mut state = State {
+            projects: registry(),
+            source_directory: PathBuf::from("/work/zellij"),
+            ..Default::default()
+        };
+        state.projects.get_mut("zellij").unwrap().worktree_dir = Some("../zellij trees".into());
+        state.projects.get_mut("dobbs").unwrap().worktree_dir = Some("/tmp/dobbs trees".into());
+        state.fill_projects();
+        assert_eq!(state.dialog.form().text(PATH), "../zellij trees");
+        state.set_text(PATH, "/manual");
+        assert_eq!(
+            spec(state.dialog.form()).worktree_dir.as_deref(),
+            Some("/manual")
+        );
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(PROJECT)
+            .unwrap()
+            .select_index(1);
+        state.changed(PROJECT);
+        assert_eq!(state.dialog.form().text(PATH), "/tmp/dobbs trees");
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(PROJECT)
+            .unwrap()
+            .select_index(0);
+        state.changed(PROJECT);
+        assert_eq!(state.dialog.form().text(PATH), "../zellij trees");
+    }
+
+    #[test]
+    fn external_worktree_probe_fills_project_default_without_replacing_manual_input() {
+        let mut state = State {
+            projects: registry(),
+            source_directory: PathBuf::from("/outside/linked"),
+            ..Default::default()
+        };
+        state.projects.get_mut("zellij").unwrap().worktree_dir = Some("../saved trees".into());
+        state.fill_projects();
+        let context = BTreeMap::from([
+            (GIT_PROBE.to_owned(), WORKTREES_PROBE.to_owned()),
+            (GIT_PROBE_ID.to_owned(), state.git_probe.to_string()),
+        ]);
+        let output = "worktree /work/zellij\n\nworktree /outside/linked\n";
+        assert!(state.finish_git_probe(Some(0), output, &context));
+        assert_eq!(state.dialog.form().text(PATH), "../saved trees");
+        state.set_text(PATH, "/manual");
+        state.changed(PATH);
+        state.finish_git_probe(Some(0), output, &context);
+        assert_eq!(state.dialog.form().text(PATH), "/manual");
     }
 
     #[test]

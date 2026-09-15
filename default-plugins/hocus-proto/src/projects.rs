@@ -16,6 +16,8 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firecracker_image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_status: Option<WorktreeStatus>,
@@ -202,6 +204,7 @@ pub fn parse_legacy(json: &[u8]) -> Registry {
             let mut project = validate(&saved.name, &saved.root).ok()?;
             project.discovered = saved.discovered;
             project.firecracker_image = saved.firecracker_image;
+            project.worktree_dir = saved.worktree_dir.filter(|dir| !dir.contains('\0'));
             project.remote = saved.remote;
             project.worktree_status = saved.worktree_status;
             project.common_dir = saved.common_dir;
@@ -229,6 +232,7 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
         name: name.to_owned(),
         root,
         firecracker_image: None,
+        worktree_dir: None,
         remote: None,
         worktree_status: None,
         common_dir: None,
@@ -251,6 +255,7 @@ pub const ROW_COLUMNS: &[&str] = &[
     "name",
     "root",
     "firecracker_image",
+    "worktree_dir",
     "remote",
     "worktree_status",
     "common_dir",
@@ -306,6 +311,7 @@ pub fn from_rows(rows: &DataRows) -> Registry {
                     name,
                     root,
                     firecracker_image: text_at(rows, row, "firecracker_image"),
+                    worktree_dir: text_at(rows, row, "worktree_dir"),
                     remote: text_at(rows, row, "remote"),
                     worktree_status: text_at(rows, row, "worktree_status")
                         .as_deref()
@@ -329,6 +335,7 @@ pub fn to_mutation(project: &Project) -> Mutation {
         .set("name", project.name.clone())
         .set("root", project.root.clone())
         .set("firecracker_image", project.firecracker_image.clone())
+        .set("worktree_dir", project.worktree_dir.clone())
         .set("remote", project.remote.clone())
         .set(
             "worktree_status",
@@ -380,6 +387,10 @@ pub fn to_rows(projects: &Registry) -> DataRows {
                     DataValue::Text(project.root.clone()),
                     project
                         .firecracker_image
+                        .clone()
+                        .map_or(DataValue::Null, DataValue::Text),
+                    project
+                        .worktree_dir
                         .clone()
                         .map_or(DataValue::Null, DataValue::Text),
                     project
@@ -735,6 +746,9 @@ pub fn adopt(projects: &mut Registry, mut project: Project, image_explicit: bool
                 project
                     .firecracker_image
                     .clone_from(&other.firecracker_image);
+            }
+            if project.worktree_dir.is_none() {
+                project.worktree_dir.clone_from(&other.worktree_dir);
             }
             other.name.clone()
         });
@@ -1261,6 +1275,19 @@ mod tests {
                 WorktreeStatus::Primary,
             )],
         );
+        projects.get_mut("hocus").unwrap().worktree_dir = Some("../saved trees".into());
+        discover(
+            &mut projects,
+            &[git(
+                "/work/hocus",
+                Some("git@example.com:hocus.git"),
+                WorktreeStatus::Primary,
+            )],
+        );
+        assert_eq!(
+            projects["hocus"].worktree_dir.as_deref(),
+            Some("../saved trees")
+        );
         let stale = adopt(
             &mut projects,
             validate("pocus", "/work/hocus").unwrap(),
@@ -1268,6 +1295,10 @@ mod tests {
         )
         .replaced;
 
+        assert_eq!(
+            projects["pocus"].worktree_dir.as_deref(),
+            Some("../saved trees")
+        );
         assert_eq!(stale, Some("hocus".to_owned()));
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["pocus"]);
         assert!(!projects["pocus"].discovered);

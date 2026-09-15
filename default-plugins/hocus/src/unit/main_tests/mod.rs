@@ -134,6 +134,7 @@ fn project_state() -> State {
             name: "hocus".to_owned(),
             root: "/work/hocus".to_owned(),
             firecracker_image: None,
+            worktree_dir: None,
             remote: None,
             worktree_status: None,
             common_dir: None,

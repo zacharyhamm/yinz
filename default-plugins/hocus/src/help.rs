@@ -232,11 +232,11 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "project_list",
-        "Show the projects, their roots, their worktrees, their tabs, and which project is active. The file tools and the git tools all work in the active project.",
+        "Show the projects, their roots, their saved worktree_dir settings, their worktrees, their tabs, and which project is active. The file tools and the git tools all work in the active project.",
     ),
     (
         "project_assign",
-        "Make a tab belong to a project. A project that does not exist needs an absolute root path. Without a tab ID, the tool takes the tab of the agent you looked at last, and the active tab after that. The project becomes the active one only when that tab is the active tab. The file tools and the git tools all work in the project of the active tab.",
+        "Make a tab belong to a project. A project that does not exist needs an absolute root path. Without a tab ID, the tool takes the tab of the agent you looked at last, and the active tab after that. The project becomes the active one only when that tab is the active tab. The file tools and the git tools all work in the project of the active tab. Set worktree_dir for future worktrees. Omit it to keep the setting, or give an empty string to clear it. Launch overrides take precedence, then this setting, then .worktrees/. Zellij appends the branch name. Relative paths resolve against the primary checkout, including sibling paths. Absolute paths are also accepted. Shell variables and ~ are not expanded. NUL bytes are rejected. Existing worktrees stay where they are.",
     ),
     (
         "project_forget",
@@ -244,7 +244,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "project_open",
-        "Open a project in a new tab, and make the tab belong to it. The new tab starts in the root of the project. A project that does not exist needs an absolute root path.",
+        "Open a project in a new tab, and make the tab belong to it. The new tab starts in the root of the project. A project that does not exist needs an absolute root path. Set worktree_dir for future worktrees. Omit it to keep the setting, or give an empty string to clear it. Launch overrides take precedence, then this setting, then .worktrees/. Zellij appends the branch name. Relative paths resolve against the primary checkout, including sibling paths. Absolute paths are also accepted. Shell variables and ~ are not expanded. NUL bytes are rejected. Existing worktrees stay where they are.",
     ),
     (
         "todo_add",
@@ -328,7 +328,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "agent_spawn",
-        "Start a coding agent in a new pane. Give agent for a known agent, or command for a different program; a call with neither is an error. Give kind to name an agent that hocus does not know: lowercase letters, digits, _ or -, up to 32 characters. Give branch to cut a new branch. The branch gets a git worktree of its own, named after it, in worktree_dir under the repository root (.worktrees/ by default); with worktree set to false, this checkout moves to the new branch instead. A branch or worktree name already taken is cut afresh as <branch>-2, unless reuse says the existing one is the work you mean. An agent that would start anywhere but a linked worktree - the primary checkout, or a folder that is no repository - is refused unless allow_outside_worktree says so. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a zellij TypeScript plugin, use plugin_write instead of an agent.",
+        "Start a coding agent in a new pane. Give agent for a known agent, or command for a different program; a call with neither is an error. Give kind to name an agent that hocus does not know: lowercase letters, digits, _ or -, up to 32 characters. Give branch to cut a new branch. The branch gets a git worktree of its own, named after it, in the explicit worktree_dir, then the saved project worktree_dir, then .worktrees/. Relative directories resolve against the primary checkout; absolute and sibling directories are supported, with no shell variable or ~ expansion; with worktree set to false, this checkout moves to the new branch instead. A branch or worktree name already taken is cut afresh as <branch>-2, unless reuse says the existing one is the work you mean. An agent that would start anywhere but a linked worktree - the primary checkout, or a folder that is no repository - is refused unless allow_outside_worktree says so. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a zellij TypeScript plugin, use plugin_write instead of an agent.",
     ),
     (
         "slack_status",

@@ -780,10 +780,23 @@ as anywhere else.
 | `name` | text | required; also the uid |
 | `root` | text | required, indexed; the folder. Not unique - resolve a cwd by *longest matching root* |
 | `firecracker_image` | text | the default Firecracker image for agents in this project |
+| `worktree_dir` | text | optional default parent directory for new worktrees |
 | `remote` | text | |
 | `worktree_status` | text | snake case, as serde spells it |
 | `common_dir` | text | the main checkout, for a worktree |
 | `discovered` | bool | required; true for one found by a running agent rather than named by hand |
+
+Set a project's `worktree_dir` through `project_open` or `project_assign`. Omit the argument to keep the saved setting.
+Use an empty string to clear it. `project_list` returns the setting. NUL bytes are rejected.
+
+For new worktrees, an explicit launch directory takes precedence over the project setting.
+If neither is set, Zellij uses `.worktrees/`. The branch name is appended to that directory.
+Relative paths, including sibling paths such as `../agent trees`, resolve against the repository's primary checkout.
+Absolute paths are also accepted. Zellij does not expand shell variables or `~`.
+
+The setting applies to Rust and TypeScript agent launches, Hocus, and the New Agent dialog.
+The dialog displays the default and allows a launch override. Existing worktrees stay in place.
+Forks continue to use the source agent's checkout.
 
 **`todo`** - one item. The tree is edges, not nesting.
 
