@@ -127,6 +127,7 @@ type Placement = {
   detached?: boolean | undefined;
   manual?: boolean | undefined;
   subtitle?: string | undefined;
+  endpoint?: string | undefined;
   workflow?: string | undefined;
 };
 // Placement belongs to an authenticated builtin view, never to a caller-supplied pane.
@@ -571,7 +572,10 @@ function updateSubtitle(work: string, subtitle: string, workflow?: string): void
 }
 // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
 function unavailable(placement: Placement, work: string): void {
-  updateSubtitle(work, `${placement.workflow ?? "Workflow"} · status unavailable`);
+  updateSubtitle(
+    work,
+    `${placement.endpoint ? `${placement.endpoint} · ` : ""}${placement.workflow ?? "Workflow"} · status unavailable`,
+  );
 }
 function attachManual(work: string, view: number): void {
   if (closed(work)) return;
@@ -2296,18 +2300,44 @@ async function invokeInner(
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
     const snapshot = response as {
       launch: string;
+      root?: string;
       history: History;
       children?: History[];
       subtitle?: string;
+      endpoint?: string | undefined;
     };
-    snapshot.subtitle = workflowSubtitle(snapshot);
+    snapshot.endpoint = await serverAddress(snapshot.root);
+    snapshot.subtitle = `${snapshot.endpoint ? `${snapshot.endpoint} · ` : ""}${workflowSubtitle(snapshot)}`;
     const placement = placements.get(snapshot.launch);
-    if (placement && placement.view === manualView)
+    if (placement && placement.view === manualView) {
+      placement.endpoint = snapshot.endpoint;
       updateSubtitle(snapshot.launch, snapshot.subtitle, snapshot.history.workflowName);
+    }
   }
   // oxlint-disable-next-line typescript/no-unsafe-return -- This branch forwards the JSON response unchanged to its caller.
   return JSON.parse(encode(response));
 }
+async function serverAddress(root: string | undefined): Promise<string | undefined> {
+  if (!root) return undefined;
+  let endpoint: Record<string, unknown>;
+  try {
+    endpoint = parsedObject(await swamp({ operation: "managed.endpoint", payload: {} }, root));
+  } catch {
+    return undefined;
+  }
+  const bind = endpoint["bind"],
+    port = endpoint["port"];
+  if (
+    typeof bind !== "string" ||
+    typeof port !== "number" ||
+    !Number.isInteger(port) ||
+    port <= 0 ||
+    port > 65535
+  )
+    return undefined;
+  return `${bind.includes(":") ? `[${bind}]` : bind}:${port}`;
+}
+
 // A separate RPC surface: Hocus cannot select arbitrary privileged bridge methods.
 // oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- Keep this existing protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together. This helper shares mutable plugin state and SDK wire types with its callers.
 async function hocusWorkflow(input: Json, call: RpcCall): Promise<Json> {

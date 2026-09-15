@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -164,6 +165,8 @@ struct Endpoint {
     child_pid: u32,
     child_started: u64,
     url: String,
+    #[serde(default = "default_bind")]
+    bind: IpAddr,
     token: String,
     #[serde(default)]
     extensions: Option<String>,
@@ -446,7 +449,11 @@ fn endpoint(root: &Path) -> Result<Option<Endpoint>> {
         Ok(bytes) => {
             let endpoint: Endpoint =
                 serde_json::from_slice(&bytes).context("invalid managed Swamp state")?;
-            if endpoint.root != root || !valid_url(&endpoint.url) {
+            if endpoint.root != root
+                || !valid_url(&endpoint.url)
+                || url_address(&endpoint.url)
+                    .is_none_or(|address| address.ip() != connection_ip(endpoint.bind))
+            {
                 return Err(anyhow!("managed Swamp checkout or endpoint mismatch"));
             }
             Ok(Some(endpoint))
@@ -456,18 +463,85 @@ fn endpoint(root: &Path) -> Result<Option<Endpoint>> {
     }
 }
 
+fn default_bind() -> IpAddr {
+    IpAddr::V4(Ipv4Addr::LOCALHOST)
+}
+
+fn connection_ip(bind: IpAddr) -> IpAddr {
+    match bind {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
+    }
+}
+
+fn url_address(value: &str) -> Option<SocketAddr> {
+    let uri = value.parse::<isahc::http::Uri>().ok()?;
+    if !matches!(uri.scheme_str(), Some("ws" | "wss")) || uri.path() != "/" || uri.query().is_some()
+    {
+        return None;
+    }
+    let address: SocketAddr = uri.authority()?.as_str().parse().ok()?;
+    (address.port() != 0).then_some(address)
+}
+
 fn valid_url(value: &str) -> bool {
-    let Ok(uri) = value.parse::<isahc::http::Uri>() else {
-        return false;
+    url_address(value).is_some()
+}
+
+fn announced_url(announcement: &Value, bind: IpAddr) -> Result<String> {
+    let url = announcement["url"]
+        .as_str()
+        .context("Swamp announced no endpoint")?;
+    let ip: IpAddr = announcement["host"]
+        .as_str()
+        .context("Swamp announced no host")?
+        .parse()
+        .context("Swamp announced an invalid host")?;
+    let port = u16::try_from(
+        announcement["port"]
+            .as_u64()
+            .context("Swamp announced no port")?,
+    )
+    .context("Swamp announced an invalid port")?;
+    let address = SocketAddr::new(ip, port);
+    let scheme = if url.starts_with("wss://") {
+        "wss"
+    } else {
+        "ws"
     };
-    uri.scheme_str() == Some("ws")
-        && uri.host() == Some("127.0.0.1")
-        && uri.port_u16().is_some_and(|port| port != 0)
-        && uri
-            .authority()
-            .is_some_and(|a| a.as_str() == format!("127.0.0.1:{}", uri.port_u16().unwrap_or(0)))
-        && uri.path() == "/"
-        && uri.query().is_none()
+    // Older Swamp builds announce IPv6 without brackets; use the structured fields.
+    if port == 0
+        || (url != format!("{scheme}://{address}") && url != format!("{scheme}://{ip}:{port}"))
+    {
+        return Err(anyhow!("Swamp announced an inconsistent endpoint"));
+    }
+    if address.ip() != bind
+        || (!bind.is_loopback() && scheme != "wss")
+        || announcement["detachRuns"] != true
+        || announcement["schedulingEnabled"] != false
+    {
+        return Err(anyhow!("Swamp is incompatible: authenticated detached execution on the requested bind address is required"));
+    }
+    Ok(format!(
+        "{scheme}://{}",
+        SocketAddr::new(connection_ip(bind), address.port())
+    ))
+}
+
+impl Endpoint {
+    fn public_metadata(&self) -> Value {
+        let port = url_address(&self.url).map(|address| address.port());
+        json!({"bind":self.bind,"port":port,"dashboardUrl":format!("{}/dashboard", self.url.replacen("ws", "http", 1).trim_end_matches('/'))})
+    }
+}
+
+/// Public endpoint data only; service credentials stay in the host.
+pub fn public_endpoint(root: &Path) -> Result<Value> {
+    Ok(endpoint(root)?
+        .filter(alive)
+        .map(|state| state.public_metadata())
+        .unwrap_or_else(|| json!({})))
 }
 
 fn process_started(pid: u32) -> Option<u64> {
@@ -652,15 +726,19 @@ fn credential(root: &Path) -> Result<String> {
 
 fn http(endpoint: &Endpoint, path: &str, post: bool) -> Result<Value> {
     let url = format!(
-        "http://{}{}",
-        endpoint.url.trim_start_matches("ws://"),
+        "{}{}",
+        endpoint.url.replacen("ws", "http", 1).trim_end_matches('/'),
         path
     );
-    let request = isahc::Request::builder()
+    let mut request = isahc::Request::builder()
         .method(if post { "POST" } else { "GET" })
         .uri(url)
         .header("Authorization", format!("Bearer {}", endpoint.token))
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(10));
+    if let Some(path) = std::env::var_os("SSL_CERT_FILE") {
+        request = request.ssl_ca_certificate(isahc::config::CaCertificate::file(path));
+    }
+    let request = request
         .body(())
         .context("cannot build managed Swamp request")?;
     let mut response =
@@ -701,6 +779,11 @@ pub fn supervise(root: PathBuf) -> Result<()> {
     {
         return Err(anyhow!("installed Swamp cannot resume inline model types; use a compatible build and run extensions/tests/serve_compatibility.ts"));
     }
+    let config = zellij_config::project_config::access_root(&root, None).map_err(|e| anyhow!(e))?;
+    if let Some(error) = config.error {
+        return Err(anyhow!(error));
+    }
+    let bind = config.config.server_bind.unwrap_or_else(default_bind);
     let extensions = extension_fingerprint(&root)?;
     check_extensions(&root)?;
     let token = credential(&root)?;
@@ -717,7 +800,7 @@ pub fn supervise(root: PathBuf) -> Result<()> {
             command.env("OTEL_TRACES_EXPORTER", "console");
             Some(directory(&root)?)
         } else { None };
-        let mut child = command.current_dir(&root).args(["serve", "--host", "127.0.0.1", "--port", "0",
+        let mut child = command.current_dir(&root).args(["serve", "--host", &bind.to_string(), "--port", "0", "--dashboard",
             "--auth-mode", "token", "--admins", "user:zellij-service", "--no-schedule", "--json", "--no-telemetry"])
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(if capture_dir.is_some() { Stdio::piped() } else { Stdio::null() }).kill_on_drop(true)
             .spawn().context("cannot start Swamp serve")?;
@@ -738,13 +821,10 @@ pub fn supervise(root: PathBuf) -> Result<()> {
         let capturing = capture_dir.is_some();
         let stdout = tokio::spawn(drain_capture(lines.into_inner(), capture_dir.map(|dir| dir.join("stdout.log"))));
         if capturing { captures.push(stdout); }
-        let url = announcement["url"].as_str().context("Swamp announced no endpoint")?.to_owned();
-        if !valid_url(&url) || announcement["detachRuns"] != true || announcement["schedulingEnabled"] != false {
-            return Err(anyhow!("Swamp is incompatible: authenticated detached local execution is required"));
-        }
+        let url = announced_url(&announcement, bind)?;
         let child_pid = child.id().context("Swamp exited during startup")?;
         let mut state = Endpoint { root, pid: std::process::id(), started: process_started(std::process::id()).context("cannot identify Swamp supervisor")?, child_pid,
-            child_started: process_started(child_pid).context("cannot identify Swamp process")?, url, token, extensions: Some(extensions) };
+            child_started: process_started(child_pid).context("cannot identify Swamp process")?, url, bind, token, extensions: Some(extensions) };
         let check = state.clone();
         tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + STARTUP;
@@ -1226,10 +1306,25 @@ async fn socket(
     );
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(16 * MAX_OUTPUT));
-    let (socket, _) = tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio_tungstenite::connect_async_with_config(request, Some(config), true),
-    )
+    let address = url_address(&state.url).context("invalid managed Swamp endpoint")?;
+    let (socket, _) = tokio::time::timeout(Duration::from_secs(10), async {
+        let stream = tokio::net::TcpStream::connect(address).await?;
+        stream.set_nodelay(true)?;
+        let stream = if state.url.starts_with("wss://") {
+            let connector = tokio_native_tls::TlsConnector::from(
+                tokio_native_tls::native_tls::TlsConnector::new()?,
+            );
+            // TLS verifies an IP literal without the brackets required by an IPv6 URL.
+            tokio_tungstenite::MaybeTlsStream::NativeTls(
+                connector.connect(&address.ip().to_string(), stream).await?,
+            )
+        } else {
+            tokio_tungstenite::MaybeTlsStream::Plain(stream)
+        };
+        Ok::<_, anyhow::Error>(
+            tokio_tungstenite::client_async_with_config(request, stream, Some(config)).await?,
+        )
+    })
     .await
     .context("Swamp connection timed out")?
     .map_err(|_| anyhow!("managed Swamp WebSocket connection failed"))?;
@@ -1420,7 +1515,7 @@ pub async fn lifecycle(root: PathBuf, action: &str) -> Result<Value> {
                     Ok(_) => "stale",
                     Err(_) => "unavailable",
                 };
-                json!({"status":if alive(&state) {"running"} else {"exited"},"pid":state.pid,"checkout":root,"extensions":freshness})
+                json!({"status":if alive(&state) {"running"} else {"exited"},"pid":state.pid,"checkout":root,"extensions":freshness,"bind":state.bind,"port":state.public_metadata()["port"],"dashboardUrl":state.public_metadata()["dashboardUrl"]})
             },
             None => json!({"status":"stopped","checkout":root}),
         });
@@ -1547,6 +1642,7 @@ mod tests {
             child_pid: pid,
             child_started: started,
             url: format!("ws://{}", listener.local_addr().unwrap()),
+            bind: default_bind(),
             token: "test.secret".into(),
             extensions: Some(extension_fingerprint(&root).unwrap()),
         })
@@ -2009,6 +2105,63 @@ export const schema = z.string();"#;
         assert!(mutation.recv().await.is_none());
         assert_eq!(next(&mut read).await["payload"]["data"]["answer"], 42);
         server.await.unwrap();
+        std::fs::remove_dir_all(directory(&root).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn announcements_validate_bind_and_normalize_actual_ports() {
+        for (bind, local) in [
+            ("127.0.0.1", "127.0.0.1"),
+            ("0.0.0.0", "127.0.0.1"),
+            ("192.0.2.1", "192.0.2.1"),
+            ("::", "[::1]"),
+            ("::1", "[::1]"),
+            ("2001:db8::1", "[2001:db8::1]"),
+        ] {
+            let ip: IpAddr = bind.parse().unwrap();
+            let scheme = if ip.is_loopback() { "ws" } else { "wss" };
+            let announcement = json!({"host":bind,"port":43127,"url":format!("{scheme}://{bind}:43127"),"detachRuns":true,"schedulingEnabled":false});
+            let url = announced_url(&announcement, ip).unwrap();
+            assert_eq!(url, format!("{scheme}://{local}:43127"));
+            assert!(valid_url(&url));
+            if !ip.is_loopback() {
+                let mut insecure = announcement.clone();
+                insecure["url"] = json!(format!("ws://{bind}:43127"));
+                assert!(announced_url(&insecure, ip).is_err());
+            }
+            assert!(announced_url(&announcement, "192.0.2.2".parse().unwrap()).is_err());
+            for (key, invalid) in [
+                ("port", json!(null)),
+                ("port", json!(-1)),
+                ("host", json!(null)),
+                ("port", json!(0)),
+                ("port", json!(65536)),
+                ("url", json!("ws://evil.example:43127")),
+                ("host", json!("localhost")),
+                ("detachRuns", json!(false)),
+                ("schedulingEnabled", json!(true)),
+            ] {
+                let mut bad = announcement.clone();
+                bad[key] = invalid;
+                assert!(announced_url(&bad, ip).is_err(), "{bad}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn public_endpoint_reports_allocated_port_without_credentials() {
+        let (_dir, root, listener) = fixture().await;
+        let metadata = public_endpoint(&root).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(
+            metadata,
+            json!({"bind":"127.0.0.1","port":port,"dashboardUrl":format!("http://127.0.0.1:{port}/dashboard")})
+        );
+        let status = lifecycle(root.clone(), "status").await.unwrap();
+        for key in ["bind", "port", "dashboardUrl"] {
+            assert_eq!(status[key], metadata[key]);
+        }
+        assert!(!status.to_string().contains("test.secret"));
         std::fs::remove_dir_all(directory(&root).unwrap()).unwrap();
     }
 

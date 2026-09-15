@@ -703,11 +703,12 @@ fn deno_bridge_foreground_commands_restore_manual_views_in_dispatch_order() {
     let mut runtime = sdk();
     run(&mut runtime, include_str!("bridge_fixture.js"));
     run(&mut runtime, r#"
-      globalThis.info=new Map(),globalThis.swaps=[],globalThis.notified=[];
+      globalThis.subtitles=new Map(),globalThis.info=new Map(),globalThis.swaps=[],globalThis.notified=[];
       const original=mock.command;
       mock.sleep=async()=>{};
       mock.command=(name,args)=>{
         const id=p=>JSON.stringify(p);
+        if(name==='SetPaneSubtitle'){subtitles.set(id(args.pane_id),args.subtitle);return;}
         if(name==='GetPaneInfo')return info.get(id(args))??original(name,args);
         if(name==='MessageToPlugin'){notified.push(args.destination_plugin_id);return;}
         if(name==='ReplacePaneWithExistingPane'){
@@ -719,7 +720,7 @@ fn deno_bridge_foreground_commands_restore_manual_views_in_dispatch_order() {
         return value;
       };
       mock.projectConfig={read:()=>({root:'/work'})};
-      mock.swampRequest=async()=>({results:[],status:'running'});
+      mock.swampRequest=async opts=>opts.operation==='managed.endpoint'?{bind:'::',port:43127,dashboardUrl:'http://[::1]:43127/dashboard'}:({results:[],status:'running'});
       globalThis.call=args=>handler(args,{source:{Plugin:1}});
       globalThis.uid=(work,key)=>JSON.stringify(['host','session',work,key]);
       globalThis.setup=work=>{
@@ -744,8 +745,12 @@ fn deno_bridge_foreground_commands_restore_manual_views_in_dispatch_order() {
         const background=await call(commandArgs('before','a-background',false));
         const second=await call(commandArgs('before','a-second',true));
         check(swaps.length===1);
+        check(subtitles.get(JSON.stringify({Terminal:first.pane}))==='[::]:43127 · Workflow · running');
         exit(first.pane);check(swaps.at(-1)[1].Terminal===second.pane);
+        check(subtitles.get(JSON.stringify({Terminal:second.pane}))==='[::]:43127 · Workflow · running');
         exit(second.pane);check(swaps.at(-1)[1].Plugin===1);
+        check(subtitles.get(JSON.stringify({Plugin:1}))==='[::]:43127 · Workflow · running');
+        check(subtitles.get(JSON.stringify({Terminal:second.pane}))==null);
         check(info.get(JSON.stringify({Terminal:background.pane})).is_suppressed);
         const agent=await call({method:'agent_spawn',work:'before',key:'agent',spec:{kind:'claude'}});
         await call({method:'agent_prompt',work:'before',key:'prompt',agent:'agent',prompt:'wait'});

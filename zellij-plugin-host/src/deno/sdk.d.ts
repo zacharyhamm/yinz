@@ -530,7 +530,7 @@ export type QueueJobOutcome = 'Succeeded' | 'Failed' | 'Cancelled' | 'Aborted';
 export interface QueueJobInfo {job_id: Integer; queue: string; plugin_url: string; plugin_id: number | null; enqueuer_plugin_id: number; context: StringMap; state: 'Pending' | 'Running';}
 export interface QueueSnapshot {queue: string; concurrency: Integer; pending: QueueJobInfo[]; running: QueueJobInfo[];}
 export interface ProjectConfigSnapshot {root: string; source: string | null; config: ProjectConfig; error: string | null;}
-export interface ProjectConfig {workflow: string | null; control_checkout: string | null; ci: string[] | null; default_branch: string | null; rebase_prompt: string | null; agent: AgentSpawnSpec | null; commit_agent: AgentSpawnSpec | null; review_agent: AgentSpawnSpec | null; review_fix_agent: AgentSpawnSpec | null; rebase_agent: AgentSpawnSpec | null; test_fix_agent: AgentSpawnSpec | null;}
+export interface ProjectConfig {server_bind: string | null; workflow: string | null; control_checkout: string | null; ci: string[] | null; default_branch: string | null; rebase_prompt: string | null; agent: AgentSpawnSpec | null; commit_agent: AgentSpawnSpec | null; review_agent: AgentSpawnSpec | null; review_fix_agent: AgentSpawnSpec | null; rebase_agent: AgentSpawnSpec | null; test_fix_agent: AgentSpawnSpec | null;}
 export type DataValue = 'Null' | {Int: Integer} | {Real: number} | {Text: string} | {Bool: boolean} | {Blob: Bytes};
 export type AttrKind = 'Text' | 'Int' | 'Real' | 'Bool' | 'Blob' | 'Json';
 export interface AttrDef {name: string; kind: AttrKind; indexed: boolean; full_text: boolean; unique: boolean; required: boolean; default: DataValue | null;}

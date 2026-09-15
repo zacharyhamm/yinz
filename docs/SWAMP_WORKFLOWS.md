@@ -96,6 +96,50 @@ share it through a private runtime directory and startup lock. A configured agen
 prewarms the service after launch; other workflow requests start it on demand.
 Reading project configuration starts no process.
 
+The dashboard and API share one OS-assigned port. Use a Swamp build that includes
+its dashboard assets. The agent-exit pane title shows the bind IP and allocated port
+before the workflow name and step status, for example `0.0.0.0:43127 · review · running`.
+The title shows no endpoint until the server has started. Helper panes retain the
+subtitle, and the view refreshes the endpoint after a server restart.
+
+Set an optional IP literal in the canonical control checkout's
+`.zellij/swamp-workflows.kdl`:
+
+```kdl
+agent_exit {
+    server_bind "0.0.0.0"
+    // Existing workflow settings…
+}
+```
+
+The default is `127.0.0.1`. IPv4 and IPv6 literals are accepted, including wildcard
+binds `0.0.0.0` and `::`. Hostnames and interface names are not accepted.
+IPv6 titles use brackets, for example `[::]:43127`.
+
+`zellij workflow server status` reports `bind`, the allocated `port`, and a
+credential-free `dashboardUrl`. Open that URL to use the dashboard.
+For wildcard binds, the local URL uses `127.0.0.1` or `[::1]`.
+Non-loopback binds require TLS. Configure `tls.cert-file` and `tls.key-file` in the control
+checkout's existing `.swamp/serve.yaml`:
+
+```yaml
+tls:
+  cert-file: /absolute/path/server.crt
+  key-file: /absolute/path/server.key
+```
+
+Swamp also accepts its existing certificate environment variables.
+The dashboard URL then uses `https://`.
+
+The certificate must cover the connection IP, including the loopback IP used for a
+wildcard bind. Zellij verifies certificates against the system trust store.
+On Linux, for a private CA, set `SSL_CERT_FILE` to its PEM certificate bundle before starting
+Zellij. Configure the browser to trust that CA when opening the dashboard.
+Token authentication remains enabled, and scheduling remains disabled.
+
+After you change `server_bind`, run `zellij workflow server restart`.
+Restart remains unavailable while executions are active.
+
 ```sh
 zellij workflow server status
 zellij workflow server restart
@@ -115,8 +159,8 @@ mutation remains unknown until persisted state identifies its outcome. It is nev
 sent again automatically. Each continuation has its own correlation tag as well as
 the shared launch token.
 
-The endpoint binds an ephemeral loopback port, requires token authentication, and has
-scheduling disabled. Bootstrap uses Swamp's local-encryption vault and service-token
+The endpoint uses an OS-assigned port on the configured bind IP, requires token
+authentication, and has scheduling disabled. Bootstrap uses Swamp's local-encryption vault and service-token
 commands. The machine-local vault definition is excluded through Git's local exclude
 file. Endpoint credentials are stored with owner-only permissions under
 `/tmp/zellij-swamp-UID/`; they never enter plugin messages, process arguments, or logs.
@@ -437,6 +481,11 @@ refusal, persisted suspension, and explicit crash recovery:
 ```sh
 deno run -A extensions/tests/managed_server.ts "$PWD/target/debug/zellij"
 ```
+
+The lifecycle probe requires OpenSSL and a Swamp build with dashboard assets.
+It creates a disposable TLS server certificate and verifies IPv4 and IPv6 wildcard
+binds with certificate checks enabled.
+
 
 The automatic-refresh regression uses the real service through Zellij's request
 layer. Build Zellij first and put a compatible Swamp binary on `PATH`:
