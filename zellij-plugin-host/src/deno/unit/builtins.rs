@@ -809,6 +809,8 @@ fn swamp_subtitle_uses_history_and_clears_placement_on_restart_or_close() {
     let source = r#"
 import real, {definePlugin} from 'zellij:plugin';
 const subtitles = new Map<string, string | null>(), messages: string[] = [], handlers: Record<string, any> = {};
+let endpoint: any = {};
+let endpointFails = false, configFails = false;
 let handler: any, exists = true, sourceExited = true, fail = false;
 const history: any = {id: 'main', workflowName: 'review', status: 'running', jobs: [{name: 'review', steps: [{name: 'wait', status: 'running'}]}]};
 const child: any = {id: 'child', workflowName: 'checks', status: 'succeeded'};
@@ -820,10 +822,14 @@ const z: any = {...real,
       : exists ? {plugin_url: 'zellij:swamp-workflow', is_suppressed: false} : null;
     return (real.command as any)(name, args);
   },
-  projectConfig: {read: () => ({root: '/work', config: {}})},
+  projectConfig: {read: () => ({root: '/work', config: {}, error: configFails ? 'configuration unavailable' : undefined})},
   rpc: {handle(_name: string, callback: any) { handler = callback; }},
   on(name: string, callback: any) { handlers[name] = callback; return (real.on as any)(name, callback); },
   async swampRequest(opts: any) {
+    if (opts.operation === 'managed.endpoint') {
+      if (endpointFails) throw Error('endpoint unavailable');
+      return endpoint;
+    }
     if (opts.payload?.select) check(opts.payload.select.length <= 4096, 'Swamp query projection exceeds the serve limit');
     if (opts.operation === 'workflow.history.get') {
       if (fail) throw Error('history unavailable');
@@ -879,6 +885,35 @@ async function scenario() {
   eq(subtitles.get('1'), 'review · status unavailable', 'bridge failures also invalidate foreground progress');
   fail = false;
   eq((await show()).subtitle, 'review · checks/ci/lint · failed');
+  endpoint = {bind: '0.0.0.0', port: 43127, dashboardUrl: 'http://127.0.0.1:43127/dashboard'};
+  eq((await show()).subtitle, '0.0.0.0:43127 · review · checks/ci/lint · failed');
+  eq(subtitles.get('1'), '0.0.0.0:43127 · review · checks/ci/lint · failed');
+  await bridge.pipe({name: 'workflow-refresh-failed', source: {Plugin: 1}, payload: 'launch'});
+  eq(subtitles.get('1'), '0.0.0.0:43127 · review · status unavailable');
+  endpoint = {bind: '::', port: 43128, dashboardUrl: 'http://[::1]:43128/dashboard'};
+  eq((await show()).subtitle, '[::]:43128 · review · checks/ci/lint · failed', 'restart refreshes the allocated port');
+  endpoint.port = 0;
+  eq((await show()).subtitle, 'review · checks/ci/lint · failed', 'never show port zero');
+  endpoint.port = 43128;
+  endpointFails = true;
+  const retained = await show();
+  eq(retained.history.id, 'main');
+  eq(retained.subtitle, 'review · checks/ci/lint · failed');
+  check(retained.endpoint == null, 'endpoint lookup failure preserves history without endpoint metadata');
+  row('failed-launch', 'launch', {checkout: '/work', workflow: 'review', outcome: 'failed', error: 'original startup diagnostics'});
+  configFails = true;
+  const failedLaunch = await handler({method: 'workflow_show', launch: 'failed-launch', directory: '/work'}, {source: {Plugin: 2}});
+  eq(failedLaunch.logs, 'original startup diagnostics');
+  eq(failedLaunch.history.status, 'failed');
+  eq(failedLaunch.subtitle, 'review · failed');
+  check(failedLaunch.endpoint == null, 'failed launch remains readable without project configuration or endpoint');
+  configFails = false;
+  endpointFails = false;
+  const validEndpoint = endpoint;
+  endpoint = [];
+  eq((await show()).subtitle, 'review · checks/ci/lint · failed', 'invalid endpoint response preserves history');
+  endpoint = validEndpoint;
+  await show();
   row('launch', 'source', {pane: 7});
   sourceExited = false;
   handlers.PaneUpdate({panes: {}});
@@ -926,17 +961,17 @@ async function scenario() {
   eq(subtitle, 'Workflow · status unavailable');
   eq(message.message_payload, '', 'a first-snapshot failure does not know its launch yet');
   void view.refresh();
-  const snapshot: any = {launch: 'launch', run: 'run', root: '/work', history: {workflowName: 'review', status: 'running'}, subtitle: 'review · test/unit · running'};
+  const snapshot: any = {launch: 'launch', run: 'run', root: '/work', history: {workflowName: 'review', status: 'running'}, endpoint: '0.0.0.0:43127', subtitle: '0.0.0.0:43127 · review · test/unit · running'};
   await answer(s => s.resolve(snapshot));
   eq(subtitle, snapshot.subtitle);
   void view.refresh();
   await answer(s => s.reject(Error('history unavailable')));
-  eq(subtitle, 'review · status unavailable');
+  eq(subtitle, '0.0.0.0:43127 · review · status unavailable');
   check(message.message_name === 'workflow-refresh-failed' && message.message_payload === 'launch', 'the bridge is told which launch failed');
   void view.refresh();
-  snapshot.history.status = 'succeeded'; snapshot.subtitle = 'review · succeeded';
+  snapshot.history.status = 'succeeded'; snapshot.endpoint = '[::]:43128'; snapshot.subtitle = '[::]:43128 · review · succeeded';
   await answer(s => s.resolve(snapshot));
-  eq(subtitle, 'review · succeeded');
+  eq(subtitle, '[::]:43128 · review · succeeded');
   view.pipe({name: 'workflow-detached'});
   check(subtitle == null, 'detachment clears the subtitle');
   void view.refresh();

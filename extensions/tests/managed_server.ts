@@ -1,6 +1,24 @@
 /** Real lifecycle checks: deno run -A extensions/tests/managed_server.ts /absolute/zellij */
 const binary = Deno.args[0];
 if (!binary) throw new Error("Pass the built Zellij binary");
+// Re-exec with a disposable trust anchor before either runtime initializes TLS.
+if (!Deno.env.get("ZELLIJ_TEST_TLS_CERT")) {
+    const tls = await Deno.makeTempDir({prefix: "zellij-managed-tls-"});
+    const cert = `${tls}/cert.pem`, key = `${tls}/key.pem`;
+    const wrongCert = `${tls}/wrong.pem`, wrongKey = `${tls}/wrong-key.pem`;
+    try {
+        const generated = await new Deno.Command("openssl", {args: ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=managed-server-test", "-addext", "subjectAltName=IP:127.0.0.1,IP:::1", "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "extendedKeyUsage=serverAuth", "-keyout", key, "-out", cert], stdout: "null", stderr: "null"}).output();
+        if (!generated.success) throw new Error("Cannot generate test TLS certificate");
+        const wrong = await new Deno.Command("openssl", {args: ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=wrong-ip-test", "-addext", "subjectAltName=IP:127.0.0.2", "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "extendedKeyUsage=serverAuth", "-keyout", wrongKey, "-out", wrongCert], stdout: "null", stderr: "null"}).output();
+        if (!wrong.success) throw new Error("Cannot generate wrong-IP TLS certificate");
+        const child = new Deno.Command(Deno.execPath(), {args: ["run", "-A", import.meta.filename!, binary], env: {ZELLIJ_TEST_TLS_CERT: cert, ZELLIJ_TEST_TLS_KEY: key, ZELLIJ_TEST_WRONG_CERT: wrongCert, SSL_CERT_FILE: cert, DENO_CERT: cert}}).spawn();
+        const status = await child.status;
+        if (!status.success) throw new Error("Managed lifecycle checks failed");
+    } finally {
+        await Deno.remove(tls, {recursive: true});
+    }
+    Deno.exit(0);
+}
 const root = await Deno.makeTempDir({ prefix: "zellij-managed-server-" });
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -53,6 +71,16 @@ async function state(cwd: string) {
 async function lifecycle(cwd: string, action: string, ok = true) {
     return await command(cwd, [binary, "workflow", "server", action], ok);
 }
+async function show(cwd: string, run: string) {
+    const history = JSON.parse((await command(cwd, [binary, "workflow", "show", run, "--json"])).text);
+    if (history.id !== run) throw new Error("Zellij TLS request returned the wrong saved run");
+}
+async function rejectTls(cwd: string, run: string, env: Record<string, string> = {}) {
+    const result = await new Deno.Command(binary, {args: ["workflow", "show", run, "--json"], cwd, env, stdout: "piped", stderr: "piped"}).output();
+    if (result.success || !dec.decode(result.stderr).includes("managed Swamp WebSocket connection failed")) {
+        throw new Error("Zellij did not reject the invalid TLS certificate at connection time");
+    }
+}
 async function setup(name: string) {
     const cwd = `${root}/${name}`;
     await Deno.mkdir(cwd);
@@ -69,7 +97,7 @@ async function connect(cwd: string) {
     ws.onmessage = (e) => queue.push(JSON.parse(e.data));
     await new Promise<void>((resolve, reject) => {
         ws.onopen = () => resolve();
-        ws.onerror = () => reject(new Error("connection failed"));
+        ws.onerror = (event) => reject(new Error(`connection failed: ${(event as ErrorEvent).message}`));
     });
     return async (type: string, payload: unknown, started = false) => {
         const id = crypto.randomUUID();
@@ -130,6 +158,12 @@ try {
         }
     });
     const original = await state(first);
+    const argv = (await Deno.readTextFile(`/proc/${original.child_pid}/cmdline`)).split("\0");
+    if (argv[argv.indexOf("--host") + 1] !== "127.0.0.1" ||
+        argv[argv.indexOf("--port") + 1] !== "0" || !argv.includes("--dashboard") ||
+        !argv.includes("--no-schedule") || argv[argv.indexOf("--auth-mode") + 1] !== "token") {
+        throw new Error("managed server launch arguments changed");
+    }
     const permissions = (await Deno.stat(await statePath(first))).mode!;
     if ((permissions & 0o077) !== 0) {
         throw new Error("credentials are not private");
@@ -139,7 +173,23 @@ try {
         status.text.includes(original.token) ||
         status.text.includes(original.url)
     ) throw new Error("status exposed credentials");
+    const publicStatus = JSON.parse(status.text);
+    const allocated = Number(new URL(original.url).port);
+    if (publicStatus.bind !== "127.0.0.1" || publicStatus.port !== allocated || allocated === 0 ||
+        publicStatus.dashboardUrl !== `http://127.0.0.1:${allocated}/dashboard`) {
+        throw new Error("status did not report the actual dashboard endpoint");
+    }
+    const dashboard = await fetch(publicStatus.dashboardUrl, {signal: AbortSignal.timeout(10000)});
+    const html = await dashboard.text();
+    if (!dashboard.ok || !html.includes("<html")) throw new Error("dashboard HTML unavailable");
+    const asset = html.match(/(?:src|href)=["']([^"']+\.(?:js|css))["']/)?.[1];
+    if (!asset) throw new Error("dashboard has no bundled asset");
+    const bundle = await fetch(new URL(asset, `${publicStatus.dashboardUrl}/`), {signal: AbortSignal.timeout(10000)});
+    if (!bundle.ok || !(await bundle.text()).length) throw new Error("dashboard asset unavailable");
     await lifecycle(second, "restart");
+    if (new URL((await state(second)).url).port === String(allocated)) {
+        throw new Error("checkouts share a port");
+    }
     if ((await state(second)).child_pid === original.child_pid) {
         throw new Error("checkouts share a server");
     }
@@ -188,6 +238,7 @@ try {
             }],
         }),
     );
+    await cli(first, "workflow", "validate", workflow.name);
     const request = await connect(first);
     const run = await request("workflow.run", {
         workflowIdOrName: workflow.name,
@@ -206,9 +257,25 @@ try {
             (await cli(first, "workflow", "history", "get", run)).status ===
                 "suspended",
     );
+    await Deno.mkdir(`${first}/.zellij`, {recursive: true});
+    await Deno.writeTextFile(`${first}/.zellij/swamp-workflows.kdl`, 'agent_exit { server_bind "0.0.0.0"; }');
+    if (JSON.parse((await lifecycle(first, "status")).text).bind !== "127.0.0.1") {
+        throw new Error("bind changed before explicit restart");
+    }
+    await Deno.writeTextFile(`${first}/.swamp/serve.yaml`, JSON.stringify({tls: {"cert-file": Deno.env.get("ZELLIJ_TEST_TLS_CERT"), "key-file": Deno.env.get("ZELLIJ_TEST_TLS_KEY")}}));
     await lifecycle(first, "stop");
     await lifecycle(first, "restart");
+    const rebound = JSON.parse((await lifecycle(first, "status")).text);
+    if (rebound.bind !== "0.0.0.0" || !rebound.dashboardUrl.startsWith("https://127.0.0.1:")) {
+        throw new Error("restart did not apply wildcard bind with loopback connections");
+    }
     const restarted = await state(first);
+    await show(first, run);
+    await rejectTls(first, run, {SSL_CERT_FILE: Deno.env.get("ZELLIJ_TEST_WRONG_CERT")!, SSL_CERT_DIR: root});
+    await Deno.writeTextFile(`${first}/.zellij/swamp-workflows.kdl`, 'agent_exit { server_bind "::"; }');
+    await lifecycle(first, "restart");
+    if (!(await state(first)).url.startsWith("wss://[::1]:")) throw new Error("History check requires IPv6 TLS");
+    await show(first, run);
     if (restarted.child_pid === original.child_pid) {
         throw new Error("restart did not replace server");
     }
@@ -231,7 +298,7 @@ try {
             return false;
         }
     });
-    Deno.kill(restarted.child_pid, "SIGKILL");
+    Deno.kill((await state(first)).child_pid, "SIGKILL");
     await until(
         "crash visible",
         async () => (await lifecycle(first, "status")).text.includes("exited"),
@@ -268,7 +335,7 @@ try {
     }, true);
     const endpoint = await state(first);
     const response = await fetch(
-        endpoint.url.replace("ws:", "http:") +
+        endpoint.url.replace(/^ws/, "http") +
             `/api/v1/cancel/workflow-run/${cancel}`,
         {
             method: "POST",
@@ -286,8 +353,38 @@ try {
     if ((await state(first)).child_pid !== endpoint.child_pid) {
         throw new Error("cancellation replaced the shared server");
     }
+    await Deno.mkdir(`${second}/.zellij`, {recursive: true});
+    await Deno.writeTextFile(`${second}/.swamp/serve.yaml`, JSON.stringify({tls: {"cert-file": Deno.env.get("ZELLIJ_TEST_TLS_CERT"), "key-file": Deno.env.get("ZELLIJ_TEST_TLS_KEY")}}));
+    await Deno.writeTextFile(`${second}/.zellij/swamp-workflows.kdl`, 'agent_exit { server_bind "::"; }');
+    await lifecycle(second, "restart");
+    const ipv6 = JSON.parse((await lifecycle(second, "status")).text);
+    if (ipv6.bind !== "::" || !ipv6.dashboardUrl.startsWith("https://[::1]:")) {
+        throw new Error("IPv6 wildcard did not normalize the dashboard URL");
+    }
+    const ipv6Dashboard = await fetch(ipv6.dashboardUrl, {signal: AbortSignal.timeout(10000)});
+    if (!ipv6Dashboard.ok || !(await ipv6Dashboard.text()).includes("<html")) {
+        throw new Error("IPv6 dashboard unavailable");
+    }
+    const ipv6Call = await connect(second);
+    await ipv6Call("workflow.history.search", {});
+    await Deno.writeTextFile(`${second}/.zellij/swamp-workflows.kdl`, 'agent_exit { server_bind "0.0.0.0"; }');
+    await lifecycle(second, "restart");
+    const endpointPath = await statePath(second);
+    const savedEndpoint = await Deno.readTextFile(endpointPath);
+    try {
+        // Reach the same trusted server at a loopback IP absent from its certificate SAN.
+        const wrongEndpoint = JSON.parse(savedEndpoint);
+        wrongEndpoint.bind = "127.0.0.2";
+        wrongEndpoint.url = wrongEndpoint.url.replace("127.0.0.1", "127.0.0.2");
+        const peer = await Deno.connect({hostname: "127.0.0.2", port: Number(new URL(wrongEndpoint.url).port)});
+        peer.close();
+        await Deno.writeTextFile(endpointPath, JSON.stringify(wrongEndpoint));
+        await rejectTls(second, run);
+    } finally {
+        await Deno.writeTextFile(endpointPath, savedEndpoint);
+    }
     console.log(
-        "PASS: startup race/failure, checkout isolation, private credentials, active stop/restart refusal, detached suspension, crash reconciliation without duplicates, and run-ID cancellation",
+        "PASS: startup race/failure, checkout and port isolation, dashboard assets, IPv4/IPv6 TLS history reads, untrusted and wrong-IP certificate rejection, private credentials, active stop/restart refusal, detached suspension, crash reconciliation without duplicates, and run-ID cancellation",
     );
 } finally {
     for (const ws of sockets) if (ws.readyState === WebSocket.OPEN) ws.close();

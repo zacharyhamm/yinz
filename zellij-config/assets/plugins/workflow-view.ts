@@ -73,6 +73,7 @@ type Snapshot = {
   outputs?: { results?: ReportEntry[] };
   logs?: string;
   subtitle?: string;
+  endpoint?: string;
 };
 type Attachment = { directory: string; run?: string | undefined; launch?: string | undefined };
 type Block = {
@@ -438,7 +439,10 @@ async function refresh(changed = true): Promise<void> {
     if (revision === generation) {
       if (view.refreshError) {
         const name = view.snapshot?.history.workflowName;
-        setSubtitle(name ? `${name} · status unavailable` : "Workflow · status unavailable");
+        const endpoint = view.snapshot?.endpoint;
+        setSubtitle(
+          `${endpoint ? `${endpoint} · ` : ""}${name ?? "Workflow"} · status unavailable`,
+        );
         z.command("MessageToPlugin", {
           plugin_url: "zellij:swamp-bridge",
           destination_plugin_id: null,

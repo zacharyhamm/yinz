@@ -3696,7 +3696,10 @@ fn swamp_request(
             let root = config.root;
             let payload: serde_json::Value = serde_json::from_str(&payload).context("invalid Swamp request payload")?;
             let progress = |payload| emit(serde_json::json!({"type":"managed.progress","id":id,"payload":payload}));
-            if operation == "workflow.get" {
+            if operation == "managed.endpoint" {
+                let value = zellij_process::swamp::public_endpoint(&root)?;
+                emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));
+            } else if operation == "workflow.get" {
                 let workflow = payload["workflowIdOrName"].as_str().context("workflow is required")?;
                 let value = zellij_process::swamp::definitions::get(root, workflow, &progress).await?;
                 emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));

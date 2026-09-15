@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
+    pub server_bind: Option<std::net::IpAddr>,
     pub workflow: Option<String>,
     pub control_checkout: Option<String>,
     pub ci: Option<Vec<String>>,
@@ -57,6 +58,9 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
             }
         }
         match name {
+            "server_bind" if properties.is_empty() && args.len() == 1 => {
+                config.server_bind = Some(args[0].parse().map_err(|_| "server_bind requires an IPv4 or IPv6 literal")?);
+            },
             "rebase_prompt" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.rebase_prompt = args.pop(),
             "workflow" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.workflow = args.pop(),
             "control_checkout" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.control_checkout = args.pop(),
@@ -314,6 +318,39 @@ pub fn access_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn server_bind_accepts_only_one_ip_literal() {
+        assert_eq!(parse("agent_exit {}").unwrap().server_bind, None);
+        for ip in [
+            "127.0.0.1",
+            "192.0.2.1",
+            "0.0.0.0",
+            "::1",
+            "::",
+            "2001:db8::1",
+        ] {
+            let config = parse(&format!("agent_exit {{ server_bind \"{ip}\"; }}")).unwrap();
+            assert_eq!(config.server_bind, Some(ip.parse().unwrap()));
+        }
+        for setting in [
+            "server_bind",
+            "server_bind 1",
+            "server_bind \"localhost\"",
+            "server_bind \"[::1]\"",
+            "server_bind \"127.0.0.1:80\"",
+            "server_bind \"999.0.0.1\"",
+            "server_bind \"::1%lo\"",
+            "server_bind \"\"",
+            "server_bind \"::\" \"::1\"",
+            "server_bind ip=\"::\"",
+            "server_bind \"::\"; server_bind \"::1\"",
+        ] {
+            assert!(
+                parse(&format!("agent_exit {{ {setting}; }}")).is_err(),
+                "{setting}"
+            );
+        }
+    }
     #[test]
     fn workflow_roles_use_shared_agent_validation_without_inheriting_fields() {
         for role in [
