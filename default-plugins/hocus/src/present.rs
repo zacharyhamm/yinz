@@ -115,6 +115,8 @@ const PROSE: &[&str] = &[
     "unschedule",
     "project_assign",
     "project_forget",
+    "project_rename",
+    "project_merge",
     "project_open",
     "agent_register",
     "web_search",

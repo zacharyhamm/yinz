@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::DataRevision;
 use zellij_tile::prelude::DataRowId;
-use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, HostId, Mutation, Pred, SortDir};
+use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, HostId, Mutation, Pred};
 
 /// The file the lists lived in before the store. Read once, by the import.
 pub const FILE: &str = "/cache/todos.json";
@@ -23,14 +23,6 @@ pub const FILE: &str = "/cache/todos.json";
 pub const MAX_DEPTH: usize = 5;
 /// The most open items in one list. An item that is crossed off does not count.
 pub const MAX_OPEN: usize = 200;
-/// The most items of any state in one list. This bounds the file.
-///
-/// It also bounds the fetch that materializes a list out of the store, which is
-/// why it is exactly `MAX_FETCH_ROWS`: a whole list is then always one fetch,
-/// and `from_rows` never has to page.
-///
-/// Delete completed items with `todo-delete` when a list reaches this cap.
-pub const MAX_ITEMS: usize = 1000;
 /// The most matches one search answers with.
 pub const MAX_MATCHES: usize = 50;
 
@@ -155,8 +147,7 @@ fn repair(list: List) -> List {
         .next_id
         .max(seen.iter().next_back().map_or(0, |id| id + 1))
         .max(1);
-    let mut kept = 0;
-    let mut items = clean(list.items, 1, &mut next, &mut seen, &mut kept);
+    let mut items = clean(list.items, 1, &mut next, &mut seen);
     open_parents(&mut items);
     let next_id = items
         .iter()
@@ -187,21 +178,12 @@ fn all_ids(item: &Item) -> Vec<u64> {
 /// A bad item takes its own subtree with it. The alternative is to guess where
 /// the children of a dropped item belong, and a guess about the user's work is
 /// worse than a clean loss the file itself shows.
-fn clean(
-    items: Vec<Item>,
-    depth: usize,
-    next: &mut u64,
-    seen: &mut BTreeSet<u64>,
-    kept: &mut usize,
-) -> Vec<Item> {
+fn clean(items: Vec<Item>, depth: usize, next: &mut u64, seen: &mut BTreeSet<u64>) -> Vec<Item> {
     if depth > MAX_DEPTH {
         return Vec::new();
     }
     let mut out = Vec::new();
     for item in items {
-        if *kept >= MAX_ITEMS {
-            break;
-        }
         let Ok(text) = clean_text(&item.text) else {
             continue;
         };
@@ -213,8 +195,7 @@ fn clean(
         } else {
             item.id
         };
-        *kept += 1;
-        let children = clean(item.children, depth + 1, next, seen, kept);
+        let children = clean(item.children, depth + 1, next, seen);
         out.push(Item {
             id,
             text,
@@ -326,23 +307,12 @@ pub struct Match {
     pub trail: Vec<String>,
 }
 
-/// One project's whole todo list, in one fetch.
-///
-/// One fetch and not a page loop, because [`MAX_ITEMS`] is also the most rows a
-/// fetch returns. A list that came back truncated would mean those two constants
-/// had drifted apart, so it is worth saying rather than silently losing a tail.
+/// Fetch every page before building the tree, so parent edges can cross pages.
 pub fn fetch_list(backend: &impl crate::store::Backend, root: &str) -> Result<List, String> {
-    let rows = backend.fetch(
-        &FetchRequest::entity("todo")
-            .filter(Pred::eq("root", root))
-            .sort_by("id", SortDir::Asc)
-            .limit(crate::store::LIST_FETCH_LIMIT),
+    let rows = crate::store::fetch_all(
+        backend,
+        FetchRequest::entity("todo").filter(Pred::eq("root", root)),
     )?;
-    if rows.truncated {
-        return Err(format!(
-            "the todo list of {root} is longer than one fetch, which should be impossible"
-        ));
-    }
     Ok(from_rows(&rows).remove(root).unwrap_or_default())
 }
 
@@ -434,15 +404,10 @@ pub fn add(
     // entry. So a call that fails leaves no empty list behind.
     let empty = List::default();
     let list = store.get(root).unwrap_or(&empty);
-    let (open, all) = counts(list);
+    let (open, _) = counts(list);
     if open >= MAX_OPEN {
         return Err(format!(
             "this project has {MAX_OPEN} open todo items; cross some off first"
-        ));
-    }
-    if all >= MAX_ITEMS {
-        return Err(format!(
-            "this project has {MAX_ITEMS} todo items, the most a list holds"
         ));
     }
     if let Some(parent_id) = parent_id {
@@ -614,10 +579,6 @@ fn cascade(items: &mut [Item], cascaded: &mut Vec<u64>) {
 // nested `List` above survives as an in-memory materialization of one project's
 // rows, and every function that carries the open-above-done invariant keeps
 // working on it unchanged.
-//
-// That is affordable because a list is capped at `MAX_ITEMS`, which is also the
-// most rows one fetch returns — so a whole list is always exactly one fetch.
-// What used to bound a file now bounds that fetch.
 //
 // Writes go the other way: plan against the materialized list using the
 // existing tree functions, then translate what they did into mutations. The
@@ -904,15 +865,10 @@ pub fn plan_add(
     parent_id: Option<u64>,
 ) -> Result<(Vec<Mutation>, String), String> {
     let text = clean_text(text)?;
-    let (open, all) = counts(list);
+    let (open, _) = counts(list);
     if open >= MAX_OPEN {
         return Err(format!(
             "this project has {MAX_OPEN} open todo items; cross some off first"
-        ));
-    }
-    if all >= MAX_ITEMS {
-        return Err(format!(
-            "this project has {MAX_ITEMS} todo items, the most a list holds"
         ));
     }
     if let Some(parent_id) = parent_id {
@@ -1182,9 +1138,6 @@ pub fn import_mutations(
     new_ids: &BTreeMap<u64, DataRowId>,
     host_id: &HostId,
 ) -> Result<Vec<Mutation>, String> {
-    if counts(list).1 + level.len() > MAX_ITEMS {
-        return Err(format!("todo lists hold {MAX_ITEMS} items at most"));
-    }
     let mut mutations = vec![assert_snapshot(list, root)];
     let mut reopened = Vec::new();
     for pending in level {
@@ -1262,7 +1215,7 @@ mod tests {
     // ----------------------------------------------------------------- rows
 
     use crate::store::{self, Backend};
-    use zellij_tile::prelude::{FetchRequest, SortDir};
+    use zellij_tile::prelude::FetchRequest;
 
     /// Rows as the store would hand them back, without a store.
     fn rows(columns: &[&str], values: Vec<Vec<DataValue>>) -> DataRows {
@@ -1295,15 +1248,7 @@ mod tests {
 
     /// Read a whole project's list back out of the store.
     fn materialize(backend: &impl Backend, root: &str) -> List {
-        let fetched = backend
-            .fetch(
-                &FetchRequest::entity("todo")
-                    .filter(Pred::eq("root", root))
-                    .sort_by("id", SortDir::Asc)
-                    .limit(store::LIST_FETCH_LIMIT),
-            )
-            .expect("fetched");
-        from_rows(&fetched).remove(root).unwrap_or_default()
+        fetch_list(backend, root).expect("fetched")
     }
 
     /// Write a whole list in, level by level, as the import will.
@@ -1350,18 +1295,6 @@ mod tests {
                 )
             })
             .collect()
-    }
-
-    /// `from_rows` never pages, which is only safe while a full list cannot
-    /// exceed one fetch. If either constant moves, materializing a long list
-    /// would silently lose its tail.
-    #[test]
-    fn a_full_list_still_fits_in_one_fetch() {
-        assert!(
-            MAX_ITEMS as u32 <= store::LIST_FETCH_LIMIT,
-            "a list of {MAX_ITEMS} items cannot be materialized by a fetch of {}",
-            store::LIST_FETCH_LIMIT
-        );
     }
 
     #[test]
@@ -2020,13 +1953,19 @@ mod tests {
     }
 
     #[test]
-    fn a_list_is_cut_at_the_item_cap() {
-        let items: Vec<Item> = (1..=MAX_ITEMS as u64 + 10)
+    fn legacy_lists_preserve_more_than_one_page() {
+        let items: Vec<Item> = (1..=1200)
             .map(|id| item(id, &format!("item {id}"), Vec::new()))
             .collect();
         let saved = parse_legacy(json(&store("/work/hocus", items)).unwrap().as_bytes());
 
-        assert_eq!(counts(&saved["/work/hocus"]).1, MAX_ITEMS);
+        assert_eq!(counts(&saved["/work/hocus"]).1, 1200);
+        let backend = backend();
+        import(&backend, "/work/hocus", &saved["/work/hocus"]);
+        assert_eq!(
+            counts(&fetch_list(&backend, "/work/hocus").unwrap()).1,
+            1200
+        );
     }
 
     #[test]

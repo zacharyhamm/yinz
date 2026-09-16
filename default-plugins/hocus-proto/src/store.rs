@@ -42,10 +42,7 @@ use zellij_tile::prelude::*;
 /// a project's root and its todo list together.
 pub const SHARED: &str = "shared:hocus";
 
-/// Rows a fetch of one project's todo list may return.
-///
-/// Equal to `MAX_FETCH_ROWS`, and to `todos::MAX_ITEMS`, which is what lets a
-/// whole list be materialized in exactly one fetch.
+/// The page size for list reads; lists may span any number of pages.
 pub const LIST_FETCH_LIMIT: u32 = MAX_FETCH_ROWS;
 
 // ---------------------------------------------------------------------------
@@ -78,6 +75,7 @@ pub fn project_def() -> EntityDef {
         // that would need a mapping table to read in the file.
         .attr(AttrDef::text("worktree_status"))
         .attr(AttrDef::text("common_dir"))
+        .attr(AttrDef::json("replaced_ids"))
         .attr(AttrDef::boolean("discovered").required().default(false))
 }
 
@@ -552,6 +550,26 @@ pub trait Backend {
         }
         Ok(())
     }
+}
+
+/// Fetch every page in the default id order, or fail without returning a partial list.
+pub fn fetch_all(backend: &impl Backend, request: FetchRequest) -> Result<DataRows, String> {
+    let mut request = request.limit(LIST_FETCH_LIMIT);
+    let mut all = backend.fetch(&request)?;
+    while all.truncated {
+        let cursor = all
+            .next_cursor
+            .ok_or("cannot finish pagination: missing cursor")?;
+        if request.after_id.is_some_and(|previous| cursor <= previous) {
+            return Err("cannot finish pagination: cursor did not advance".into());
+        }
+        request = request.after_id(cursor);
+        let page = backend.fetch(&request)?;
+        all.rows.extend(page.rows);
+        all.truncated = page.truncated;
+        all.next_cursor = page.next_cursor;
+    }
+    Ok(all)
 }
 
 /// A reference to a backend is a backend, so a caller can hold one without
@@ -1232,5 +1250,54 @@ mod tests {
             error.starts_with("could not declare `todo`"),
             "got: {error}"
         );
+    }
+    #[test]
+    fn incomplete_pagination_never_returns_a_partial_todo_tree() {
+        use std::cell::RefCell;
+        use std::collections::VecDeque;
+        struct Pages(RefCell<VecDeque<Result<DataRows, String>>>);
+        impl Backend for Pages {
+            fn fetch(&self, _: &FetchRequest) -> Result<DataRows, String> {
+                self.0
+                    .borrow_mut()
+                    .pop_front()
+                    .expect("unexpected extra fetch")
+            }
+            fn define(&self, _: &EntityDef) -> Result<DataSchemaInfo, String> {
+                unreachable!()
+            }
+            fn count(&self, _: &FetchRequest) -> Result<u64, String> {
+                unreachable!()
+            }
+            fn apply(&self, _: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
+                unreachable!()
+            }
+            fn watch(&self, _: &FetchRequest, _: WatchMode) -> Result<DataWatchHandle, String> {
+                unreachable!()
+            }
+        }
+        let page = |cursor: Option<i64>| {
+            Ok(DataRows {
+                truncated: true,
+                next_cursor: cursor.map(DataRowId::new),
+                ..Default::default()
+            })
+        };
+        for (pages, message) in [
+            (vec![Err("fetch failed".into())], "fetch failed"),
+            (vec![page(None)], "missing cursor"),
+            (
+                vec![page(Some(1)), Err("fetch failed".into())],
+                "fetch failed",
+            ),
+            (vec![page(Some(1)), page(None)], "missing cursor"),
+            (vec![page(Some(1)), page(Some(1))], "did not advance"),
+        ] {
+            let backend = Pages(RefCell::new(pages.into()));
+            assert!(crate::todos::fetch_list(&backend, "/work")
+                .unwrap_err()
+                .contains(message));
+            assert!(backend.0.borrow().is_empty());
+        }
     }
 }

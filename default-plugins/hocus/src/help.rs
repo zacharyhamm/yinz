@@ -243,6 +243,14 @@ const TOOL_HELP: &[(&str, &str)] = &[
         "Remove a project from the list. Every tab that belongs to it loses the project, thus the session can be left with no active project. The todos and the notes of the project stay. A project that hocus found by itself comes back while an agent runs in it.",
     ),
     (
+        "project_rename",
+        "Change a project's name with name=old new_name=new. The new name must be unused. The root and settings stay the same. The project becomes user-managed, so discovery keeps its name and root.",
+    ),
+    (
+        "project_merge",
+        "Combine two projects with source=duplicate target=kept. Both must have equivalent nonempty Git origins. HTTPS and SSH origins for the same repository match. The target keeps its name, root and settings and becomes user-managed. Source todos and notes move to the target root with their IDs, hierarchy, tags and links intact. The source is removed. A merge across roots is refused if another project shares the source root. Checkout paths, Git configuration and historical runs stay unchanged.",
+    ),
+    (
         "project_open",
         "Open a project in a new tab, and make the tab belong to it. The new tab starts in the root of the project. A project that does not exist needs an absolute root path. Set worktree_dir for future worktrees. Omit it to keep the setting, or give an empty string to clear it. Launch overrides take precedence, then this setting, then .worktrees/. Zellij appends the branch name. Relative paths resolve against the primary checkout, including sibling paths. Absolute paths are also accepted. Shell variables and ~ are not expanded. NUL bytes are rejected. Existing worktrees stay where they are.",
     ),

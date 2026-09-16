@@ -216,8 +216,9 @@ fn the_tool_payload_floor_stays_under_22_kb() {
 /// edit tools, which the floor cap above explains. The `plugin_docs` section enum grew by one
 /// name (`deno_commands`) after that, which is what moved the cap from 37,000 to 37,500.
 /// The workflow family adds definition, diagnostics and control schemas only when loaded.
+/// Project rename and merge add two schemas to the deferred project family (50,593 bytes total).
 #[test]
-fn the_fully_loaded_tool_payload_stays_under_50_kb() {
+fn the_fully_loaded_tool_payload_stays_under_51_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     // A load of every deferred family, which is what puts them in the array — the
@@ -242,7 +243,7 @@ fn the_fully_loaded_tool_payload_stays_under_50_kb() {
     // and a real conversation's transcript is not this one.
     let tools_bytes = serde_json::to_vec(&value["tools"]).unwrap().len();
     assert!(
-        tools_bytes < 50_000,
+        tools_bytes < 51_000,
         "the fully loaded tool payload grew to {tools_bytes} bytes",
     );
 }

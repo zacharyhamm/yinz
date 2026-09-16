@@ -785,6 +785,7 @@ as anywhere else.
 | `worktree_status` | text | snake case, as serde spells it |
 | `common_dir` | text | the main checkout, for a worktree |
 | `discovered` | bool | required; true for one found by a running agent rather than named by hand |
+| `replaced_ids` | json | optional array of project row IDs replaced by explicit renames, merges, or adoption, including earlier replacements |
 
 Set a project's `worktree_dir` through `project_open` or `project_assign`. Omit the argument to keep the saved setting.
 Use an empty string to clear it. `project_list` returns the setting. NUL bytes are rejected.
@@ -799,6 +800,8 @@ The dialog displays the default and allows a launch override. Existing worktrees
 Forks continue to use the source agent's checkout.
 
 **`todo`** - one item. The tree is edges, not nesting.
+
+Todo lists have no total item cap. Fetch limits are page sizes. Read every page before building a tree from `parent_id` links.
 
 | Attribute | Kind | |
 |---|---|---|

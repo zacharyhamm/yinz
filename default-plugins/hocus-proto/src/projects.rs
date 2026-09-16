@@ -4,7 +4,65 @@ use crate::location::Location;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
-use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
+use zellij_tile::prelude::{DataRevision, DataRowId, DataRows, DataValue, Mutation, Pred};
+
+/// A comparison key only: stored origins and Git configuration keep their spelling.
+/// Unknown forms live in a separate key space and compare exactly.
+pub fn origin_identity(origin: &str) -> String {
+    fn repository(origin: &str) -> Option<String> {
+        if origin.chars().any(|c| c.is_whitespace() || c.is_control())
+            || origin.contains(['\\', '?', '#'])
+        {
+            return None;
+        }
+        let scp;
+        let url = if let Some(rest) = origin.strip_prefix("git@") {
+            let (host, path) = rest.split_once(':')?;
+            if host.is_empty() || host.contains('/') || path.starts_with('/') {
+                return None;
+            }
+            scp = format!("ssh://git@{host}/{path}");
+            scp.as_str()
+        } else {
+            origin
+        };
+        let (scheme, rest) = url.split_once("://")?;
+        let default_port = match scheme.to_ascii_lowercase().as_str() {
+            "https" => 443,
+            "ssh" => 22,
+            _ => return None,
+        };
+        let (authority, raw_path) = rest.split_once('/')?;
+        if authority.is_empty() || authority.ends_with(':') {
+            return None;
+        }
+        let parsed = url::Url::parse(url).ok()?;
+        // Do not let URL parsing repair malformed input or resolve path components.
+        if parsed.path().strip_prefix('/')? != raw_path {
+            return None;
+        }
+        let path = raw_path.trim_end_matches('/');
+        let path = path.strip_suffix(".git").unwrap_or(path);
+        if path.is_empty()
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return None;
+        }
+        let host = parsed.host_str()?.to_ascii_lowercase();
+        let port = parsed.port().filter(|port| *port != default_port);
+        let port = port.map(|port| format!(":{port}")).unwrap_or_default();
+        Some(format!("repo:{host}{port}/{path}"))
+    }
+    repository(origin).unwrap_or_else(|| format!("exact:{origin}"))
+}
+
+pub fn equivalent_origins(left: Option<&str>, right: Option<&str>) -> bool {
+    matches!((left, right), (Some(left), Some(right))
+        if !left.trim().is_empty() && !right.trim().is_empty()
+            && origin_identity(left) == origin_identity(right))
+}
 
 /// The file the registry lived in before the store. Read once, by the import.
 pub const FILE: &str = "/cache/projects.json";
@@ -31,6 +89,9 @@ pub struct Project {
     /// a user project.
     #[serde(default)]
     pub discovered: bool,
+    /// Store row IDs replaced by explicit renames or merges, including their history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced_ids: Vec<DataRowId>,
 }
 
 impl Project {
@@ -237,6 +298,7 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
         worktree_status: None,
         common_dir: None,
         discovered: false,
+        replaced_ids: Vec::new(),
     })
 }
 
@@ -260,6 +322,7 @@ pub const ROW_COLUMNS: &[&str] = &[
     "worktree_status",
     "common_dir",
     "discovered",
+    "replaced_ids",
 ];
 
 impl WorktreeStatus {
@@ -318,6 +381,10 @@ pub fn from_rows(rows: &DataRows) -> Registry {
                         .and_then(|status| status.parse().ok()),
                     common_dir: text_at(rows, row, "common_dir"),
                     discovered: matches!(rows.get(row, "discovered"), Some(DataValue::Bool(true))),
+                    replaced_ids: match rows.get(row, "replaced_ids") {
+                        Some(DataValue::Text(ids)) => serde_json::from_str(ids).unwrap_or_default(),
+                        _ => Vec::new(),
+                    },
                 },
             ))
         })
@@ -343,6 +410,10 @@ pub fn to_mutation(project: &Project) -> Mutation {
         )
         .set("common_dir", project.common_dir.clone())
         .set("discovered", project.discovered)
+        .set(
+            "replaced_ids",
+            serde_json::json!(project.replaced_ids).to_string(),
+        )
         .build()
 }
 
@@ -405,6 +476,7 @@ pub fn to_rows(projects: &Registry) -> DataRows {
                         .clone()
                         .map_or(DataValue::Null, DataValue::Text),
                     DataValue::Bool(project.discovered),
+                    DataValue::Text(serde_json::json!(project.replaced_ids).to_string()),
                 ]
             })
             .collect(),
@@ -416,6 +488,154 @@ pub fn to_rows(projects: &Registry) -> DataRows {
 /// The write that forgets one project by name.
 pub fn delete_mutation(name: &str) -> Mutation {
     Mutation::delete("project", Pred::eq("name", name))
+}
+
+/// A rename or merge, ready to apply in one transaction. Publish it only after success.
+#[derive(Debug)]
+pub struct Change {
+    pub replaced: String,
+    pub project: Project,
+    pub mutations: Vec<Mutation>,
+}
+
+/// Guard the matching rows, including their absence. Never plan from a partial registry.
+pub fn assert_projects(rows: &DataRows, column: &str, values: &[&str]) -> Result<Mutation, String> {
+    if rows.truncated {
+        return Err("project list is incomplete; cannot change projects".into());
+    }
+    let revisions = rows.rows.iter().filter(|row| {
+        matches!(rows.get(row, column), Some(DataValue::Text(value)) if values.contains(&value.as_str()))
+    }).map(|row| {
+        match (rows.get(row, "id"), rows.get(row, "rev")) {
+            (Some(DataValue::Int(id)), Some(DataValue::Int(rev))) if *id > 0 && *rev > 0 =>
+                Ok((DataRowId::new(*id), DataRevision::new(*rev))),
+            _ => Err("project rows are missing revisions; reload and retry".to_owned()),
+        }
+    }).collect::<Result<Vec<_>, _>>()?;
+    Ok(Mutation::AssertRows {
+        entity: "project".into(),
+        filter: Pred::is_in(column, values.iter().copied()),
+        rows: revisions,
+    })
+}
+
+pub fn plan_rename(rows: &DataRows, name: &str, new_name: &str) -> Result<Change, String> {
+    let projects = from_rows(rows);
+    let name = name.trim();
+    let mut project = projects
+        .get(name)
+        .cloned()
+        .ok_or_else(|| format!("unknown project {name}; call project_list"))?;
+    project.name = validate(new_name, &project.root)?.name;
+    if projects.contains_key(&project.name) {
+        return Err(format!("project {} already exists", project.name));
+    }
+    project.discovered = false;
+    record_replacement(rows, &projects[name], &mut project)?;
+    let mutations = vec![
+        assert_projects(rows, "name", &[name, &project.name])?,
+        to_mutation(&project),
+        delete_mutation(name),
+    ];
+    Ok(Change {
+        replaced: name.into(),
+        project,
+        mutations,
+    })
+}
+
+pub fn plan_merge(rows: &DataRows, source: &str, target: &str) -> Result<Change, String> {
+    let projects = from_rows(rows);
+    let (source, target) = (source.trim(), target.trim());
+    if source == target {
+        return Err("source and target must be distinct projects".into());
+    }
+    let lookup = |name: &str| {
+        projects
+            .get(name)
+            .ok_or_else(|| format!("unknown project {name}; call project_list"))
+    };
+    let source = lookup(source)?;
+    let mut project = lookup(target)?.clone();
+    if !equivalent_origins(source.remote.as_deref(), project.remote.as_deref()) {
+        return Err("projects must have equivalent nonempty origins".into());
+    }
+    let mut mutations = vec![assert_projects(rows, "name", &[&source.name, target])?];
+    if source.root != project.root {
+        if projects
+            .values()
+            .any(|other| other.name != source.name && other.root == source.root)
+        {
+            return Err(
+                "another project shares the source root; its todos and notes cannot be separated"
+                    .into(),
+            );
+        }
+        mutations.push(assert_projects(rows, "root", &[&source.root])?);
+        mutations.extend(crate::todos::plan_move_root(&source.root, &project.root)?);
+        mutations.extend(crate::notes::plan_move_root(&source.root, &project.root)?);
+    }
+    project.discovered = false;
+    record_replacement(rows, source, &mut project)?;
+    mutations.extend([to_mutation(&project), delete_mutation(&source.name)]);
+    Ok(Change {
+        replaced: source.name.clone(),
+        project,
+        mutations,
+    })
+}
+
+/// The store identity of each name. Recreating a deleted name allocates a new ID.
+pub fn row_ids(rows: &DataRows) -> BTreeMap<String, DataRowId> {
+    rows.rows
+        .iter()
+        .filter_map(|row| match (rows.get(row, "name"), rows.get(row, "id")) {
+            (Some(DataValue::Text(name)), Some(DataValue::Int(id))) if *id > 0 => {
+                Some((name.clone(), DataRowId::new(*id)))
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn record_replacement(
+    rows: &DataRows,
+    source: &Project,
+    target: &mut Project,
+) -> Result<(), String> {
+    let id = row_ids(rows)
+        .get(&source.name)
+        .copied()
+        .ok_or("project rows are missing IDs; reload and retry")?;
+    target.replaced_ids.push(id);
+    target.replaced_ids.extend_from_slice(&source.replaced_ids);
+    target.replaced_ids.sort_unstable();
+    target.replaced_ids.dedup();
+    Ok(())
+}
+
+/// An explicit adoption and its history are committed together, guarded by the rows read.
+pub fn plan_adopt(
+    rows: &DataRows,
+    project: Project,
+    image_explicit: bool,
+) -> Result<(Adopted, Vec<Mutation>), String> {
+    let before = from_rows(rows);
+    let mut after = before.clone();
+    let mut adopted = adopt(&mut after, project, image_explicit);
+    let name = adopted.project.name.clone();
+    let mut names = vec![name.as_str()];
+    if let Some(name) = &adopted.replaced {
+        record_replacement(rows, &before[name], &mut adopted.project)?;
+        after.insert(adopted.project.name.clone(), adopted.project.clone());
+        names.push(name);
+    }
+    let mut mutations = vec![
+        assert_projects(rows, "name", &names)?,
+        assert_projects(rows, "root", &[&adopted.project.root])?,
+    ];
+    mutations.extend(diff_mutations(&before, &after));
+    Ok((adopted, mutations))
 }
 
 /// Whether a folder is inside a project's root.
@@ -451,7 +671,7 @@ pub fn for_cwd<'a>(projects: &'a Registry, cwd: &Location) -> Option<&'a Project
 /// larger change than this one.
 fn same_repository(project: &Project, repository: &Repository) -> bool {
     match (&project.remote, &repository.remote) {
-        (Some(left), Some(right)) => left == right,
+        (Some(left), Some(right)) => equivalent_origins(Some(left), Some(right)),
         (None, None) => {
             repository.host.is_none()
                 && project.common_dir.is_some()
@@ -735,6 +955,9 @@ pub struct Adopted {
 /// what the image should be (`image_explicit`), in which case the caller's
 /// answer stands even when that answer is "none".
 pub fn adopt(projects: &mut Registry, mut project: Project, image_explicit: bool) -> Adopted {
+    if let Some(stored) = projects.get(&project.name) {
+        project.replaced_ids.clone_from(&stored.replaced_ids);
+    }
     let replaced = projects
         .values()
         .find(|other| other.discovered && other.root == project.root && other.name != project.name)
@@ -779,6 +1002,458 @@ pub fn forgotten(project: &Project) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn origin_identity_matches_transports_but_preserves_repository_paths_and_ports() {
+        let canonical = origin_identity("https://example.com/Owner/Repo");
+        for origin in [
+            "https://EXAMPLE.com:443/Owner/Repo.git/",
+            "HTTPS://EXAMPLE.COM/Owner/Repo/",
+            "git@EXAMPLE.com:Owner/Repo.git",
+            "ssh://git@EXAMPLE.com:22/Owner/Repo.git/",
+            "ssh://git@example.com/Owner/Repo",
+        ] {
+            assert_eq!(origin_identity(origin), canonical, "{origin}");
+        }
+        for origin in [
+            "https://other.com/Owner/Repo",
+            "https://example.com/Other/Repo",
+            "https://example.com/owner/Repo",
+            "https://example.com/Owner/repo",
+            "https://example.com:8443/Owner/Repo",
+            "ssh://git@example.com:2222/Owner/Repo",
+            "ssh://git@example.com:443/Owner/Repo",
+            "https://example.com:22/Owner/Repo",
+        ] {
+            assert_ne!(origin_identity(origin), canonical, "{origin}");
+        }
+        assert_eq!(
+            origin_identity("https://example.com:8443/Owner/Repo.git"),
+            origin_identity("ssh://git@example.com:8443/Owner/Repo")
+        );
+        for origin in [
+            "",
+            "/Owner/Repo.git",
+            "../Repo.git",
+            "example.com/Owner/Repo",
+            "file:///Owner/Repo.git",
+            "http://example.com/Owner/Repo",
+            "host:Owner/Repo",
+            "https:///Owner/Repo",
+            "https://",
+            "ssh://git@/Owner/Repo",
+            "https://example.com:/Owner/Repo",
+            "https://example.com:bad/Owner/Repo",
+            "https://example.com:65536/Owner/Repo",
+            "https://example.com/",
+            "https://example.com/.git",
+            "https://example.com/Owner/../Repo",
+            "https://example.com/Owner/%2e%2e/Repo",
+            "https://example.com/Owner//Repo",
+            "https://example.com/Owner/Repo?query",
+            "https://example.com/Owner/Repo#fragment",
+            " https://example.com/Owner/Repo",
+            "https://example.com/Owner/Repo\n",
+            "git@example.com:/Owner/Repo",
+            "git@/local:Owner/Repo",
+        ] {
+            assert_eq!(
+                origin_identity(origin),
+                format!("exact:{origin}"),
+                "{origin}"
+            );
+        }
+        assert_ne!(
+            origin_identity("/Owner/Repo.git"),
+            origin_identity("/Owner/Repo")
+        );
+        assert!(equivalent_origins(
+            Some("custom:exact"),
+            Some("custom:exact")
+        ));
+        assert!(!equivalent_origins(Some(""), Some("")));
+        assert!(!equivalent_origins(None, None));
+    }
+
+    fn project_rows(backend: &impl Backend) -> DataRows {
+        backend
+            .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
+            .unwrap()
+    }
+
+    fn merge_projects(backend: &impl Backend) -> (Project, Project) {
+        let mut source = validated("duplicate", "/source");
+        source.remote = Some("git@example.com:Owner/Repo.git".into());
+        source.worktree_dir = Some("/source-worktrees".into());
+        source.firecracker_image = Some("source-image".into());
+        let mut target = validated("kept", "/target");
+        target.remote = Some("https://example.com/Owner/Repo".into());
+        target.worktree_dir = Some("../target-worktrees".into());
+        target.firecracker_image = Some("target-image".into());
+        target.common_dir = Some("/target/.git".into());
+        target.worktree_status = Some(WorktreeStatus::Linked);
+        target.discovered = true;
+        backend
+            .apply(vec![to_mutation(&source), to_mutation(&target)])
+            .unwrap();
+        (source, target)
+    }
+
+    #[test]
+    fn replacement_history_survives_renames_merges_and_updates_but_not_name_reuse() {
+        let backend = backend();
+        merge_projects(&backend);
+        let first = row_ids(&project_rows(&backend))["duplicate"];
+        backend
+            .apply(
+                plan_rename(&project_rows(&backend), "duplicate", "renamed")
+                    .unwrap()
+                    .mutations,
+            )
+            .unwrap();
+        let renamed = row_ids(&project_rows(&backend))["renamed"];
+        backend
+            .apply(
+                plan_merge(&project_rows(&backend), "renamed", "kept")
+                    .unwrap()
+                    .mutations,
+            )
+            .unwrap();
+        let kept = row_ids(&project_rows(&backend))["kept"];
+        backend
+            .apply(
+                plan_rename(&project_rows(&backend), "kept", "last")
+                    .unwrap()
+                    .mutations,
+            )
+            .unwrap();
+        let expected = vec![first, kept, renamed];
+        let mut expected = expected;
+        expected.sort_unstable();
+        assert_eq!(read_back(&backend)["last"].replaced_ids, expected);
+        let (adopted, mutations) = plan_adopt(
+            &project_rows(&backend),
+            validated("last", "/changed"),
+            false,
+        )
+        .unwrap();
+        backend.apply(mutations).unwrap();
+        assert_eq!(adopted.project.replaced_ids, expected);
+        assert_eq!(read_back(&backend)["last"].replaced_ids, expected);
+        backend.apply(vec![delete_mutation("last")]).unwrap();
+        let (_, mutations) = plan_adopt(
+            &project_rows(&backend),
+            validated("last", "/changed"),
+            false,
+        )
+        .unwrap();
+        backend.apply(mutations).unwrap();
+        assert!(read_back(&backend)["last"].replaced_ids.is_empty());
+    }
+
+    #[test]
+    fn adoption_records_replacements_and_conflicts_publish_nothing() {
+        for conflict in [false, true] {
+            let backend = backend();
+            let mut found = validated("found", "/work");
+            found.discovered = true;
+            found.replaced_ids = vec![DataRowId::new(900)];
+            backend.apply(vec![to_mutation(&found)]).unwrap();
+            let rows = project_rows(&backend);
+            let id = row_ids(&rows)["found"];
+            let (adopted, mutations) =
+                plan_adopt(&rows, validated("mine", "/work"), false).unwrap();
+            assert_eq!(adopted.project.replaced_ids, vec![id, DataRowId::new(900)]);
+            if conflict {
+                backend
+                    .apply(vec![Mutation::update("project", Pred::eq("name", "found"))
+                        .set("worktree_dir", "changed")
+                        .build()])
+                    .unwrap();
+                let before = project_rows(&backend);
+                assert!(backend.apply(mutations).unwrap_err().is_conflict());
+                assert_eq!(project_rows(&backend), before);
+            } else {
+                backend.apply(mutations).unwrap();
+                assert_eq!(read_back(&backend)["mine"], adopted.project);
+            }
+        }
+    }
+
+    #[test]
+    fn merging_two_completed_lists_keeps_all_1200_items_usable() {
+        use crate::todos;
+        let backend = backend();
+        let (source, target) = merge_projects(&backend);
+        let ids = backend
+            .apply(
+                [&source.root, &target.root]
+                    .into_iter()
+                    .flat_map(|root| {
+                        (0..600).map(move |i| {
+                            Mutation::put("todo")
+                                .set("root", root.clone())
+                                .set("text", format!("task {i}"))
+                                .set("done", true)
+                                .build()
+                        })
+                    })
+                    .collect(),
+            )
+            .unwrap()
+            .ids;
+        backend
+            .apply(
+                plan_merge(&project_rows(&backend), &source.name, &target.name)
+                    .unwrap()
+                    .mutations,
+            )
+            .unwrap();
+        let list = todos::fetch_list(&backend, &target.root).unwrap();
+        assert_eq!(todos::counts(&list), (0, 1200));
+        assert!(todos::fetch_list(&backend, &source.root)
+            .unwrap()
+            .items
+            .is_empty());
+        let mut edits = Vec::new();
+        for id in &ids {
+            assert!(todos::plan_delete(&list, &target.root, id.get() as u64, false).is_ok());
+            edits.extend(
+                todos::plan_edit(&list, id.get() as u64, "edited", None)
+                    .unwrap()
+                    .0,
+            );
+        }
+        backend.apply(edits).unwrap();
+        let list = todos::fetch_list(&backend, &target.root).unwrap();
+        assert!(list.items.iter().all(|item| item.text == "edited"));
+        backend
+            .apply(
+                todos::plan_add(&list, &target.root, "another", None)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+        let list = todos::fetch_list(&backend, &target.root).unwrap();
+        assert_eq!(todos::counts(&list), (1, 1201));
+        // Remove items on both sides of the page boundary through the public planner.
+        for index in [0, 999, 1199] {
+            let list = todos::fetch_list(&backend, &target.root).unwrap();
+            backend
+                .apply(
+                    todos::plan_delete(&list, &target.root, ids[index].get() as u64, false)
+                        .unwrap()
+                        .0,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            todos::counts(&todos::fetch_list(&backend, &target.root).unwrap()),
+            (1, 1198)
+        );
+    }
+
+    #[test]
+    fn rename_validates_names_and_preserves_all_metadata() {
+        let backend = backend();
+        let (_, mut expected) = merge_projects(&backend);
+        let rows = project_rows(&backend);
+        for name in ["", " \t ", "bad\nname", "duplicate", "kept"] {
+            assert!(plan_rename(&rows, "kept", name).is_err(), "{name:?}");
+        }
+        assert!(plan_rename(&rows, "missing", "new").is_err());
+        let change = plan_rename(&rows, "kept", "  new name  ").unwrap();
+        expected.replaced_ids = vec![row_ids(&rows)["kept"]];
+        expected.name = "new name".into();
+        expected.discovered = false;
+        assert_eq!(change.project, expected);
+        backend.apply(change.mutations).unwrap();
+        let registry = read_back(&backend);
+        assert!(!registry.contains_key("kept"));
+        assert_eq!(registry["new name"], expected);
+    }
+
+    #[test]
+    fn merge_preserves_target_settings_todo_hierarchy_and_note_links() {
+        use crate::{notes, todos};
+        let backend = backend();
+        let (source, mut expected) = merge_projects(&backend);
+        let add_todo = |root: &str, parent| {
+            let list = todos::fetch_list(&backend, root).unwrap();
+            let (mutations, _) = todos::plan_add(&list, root, "task", parent).unwrap();
+            backend.apply(mutations).unwrap().ids[0].get() as u64
+        };
+        let parent = add_todo(&source.root, None);
+        let child = add_todo(&source.root, Some(parent));
+        let kept = add_todo(&expected.root, None);
+        let (mutations, draft) = notes::plan_add(
+            0,
+            Some(&source.root),
+            "note",
+            "body",
+            "user",
+            &["tag".into()],
+            &[child],
+        )
+        .unwrap();
+        let note = backend.apply(mutations).unwrap().ids[0].get() as u64;
+        backend
+            .apply(notes::plan_attach(&backend, note, &draft.tags, &draft.todo_ids).unwrap())
+            .unwrap();
+        let before_note = notes::fetch_note(&backend, note).unwrap().unwrap();
+
+        let rows = project_rows(&backend);
+        let change = plan_merge(&rows, "duplicate", "kept").unwrap();
+        expected.replaced_ids = vec![row_ids(&rows)["duplicate"]];
+        expected.discovered = false;
+        assert_eq!(change.project, expected);
+        backend.apply(change.mutations).unwrap();
+        let mut registry = read_back(&backend);
+        assert_eq!(
+            registry,
+            Registry::from([("kept".into(), expected.clone())])
+        );
+        assert!(todos::fetch_list(&backend, &source.root)
+            .unwrap()
+            .items
+            .is_empty());
+        let list = todos::fetch_list(&backend, &expected.root).unwrap();
+        assert_eq!(list.items.len(), 2);
+        assert_eq!(todos::item_of(&list, parent).unwrap().children[0].id, child);
+        assert!(todos::item_of(&list, kept).is_some());
+        let after_note = notes::fetch_note(&backend, note).unwrap().unwrap();
+        assert_eq!(after_note.root.as_deref(), Some(expected.root.as_str()));
+        assert_eq!(after_note.id, before_note.id);
+        assert_eq!(after_note.tags, before_note.tags);
+        assert_eq!(after_note.todo_ids, before_note.todo_ids);
+        assert_eq!(after_note.body, before_note.body);
+
+        // Even a primary source checkout cannot move the user-managed target or recreate it.
+        let source_checkout = git(
+            &source.root,
+            source.remote.as_deref(),
+            WorktreeStatus::Primary,
+        );
+        assert!(!discover(&mut registry, std::slice::from_ref(&source_checkout)).changed());
+        assert_eq!(for_repository(&registry, &source_checkout), Some(&expected));
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn merge_requires_distinct_matching_origins_and_exclusive_source_root() {
+        let backend = backend();
+        let (source, mut target) = merge_projects(&backend);
+        let rows = project_rows(&backend);
+        assert!(plan_merge(&rows, "kept", "kept").is_err());
+        assert!(plan_merge(&rows, "missing", "kept").is_err());
+        assert!(plan_merge(&rows, "duplicate", "missing").is_err());
+        for remote in [None, Some(""), Some("ssh://git@elsewhere/Owner/Repo")] {
+            target.remote = remote.map(str::to_owned);
+            backend.apply(vec![to_mutation(&target)]).unwrap();
+            assert!(plan_merge(&project_rows(&backend), "duplicate", "kept").is_err());
+        }
+        target.remote = source.remote.clone();
+        backend
+            .apply(vec![
+                to_mutation(&target),
+                to_mutation(&validated("shared", &source.root)),
+            ])
+            .unwrap();
+        assert!(plan_merge(&project_rows(&backend), "duplicate", "kept")
+            .unwrap_err()
+            .contains("shares"));
+        target.root = source.root.clone();
+        backend.apply(vec![to_mutation(&target)]).unwrap();
+        backend
+            .apply(
+                plan_merge(&project_rows(&backend), "duplicate", "kept")
+                    .unwrap()
+                    .mutations,
+            )
+            .unwrap();
+        assert!(read_back(&backend).contains_key("shared"));
+    }
+
+    #[test]
+    fn project_changes_reject_stale_rows_new_names_and_new_root_sharers_atomically() {
+        for conflict in [
+            "source",
+            "target",
+            "root sharer",
+            "destination",
+            "deleted source",
+        ] {
+            let backend = backend();
+            let (source, _) = merge_projects(&backend);
+            let rows = project_rows(&backend);
+            let change = if conflict == "destination" {
+                plan_rename(&rows, "duplicate", "new").unwrap()
+            } else {
+                plan_merge(&rows, "duplicate", "kept").unwrap()
+            };
+            let concurrent = match conflict {
+                "source" | "target" => Mutation::update(
+                    "project",
+                    Pred::eq(
+                        "name",
+                        if conflict == "source" {
+                            "duplicate"
+                        } else {
+                            "kept"
+                        },
+                    ),
+                )
+                .set("worktree_dir", "concurrent")
+                .build(),
+                "root sharer" => to_mutation(&validated("shared", &source.root)),
+                "destination" => to_mutation(&validated("new", "/unrelated")),
+                _ => delete_mutation("duplicate"),
+            };
+            backend.apply(vec![concurrent]).unwrap();
+            let before = project_rows(&backend);
+            // A preceding write is rolled back too: assertions are inside the transaction.
+            let mut mutations = vec![to_mutation(&validated("rolled-back", "/rollback"))];
+            mutations.extend(change.mutations);
+            assert!(
+                backend.apply(mutations).unwrap_err().is_conflict(),
+                "{conflict}"
+            );
+            assert_eq!(project_rows(&backend), before, "{conflict}");
+        }
+        let backend = backend();
+        merge_projects(&backend);
+        let mut rows = project_rows(&backend);
+        rows.truncated = true;
+        assert!(plan_merge(&rows, "duplicate", "kept").is_err());
+        assert!(plan_rename(&rows, "duplicate", "new").is_err());
+        let rows = to_rows(&read_back(&backend));
+        assert!(plan_merge(&rows, "duplicate", "kept").is_err());
+    }
+
+    #[test]
+    fn discovery_and_cwd_matching_reuse_https_projects_for_ssh_checkouts() {
+        let mut projects = Registry::new();
+        let first = git(
+            "/first",
+            Some("https://example.com/Owner/Repo.git"),
+            WorktreeStatus::Primary,
+        );
+        let second = git(
+            "/second",
+            Some("ssh://git@EXAMPLE.com:22/Owner/Repo/"),
+            WorktreeStatus::Primary,
+        );
+        discover(&mut projects, std::slice::from_ref(&first));
+        assert!(!discover(&mut projects, std::slice::from_ref(&second)).changed());
+        let probed = Probed::from([(here("/second"), second)]);
+        assert_eq!(
+            project_for_cwd(&probed, &projects, &here("/second"))
+                .unwrap()
+                .name,
+            "first"
+        );
+        assert_eq!(projects["first"].remote, first.remote);
+    }
 
     // ----------------------------------------------------------------- rows
 

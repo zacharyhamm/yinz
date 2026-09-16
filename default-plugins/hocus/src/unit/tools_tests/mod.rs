@@ -15,6 +15,7 @@ fn project() -> Project {
         worktree_status: None,
         common_dir: None,
         discovered: false,
+        replaced_ids: Vec::new(),
     }
 }
 

@@ -2082,6 +2082,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-width 0.2.2",
+ "url",
  "zellij-runtime",
  "zellij-storage",
  "zellij-tile",

@@ -1605,6 +1605,8 @@ impl State {
                 | "project_assign"
                 | "project_open"
                 | "project_forget"
+                | "project_rename"
+                | "project_merge"
                 | "todo_list"
                 | "todo_search"
                 | "note_list"
@@ -1639,6 +1641,9 @@ impl State {
             "project_assign" => self.project_assign(&args),
             "project_open" => self.project_open(&args),
             "project_forget" => self.project_forget(&args),
+            "project_rename" | "project_merge" => self
+                .project_change(&args, call.name == "project_merge")
+                .unwrap_or_else(|error| error),
             "todo_list" => self.todo_list(&args),
             "todo_search" => self.todo_search(&args),
             "note_list" => self.note_list(&args),
@@ -1684,7 +1689,11 @@ impl State {
         {
             return Err("worktree_dir must not contain NUL bytes".to_owned());
         }
-        let stored = self.projects.get(name).cloned();
+        let rows = self
+            .store()
+            .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))?;
+        let before = projects::from_rows(&rows);
+        let stored = before.get(name).cloned();
         if let Some(root) = args.root.as_deref() {
             let mut project = projects::validate(name, root)?;
             project.worktree_dir = stored
@@ -1695,28 +1704,32 @@ impl State {
                 Some(image) => image,
                 None => stored.and_then(|project| project.firecracker_image),
             };
-            let before = self.projects.clone();
-            // The user just gave this folder a better name than a poll could.
-            // What comes back is the project as stored, which a rename may have
-            // filled in from the discovered entry.
-            let projects::Adopted {
-                mut project,
-                replaced,
-            } = projects::adopt(&mut self.projects, project, image_explicit);
+            let (mut adopted, mut mutations) =
+                projects::plan_adopt(&rows, project, image_explicit)?;
             if let Some(dir) = &args.worktree_dir {
-                project.worktree_dir = (!dir.is_empty()).then(|| dir.clone());
-                self.projects.insert(project.name.clone(), project.clone());
+                adopted.project.worktree_dir = (!dir.is_empty()).then(|| dir.clone());
+                // Apply the explicit override after the adoption's inherited defaults.
+                mutations.push(projects::to_mutation(&adopted.project));
             }
-            if let Some(gone) = replaced {
-                self.rename_project(&gone, &project.name);
+            let report = self.write_store(mutations).map_err(|error| {
+                if error.is_conflict() {
+                    "projects changed; call project_list and retry".to_owned()
+                } else {
+                    error.into()
+                }
+            })?;
+            let project = adopted.project;
+            let mut registry = before;
+            let mut ids = projects::row_ids(&rows);
+            if let Some(gone) = adopted.replaced {
+                registry.remove(&gone);
+                ids.remove(&gone);
             }
-            // Applied to our copy first and written after: `project_open` needs
-            // the project in hand to open its tab, and the watch notification
-            // confirming the same change is queued through the plugin thread
-            // rather than delivered inline, so it arrives later.
-            let mutations = projects::diff_mutations(&before, &self.projects);
-            let _ = self.write_store(mutations);
-            self.push_strip(false);
+            if let Some(id) = report.ids.last() {
+                ids.insert(project.name.clone(), *id);
+            }
+            registry.insert(project.name.clone(), project.clone());
+            self.take_projects(registry, ids);
             Ok(project)
         } else {
             let mut project = stored.ok_or_else(|| {
@@ -1733,13 +1746,75 @@ impl State {
             if let Some(dir) = &args.worktree_dir {
                 project.worktree_dir = (!dir.is_empty()).then(|| dir.clone());
             }
-            let before = self.projects.clone();
-            self.projects.insert(project.name.clone(), project.clone());
-            let mutations = projects::diff_mutations(&before, &self.projects);
-            let _ = self.write_store(mutations);
-            self.push_strip(false);
+            let mutations = vec![
+                projects::assert_projects(&rows, "name", &[&project.name])?,
+                projects::to_mutation(&project),
+            ];
+            self.write_store(mutations)
+                .map_err(|error| error.to_string())?;
+            let mut registry = before;
+            registry.insert(project.name.clone(), project.clone());
+            self.take_projects(registry, projects::row_ids(&rows));
             Ok(project)
         }
+    }
+
+    fn project_change(&mut self, args: &tools::Args, merge: bool) -> Result<String, String> {
+        let (source, target) = if merge {
+            (args.source.as_deref(), args.target.as_deref())
+        } else {
+            (args.name.as_deref(), args.new_name.as_deref())
+        };
+        let (Some(source), Some(target)) = (source, target) else {
+            return Err(if merge {
+                "source and target are required"
+            } else {
+                "name and new_name are required"
+            }
+            .into());
+        };
+        let rows = self
+            .store()
+            .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))?;
+        let change = if merge {
+            projects::plan_merge(&rows, source, target)?
+        } else {
+            projects::plan_rename(&rows, source, target)?
+        };
+        let message = if merge {
+            format!(
+                "merged {} into {}; kept the target's root and settings",
+                change.replaced, change.project.name
+            )
+        } else {
+            format!("renamed {} to {}", change.replaced, change.project.name)
+        };
+        self.apply_project_change(&rows, change)?;
+        Ok(message)
+    }
+
+    pub(crate) fn apply_project_change(
+        &mut self,
+        rows: &DataRows,
+        change: projects::Change,
+    ) -> Result<(), String> {
+        let report = self.write_store(change.mutations).map_err(|error| {
+            if error.is_conflict() {
+                "projects changed; call project_list and retry".to_owned()
+            } else {
+                error.into()
+            }
+        })?;
+        let mut registry = projects::from_rows(rows);
+        registry.remove(&change.replaced);
+        registry.insert(change.project.name.clone(), change.project.clone());
+        let mut ids = projects::row_ids(rows);
+        ids.remove(&change.replaced);
+        if let Some(id) = report.ids.first() {
+            ids.insert(change.project.name.clone(), *id);
+        }
+        self.take_projects(registry, ids);
+        Ok(())
     }
 
     pub(crate) fn project_list(&self) -> String {
@@ -2463,22 +2538,6 @@ impl State {
     /// The project that owns a pane's folder. See [`projects::project_for_cwd`].
     fn project_for_cwd(&self, cwd: &Location) -> Option<&projects::Project> {
         projects::project_for_cwd(&self.repositories, &self.projects, cwd)
-    }
-
-    /// Point everything that names a project that went away at the project that
-    /// took its folders. Without this, the active project can name nothing and
-    /// `agent_list` answers "unknown project".
-    pub(crate) fn rename_project(&mut self, gone: &str, kept: &str) {
-        for assigned in self
-            .tab_projects
-            .values_mut()
-            .chain(self.auto_tab_projects.values_mut())
-            .chain(self.active_project.iter_mut())
-        {
-            if assigned == gone {
-                kept.clone_into(assigned);
-            }
-        }
     }
 
     /// Work out the project of each tab again, and the active project with it.

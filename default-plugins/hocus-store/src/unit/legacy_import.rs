@@ -305,3 +305,26 @@ fn failed_completion_marker_resumes_without_resurrecting_deleted_todos() {
     assert!(imported(&backend, &host, "todos"));
     assert_eq!(backend.count(&FetchRequest::entity("todo")).unwrap(), 1);
 }
+
+#[test]
+fn legacy_import_pages_through_parents_and_preserves_all_items() {
+    let backend = backend();
+    let items: Vec<_> = (1..=1200)
+        .map(|id| {
+            serde_json::json!({
+                "id": id, "text": format!("parent {id}"), "done": true,
+                "children": [{"id": id + 1200, "text": "child", "done": true}]
+            })
+        })
+        .collect();
+    let bytes = serde_json::to_vec(&serde_json::json!({"/work": {"items": items}})).unwrap();
+    let lists = todos::parse_legacy(&bytes);
+    let host = HostId::new("host-a");
+    import_todos(&backend, &host, &lists).unwrap();
+    let list = todos::fetch_list(&backend, "/work").unwrap();
+    assert_eq!(todos::counts(&list), (0, 2400));
+    assert_eq!(list.items.len(), 1200);
+    assert!(list.items.iter().all(|item| item.children.len() == 1));
+    import_todos(&backend, &host, &lists).unwrap();
+    assert_eq!(todos::fetch_list(&backend, "/work").unwrap(), list);
+}

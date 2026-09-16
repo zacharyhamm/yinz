@@ -139,6 +139,7 @@ fn project_state() -> State {
             worktree_status: None,
             common_dir: None,
             discovered: false,
+            replaced_ids: Vec::new(),
         },
     );
     state.active_project = Some("hocus".to_owned());
@@ -543,7 +544,15 @@ fn poll_focus(
 /// session runs. The rows are built from a registry because that is what the
 /// callers have.
 fn give_projects(state: &mut State, registry: projects::Registry) {
-    let rows = projects::to_rows(&registry);
+    let backend = state.store();
+    let before = projects::from_rows(&backend.fetch(&FetchRequest::entity("project")).unwrap());
+    backend
+        .apply(projects::diff_mutations(&before, &registry))
+        .unwrap();
+    let rows = backend
+        .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
+        .unwrap();
+    drop(backend);
     state.on_projects_changed(state.project_watch, &rows);
 }
 
