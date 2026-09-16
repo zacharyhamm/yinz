@@ -544,7 +544,7 @@ fn a_projects_firecracker_image_is_kept_cleared_or_updated_by_the_project_tools(
             .map(|project| project.name.clone())
             .expect("discovered");
         registry.get_mut(&name).unwrap().firecracker_image = Some(image.to_owned());
-        state.projects = registry;
+        give_projects(state, registry);
         name
     };
     let found = discovered(&mut state, "/work/found", "rust");

@@ -8,9 +8,8 @@ fn confirmation_policy_lists_tools_correctly() {
         "send_input",
         "agent_send",
         "agent_control",
-        // Forgetting a project is the one project tool that takes
-        // something away.
         "project_forget",
+        "project_merge",
         "slack_post",
     ] {
         assert!(needs_confirmation(name), "{name} should be confirmed");
@@ -36,6 +35,7 @@ fn confirmation_policy_lists_tools_correctly() {
         "new_tab",
         "focus",
         "rename",
+        "project_rename",
         "move_pane",
         "swap_panes",
         "resize_pane",
@@ -103,9 +103,9 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 121);
+    assert_eq!(names.len(), 123);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-    assert_eq!(confirmed, 27);
+    assert_eq!(confirmed, 28);
 }
 
 /// The invariant the name table cannot state on its own: whatever decides to

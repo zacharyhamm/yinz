@@ -711,6 +711,7 @@ fn a_scan_overtaken_by_a_later_one_is_ignored() {
             worktree_status: None,
             common_dir: None,
             discovered: false,
+            replaced_ids: Vec::new(),
         },
     );
     state.active_project = Some("other".to_owned());

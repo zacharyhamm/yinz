@@ -640,6 +640,7 @@ pub struct State {
     /// tools, both already behind a model round trip, so they are fetched when
     /// asked for. That drops the largest thing hocus used to hold a copy of.
     projects: projects::Registry,
+    project_ids: BTreeMap<String, zellij_tile::prelude::DataRowId>,
     /// The watch feeding `projects`, so a change event can be told from another
     /// plugin's.
     project_watch: DataWatchId,
@@ -1036,6 +1037,7 @@ impl Default for State {
             vm_panel_snapshot: Default::default(),
             vm_panel_current_session: None,
             projects: BTreeMap::new(),
+            project_ids: BTreeMap::new(),
             project_watch: DataWatchId::new(0),
             #[cfg(not(target_family = "wasm"))]
             store: {

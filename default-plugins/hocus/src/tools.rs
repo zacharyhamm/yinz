@@ -115,8 +115,9 @@ pub fn needs_confirmation(name: &str) -> bool {
             | "send_input"
             | "agent_send"
             | "agent_control"
-            // The one tool that removes something the user meant to keep.
+            // These remove a project the user meant to keep.
             | "project_forget"
+            | "project_merge"
             | "slack_post"
             // The inbound warps are deliberately absent, `warp_tab_here` included:
             // what they bring arrives in front of whoever asked, so the prompt would
@@ -286,6 +287,11 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "project_forget" => {
             let name = args.name.as_deref().unwrap_or("a project");
             format!("forgets the project {name}; its todos stay, the project does not")
+        },
+        "project_merge" => {
+            let source = args.source.as_deref().unwrap_or("the source project");
+            let target = args.target.as_deref().unwrap_or("the target project");
+            format!("merges {source} into {target}, moves its todos and notes, and removes {source}; keeps {target}'s root and settings")
         },
         // Both merges write the user's checkout, so both name it as a write rather
         // than as a transfer. `.guest` is named because those files are the part the
@@ -1259,6 +1265,22 @@ pub fn specs() -> Value {
                 },
                 "required": ["name"],
             }),
+        ),
+        tool(
+            "project_rename",
+            "Rename a project, preserving its root and settings. The new name must be unused.",
+            json!({"type": "object", "properties": {
+                "name": {"type": "string"},
+                "new_name": {"type": "string"},
+            }, "required": ["name", "new_name"]}),
+        ),
+        tool(
+            "project_merge",
+            "Merge projects with equivalent origins. Move source todos and notes, remove source, and keep target root and settings. Requires confirmation.",
+            json!({"type": "object", "properties": {
+                "source": {"type": "string"},
+                "target": {"type": "string"},
+            }, "required": ["source", "target"]}),
         ),
         tool(
             "project_open",
@@ -2354,9 +2376,15 @@ pub const FAMILIES: &[Family] = &[
     },
     Family {
         name: "project",
-        summary: "open and assign the project hocus works in",
+        summary: "open, assign, rename and merge projects",
         deferred: true,
-        tools: &["project_assign", "project_forget", "project_open"],
+        tools: &[
+            "project_assign",
+            "project_forget",
+            "project_open",
+            "project_rename",
+            "project_merge",
+        ],
     },
     Family {
         name: "vm",
@@ -2743,6 +2771,8 @@ pub struct Args {
     pub new_tab_name: Option<String>,
     pub panes: Vec<PaneRef>,
     pub name: Option<String>,
+    pub new_name: Option<String>,
+    pub target: Option<String>,
     // `plugin_edit`'s halves. Named as the file tools of every other agent name them, so a
     // model that has edited a file anywhere else already knows the shape.
     pub old_string: Option<String>,

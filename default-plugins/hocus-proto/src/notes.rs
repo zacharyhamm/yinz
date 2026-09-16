@@ -16,7 +16,7 @@
 //! Everything here is either pure or goes through [`Backend`], so it all tests
 //! on the host against the real engine.
 
-use crate::store::Backend;
+use crate::store::{fetch_all, Backend};
 use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::{DataRevision, DataRowId};
 use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir};
@@ -292,23 +292,6 @@ pub fn from_rows(rows: &DataRows) -> Vec<Note> {
             })
         })
         .collect()
-}
-
-/// Every row a request matches, paging by id until the store says there are no
-/// more. For side tables, whose rows per note are bounded but whose total is not.
-fn fetch_all(backend: &impl Backend, request: FetchRequest) -> Result<DataRows, String> {
-    let request = request.limit(crate::store::LIST_FETCH_LIMIT);
-    let mut all = backend.fetch(&request)?;
-    while all.truncated {
-        let Some(cursor) = all.next_cursor else {
-            break;
-        };
-        let page = backend.fetch(&request.clone().after_id(cursor))?;
-        all.rows.extend(page.rows);
-        all.truncated = page.truncated;
-        all.next_cursor = page.next_cursor;
-    }
-    Ok(all)
 }
 
 /// The rows of a side table for a set of note ids, chunked so no `IN` grows

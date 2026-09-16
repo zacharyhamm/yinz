@@ -35,9 +35,10 @@ pub type OpResult = Result<String, String>;
 /// `list` holds the single project's todo list the call is about, if it is about
 /// one. Loading only that list is the point: the old code held every list of
 /// every project in memory because they all lived in one file.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct StoreView {
     pub projects: projects::Registry,
+    pub project_rows: zellij_tile::prelude::DataRows,
     pub list: Option<(String, todos::List)>,
 }
 
@@ -134,20 +135,13 @@ pub fn plan_mutate(
             };
             let project = projects::validate(name, root)?;
             let name = project.name.clone();
-            // `adopt` on a copy, then diff. It resolves a discovered project at
-            // the same root by inheriting its Git identity and removing it, and
-            // the diff turns that into the delete and the put — in one batch, so
-            // no reader ever sees the project twice or not at all.
-            let mut after = view.projects.clone();
-            let stale = projects::adopt(&mut after, project, false).replaced;
+            let (adopted, mutations) = projects::plan_adopt(&view.project_rows, project, false)?;
+            let stale = adopted.replaced;
             let message = match &stale {
                 Some(stale) => format!("remembered {name}, replacing discovered {stale}"),
                 None => format!("remembered {name}"),
             };
-            Ok((
-                projects::diff_mutations(&view.projects, &after),
-                Reply::Fixed(message),
-            ))
+            Ok((mutations, Reply::Fixed(message)))
         },
         "project_forget" => {
             let Some(name) = arg(args, "name") else {
@@ -322,11 +316,11 @@ pub fn answer_query(view: &StoreView, op: &str, args: &Value) -> OpResult {
 
 /// Materialize what an op needs to see.
 fn load_view(backend: &impl Backend, op: &str, args: &Value) -> Result<StoreView, String> {
-    let projects = projects::from_rows(
-        &backend.fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))?,
-    );
+    let project_rows =
+        backend.fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))?;
     let mut view = StoreView {
-        projects,
+        projects: projects::from_rows(&project_rows),
+        project_rows,
         list: None,
     };
     if needs_list(op) {
@@ -1038,6 +1032,7 @@ mod tests {
             worktree_status: Some(projects::WorktreeStatus::Primary),
             common_dir: Some("/tmp/found/.git".to_owned()),
             discovered: true,
+            replaced_ids: Vec::new(),
         };
         backend
             .apply(vec![projects::to_mutation(&found)])
@@ -1067,6 +1062,7 @@ mod tests {
             worktree_status: Some(projects::WorktreeStatus::Primary),
             common_dir: None,
             discovered: true,
+            replaced_ids: Vec::new(),
         };
         backend
             .apply(vec![projects::to_mutation(&found)])
@@ -1106,6 +1102,7 @@ mod tests {
                 projects::validate("work", "/tmp/work").unwrap(),
             )]),
             list: None,
+            ..Default::default()
         };
         let (mutations, reply) =
             plan_mutate(&view, "project_forget", &json!({ "name": "work" })).expect("planned");

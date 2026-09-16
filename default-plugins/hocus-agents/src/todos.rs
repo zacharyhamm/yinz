@@ -112,7 +112,7 @@ impl State {
         if self.todos.todo_watch != Some(watch_id) {
             return false;
         }
-        self.take_todo_rows(&rows);
+        self.take_todo_rows(&Host::shared(), &rows);
         self.surface == Surface::Todos
     }
 
@@ -149,22 +149,33 @@ impl State {
             &FetchRequest::entity("todo")
                 .filter(Pred::eq("root", root.as_str()))
                 .sort_by("id", SortDir::Asc)
-                .limit(todos::MAX_ITEMS as u32),
+                .limit(store::LIST_FETCH_LIMIT),
             WatchMode::Rows,
         ) {
             Ok(handle) => {
                 self.todos.todo_watch = Some(handle.watch_id);
                 self.todos.status.clear();
-                self.take_todo_rows(&handle.rows);
+                self.take_todo_rows(&Host::shared(), &handle.rows);
             },
             Err(error) => self.todos.status = error,
         }
     }
 
-    fn take_todo_rows(&mut self, rows: &DataRows) {
+    fn take_todo_rows(&mut self, backend: &impl Backend, rows: &DataRows) {
         let root = self.todos.project_root.as_deref().unwrap_or_default();
         let before = todo_rows(&self.todos.list, self.todos.show_done);
-        self.todos.list = todos::from_rows(rows).remove(root).unwrap_or_default();
+        let list = if rows.truncated {
+            todos::fetch_list(backend, root)
+        } else {
+            Ok(todos::from_rows(rows).remove(root).unwrap_or_default())
+        };
+        match list {
+            Ok(list) => self.todos.list = list,
+            Err(error) => {
+                self.todos.status = error;
+                return;
+            },
+        }
         self.todos.line_cache = None;
         let visible = todo_rows(&self.todos.list, self.todos.show_done);
         self.todos.selected = nearest_surviving(&before, &visible, self.todos.selected);
@@ -351,7 +362,7 @@ impl State {
                 todos::plan_edit(&self.todos.list, id, &text, Some(rev)).map(|(plan, _)| plan)
             },
         };
-        self.apply_todo_plan(planned, "saved todo");
+        self.apply_todo_plan(&Host::shared(), planned, "saved todo");
     }
 
     fn toggle_todo(&mut self) -> bool {
@@ -366,7 +377,7 @@ impl State {
         };
         let planned = todos::plan_set_done(&self.todos.list, &root, item.id, !item.done)
             .map(|(plan, _)| plan);
-        self.apply_todo_plan(planned, message);
+        self.apply_todo_plan(&Host::shared(), planned, message);
         true
     }
 
@@ -392,7 +403,7 @@ impl State {
             return false;
         };
         if key.bare_key == BareKey::Char('y') && key.has_no_modifiers() {
-            self.apply_todo_plan(Ok(plan), "deleted todo");
+            self.apply_todo_plan(&Host::shared(), Ok(plan), "deleted todo");
         }
         true
     }
@@ -457,7 +468,7 @@ impl State {
         };
         let planned = todos::plan_move(&self.todos.list, &root, id, parent_id, Some(rev))
             .map(|(plan, _)| plan);
-        self.apply_todo_plan(planned, "moved todo");
+        self.apply_todo_plan(&Host::shared(), planned, "moved todo");
     }
 
     fn move_targets(&self, source: u64) -> Vec<u64> {
@@ -474,13 +485,27 @@ impl State {
 
     fn apply_todo_plan(
         &mut self,
+        backend: &impl Backend,
         planned: Result<Vec<zellij_tile::prelude::Mutation>, String>,
         success: &str,
     ) {
         self.todos.status = match planned {
             Err(error) => error,
-            Ok(plan) => match Host::shared().apply(plan) {
-                Ok(_) => success.to_owned(),
+            Ok(plan) => match backend.apply(plan) {
+                Ok(_) => {
+                    // A write beyond the watch's first page may not produce a notification.
+                    let root = self.todos.project_root.as_deref().unwrap_or_default();
+                    match store::fetch_all(
+                        backend,
+                        FetchRequest::entity("todo").filter(Pred::eq("root", root)),
+                    ) {
+                        Ok(rows) => {
+                            self.take_todo_rows(backend, &rows);
+                            success.to_owned()
+                        },
+                        Err(error) => format!("{success}; could not refresh: {error}"),
+                    }
+                },
                 Err(error) => todos::topology_error(error),
             },
         };
@@ -803,6 +828,56 @@ mod tests {
     }
 
     #[test]
+    fn a_truncated_watch_loads_the_complete_list_and_keeps_it_on_fetch_failure() {
+        let backend = store::Local::shared("hocus-agents");
+        backend.define_all(&store::shared_defs()).unwrap();
+        backend
+            .apply(
+                (0..1200)
+                    .map(|id| {
+                        Mutation::put("todo")
+                            .set("root", "/work")
+                            .set("text", format!("item {id}"))
+                            .set("done", true)
+                            .build()
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        let rows = backend
+            .fetch(&FetchRequest::entity("todo").limit(store::LIST_FETCH_LIMIT))
+            .unwrap();
+        assert!(rows.truncated);
+        let mut state = State::default();
+        state.todos.project_root = Some("/work".into());
+        state.take_todo_rows(&backend, &rows);
+        assert_eq!(todos::counts(&state.todos.list), (0, 1200));
+        let tail = state.todos.list.items.last().unwrap().id;
+        let edit = todos::plan_edit(&state.todos.list, tail, "edited", None)
+            .unwrap()
+            .0;
+        state.apply_todo_plan(&backend, Ok(edit), "saved todo");
+        assert_eq!(
+            todos::item_of(&state.todos.list, tail).unwrap().text,
+            "edited"
+        );
+        let delete = todos::plan_delete(&state.todos.list, "/work", tail, false)
+            .unwrap()
+            .0;
+        state.apply_todo_plan(&backend, Ok(delete), "deleted todo");
+        assert!(todos::item_of(&state.todos.list, tail).is_none());
+        let add = todos::plan_add(&state.todos.list, "/work", "new", None)
+            .unwrap()
+            .0;
+        state.apply_todo_plan(&backend, Ok(add), "saved todo");
+        assert_eq!(todos::counts(&state.todos.list), (1, 1200));
+        let before = state.todos.list.clone();
+        state.take_todo_rows(&Host::shared(), &rows);
+        assert!(!state.todos.status.is_empty());
+        assert_eq!(state.todos.list, before);
+    }
+
+    #[test]
     fn completed_subtrees_are_hidden_and_move_targets_exclude_the_source_subtree() {
         let list = todos::List {
             items: vec![
@@ -1037,6 +1112,7 @@ mod tests {
                                 worktree_status: None,
                                 common_dir: None,
                                 discovered: false,
+                                replaced_ids: Vec::new(),
                             },
                         )
                     })
@@ -1160,6 +1236,7 @@ mod tests {
             worktree_status: None,
             common_dir: None,
             discovered: false,
+            replaced_ids: Vec::new(),
         };
         let mut state = State::default();
         state.todos.initial_cwd = "/work/nested/src".into();

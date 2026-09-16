@@ -49,7 +49,7 @@ pub fn classify(
                         .remote
                         .as_ref()
                         .filter(|remote| !remote.is_empty())
-                        .map(|remote| format!("remote:{remote}"))
+                        .map(|remote| format!("remote:{}", projects::origin_identity(remote)))
                         .or_else(|| {
                             repo.common_dir
                                 .as_ref()
@@ -152,6 +152,44 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn https_and_ssh_checkouts_share_a_group_with_or_without_a_registered_project() {
+        let snapshot = reply(
+            vec![pane(1, "/first"), pane(2, "/second")],
+            BTreeMap::from([
+                (
+                    Location::local("/first"),
+                    repo(
+                        "/first",
+                        "/first/.git",
+                        Some("https://example.com/owner/repo.git"),
+                        None,
+                    ),
+                ),
+                (
+                    Location::local("/second"),
+                    repo(
+                        "/second",
+                        "/second/.git",
+                        Some("git@EXAMPLE.com:owner/repo"),
+                        None,
+                    ),
+                ),
+            ]),
+        );
+        let mut project = projects::validate("kept", "/elsewhere").unwrap();
+        project.remote = Some("ssh://git@example.com:22/owner/repo.git/".into());
+        for registry in [BTreeMap::new(), BTreeMap::from([("kept".into(), project)])] {
+            let (groups, skipped) = classify(&registry, &snapshot);
+            assert_eq!(skipped, 0);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].pane_ids, vec![1, 2]);
+            if !registry.is_empty() {
+                assert_eq!(groups[0].name, "kept");
+            }
+        }
+    }
+
     #[test]
     fn identity_and_checkout_order_are_independent_of_display_names() {
         let mut remote = pane(3, "/process");

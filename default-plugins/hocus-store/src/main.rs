@@ -401,15 +401,10 @@ fn import_todos(
 
                 // Keep UIDs to recover parents after a restart. Use this same snapshot
                 // for validation and the transaction guard.
-                let rows = backend.fetch(
-                    &FetchRequest::entity("todo")
-                        .filter(Pred::eq("root", root.as_str()))
-                        .sort_by("id", SortDir::Asc)
-                        .limit(store::LIST_FETCH_LIMIT),
+                let rows = store::fetch_all(
+                    backend,
+                    FetchRequest::entity("todo").filter(Pred::eq("root", root.as_str())),
                 )?;
-                if rows.truncated {
-                    return Err(format!("cannot import into a truncated todo list: {root}"));
-                }
                 let ids_by_uid: BTreeMap<_, _> = rows
                     .rows
                     .iter()

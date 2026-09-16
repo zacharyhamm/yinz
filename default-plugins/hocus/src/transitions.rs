@@ -634,7 +634,10 @@ impl State {
             return;
         };
         self.project_watch = handle.watch_id;
-        self.take_projects(projects::from_rows(&handle.rows));
+        self.take_projects(
+            projects::from_rows(&handle.rows),
+            projects::row_ids(&handle.rows),
+        );
     }
 
     /// Take a new copy of the project registry.
@@ -646,25 +649,57 @@ impl State {
         if watch_id != self.project_watch {
             return false;
         }
-        self.take_projects(projects::from_rows(rows));
+        self.take_projects(projects::from_rows(rows), projects::row_ids(rows));
         true
     }
 
-    fn take_projects(&mut self, projects: projects::Registry) {
-        self.projects = projects;
-        // A project can be renamed or dropped out from under the tab maps —
-        // discovery replaces a project when a shallower folder takes its
-        // folders. Anything naming a project that no longer exists is dropped,
-        // or `agent_list` answers "unknown project" for a tab forever.
-        self.tab_projects
-            .retain(|_, name| self.projects.contains_key(name));
-        self.auto_tab_projects
-            .retain(|_, name| self.projects.contains_key(name));
-        if let Some(active) = &self.active_project {
-            if !self.projects.contains_key(active) {
-                self.active_project = None;
-            }
+    pub(crate) fn take_projects(
+        &mut self,
+        projects: projects::Registry,
+        ids: BTreeMap<String, zellij_tile::prelude::DataRowId>,
+    ) {
+        // Compare row identities too: a forgotten name may already have been recreated.
+        // ponytail: scan replacement histories; index IDs if large registries slow watches.
+        let replacements: BTreeMap<_, _> = self
+            .projects
+            .keys()
+            .filter(|name| {
+                !projects.contains_key(*name)
+                    || self
+                        .project_ids
+                        .get(*name)
+                        .is_some_and(|id| ids.get(*name) != Some(id))
+            })
+            .map(|name| {
+                let replacement = self.project_ids.get(name).and_then(|id| {
+                    let mut matches = projects
+                        .values()
+                        .filter(|project| project.replaced_ids.contains(id));
+                    let project = matches.next()?;
+                    matches.next().is_none().then(|| project.name.clone())
+                });
+                (name.clone(), replacement)
+            })
+            .collect();
+        for assignments in [&mut self.tab_projects, &mut self.auto_tab_projects] {
+            assignments.retain(|_, name| match replacements.get(name) {
+                Some(Some(replacement)) => {
+                    name.clone_from(replacement);
+                    true
+                },
+                Some(None) => false,
+                None => projects.contains_key(name),
+            });
         }
+        if let Some(replacement) = self
+            .active_project
+            .as_ref()
+            .and_then(|name| replacements.get(name))
+        {
+            self.active_project = replacement.clone();
+        }
+        self.projects = projects;
+        self.project_ids = ids;
         self.refresh_tab_projects();
         self.push_strip(false);
     }
