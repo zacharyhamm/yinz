@@ -2060,6 +2060,7 @@ name = "hocus-agents"
 version = "0.1.0"
 dependencies = [
  "hocus-proto",
+ "serde",
  "serde_json",
  "unicode-width 0.2.2",
  "zellij-tile",

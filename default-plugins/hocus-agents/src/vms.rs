@@ -1178,7 +1178,12 @@ mod tests {
             let header_visible = rows > 0 && cols > 0;
             assert_eq!(state.on_mouse(Mouse::LeftClick(0, 0)), header_visible);
             assert_eq!(state.surface == Surface::Vms, !header_visible);
-            let vm_x = state.tab_cells.last().map(|cell| cell.x).unwrap_or(10);
+            let vm_x = state
+                .tab_cells
+                .iter()
+                .find(|cell| cell.target == Surface::Vms)
+                .map(|cell| cell.x)
+                .unwrap_or(10);
             assert_eq!(state.on_mouse(Mouse::LeftClick(0, vm_x)), header_visible);
             assert_eq!(state.surface, Surface::Vms);
 
