@@ -495,6 +495,18 @@ pub enum Firecracker {
         #[clap(long, value_parser = parse_vm_identity)]
         #[serde(default)]
         expected_identity: Option<zellij_types::firecracker::Identity>,
+        /// Absolute secondary checkout path confirmed by the caller.
+        #[clap(long, requires_all = ["expected_identity", "expected_head"])]
+        #[serde(default)]
+        expected_worktree: Option<PathBuf>,
+        /// HEAD confirmed with the checkout path.
+        #[clap(long, requires = "expected_worktree")]
+        #[serde(default)]
+        expected_head: Option<String>,
+        /// Branch confirmed with the checkout path; omit for a detached checkout.
+        #[clap(long, requires = "expected_worktree")]
+        #[serde(default)]
+        expected_branch: Option<String>,
     },
     /// Stop one VM.
     Stop {
@@ -2298,6 +2310,46 @@ mod tests {
             ])
             .is_err());
         }
+
+        let guarded_remove = try_parse_cli([
+            "zellij",
+            "firecracker",
+            "close",
+            "review",
+            "--session",
+            "work",
+            "--expected-identity",
+            &expected.to_string(),
+            "--expected-worktree",
+            "/repo with spaces",
+            "--expected-head",
+            "0123456789",
+            "--expected-branch",
+            "topic",
+        ])
+        .unwrap();
+        assert!(matches!(
+            guarded_remove.command,
+            Some(Command::Firecracker(Firecracker::Close {
+                expected_worktree: Some(ref worktree),
+                expected_head: Some(ref head),
+                expected_branch: Some(ref branch),
+                ..
+            })) if worktree == std::path::Path::new("/repo with spaces")
+                && head == "0123456789"
+                && branch == "topic"
+        ));
+        assert!(try_parse_cli([
+            "zellij",
+            "firecracker",
+            "close",
+            "review",
+            "--expected-identity",
+            &expected.to_string(),
+            "--expected-worktree",
+            "/repo",
+        ])
+        .is_err());
     }
 
     /// Every field of a `zellij subscribe` invocation survives the argv round-trip, with

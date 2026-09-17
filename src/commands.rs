@@ -358,13 +358,29 @@ pub(crate) fn run_firecracker(
             name,
             session,
             expected_identity,
+            expected_worktree,
+            expected_head,
+            expected_branch,
         } => {
             let session = selected_session(session)?;
+            let expected_checkout = match (expected_worktree.as_deref(), expected_head.as_deref()) {
+                (Some(worktree), Some(head)) => Some((worktree, head, expected_branch.as_deref())),
+                (None, None) if expected_branch.is_none() => None,
+                _ => {
+                    return Err(anyhow!(
+                        "expected worktree cleanup requires both path and HEAD"
+                    ))
+                },
+            };
+            if expected_checkout.is_some() && expected_identity.is_none() {
+                return Err(anyhow!("expected worktree cleanup requires a VM identity"));
+            }
             close_firecracker_lease(
                 provider,
                 &session,
                 &name,
                 expected_identity.as_ref(),
+                expected_checkout,
                 out,
                 err,
             )?;
@@ -418,6 +434,7 @@ fn close_firecracker_lease(
     session: &str,
     name: &str,
     expected: Option<&zellij_types::firecracker::Identity>,
+    expected_checkout: Option<(&Path, &str, Option<&str>)>,
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
 ) -> zellij_runtime::errors::prelude::Result<()> {
@@ -428,6 +445,19 @@ fn close_firecracker_lease(
         expected
             .validate_target(session, name)
             .map_err(|error| anyhow!(error))?;
+    }
+    if let Some((path, head, branch)) = expected_checkout {
+        let expected = expected.context("expected worktree cleanup requires a VM identity")?;
+        for warning in
+            provider.close_and_remove_worktree_if_matches(expected, path, head, branch)?
+        {
+            writeln!(err, "warning: {warning}")?;
+        }
+        writeln!(
+            out,
+            "Lease released and worktree removed: {name} in {session}."
+        )?;
+        return Ok(());
     }
     let before = provider.list(None)?;
     let mut leases = before
@@ -2467,6 +2497,7 @@ mod firecracker_command_tests {
                     "work",
                     "review",
                     identity.as_ref(),
+                    None,
                     &mut vec![],
                     &mut vec![],
                 );
@@ -2512,6 +2543,7 @@ mod firecracker_command_tests {
                 "work",
                 "review",
                 Some(&expected),
+                None,
                 &mut vec![],
                 &mut vec![],
             );
@@ -2543,6 +2575,9 @@ mod firecracker_command_tests {
         let (out, err) = run(
             Firecracker::Close {
                 expected_identity: None,
+                expected_worktree: None,
+                expected_head: None,
+                expected_branch: None,
                 name: "api".into(),
                 session: Some(session),
             },
@@ -2561,6 +2596,44 @@ mod firecracker_command_tests {
         );
         assert_eq!(sent[1]["expected"]["worktree"], lease["worktree"]);
         assert_eq!(sent[2]["action"], "list");
+    }
+
+    #[test]
+    fn close_dispatches_guarded_worktree_removal_as_one_provider_request() {
+        let lease = json!({
+            "session": "work", "name": "review", "state": "running",
+            "vm_id": "/vm/socket", "metrics": {
+                "generation": "42:100", "source": "process", "sample_time_us": 0,
+            },
+            "worktree": "/repo/topic",
+        });
+        let expected: zellij_types::firecracker::Identity = serde_json::from_value(json!({
+            "session": "work", "name": "review", "vm_id": "/vm/socket",
+            "generation": "42:100", "worktree": "/repo/topic",
+        }))
+        .unwrap();
+        let (dir, provider) =
+            stub_provider(&json!({"version": 2, "vms": [lease], "warnings": []}).to_string());
+
+        run(
+            Firecracker::Close {
+                name: "review".into(),
+                session: Some("work".into()),
+                expected_identity: Some(expected),
+                expected_worktree: Some("/repo/topic".into()),
+                expected_head: Some("0123456789".into()),
+                expected_branch: Some("topic".into()),
+            },
+            &provider,
+        );
+
+        let sent = requests(&dir);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["action"], "close_and_remove_worktree_if_matches");
+        assert_eq!(
+            sent[0]["checkout"],
+            json!({"path": "/repo/topic", "head": "0123456789", "branch": "topic"})
+        );
     }
 
     #[test]
