@@ -132,7 +132,10 @@ impl State {
                 if opened {
                     self.poll_vms();
                 }
-                Some(opened)
+                // A shared overlay moved to another tab can reopen without Visible(true).
+                // The verified owner's signal covers the whole panel, including Swamp.
+                let swamp_changed = self.swamp_visibility(visible);
+                Some(opened || swamp_changed)
             },
             vms::RESULT => {
                 let Some(result) = message

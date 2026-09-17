@@ -754,3 +754,53 @@ fn vm_tab_focuses_a_pane_in_another_session_and_dismisses_the_panel() {
     source.quit();
     remote.quit();
 }
+
+#[test]
+fn swamp_issue_details_load_after_moving_the_panel_to_another_tab() {
+    let root = zellij_integration_tests::test_env::init();
+    let bin = root.join("swamp-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    zellij_test_support::write_warm_script(
+        &bin.join("swamp"),
+        r#"case "$2" in
+search) echo '{"issues":[{"number":42,"title":"List proof","type":"bug","status":"open","author":"tester","url":"https://example.test/42"}],"total":1}' ;;
+get) echo '{"number":42,"title":"List proof","type":"bug","status":"open","author":"tester","url":"https://example.test/42","body":"Issue detail proof","assignees":[],"comments":[]}' ;;
+*) exit 1 ;;
+esac"#,
+    );
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).unwrap(),
+    );
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .start();
+    zellij_integration_tests::claim_first_terminal_and_wait_for_prompt(&zellij);
+    open_sidebar(&zellij);
+    zellij.send_stdin(&keys::SHIFT_TAB);
+    for _ in 0..3 {
+        zellij.send_stdin(b"\x1b[C");
+    }
+    zellij.wait_until("command permission requested", |grid| {
+        grid.contains("Allow?")
+    });
+    zellij.send_stdin(&keys::key('y'));
+    zellij.wait_until("issue list loaded", |grid| grid.contains("List proof"));
+    zellij.send_stdin(&keys::ctrl('t'));
+    zellij.send_stdin(&keys::key('n'));
+    zellij.expect_pty_spawn().output(b"new-tab-proof\r\n$ ");
+    zellij.wait_until("new tab opened", |grid| grid.contains("new-tab-proof"));
+    zellij.send_stdin(&keys::ctrl('b'));
+    zellij.wait_until("hocus moved to the new tab", |grid| {
+        grid.contains("hocus — ")
+    });
+    zellij.send_stdin(&keys::ctrl('a'));
+    zellij.wait_until("issue list reopened", |grid| grid.contains("List proof"));
+    zellij.send_stdin(b"\x1b[B");
+    zellij.send_stdin(&keys::ENTER);
+    zellij.wait_until("issue details loaded", |grid| {
+        grid.contains("Issue detail proof")
+    });
+    zellij.quit();
+}
