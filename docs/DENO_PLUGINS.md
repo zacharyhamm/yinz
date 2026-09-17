@@ -1325,9 +1325,18 @@ and the pane it opens is itself an agent pane, so this hook runs again when *tha
 
 ### Project-owned Swamp workflows
 
-The builtin `agent-exit` hook launches the workflow bound in the control checkout. It preserves the exited pane and
-its scrollback. Escape closes the view and restores that pane. Enter restarts the agent; Delete closes its held pane.
-An unconfigured exit shows setup guidance and retains these controls.
+The builtin `agent-exit` hook launches the workflow bound in the control checkout; configured workflow behavior is
+unchanged. Without a configured workflow, Enter restarts the agent and Escape closes both the held agent pane and
+the exit view. A local or Firecracker-backed secondary Git worktree also gets a Delete action. The first Delete
+shows a destructive confirmation naming the worktree, branch, and VM when present; a second Delete removes the
+worktree and compare-deletes its branch at the confirmed HEAD with `git update-ref -d`. Escape cancels the
+confirmation. Primary checkouts, SSH panes, non-repositories, and checkouts whose identity cannot be established do
+not offer deletion. A detached secondary checkout removes only the worktree. If project configuration cannot be
+read or parsed, that error is shown and the hook does not inspect Git or offer deletion.
+
+Local deletion revalidates the worktree immediately before removing it. Firecracker deletion validates and removes
+the worktree under the provider's lease lock. Failures remain visible in the exit view and can be retried, including
+a branch deletion that failed after the worktree was already removed.
 
 Configure `.zellij/swamp-workflows.kdl` in the control checkout:
 

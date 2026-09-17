@@ -81,6 +81,11 @@ pub(crate) enum Request<'a> {
         version: u32,
         expected: Identity,
     },
+    CloseAndRemoveWorktreeIfMatches {
+        version: u32,
+        expected: Identity,
+        checkout: WorktreeIdentity,
+    },
     SyncIfMatches {
         version: u32,
         expected: Identity,
@@ -122,6 +127,7 @@ impl Request<'_> {
             | Self::Stop { version, .. }
             | Self::StopIfMatches { version, .. }
             | Self::CloseIfMatches { version, .. }
+            | Self::CloseAndRemoveWorktreeIfMatches { version, .. }
             | Self::SyncIfMatches { version, .. }
             | Self::ChangesIfMatches { version, .. }
             | Self::StopSession { version, .. }
@@ -131,6 +137,13 @@ impl Request<'_> {
             | Self::RenameSession { version, .. } => *version,
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct WorktreeIdentity {
+    pub path: PathBuf,
+    pub head: String,
+    pub branch: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -297,6 +310,32 @@ impl Provider {
         let response: WarningsResponse = self.invoke(Request::CloseIfMatches {
             version: PROTOCOL_VERSION,
             expected: expected.clone(),
+        })?;
+        self.check_version(response.version)?;
+        Ok(response.warnings)
+    }
+
+    /// Release the listed lease and remove its unchanged secondary checkout while the
+    /// provider lock excludes another lease. Older providers reject the distinct request.
+    pub fn close_and_remove_worktree_if_matches(
+        &self,
+        expected: &Identity,
+        path: &Path,
+        head: &str,
+        branch: Option<&str>,
+    ) -> Result<Vec<String>> {
+        expected.validate().map_err(|error| anyhow!(error))?;
+        if !path.is_absolute() || head.is_empty() {
+            return Err(anyhow!("a complete absolute worktree identity is required"));
+        }
+        let response: WarningsResponse = self.invoke(Request::CloseAndRemoveWorktreeIfMatches {
+            version: PROTOCOL_VERSION,
+            expected: expected.clone(),
+            checkout: WorktreeIdentity {
+                path: path.to_owned(),
+                head: head.to_owned(),
+                branch: branch.map(str::to_owned),
+            },
         })?;
         self.check_version(response.version)?;
         Ok(response.warnings)
@@ -675,6 +714,12 @@ exit 1"#,
         for result in [
             provider.stop_if_matches(&expected),
             provider.close_if_matches(&expected),
+            provider.close_and_remove_worktree_if_matches(
+                &expected,
+                Path::new("/repo"),
+                "head",
+                Some("topic"),
+            ),
             provider.sync_if_matches(&expected),
             provider.changes_if_matches(&expected).map(|_| vec![]),
         ] {
@@ -689,6 +734,12 @@ exit 1"#,
         for result in [
             provider.stop_if_matches(&expected),
             provider.close_if_matches(&expected),
+            provider.close_and_remove_worktree_if_matches(
+                &expected,
+                Path::new("/repo"),
+                "head",
+                Some("topic"),
+            ),
             provider.sync_if_matches(&expected),
             provider.changes_if_matches(&expected).map(|_| vec![]),
         ] {
@@ -705,10 +756,19 @@ exit 1"#,
             [
                 "stop_if_matches",
                 "close_if_matches",
+                "close_and_remove_worktree_if_matches",
                 "sync_if_matches",
                 "changes_if_matches"
             ]
-            .map(|action| { json!({"action": action, "version": 2, "expected": expected}) })
+            .map(|action| {
+                let mut request = json!({"action": action, "version": 2, "expected": expected});
+                if action == "close_and_remove_worktree_if_matches" {
+                    request["checkout"] = json!({
+                        "path": "/repo", "head": "head", "branch": "topic",
+                    });
+                }
+                request
+            })
         );
     }
 

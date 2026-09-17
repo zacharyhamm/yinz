@@ -5,8 +5,8 @@
 //! own. The privileged part is a one-time pool of user-owned TAP devices.
 
 use super::{
-    vm_id, worktree_vm_name, EnsureResponse, Identity, RecoveryEntry, VmEntry, PROGRESS_PREFIX,
-    PROTOCOL_VERSION,
+    vm_id, worktree_vm_name, EnsureResponse, Identity, RecoveryEntry, VmEntry, WorktreeIdentity,
+    PROGRESS_PREFIX, PROTOCOL_VERSION,
 };
 use crate::pty_host::ensure_secure_dir;
 use crate::pty_host::remote::ssh::SshOptions;
@@ -417,6 +417,20 @@ fn handle_request(
         Request::CloseIfMatches { expected, .. } => json!({
             "version": PROTOCOL_VERSION,
             "warnings": close_if_matches(state, config, copy, &expected, zellij_session::firecracker::close_panes)?,
+        }),
+        Request::CloseAndRemoveWorktreeIfMatches {
+            expected, checkout, ..
+        } => json!({
+            "version": PROTOCOL_VERSION,
+            "warnings": close_and_remove_worktree_if_matches(
+                state,
+                config,
+                copy,
+                &expected,
+                &checkout,
+                zellij_session::firecracker::close_panes,
+                remove_git_worktree_if_matches,
+            )?,
         }),
         Request::SyncIfMatches { expected, .. } => json!({
             "version": PROTOCOL_VERSION,
@@ -2708,6 +2722,114 @@ fn close_if_matches(
         close_panes(&expected.session, &expected.name, Duration::from_secs(15))?;
     }
     release(locked, config, copy, path, state, &expected.session)
+}
+
+fn close_and_remove_worktree_if_matches(
+    locked: &LockedState,
+    config: &Config,
+    copy: &dyn GuestCopy,
+    expected: &Identity,
+    checkout: &WorktreeIdentity,
+    close_panes: impl FnOnce(&str, &str, Duration) -> Result<()>,
+    remove_worktree: impl FnOnce(&WorktreeIdentity) -> Result<()>,
+) -> Result<Vec<String>> {
+    expected.validate().map_err(|error| anyhow!(error))?;
+    if !checkout.path.is_absolute() || checkout.head.is_empty() {
+        bail!("a complete absolute worktree identity is required");
+    }
+    if expected.worktree.as_deref() != Some(checkout.path.as_path()) {
+        bail!("VM and checkout worktree identities do not match");
+    }
+
+    let warnings = if let Some((path, state)) =
+        find_vm(&locked.entries()?, &expected.session, &expected.name)?
+    {
+        check_vm_identity(locked, expected)?;
+        {
+            let _progress = Progress::start("waiting for VM pane closure");
+            close_panes(&expected.session, &expected.name, Duration::from_secs(15))?;
+        }
+        release(locked, config, copy, path, state, &expected.session)?
+    } else {
+        vec![]
+    };
+
+    let remaining: Vec<_> = locked
+        .entries()?
+        .into_iter()
+        .filter(|(_, state)| state.worktree.as_deref() == Some(checkout.path.as_path()))
+        .flat_map(|(_, state)| {
+            if state.leases.is_empty() {
+                vec![state.session]
+            } else {
+                state.leases
+            }
+        })
+        .collect();
+    if !remaining.is_empty() {
+        bail!("Worktree is still leased by {}", remaining.join(", "));
+    }
+    remove_worktree(checkout)?;
+    Ok(warnings)
+}
+
+#[derive(Default)]
+struct GitWorktree {
+    path: PathBuf,
+    head: String,
+    branch: Option<String>,
+}
+
+fn remove_git_worktree_if_matches(expected: &WorktreeIdentity) -> Result<()> {
+    let output = run_capturing(
+        Command::new("git").arg("-C").arg(&expected.path).args([
+            "worktree",
+            "list",
+            "--porcelain",
+            "-z",
+        ]),
+        "failed to list Git worktrees",
+    )?;
+    let mut worktrees = vec![];
+    let mut current = GitWorktree::default();
+    for field in output.split('\0') {
+        if field.is_empty() {
+            if !current.path.as_os_str().is_empty() && !current.head.is_empty() {
+                worktrees.push(current);
+            }
+            current = GitWorktree::default();
+        } else if let Some(path) = field.strip_prefix("worktree ") {
+            current.path = PathBuf::from(path);
+        } else if let Some(head) = field.strip_prefix("HEAD ") {
+            current.head = head.to_owned();
+        } else if let Some(branch) = field.strip_prefix("branch refs/heads/") {
+            current.branch = Some(branch.to_owned());
+        }
+    }
+    if !current.path.as_os_str().is_empty() && !current.head.is_empty() {
+        worktrees.push(current);
+    }
+    let found = worktrees
+        .iter()
+        .find(|worktree| worktree.path == expected.path)
+        .context("The worktree disappeared; deletion was refused")?;
+    if worktrees
+        .first()
+        .is_some_and(|primary| primary.path == found.path)
+        || found.head != expected.head
+        || found.branch != expected.branch
+    {
+        bail!("The worktree identity changed; deletion was refused");
+    }
+    let primary = &worktrees[0].path;
+    run(
+        Command::new("git")
+            .arg("-C")
+            .arg(primary)
+            .args(["worktree", "remove", "--force", "--"])
+            .arg(&expected.path),
+        "failed to remove the Git worktree",
+    )
 }
 
 fn stop_one(
@@ -10785,6 +10907,172 @@ mod tests {
             });
             assert_eq!(read_state(&vm.path).unwrap().pid, Some(replacement.pid));
         }
+    }
+
+    #[test]
+    fn guarded_worktree_removal_holds_the_lock_and_can_retry_after_release() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        lock_exclusively(&locked._lock, || Progress::start(LOCK_WAIT_PHASE)).unwrap();
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[]);
+        let live = LiveProcess::spawn();
+        live.attach(&mut vm);
+        let expected = list(&locked, Some("work")).unwrap().remove(0).identity();
+        let checkout = WorktreeIdentity {
+            path: vm.host.clone(),
+            head: "expected-head".into(),
+            branch: Some("topic".into()),
+        };
+
+        let error = close_and_remove_worktree_if_matches(
+            &locked,
+            &provider_config(root.path()),
+            &guests,
+            &expected,
+            &checkout,
+            |_, _, _| Ok(()),
+            |_| {
+                let contender = File::open(root.path().join("lock")).unwrap();
+                assert_eq!(
+                    unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                    -1,
+                    "another lease acquired the provider lock during Git removal"
+                );
+                bail!("injected Git removal failure")
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("injected Git removal failure"));
+        assert!(!vm.path.exists(), "the VM lease was already released");
+
+        close_and_remove_worktree_if_matches(
+            &locked,
+            &provider_config(root.path()),
+            &guests,
+            &expected,
+            &checkout,
+            |_, _, _| panic!("an already released lease has no panes to close"),
+            |_| Ok(()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn guarded_worktree_removal_refuses_a_remaining_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[]);
+        vm.state.leases = vec!["work".into(), "other".into()];
+        let live = LiveProcess::spawn();
+        live.attach(&mut vm);
+        let expected = list(&locked, Some("work")).unwrap().remove(0).identity();
+        let checkout = WorktreeIdentity {
+            path: vm.host.clone(),
+            head: "expected-head".into(),
+            branch: Some("topic".into()),
+        };
+
+        let error = close_and_remove_worktree_if_matches(
+            &locked,
+            &provider_config(root.path()),
+            &guests,
+            &expected,
+            &checkout,
+            |_, _, _| Ok(()),
+            |_| panic!("Git removal must wait for every lease"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("still leased by other"));
+        assert_eq!(read_state(&vm.path).unwrap().leases, ["other"]);
+    }
+
+    #[test]
+    fn git_worktree_removal_refuses_changed_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let primary = root.path().join("repo");
+        let secondary = root.path().join("topic");
+        fs::create_dir(&primary).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "fixture"],
+            vec!["config", "user.email", "fixture@example.test"],
+        ] {
+            run(
+                Command::new("git").arg("-C").arg(&primary).args(args),
+                "git fixture",
+            )
+            .unwrap();
+        }
+        fs::write(primary.join("file"), "base").unwrap();
+        run(
+            Command::new("git")
+                .arg("-C")
+                .arg(&primary)
+                .args(["add", "file"]),
+            "git fixture",
+        )
+        .unwrap();
+        run(
+            Command::new("git")
+                .arg("-C")
+                .arg(&primary)
+                .args(["commit", "-qm", "base"]),
+            "git fixture",
+        )
+        .unwrap();
+        let original = run_capturing(
+            Command::new("git")
+                .arg("-C")
+                .arg(&primary)
+                .args(["rev-parse", "HEAD"]),
+            "git fixture",
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        run(
+            Command::new("git")
+                .arg("-C")
+                .arg(&primary)
+                .args(["worktree", "add", "-qb", "topic"])
+                .arg(&secondary),
+            "git fixture",
+        )
+        .unwrap();
+        fs::write(secondary.join("file"), "changed").unwrap();
+        run(
+            Command::new("git")
+                .arg("-C")
+                .arg(&secondary)
+                .args(["commit", "-qam", "changed"]),
+            "git fixture",
+        )
+        .unwrap();
+
+        let mut expected = WorktreeIdentity {
+            path: secondary.clone(),
+            head: original,
+            branch: Some("topic".into()),
+        };
+        assert!(remove_git_worktree_if_matches(&expected)
+            .unwrap_err()
+            .to_string()
+            .contains("identity changed"));
+        assert!(secondary.exists());
+        expected.head = run_capturing(
+            Command::new("git")
+                .arg("-C")
+                .arg(&secondary)
+                .args(["rev-parse", "HEAD"]),
+            "git fixture",
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        remove_git_worktree_if_matches(&expected).unwrap();
+        assert!(!secondary.exists());
     }
 
     #[test]

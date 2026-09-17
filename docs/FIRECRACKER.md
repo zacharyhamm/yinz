@@ -502,14 +502,20 @@ the next sync treats it as changed on both sides and keeps both copies:
 zellij firecracker sync review [--session work]
 ```
 
-The shipped `agent_exit` hook runs the read-only check when an agent exits in a worktree-backed
-VM. If any paths changed, its exit screen shows the count and offers `<S>` to run this sync; the
-screen stays open afterwards so the pane can still be restarted or closed. The same check is
-available directly:
+The same check is available directly:
 
 ```sh
 zellij firecracker changes review [--session work]
 ```
+
+When no project-owned exit workflow is configured, the shipped `agent_exit` hook offers to delete a
+worktree-backed VM agent's secondary checkout. The confirmation names both the checkout and VM. After confirmation,
+the hook calls `firecracker close` with the confirmed VM identity, worktree path, HEAD, and optional branch. The
+provider holds its exclusive state lock while it validates the VM, releases the selected lease, refuses any remaining
+lease for the worktree, revalidates the secondary Git checkout, and removes it. It never falls back to separate
+close/list/remove operations if the provider does not support this request. A VM, checkout, or lease check failure
+stays visible and leaves the destructive action available for retry. Branch removal is a separate compare-delete at
+the confirmed HEAD, so a retry after worktree removal repeats only that step.
 
 Zellij sends `stop_session` whenever the server exits on its own — the last client or pane
 closing, a kill-session, or a fatal server error — after it has closed the session's panes.
@@ -629,6 +635,10 @@ Lease release, VM termination, and a successful merge are separate outcomes.
 The VM ID and generation must be present and nonempty. `worktree` can be `null` for a VM without a host worktree.
 Without this argument, `close` captures and validates the current listing identity before it closes panes.
 Direct `sync` and `changes` commands without this argument retain their original behavior.
+
+The exit hook additionally supplies `--expected-worktree`, `--expected-head`, and, for an attached checkout,
+`--expected-branch` to `close`. That selects the atomic provider operation described above; the provider lock remains
+held through `git worktree remove --force` so another session cannot acquire a lease in between.
 
 Provider listing JSON now accepts optional `vm_id` and `metrics` fields. Metrics include
 `generation`, `source`, `sample_time_us`, cumulative `cpu_usage_us`, `memory_bytes`, `memory_source`,

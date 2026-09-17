@@ -921,7 +921,7 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
         "the payload's cwd is shown, got: {rendered}"
     );
     assert!(contains("Enter: restart agent"), "got: {rendered}");
-    assert!(contains("Delete: close held pane"), "got: {rendered}");
+    assert!(contains("Esc: close pane"), "got: {rendered}");
 }
 
 /// The `AddPlugin` a hook produces, as (plugin id, pane it replaces).
@@ -1145,8 +1145,8 @@ pub fn the_agent_exit_hook_restarts_the_pane_on_enter() {
 
 #[test]
 #[serial(plugin_tests)]
-pub fn the_agent_exit_hook_closes_the_pane_on_delete() {
-    // Delete closes the pane the hook stands in for, and only then itself: closing the suppressed
+pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
+    // Escape closes the pane the hook stands in for, and only then itself: closing the suppressed
     // pane first is what stops it being restored when this one goes.
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1190,14 +1190,14 @@ pub fn the_agent_exit_hook_closes_the_pane_on_delete() {
         None,
     ));
     received_screen_instructions.wait_until(
-        "exit hook ready for Delete",
+        "exit hook ready for Escape",
         zellij_test_support::default_timeout(),
         |instructions| (!rendered_output(instructions).is_empty()).then_some(()),
     );
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
-        Event::Key(KeyWithModifier::new(BareKey::Delete)),
+        Event::Key(KeyWithModifier::new(BareKey::Esc)),
     )]));
     pty_thread.join().unwrap();
     teardown();
@@ -1210,7 +1210,7 @@ pub fn the_agent_exit_hook_closes_the_pane_on_delete() {
     });
     assert!(
         closed,
-        "expected Delete to close pane 7, got: {:?}",
+        "expected Escape to close pane 7, got: {:?}",
         received_pty_instructions.lock()
     );
     let closed_in_screen = received_screen_instructions
