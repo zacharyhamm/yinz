@@ -119,6 +119,7 @@
 //! take the focus - `wire::OPENED_BY` is what tells it so - because the user
 //! asked for a list.
 
+mod swamp;
 mod todos;
 mod vms;
 use std::collections::BTreeMap;
@@ -141,6 +142,7 @@ struct State {
     age_minute: i64,
     vms: vms::View,
     todos: todos::View,
+    swamp: swamp::View,
     /// The strip as hocus last sent it.
     rows: Vec<StripRow>,
     /// What the daemon's model last made of each idle agent, as hocus last sent it.
@@ -389,6 +391,7 @@ enum Surface {
     Agents,
     Todos,
     Vms,
+    Swamp,
 }
 
 impl Surface {
@@ -397,11 +400,13 @@ impl Surface {
             Self::Agents => 0,
             Self::Todos => 1,
             Self::Vms => 2,
+            Self::Swamp => 3,
         };
-        match index.saturating_add_signed(delta).min(2) {
+        match index.saturating_add_signed(delta).min(3) {
             0 => Self::Agents,
             1 => Self::Todos,
-            _ => Self::Vms,
+            2 => Self::Vms,
+            _ => Self::Swamp,
         }
     }
 }
@@ -420,6 +425,9 @@ impl ZellijPlugin for State {
             EventType::PermissionRequestResult,
             EventType::Timer,
             EventType::SessionUpdate,
+            EventType::RunCommandResult,
+            EventType::Visible,
+            EventType::PaneUpdate,
         ]);
         set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
         set_selectable(true);
@@ -440,6 +448,12 @@ impl ZellijPlugin for State {
         let selection = self.selection_key();
         let revision = self.selected_revision();
         let rendered = match event {
+            Event::RunCommandResult(code, stdout, stderr, context) => {
+                self.swamp_result(code, &stdout, &stderr, &context)
+            },
+            Event::PermissionRequestResult(status) => self.swamp_permission(status),
+            Event::Visible(visible) => self.swamp_visibility(visible),
+            Event::PaneUpdate(manifest) => self.swamp_panes(&manifest),
             Event::SessionUpdate(sessions, _) => self.vm_sessions(&sessions),
             Event::PluginDataChanged { watch_id, rows, .. } => {
                 self.todo_rows_changed(watch_id, rows)
@@ -453,10 +467,11 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
                 let vm_changed = self.poll_vms();
+                let swamp_changed = self.poll_swamp(now_ms(), false);
                 let minute = now_ms() / 60_000;
                 let changed = minute != self.age_minute;
                 self.age_minute = minute;
-                vm_changed || (changed && self.shows_an_age())
+                vm_changed || swamp_changed || (changed && self.shows_an_age())
             },
             _ => false,
         };
@@ -604,6 +619,7 @@ impl ZellijPlugin for State {
             self.last_reader_max_scroll = 0;
             self.vms.clear_dimensions();
             self.todos.clear_dimensions();
+            self.swamp.clear_dimensions();
         }
         if rows == 0 || cols == 0 {
             return;
@@ -648,6 +664,17 @@ impl ZellijPlugin for State {
                         self.tabs_focused && self.surface == Surface::Vms,
                         Surface::Vms,
                     ),
+                    (
+                        if self.swamp.has_error() {
+                            "Swamp!"
+                        } else {
+                            "Swamp"
+                        }
+                        .to_owned(),
+                        self.surface == Surface::Swamp,
+                        self.tabs_focused && self.surface == Surface::Swamp,
+                        Surface::Swamp,
+                    ),
                 ],
                 cols,
             );
@@ -662,6 +689,10 @@ impl ZellijPlugin for State {
             return;
         }
         match self.surface {
+            Surface::Swamp => {
+                self.render_swamp(rows, cols);
+                return;
+            },
             Surface::Todos => {
                 self.render_todos(rows, cols);
                 return;
@@ -1006,6 +1037,9 @@ impl State {
         if surface == Surface::Vms {
             self.poll_vms();
         }
+        if surface == Surface::Swamp {
+            self.poll_swamp(now_ms(), true);
+        }
     }
 
     /// Whether the cursor has left the row `was` named, dropping everything that belonged to
@@ -1047,6 +1081,9 @@ impl State {
         if self.search_editing {
             return self.search_key(key);
         }
+        if self.surface == Surface::Swamp && self.swamp.is_editing() {
+            return self.swamp_key(key);
+        }
         if self.tabs_focused {
             if key.bare_key == BareKey::Tab {
                 if key.has_modifiers(&[KeyModifier::Shift]) {
@@ -1084,6 +1121,7 @@ impl State {
             return false;
         }
         match self.surface {
+            Surface::Swamp => return self.swamp_key(key),
             Surface::Todos => return self.todo_key(key),
             Surface::Vms => return self.vm_key(key),
             Surface::Agents => {},
@@ -1430,6 +1468,7 @@ impl State {
             other => other,
         };
         match self.surface {
+            Surface::Swamp => return self.swamp_mouse(mouse_event),
             Surface::Todos => return self.todo_mouse(mouse_event),
             Surface::Vms => return self.vm_mouse(mouse_event),
             Surface::Agents => {},
@@ -1638,6 +1677,7 @@ impl State {
     /// Both keys that dismiss come through here: `Esc`, which is the whole of what it does, and
     /// `Enter`, which follows it with a focus.
     fn hide_the_panel(&mut self) {
+        self.swamp.pane_visible = false;
         self.vms.visible = false;
         #[cfg(test)]
         {
@@ -2651,7 +2691,7 @@ impl State {
             self.vms.details = stop == Some(wire::STOP_HISTORY) && self.vms.last_details_rows > 0;
             return true;
         }
-        if self.surface == Surface::Todos {
+        if matches!(self.surface, Surface::Todos | Surface::Swamp) {
             return true;
         }
         let focus = match stop {
@@ -4181,6 +4221,7 @@ mod tests {
                 (" Agents │", Surface::Agents),
                 (" Todos │", Surface::Todos),
                 (" VMs │", Surface::Vms),
+                (" Swamp │", Surface::Swamp),
             ]
         );
 
@@ -4342,7 +4383,12 @@ mod tests {
                 assert_eq!(position(&state), before);
 
                 let header_visible = rows > 0 && cols > 0;
-                let vm_x = state.tab_cells.last().map(|cell| cell.x).unwrap_or(10);
+                let vm_x = state
+                    .tab_cells
+                    .iter()
+                    .find(|cell| cell.target == Surface::Vms)
+                    .map(|cell| cell.x)
+                    .unwrap_or(10);
                 assert_eq!(state.on_mouse(Mouse::LeftClick(0, vm_x)), header_visible);
                 assert_eq!(state.surface == Surface::Vms, header_visible);
                 assert_eq!(state.on_mouse(Mouse::LeftClick(0, 0)), header_visible);
