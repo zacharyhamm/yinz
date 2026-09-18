@@ -2,10 +2,8 @@ use zellij_runtime::errors::prelude::*;
 use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 
-use super::agent_placement::AgentPlacement;
 use super::{
-    active_tab, active_tab_and_connected_client_id,
-    active_tab_and_connected_client_id_with_first_tab_fallback, denormalize_notification_response,
+    active_tab, active_tab_and_connected_client_id, denormalize_notification_response,
     get_default_editor, CopyOptions, Notification, NotificationRecord, Screen, ScreenInstruction,
 };
 use crate::background_jobs::BackgroundJob;
@@ -33,9 +31,8 @@ use zellij_types::style::HostTerminalThemeMode;
 use zellij_types::{agent::AgentInfo, geometry::Direction};
 use {
     zellij_types::data::Event, zellij_types::data::GetFocusedPaneInfoResponse,
-    zellij_types::data::InputMode, zellij_types::data::NewPanePlacement,
-    zellij_types::data::NotificationInfo, zellij_types::data::PaneScrollbackResponse,
-    zellij_types::data::PluginCapabilities,
+    zellij_types::data::InputMode, zellij_types::data::NotificationInfo,
+    zellij_types::data::PaneScrollbackResponse, zellij_types::data::PluginCapabilities,
 };
 use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
 use {
@@ -518,58 +515,7 @@ pub(crate) fn screen_thread_main(
                         .retain(|(id, _), _| *id != plugin);
                 },
                 ScreenInstruction::PtyBytes(pid, vte_bytes) => {
-                    screen
-                        .pane_output_activity
-                        .insert(PaneId::Terminal(pid), Instant::now());
-                    let mut vte_bytes = Some(vte_bytes);
-                    {
-                        for tab in screen.tabs.values_mut() {
-                            if tab.has_terminal_pid(pid) {
-                                if let Some(bytes) = vte_bytes.take() {
-                                    if let Some(zellij_types::input::layout::Run::Command(
-                                        command,
-                                    )) = tab
-                                        .get_pane_with_id(PaneId::Terminal(pid))
-                                        .and_then(|p| p.invoked_with().as_ref())
-                                    {
-                                        if let Some(origin) = &command.originating_plugin {
-                                            for ((plugin, client), (filter, generation)) in
-                                                &screen.pane_output_subscriptions
-                                            {
-                                                if filter
-                                                    .iter()
-                                                    .all(|(k, v)| origin.context.get(k) == Some(v))
-                                                {
-                                                    let _ = screen.bus.senders.send_to_plugin(
-                                                        PluginInstruction::for_plugin_event(
-                                                            *plugin,
-                                                            *client,
-                                                            *generation,
-                                                            Event::PaneOutput {
-                                                                pane_id: pid.get(),
-                                                                data: bytes.clone(),
-                                                                context: origin.context.clone(),
-                                                            },
-                                                        ),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    tab.handle_pty_bytes(pid, bytes)
-                                        .context("failed to process pty bytes")?;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(vte_bytes) = vte_bytes {
-                        pending
-                            .waiting_for_pane
-                            .entry(PaneId::Terminal(pid))
-                            .or_default()
-                            .push(ScreenInstruction::PtyBytes(pid, vte_bytes));
-                    }
+                    screen.handle_pty_bytes(pid, vte_bytes, &mut pending)?;
                     let _ = screen
                         .bus
                         .senders
@@ -647,214 +593,24 @@ pub(crate) fn screen_thread_main(
                     initial_pane_title,
                     hold_for_command,
                     invoked_with,
-                    mut new_pane_placement,
+                    new_pane_placement,
                     start_suppressed,
                     client_or_tab_index,
-                    mut completion_tx,
+                    completion_tx,
                     set_blocking,
                 ) => {
-                    completion_tx.as_mut().map(|c| c.set_affected_pane_id(pid));
-
-                    let blocking_notification = if set_blocking { completion_tx } else { None };
-
-                    // Resolve a plugin-pane target first: when the plugin has not been placed yet,
-                    // agent placement must reason from the client's current tab instead.
-                    let client_or_tab_index = screen.resolve_pane_placement(client_or_tab_index);
-
-                    // An agent's pane may be sent to a roomier tab than the one it was asked for,
-                    // or to a tab of its own - `agent_pane_target` says when. Every other pane
-                    // keeps the target it came with.
-                    let AgentPlacement {
-                        target: client_or_tab_index,
-                        focus_after_placing,
-                    } = screen.agent_pane_target(
-                        invoked_with.as_ref(),
-                        &mut new_pane_placement,
+                    screen.place_new_pane(
+                        pid,
+                        initial_pane_title,
+                        hold_for_command,
+                        invoked_with,
+                        new_pane_placement,
                         start_suppressed,
                         client_or_tab_index,
-                    );
-                    match client_or_tab_index {
-                        ClientTabIndexOrPaneId::ClientId(client_id)
-                        | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
-                            let should_focus_pane =
-                                matches!(client_or_tab_index, ClientTabIndexOrPaneId::ClientId(_));
-                            active_tab_and_connected_client_id_with_first_tab_fallback!(screen, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
-                            tab.new_pane(pid,
-                               initial_pane_title,
-                               invoked_with,
-                               start_suppressed,
-                               should_focus_pane,
-                               new_pane_placement,
-                               client_id,
-                               blocking_notification
-                           )
-                        }, ?);
-                            if let Some(hold_for_command) = hold_for_command {
-                                let is_first_run = true;
-                                active_tab_and_connected_client_id_with_first_tab_fallback!(
-                                    screen,
-                                    client_id,
-                                    |tab: &mut Tab, _client_id: Option<ClientId>| tab.hold_pane(
-                                        pid,
-                                        None,
-                                        is_first_run,
-                                        hold_for_command
-                                    )
-                                )
-                            }
-                            if should_focus_pane {
-                                screen.sync_scroll_mode_on_focus(client_id)?;
-                            }
-                        },
-                        ClientTabIndexOrPaneId::TabIndex(tab_index)
-                        | ClientTabIndexOrPaneId::TabIndexNoFocus(tab_index) => {
-                            let should_focus_pane =
-                                matches!(client_or_tab_index, ClientTabIndexOrPaneId::TabIndex(_));
-                            // Some placements (directional split, stacked without a
-                            // target pane) need a client_id to know which pane to
-                            // split relative to. Only resolve one when required.
-                            let needs_client_id = matches!(
-                                new_pane_placement,
-                                NewPanePlacement::Tiled {
-                                    direction: Some(_),
-                                    ..
-                                } | NewPanePlacement::Stacked {
-                                    pane_id_to_stack_under: None,
-                                    ..
-                                }
-                            );
-                            let client_id = if needs_client_id {
-                                screen
-                                    .active_tab_ids
-                                    .iter()
-                                    .find(|(_, tid)| **tid == tab_index)
-                                    .map(|(cid, _)| *cid)
-                                    .or_else(|| screen.active_tab_ids.keys().next().copied())
-                            } else {
-                                None
-                            };
-                            if let Some(active_tab) = screen.tabs.get_mut(&tab_index) {
-                                active_tab.new_pane(
-                                    pid,
-                                    initial_pane_title,
-                                    invoked_with,
-                                    start_suppressed,
-                                    should_focus_pane,
-                                    new_pane_placement,
-                                    client_id,
-                                    blocking_notification,
-                                )?;
-                                if let Some(hold_for_command) = hold_for_command {
-                                    let is_first_run = true;
-                                    let _ = active_tab.hold_pane(
-                                        pid,
-                                        None,
-                                        is_first_run,
-                                        hold_for_command,
-                                    );
-                                }
-                            } else {
-                                screen.forget_unplaced_pane(
-                                    pid,
-                                    format!("tab index {tab_index:?} not found"),
-                                );
-                            }
-                        },
-                        ClientTabIndexOrPaneId::PaneId(pane_id)
-                        | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, _) => {
-                            // The second spelling cannot reach here - it was resolved above - but
-                            // an arm for it keeps the match exhaustive without a catch-all.
-                            let mut found = false;
-                            let all_tabs = screen.get_tabs_mut();
-                            let should_focus_pane = false;
-                            for tab in all_tabs.values_mut() {
-                                if tab.has_pane_with_pid(&pane_id) {
-                                    match new_pane_placement {
-                                        NewPanePlacement::Tiled {
-                                            direction: Some(direction),
-                                            borderless,
-                                        } => {
-                                            if direction == Direction::Left
-                                                || direction == Direction::Right
-                                            {
-                                                tab.vertical_split_of_pane_id(
-                                                    pid,
-                                                    initial_pane_title,
-                                                    invoked_with,
-                                                    pane_id,
-                                                    blocking_notification,
-                                                    borderless,
-                                                )?;
-                                            } else {
-                                                tab.horizontal_split_of_pane_id(
-                                                    pid,
-                                                    initial_pane_title,
-                                                    invoked_with,
-                                                    pane_id,
-                                                    blocking_notification,
-                                                    borderless,
-                                                )?;
-                                            }
-                                        },
-                                        _ => {
-                                            tab.new_pane(
-                                                pid,
-                                                initial_pane_title,
-                                                invoked_with,
-                                                start_suppressed,
-                                                should_focus_pane,
-                                                new_pane_placement,
-                                                None,
-                                                blocking_notification,
-                                            )?;
-                                        },
-                                    }
-                                    if let Some(hold_for_command) = hold_for_command {
-                                        let is_first_run = true;
-                                        let _ = tab.hold_pane(
-                                            pid,
-                                            None,
-                                            is_first_run,
-                                            hold_for_command,
-                                        );
-                                    }
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if !found {
-                                screen.forget_unplaced_pane(
-                                    pid,
-                                    format!("no tab contains pane {pane_id:?}"),
-                                );
-                            }
-                        },
-                    };
-                    // A `TabIndex` target places without a client, so a pane redirected to a tab
-                    // that already exists is brought to its client here. A tab made for the pane
-                    // needs nothing: `apply_layout` moves the client when the layout lands.
-                    if let Some(client_id) = focus_after_placing {
-                        // The pane is placed by now; a focus that misses is not a reason to skip
-                        // the hooks, the report and the render below.
-                        screen
-                            .focus_pane_with_id(pid, false, false, client_id)
-                            .context("failed to focus agent pane after placing it in another tab")
-                            .non_fatal();
-                        screen
-                            .sync_scroll_mode_on_focus(client_id)
-                            .context(
-                                "failed to synchronize scroll mode after focusing an agent pane",
-                            )
-                            .non_fatal();
-                    }
-                    // Before the replay: a pane that exited before the screen created it starts,
-                    // and then exits, in that order.
-                    screen.fire_agent_start_for_new_pane(pid);
-                    if let Some(pending_events) = pending.waiting_for_pane.remove(&pid) {
-                        for event in pending_events {
-                            replay_pending_pane_event(&mut screen, event).non_fatal();
-                        }
-                    }
+                        completion_tx,
+                        set_blocking,
+                        &mut pending,
+                    )?;
                     screen.log_and_report_session_state()?;
 
                     screen.render(None)?;
@@ -1270,106 +1026,15 @@ pub(crate) fn screen_thread_main(
                     cli_client_id,
                     ansi,
                 ) => {
-                    match file {
-                        Some(file_path) => {
-                            // Write dump to file (existing behavior)
-                            match pane_id {
-                                Some(pane_id) => {
-                                    if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                                        if ansi {
-                                            tab.dump_with_ansi_terminal_screen(
-                                                Some(file_path.clone()),
-                                                pane_id,
-                                                full,
-                                            )?;
-                                        } else {
-                                            tab.dump_terminal_screen(
-                                                Some(file_path.clone()),
-                                                pane_id,
-                                                full,
-                                            )?;
-                                        }
-                                    }
-                                },
-                                None => {
-                                    if ansi {
-                                        active_tab_and_connected_client_id!(
-                                            screen,
-                                            client_id,
-                                            |tab: &mut Tab, client_id: ClientId| tab.dump_with_ansi_active_terminal_screen(
-                                                Some(file_path.to_string()),
-                                                client_id,
-                                                full
-                                            ),
-                                            ?
-                                        );
-                                    } else {
-                                        active_tab_and_connected_client_id!(
-                                            screen,
-                                            client_id,
-                                            |tab: &mut Tab, client_id: ClientId| tab.dump_active_terminal_screen(
-                                                Some(file_path.to_string()),
-                                                client_id,
-                                                full
-                                            ),
-                                            ?
-                                        );
-                                    }
-                                },
-                            }
-                            screen.render(None)?;
-                            drop(completion_tx);
-                        },
-                        None => {
-                            // Dump to STDOUT via Log
-                            let dump = match pane_id {
-                                Some(pane_id) => {
-                                    let mut result = String::new();
-                                    if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                                        let dump = if ansi {
-                                            tab.get_dump_with_ansi_terminal_screen(pane_id, full)
-                                        } else {
-                                            tab.get_dump_terminal_screen(pane_id, full)
-                                        };
-                                        if let Some(dump) = dump {
-                                            result = dump;
-                                        }
-                                    }
-                                    result
-                                },
-                                None => {
-                                    let mut result = String::new();
-                                    if ansi {
-                                        active_tab_and_connected_client_id!(
-                                            screen,
-                                            client_id,
-                                            |tab: &mut Tab, client_id: ClientId| {
-                                                result = tab.get_dump_with_ansi_active_terminal_screen(client_id, full);
-                                                Ok::<(), anyhow::Error>(())
-                                            },
-                                            ?
-                                        );
-                                    } else {
-                                        active_tab_and_connected_client_id!(
-                                            screen,
-                                            client_id,
-                                            |tab: &mut Tab, client_id: ClientId| {
-                                                result = tab.get_dump_active_terminal_screen(client_id, full);
-                                                Ok::<(), anyhow::Error>(())
-                                            },
-                                            ?
-                                        );
-                                    }
-                                    result
-                                },
-                            };
-                            screen.bus.senders.send_to_server(ServerInstruction::Log(
-                                vec![dump],
-                                cli_client_id.unwrap_or(client_id),
-                                completion_tx,
-                            ))?;
-                        },
-                    }
+                    screen.dump_screen(
+                        file,
+                        client_id,
+                        full,
+                        pane_id,
+                        completion_tx,
+                        cli_client_id,
+                        ansi,
+                    )?;
                 },
                 ScreenInstruction::DumpLayout(default_shell, client_id, completion_tx) => {
                     let err_context = || "Failed to dump layout".to_string();
@@ -1917,61 +1582,13 @@ pub(crate) fn screen_thread_main(
                     // waiting for it
                     exit_status,
                 ) => {
-                    // A command pane whose command exited without `hold_on_close` arrives here from
-                    // the pty with no client and no completion; explicit ID-targeted actions carry
-                    // a completion. A plugin's `close_self` also has neither, but no command. This is the `pane_exit`
-                    // hook's moment for a pane that is not held.
-                    if client_id.is_none() && completion_tx.is_none() {
-                        if let Some(run_command) = screen
-                            .tab_containing_pane(id)
-                            .and_then(|tab| tab.pane_run_command(id))
-                        {
-                            screen.fire_pane_exit_hook(id, exit_status, &run_command, false);
-                        }
-                    }
-                    if screen.destroyed_panes.contains(&id)
-                        && screen.tab_containing_pane(id).is_none()
-                    {
-                        drop(completion_tx);
-                    } else if client_id.is_some() || completion_tx.is_some() {
-                        if screen.tab_containing_pane(id).is_some() {
-                            screen.close_pane_explicitly(id, completion_tx);
-                        } else {
-                            pending.waiting_for_pane.entry(id).or_default().push(
-                                ScreenInstruction::ClosePane(
-                                    id,
-                                    client_id,
-                                    completion_tx,
-                                    exit_status,
-                                ),
-                            );
-                        }
-                    } else {
-                        screen.repaint_tab_of_closing_overlay(id);
-                        if let Some(tab) = screen.tab_containing_pane_mut(id) {
-                            tab.close_pane(id, false, exit_status);
-                            if !tab.has_pane_with_pid(&id) {
-                                screen.cleanup_closed_pane(id);
-                            }
-                        } else {
-                            pending
-                                .waiting_for_pane
-                                .entry(id)
-                                .or_default()
-                                .push(ScreenInstruction::ClosePane(id, None, None, exit_status));
-                        }
-                        // Natural process exit still owes the PTY its resource cleanup.
-                        let _ = screen
-                            .bus
-                            .senders
-                            .send_to_pty(PtyInstruction::ClosePane(id, None));
-                    }
-
-                    let connected_client_ids: Vec<ClientId> =
-                        screen.active_tab_ids.keys().copied().collect();
-                    for connected_client_id in connected_client_ids {
-                        screen.sync_scroll_mode_on_focus(connected_client_id)?;
-                    }
+                    screen.close_pane_from_instruction(
+                        id,
+                        client_id,
+                        completion_tx,
+                        exit_status,
+                        &mut pending,
+                    )?;
                     screen.log_and_report_session_state().non_fatal();
                     screen.retain_only_existing_panes_in_pane_groups();
                     screen.render(None)?;
@@ -3140,54 +2757,16 @@ pub(crate) fn screen_thread_main(
                     should_float_if_hidden,
                     should_be_in_place_if_hidden,
                     client_id,
-                    mut completion_tx,
+                    completion_tx,
                 ) => {
-                    let pane_exists = screen.tab_containing_pane(pane_id).is_some();
-                    if !pane_exists {
-                        if let Some(c) = completion_tx.as_mut() {
-                            c.set_exit_status(1);
-                            c.set_error_message(format!("Pane with id {:?} not found", pane_id));
-                        }
-                    } else if screen.has_pending_tabs() {
-                        // Deferred for the reason `GoToTab` is: a tab whose layout has not landed
-                        // has provisional geometry, and its layout landing may move the client
-                        // itself. A plugin that spawned a pane into a tab made for it focuses the
-                        // pane in the same breath, and that focus should land after the layout,
-                        // on the tab as it really is.
-                        pending
-                            .waiting_for_tab
-                            .push(ScreenInstruction::FocusPaneWithId(
-                                pane_id,
-                                should_float_if_hidden,
-                                should_be_in_place_if_hidden,
-                                client_id,
-                                completion_tx,
-                            ));
-                    } else {
-                        let already_focused = screen
-                            .get_active_pane_id(&client_id)
-                            .map(|active| active == pane_id)
-                            .unwrap_or(false);
-                        if already_focused {
-                            if let Some(c) = completion_tx.as_mut() {
-                                c.set_exit_status(1);
-                                c.set_error_message(format!(
-                                    "Pane {:?} is already focused",
-                                    pane_id
-                                ));
-                            }
-                        } else {
-                            screen.focus_pane_with_id(
-                                pane_id,
-                                should_float_if_hidden,
-                                should_be_in_place_if_hidden,
-                                client_id,
-                            )?;
-                            screen.clear_bell_for_pane_id(pane_id, client_id);
-                            screen.sync_scroll_mode_on_focus(client_id)?;
-                            screen.log_and_report_session_state()?;
-                        }
-                    }
+                    screen.focus_pane_by_request(
+                        pane_id,
+                        should_float_if_hidden,
+                        should_be_in_place_if_hidden,
+                        client_id,
+                        completion_tx,
+                        &mut pending,
+                    )?;
                 },
                 ScreenInstruction::RenamePane(
                     pane_id,

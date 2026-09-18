@@ -155,6 +155,7 @@ mod mouse;
 mod nested;
 mod notification_browser;
 mod notifications;
+mod panes;
 mod plugin_state;
 mod plugins;
 mod render;
