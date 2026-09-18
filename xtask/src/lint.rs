@@ -56,10 +56,11 @@ fn check_clippy() -> anyhow::Result<PathBuf> {
 }
 
 /// The file-level lint suppressions the workspace tolerates, each with its reason. Every entry
-/// is a `(path, lint)` pair; a `#![allow(..)]` or `#![expect(..)]` anywhere else - written
-/// directly or through `#![cfg_attr(.., allow(..))]` - fails the lint task before clippy runs,
-/// and an entry that no longer matches fails it too, so the list only ever shrinks by hand.
-/// A `reason = ".."` argument is not a lint and is ignored when matching.
+/// is a `(path, lint)` pair; a file-level `#![allow(..)]` or `#![expect(..)]` that no entry
+/// names - written directly or through `#![cfg_attr(.., allow(..))]` - fails the lint task
+/// before clippy runs, and an entry that no longer matches fails it too, so the list only ever
+/// shrinks by hand. A `reason = ".."` argument is not a lint and is ignored when matching. An
+/// inner attribute inside a `mod` or `fn` body is not file-level and is left to clippy.
 ///
 /// `[workspace.lints.clippy]` in `Cargo.toml` is the place for a lint that is allowed
 /// everywhere, with a reason. This list is for a lint that is wrong for one file: a generated
@@ -99,21 +100,26 @@ const FILE_LEVEL_ALLOWS: &[(&str, &str)] = &[
 ];
 
 /// Every `.rs` file under `dir`, as a path relative to `root`, skipping the build output, hidden
-/// directories (`.git`, sibling worktrees) and anything a symlink points at.
-fn rust_sources(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
-    let entries =
-        std::fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?;
-    for entry in entries {
-        let entry = entry?;
+/// directories (`.git`, sibling worktrees) and anything a symlink points at. Only `dir` itself
+/// failing to read is an error: an entry or a subdirectory this process cannot read is skipped,
+/// as the caller skips a file it cannot read.
+fn rust_sources(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let file_type = entry.file_type()?;
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         if file_type.is_dir() {
             if name.starts_with('.') || name == "target" || name == "node_modules" {
                 continue;
             }
-            rust_sources(&path, root, out)?;
+            // An unreadable subdirectory is skipped, like an unreadable file.
+            let _ = rust_sources(&path, root, out);
         } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
             out.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
         }
@@ -129,35 +135,32 @@ struct Suppression {
     lint: String,
 }
 
-/// The lints suppressed by the inner attributes (`#![..]`) in `source`, whether written
-/// directly or through `#![cfg_attr(<predicate>, allow(..))]`; a `reason = ".."` argument is
-/// not a lint and is dropped. Attributes may span lines, as rustfmt wraps a long list.
+/// The lints suppressed by the file-level inner attributes (`#![..]`) in `source`: those outside
+/// any bracket, so not the ones a `mod` or `fn` body carries. An attribute counts whether written
+/// directly or through `#![cfg_attr(<predicate>, allow(..))]`, and may span lines, as rustfmt
+/// wraps a long list; a `reason = ".."` argument is not a lint and is dropped. Comments and
+/// string and character literals are not code, so a `#![allow(..)]` quoted in one is not found,
+/// and a bracket or quote inside one does not end an attribute early.
 fn file_level_suppressions(source: &str) -> Vec<Suppression> {
+    // A shebang is not an attribute, and rustc drops the line before lexing.
+    let source = match source.strip_prefix("#!") {
+        Some(rest) if !rest.starts_with('[') => rest.find('\n').map_or("", |i| &rest[i..]),
+        _ => source,
+    };
     let mut found = Vec::new();
-    let mut rest = source;
-    while let Some(at) = rest.find("#![") {
-        let line_start = rest[..at].rfind('\n').map_or(0, |i| i + 1);
-        if !rest[line_start..at].trim().is_empty() {
-            // Not at the start of a line: a doc comment or a string mentioning one.
-            rest = &rest[at + 3..];
-            continue;
-        }
-        let body_start = at + 3;
-        let body_end =
-            matching_close(&rest[body_start..], ']').map_or(rest.len(), |i| body_start + i);
-        let body = rest[body_start..body_end].trim();
-        rest = &rest[body_end..];
-        let Some((name, args)) = call(body) else {
-            continue;
-        };
-        match name {
-            "allow" | "expect" => found.extend(lints(name, args)),
-            "cfg_attr" => {
-                for attr in split_top_level(args).skip(1) {
-                    if let Some((name @ ("allow" | "expect"), args)) = call(attr.trim()) {
-                        found.extend(lints(name, args));
-                    }
-                }
+    let mut depth = 0usize;
+    let mut code = CodeChars::new(source);
+    while let Some((i, c)) = code.next() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '#' if depth == 0 && source[i..].starts_with("#![") => {
+                let body_start = i + 3;
+                let body_end = matching_close(&source[body_start..], ']')
+                    .map_or(source.len(), |close| body_start + close);
+                found.extend(suppressions_in(source[body_start..body_end].trim()));
+                // Past the closing `]`, which is code again.
+                code.skip_to((body_end + 1).min(source.len()));
             },
             _ => {},
         }
@@ -165,16 +168,34 @@ fn file_level_suppressions(source: &str) -> Vec<Suppression> {
     found
 }
 
+/// The lints suppressed by one inner attribute, given `body`: what sits between `#![` and `]`.
+fn suppressions_in(body: &str) -> Vec<Suppression> {
+    let Some((name, args)) = call(body) else {
+        return Vec::new();
+    };
+    match name {
+        "allow" | "expect" => lints(name, args).collect(),
+        "cfg_attr" => split_top_level(args)
+            .skip(1)
+            .flat_map(|attr| {
+                let attr = code_only(attr);
+                match call(attr.trim()) {
+                    Some((name @ ("allow" | "expect"), args)) => lints(name, args).collect(),
+                    _ => Vec::new(),
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The lints in `args`, the inside of an `allow(..)` or `expect(..)`, tagged with `kind`.
 fn lints<'a>(kind: &str, args: &'a str) -> impl Iterator<Item = Suppression> + 'a {
     let kind = if kind == "allow" { "allow" } else { "expect" };
     split_top_level(args)
-        .map(str::trim)
+        .map(|arg| code_only(arg).trim().to_owned())
         .filter(|arg| !arg.is_empty() && !arg.starts_with("reason"))
-        .map(move |lint| Suppression {
-            kind,
-            lint: lint.to_owned(),
-        })
+        .map(move |lint| Suppression { kind, lint })
 }
 
 /// `name(args)` split into its parts, when `text` is exactly one such call.
@@ -189,13 +210,11 @@ fn call(text: &str) -> Option<(&str, &str)> {
 }
 
 /// The index in `text` of the `close` that ends the bracket opened just before it, skipping
-/// nested brackets and the contents of string literals.
+/// nested brackets and anything inside comments and literals.
 fn matching_close(text: &str, close: char) -> Option<usize> {
     let mut depth = 0usize;
-    let mut chars = text.char_indices();
-    while let Some((i, c)) = chars.next() {
+    for (i, c) in CodeChars::new(text) {
         match c {
-            '"' => skip_string(&mut chars),
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' if depth > 0 => depth -= 1,
             c if c == close => return Some(i),
@@ -205,14 +224,13 @@ fn matching_close(text: &str, close: char) -> Option<usize> {
     None
 }
 
-/// `text` split on the commas outside brackets and string literals.
+/// `text` split on the commas outside brackets, comments and literals. The pieces are raw, so
+/// a comment inside one is still there; `code_only` strips it.
 fn split_top_level(text: &str) -> impl Iterator<Item = &str> {
     let mut depth = 0usize;
-    let mut chars = text.char_indices();
     let mut cuts = Vec::new();
-    while let Some((i, c)) = chars.next() {
+    for (i, c) in CodeChars::new(text) {
         match c {
-            '"' => skip_string(&mut chars),
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => cuts.push(i),
@@ -229,17 +247,131 @@ fn split_top_level(text: &str) -> impl Iterator<Item = &str> {
         })
 }
 
-/// Advances `chars` past the string literal whose opening quote was just read.
-fn skip_string(chars: &mut std::str::CharIndices<'_>) {
-    while let Some((_, c)) = chars.next() {
-        match c {
-            '\\' => {
-                chars.next();
-            },
-            '"' => return,
-            _ => {},
+/// `text` with its comments and literals removed: what [`CodeChars`] yields, as a string.
+fn code_only(text: &str) -> String {
+    CodeChars::new(text).map(|(_, c)| c).collect()
+}
+
+/// The characters of a piece of Rust source that are code: outside comments, and outside
+/// string, byte-string, raw-string and character literals. Each comes with its byte index in
+/// the text. A lifetime's quote is code (`'a` is not a literal); a comment's newline is not.
+struct CodeChars<'a> {
+    text: &'a str,
+    offset: usize,
+    chars: std::str::CharIndices<'a>,
+}
+
+impl<'a> CodeChars<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            offset: 0,
+            chars: text.char_indices(),
         }
     }
+
+    /// Continues from byte index `at`, which must be a char boundary in code: not inside a
+    /// comment or a literal.
+    fn skip_to(&mut self, at: usize) {
+        self.offset = at;
+        self.chars = self.text[at..].char_indices();
+    }
+
+    /// Advances past the end of the block comment whose `/*` was just read, honouring nesting.
+    fn skip_block_comment(&mut self) {
+        let mut depth = 1usize;
+        while let Some((i, c)) = self.chars.next() {
+            let rest = &self.text[self.offset + i..];
+            if c == '/' && rest.starts_with("/*") {
+                self.chars.next();
+                depth += 1;
+            } else if c == '*' && rest.starts_with("*/") {
+                self.chars.next();
+                depth -= 1;
+                if depth == 0 {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Advances past the end of the string literal whose opening quote was just read. `hashes`
+    /// is the number of `#` a raw string closes with, or `None` for a string with escapes.
+    fn skip_string(&mut self, hashes: Option<usize>) {
+        while let Some((i, c)) = self.chars.next() {
+            match (c, hashes) {
+                ('\\', None) => {
+                    self.chars.next();
+                },
+                ('"', None) => return,
+                ('"', Some(n)) => {
+                    let after = &self.text.as_bytes()[self.offset + i + 1..];
+                    if after.len() >= n && after[..n].iter().all(|&b| b == b'#') {
+                        for _ in 0..n {
+                            self.chars.next();
+                        }
+                        return;
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+
+    /// Advances past the character literal whose opening quote was just read and says so, or
+    /// leaves a lifetime or label alone: `'a'` and `'\n'` are literals, `'a` is not.
+    fn skip_char_literal(&mut self) -> bool {
+        let mut look = self.chars.clone();
+        match look.next() {
+            Some((_, '\\')) => {
+                // The backslash, the escaped char, then whatever precedes the closing quote.
+                self.chars.next();
+                self.chars.next();
+                while self.chars.next().is_some_and(|(_, c)| c != '\'') {}
+                true
+            },
+            Some(_) if matches!(look.next(), Some((_, '\''))) => {
+                self.chars.next();
+                self.chars.next();
+                true
+            },
+            _ => false,
+        }
+    }
+}
+
+impl Iterator for CodeChars<'_> {
+    type Item = (usize, char);
+
+    fn next(&mut self) -> Option<(usize, char)> {
+        loop {
+            let (i, c) = self.chars.next()?;
+            let at = self.offset + i;
+            let rest = &self.text[at..];
+            match c {
+                '/' if rest.starts_with("//") => {
+                    while self.chars.next().is_some_and(|(_, c)| c != '\n') {}
+                },
+                '/' if rest.starts_with("/*") => {
+                    self.chars.next();
+                    self.skip_block_comment();
+                },
+                '"' => self.skip_string(raw_string_hashes(&self.text[..at])),
+                '\'' if self.skip_char_literal() => {},
+                _ => return Some((at, c)),
+            }
+        }
+    }
+}
+
+/// For a `"` preceded by `before`: the number of `#` the raw string opened there closes with,
+/// or `None` when the quote opens an ordinary string. A raw string is `r`, then its hashes,
+/// then the quote (`br##"` and `cr"` included).
+fn raw_string_hashes(before: &str) -> Option<usize> {
+    let unhashed = before.trim_end_matches('#');
+    unhashed
+        .ends_with('r')
+        .then(|| before.len() - unhashed.len())
 }
 
 /// Fails when a Rust source file carries a file-level lint suppression that
@@ -248,7 +380,8 @@ fn skip_string(chars: &mut std::str::CharIndices<'_>) {
 fn check_file_level_allows() -> anyhow::Result<()> {
     let root = crate::project_root();
     let mut files = Vec::new();
-    rust_sources(&root, &root, &mut files)?;
+    rust_sources(&root, &root, &mut files)
+        .with_context(|| format!("failed to read {}", root.display()))?;
     let mut offenders = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut present = std::collections::HashSet::new();
@@ -316,6 +449,10 @@ mod tests {
             .collect()
     }
 
+    fn allow(lint: &str) -> (&'static str, String) {
+        ("allow", lint.to_owned())
+    }
+
     #[test]
     fn a_one_line_allow_is_found() {
         assert_eq!(
@@ -381,5 +518,139 @@ mod tests {
                       /// a `#![allow(..)]` in a doc comment\n#[allow(dead_code)]\nfn f() {}\n\
                       fn g() { let s = \"#![allow(y)]\"; }\n";
         assert_eq!(found(source), vec![]);
+    }
+
+    #[test]
+    fn code_chars_skip_comments_and_literals() {
+        // Every `]` below is inside a comment or a literal; everything else is code.
+        let source = "a '\"' \"]\" // ]\nb /* ] /* ] */ ] */ c r#\"]\"# b'\\'' '\\u{1F600}' 'é' \
+                      impl<'a> 'l: loop {} /*/ ] */ d /**/ e";
+        let code = code_only(source);
+        assert_eq!(
+            code.split_whitespace().collect::<Vec<_>>().join(" "),
+            "a b c r# b impl<'a> 'l: loop {} d e"
+        );
+        // Neither an unterminated literal nor a lone trailing quote panics.
+        assert_eq!(code_only("x '"), "x '");
+        assert_eq!(code_only("x \"unterminated"), "x ");
+        assert_eq!(code_only("/* unterminated"), "");
+        assert_eq!(code_only("'é' => {}"), " => {}");
+    }
+
+    #[test]
+    fn an_allow_inside_a_comment_or_string_is_not_a_suppression() {
+        for source in [
+            "/*\n#![allow(dead_code)]\n*/\n",
+            "/* /* */ #![allow(x)] */\n",
+            "const S: &str = \"\n#![allow(x)]\n\";\n",
+            "const S: &str = r##\"\"# #![allow(x)]\"##;\n",
+            "// #![allow(x)]\n//! #![allow(y)]\n",
+        ] {
+            assert_eq!(found(source), vec![], "{source:?}");
+        }
+    }
+
+    #[test]
+    fn a_char_literal_or_multiline_string_in_an_attribute_does_not_hide_later_ones() {
+        for source in [
+            "#![doc = '\"']\n#![allow(x)]\n",
+            "#![doc = \"a\nb\"]\n#![allow(x)]\n",
+            "#![allow(x, reason = \"see http://x/*y*/\")]\n",
+        ] {
+            assert_eq!(found(source), vec![allow("x")], "{source:?}");
+        }
+    }
+
+    #[test]
+    fn inner_attributes_inside_an_item_body_are_not_file_level() {
+        let source = "#![allow(a)]\nmod t {\n    #![allow(b)]\n}\nfn f() {\n    #![allow(c)]\n}\n\
+                      macro_rules! m { () => { #![allow(d)] }; }\n";
+        assert_eq!(found(source), vec![allow("a")]);
+    }
+
+    #[test]
+    fn a_comment_inside_a_wrapped_list_is_not_a_lint() {
+        assert_eq!(
+            found("#![allow(\n    dead_code, // why\n    unused,\n)]\n"),
+            vec![allow("dead_code"), allow("unused")]
+        );
+        assert_eq!(
+            found("#![cfg_attr(test, // why\n    allow(x))]\n"),
+            vec![allow("x")]
+        );
+    }
+
+    #[test]
+    fn a_shebang_and_adjacent_or_unterminated_attributes() {
+        assert_eq!(
+            found("#!/usr/bin/env cargo\n#![allow(x)]\n"),
+            vec![allow("x")]
+        );
+        assert_eq!(
+            found("#![allow(x)]#![allow(y)]"),
+            vec![allow("x"), allow("y")]
+        );
+        assert_eq!(found("#![allow(x"), vec![]);
+    }
+
+    /// Restores `path`'s mode on drop, so a failed assertion cannot leave a tempdir that
+    /// cannot be deleted.
+    #[cfg(unix)]
+    struct RestoreMode<'a>(&'a Path);
+
+    #[cfg(unix)]
+    impl Drop for RestoreMode<'_> {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    /// Makes `path` unreadable until the guard drops.
+    #[cfg(unix)]
+    fn locked(path: &Path) -> RestoreMode<'_> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        RestoreMode(path)
+    }
+
+    /// Root reads a mode-000 directory regardless, so the two tests below prove nothing there.
+    #[cfg(unix)]
+    fn is_root() -> bool {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rust_sources_skips_an_unreadable_subdirectory() {
+        if is_root() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let locked_dir = root.path().join("locked");
+        std::fs::create_dir(&locked_dir).unwrap();
+        std::fs::write(root.path().join("a.rs"), "").unwrap();
+        std::fs::write(locked_dir.join("b.rs"), "").unwrap();
+        let _restore = locked(&locked_dir);
+
+        let mut files = Vec::new();
+        rust_sources(root.path(), root.path(), &mut files).unwrap();
+
+        assert!(files.contains(&PathBuf::from("a.rs")), "{files:?}");
+        assert!(!files.contains(&PathBuf::from("locked/b.rs")), "{files:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rust_sources_fails_when_the_root_is_unreadable() {
+        if is_root() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let _restore = locked(root.path());
+
+        let mut files = Vec::new();
+        assert!(rust_sources(root.path(), root.path(), &mut files).is_err());
     }
 }
