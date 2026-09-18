@@ -519,7 +519,6 @@ pub enum ServerContext {
     Reconfigure,
     ReconfigureAllClients,
     ConfigWrittenToDisk,
-    FailedToWriteConfigToDisk,
     RebindKeys,
     ClearMouseHelpText,
     ClearCommandOutputFlash,

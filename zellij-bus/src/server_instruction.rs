@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::str::FromStr;
 
 use crate::route::NotificationEnd;
@@ -63,7 +62,6 @@ pub enum ServerInstruction {
         completion: Option<NotificationEnd>,
     },
     ConfigWrittenToDisk(Config),
-    FailedToWriteConfigToDisk(ClientId, Option<PathBuf>), // Pathbuf - file we failed to write
     RebindKeys {
         client_id: ClientId,
         keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,

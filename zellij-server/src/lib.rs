@@ -585,7 +585,8 @@ impl SessionMetaData {
                         .host_notification_protocol
                         .unwrap_or_default(),
                 })
-                .unwrap();
+                .context("reconfiguring the screen")
+                .non_fatal();
             self.senders
                 .send_to_plugin(PluginInstruction::Reconfigure {
                     client_id,
@@ -606,14 +607,16 @@ impl SessionMetaData {
                     context_menu: new_config.context_menu,
                     was_written_to_disk: config_was_written_to_disk,
                 })
-                .unwrap();
+                .context("reconfiguring the plugins")
+                .non_fatal();
             self.senders
                 .send_to_pty(PtyInstruction::Reconfigure {
                     client_id,
                     default_editor: new_config.options.scrollback_editor,
                     post_command_discovery_hook: new_config.options.post_command_discovery_hook,
                 })
-                .unwrap();
+                .context("reconfiguring the pty")
+                .non_fatal();
         }
 
         // Detect and notify plugins of configuration changes
@@ -621,9 +624,34 @@ impl SessionMetaData {
             if let Some(new_plugins) = new_plugin_config {
                 self.senders
                     .send_to_plugin(PluginInstruction::DetectPluginConfigChanges(new_plugins))
-                    .unwrap();
+                    .context("reporting plugin config changes")
+                    .non_fatal();
             }
         }
+    }
+}
+
+impl SessionMetaData {
+    /// Tell the screen and plugin threads a client is gone: the last step of every path that
+    /// removes one. Non-fatal, because the only way either send fails is that the thread has
+    /// already exited, and then there is nothing left to tell.
+    fn detach_client(&self, client_id: ClientId) {
+        self.senders
+            .send_to_screen(ScreenInstruction::RemoveClient(client_id))
+            .with_context(|| format!("removing client {client_id} from the screen"))
+            .non_fatal();
+        self.senders
+            .send_to_plugin(PluginInstruction::RemoveClient(client_id))
+            .with_context(|| format!("removing client {client_id} from the plugins"))
+            .non_fatal();
+    }
+
+    /// Tell the plugins that a config write failed, naming the file when one was reached.
+    fn report_config_write_failure(&self, file_path: Option<PathBuf>) {
+        self.senders
+            .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk { file_path })
+            .context("reporting a failed config write to the plugins")
+            .non_fatal();
     }
 }
 
@@ -702,6 +730,25 @@ fn remove_client_and_flush_forwards(
                 });
         }
     }
+}
+
+/// The live session, if there is one. `None` from server start until `FirstClientConnected`
+/// builds it, and a `zellij ls` probe, a watcher, and the `RemoveClient` that ends every route
+/// can all arrive in that window: an arm that finds no session is a no-op then. A read lock:
+/// sending and cloning need no exclusivity, and the route threads read this lock too.
+fn with_session<R>(
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+    f: impl FnOnce(&SessionMetaData) -> R,
+) -> Option<R> {
+    session_data.read().unwrap().as_ref().map(f)
+}
+
+/// As [`with_session`], for the arms that change the session.
+fn with_session_mut<R>(
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+    f: impl FnOnce(&mut SessionMetaData) -> R,
+) -> Option<R> {
+    session_data.write().unwrap().as_mut().map(f)
 }
 
 macro_rules! remove_client {
@@ -1177,17 +1224,16 @@ pub fn start_server_impl(
                     .insert(client_id);
 
                 *session_data.write().unwrap() = Some(session);
-                session_data
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_screen(ScreenInstruction::RecomputeTabSize(
-                        client_id,
-                        client_attributes.size,
-                    ))
-                    .unwrap();
+                with_session(&session_data, |session| {
+                    session
+                        .senders
+                        .send_to_screen(ScreenInstruction::RecomputeTabSize(
+                            client_id,
+                            client_attributes.size,
+                        ))
+                        .context("sizing the first client's tabs")
+                        .non_fatal()
+                });
 
                 let default_shell = runtime_config_options.default_shell.map(|shell| {
                     TerminalAction::RunCommand(RunCommand {
@@ -1204,26 +1250,25 @@ pub fn start_server_impl(
                                   tab_name,
                                   swap_layouts,
                                   should_focus_tab| {
-                    session_data
-                        .read()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_screen(ScreenInstruction::NewTab(
-                            cwd.clone(),
-                            default_shell.clone(),
-                            tab_layout,
-                            floating_panes_layout,
-                            tab_name,
-                            swap_layouts,
-                            None,  // initial_panes
-                            false, // block_on_first_terminal
-                            should_focus_tab,
-                            client_id,
-                            None,
-                        ))
-                        .unwrap()
+                    with_session(&session_data, |session| {
+                        session
+                            .senders
+                            .send_to_screen(ScreenInstruction::NewTab(
+                                cwd.clone(),
+                                default_shell.clone(),
+                                tab_layout,
+                                floating_panes_layout,
+                                tab_name,
+                                swap_layouts,
+                                None,  // initial_panes
+                                false, // block_on_first_terminal
+                                should_focus_tab,
+                                client_id,
+                                None,
+                            ))
+                            .context("opening a tab for the first client")
+                            .non_fatal()
+                    });
                 };
 
                 if layout.has_tabs() {
@@ -1276,21 +1321,21 @@ pub fn start_server_impl(
                         true,
                     );
                 }
-                {
-                    let rlock = session_data.read().unwrap();
-                    let session_data = rlock.as_ref().unwrap();
-                    session_data
+                with_session(&session_data, |session| {
+                    session
                         .senders
                         .send_to_plugin(PluginInstruction::AddClient(client_id))
-                        .unwrap();
-                    session_data
+                        .context("adding the first client to the plugins")
+                        .non_fatal();
+                    session
                         .senders
                         .send_to_screen(ScreenInstruction::SetClientHostTerminalEnv(
                             client_id,
                             host_terminal_env,
                         ))
-                        .unwrap();
-                }
+                        .context("recording the first client's host terminal")
+                        .non_fatal();
+                });
             },
             ServerInstruction::AttachClient(
                 cli_assets,
@@ -1378,7 +1423,8 @@ pub fn start_server_impl(
                         client_id,
                         host_terminal_env,
                     ))
-                    .unwrap();
+                    .context("recording the attaching client's host terminal")
+                    .non_fatal();
                 log::info!("attach trace: server main client_id={client_id} enqueue AddClient");
                 session_data
                     .senders
@@ -1388,14 +1434,16 @@ pub fn start_server_impl(
                         tab_number_to_focus,
                         pane_id_to_focus,
                     ))
-                    .unwrap();
+                    .context("adding the attaching client to the screen")
+                    .non_fatal();
                 log::info!(
                     "attach trace: server main client_id={client_id} enqueue Plugin AddClient"
                 );
                 session_data
                     .senders
                     .send_to_plugin(PluginInstruction::AddClient(client_id))
-                    .unwrap();
+                    .context("adding the attaching client to the plugins")
+                    .non_fatal();
                 let default_mode = config.options.default_mode.unwrap_or_default();
                 // ModeUpdate broadcast is handled by the screen thread via
                 // change_mode() -> update_input_modes()
@@ -1408,13 +1456,29 @@ pub fn start_server_impl(
                         client_id,
                         None,
                     ))
-                    .unwrap();
+                    .context("setting the attaching client's mode")
+                    .non_fatal();
                 log::info!(
                     "attach trace: server main client_id={client_id} attach dispatch complete after {:?}",
                     attach_started_at.elapsed()
                 );
             },
             ServerInstruction::AttachWatcherClient(client_id, terminal_size) => {
+                if session_data.read().unwrap().is_none() {
+                    // As for `AttachClient`: no first client ever initialised this session, so
+                    // there is nothing to watch. Tell the client rather than unwrap and take
+                    // the whole server down.
+                    let _ = os_input.send_to_client(
+                        client_id,
+                        ServerToClientMsg::Exit {
+                            exit_reason: ExitReason::Error(
+                                "the session was never initialised, nothing to watch".to_owned(),
+                            ),
+                        },
+                    );
+                    remove_client!(client_id, os_input, session_state, session_data);
+                    continue;
+                }
                 // the client_id was inserted into clients upon ipc tunnel initialization
                 // now that it identified itself as a watcher, we need to convert it
 
@@ -1425,17 +1489,16 @@ pub fn start_server_impl(
                     .convert_client_to_watcher(client_id);
 
                 // Also notify Screen to add this as a watcher client (for rendering) with the terminal size
-                session_data
-                    .write()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_screen(ScreenInstruction::AddWatcherClient(
-                        client_id,
-                        terminal_size,
-                    ))
-                    .unwrap();
+                with_session(&session_data, |session| {
+                    session
+                        .senders
+                        .send_to_screen(ScreenInstruction::AddWatcherClient(
+                            client_id,
+                            terminal_size,
+                        ))
+                        .context("adding a watcher client to the screen")
+                        .non_fatal()
+                });
             },
             ServerInstruction::UnblockInputThread => {
                 // Pane closes and plugin reloads release interactive input only. A CLI
@@ -1512,7 +1575,10 @@ pub fn start_server_impl(
                             .send_to_screen(ScreenInstruction::RemoveWatcherClient(client_id));
                     }
 
-                    os_input.remove_client(client_id).unwrap();
+                    os_input
+                        .remove_client(client_id)
+                        .context("removing a watcher client")
+                        .non_fatal();
                 } else {
                     if let Some(session_data) = session_data.write().unwrap().as_mut() {
                         session_data.remove_key_passthrough_client(client_id);
@@ -1520,22 +1586,7 @@ pub fn start_server_impl(
                     // Handle regular client removal
                     remove_client!(client_id, os_input, session_state, session_data);
                     drop(completion_tx); // prevent deadlock with route thread
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_screen(ScreenInstruction::RemoveClient(client_id))
-                        .unwrap();
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_plugin(PluginInstruction::RemoveClient(client_id))
-                        .unwrap();
+                    with_session(&session_data, |session| session.detach_client(client_id));
                     if !session_state.read().unwrap().active_clients_are_connected() {
                         // Take it out under the lock, drop it outside. Dropping
                         // `SessionMetaData` joins the screen, pty and plugin
@@ -1602,29 +1653,17 @@ pub fn start_server_impl(
                             .send_to_screen(ScreenInstruction::RemoveWatcherClient(client_id));
                     }
 
-                    os_input.remove_client(client_id).unwrap();
+                    os_input
+                        .remove_client(client_id)
+                        .context("removing a watcher client")
+                        .non_fatal();
                 } else {
                     if let Some(session_data) = session_data.write().unwrap().as_mut() {
                         session_data.remove_key_passthrough_client(client_id);
                     }
                     // Handle regular client removal
                     remove_client!(client_id, os_input, session_state, session_data);
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_screen(ScreenInstruction::RemoveClient(client_id))
-                        .unwrap();
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_plugin(PluginInstruction::RemoveClient(client_id))
-                        .unwrap();
+                    with_session(&session_data, |session| session.detach_client(client_id));
                 }
             },
             ServerInstruction::KillSession | ServerInstruction::KillSessionWithCompletion(_) => {
@@ -1688,22 +1727,7 @@ pub fn start_server_impl(
                                      // by us having to wait for session_data to send cleanup
                                      // signals to the various threads
                 for client_id in client_ids {
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_screen(ScreenInstruction::RemoveClient(client_id))
-                        .unwrap();
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_plugin(PluginInstruction::RemoveClient(client_id))
-                        .unwrap();
+                    with_session(&session_data, |session| session.detach_client(client_id));
                 }
             },
             ServerInstruction::Render(serialized_output) => {
@@ -1854,16 +1878,15 @@ pub fn start_server_impl(
                 if connect_to_session.name == current_session_name.ok() {
                     log::error!("Cannot attach to same session");
                 } else {
-                    let layout_dir = session_data
-                        .read()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .session_configuration
-                        .get_client_configuration(&client_id)
-                        .options
-                        .layout_dir
-                        .or_else(default_layout_dir);
+                    let layout_dir = with_session(&session_data, |session| {
+                        session
+                            .session_configuration
+                            .get_client_configuration(&client_id)
+                            .options
+                            .layout_dir
+                    })
+                    .flatten()
+                    .or_else(default_layout_dir);
                     if let Some(layout_dir) = layout_dir {
                         connect_to_session.apply_layout_dir(&layout_dir);
                     }
@@ -1878,22 +1901,7 @@ pub fn start_server_impl(
                     remove_client!(client_id, os_input, session_state, session_data);
                     drop(completion_tx); // do not deadlock with route thread
 
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_screen(ScreenInstruction::RemoveClient(client_id))
-                        .unwrap();
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_plugin(PluginInstruction::RemoveClient(client_id))
-                        .unwrap();
+                    with_session(&session_data, |session| session.detach_client(client_id));
                 }
             },
             ServerInstruction::AssociatePipeWithClient { pipe_id, client_id } => {
@@ -1903,11 +1911,11 @@ pub fn start_server_impl(
                     .associate_pipe_with_client(pipe_id, client_id);
             },
             ServerInstruction::ChangeMode(client_id, input_mode, completion) => {
-                let mut session_data = session_data.write().unwrap();
-                let session_data = session_data.as_mut().unwrap();
-                session_data
-                    .change_input_mode(client_id, input_mode, completion)
-                    .fatal();
+                with_session_mut(&session_data, |session| {
+                    session
+                        .change_input_mode(client_id, input_mode, completion)
+                        .non_fatal()
+                });
             },
             ServerInstruction::ResolveLockedEscape(client_id, token) => {
                 let mut guard = session_data
@@ -1920,25 +1928,24 @@ pub fn start_server_impl(
                 }
             },
             ServerInstruction::ChangeModeForAllClients(input_mode) => {
-                session_data
-                    .write()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .change_mode_for_all_clients(input_mode);
+                with_session_mut(&session_data, |session| {
+                    session.change_mode_for_all_clients(input_mode)
+                });
             },
             ServerInstruction::Reconfigure {
                 client_id,
                 config,
                 write_config_to_disk,
             } => {
-                let (new_config, runtime_config_changed) = session_data
-                    .write()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .session_configuration
-                    .reconfigure_runtime_config(&client_id, config.clone());
+                let Some((new_config, runtime_config_changed)) =
+                    with_session_mut(&session_data, |session| {
+                        session
+                            .session_configuration
+                            .reconfigure_runtime_config(&client_id, config.clone())
+                    })
+                else {
+                    continue;
+                };
                 let persistence = match write_config_to_disk {
                     true => ConfigPersistence::Fragment(config),
                     false => ConfigPersistence::None,
@@ -1968,13 +1975,15 @@ pub fn start_server_impl(
                 };
                 let mut write_pending = write_config_to_disk;
                 for client_id in client_ids {
-                    let (new_config, runtime_config_changed) = session_data
-                        .write()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .session_configuration
-                        .reconfigure_runtime_config(&client_id, config.clone());
+                    let Some((new_config, runtime_config_changed)) =
+                        with_session_mut(&session_data, |session| {
+                            session
+                                .session_configuration
+                                .reconfigure_runtime_config(&client_id, config.clone())
+                        })
+                    else {
+                        break;
+                    };
                     // Written once: a write propagates the saved config to every client itself.
                     let write_now = std::mem::take(&mut write_pending) && new_config.is_some();
                     let persistence = match write_now {
@@ -1992,20 +2001,13 @@ pub fn start_server_impl(
                 drop(completion);
             },
             ServerInstruction::ConfigWrittenToDisk(new_config) => {
-                let changes = session_data
-                    .write()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .session_configuration
-                    .change_saved_config(new_config);
-                let config_was_written_to_disk = true;
-                session_data
-                    .write()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .propagate_configuration_changes(changes, config_was_written_to_disk);
+                with_session_mut(&session_data, |session| {
+                    let changes = session
+                        .session_configuration
+                        .change_saved_config(new_config);
+                    let config_was_written_to_disk = true;
+                    session.propagate_configuration_changes(changes, config_was_written_to_disk);
+                });
                 let client_ids = session_state.read().unwrap().client_ids();
                 for client_id in client_ids {
                     send_to_client!(
@@ -2016,16 +2018,6 @@ pub fn start_server_impl(
                         session_data
                     );
                 }
-            },
-            ServerInstruction::FailedToWriteConfigToDisk(_client_id, file_path) => {
-                session_data
-                    .write()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk { file_path })
-                    .unwrap();
             },
             ServerInstruction::RebindKeys {
                 client_id,
@@ -2039,28 +2031,25 @@ pub fn start_server_impl(
                     for (mode, key, actions) in keys_to_rebind {
                         keybinds.0.entry(mode).or_default().insert(key, actions);
                     }
-                    let changes = session_data
-                        .write()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .session_configuration
-                        .register_plugin_default_keybinds(plugin_id, keybinds);
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .propagate_configuration_changes(changes, false);
+                    with_session_mut(&session_data, |session| {
+                        let changes = session
+                            .session_configuration
+                            .register_plugin_default_keybinds(plugin_id, keybinds);
+                        session.propagate_configuration_changes(changes, false);
+                    });
                     continue;
                 }
-                let (new_config, runtime_config_changed) = session_data
-                    .write()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .session_configuration
-                    .rebind_keys(&client_id, keys_to_rebind, keys_to_unbind);
+                let Some((new_config, runtime_config_changed)) =
+                    with_session_mut(&session_data, |session| {
+                        session.session_configuration.rebind_keys(
+                            &client_id,
+                            keys_to_rebind,
+                            keys_to_unbind,
+                        )
+                    })
+                else {
+                    continue;
+                };
 
                 update_new_saved_config(
                     new_config,
@@ -2090,24 +2079,22 @@ pub fn start_server_impl(
                 }
             },
             ServerInstruction::ClearMouseHelpText(client_id) => {
-                session_data
-                    .write()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_screen(ScreenInstruction::ClearMouseHelpText(client_id))
-                    .unwrap();
+                with_session(&session_data, |session| {
+                    session
+                        .senders
+                        .send_to_screen(ScreenInstruction::ClearMouseHelpText(client_id))
+                        .context("clearing the mouse help text")
+                        .non_fatal()
+                });
             },
             ServerInstruction::ClearCommandOutputFlash(pane_id) => {
-                session_data
-                    .write()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_screen(ScreenInstruction::ClearCommandOutputFlash(pane_id))
-                    .unwrap();
+                with_session(&session_data, |session| {
+                    session
+                        .senders
+                        .send_to_screen(ScreenInstruction::ClearCommandOutputFlash(pane_id))
+                        .context("clearing a command output flash")
+                        .non_fatal()
+                });
             },
             ServerInstruction::ForwardQueryToHost(token, query_bytes, resolve_async) => {
                 // Pick a regular (non-watcher) client to carry the
@@ -2841,13 +2828,8 @@ fn update_new_saved_config(
     if let Some(new_config) = new_config {
         if let ConfigPersistence::Fragment(fragment) = persistence {
             let overlay_dir = {
-                let config_dir = session_data
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .config_dir
-                    .clone();
+                let config_dir =
+                    with_session(session_data, |session| session.config_dir.clone()).flatten();
                 zellij_runtime::home::get_config_overlay_dir(
                     config_dir.or_else(zellij_runtime::home::find_default_config_dir),
                 )
@@ -2866,36 +2848,24 @@ fn update_new_saved_config(
                 Ok(_) => {
                     // The session's saved config is the running one now, and every client
                     // hears that it was written.
-                    let changes = session_data
-                        .write()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .session_configuration
-                        .change_saved_config(new_config);
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .propagate_configuration_changes(changes, true);
+                    with_session_mut(session_data, |session| {
+                        let changes = session
+                            .session_configuration
+                            .change_saved_config(new_config);
+                        session.propagate_configuration_changes(changes, true);
+                    });
                 },
                 Err(file_path) => {
-                    session_data
-                        .read()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk { file_path })
-                        .unwrap();
+                    with_session(session_data, |session| {
+                        session.report_config_write_failure(file_path)
+                    });
                     if runtime_config_changed {
-                        session_data
-                            .write()
-                            .unwrap()
-                            .as_mut()
-                            .unwrap()
-                            .propagate_configuration_changes(vec![(client_id, new_config)], false);
+                        with_session_mut(session_data, |session| {
+                            session.propagate_configuration_changes(
+                                vec![(client_id, new_config)],
+                                false,
+                            )
+                        });
                     }
                 },
             }
@@ -2903,46 +2873,28 @@ fn update_new_saved_config(
         }
         if matches!(persistence, ConfigPersistence::WholeConfig) {
             let clear_defaults = true;
-            let config_file_path = session_data
-                .read()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .config_file_path
-                .clone();
+            let config_file_path =
+                with_session(session_data, |session| session.config_file_path.clone()).flatten();
 
             let Some(config_file_path) = config_file_path.as_ref() else {
                 log::error!("No config file path found.");
-                session_data
-                    .write()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk {
-                        file_path: None,
-                    })
-                    .unwrap();
+                with_session(session_data, |session| {
+                    session.report_config_write_failure(None)
+                });
                 return;
             };
             match new_config
                 .write_config_to_disk(new_config.to_string(clear_defaults), config_file_path)
             {
                 Ok(written_config) => {
-                    let changes = session_data
-                        .write()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .session_configuration
-                        .change_saved_config(written_config);
-                    let config_was_written_to_disk = true;
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .propagate_configuration_changes(changes, config_was_written_to_disk);
+                    with_session_mut(session_data, |session| {
+                        let changes = session
+                            .session_configuration
+                            .change_saved_config(written_config);
+                        let config_was_written_to_disk = true;
+                        session
+                            .propagate_configuration_changes(changes, config_was_written_to_disk);
+                    });
                 },
                 Err(e) => {
                     let error_path = e
@@ -2950,29 +2902,19 @@ fn update_new_saved_config(
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(String::new);
                     log::error!("Failed to write config to disk: {}", error_path);
-                    session_data
-                        .write()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .senders
-                        .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk {
-                            file_path: e,
-                        })
-                        .unwrap();
+                    with_session(session_data, |session| {
+                        session.report_config_write_failure(e)
+                    });
                 },
             }
         } else if runtime_config_changed {
             let config_was_written_to_disk = false;
-            session_data
-                .write()
-                .unwrap()
-                .as_mut()
-                .unwrap()
-                .propagate_configuration_changes(
+            with_session_mut(session_data, |session| {
+                session.propagate_configuration_changes(
                     vec![(client_id, new_config)],
                     config_was_written_to_disk,
-                );
+                )
+            });
         }
     }
 }
@@ -2989,6 +2931,10 @@ fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<Layo
         .map(|l| format!("{}", l.display()));
     zellij_config::layout::list_available_layouts(layout_dir, &default_layout_name)
 }
+
+#[cfg(test)]
+#[path = "unit/session_teardown_tests.rs"]
+mod session_teardown_tests;
 
 #[cfg(test)]
 mod session_state_tests {
