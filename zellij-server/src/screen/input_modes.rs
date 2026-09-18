@@ -1,16 +1,125 @@
 use zellij_runtime::errors::prelude::*;
 
-use super::{active_tab, Screen};
+use super::thread_main::is_typable_text;
+use super::{active_tab, active_tab_and_connected_client_id, Screen};
 use crate::panes::PaneId;
 use crate::plugins::{PluginId, PluginInstruction};
 use crate::tab::Tab;
 use crate::{ClientId, ServerInstruction};
+use std::collections::HashMap;
+use zellij_types::keys::KeyWithModifier;
 use {
     zellij_types::data::Event, zellij_types::data::EventType, zellij_types::data::InputMode,
     zellij_types::data::ModeInfo,
 };
 
 impl Screen {
+    /// A key or text from a client: hands it to the plugin intercepting that client's keys, to an
+    /// open context menu, to the tab or pane being renamed, to the search term, or to the active
+    /// terminal(s), in that order of precedence.
+    ///
+    /// Returns whether the caller should render: an intercepted key and a key a context menu
+    /// consumed change nothing on screen.
+    pub(super) fn write_character(
+        &mut self,
+        key_with_modifier: Option<KeyWithModifier>,
+        raw_bytes: Vec<u8>,
+        is_kitty_keyboard_protocol: bool,
+        client_id: ClientId,
+        keybind_intercepts: &HashMap<ClientId, PluginId>,
+    ) -> Result<bool> {
+        if let Some(plugin_id) = keybind_intercepts.get(&client_id) {
+            if let Some(key_with_modifier) = key_with_modifier {
+                let _ = self
+                    .bus
+                    .senders
+                    .send_to_plugin(PluginInstruction::Update(vec![(
+                        Some(*plugin_id),
+                        Some(client_id),
+                        Event::InterceptedKeyPress(key_with_modifier),
+                    )]));
+                return Ok(false);
+            }
+        }
+        // An open context menu takes the keys it uses - arrows, Enter, Esc - before any
+        // pane sees them. Anything else falls through and reaches the pane as usual; the
+        // focus or layout change it causes then closes the menu, which is what pressing an
+        // unrelated key while a menu is up means anyway.
+        if self.context_menu_handles_key(&key_with_modifier, client_id) {
+            for tab in self.tabs.values_mut() {
+                tab.pending_agent_escapes
+                    .retain(|(client, _), _| *client != client_id);
+            }
+            return Ok(false);
+        }
+        // A key the menu did not want is about to do something else - reach the pane, or
+        // fire whatever the current mode binds it to. Either way the menu is answering a
+        // question about a moment that has passed, so it gets out of the way. This is the
+        // same discipline `defocus_dismissible_panes` applies to dismissible overlays.
+        if self.close_context_menu(client_id) {
+            self.render(None)?;
+        }
+        let mut state_changed = false;
+        let client_input_mode = self.get_client_input_mode(client_id);
+        match client_input_mode {
+            Some(InputMode::RenameTab) => {
+                if is_typable_text(&raw_bytes) {
+                    self.update_active_tab_name(raw_bytes, client_id)?;
+                    state_changed = true;
+                }
+            },
+            _ => {
+                active_tab_and_connected_client_id!(
+                    self,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| {
+                        match client_input_mode {
+                            Some(InputMode::EnterSearch) => {
+                                if is_typable_text(&raw_bytes) {
+                                    tab.update_search_term(raw_bytes, client_id);
+                                }
+                                state_changed = true;
+                            },
+                            Some(InputMode::RenamePane) => {
+                                if is_typable_text(&raw_bytes) {
+                                    if let Err(e) =
+                                        tab.update_active_pane_name(raw_bytes, client_id)
+                                    {
+                                        log::error!("{}", e);
+                                    }
+                                    state_changed = true;
+                                }
+                            },
+                            _ => {
+                                let write_result = match tab.is_sync_panes_active() {
+                                    true => tab.write_to_terminals_on_current_tab(
+                                        &key_with_modifier,
+                                        raw_bytes,
+                                        is_kitty_keyboard_protocol,
+                                        client_id,
+                                    ),
+                                    false => tab.write_to_active_terminal(
+                                        &key_with_modifier,
+                                        raw_bytes,
+                                        is_kitty_keyboard_protocol,
+                                        client_id,
+                                    ),
+                                };
+                                if let Ok(true) = write_result {
+                                    state_changed = true;
+                                }
+                            },
+                        }
+                    }
+                );
+            },
+        };
+        if state_changed {
+            self.log_and_report_session_state()?;
+        }
+        Ok(true)
+    }
+
     pub fn change_mode(
         &mut self,
         new_mode: InputMode,
