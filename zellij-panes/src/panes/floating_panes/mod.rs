@@ -1,4 +1,3 @@
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::if_same_then_else)]
 pub mod floating_pane_grid;
 use zellij_types::data::PaneInfo;
@@ -1933,7 +1932,7 @@ impl FloatingPanes {
             display_area,
             viewport,
         );
-        floating_pane_grid.next_selectable_pane_id_above(&pane_id)
+        floating_pane_grid.next_selectable_pane_id_above(pane_id)
     }
     pub fn next_selectable_pane_id_below(&mut self, pane_id: &PaneId) -> Option<PaneId> {
         let display_area = *self.display_area.borrow();
@@ -1944,7 +1943,7 @@ impl FloatingPanes {
             display_area,
             viewport,
         );
-        floating_pane_grid.next_selectable_pane_id_below(&pane_id)
+        floating_pane_grid.next_selectable_pane_id_below(pane_id)
     }
     pub fn next_selectable_pane_id_to_the_left(&mut self, pane_id: &PaneId) -> Option<PaneId> {
         let display_area = *self.display_area.borrow();
@@ -1955,7 +1954,7 @@ impl FloatingPanes {
             display_area,
             viewport,
         );
-        floating_pane_grid.next_selectable_pane_id_to_the_left(&pane_id)
+        floating_pane_grid.next_selectable_pane_id_to_the_left(pane_id)
     }
     pub fn next_selectable_pane_id_to_the_right(&mut self, pane_id: &PaneId) -> Option<PaneId> {
         let display_area = *self.display_area.borrow();
@@ -1966,7 +1965,7 @@ impl FloatingPanes {
             display_area,
             viewport,
         );
-        floating_pane_grid.next_selectable_pane_id_to_the_right(&pane_id)
+        floating_pane_grid.next_selectable_pane_id_to_the_right(pane_id)
     }
     fn make_sure_pinned_panes_are_on_top(&mut self) {
         let pinned_status: std::collections::HashMap<_, _> = self

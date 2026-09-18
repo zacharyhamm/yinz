@@ -1,6 +1,5 @@
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::ptr_arg)]
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::useless_conversion)]
 #![allow(clippy::bind_instead_of_map)]
 #![allow(clippy::from_over_into)]
@@ -292,7 +291,7 @@ impl SessionLayoutMetadata {
                     let mut command_line = command.iter();
                     if let Some(command_name) = command_line.next() {
                         let args: Vec<String> = command_line.map(|c| c.to_owned()).collect();
-                        if Self::is_default_shell(self.default_shell.as_ref(), &command_name, &args)
+                        if Self::is_default_shell(self.default_shell.as_ref(), command_name, &args)
                         {
                             pane_layout_metadata.run = None;
                         } else {
@@ -469,7 +468,7 @@ impl SessionLayoutMetadata {
     }
     pub fn update_plugin_aliases_in_default_layout(&mut self, plugin_aliases: &PluginAliases) {
         self.default_layout
-            .populate_plugin_aliases_in_layout(&plugin_aliases);
+            .populate_plugin_aliases_in_layout(plugin_aliases);
     }
     pub fn to_layout_metadata(&self) -> LayoutMetadata {
         // Get current timestamp for both creation and update time

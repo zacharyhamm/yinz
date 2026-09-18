@@ -1,8 +1,6 @@
 #![allow(clippy::unnecessary_to_owned)]
 #![allow(clippy::useless_format)]
-#![allow(clippy::op_ref)]
 #![allow(clippy::ptr_arg)]
-#![allow(clippy::needless_borrow)]
 mod component_coordinates;
 mod nested_list;
 mod ribbon;
@@ -85,7 +83,7 @@ impl<'a> UiComponentParser<'a> {
             }
         }
 
-        if component_name == &"table" {
+        if component_name == "table" {
             let columns = parse_next_param!(params_iter.next(), usize, "table", "columns");
             let rows = parse_next_param!(params_iter.next(), usize, "table", "rows");
             let stringified_params = parse_text_params(params_iter);
@@ -98,7 +96,7 @@ impl<'a> UiComponentParser<'a> {
             );
             parse_vte_bytes!(self, encoded_table);
             Ok(())
-        } else if component_name == &"ribbon" {
+        } else if component_name == "ribbon" {
             let stringified_params = parse_text_params(params_iter)
                 .into_iter()
                 .next()
@@ -111,13 +109,13 @@ impl<'a> UiComponentParser<'a> {
             );
             parse_vte_bytes!(self, encoded_text);
             Ok(())
-        } else if component_name == &"nested_list" {
+        } else if component_name == "nested_list" {
             let nested_list_items = parse_nested_list_items(params_iter);
             let encoded_nested_list =
                 nested_list(nested_list_items, &self.style, component_coordinates);
             parse_vte_bytes!(self, encoded_nested_list);
             Ok(())
-        } else if component_name == &"text" {
+        } else if component_name == "text" {
             let stringified_params = parse_text_params(params_iter)
                 .into_iter()
                 .next()
@@ -138,7 +136,7 @@ impl<'a> UiComponentParser<'a> {
         lazy_static! {
             static ref RE: Regex = Regex::new(r"(\d*)/(\d*)/(\d*)/(\d*)").unwrap();
         }
-        if let Some(captures) = RE.captures_iter(&coordinates).next() {
+        if let Some(captures) = RE.captures_iter(coordinates).next() {
             let x = captures[1].parse::<usize>().with_context(|| {
                 format!(
                     "Failed to parse x coordinates for string: {:?}",

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::unnecessary_unwrap)]
 #![allow(clippy::unnecessary_fallible_conversions)]
 #![allow(clippy::clone_on_copy)]

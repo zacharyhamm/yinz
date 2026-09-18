@@ -1,5 +1,4 @@
 #![allow(clippy::borrowed_box)]
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::explicit_counter_loop)]
 #![allow(clippy::ptr_arg)]
 #![allow(clippy::field_reassign_with_default)]
@@ -221,8 +220,8 @@ impl<'a> LayoutApplier<'a> {
         existing_tab_state.order = order.map(|ids| ids.to_vec());
 
         let mut pane_applier = PaneApplier::new(
-            &mut self.tiled_panes,
-            &mut self.floating_panes,
+            self.tiled_panes,
+            self.floating_panes,
             &self.senders,
             &self.character_cell_size,
         );
@@ -291,7 +290,7 @@ impl<'a> LayoutApplier<'a> {
         &mut self,
         tiled_panes_layout: &TiledPaneLayout,
         mut new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
-        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         retain_existing_terminal_panes: bool,
         retain_existing_plugin_panes: bool,
         client_id: ClientId,
@@ -301,8 +300,8 @@ impl<'a> LayoutApplier<'a> {
         let mut existing_tab_state = ExistingTabState::new(self.tiled_panes.drain());
 
         let mut pane_applier = PaneApplier::new(
-            &mut self.tiled_panes,
-            &mut self.floating_panes,
+            self.tiled_panes,
+            self.floating_panes,
             &self.senders,
             &self.character_cell_size,
         );
@@ -337,15 +336,15 @@ impl<'a> LayoutApplier<'a> {
 
         let (focus_pane_id, pane_ids_expanded_in_stack) = self.position_new_panes(
             &mut new_terminal_ids,
-            &mut new_plugin_ids,
+            new_plugin_ids,
             &mut positions_left_without_exact_matches,
         )?;
 
         // we do this because we have to add the remaining tiled pane ids ONLY AFTER positioning
         // the new panes, otherwise the layout might get borked
         let mut pane_applier = PaneApplier::new(
-            &mut self.tiled_panes,
-            &mut self.floating_panes,
+            self.tiled_panes,
+            self.floating_panes,
             &self.senders,
             &self.character_cell_size,
         );
@@ -452,7 +451,7 @@ impl<'a> LayoutApplier<'a> {
         &mut self,
         layout: TiledPaneLayout,
         mut new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
-        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         client_id: ClientId,
     ) -> Result<()> {
         let err_context = || "failed to apply tiled panes layout".to_string();
@@ -463,7 +462,7 @@ impl<'a> LayoutApplier<'a> {
         );
         let (focus_pane_id, pane_ids_expanded_in_stack) = self.position_new_panes(
             &mut new_terminal_ids,
-            &mut new_plugin_ids,
+            new_plugin_ids,
             &mut positions_in_layout,
         )?;
         self.handle_run_instructions_without_a_location(
@@ -526,19 +525,19 @@ impl<'a> LayoutApplier<'a> {
         for (layout, position_and_size) in positions_in_layout {
             if let Some(Run::Plugin(run)) = layout.run.clone() {
                 let pid =
-                    self.new_tiled_plugin_pane(run, new_plugin_ids, &position_and_size, &layout)?;
+                    self.new_tiled_plugin_pane(run, new_plugin_ids, position_and_size, layout)?;
                 if layout.is_expanded_in_stack {
                     pane_ids_expanded_in_stack.push(PaneId::Plugin(pid));
                 }
-                set_focus_pane_id(&layout, PaneId::Plugin(pid));
+                set_focus_pane_id(layout, PaneId::Plugin(pid));
             } else if !new_terminal_ids.is_empty() {
                 // there are still panes left to fill, use the pids we received in this method
                 let (pid, hold_for_command) = new_terminal_ids.remove(0);
-                self.new_terminal_pane(pid, &hold_for_command, &position_and_size, &layout)?;
+                self.new_terminal_pane(pid, &hold_for_command, position_and_size, layout)?;
                 if layout.is_expanded_in_stack {
                     pane_ids_expanded_in_stack.push(PaneId::Terminal(pid));
                 }
-                set_focus_pane_id(&layout, PaneId::Terminal(pid));
+                set_focus_pane_id(layout, PaneId::Terminal(pid));
             }
         }
         Ok((focus_pane_id, pane_ids_expanded_in_stack))
@@ -676,7 +675,7 @@ impl<'a> LayoutApplier<'a> {
     ) -> Result<Option<PaneId>> {
         let mut pane_id_to_focus = None;
         let next_terminal_position =
-            get_next_terminal_position(&self.tiled_panes, &self.floating_panes);
+            get_next_terminal_position(self.tiled_panes, self.floating_panes);
         let initial_title = match &floating_pane_layout.run {
             Some(Run::Command(run_command)) => Some(run_command.to_string()),
             _ => None,
@@ -741,7 +740,7 @@ impl<'a> LayoutApplier<'a> {
         layout: &TiledPaneLayout,
     ) -> Result<()> {
         let next_terminal_position =
-            get_next_terminal_position(&self.tiled_panes, &self.floating_panes);
+            get_next_terminal_position(self.tiled_panes, self.floating_panes);
         let initial_title = match &layout.run {
             Some(Run::Command(run_command)) => Some(run_command.to_string()),
             _ => None,
@@ -842,7 +841,7 @@ impl<'a> LayoutApplier<'a> {
         &mut self,
         mut floating_panes_layout: Vec<FloatingPaneLayout>,
         new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
-        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
     ) -> Result<bool> {
         let layout_has_floating_panes = !floating_panes_layout.is_empty();
 
@@ -858,7 +857,7 @@ impl<'a> LayoutApplier<'a> {
         for floating_pane_layout in floating_panes_layout {
             let position_and_size = self
                 .floating_panes
-                .position_floating_pane_layout(&floating_pane_layout)?;
+                .position_floating_pane_layout(floating_pane_layout)?;
             let pid_to_focus = if floating_pane_layout.already_running {
                 self.floating_panes.set_geom_for_pane_with_run(
                     floating_pane_layout.run.clone(),
@@ -868,9 +867,9 @@ impl<'a> LayoutApplier<'a> {
             } else if let Some(Run::Plugin(run)) = floating_pane_layout.run.clone() {
                 self.new_floating_plugin_pane(
                     run,
-                    &mut new_plugin_ids,
+                    new_plugin_ids,
                     position_and_size,
-                    &floating_pane_layout,
+                    floating_pane_layout,
                 )?
             } else if let Some((pid, hold_for_command)) = new_floating_terminal_ids.next() {
                 self.new_floating_terminal_pane(
@@ -909,8 +908,8 @@ impl<'a> LayoutApplier<'a> {
         }
         let mut existing_tab_state = ExistingTabState::new(self.floating_panes.drain());
         let mut pane_applier = PaneApplier::new(
-            &mut self.tiled_panes,
-            &mut self.floating_panes,
+            self.tiled_panes,
+            self.floating_panes,
             &self.senders,
             &self.character_cell_size,
         );
@@ -971,7 +970,7 @@ impl<'a> LayoutApplier<'a> {
         &mut self,
         floating_panes_layout: &Vec<FloatingPaneLayout>,
         new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
-        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         retain_existing_terminal_panes: bool,
         retain_existing_plugin_panes: bool,
     ) -> Result<bool> {
@@ -986,8 +985,8 @@ impl<'a> LayoutApplier<'a> {
         let mut positions_left = vec![];
 
         let mut pane_applier = PaneApplier::new(
-            &mut self.tiled_panes,
-            &mut self.floating_panes,
+            self.tiled_panes,
+            self.floating_panes,
             &self.senders,
             &self.character_cell_size,
         );
@@ -1025,7 +1024,7 @@ impl<'a> LayoutApplier<'a> {
             let pid_to_focus = if let Some(Run::Plugin(run)) = floating_pane_layout.run.clone() {
                 self.new_floating_plugin_pane(
                     run,
-                    &mut new_plugin_ids,
+                    new_plugin_ids,
                     position_and_size,
                     &floating_pane_layout,
                 )?
@@ -1047,8 +1046,8 @@ impl<'a> LayoutApplier<'a> {
         // we do this because we have to add the remaining tiled pane ids ONLY AFTER positioning
         // the new panes, otherwise the layout might get borked
         let mut pane_applier = PaneApplier::new(
-            &mut self.tiled_panes,
-            &mut self.floating_panes,
+            self.tiled_panes,
+            self.floating_panes,
             &self.senders,
             &self.character_cell_size,
         );

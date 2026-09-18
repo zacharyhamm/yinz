@@ -1,4 +1,3 @@
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::borrowed_box)]
 use crate::{
     panes::PaneId,
@@ -59,7 +58,7 @@ impl<'a> StackedPanes<'a> {
             source_pane_geom.rows = Dimension::fixed(1);
             source_pane.set_geom(source_pane_geom);
             let destination_pane = panes
-                .get_mut(&destination_pane_id)
+                .get_mut(destination_pane_id)
                 .with_context(err_context)?;
             destination_pane.set_geom(destination_pane_geom);
         } else if destination_pane_stack_id.is_some() {
@@ -95,7 +94,7 @@ impl<'a> StackedPanes<'a> {
             source_pane.set_geom(source_pane_geom);
             destination_pane_geom.y -= 1;
             let destination_pane = panes
-                .get_mut(&destination_pane_id)
+                .get_mut(destination_pane_id)
                 .with_context(err_context)?;
             destination_pane.set_geom(destination_pane_geom);
         } else if destination_pane_stack_id.is_some() {
@@ -284,7 +283,7 @@ impl<'a> StackedPanes<'a> {
                 }
                 self.panes
                     .borrow_mut()
-                    .get_mut(&pane_id)
+                    .get_mut(pane_id)
                     .with_context(err_context)?
                     .set_geom(new_pane_geom);
             }
@@ -337,7 +336,7 @@ impl<'a> StackedPanes<'a> {
         let panes = self.panes.borrow();
         let pane_to_close = panes.get(current_pane_id).with_context(err_context)?;
         let position_of_current_pane =
-            self.position_of_current_pane(&all_stacked_pane_positions, &pane_to_close)?;
+            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close)?;
         let position_of_flexible_pane =
             self.position_of_flexible_pane(&all_stacked_pane_positions)?;
         Ok((position_of_current_pane, position_of_flexible_pane))
@@ -663,7 +662,7 @@ impl<'a> StackedPanes<'a> {
         geom_of_flexible_pane.stacked = Some(stack_id);
         let mut all_stack_geoms = other_pane_ids_and_geoms;
         let original_geom_of_main_pane = panes
-            .get(&root_pane_id)
+            .get(root_pane_id)
             .ok_or_else(|| anyhow!("Failed to find root geom"))?
             .position_and_size(); // for sorting purposes
         all_stack_geoms.push((*root_pane_id, original_geom_of_main_pane));
@@ -738,7 +737,7 @@ impl<'a> StackedPanes<'a> {
             .decrease_inner(other_pane_ids_and_geoms.len());
         let mut all_stacked_geoms = other_pane_ids_and_geoms;
         let original_geom_of_main_pane = panes
-            .get(&root_pane_id)
+            .get(root_pane_id)
             .ok_or_else(|| anyhow!("Failed to find root geom"))?
             .position_and_size(); // for sorting purposes
         all_stacked_geoms.push((*root_pane_id, original_geom_of_main_pane));
@@ -751,7 +750,7 @@ impl<'a> StackedPanes<'a> {
         });
         for (pane_id, mut pane_geom) in all_stacked_geoms {
             if &pane_id == root_pane_id {
-                if let Some(root_pane) = panes.get_mut(&root_pane_id) {
+                if let Some(root_pane) = panes.get_mut(root_pane_id) {
                     pane_geom.x = new_stack_geom.x;
                     pane_geom.cols = new_stack_geom.cols;
                     pane_geom.y = running_y;
@@ -783,7 +782,7 @@ impl<'a> StackedPanes<'a> {
             return None;
         };
         let mut all_stacked_pane_positions = self
-            .positions_in_stack(&pane_id)
+            .positions_in_stack(pane_id)
             .with_context(err_context)
             .ok()?;
         if all_stacked_pane_positions.is_empty() {
@@ -993,7 +992,7 @@ impl<'a> StackedPanes<'a> {
     ) -> Option<PaneId> {
         let err_context = || "Failed to get flexible pane id";
         let position_of_flexible_pane = self
-            .position_of_flexible_pane(&all_stacked_pane_positions)
+            .position_of_flexible_pane(all_stacked_pane_positions)
             .with_context(err_context)
             .ok()?;
         let (flexible_pane_id, _flexible_pane_geom) = all_stacked_pane_positions
@@ -1037,7 +1036,7 @@ impl<'a> StackedPanes<'a> {
         let mut panes = self.panes.borrow_mut();
         let pane_to_close = panes.get(id).with_context(err_context)?;
         let position_of_current_pane =
-            self.position_of_current_pane(&all_stacked_pane_positions, &pane_to_close)?;
+            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close)?;
         let only_one_pane_remaining_in_stack_after_close = all_stacked_pane_positions.len() == 2;
         if all_stacked_pane_positions.len() > position_of_current_pane + 1 {
             let mut pane_to_close_position_and_size = pane_to_close.position_and_size();
@@ -1081,7 +1080,7 @@ impl<'a> StackedPanes<'a> {
         let mut panes = self.panes.borrow_mut();
         let pane_to_close = panes.get(id).with_context(err_context)?;
         let position_of_current_pane =
-            self.position_of_current_pane(&all_stacked_pane_positions, &pane_to_close)?;
+            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close)?;
         let position_of_flexible_pane =
             self.position_of_flexible_pane(&all_stacked_pane_positions)?;
         let id_of_flexible_pane = all_stacked_pane_positions
@@ -1113,7 +1112,7 @@ impl<'a> StackedPanes<'a> {
         let mut panes = self.panes.borrow_mut();
         let pane_to_close = panes.get(id).with_context(err_context)?;
         let position_of_current_pane =
-            self.position_of_current_pane(&all_stacked_pane_positions, &pane_to_close)?;
+            self.position_of_current_pane(&all_stacked_pane_positions, pane_to_close)?;
         let position_of_flexible_pane =
             self.position_of_flexible_pane(&all_stacked_pane_positions)?;
         let id_of_flexible_pane = all_stacked_pane_positions

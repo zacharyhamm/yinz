@@ -1,5 +1,4 @@
 #![allow(clippy::result_large_err)]
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::useless_borrows_in_formatting)]
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::useless_conversion)]
