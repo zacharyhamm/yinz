@@ -1,5 +1,6 @@
 //! Read-only issue browsing through the host's authenticated Swamp CLI.
 use super::*;
+use chrono::{DateTime, FixedOffset};
 use serde::Deserialize;
 use zellij_tile::ui_components::forms::{Combo, Form, FormEvent, Rect, RenderBuffer, Select};
 
@@ -8,6 +9,12 @@ const REQUEST_ID: &str = "swamp_issue_request";
 const ISSUE_NUMBER: &str = "swamp_issue_number";
 const TYPES: [&str; 4] = ["", "bug", "feature", "security"];
 const STATUSES: [&str; 6] = ["", "open", "triaged", "in_progress", "shipped", "closed"];
+const SORTS: [&str; 4] = [
+    "Updated newest first",
+    "Updated oldest first",
+    "Created newest first",
+    "Created oldest first",
+];
 
 #[derive(Debug, Deserialize)]
 struct Issue {
@@ -18,6 +25,19 @@ struct Issue {
     kind: String,
     author: String,
     url: String,
+    #[serde(rename = "createdAt", default, deserialize_with = "timestamp")]
+    created_at: Option<DateTime<FixedOffset>>,
+    #[serde(rename = "updatedAt", default, deserialize_with = "timestamp")]
+    updated_at: Option<DateTime<FixedOffset>>,
+}
+
+fn timestamp<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<DateTime<FixedOffset>>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +99,7 @@ pub(super) struct View {
     editing: Option<String>,
     status: usize,
     kind: usize,
+    sort: usize,
     source: String,
     filter: Option<FilterEditor>,
     source_tags: Vec<String>,
@@ -137,6 +158,7 @@ impl View {
                     },
                     'f',
                 ),
+                ("Sort", SORTS[self.sort], 'o'),
             ] {
                 let text = fit(&format!("[{label}: {value} ({shortcut})]"), cols);
                 let width = text.width();
@@ -192,6 +214,47 @@ impl View {
 
     fn issues(&self) -> &[Issue] {
         self.search.as_ref().map_or(&[], |search| &search.issues)
+    }
+
+    fn selected_number(&self) -> Option<u64> {
+        self.issues().get(self.selected).map(|issue| issue.number)
+    }
+
+    fn sort_issues(&mut self, selected: Option<u64>) {
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        search.issues.sort_by(|a, b| {
+            let (a_time, b_time) = if self.sort < 2 {
+                (a.updated_at, b.updated_at)
+            } else {
+                (a.created_at, b.created_at)
+            };
+            match (a_time, b_time) {
+                (Some(a), Some(b)) if self.sort == 0 || self.sort == 2 => b.cmp(&a),
+                (Some(a), Some(b)) => a.cmp(&b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+            .then_with(|| b.number.cmp(&a.number))
+        });
+        self.selected = search
+            .issues
+            .iter()
+            .position(|issue| Some(issue.number) == selected)
+            .unwrap_or(self.selected.min(search.issues.len().saturating_sub(1)));
+        self.list_scroll = None;
+    }
+
+    pub(super) fn shows_an_age(&self) -> bool {
+        self.visible()
+            && self.opened.is_none()
+            && self.last_body_rows > 0
+            && self
+                .issues()
+                .iter()
+                .any(|issue| issue.created_at.is_some() || issue.updated_at.is_some())
     }
 
     fn note(&self) -> Option<String> {
@@ -395,21 +458,9 @@ impl State {
             Target::Search(generation) if generation == self.swamp.search_generation => {
                 match decode::<Search>(code, stdout, stderr) {
                     Ok(search) => {
-                        let selected = self
-                            .swamp
-                            .issues()
-                            .get(self.swamp.selected)
-                            .map(|issue| issue.number);
-                        self.swamp.selected = search
-                            .issues
-                            .iter()
-                            .position(|issue| Some(issue.number) == selected)
-                            .unwrap_or(
-                                self.swamp
-                                    .selected
-                                    .min(search.issues.len().saturating_sub(1)),
-                            );
+                        let selected = self.swamp.selected_number();
                         self.swamp.search = Some(search);
+                        self.swamp.sort_issues(selected);
                         self.swamp.list_error = None;
                     },
                     Err(error) => self.swamp.list_error = Some(error),
@@ -439,12 +490,7 @@ impl State {
     }
 
     fn open_swamp_issue(&mut self) {
-        let Some(number) = self
-            .swamp
-            .issues()
-            .get(self.swamp.selected)
-            .map(|issue| issue.number)
-        else {
+        let Some(number) = self.swamp.selected_number() else {
             return;
         };
         self.swamp.opened = Some(number);
@@ -545,7 +591,7 @@ impl State {
             BareKey::Char('/') if self.swamp.opened.is_none() => {
                 self.swamp.editing = Some(self.swamp.query.clone());
             },
-            BareKey::Char(shortcut @ ('s' | 't' | 'f')) if self.swamp.opened.is_none() => {
+            BareKey::Char(shortcut @ ('s' | 't' | 'f' | 'o')) if self.swamp.opened.is_none() => {
                 self.open_swamp_filter(shortcut);
             },
             BareKey::Enter if self.swamp.opened.is_none() => self.open_swamp_issue(),
@@ -573,6 +619,11 @@ impl State {
                 Select::new(TYPES.map(|kind| if kind.is_empty() { "All" } else { kind }))
                     .with_selected(self.swamp.kind),
             ),
+            'o' => Form::new().select(
+                "value",
+                "Sort",
+                Select::new(SORTS).with_selected(self.swamp.sort),
+            ),
             _ => Form::new().combo(
                 "value",
                 "Source",
@@ -595,14 +646,15 @@ impl State {
         let Some(editor) = &mut self.swamp.filter else {
             return;
         };
+        let sorting = editor.shortcut == 'o';
         let changed = if let Some(select) = editor.form.select_by_id("value") {
             let Some(index) = select.selected_index() else {
                 return;
             };
-            let value = if editor.shortcut == 's' {
-                &mut self.swamp.status
-            } else {
-                &mut self.swamp.kind
+            let value = match editor.shortcut {
+                's' => &mut self.swamp.status,
+                'o' => &mut self.swamp.sort,
+                _ => &mut self.swamp.kind,
             };
             let changed = *value != index;
             *value = index;
@@ -629,7 +681,11 @@ impl State {
         };
         self.swamp.cancel_filter();
         if changed {
-            self.search_swamp();
+            if sorting {
+                self.swamp.sort_issues(self.swamp.selected_number());
+            } else {
+                self.search_swamp();
+            }
         }
     }
 
@@ -854,13 +910,14 @@ impl State {
                 Some(cols),
                 None,
             );
+            let now = now_ms();
             self.swamp.list_rows = self
                 .swamp
                 .issues()
                 .iter()
                 .enumerate()
                 .flat_map(|(index, issue)| {
-                    issue_lines(issue, index == self.swamp.selected, cols)
+                    issue_lines(issue, index == self.swamp.selected, cols, now)
                         .into_iter()
                         .map(move |line| (index, line))
                 })
@@ -998,7 +1055,7 @@ fn list_text(line: &str, selected: bool) -> Text {
     }
 }
 
-fn issue_lines(issue: &Issue, selected: bool, cols: usize) -> Vec<String> {
+fn issue_lines(issue: &Issue, selected: bool, cols: usize, now: i64) -> Vec<String> {
     let mut lines = vec![fit(
         &format!(
             "{} #{} {} · {}",
@@ -1011,11 +1068,27 @@ fn issue_lines(issue: &Issue, selected: bool, cols: usize) -> Vec<String> {
     )];
     // Leave room for a wide Unicode character before adding the indentation.
     let indent = if cols >= 4 { "  " } else { "" };
-    lines.extend(
-        zellij_tile::text::wrap(&issue.title, cols - indent.len())
-            .into_iter()
-            .map(|line| fit(&format!("{indent}{line}"), cols)),
+    let age = |timestamp: Option<DateTime<FixedOffset>>| {
+        timestamp.map_or_else(
+            || "unknown".into(),
+            |timestamp| match agents::short_age(now, timestamp.timestamp_millis()) {
+                age if age == "now" => age,
+                age => format!("{age} ago"),
+            },
+        )
+    };
+    let timestamps = format!(
+        "Created {} · Updated {}",
+        age(issue.created_at),
+        age(issue.updated_at),
     );
+    for text in [&issue.title, &timestamps] {
+        lines.extend(
+            zellij_tile::text::wrap(text, cols - indent.len())
+                .into_iter()
+                .map(|line| fit(&format!("{indent}{line}"), cols)),
+        );
+    }
     lines
 }
 
@@ -1027,6 +1100,9 @@ fn detail_lines(detail: &Detail, cols: usize) -> Vec<markdown::MdLine> {
         detail.assignees.join(", ")
     };
     let mut lines = Vec::new();
+    let precise = |timestamp: Option<DateTime<FixedOffset>>| {
+        timestamp.map_or_else(|| "unknown".into(), |timestamp| timestamp.to_rfc3339())
+    };
     for text in [
         format!("#{} {}", issue.number, issue.title),
         format!(
@@ -1035,6 +1111,8 @@ fn detail_lines(detail: &Detail, cols: usize) -> Vec<markdown::MdLine> {
             issue.kind,
             issue.author
         ),
+        format!("Created: {}", precise(issue.created_at)),
+        format!("Updated: {}", precise(issue.updated_at)),
         format!("Assignees: {assignees}"),
         issue.url.clone(),
     ] {
@@ -1177,12 +1255,217 @@ mod tests {
         assert!(empty.issues.is_empty());
         let unknown = SEARCH.replace("triaged", "reviewing");
         let search = decode::<Search>(Some(0), unknown.as_bytes(), &[]).unwrap();
-        assert!(issue_lines(&search.issues[0], true, 100)[0].contains("reviewing"));
+        assert!(issue_lines(&search.issues[0], true, 100, now_ms())[0].contains("reviewing"));
         let empty = DETAIL.replace(r#"["skunk-ape"]"#, "[]");
         let mut value: serde_json::Value = serde_json::from_str(&empty).unwrap();
         value["comments"] = json!([]);
         let detail = decode::<Detail>(Some(0), value.to_string().as_bytes(), &[]).unwrap();
         assert!(detail.assignees.is_empty() && detail.comments.is_empty());
+    }
+
+    #[test]
+    fn timestamps_decode_and_render_relative_ages_and_precise_offsets() {
+        let mut value: serde_json::Value = serde_json::from_str(DETAIL).unwrap();
+        value["createdAt"] = json!("2026-09-18T05:00:00-05:00");
+        value["updatedAt"] = json!("2026-09-18T13:55:00.123+02:00");
+        let detail = decode::<Detail>(Some(0), value.to_string().as_bytes(), &[]).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-09-18T12:00:00.123Z")
+            .unwrap()
+            .timestamp_millis();
+        let lines = issue_lines(&detail.issue, true, 100, now);
+        assert_eq!(lines.last().unwrap(), "  Created 2h ago · Updated 5m ago");
+        assert!(issue_lines(&detail.issue, true, 100, now + REFRESH_MS)
+            .last()
+            .unwrap()
+            .contains("Updated 6m ago"));
+        let precise = detail_lines(&detail, 100)
+            .into_iter()
+            .map(|line| line.text)
+            .collect::<Vec<_>>();
+        assert!(precise.contains(&"Created: 2026-09-18T05:00:00-05:00".into()));
+        assert!(precise.contains(&"Updated: 2026-09-18T13:55:00.123+02:00".into()));
+        for cols in 1..50 {
+            assert!(issue_lines(&detail.issue, true, cols, now)
+                .iter()
+                .all(|line| line.width() <= cols));
+            assert!(detail_lines(&detail, cols)
+                .iter()
+                .all(|line| line.text.width() <= cols));
+        }
+        assert!(issue_lines(&detail.issue, false, 100, 0)
+            .last()
+            .unwrap()
+            .contains("Created now · Updated now"));
+    }
+
+    #[test]
+    fn missing_null_and_invalid_timestamps_are_unknown() {
+        let mut value: serde_json::Value = serde_json::from_str(DETAIL).unwrap();
+        for invalid in [
+            None,
+            Some(json!(null)),
+            Some(json!("not a timestamp")),
+            Some(json!("2026-09-18T10:00:00")), // no timezone
+            Some(json!("2026-02-30T10:00:00Z")),
+            Some(json!(42)),
+            Some(json!(false)),
+            Some(json!({})),
+            Some(json!([])),
+        ] {
+            if let Some(invalid) = invalid {
+                value["createdAt"] = invalid.clone();
+                value["updatedAt"] = invalid;
+            }
+            let detail = decode::<Detail>(Some(0), value.to_string().as_bytes(), &[]).unwrap();
+            assert!(detail.issue.created_at.is_none() && detail.issue.updated_at.is_none());
+            assert_eq!(
+                issue_lines(&detail.issue, false, 100, now_ms())
+                    .last()
+                    .unwrap(),
+                "  Created unknown · Updated unknown"
+            );
+            let precise = detail_lines(&detail, 100);
+            for label in ["Created: unknown", "Updated: unknown"] {
+                assert!(precise.iter().any(|line| line.text == label));
+            }
+        }
+    }
+
+    fn timestamped_search() -> String {
+        let mut value: serde_json::Value = serde_json::from_str(SEARCH).unwrap();
+        let template = value["issues"][0].clone();
+        value["issues"] = json!([]);
+        for (number, created, updated) in [
+            (
+                1,
+                Some("2026-09-18T10:00:00Z"),
+                Some("2026-09-18T10:00:00Z"),
+            ),
+            (
+                2,
+                Some("2026-09-18T09:00:00Z"),
+                Some("2026-09-18T12:00:00Z"),
+            ),
+            (
+                3,
+                Some("2026-09-18T11:00:00+01:00"),
+                Some("2026-09-18T13:00:00+01:00"),
+            ),
+            (4, None, Some("invalid")),
+            (5, Some("invalid"), None),
+            (6, None, None),
+        ] {
+            let mut issue = template.clone();
+            issue["number"] = json!(number);
+            if number != 6 {
+                issue["createdAt"] = json!(created);
+                issue["updatedAt"] = json!(updated);
+            }
+            value["issues"].as_array_mut().unwrap().push(issue);
+        }
+        value.to_string()
+    }
+
+    #[test]
+    fn all_sort_orders_use_instants_then_descending_numbers_with_unknowns_last() {
+        let mut state = ready();
+        state.poll_swamp(0, true);
+        reply(&mut state, &timestamped_search());
+        assert_eq!(state.swamp.sort, 0);
+        assert_eq!(state.swamp.selected_number(), Some(3));
+        let count = state.swamp.commands.len();
+        for (sort, expected) in [
+            [3, 2, 1, 6, 5, 4],
+            [1, 3, 2, 6, 5, 4],
+            [3, 1, 2, 6, 5, 4],
+            [2, 3, 1, 6, 5, 4],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            choose(&mut state, 'o', SORTS[sort]);
+            assert!(!state.swamp.is_editing());
+            assert_eq!(state.swamp.sort, sort);
+            assert_eq!(
+                state
+                    .swamp
+                    .issues()
+                    .iter()
+                    .map(|issue| issue.number)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(state.swamp.selected_number(), Some(3));
+            assert_eq!(state.swamp.commands.len(), count, "sorting stays local");
+            assert!(state.swamp.header().contains("6 of 2219"));
+        }
+        key(&mut state, BareKey::Char('o'));
+        key(&mut state, BareKey::Up);
+        key(&mut state, BareKey::Esc);
+        assert_eq!(state.swamp.sort, 3, "cancel keeps the committed sort");
+        key(&mut state, BareKey::Char('o'));
+        key(&mut state, BareKey::Up);
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.sort, 2);
+        assert_eq!(state.swamp.commands.len(), count);
+    }
+
+    #[test]
+    fn sorting_and_refresh_reveal_selection_and_keep_sort_across_surfaces() {
+        let mut state = ready();
+        state.poll_swamp(0, true);
+        reply(&mut state, &timestamped_search());
+        state.render(9, 12);
+        state.swamp.list_scroll = Some(usize::MAX);
+        choose(&mut state, 'o', "Created oldest first");
+        assert_eq!(state.swamp.list_scroll, None);
+        state.render(9, 12);
+        assert_eq!(state.swamp.selected_number(), Some(3));
+        assert_eq!(
+            state.swamp.list_rows[state.swamp.window].0,
+            state.swamp.selected
+        );
+        let mut refresh: serde_json::Value = serde_json::from_str(&timestamped_search()).unwrap();
+        refresh["issues"][2]["createdAt"] = json!("2026-09-18T08:00:00Z");
+        refresh["issues"].as_array_mut().unwrap().reverse();
+        state.poll_swamp(REFRESH_MS, true);
+        state.swamp.list_scroll = Some(usize::MAX);
+        reply(&mut state, &refresh.to_string());
+        assert_eq!(state.swamp.selected_number(), Some(3));
+        assert_eq!(state.swamp.selected, 0);
+        assert_eq!(state.swamp.list_scroll, None);
+        state.render(9, 12);
+        assert_eq!(state.swamp.window, 0);
+        state.switch_surface(Surface::Agents);
+        state.switch_surface(Surface::Swamp);
+        reply(&mut state, &refresh.to_string());
+        assert_eq!(state.swamp.sort, 3);
+        assert_eq!(state.swamp.selected_number(), Some(3));
+        assert_eq!(state.swamp.selected, 0);
+    }
+
+    #[test]
+    fn minute_ticks_redraw_issue_ages_while_a_refresh_is_pending() {
+        let mut state = loaded();
+        assert!(!state.shows_an_age(), "legacy issues have no ages to tick");
+        state.poll_swamp(REFRESH_MS, true);
+        reply(&mut state, &timestamped_search());
+        state.render(12, 80);
+        assert!(state.shows_an_age());
+        state.poll_swamp(2 * REFRESH_MS, true);
+        let count = state.swamp.commands.len();
+        state.age_minute = now_ms() / REFRESH_MS - 1;
+        assert!(state.update(Event::Timer(FractionalSeconds::new(0.0))));
+        assert_eq!(state.swamp.commands.len(), count);
+        assert!(!state.update(Event::Timer(FractionalSeconds::new(0.0))));
+        key(&mut state, BareKey::Enter);
+        assert!(!state.shows_an_age(), "details use precise timestamps");
+        key(&mut state, BareKey::Esc);
+        state.render(1, 80);
+        assert!(!state.shows_an_age());
+        state.render(12, 80);
+        state.swamp_visibility(false);
+        assert!(!state.shows_an_age());
     }
 
     fn type_text(state: &mut State, text: &str) {
@@ -1347,7 +1630,7 @@ mod tests {
 
     #[test]
     fn filter_mouse_selects_on_release_and_intercepts_issue_rows() {
-        for shortcut in ['s', 't', 'f'] {
+        for shortcut in ['s', 't', 'f', 'o'] {
             let mut state = loaded();
             let (row, x, _, _) = *state
                 .swamp
@@ -1382,10 +1665,12 @@ mod tests {
             state.on_mouse(Mouse::Release(y, rect.x));
             assert!(!state.swamp.is_editing());
             assert!(state.swamp.opened.is_none());
-            assert_eq!(state.swamp.commands.len(), count + 1);
+            let expected_count = count + usize::from(shortcut != 'o');
+            assert_eq!(state.swamp.commands.len(), expected_count);
             match shortcut {
                 's' => assert_eq!(STATUSES[state.swamp.status], "open"),
                 't' => assert_eq!(TYPES[state.swamp.kind], "bug"),
+                'o' => assert_eq!(state.swamp.sort, 1),
                 _ => assert_eq!(state.swamp.source, "swamp"),
             }
             reply(&mut state, SEARCH);
@@ -1394,14 +1679,14 @@ mod tests {
             state.on_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize + 1, 79));
             assert!(!state.swamp.is_editing());
             assert!(state.swamp.opened.is_none());
-            assert_eq!(state.swamp.commands.len(), count + 1);
+            assert_eq!(state.swamp.commands.len(), expected_count);
         }
     }
 
     #[test]
     fn filter_chips_and_active_forms_fit_resized_panes() {
         let mut state = loaded();
-        for shortcut in ['s', 't', 'f'] {
+        for shortcut in ['s', 't', 'f', 'o'] {
             key(&mut state, BareKey::Char(shortcut));
             for cols in 1..80 {
                 for rows in [2, 4, 12] {
@@ -1423,7 +1708,7 @@ mod tests {
             key(&mut state, BareKey::Esc);
         }
         state.render(12, 20);
-        assert_eq!(state.swamp.filter_cells.len(), 3);
+        assert_eq!(state.swamp.filter_cells.len(), 4);
         assert!(state
             .swamp
             .filter_cells
@@ -1590,7 +1875,7 @@ mod tests {
     }
 
     #[test]
-    fn refreshing_preserves_selection_scroll_and_content_after_failure() {
+    fn refreshing_preserves_selection_and_content_after_failure() {
         let mut state = loaded();
         state.swamp.selected = 1;
         state.swamp.list_scroll = Some(1);
@@ -1598,8 +1883,8 @@ mod tests {
         let mut reordered: serde_json::Value = serde_json::from_str(SEARCH).unwrap();
         reordered["issues"].as_array_mut().unwrap().reverse();
         reply(&mut state, &reordered.to_string());
-        assert_eq!(state.swamp.selected, 0);
-        assert_eq!(state.swamp.list_scroll, Some(1));
+        assert_eq!(state.swamp.selected, 1);
+        assert_eq!(state.swamp.list_scroll, None);
         state.poll_swamp(2 * REFRESH_MS, false);
         reply(&mut state, r#"{"error":"Network unavailable"}"#);
         assert_eq!(state.swamp.issues()[state.swamp.selected].number, 2180);
@@ -1843,7 +2128,7 @@ mod tests {
         key(&mut state, BareKey::Esc);
         assert_eq!(state.panel_hides, 0);
         state.render(12, 80);
-        let line = state.swamp.last_body_top + 3; // second metadata row plus tab bar
+        let line = state.swamp.last_body_top + 4; // second metadata row plus tab bar
         assert!(state.on_mouse(Mouse::LeftClick(line as isize, 4)));
         assert_eq!(state.swamp.opened, Some(2180));
         key(&mut state, BareKey::Esc);
@@ -1908,7 +2193,7 @@ mod tests {
                     .iter()
                     .all(|line| line.text.width() <= cols));
             }
-            assert!(issue_lines(&state.swamp.issues()[0], true, cols)
+            assert!(issue_lines(&state.swamp.issues()[0], true, cols, now_ms())
                 .iter()
                 .all(|line| line.width() <= cols));
         }
@@ -1930,9 +2215,9 @@ mod tests {
         let mut state = loaded();
         let issue = &mut state.swamp.search.as_mut().unwrap().issues[0];
         issue.title = "alpha beta\ngamma\nabcdefghijk\n界面 é".into();
-        let lines = issue_lines(issue, true, 8);
+        let lines = issue_lines(issue, true, 8, now_ms());
         assert_eq!(
-            &lines[1..],
+            &lines[1..7],
             &[
                 "  alpha",
                 "  beta",
@@ -1944,7 +2229,7 @@ mod tests {
         );
         assert!(!lines[0].contains("alpha"));
         for cols in 0..20 {
-            assert!(issue_lines(issue, false, cols)
+            assert!(issue_lines(issue, false, cols, now_ms())
                 .iter()
                 .all(|line| line.width() <= cols));
         }
@@ -1972,7 +2257,7 @@ mod tests {
         state.swamp.search = Some(Search { issues, total: 20 });
         state.render_swamp(8, 80);
         key(&mut state, BareKey::PageDown);
-        assert_eq!(state.swamp.selected, 2);
+        assert_eq!(state.swamp.selected, 1);
         state.render_swamp(8, 80);
         key(&mut state, BareKey::PageUp);
         assert_eq!(state.swamp.selected, 0);
@@ -2009,8 +2294,8 @@ mod tests {
         key(&mut state, BareKey::Down);
         state.render_swamp(10, 12);
         assert_eq!(state.swamp.selected, 1);
-        assert!(state.swamp.window <= first_end);
-        assert!(state.swamp.window + state.swamp.last_body_rows >= state.swamp.list_rows.len());
+        assert_eq!(state.swamp.window, first_end);
+        assert_eq!(state.swamp.list_rows[state.swamp.window].0, 1);
         key(&mut state, BareKey::Up);
         state.render_swamp(10, 12);
         assert_eq!(state.swamp.window, 0);
