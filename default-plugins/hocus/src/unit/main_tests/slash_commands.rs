@@ -761,3 +761,22 @@ fn a_skill_opened_chat_is_titled_by_the_typed_line() {
     )];
     assert_eq!(history::title(&messages), "/bench now");
 }
+
+#[test]
+fn linear_tools_and_family_are_removed() {
+    assert!(!tools::deferred_families().contains(&"linear"));
+    assert!(tools::load_family(Some("linear"), false).starts_with("no such tool family:"));
+    for name in ["linear_search", "linear_issues", "linear_issue"] {
+        assert!(!tools::names().iter().any(|tool| tool == name));
+        assert!(tools::family_of(name).is_none());
+        let mut state = ready_state();
+        assert!(state.run_manual(&format!("/{name}")));
+        assert!(state.pending.is_empty());
+        let error = state.messages.last().unwrap();
+        assert_eq!(error.role, Role::Error);
+        assert_eq!(
+            error.content,
+            format!("no such tool or skill: {name} — /help lists the commands, /skills the skills")
+        );
+    }
+}

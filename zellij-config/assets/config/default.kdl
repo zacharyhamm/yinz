@@ -449,13 +449,6 @@ plugins {
     //   summary_model  the model those summaries are asked of. Defaults to `model`;
     //                  set it to point the cheap work somewhere cheaper.
     //
-    //   linear_api_key_env  the *name* of the variable holding a Linear personal API
-    //                       key - never the key itself. Defaults to LINEAR_API_KEY, and
-    //                       like the key above it must be set in the environment the
-    //                       session was started from. Unset, the `linear_*` tools stay
-    //                       advertised and answer with a sentence saying which variable
-    //                       to set; nothing else about hocus changes.
-    //
     // hocus draws itself as one overlay panel in the bottom-left corner of the
     // screen — over a tab rather than beside it, so no tab is shrunk to make
     // room. The panel is two panes butted together: the agent list on the left,

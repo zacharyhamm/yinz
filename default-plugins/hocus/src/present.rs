@@ -120,9 +120,6 @@ const PROSE: &[&str] = &[
     "project_open",
     "agent_register",
     "web_search",
-    "linear_search",
-    "linear_issues",
-    "linear_issue",
     // Raw scrollback. Fencing it would be a lie about what it is, and the plain
     // path already renders it whole.
     "read_pane",

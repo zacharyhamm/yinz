@@ -1549,9 +1549,6 @@ impl State {
         if self.finish_search(status, body, context) {
             return true;
         }
-        if self.finish_linear(status, body, context) {
-            return true;
-        }
         if self.finish_models(status, body, context) {
             return true;
         }

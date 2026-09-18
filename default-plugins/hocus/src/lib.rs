@@ -12,7 +12,6 @@ mod events;
 mod extensions;
 mod help;
 mod history;
-mod linear;
 mod log;
 mod message;
 mod overlay;
