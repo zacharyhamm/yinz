@@ -160,12 +160,25 @@ sent again automatically. Each continuation has its own correlation tag as well 
 the shared launch token.
 
 The endpoint uses an OS-assigned port on the configured bind IP, requires token
-authentication, and has scheduling disabled. Bootstrap uses Swamp's local-encryption vault and service-token
-commands. The machine-local vault definition is excluded through Git's local exclude
-file. Endpoint credentials are stored with owner-only permissions under
+authentication, and has scheduling disabled. Bootstrap uses Swamp's service-token
+commands and control-plane vault, without an explicit vault override. Swamp manages
+credential storage when tokens are minted or rotated. Endpoint credentials are stored
+with owner-only permissions under
 `/tmp/zellij-swamp-UID/`; they never enter plugin messages, process arguments, or logs.
 The supervisor rotates the seven-day credential daily through Swamp. A renewal
 failure is reported without terminating active work.
+
+Bootstrap errors identify the operation, control-checkout path, and command exit
+status when available. Execution errors and invalid JSON responses are reported
+separately. Arguments, stdout, stderr, and credentials are omitted. Investigate the
+reported operation in that checkout. A bootstrap failure does not necessarily
+indicate a vault configuration problem.
+
+Bootstrap lists tokens before it creates or rotates `zellij-service`. Only a valid
+listing that confirms absence permits creation. An existing token is rotated, then
+revealed. Listing, rotation, or reveal failures stop bootstrap without a recovery
+mint attempt. A revoked token is reported and is not recreated. Resolve the
+reported failure before retrying the launch.
 
 Workflow YAML loads on each invocation. Before validating, launching or resuming
 a workflow, Zellij compares extension contents with the running service's startup

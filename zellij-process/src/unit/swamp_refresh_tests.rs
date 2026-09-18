@@ -42,6 +42,7 @@ async fn refreshes_local_extensions_once_after_active_work_and_preserves_suspens
         .success());
     cli(
         &root,
+        "repo init",
         &["repo", "init", root.to_str().unwrap(), "--tool", "none"],
     )
     .unwrap();
@@ -70,8 +71,18 @@ export const model = {
   }
 };
 "#).unwrap();
-    let probe = cli(&root, &["workflow", "create", "refresh-probe"]).unwrap();
-    let hold = cli(&root, &["workflow", "create", "refresh-hold"]).unwrap();
+    let probe = cli(
+        &root,
+        "workflow create",
+        &["workflow", "create", "refresh-probe"],
+    )
+    .unwrap();
+    let hold = cli(
+        &root,
+        "workflow create",
+        &["workflow", "create", "refresh-hold"],
+    )
+    .unwrap();
     let write_workflow = |workflow: &Value, method: &str, suspend: bool| {
         let mut steps = vec![
             json!({"name":"probe","task":{"type":"model_method","modelType":"@test/refresh","modelName":"probe","methodName":method,"inputs":{}}}),
@@ -89,7 +100,9 @@ export const model = {
         .unwrap()
         .unwrap();
     let result = async {
-        let original = endpoint(&root).unwrap().unwrap().child_pid;
+        let initial = endpoint(&root).unwrap().unwrap();
+        assert!(!initial.token.is_empty());
+        let original = initial.child_pid;
         assert_eq!(
             call(
                 root.clone(),
@@ -187,6 +200,10 @@ export const model = {
         assert_eq!(runs[0]["status"], "succeeded");
         let refreshed = endpoint(&root)?.unwrap().child_pid;
         assert_ne!(refreshed, original);
+        assert!(
+            endpoint(&root)?.unwrap().token != initial.token,
+            "refresh must rotate the service credential"
+        );
         assert_eq!(
             call(
                 root.clone(),
@@ -277,6 +294,7 @@ fn external_source_fingerprints_track_configured_directories_and_membership() {
     let root = repo.path();
     cli(
         root,
+        "repo init",
         &["repo", "init", root.to_str().unwrap(), "--tool", "none"],
     )
     .unwrap();
@@ -294,6 +312,7 @@ fn external_source_fingerprints_track_configured_directories_and_membership() {
     for source in [external.path(), flat.path()] {
         cli(
             root,
+            "extension source",
             &["extension", "source", "add", source.to_str().unwrap()],
         )
         .unwrap();
@@ -347,12 +366,23 @@ async fn hocus_workflow_definition_and_execution_lifecycle() {
         .success());
     cli(
         &root,
+        "repo init",
         &["repo", "init", root.to_str().unwrap(), "--tool", "none"],
     )
     .unwrap();
-    cli(&root, &["model", "create", "command/shell", "probe"]).unwrap();
+    cli(
+        &root,
+        "model create",
+        &["model", "create", "command/shell", "probe"],
+    )
+    .unwrap();
     // Seed a repository-owned extension through a Swamp-assigned scaffold.
-    let extension = cli(&root, &["workflow", "create", "owned-probe"]).unwrap();
+    let extension = cli(
+        &root,
+        "workflow create",
+        &["workflow", "create", "owned-probe"],
+    )
+    .unwrap();
     let extension_path = root.join("extensions/workflows/owned.yaml");
     std::fs::create_dir_all(extension_path.parent().unwrap()).unwrap();
     std::fs::rename(extension["path"].as_str().unwrap(), &extension_path).unwrap();
