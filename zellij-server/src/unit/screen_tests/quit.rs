@@ -699,12 +699,7 @@ fn closing_a_tab_drops_the_guards_of_the_plugins_in_it() {
 fn screen_with_plugin_senders_and_clients(
     tab_ids: &[TabId],
     client_ids: &[crate::ClientId],
-) -> (
-    Screen,
-    ScreenReceiver,
-    Receiver<(ServerInstruction, ErrorContext)>,
-    Receiver<(PluginInstruction, ErrorContext)>,
-) {
+) -> (Screen, ScreenReceiver, ServerReceiver, PluginReceiver) {
     let size = Size { cols: 80, rows: 24 };
     let mut screen = create_new_screen(size, true, true);
     let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();

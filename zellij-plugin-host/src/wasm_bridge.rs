@@ -1,8 +1,9 @@
-#![allow(clippy::type_complexity)]
 use super::{PinnedExecutor, PluginId, PluginInstruction};
 use crate::pipes::{apply_pipe_message_to_plugin, pipes_to_block_or_unblock, PendingPipes};
 use crate::plugin_loader::PluginLoader;
-use crate::plugin_map::{AtomicEvent, PluginEnv, PluginMap, RunningPlugin, Subscriptions};
+use crate::plugin_map::{
+    AtomicEvent, PluginEnv, PluginMap, RunningPlugin, RunningPluginEntry, Subscriptions,
+};
 use crate::{PipeStateChange, PluginRenderAsset};
 use zellij_bus::global_async_runtime::get_tokio_runtime;
 use zellij_types::internal_ids::QueueJobId;
@@ -1841,12 +1842,7 @@ impl WasmBridge {
                 }
             }
         }
-        let plugins_to_update: Vec<(
-            PluginId,
-            ClientId,
-            Arc<Mutex<RunningPlugin>>,
-            Arc<Mutex<Subscriptions>>,
-        )> = self
+        let plugins_to_update: Vec<RunningPluginEntry> = self
             .plugin_map
             .lock()
             .unwrap()
@@ -1985,12 +1981,7 @@ impl WasmBridge {
         plugin_id_to_update: PluginId,
         client_id_to_update: ClientId,
     ) -> Result<()> {
-        let plugins_to_change: Vec<(
-            PluginId,
-            ClientId,
-            Arc<Mutex<RunningPlugin>>,
-            Arc<Mutex<Subscriptions>>,
-        )> = self
+        let plugins_to_change: Vec<RunningPluginEntry> = self
             .plugin_map
             .lock()
             .unwrap()
@@ -2100,12 +2091,7 @@ impl WasmBridge {
         shutdown_sender: Sender<()>,
         mut notification_end: Option<NotificationEnd>,
     ) -> Result<()> {
-        let plugins_to_update: Vec<(
-            PluginId,
-            ClientId,
-            Arc<Mutex<RunningPlugin>>,
-            Arc<Mutex<Subscriptions>>,
-        )> = self
+        let plugins_to_update: Vec<RunningPluginEntry> = self
             .plugin_map
             .lock()
             .unwrap()

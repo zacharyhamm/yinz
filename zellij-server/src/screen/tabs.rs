@@ -36,15 +36,10 @@ impl Screen {
             self.default_layout.swap_tiled_layouts.clone(),
             self.default_layout.swap_floating_layouts.clone(),
         );
-        let client_id = if client_id.is_none() {
-            None
-        } else if self
-            .active_tab_ids
-            .contains_key(&client_id.expect("This is checked above"))
-        {
-            client_id
-        } else {
-            self.active_tab_ids.keys().next().copied()
+        let client_id = match client_id {
+            None => None,
+            Some(client_id) if self.active_tab_ids.contains_key(&client_id) => Some(client_id),
+            Some(_) => self.active_tab_ids.keys().next().copied(),
         };
         if let Some(client_id) = client_id {
             if let Ok(tab_exists) = self.go_to_tab_name(tab_name.clone(), client_id) {

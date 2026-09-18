@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 use crate::ClientId;
 use crate::PaneId;
 use std::collections::{BTreeMap, HashMap};
@@ -191,13 +190,13 @@ impl SessionLayoutMetadata {
     }
     fn is_default_shell(
         default_shell: Option<&PathBuf>,
-        command_name: &String,
-        args: &Vec<String>,
+        command_name: &str,
+        args: &[String],
     ) -> bool {
         default_shell
             .as_ref()
             .map(|c| c.display().to_string())
-            .as_ref()
+            .as_deref()
             == Some(command_name)
             && args.is_empty()
     }

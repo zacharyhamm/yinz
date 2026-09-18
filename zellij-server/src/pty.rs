@@ -1,5 +1,3 @@
-// Clippy allows kept as debt — see REVIEW_CHECKLIST.md.
-#![allow(clippy::type_complexity)]
 use crate::background_jobs::write_session_state_to_disk;
 use crate::background_jobs::BackgroundJob;
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
@@ -2072,19 +2070,9 @@ impl Pty {
             client_id,
             completion_tx,
         } = pending;
-        let mut new_pane_pids: Vec<(
-            TerminalId,
-            bool,
-            Option<RunCommand>,
-            Option<Result<Box<dyn AsyncReader>>>,
-        )> = vec![];
+        let mut new_pane_pids: Vec<SpawnedPane> = vec![];
 
-        let mut new_floating_panes_pids: Vec<(
-            TerminalId,
-            bool,
-            Option<RunCommand>,
-            Option<Result<Box<dyn AsyncReader>>>,
-        )> = vec![];
+        let mut new_floating_panes_pids: Vec<SpawnedPane> = vec![];
 
         let mut originating_plugins_to_inform = vec![];
         let mut deferred_spawns = vec![];
@@ -2149,12 +2137,7 @@ impl Pty {
         }
 
         // Option<RunCommand> should only be Some if the pane starts held
-        let spawned_ids = |pids: &Vec<(
-            TerminalId,
-            bool,
-            Option<RunCommand>,
-            Option<Result<Box<dyn AsyncReader>>>,
-        )>| {
+        let spawned_ids = |pids: &Vec<SpawnedPane>| {
             pids.iter()
                 .map(|(terminal_id, starts_held, run_command, _)| {
                     if *starts_held {
@@ -2442,19 +2425,9 @@ impl Pty {
             .iter()
             .filter(|f| !f.already_running)
             .map(|f| f.run.clone());
-        let mut new_pane_pids: Vec<(
-            TerminalId,
-            bool,
-            Option<RunCommand>,
-            Option<Result<Box<dyn AsyncReader>>>,
-        )> = vec![];
+        let mut new_pane_pids: Vec<SpawnedPane> = vec![];
 
-        let mut new_floating_panes_pids: Vec<(
-            TerminalId,
-            bool,
-            Option<RunCommand>,
-            Option<Result<Box<dyn AsyncReader>>>,
-        )> = vec![];
+        let mut new_floating_panes_pids: Vec<SpawnedPane> = vec![];
 
         let mut originating_plugins_to_inform = vec![];
         let mut deferred_spawns = vec![];
@@ -2639,18 +2612,7 @@ impl Pty {
         run_instruction: Option<Run>,
         default_shell: TerminalAction,
         deferred_spawns: &mut Vec<PendingRemoteSpawn>,
-    ) -> Result<
-        Option<(
-            TerminalId,
-            bool,
-            Option<RunCommand>,
-            Option<Result<Box<dyn AsyncReader>>>,
-        )>,
-    > {
-        // terminal_id,
-        // starts_held,
-        // command
-        // successfully opened
+    ) -> Result<Option<SpawnedPane>> {
         let err_context = || "failed to apply run instruction".to_string();
         let quit_cb = Box::new({
             let senders = self.bus.senders.clone();

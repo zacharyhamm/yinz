@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else)]
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::kitty_graphics::{
     InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore,
@@ -430,11 +429,8 @@ impl Pane for TerminalPane {
                     b"2" => Some('2'),
                     _ => None,
                 });
-            if is_up {
-                self.guest_modal.insert(client_id, (selection + 1) % 2);
-                self.set_should_render(true);
-                Some(AdjustedInput::GuestModalSelectionChanged)
-            } else if is_down {
+            // up or down: the modal has two entries, so either key flips the selection
+            if is_up || is_down {
                 self.guest_modal.insert(client_id, (selection + 1) % 2);
                 self.set_should_render(true);
                 Some(AdjustedInput::GuestModalSelectionChanged)

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::pane_resizer::PaneResizer;
 use crate::panes::PaneId;
 use crate::tab::Pane;

@@ -274,11 +274,15 @@ fn route_arbitrary_action_to_server(
 /// Everything the screen wrote to each terminal's stdin, keyed by terminal id.
 type TtyStdinBytes = Arc<Mutex<BTreeMap<TerminalId, Vec<u8>>>>;
 type ServerReceiver = Receiver<(ServerInstruction, ErrorContext)>;
+type PluginReceiver = Receiver<(PluginInstruction, ErrorContext)>;
+/// Every message the fake os api sent to each client, shared with the `FakeInputOutput` that
+/// records them.
+type CapturedClientMessages = Arc<Mutex<HashMap<ClientId, Vec<ServerToClientMsg>>>>;
 
 #[derive(Clone, Default)]
 struct FakeInputOutput {
     fake_filesystem: Arc<Mutex<HashMap<String, String>>>,
-    server_to_client_messages: Arc<Mutex<HashMap<ClientId, Vec<ServerToClientMsg>>>>,
+    server_to_client_messages: CapturedClientMessages,
     tty_stdin_bytes: TtyStdinBytes,
 }
 
@@ -1071,12 +1075,7 @@ fn create_fixed_size_screen() -> Screen {
     )
 }
 
-fn create_new_screen_with_message_capture(
-    size: Size,
-) -> (
-    Screen,
-    Arc<Mutex<HashMap<ClientId, Vec<ServerToClientMsg>>>>,
-) {
+fn create_new_screen_with_message_capture(size: Size) -> (Screen, CapturedClientMessages) {
     let mut bus: Bus<ScreenInstruction> = Bus::empty();
     let fake_os_input = FakeInputOutput::default();
     let messages = fake_os_input.server_to_client_messages.clone();

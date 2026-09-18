@@ -1,4 +1,3 @@
-#![allow(clippy::same_item_push)]
 use crate::output::CharacterChunk;
 use crate::panes::{
     AnsiCode, CharacterStyles, RcCharacterStyles, TerminalCharacter, EMPTY_TERMINAL_CHARACTER,
@@ -16,6 +15,7 @@ use zellij_types::position::Position;
 use zellij_types::style::Style;
 use {zellij_types::data::client_id_to_colors, zellij_types::data::PaletteColor};
 
+use std::iter::repeat_n;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 fn styled_characters(
@@ -924,9 +924,10 @@ impl PaneFrame {
             .unwrap_or((vec![], 0));
         let mut line = Vec::with_capacity(usable_cols);
         line.append(&mut focus_part);
-        for _ in focus_length..left_budget {
-            line.push(EMPTY_TERMINAL_CHARACTER);
-        }
+        line.extend(repeat_n(
+            EMPTY_TERMINAL_CHARACTER,
+            left_budget.saturating_sub(focus_length),
+        ));
         let unfocused_color = self.style.colors.frame_unselected.map(|frame| frame.base);
         let style_entry_text = |text: &str| {
             if entry.is_selected || entry.is_emphasized {
@@ -940,22 +941,14 @@ impl PaneFrame {
         if entry.is_selected {
             line.append(&mut foreground_color(selection_marker, None));
         } else {
-            for _ in 0..marker_width {
-                line.push(EMPTY_TERMINAL_CHARACTER);
-            }
+            line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, marker_width));
         }
         line.append(&mut foreground_color(boundary_type::VERTICAL, None));
-        for _ in 0..corner_padding {
-            line.push(EMPTY_TERMINAL_CHARACTER);
-        }
+        line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, corner_padding));
         line.append(&mut style_entry_text(&content));
         let content_padding = inner_width.saturating_sub(content.width());
-        for _ in 0..content_padding {
-            line.push(EMPTY_TERMINAL_CHARACTER);
-        }
-        for _ in 0..corner_padding {
-            line.push(EMPTY_TERMINAL_CHARACTER);
-        }
+        line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, content_padding));
+        line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, corner_padding));
         line.append(&mut foreground_color(boundary_type::VERTICAL, None));
         let mut occupied_columns = entry_start + full_width_entry_length;
         let (mut scroll_part, scroll_length) = self

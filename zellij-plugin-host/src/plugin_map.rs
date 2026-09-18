@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 use crate::deno::DenoPlugin;
 use crate::plugin_limits::PluginResourceLimits;
 use crate::plugin_worker::MessageToWorker;
@@ -92,6 +91,18 @@ pub type PluginAssets = (
     Arc<Mutex<RunningPlugin>>,
     Arc<Mutex<Subscriptions>>,
     HashMap<String, UnboundedSender<MessageToWorker>>,
+);
+
+/// A running plugin instance and the events it subscribes to, each behind its own lock so
+/// that updating one instance never blocks rendering another.
+pub type RunningPluginAndSubscriptions = (Arc<Mutex<RunningPlugin>>, Arc<Mutex<Subscriptions>>);
+
+/// A `RunningPluginAndSubscriptions` together with the plugin and client it was loaded for.
+pub type RunningPluginEntry = (
+    PluginId,
+    ClientId,
+    Arc<Mutex<RunningPlugin>>,
+    Arc<Mutex<Subscriptions>>,
 );
 
 /// Configuration match used when looking up running plugins to reload.
@@ -201,14 +212,7 @@ impl PluginMap {
             })
             .collect()
     }
-    pub fn running_plugins_and_subscriptions(
-        &mut self,
-    ) -> Vec<(
-        PluginId,
-        ClientId,
-        Arc<Mutex<RunningPlugin>>,
-        Arc<Mutex<Subscriptions>>,
-    )> {
+    pub fn running_plugins_and_subscriptions(&mut self) -> Vec<RunningPluginEntry> {
         self.plugin_assets
             .iter()
             .map(
@@ -227,7 +231,7 @@ impl PluginMap {
         &self,
         plugin_id: PluginId,
         client_id: ClientId,
-    ) -> Option<(Arc<Mutex<RunningPlugin>>, Arc<Mutex<Subscriptions>>)> {
+    ) -> Option<RunningPluginAndSubscriptions> {
         self.plugin_assets
             .get(&(plugin_id, client_id))
             .map(|(running_plugin, subscriptions, _)| {

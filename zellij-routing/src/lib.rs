@@ -1,5 +1,3 @@
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::borrowed_box)]
 //! Synchronous action dispatch over the thread bus, shared by the server and plugin host.
 use std::collections::{BTreeMap, HashSet};
 use tokio::sync::oneshot;
@@ -136,8 +134,8 @@ fn new_pane_routing(
         } else {
             ClientTabIndexOrPaneId::TabIndex(tab_id)
         }
-    } else if (no_focus || near_current_pane) && pane_id.is_some() {
-        ClientTabIndexOrPaneId::PaneId(pane_id.unwrap())
+    } else if let Some(pane_id) = pane_id.filter(|_| no_focus || near_current_pane) {
+        ClientTabIndexOrPaneId::PaneId(pane_id)
     } else if no_focus {
         ClientTabIndexOrPaneId::ClientIdNoFocus(client_id)
     } else {
@@ -903,8 +901,7 @@ pub fn route_action(
                         ClientTabIndexOrPaneId::TabIndex(tab_id)
                     },
                 )
-            } else if (no_focus || near_current_pane) && pane_id.is_some() {
-                let pane_id = pane_id.unwrap();
+            } else if let Some(pane_id) = pane_id.filter(|_| no_focus || near_current_pane) {
                 (
                     NewPanePlacement::Stacked {
                         pane_id_to_stack_under: Some(pane_id),
@@ -1250,9 +1247,9 @@ pub fn route_action(
                 zellij_bus::warp::WARP_TIMEOUT,
             ) {
                 Ok(message) => {
-                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
+                    send_output_to_client(cli_client_id, os_input.as_deref(), vec![message])
                 },
-                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_deref(), &message),
             }
         },
         Action::AdoptPane { payload, placement } => {
@@ -1265,9 +1262,9 @@ pub fn route_action(
                 zellij_bus::warp::WARP_TIMEOUT,
             ) {
                 Ok(message) => {
-                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
+                    send_output_to_client(cli_client_id, os_input.as_deref(), vec![message])
                 },
-                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_deref(), &message),
             }
         },
         Action::WarpTab { tab_id, to_session } => {
@@ -1281,9 +1278,9 @@ pub fn route_action(
                 zellij_bus::warp::WARP_TIMEOUT,
             ) {
                 Ok(message) => {
-                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
+                    send_output_to_client(cli_client_id, os_input.as_deref(), vec![message])
                 },
-                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_deref(), &message),
             }
         },
         Action::AdoptTab { payload } => {
@@ -1295,9 +1292,9 @@ pub fn route_action(
                 zellij_bus::warp::WARP_TIMEOUT,
             ) {
                 Ok(message) => {
-                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
+                    send_output_to_client(cli_client_id, os_input.as_deref(), vec![message])
                 },
-                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_deref(), &message),
             }
         },
         Action::WarpTabFrom {
@@ -1315,9 +1312,9 @@ pub fn route_action(
                 zellij_bus::warp::WARP_PULL_TIMEOUT,
             ) {
                 Ok(message) => {
-                    send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
+                    send_output_to_client(cli_client_id, os_input.as_deref(), vec![message])
                 },
-                Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
+                Err(message) => send_error_to_client(cli_client_id, os_input.as_deref(), &message),
             }
         },
         Action::SwitchSession {
@@ -1909,9 +1906,9 @@ pub fn route_action(
                     )
                 };
 
-                send_output_to_client(cli_client_id, os_input.as_ref(), output_lines);
+                send_output_to_client(cli_client_id, os_input.as_deref(), output_lines);
             } else {
-                send_error_to_client(cli_client_id, os_input.as_ref(), "Timeout listing panes");
+                send_error_to_client(cli_client_id, os_input.as_deref(), "Timeout listing panes");
             }
             drop(NotificationEnd::new(completion_tx));
         },
@@ -1939,9 +1936,9 @@ pub fn route_action(
                     )
                 };
 
-                send_output_to_client(cli_client_id, os_input.as_ref(), output_lines);
+                send_output_to_client(cli_client_id, os_input.as_deref(), output_lines);
             } else {
-                send_error_to_client(cli_client_id, os_input.as_ref(), "Timeout listing tabs");
+                send_error_to_client(cli_client_id, os_input.as_deref(), "Timeout listing tabs");
             }
             drop(NotificationEnd::new(completion_tx));
         },
@@ -1956,12 +1953,12 @@ pub fn route_action(
                     } else {
                         format_current_tab_info_plain(&tab_info)
                     };
-                    send_output_to_client(cli_client_id, os_input.as_ref(), output_lines);
+                    send_output_to_client(cli_client_id, os_input.as_deref(), output_lines);
                 },
                 None => {
                     send_error_to_client(
                         cli_client_id,
-                        os_input.as_ref(),
+                        os_input.as_deref(),
                         "No active tab found for current client",
                     );
                 },
@@ -2774,7 +2771,7 @@ fn format_current_tab_info_plain(tab_info: &TabInfo) -> Vec<String> {
 
 fn send_error_to_client(
     cli_client_id: Option<ClientId>,
-    os_input: Option<&Box<dyn ServerOsApi>>,
+    os_input: Option<&dyn ServerOsApi>,
     error_message: &str,
 ) {
     if let Some(cli_client_id) = cli_client_id {
@@ -2791,7 +2788,7 @@ fn send_error_to_client(
 
 fn send_output_to_client(
     cli_client_id: Option<ClientId>,
-    os_input: Option<&Box<dyn ServerOsApi>>,
+    os_input: Option<&dyn ServerOsApi>,
     output_lines: Vec<String>,
 ) {
     if let Some(cli_client_id) = cli_client_id {

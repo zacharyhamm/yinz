@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 use crate::tab::Pane;
 
 use crate::{os_input_output::ServerOsApi, panes::PaneId, ClientId};

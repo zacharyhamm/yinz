@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else)]
 pub mod floating_pane_grid;
 use zellij_types::data::PaneInfo;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy};
@@ -1459,10 +1458,8 @@ impl FloatingPanes {
         }
         let pane_frame_style = self.pane_frame_style;
         if let Some(pane) = self.panes.get_mut(&pane_id) {
-            if covers_ui {
-                pane.set_frame(false);
-                pane.set_content_offset(Offset::default());
-            } else if pane.borderless() {
+            // a pane covering the UI, or a borderless pane: no frame either way
+            if covers_ui || pane.borderless() {
                 pane.set_frame(false);
                 pane.set_content_offset(Offset::default());
             } else if pane_frame_style.draws_full_frames() {

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::pane_resizer_test_mock::{
     dim_fixed, dim_pct, run_layout, spec, spec_stacked, with_override, Outcome, PaneSnapshot,
     PaneSpec, Run,
@@ -578,6 +576,12 @@ fn assert_no_mutation(run: &Run, input: &[PaneSpec], name: &str) {
 }
 
 fn assert_class_b_invariants(fixture: &Fixture, run: &Run) {
+    assert_eq!(
+        fixture.class,
+        Class::B,
+        "{}: only class-B fixtures are held to the class-B invariants",
+        fixture.name
+    );
     let axis = fixture.axis();
     assert_result_is_benign(run, fixture.name);
     assert_constraints_preserved(run, &fixture.specs, axis, fixture.name);

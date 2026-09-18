@@ -14,6 +14,23 @@ use zellij_types::input::layout::Layout;
 use zellij_types::pane_size::PaneGeom;
 use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
 
+/// A pane taken out of its tab on the way to another: where it sat, the pane itself, and the
+/// respawn it had pending, carried along so the move loses nothing.
+type ExtractedPane = (
+    ExtractedPanePlacement,
+    Box<dyn Pane>,
+    Option<(RunCommand, bool)>,
+);
+
+/// An `ExtractedPane` that remembers the tab it came from, so a destination that refuses it
+/// can hand it back.
+type ExtractedPaneWithSource = (
+    TabId,
+    ExtractedPanePlacement,
+    Box<dyn Pane>,
+    Option<(RunCommand, bool)>,
+);
+
 impl Screen {
     pub fn break_pane(
         &mut self,
@@ -123,11 +140,7 @@ impl Screen {
         let err_context = || "failed break multiple panes to a new tab".to_string();
 
         let all_tabs = self.get_tabs_mut();
-        let mut extracted_panes: Vec<(
-            ExtractedPanePlacement,
-            Box<dyn Pane>,
-            Option<(RunCommand, bool)>,
-        )> = vec![];
+        let mut extracted_panes: Vec<ExtractedPane> = vec![];
         for pane_id in pane_ids {
             for tab in all_tabs.values_mut() {
                 if !tab.has_pane_with_pid(&pane_id) {
@@ -404,12 +417,7 @@ impl Screen {
 
         // remember where each pane came from, so that a destination that refuses it can
         // be recovered from rather than losing the pane
-        let mut extracted: Vec<(
-            TabId,
-            ExtractedPanePlacement,
-            Box<dyn Pane>,
-            Option<(RunCommand, bool)>,
-        )> = Vec::with_capacity(to_extract.len());
+        let mut extracted: Vec<ExtractedPaneWithSource> = Vec::with_capacity(to_extract.len());
         {
             let all_tabs = self.get_tabs_mut();
             'panes: for pane_id in to_extract {
@@ -439,12 +447,7 @@ impl Screen {
             }
         }
 
-        let mut refused: Vec<(
-            TabId,
-            ExtractedPanePlacement,
-            Box<dyn Pane>,
-            Option<(RunCommand, bool)>,
-        )> = vec![];
+        let mut refused: Vec<ExtractedPaneWithSource> = vec![];
         match self.get_tab_by_id_mut(tab_id) {
             Some(destination) => {
                 for (source_tab_id, placement, pane, carried_respawn) in extracted {

@@ -296,11 +296,14 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     tab
 }
 
+/// A base tiled layout and the terminal ids (with their commands) it is applied with.
+type BaseLayoutAndIds = (TiledPaneLayout, Vec<(TerminalId, Option<RunCommand>)>);
+
 fn create_new_tab_with_stacked_pane_list(
     size: Size,
     default_mode: ModeInfo,
     stacked_pane_list: bool,
-    base_layout_and_ids: Option<(TiledPaneLayout, Vec<(TerminalId, Option<RunCommand>)>)>,
+    base_layout_and_ids: Option<BaseLayoutAndIds>,
 ) -> Tab {
     set_session_name("test".into());
     let index = 0;
@@ -478,17 +481,21 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     tab
 }
 
+/// A base tiled and floating layout, the tiled and floating terminal ids (with their commands)
+/// and the plugin ids they are applied with.
+type BaseLayoutsAndIds = (
+    TiledPaneLayout,
+    Vec<FloatingPaneLayout>,
+    Vec<(TerminalId, Option<RunCommand>)>,
+    Vec<(TerminalId, Option<RunCommand>)>,
+    HashMap<RunPluginOrAlias, Vec<zellij_types::internal_ids::PluginId>>,
+);
+
 fn create_new_tab_with_swap_layouts(
     size: Size,
     default_mode: ModeInfo,
     swap_layouts: (Vec<SwapTiledLayout>, Vec<SwapFloatingLayout>),
-    base_layout_and_ids: Option<(
-        TiledPaneLayout,
-        Vec<FloatingPaneLayout>,
-        Vec<(TerminalId, Option<RunCommand>)>,
-        Vec<(TerminalId, Option<RunCommand>)>,
-        HashMap<RunPluginOrAlias, Vec<zellij_types::internal_ids::PluginId>>,
-    )>,
+    base_layout_and_ids: Option<BaseLayoutsAndIds>,
     draw_pane_frames: bool,
     stacked_resize: bool,
 ) -> Tab {
@@ -594,16 +601,12 @@ fn create_new_tab_with_swap_layouts(
     tab
 }
 
-fn create_new_tab_with_os_api(
-    size: Size,
-    default_mode: ModeInfo,
-    os_api: &Box<FakeInputOutput>,
-) -> Tab {
+fn create_new_tab_with_os_api(size: Size, default_mode: ModeInfo, os_api: &FakeInputOutput) -> Tab {
     set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
-    let os_api = os_api.clone();
+    let os_api = Box::new(os_api.clone());
     let senders = ThreadSenders::default().silently_fail_on_send();
     let max_panes = None;
     let mode_info = default_mode;

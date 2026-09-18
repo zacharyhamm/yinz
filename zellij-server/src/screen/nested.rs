@@ -750,10 +750,13 @@ impl Screen {
             let currently_fullscreen =
                 matches!(tab.tiled_or_floating_fullscreen(), Some((id, true)) if id == pane_id);
             if fullscreen && !currently_fullscreen {
-                let existing_fullscreen = tab.tiled_or_floating_fullscreen().map(|(id, _)| id);
-                if existing_fullscreen.is_some() && existing_fullscreen != Some(pane_id) {
-                    displaced_pane_id = existing_fullscreen;
-                    tab.toggle_pane_no_ui_fullscreen(existing_fullscreen.unwrap());
+                if let Some(existing_fullscreen) =
+                    tab.tiled_or_floating_fullscreen().map(|(id, _)| id)
+                {
+                    if existing_fullscreen != pane_id {
+                        displaced_pane_id = Some(existing_fullscreen);
+                        tab.toggle_pane_no_ui_fullscreen(existing_fullscreen);
+                    }
                 }
                 tab.toggle_pane_no_ui_fullscreen(pane_id);
             } else if !fullscreen && currently_fullscreen {
