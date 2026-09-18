@@ -225,41 +225,53 @@ fn spawn_server_error_message(e: io::Error) -> String {
     )
 }
 
-fn create_ipc_pipe(teardown: Option<ClientTeardown>) -> PathBuf {
-    let mut sock_dir = ZELLIJ_SOCK_DIR.clone();
-    if let Err(e) = std::fs::create_dir_all(&sock_dir) {
-        ClientTeardown::exit_after_startup_error(
-            teardown,
-            format!(
-                "Error: failed to create the Zellij socket directory:\n  {}\n\n\
-                 Reason: {}\n\n\
-                 This usually means the directory (or one of its parents) is owned by \
-                 another user or is not writable - for example if Zellij was previously \
-                 run with `sudo`, or if $XDG_RUNTIME_DIR points to a directory you do not \
-                 own.\nTo fix this, remove or correct the offending directory, or set a \
-                 writable socket directory, eg.:\n  ZELLIJ_SOCKET_DIR=/tmp/zellij-$USER zellij",
-                sock_dir.display(),
-                e
-            ),
-        );
+/// Create the socket directory and restrict it to its owner. The `Err` is the diagnostic to
+/// show the user: both failures mean the directory is owned by someone else or is not writable,
+/// and `ZELLIJ_SOCKET_DIR` is the way out.
+fn prepare_socket_dir(sock_dir: &Path) -> std::result::Result<(), String> {
+    if let Err(e) = std::fs::create_dir_all(sock_dir) {
+        return Err(format!(
+            "Error: failed to create the Zellij socket directory:\n  {}\n\n\
+             Reason: {}\n\n\
+             This usually means the directory (or one of its parents) is owned by \
+             another user or is not writable - for example if Zellij was previously \
+             run with `sudo`, or if $XDG_RUNTIME_DIR points to a directory you do not \
+             own.\nTo fix this, remove or correct the offending directory, or set a \
+             writable socket directory, eg.:\n  ZELLIJ_SOCKET_DIR=/tmp/zellij-$USER zellij",
+            sock_dir.display(),
+            e
+        ));
     }
-    if let Err(e) = set_permissions(&sock_dir, 0o700) {
-        ClientTeardown::exit_after_startup_error(
-            teardown,
-            format!(
-                "Error: failed to set permissions (0700) on the Zellij socket directory:\n  {}\n\n\
-                 Reason: {}\n\n\
-                 This usually means the directory is owned by another user.\n\
-                 To fix this, remove or correct the offending directory, or set a writable \
-                 socket directory, eg.:\n  ZELLIJ_SOCKET_DIR=/tmp/zellij-$USER zellij",
-                sock_dir.display(),
-                e
-            ),
-        );
+    if let Err(e) = set_permissions(sock_dir, 0o700) {
+        return Err(format!(
+            "Error: failed to set permissions (0700) on the Zellij socket directory:\n  {}\n\n\
+             Reason: {}\n\n\
+             This usually means the directory is owned by another user.\n\
+             To fix this, remove or correct the offending directory, or set a writable \
+             socket directory, eg.:\n  ZELLIJ_SOCKET_DIR=/tmp/zellij-$USER zellij",
+            sock_dir.display(),
+            e
+        ));
     }
-    sock_dir.push(envs::get_session_name().unwrap());
-    check_ipc_pipe_length(&sock_dir, teardown);
-    sock_dir
+    Ok(())
+}
+
+/// The socket path for `session_name`, with the socket directory prepared first.
+///
+/// Exits with a startup diagnostic when the directory cannot be prepared or the path is too
+/// long: through `teardown` when the terminal has been claimed, on stderr otherwise. Every
+/// client that connects to a session by name goes through here, so a socket directory that
+/// cannot be used produces the same message from `zellij action` as from `zellij attach`.
+pub(crate) fn ipc_pipe_for_session(
+    session_name: &SessionName,
+    teardown: Option<ClientTeardown>,
+) -> PathBuf {
+    if let Err(message) = prepare_socket_dir(&ZELLIJ_SOCK_DIR) {
+        ClientTeardown::exit_after_startup_error(teardown, message);
+    }
+    let ipc_pipe = ZELLIJ_SOCK_DIR.join(session_name);
+    check_ipc_pipe_length(&ipc_pipe, teardown);
+    ipc_pipe
 }
 
 /// Restores output post-processing for as long as it is held, and clears it again on the way out.

@@ -2,9 +2,9 @@
 //! and dispatch actions, that are specified through the command line.
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 use std::process;
 use std::str::FromStr;
-use std::{fs, path::PathBuf};
 use zellij_types::internal_ids::SessionName;
 
 use crate::os_input_output::CliClientOs;
@@ -22,14 +22,7 @@ pub fn start_cli_client(
     session_name: &SessionName,
     actions: Vec<Action>,
 ) -> i32 {
-    let zellij_ipc_pipe: PathBuf = {
-        let mut sock_dir = zellij_runtime::consts::ZELLIJ_SOCK_DIR.clone();
-        fs::create_dir_all(&sock_dir).unwrap();
-        zellij_runtime::shared::set_permissions(&sock_dir, 0o700).unwrap();
-        sock_dir.push(session_name);
-        sock_dir
-    };
-    crate::check_ipc_pipe_length(&zellij_ipc_pipe, None);
+    let zellij_ipc_pipe = crate::ipc_pipe_for_session(session_name, None);
     if let Err(e) = os_input.connect_to_server(&zellij_ipc_pipe) {
         eprintln!("{e}");
         std::process::exit(1);
@@ -283,14 +276,7 @@ pub fn start_subscribe_client(
     session_name: &SessionName,
     subscribe_cli: SubscribeCli,
 ) {
-    let zellij_ipc_pipe: PathBuf = {
-        let mut sock_dir = zellij_runtime::consts::ZELLIJ_SOCK_DIR.clone();
-        fs::create_dir_all(&sock_dir).unwrap();
-        zellij_runtime::shared::set_permissions(&sock_dir, 0o700).unwrap();
-        sock_dir.push(session_name);
-        sock_dir
-    };
-    crate::check_ipc_pipe_length(&zellij_ipc_pipe, None);
+    let zellij_ipc_pipe = crate::ipc_pipe_for_session(session_name, None);
     if let Err(e) = os_input.connect_to_server(&zellij_ipc_pipe) {
         eprintln!("{e}");
         std::process::exit(1);
@@ -395,14 +381,7 @@ pub fn start_events_client(
     session_name: &SessionName,
     events_cli: EventsCli,
 ) {
-    let zellij_ipc_pipe: PathBuf = {
-        let mut sock_dir = zellij_runtime::consts::ZELLIJ_SOCK_DIR.clone();
-        fs::create_dir_all(&sock_dir).unwrap();
-        zellij_runtime::shared::set_permissions(&sock_dir, 0o700).unwrap();
-        sock_dir.push(session_name);
-        sock_dir
-    };
-    crate::check_ipc_pipe_length(&zellij_ipc_pipe, None);
+    let zellij_ipc_pipe = crate::ipc_pipe_for_session(session_name, None);
 
     // Refused here, before connecting, so a typo costs nothing but the message.
     let event_types: Vec<String> = events_cli
