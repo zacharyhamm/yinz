@@ -1,6 +1,7 @@
 //! Read-only issue browsing through the host's authenticated Swamp CLI.
 use super::*;
 use serde::Deserialize;
+use zellij_tile::ui_components::forms::{Combo, Form, FormEvent, Rect, RenderBuffer, Select};
 
 const REFRESH_MS: i64 = 60_000;
 const REQUEST_ID: &str = "swamp_issue_request";
@@ -62,6 +63,12 @@ struct Request {
     target: Target,
 }
 
+struct FilterEditor {
+    shortcut: char,
+    form: Form,
+    row: Option<Rect>,
+}
+
 #[derive(Default)]
 pub(super) struct View {
     // The surface starts available; a PaneUpdate must confirm the pane is shown.
@@ -73,7 +80,8 @@ pub(super) struct View {
     status: usize,
     kind: usize,
     source: String,
-    editing_source: bool,
+    filter: Option<FilterEditor>,
+    source_tags: Vec<String>,
     filter_cells: Vec<(usize, usize, usize, char)>, // row, column, width, shortcut
     search: Option<Search>,
     selected: usize,
@@ -103,15 +111,72 @@ pub(super) struct View {
 }
 
 impl View {
+    fn layout_filters(&mut self, rows: usize, cols: usize) -> (usize, Vec<String>) {
+        let mut top = 1 + usize::from(self.note().is_some() && rows > 1);
+        let mut labels = Vec::new();
+        self.filter_cells.clear();
+        if self.opened.is_none() {
+            let mut x = 0;
+            for (label, value, shortcut) in [
+                ("Status", status_label(STATUSES[self.status]), 's'),
+                (
+                    "Type",
+                    if self.kind == 0 {
+                        "All"
+                    } else {
+                        TYPES[self.kind]
+                    },
+                    't',
+                ),
+                (
+                    "Source",
+                    if self.source.is_empty() {
+                        "All"
+                    } else {
+                        &self.source
+                    },
+                    'f',
+                ),
+            ] {
+                let text = fit(&format!("[{label}: {value} ({shortcut})]"), cols);
+                let width = text.width();
+                if x > 0 && x + width > cols {
+                    top += 1;
+                    x = 0;
+                }
+                if top >= rows {
+                    break;
+                }
+                labels.push(text);
+                self.filter_cells.push((top, x, width, shortcut));
+                x += width + 1;
+            }
+            top = (top + 1).min(rows);
+        }
+        (top, labels)
+    }
+
     fn visible(&self) -> bool {
         !self.surface_hidden && self.pane_visible
     }
 
     pub(super) fn is_editing(&self) -> bool {
-        self.editing.is_some()
+        self.editing.is_some() || self.filter.is_some()
+    }
+
+    pub(super) fn cancel_filter(&mut self) {
+        self.filter = None;
+    }
+
+    pub(super) fn has_filter_editor(&self) -> bool {
+        self.filter.is_some()
     }
 
     pub(super) fn clear_dimensions(&mut self) {
+        if let Some(editor) = &mut self.filter {
+            editor.row = None;
+            editor.form.render_buffer_in_viewport(0, 0, 0, 0);
+        }
         self.filter_cells.clear();
         self.last_body_rows = 0;
         self.last_body_top = 0;
@@ -153,8 +218,7 @@ impl View {
 
     fn header(&self) -> String {
         if let Some(query) = &self.editing {
-            let prefix = if self.editing_source { "Source: " } else { "/" };
-            return format!("{prefix}{query} · Enter apply · Esc cancel");
+            return format!("/{query} · Enter apply · Esc cancel");
         }
         if let Some(number) = self.opened {
             return format!("#{number} · Esc back · r refresh");
@@ -200,6 +264,9 @@ impl State {
 
     fn swamp_visibility_changed(&mut self, was_visible: bool) -> bool {
         let visible = self.swamp.visible();
+        if !visible {
+            self.swamp.cancel_filter();
+        }
         if was_visible == visible {
             return false;
         }
@@ -399,29 +466,39 @@ impl State {
     }
 
     pub(super) fn swamp_key(&mut self, key: KeyWithModifier) -> bool {
+        if let Some(editor) = &mut self.swamp.filter {
+            if key.bare_key == BareKey::Esc || key.bare_key == BareKey::Tab {
+                self.swamp.cancel_filter();
+                return true;
+            }
+            let enter = key == KeyWithModifier::new(BareKey::Enter);
+            let event = editor.form.handle_key(key);
+            if event == FormEvent::Cancel {
+                self.swamp.cancel_filter();
+            } else if enter
+                && editor
+                    .form
+                    .select_by_id("value")
+                    .is_none_or(|select| !select.is_open())
+            {
+                self.commit_swamp_filter();
+            }
+            return true;
+        }
         if let Some(query) = self.swamp.editing.as_mut() {
             match key.bare_key {
                 BareKey::Esc => self.swamp.editing = None,
                 BareKey::Enter => {
-                    let (keyword, source) = if self.swamp.editing_source {
-                        (self.swamp.query.as_str(), query.trim())
-                    } else {
-                        (query.trim(), self.swamp.source.as_str())
-                    };
                     if let Err(error) = search_args(
-                        keyword,
+                        query.trim(),
                         STATUSES[self.swamp.status],
                         TYPES[self.swamp.kind],
-                        source,
+                        &self.swamp.source,
                     ) {
                         self.swamp.list_error = Some(error);
                         return true;
                     }
-                    if self.swamp.editing_source {
-                        self.swamp.source = query.trim().to_owned();
-                    } else {
-                        self.swamp.query = query.trim().to_owned();
-                    }
+                    self.swamp.query = query.trim().to_owned();
                     self.swamp.editing = None;
                     self.search_swamp();
                 },
@@ -466,20 +543,10 @@ impl State {
                 self.poll_swamp(now_ms(), true);
             },
             BareKey::Char('/') if self.swamp.opened.is_none() => {
-                self.swamp.editing_source = false;
                 self.swamp.editing = Some(self.swamp.query.clone());
             },
-            BareKey::Char('s') if self.swamp.opened.is_none() => {
-                self.swamp.status = (self.swamp.status + 1) % STATUSES.len();
-                self.search_swamp();
-            },
-            BareKey::Char('t') if self.swamp.opened.is_none() => {
-                self.swamp.kind = (self.swamp.kind + 1) % TYPES.len();
-                self.search_swamp();
-            },
-            BareKey::Char('f') if self.swamp.opened.is_none() => {
-                self.swamp.editing_source = true;
-                self.swamp.editing = Some(self.swamp.source.clone());
+            BareKey::Char(shortcut @ ('s' | 't' | 'f')) if self.swamp.opened.is_none() => {
+                self.open_swamp_filter(shortcut);
             },
             BareKey::Enter if self.swamp.opened.is_none() => self.open_swamp_issue(),
             BareKey::Up | BareKey::Char('k') => self.swamp_step(-1),
@@ -489,6 +556,111 @@ impl State {
             BareKey::Home => self.swamp_step(-isize::MAX),
             BareKey::End => self.swamp_step(isize::MAX),
             _ => return false,
+        }
+        true
+    }
+
+    fn open_swamp_filter(&mut self, shortcut: char) {
+        let mut form = match shortcut {
+            's' => Form::new().select(
+                "value",
+                "Status",
+                Select::new(STATUSES.map(status_label)).with_selected(self.swamp.status),
+            ),
+            't' => Form::new().select(
+                "value",
+                "Type",
+                Select::new(TYPES.map(|kind| if kind.is_empty() { "All" } else { kind }))
+                    .with_selected(self.swamp.kind),
+            ),
+            _ => Form::new().combo(
+                "value",
+                "Source",
+                Combo::new(
+                    std::iter::once("swamp")
+                        .chain(self.swamp.source_tags.iter().map(String::as_str)),
+                )
+                .with_text(&self.swamp.source),
+            ),
+        };
+        form.handle_key(KeyWithModifier::new(BareKey::Enter));
+        self.swamp.filter = Some(FilterEditor {
+            shortcut,
+            form,
+            row: None,
+        });
+    }
+
+    fn commit_swamp_filter(&mut self) {
+        let Some(editor) = &mut self.swamp.filter else {
+            return;
+        };
+        let changed = if let Some(select) = editor.form.select_by_id("value") {
+            let Some(index) = select.selected_index() else {
+                return;
+            };
+            let value = if editor.shortcut == 's' {
+                &mut self.swamp.status
+            } else {
+                &mut self.swamp.kind
+            };
+            let changed = *value != index;
+            *value = index;
+            changed
+        } else {
+            let source = editor.form.text("value").trim().to_owned();
+            if let Err(error) = search_args(
+                &self.swamp.query,
+                STATUSES[self.swamp.status],
+                TYPES[self.swamp.kind],
+                &source,
+            ) {
+                self.swamp.list_error = Some(error);
+                editor.form.handle_key(KeyWithModifier::new(BareKey::Enter));
+                return;
+            }
+            if !source.is_empty() && source != "swamp" && !self.swamp.source_tags.contains(&source)
+            {
+                self.swamp.source_tags.push(source.clone());
+            }
+            let changed = self.swamp.source != source;
+            self.swamp.source = source;
+            changed
+        };
+        self.swamp.cancel_filter();
+        if changed {
+            self.search_swamp();
+        }
+    }
+
+    // Forms use pane coordinates, including the surface-tab row. Consume every
+    // event while editing so an overlay click cannot also open an issue below it.
+    pub(super) fn swamp_filter_mouse(&mut self, mouse: Mouse) -> bool {
+        let Some(editor) = &mut self.swamp.filter else {
+            return false;
+        };
+        let overlay = editor.form.overlay_rect();
+        if let Mouse::LeftClick(line, column) = mouse {
+            if line < 0
+                || !editor
+                    .row
+                    .into_iter()
+                    .chain(overlay)
+                    .any(|rect| rect.contains(column, line as usize))
+            {
+                self.swamp.cancel_filter();
+                return true;
+            }
+        }
+        let event = editor.form.handle_mouse(mouse);
+        if let Mouse::Release(line, column) = mouse {
+            if line >= 0
+                && overlay.is_some_and(|rect| rect.contains(column, line as usize))
+                && event != FormEvent::Ignored
+                && editor.form.overlay_rect().is_none()
+            {
+                self.commit_swamp_filter();
+            }
         }
         true
     }
@@ -589,57 +761,46 @@ impl State {
         }
     }
 
+    pub(super) fn swamp_filter_buffer(&mut self, rows: usize, cols: usize) -> Option<RenderBuffer> {
+        if rows == 0 || cols == 0 || self.swamp.filter.is_none() {
+            return None;
+        }
+        self.swamp.layout_filters(rows, cols);
+        if let Some(editor) = &mut self.swamp.filter {
+            let (row, x) = self
+                .swamp
+                .filter_cells
+                .iter()
+                .find(|(_, _, _, shortcut)| *shortcut == editor.shortcut)
+                .map_or((rows - 1, 0), |(row, x, _, _)| (*row, *x));
+            let width = cols.min(32);
+            let x = x.min(cols - width);
+            let y = row + 1;
+            editor.row = Some(Rect::new(x, y, width, 1));
+            return Some(
+                editor
+                    .form
+                    .render_buffer_with_overlay(x, y, width, 1, rows + 1),
+            );
+        }
+        None
+    }
+
     pub(super) fn render_swamp(&mut self, rows: usize, cols: usize) {
         if rows == 0 || cols == 0 {
             self.swamp.clear_dimensions();
             return;
         }
         let note = self.swamp.note();
-        let mut top = 1 + usize::from(note.is_some() && rows > 1);
-        self.swamp.filter_cells.clear();
-        if self.swamp.opened.is_none() {
-            let mut x = 0;
-            for (label, value, shortcut) in [
-                ("Status", status_label(STATUSES[self.swamp.status]), 's'),
-                (
-                    "Type",
-                    if self.swamp.kind == 0 {
-                        "All"
-                    } else {
-                        TYPES[self.swamp.kind]
-                    },
-                    't',
-                ),
-                (
-                    "Source",
-                    if self.swamp.source.is_empty() {
-                        "All"
-                    } else {
-                        &self.swamp.source
-                    },
-                    'f',
-                ),
-            ] {
-                let text = fit(&format!("[{label}: {value} ({shortcut})]"), cols);
-                let width = text.width();
-                if x > 0 && x + width > cols {
-                    top += 1;
-                    x = 0;
-                }
-                if top >= rows {
-                    break;
-                }
-                paint(
-                    Text::new(text).color_range(2, ..),
-                    x,
-                    top,
-                    Some(width),
-                    None,
-                );
-                self.swamp.filter_cells.push((top, x, width, shortcut));
-                x += width + 1;
-            }
-            top = (top + 1).min(rows);
+        let (top, labels) = self.swamp.layout_filters(rows, cols);
+        for ((row, x, width, _), text) in self.swamp.filter_cells.iter().zip(labels) {
+            paint(
+                Text::new(text).color_range(2, ..),
+                *x,
+                *row,
+                Some(*width),
+                None,
+            );
         }
         let room = rows.saturating_sub(top);
         self.swamp.last_body_top = top;
@@ -1024,23 +1185,32 @@ mod tests {
         assert!(detail.assignees.is_empty() && detail.comments.is_empty());
     }
 
+    fn type_text(state: &mut State, text: &str) {
+        for ch in text.chars() {
+            key(state, BareKey::Char(ch));
+        }
+    }
+
+    fn choose(state: &mut State, shortcut: char, text: &str) {
+        key(state, BareKey::Char(shortcut));
+        type_text(state, text);
+        key(state, BareKey::Enter);
+    }
+
+    fn clear_source(state: &mut State) {
+        key(state, BareKey::Home);
+        state.on_key(KeyWithModifier::new(BareKey::Char('k')).with_ctrl_modifier());
+    }
+
     #[test]
     fn filters_combine_coalesce_and_source_edits_apply_cancel_clear() {
         let mut state = loaded();
-        key(&mut state, BareKey::Char('s'));
+        choose(&mut state, 's', "open");
         let stale = context(&state);
-        key(&mut state, BareKey::Char('t'));
-        key(&mut state, BareKey::Char('f'));
-        for ch in "  cli tag  ".chars() {
-            key(&mut state, BareKey::Char(ch));
-        }
-        key(&mut state, BareKey::Enter);
+        choose(&mut state, 't', "bug");
+        choose(&mut state, 'f', "  cli tag  ");
         assert_eq!(state.swamp.source, "cli tag");
-        key(&mut state, BareKey::Char('/'));
-        for ch in "two words".chars() {
-            key(&mut state, BareKey::Char(ch));
-        }
-        key(&mut state, BareKey::Enter);
+        choose(&mut state, '/', "two words");
         assert_eq!(state.swamp.commands.len(), 2);
         state.swamp_result(Some(0), br#"{"issues":[],"total":0}"#, &[], &stale);
         assert_eq!(state.swamp.issues().len(), 2, "superseded result discarded");
@@ -1059,7 +1229,7 @@ mod tests {
                 "bug",
                 "--source",
                 "cli tag",
-                "two words",
+                "two words"
             ]
         );
         reply(&mut state, SEARCH);
@@ -1068,23 +1238,25 @@ mod tests {
         key(&mut state, BareKey::Esc);
         assert_eq!(state.swamp.source, "cli tag");
         key(&mut state, BareKey::Char('f'));
-        state.swamp.editing = Some("--help".into());
+        clear_source(&mut state);
+        type_text(&mut state, "--help");
         let count = state.swamp.commands.len();
         key(&mut state, BareKey::Enter);
         assert!(state.swamp.is_editing());
         assert_eq!(state.swamp.commands.len(), count);
         assert_eq!(state.swamp.source, "cli tag");
-        assert!(search_args("", "", "", "--help").is_err());
-        state.swamp.editing = Some("   ".into());
+        assert!(state
+            .swamp
+            .list_error
+            .as_ref()
+            .unwrap()
+            .contains("Source must"));
+        clear_source(&mut state);
         key(&mut state, BareKey::Enter);
         assert!(state.swamp.source.is_empty());
         assert!(!state.swamp.is_editing());
-        for _ in 1..STATUSES.len() {
-            key(&mut state, BareKey::Char('s'));
-        }
-        for _ in 1..TYPES.len() {
-            key(&mut state, BareKey::Char('t'));
-        }
+        choose(&mut state, 's', "all");
+        choose(&mut state, 't', "all");
         assert_eq!((state.swamp.status, state.swamp.kind), (0, 0));
         reply(&mut state, SEARCH);
         assert_eq!(
@@ -1094,41 +1266,199 @@ mod tests {
     }
 
     #[test]
-    fn filter_chips_wrap_and_mouse_uses_rendered_positions() {
+    fn select_typeahead_is_provisional_and_unmatched_input_cannot_commit() {
         let mut state = loaded();
-        for cols in 1..80 {
-            state.render(12, cols);
-            assert_eq!(state.swamp.filter_cells.len(), 3);
-            for (row, x, width, _) in &state.swamp.filter_cells {
-                assert!(x + width <= cols);
-                assert!(*row < state.swamp.last_body_top);
-            }
-        }
-        state.render(12, 20);
-        let cells = state.swamp.filter_cells.clone();
-        assert!(cells.windows(2).all(|pair| pair[0].0 < pair[1].0));
-        for (row, x, _, _) in cells {
-            assert!(state.on_mouse(Mouse::LeftClick(row as isize + 1, x)));
-        }
-        assert_eq!((state.swamp.status, state.swamp.kind), (1, 1));
-        assert!(state.swamp.editing_source && state.swamp.is_editing());
+        let count = state.swamp.commands.len();
+        key(&mut state, BareKey::Char('s'));
+        type_text(&mut state, "iprg");
+        assert_eq!(state.swamp.status, 0);
+        assert_eq!(state.swamp.commands.len(), count);
+        key(&mut state, BareKey::Enter);
+        assert_eq!(STATUSES[state.swamp.status], "in_progress");
+        assert!(!state.swamp.is_editing());
+        reply(&mut state, SEARCH);
+        let count = state.swamp.commands.len();
+        choose(&mut state, 's', "iprg");
+        assert_eq!(
+            state.swamp.commands.len(),
+            count,
+            "unchanged commit does not search"
+        );
+        key(&mut state, BareKey::Char('t'));
+        type_text(&mut state, "zzzz");
+        key(&mut state, BareKey::Enter);
+        assert!(state.swamp.is_editing());
+        assert_eq!(state.swamp.kind, 0);
+        assert_eq!(state.swamp.commands.len(), count);
         key(&mut state, BareKey::Esc);
+        key(&mut state, BareKey::Char('t'));
+        key(&mut state, BareKey::Down);
+        key(&mut state, BareKey::Esc);
+        assert_eq!(state.swamp.kind, 0);
+        assert_eq!(state.swamp.commands.len(), count);
+        key(&mut state, BareKey::Char('t'));
+        key(&mut state, BareKey::Down);
+        key(&mut state, BareKey::Enter);
+        assert_eq!(TYPES[state.swamp.kind], "bug");
+    }
+
+    #[test]
+    fn source_suggestions_remember_only_committed_unique_tags() {
+        let mut state = loaded();
+        choose(&mut state, 'f', "custom");
         reply(&mut state, SEARCH);
+        choose(&mut state, 'f', "");
+        assert_eq!(
+            state.swamp.commands.len(),
+            2,
+            "unchanged source does not search"
+        );
+        key(&mut state, BareKey::Char('f'));
+        clear_source(&mut state);
+        type_text(&mut state, "cancelled");
+        key(&mut state, BareKey::Esc);
+        key(&mut state, BareKey::Char('f'));
+        assert_eq!(
+            state
+                .swamp
+                .filter
+                .as_ref()
+                .unwrap()
+                .form
+                .combo_by_id("value")
+                .unwrap()
+                .suggestions(),
+            ["swamp", "custom"]
+        );
+        clear_source(&mut state);
+        key(&mut state, BareKey::Down);
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.source, "swamp");
+        assert_eq!(state.swamp.source_tags, ["custom"]);
         reply(&mut state, SEARCH);
+        key(&mut state, BareKey::Char('f'));
+        clear_source(&mut state);
+        type_text(&mut state, "cstm");
+        key(&mut state, BareKey::Down);
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.source, "custom");
+        assert_eq!(state.swamp.source_tags, ["custom"]);
+    }
+
+    #[test]
+    fn filter_mouse_selects_on_release_and_intercepts_issue_rows() {
+        for shortcut in ['s', 't', 'f'] {
+            let mut state = loaded();
+            let (row, x, _, _) = *state
+                .swamp
+                .filter_cells
+                .iter()
+                .find(|cell| cell.3 == shortcut)
+                .unwrap();
+            state.on_mouse(Mouse::LeftClick(row as isize + 1, x));
+            state.render(14, 80);
+            state.on_mouse(Mouse::Release(row as isize + 1, x));
+            assert!(state.swamp.is_editing(), "opening release must not commit");
+            let rect = state
+                .swamp
+                .filter
+                .as_ref()
+                .unwrap()
+                .form
+                .overlay_rect()
+                .unwrap();
+            let y = rect.y as isize + if shortcut == 'f' { 0 } else { 1 };
+            let count = state.swamp.commands.len();
+            state.on_mouse(Mouse::LeftClick(y, rect.x));
+            state.render(14, 80);
+            assert_eq!(state.swamp.commands.len(), count);
+            assert!(state.swamp.opened.is_none());
+            state.on_mouse(Mouse::Release(y + 1, rect.x));
+            assert!(
+                state.swamp.is_editing(),
+                "release off the pressed option cancels the click"
+            );
+            state.on_mouse(Mouse::LeftClick(y, rect.x));
+            state.on_mouse(Mouse::Release(y, rect.x));
+            assert!(!state.swamp.is_editing());
+            assert!(state.swamp.opened.is_none());
+            assert_eq!(state.swamp.commands.len(), count + 1);
+            match shortcut {
+                's' => assert_eq!(STATUSES[state.swamp.status], "open"),
+                't' => assert_eq!(TYPES[state.swamp.kind], "bug"),
+                _ => assert_eq!(state.swamp.source, "swamp"),
+            }
+            reply(&mut state, SEARCH);
+            key(&mut state, BareKey::Char(shortcut));
+            state.render(14, 80);
+            state.on_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize + 1, 79));
+            assert!(!state.swamp.is_editing());
+            assert!(state.swamp.opened.is_none());
+            assert_eq!(state.swamp.commands.len(), count + 1);
+        }
+    }
+
+    #[test]
+    fn filter_chips_and_active_forms_fit_resized_panes() {
+        let mut state = loaded();
+        for shortcut in ['s', 't', 'f'] {
+            key(&mut state, BareKey::Char(shortcut));
+            for cols in 1..80 {
+                for rows in [2, 4, 12] {
+                    state.render(rows, cols);
+                    for (row, x, width, _) in &state.swamp.filter_cells {
+                        assert!(x + width <= cols);
+                        assert!(*row < state.swamp.last_body_top);
+                    }
+                    let editor = state.swamp.filter.as_ref().unwrap();
+                    for rect in editor.row.into_iter().chain(editor.form.overlay_rect()) {
+                        assert!(rect.x + rect.columns <= cols);
+                        assert!(rect.y + rect.rows <= rows);
+                    }
+                }
+            }
+            state.render(1, 1);
+            let editor = state.swamp.filter.as_ref().unwrap();
+            assert!(editor.row.is_none() && editor.form.overlay_rect().is_none());
+            key(&mut state, BareKey::Esc);
+        }
         state.render(12, 20);
+        assert_eq!(state.swamp.filter_cells.len(), 3);
+        assert!(state
+            .swamp
+            .filter_cells
+            .windows(2)
+            .all(|pair| pair[0].0 < pair[1].0));
         assert!(state.on_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize + 1, 0)));
         assert_eq!(state.swamp.opened, Some(2254));
-        assert_eq!((state.swamp.status, state.swamp.kind), (1, 1));
-        state.render(12, 20);
-        assert!(state.swamp.filter_cells.is_empty());
-        key(&mut state, BareKey::Esc);
-        state.switch_surface(Surface::Agents);
-        state.switch_surface(Surface::Swamp);
-        assert_eq!((state.swamp.status, state.swamp.kind), (1, 1));
-        state.render_swamp(2, 80);
-        assert_eq!(state.swamp.last_body_rows, 0);
-        state.swamp.clear_dimensions();
-        assert!(state.swamp.filter_cells.is_empty());
+    }
+
+    #[test]
+    fn leaving_the_surface_cancels_filter_edits_and_keeps_committed_values() {
+        let mut state = loaded();
+        choose(&mut state, 't', "security");
+        reply(&mut state, SEARCH);
+        for leave in 0..4 {
+            key(&mut state, BareKey::Char('f'));
+            type_text(&mut state, "provisional");
+            match leave {
+                0 => state.switch_surface(Surface::Agents),
+                1 => {
+                    state.swamp_visibility(false);
+                },
+                2 => {
+                    state.update(pane_update(state.own_plugin_id, true));
+                },
+                _ => state.hide_the_panel(),
+            }
+            assert!(!state.swamp.is_editing());
+            assert!(state.swamp.source.is_empty());
+            assert_eq!(TYPES[state.swamp.kind], "security");
+            state.switch_surface(Surface::Swamp);
+            state.swamp_visibility(true);
+            state.update(pane_update(state.own_plugin_id, false));
+            reply(&mut state, SEARCH);
+        }
     }
 
     #[test]
@@ -1200,7 +1530,7 @@ mod tests {
         assert!(search_args("--help", "", "", "").is_err());
         let mut state = loaded();
         for status in STATUSES.iter().skip(1).chain([&STATUSES[0]]) {
-            key(&mut state, BareKey::Char('s'));
+            choose(&mut state, 's', status_label(status));
             let args = &state.swamp.commands.last().unwrap().0;
             assert_eq!(*args, search_args("", status, "", "").unwrap());
             reply(&mut state, SEARCH);
