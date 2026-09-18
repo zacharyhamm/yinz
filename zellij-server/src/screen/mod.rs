@@ -9,7 +9,6 @@
 #![allow(clippy::useless_format)]
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::collapsible_if)]
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::needless_option_take)]
 #![allow(clippy::needless_return)]
 #![allow(clippy::option_map_unit_fn)]
@@ -2700,7 +2699,7 @@ impl Screen {
             .filter(|tab_id| self.tabs.contains_key(tab_id));
         let all_tabs = self.get_tabs_mut();
         for (tab_id, tab) in all_tabs.iter_mut() {
-            if let Some(plugin_pane_id) = tab.find_plugin(&run_plugin) {
+            if let Some(plugin_pane_id) = tab.find_plugin(run_plugin) {
                 tab_id_and_plugin_pane_id = Some((*tab_id, plugin_pane_id));
                 if move_to_focused_tab && focused_tab_id.is_some_and(|focused| focused != *tab_id) {
                     // Extraction forgets the link, so carry the panel as one batch instead.
@@ -4027,7 +4026,7 @@ impl Screen {
                 tab.set_tiled_panes_damaged();
             }
             for pane_id in &pane_ids_to_stack {
-                if tab.has_pane_with_pid(&pane_id) {
+                if tab.has_pane_with_pid(pane_id) {
                     let carried_respawn = tab.take_pending_respawn(*pane_id);
                     match tab.extract_pane(*pane_id, false) {
                         Some(pane) => {
@@ -4227,7 +4226,7 @@ impl Screen {
         tabs_to_process.sort_by_key(|(_, tab)| tab.position);
 
         for (tab_index, tab) in tabs_to_process {
-            let tab_is_focused = active_tab_index == Some(&tab_index);
+            let tab_is_focused = active_tab_index == Some(tab_index);
             let (tiled_panes, floating_panes, hide_floating_panes) =
                 self.tab_panes_for_layout(*tab_index, tab, self.serialize_pane_viewport, false);
             session_layout_metadata.add_tab(
@@ -4285,7 +4284,7 @@ impl Screen {
                 .borrow()
                 .iter()
                 .copied()
-                .filter(|c| self.active_tab_ids.get(&c) == Some(&tab_index))
+                .filter(|c| self.active_tab_ids.get(c) == Some(&tab_index))
                 .collect();
 
             let mut active_pane_ids: HashMap<ClientId, Option<PaneId>> = HashMap::new();
@@ -4542,9 +4541,9 @@ impl Screen {
                 .copied()
                 .unwrap_or(false)
             {
-                let active_pane_id = self.get_active_pane_id(&client_id);
+                let active_pane_id = self.get_active_pane_id(client_id);
                 if let Some(active_pane_id) = active_pane_id {
-                    self.add_pane_id_to_group(active_pane_id, &client_id);
+                    self.add_pane_id_to_group(active_pane_id, client_id);
                 }
             }
         }

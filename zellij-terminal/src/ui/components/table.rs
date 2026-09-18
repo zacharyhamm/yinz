@@ -1,6 +1,5 @@
 #![allow(clippy::useless_format)]
 #![allow(clippy::unwrap_or_default)]
-#![allow(clippy::needless_borrow)]
 use super::{is_too_high, is_too_wide, stringify_text, Coordinates, Text};
 use crate::panes::{
     terminal_character::{AnsiCode, RESET_STYLES},
@@ -104,7 +103,7 @@ fn stringify_table_rows(
     let mut row_width = 0;
     for (_, column) in stringified_columns.into_iter() {
         let max_column_width = max_table_column_width(&column);
-        if is_too_wide(max_column_width + 1, row_width, &coordinates) {
+        if is_too_wide(max_column_width + 1, row_width, coordinates) {
             break;
         }
         row_width += max_column_width + 1;

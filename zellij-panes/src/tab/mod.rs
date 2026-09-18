@@ -7,7 +7,6 @@
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::same_item_push)]
 #![allow(clippy::if_same_then_else)]
-#![allow(clippy::needless_borrow)]
 //! `Tab`s holds multiple panes. It tracks their coordinates (x/y) and size,
 //! as well as how they should be resized
 
@@ -8645,7 +8644,7 @@ impl Tab {
                     },
                     _ => &clean_string_from_control_and_linebreak(s),
                 };
-                active_pane.update_name(&to_update);
+                active_pane.update_name(to_update);
             })?;
         Ok(())
     }
@@ -10187,7 +10186,7 @@ impl Tab {
         if !self.floating_panes.panes_contain(pane_id) {
             // if these panes are not floating, we make them floating (assuming doing so wouldn't
             // be removing the last selectable tiled pane in the tab, which would close it)
-            if (self.tiled_panes.panes_contain(&pane_id)
+            if (self.tiled_panes.panes_contain(pane_id)
                 && self.get_selectable_tiled_panes().count() <= 1)
                 || self.suppressed_panes.contains_key(pane_id)
             {

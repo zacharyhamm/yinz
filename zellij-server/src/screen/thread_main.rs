@@ -73,7 +73,7 @@ fn apply_queued_agent_report(
             }
         }
     }
-    let mut trace = zellij_runtime::agent::report::report_diagnostics(&report);
+    let mut trace = zellij_runtime::agent::report::report_diagnostics(report);
     trace.session = screen.session_name.to_string();
     trace.record("screen_queue", accepted_at.elapsed(), "ok");
     let started = std::time::Instant::now();

@@ -669,7 +669,7 @@ impl RuntimeInstance {
             .context("creating Deno runtime")?;
         runtime.op_state().borrow_mut().put(HostState {
             env: None,
-            log_tag: log_tag(&env),
+            log_tag: log_tag(env),
         });
         let bridge = runtime
             .execute_script("zellij:sdk-bootstrap", SDK)

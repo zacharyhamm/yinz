@@ -4,7 +4,6 @@
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::collapsible_match)]
-#![allow(clippy::needless_borrow)]
 use crate::background_jobs::write_session_state_to_disk;
 use crate::background_jobs::BackgroundJob;
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
@@ -3390,7 +3389,7 @@ impl Pty {
 
         let pids: Vec<_> = terminal_ids
             .iter()
-            .filter_map(|id| self.id_to_child_pid.get(&id))
+            .filter_map(|id| self.id_to_child_pid.get(id))
             .copied()
             .collect();
         let (pids_to_cwds, pids_to_cmds) = self

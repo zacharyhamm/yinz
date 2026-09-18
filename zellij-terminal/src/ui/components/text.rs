@@ -1,4 +1,3 @@
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::single_match)]
 #![allow(clippy::ptr_arg)]
 #![allow(clippy::useless_format)]
@@ -88,7 +87,7 @@ pub fn stringify_text(
         if is_too_wide(
             character_width,
             left_padding.unwrap_or(0) + text_width,
-            &coordinates,
+            coordinates,
         ) {
             break;
         }
@@ -102,7 +101,7 @@ pub fn stringify_text(
 
         if !text.indices.is_empty() || text.selected || text.opaque {
             let character_with_styling =
-                color_index_character(character, i, &text, style, styling, base_text_style);
+                color_index_character(character, i, text, style, styling, base_text_style);
             stringified.push_str(&character_with_styling);
         } else {
             stringified.push(character)
@@ -174,12 +173,12 @@ pub fn color_index_character(
 
 pub fn parse_text_params<'a>(params_iter: impl Iterator<Item = &'a mut String>) -> Vec<Text> {
     params_iter
-        .flat_map(|mut stringified| {
-            let selected = parse_selected(&mut stringified);
-            let opaque = parse_opaque(&mut stringified);
-            let disabled = parse_disabled(&mut stringified);
-            let indices = parse_indices(&mut stringified);
-            let text = parse_text(&mut stringified).map_err(|e| e.to_string())?;
+        .flat_map(|stringified| {
+            let selected = parse_selected(stringified);
+            let opaque = parse_opaque(stringified);
+            let disabled = parse_disabled(stringified);
+            let indices = parse_indices(stringified);
+            let text = parse_text(stringified).map_err(|e| e.to_string())?;
             Ok::<Text, String>(Text {
                 text,
                 opaque,

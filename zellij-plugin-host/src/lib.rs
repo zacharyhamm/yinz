@@ -13,7 +13,6 @@
 // test comment 3
 // test comment 4
 // test comment 5
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::option_map_unit_fn)]
 #![allow(clippy::manual_inspect)]
@@ -1524,7 +1523,7 @@ fn pipe_to_specific_plugins(
     let is_private = true;
     let size = Size::default();
     match zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
-        &plugin_url,
+        plugin_url,
         configuration,
         Some(plugin_aliases),
         cwd.clone(),
@@ -1870,7 +1869,7 @@ fn load_background_plugin(
     plugin_aliases: &PluginAliases,
     client_id: ClientId,
 ) -> Option<(PluginId, ClientId)> {
-    run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
+    run_plugin_or_alias.populate_run_plugin_if_needed(plugin_aliases);
     let cwd = run_plugin_or_alias.get_initial_cwd();
     let run_plugin = run_plugin_or_alias.get_run_plugin();
     let size = Size::default();

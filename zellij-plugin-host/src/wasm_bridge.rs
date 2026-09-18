@@ -1,5 +1,4 @@
 #![allow(clippy::type_complexity)]
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::iter_overeager_cloned)]
 use super::{PinnedExecutor, PluginId, PluginInstruction};
 use crate::pipes::{apply_pipe_message_to_plugin, pipes_to_block_or_unblock, PendingPipes};
@@ -533,7 +532,7 @@ impl WasmBridge {
                 let needs_download = matches!(plugin.location, RunPluginLocation::Remote(_));
 
                 let mut loading_context = LoadingContext::new(
-                    &self,
+                    self,
                     Some(zellij_cwd.clone()),
                     plugin.clone(), // TODO: rename to plugin_config
                     plugin_id,
@@ -1198,7 +1197,7 @@ impl WasmBridge {
         let cwd = self.cwd_of_plugin_id(plugin_id);
 
         let mut loading_context = LoadingContext::new(
-            &self,
+            self,
             cwd,
             plugin_config,
             plugin_id,
@@ -1438,7 +1437,7 @@ impl WasmBridge {
             // sets; a no-op when the plugin is registered, as it normally is here.
             self.cancel_token(plugin_id);
             let mut loading_context = LoadingContext::new(
-                &self,
+                self,
                 cwd,
                 plugin_config,
                 plugin_id,
@@ -1539,7 +1538,7 @@ impl WasmBridge {
             .filter(|(plugin_id, _client_id, _running_plugin)| {
                 !self
                     .cached_resizes_for_pending_plugins
-                    .contains_key(&plugin_id)
+                    .contains_key(plugin_id)
             })
             .collect();
         for (plugin_id, client_id, running_plugin) in plugins_to_resize {
@@ -1858,7 +1857,7 @@ impl WasmBridge {
             .filter(|(plugin_id, _client_id, _running_plugin, _subscriptions)| {
                 !&self
                     .cached_events_for_pending_plugins
-                    .contains_key(&plugin_id)
+                    .contains_key(plugin_id)
             })
             .collect();
 
@@ -2115,7 +2114,7 @@ impl WasmBridge {
             .filter(|(plugin_id, _client_id, _running_plugin, _subscriptions)| {
                 !&self
                     .cached_events_for_pending_plugins
-                    .contains_key(&plugin_id)
+                    .contains_key(plugin_id)
             })
             .collect();
 

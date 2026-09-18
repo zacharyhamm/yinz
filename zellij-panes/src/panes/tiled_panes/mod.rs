@@ -1,5 +1,4 @@
 #![allow(clippy::needless_return)]
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::option_map_unit_fn)]
 #![allow(clippy::manual_inspect)]
@@ -554,7 +553,7 @@ impl TiledPanes {
             .map(|p| p.is_stacked())
             .unwrap_or(false);
         if !pane_id_is_stacked {
-            let _ = pane_grid.make_pane_stacked(&active_pane_id);
+            let _ = pane_grid.make_pane_stacked(active_pane_id);
         }
         match pane_grid.make_room_in_stack_of_pane_id_for_pane(active_pane_id) {
             Ok(new_pane_geom) => {
@@ -1039,7 +1038,7 @@ impl TiledPanes {
                 Some(pane_id) => {
                     if let Some(stack_id) = self
                         .panes
-                        .get(&pane_id)
+                        .get(pane_id)
                         .and_then(|p| p.current_geom().stacked)
                     {
                         stack_ids_to_pane_ids_to_expand.push((stack_id, *pane_id));
@@ -1385,7 +1384,7 @@ impl TiledPanes {
                     pane_is_stacked_under,
                     pane_is_stacked_over,
                     should_draw_pane_frames,
-                    &mouse_hover_pane_id,
+                    mouse_hover_pane_id,
                     current_pane_group.clone(),
                     show_help_text,
                     omit_pane_title && reserved_rows_for_pane == 0,
@@ -3224,7 +3223,7 @@ impl TiledPanes {
         let mut pane_infos = vec![];
         for (pane_id, pane) in self.panes.iter() {
             let mut pane_info_for_pane =
-                pane_info_for_pane(pane_id, pane.as_ref(), &current_pane_group);
+                pane_info_for_pane(pane_id, pane.as_ref(), current_pane_group);
             let is_focused = self.active_panes.pane_id_is_focused(pane_id);
             pane_info_for_pane.is_floating = false;
             pane_info_for_pane.is_suppressed = false;
@@ -3275,7 +3274,7 @@ impl TiledPanes {
             .new_stack(root_pane_id, pane_count_in_stack)
     }
     fn is_connected(&self, client_id: &ClientId) -> bool {
-        self.connected_clients.borrow().contains(&client_id)
+        self.connected_clients.borrow().contains(client_id)
     }
     pub fn stacked_pane_ids_under_and_over_flexible_panes(
         &mut self,
@@ -3291,7 +3290,7 @@ impl TiledPanes {
             *self.viewport.borrow(),
         );
         let include_panes_in_stack = true;
-        pane_grid.next_selectable_pane_id_above(&pane_id, include_panes_in_stack)
+        pane_grid.next_selectable_pane_id_above(pane_id, include_panes_in_stack)
     }
     pub fn next_selectable_pane_id_below(&mut self, pane_id: &PaneId) -> Option<PaneId> {
         let pane_grid = TiledPaneGrid::new(
@@ -3301,7 +3300,7 @@ impl TiledPanes {
             *self.viewport.borrow(),
         );
         let include_panes_in_stack = true;
-        pane_grid.next_selectable_pane_id_below(&pane_id, include_panes_in_stack)
+        pane_grid.next_selectable_pane_id_below(pane_id, include_panes_in_stack)
     }
     pub fn next_selectable_pane_id_to_the_left(&mut self, pane_id: &PaneId) -> Option<PaneId> {
         let pane_grid = TiledPaneGrid::new(
@@ -3310,7 +3309,7 @@ impl TiledPanes {
             display_area_viewport(&self.display_area),
             *self.viewport.borrow(),
         );
-        pane_grid.next_selectable_pane_id_to_the_left(&pane_id)
+        pane_grid.next_selectable_pane_id_to_the_left(pane_id)
     }
     pub fn next_selectable_pane_id_to_the_right(&mut self, pane_id: &PaneId) -> Option<PaneId> {
         let pane_grid = TiledPaneGrid::new(
@@ -3319,7 +3318,7 @@ impl TiledPanes {
             display_area_viewport(&self.display_area),
             *self.viewport.borrow(),
         );
-        pane_grid.next_selectable_pane_id_to_the_right(&pane_id)
+        pane_grid.next_selectable_pane_id_to_the_right(pane_id)
     }
 }
 

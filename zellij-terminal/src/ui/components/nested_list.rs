@@ -1,4 +1,3 @@
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::ptr_arg)]
 use super::{
@@ -93,13 +92,13 @@ pub fn parse_nested_list_items<'a>(
     params_iter: impl Iterator<Item = &'a mut String>,
 ) -> Vec<NestedListItem> {
     params_iter
-        .flat_map(|mut stringified| {
-            let indentation_level = parse_indentation_level(&mut stringified);
-            let selected = parse_selected(&mut stringified);
-            let opaque = parse_opaque(&mut stringified);
-            let disabled = parse_disabled(&mut stringified);
-            let indices = parse_indices(&mut stringified);
-            let text = parse_text(&mut stringified).map_err(|e| e.to_string())?;
+        .flat_map(|stringified| {
+            let indentation_level = parse_indentation_level(stringified);
+            let selected = parse_selected(stringified);
+            let opaque = parse_opaque(stringified);
+            let disabled = parse_disabled(stringified);
+            let indices = parse_indices(stringified);
+            let text = parse_text(stringified).map_err(|e| e.to_string())?;
             let text = Text {
                 text,
                 opaque,

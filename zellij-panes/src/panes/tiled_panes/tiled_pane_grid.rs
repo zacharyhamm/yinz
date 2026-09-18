@@ -1,5 +1,3 @@
-#![allow(clippy::match_ref_pats)]
-#![allow(clippy::needless_borrow)]
 use super::is_inside_viewport;
 use super::pane_resizer::PaneResizer;
 use super::stacked_panes::StackedPanes;
@@ -237,7 +235,7 @@ impl<'a> TiledPaneGrid<'a> {
             && strategy.direction.is_some(); // Only invert if there's a direction
 
         let can_change_pane_size_in_main_direction = self
-            .can_change_pane_size(pane_id, &strategy, change_by)
+            .can_change_pane_size(pane_id, strategy, change_by)
             .unwrap_or_else(|err| {
                 if let Some(ZellijError::CantResizeFixedPanes { pane_ids }) =
                     err.downcast_ref::<ZellijError>()
@@ -768,19 +766,19 @@ impl<'a> TiledPaneGrid<'a> {
             }
         }
 
-        let mut resize_border = match direction {
-            &L => 0,
-            &D => self.viewport.y + self.viewport.rows,
-            &U => 0,
-            &R => self.viewport.x + self.viewport.cols,
+        let mut resize_border = match *direction {
+            L => 0,
+            D => self.viewport.y + self.viewport.rows,
+            U => 0,
+            R => self.viewport.x + self.viewport.cols,
         };
 
         for (_, pane) in &result {
-            let pane_boundary = match direction {
-                &L => pane.x + pane.cols.as_usize(),
-                &D => pane.y,
-                &U => pane.y + pane.rows.as_usize(),
-                &R => pane.x,
+            let pane_boundary = match *direction {
+                L => pane.x + pane.cols.as_usize(),
+                D => pane.y,
+                U => pane.y + pane.rows.as_usize(),
+                R => pane.x,
             };
             if border.get(&pane_boundary).is_some() {
                 match direction {
@@ -797,19 +795,19 @@ impl<'a> TiledPaneGrid<'a> {
                 }
             }
         }
-        result.retain(|(_pid, pane)| match direction {
-            &L => pane.x >= resize_border,
-            &D => (pane.y + pane.rows.as_usize()) <= resize_border,
-            &U => pane.y >= resize_border,
-            &R => (pane.x + pane.cols.as_usize()) <= resize_border,
+        result.retain(|(_pid, pane)| match *direction {
+            L => pane.x >= resize_border,
+            D => (pane.y + pane.rows.as_usize()) <= resize_border,
+            U => pane.y >= resize_border,
+            R => (pane.x + pane.cols.as_usize()) <= resize_border,
         });
 
         let resize_border = if result.is_empty() {
-            match direction {
-                &L => pane_to_check.x,
-                &D => pane_to_check.y + pane_to_check.rows.as_usize(),
-                &U => pane_to_check.y,
-                &R => pane_to_check.x + pane_to_check.cols.as_usize(),
+            match *direction {
+                L => pane_to_check.x,
+                D => pane_to_check.y + pane_to_check.rows.as_usize(),
+                U => pane_to_check.y,
+                R => pane_to_check.x + pane_to_check.cols.as_usize(),
             }
         } else {
             resize_border
@@ -1794,10 +1792,10 @@ impl<'a> TiledPaneGrid<'a> {
             return None;
         }
         StackedPanes::new(self.panes.clone())
-            .combine_vertically_aligned_panes_to_stack(&pane_id, neighboring_pane_ids_above)
+            .combine_vertically_aligned_panes_to_stack(pane_id, neighboring_pane_ids_above)
             .non_fatal();
         StackedPanes::new(self.panes.clone())
-            .expand_pane(&pane_id)
+            .expand_pane(pane_id)
             .non_fatal();
         Some(vec![*pane_id])
     }
@@ -1807,7 +1805,7 @@ impl<'a> TiledPaneGrid<'a> {
             .map(|pane_geom| pane_geom.is_stacked())
             .unwrap_or(false);
         if pane_is_stacked {
-            StackedPanes::new(self.panes.clone()).break_pane_out_of_stack(&pane_id)
+            StackedPanes::new(self.panes.clone()).break_pane_out_of_stack(pane_id)
         } else {
             None
         }
@@ -1878,10 +1876,10 @@ impl<'a> TiledPaneGrid<'a> {
             return None;
         }
         StackedPanes::new(self.panes.clone())
-            .combine_vertically_aligned_panes_to_stack(&pane_id, neighboring_pane_ids_below)
+            .combine_vertically_aligned_panes_to_stack(pane_id, neighboring_pane_ids_below)
             .non_fatal();
         StackedPanes::new(self.panes.clone())
-            .expand_pane(&pane_id)
+            .expand_pane(pane_id)
             .non_fatal();
         Some(vec![*pane_id])
     }
@@ -1952,10 +1950,10 @@ impl<'a> TiledPaneGrid<'a> {
             return None;
         }
         StackedPanes::new(self.panes.clone())
-            .combine_horizontally_aligned_panes_to_stack(&pane_id, neighboring_pane_ids_to_the_left)
+            .combine_horizontally_aligned_panes_to_stack(pane_id, neighboring_pane_ids_to_the_left)
             .non_fatal();
         StackedPanes::new(self.panes.clone())
-            .expand_pane(&pane_id)
+            .expand_pane(pane_id)
             .non_fatal();
         Some(vec![*pane_id])
     }
@@ -2029,13 +2027,10 @@ impl<'a> TiledPaneGrid<'a> {
             return None;
         }
         StackedPanes::new(self.panes.clone())
-            .combine_horizontally_aligned_panes_to_stack(
-                &pane_id,
-                neighboring_pane_ids_to_the_right,
-            )
+            .combine_horizontally_aligned_panes_to_stack(pane_id, neighboring_pane_ids_to_the_right)
             .non_fatal();
         StackedPanes::new(self.panes.clone())
-            .expand_pane(&pane_id)
+            .expand_pane(pane_id)
             .non_fatal();
         Some(vec![*pane_id])
     }

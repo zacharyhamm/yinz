@@ -1,4 +1,3 @@
-#![allow(clippy::needless_borrow)]
 #![allow(clippy::for_kv_map)]
 #![allow(clippy::ptr_arg)]
 use crate::tab::Pane;
@@ -48,7 +47,7 @@ impl ActivePanes {
         }
     }
     pub fn get(&self, client_id: &ClientId) -> Option<&PaneId> {
-        self.active_panes.get(&client_id)
+        self.active_panes.get(client_id)
     }
     pub fn get_last(&self, client_id: &ClientId) -> Option<&PaneId> {
         self.last_panes.get(client_id)
@@ -77,7 +76,7 @@ impl ActivePanes {
         self.active_panes.values()
     }
     pub fn remove(&mut self, client_id: &ClientId, panes: &impl PaneLookup) -> Option<PaneId> {
-        if let Some(pane_id_to_unfocus) = self.active_panes.get(&client_id) {
+        if let Some(pane_id_to_unfocus) = self.active_panes.get(client_id) {
             self.unfocus_pane(*pane_id_to_unfocus, panes);
         }
         self.active_panes.remove(client_id)
