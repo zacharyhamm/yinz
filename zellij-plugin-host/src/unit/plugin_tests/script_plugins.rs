@@ -982,13 +982,25 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
     let opened = hook_panes_opened(&received_screen_instructions.lock());
     // The id in the title is the hook pane's own, not the terminal suppressed behind it, so it
     // is read off the same instruction rather than written out.
-    assert!(received_screen_instructions
-        .lock()
+    let instructions = received_screen_instructions.lock();
+    let (title, plugin_id) = instructions
         .iter()
-        .any(|instruction| {
-            matches!(instruction, ScreenInstruction::AddPlugin(_, _, _, _, Some(title), _, plugin_id, ..)
-            if title == &format!("[{plugin_id}] build-box topic: Review"))
-        }));
+        .find_map(|instruction| match instruction {
+            ScreenInstruction::AddPlugin(_, _, _, _, Some(title), _, plugin_id, ..) => {
+                Some((title, *plugin_id))
+            },
+            _ => None,
+        })
+        .expect("the hook opens a pane with a title");
+    assert_eq!(
+        title,
+        &format!("[plugin_{plugin_id}] build-box topic: Review")
+    );
+    let reference = title.strip_prefix('[').unwrap().split_once(']').unwrap().0;
+    let pane_id = reference.parse::<PaneId>().unwrap();
+    assert_eq!(pane_id, PaneId::Plugin(plugin_id));
+    assert_ne!(pane_id, plugin_id.to_string().parse::<PaneId>().unwrap());
+    drop(instructions);
     assert_eq!(
         opened.iter().map(|(_, pane)| *pane).collect::<Vec<_>>(),
         vec![PaneId::Terminal(crate::TerminalId::new(7))],
