@@ -682,6 +682,9 @@ pub(crate) struct Screen {
     agent_pane_min_size: Size,
     auto_layout: bool,
     session_serialization: bool,
+    /// `Options::agent_double_escape`, pushed to every tab at the top of each screen-thread
+    /// loop turn and replaced by `Reconfigure`.
+    pub(super) agent_double_escape: bool,
     serialize_pane_viewport: bool,
     scrollback_lines_to_serialize: Option<usize>,
     /// Warps waiting on the pty thread, keyed by the terminal id being released.
@@ -1323,6 +1326,7 @@ impl Screen {
             default_shell,
             default_shell_action,
             session_serialization,
+            agent_double_escape: false,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             pending_warps: HashMap::new(),

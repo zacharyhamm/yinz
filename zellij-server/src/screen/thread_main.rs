@@ -210,6 +210,20 @@ pub(crate) fn apply_pane_agent_report(
 // The box is here in order to make the
 // NewClient enum smaller
 #[allow(clippy::boxed_local)]
+/// Work the screen thread has accepted but cannot act on yet.
+///
+/// An instruction that names a tab, client or pane which does not exist yet is parked here and
+/// replayed once the thing it names arrives; a tab switch requested while a layout is still
+/// landing waits until the layout is applied. Owned by the screen thread's loop and handed to
+/// the `Screen` methods that queue or drain it.
+#[derive(Default)]
+pub(super) struct PendingEvents {
+    pub(super) tab_switches: HashSet<(TabId, ClientId)>,
+    pub(super) waiting_for_tab: Vec<ScreenInstruction>,
+    pub(super) waiting_for_client: Vec<ScreenInstruction>,
+    pub(super) waiting_for_pane: HashMap<PaneId, Vec<ScreenInstruction>>,
+}
+
 pub(crate) fn screen_thread_main(
     bus: Bus<ScreenInstruction>,
     max_panes: Option<usize>,
@@ -250,7 +264,7 @@ pub(crate) fn screen_thread_main(
     let context_menu = config.context_menu.clone();
     let explicit_theme_hue = config.options.explicit_theme_hue;
     let config_options = config.options;
-    let mut agent_double_escape = config_options.agent_double_escape.unwrap_or(false);
+    let agent_double_escape = config_options.agent_double_escape.unwrap_or(false);
     let arrow_fonts = !config_options.simplified_ui.unwrap_or_default();
     let pane_frame_style = PaneFrameStyle::from_options(&config_options);
     let auto_layout = config_options.auto_layout.unwrap_or(true);
@@ -410,18 +424,15 @@ pub(crate) fn screen_thread_main(
         screen.resolve_default_theme_mode().non_fatal();
     }
     screen.set_host_notification_protocol(host_notification_protocol);
+    screen.agent_double_escape = agent_double_escape;
 
-    let mut pending_tab_switches: HashSet<(TabId, ClientId)> = HashSet::new();
-    let mut pending_events_waiting_for_tab: Vec<ScreenInstruction> = vec![];
-    let mut pending_events_waiting_for_client: Vec<ScreenInstruction> = vec![];
-    let mut pending_events_waiting_for_pane: HashMap<PaneId, Vec<ScreenInstruction>> =
-        HashMap::new();
+    let mut pending = PendingEvents::default();
     let mut attach_traces_waiting_for_first_render: HashMap<ClientId, Instant> = HashMap::new();
     let mut keybind_intercepts = HashMap::new();
     let mut escape_focus = HashMap::new();
     let mut pending_escape_count = 0;
     'instructions: loop {
-        if agent_double_escape {
+        if screen.agent_double_escape {
             // Observe every screen transition, including programmatic focus changes. Keeping the
             // previous focus/mode catches leaving and returning before the next key arrives.
             let focus: HashMap<_, _> = screen
@@ -439,7 +450,7 @@ pub(crate) fn screen_thread_main(
                 })
                 .collect();
             for tab in screen.tabs.values_mut() {
-                tab.agent_double_escape = agent_double_escape;
+                tab.agent_double_escape = screen.agent_double_escape;
                 tab.pending_agent_escapes.retain(|(client, _), _| {
                     focus.contains_key(client) && focus.get(client) == escape_focus.get(client)
                 });
@@ -466,7 +477,7 @@ pub(crate) fn screen_thread_main(
         // when this cache is Dropped, for more information, see the comments in PtyWriter
         let _resize_cache = ResizeCache::new(thread_senders.clone());
 
-        if agent_double_escape {
+        if screen.agent_double_escape {
             let reset_client = match &event {
                 ScreenInstruction::MouseEvent(_, client, ..)
                 | ScreenInstruction::HostTerminalFocusChanged(client, _)
@@ -561,7 +572,8 @@ pub(crate) fn screen_thread_main(
                         }
                     }
                     if let Some(vte_bytes) = vte_bytes {
-                        pending_events_waiting_for_pane
+                        pending
+                            .waiting_for_pane
                             .entry(PaneId::Terminal(pid))
                             .or_default()
                             .push(ScreenInstruction::PtyBytes(pid, vte_bytes));
@@ -583,7 +595,8 @@ pub(crate) fn screen_thread_main(
                         screen.handle_plugin_render_assets(plugin_render_assets, true)?
                     {
                         let plugin_id = plugin_render_asset.plugin_id;
-                        pending_events_waiting_for_pane
+                        pending
+                            .waiting_for_pane
                             .entry(PaneId::Plugin(plugin_id))
                             .or_default()
                             .push(ScreenInstruction::PluginBytes(vec![plugin_render_asset]));
@@ -845,7 +858,7 @@ pub(crate) fn screen_thread_main(
                     // Before the replay: a pane that exited before the screen created it starts,
                     // and then exits, in that order.
                     screen.fire_agent_start_for_new_pane(pid);
-                    if let Some(pending_events) = pending_events_waiting_for_pane.remove(&pid) {
+                    if let Some(pending_events) = pending.waiting_for_pane.remove(&pid) {
                         for event in pending_events {
                             replay_pending_pane_event(&mut screen, event).non_fatal();
                         }
@@ -882,7 +895,7 @@ pub(crate) fn screen_thread_main(
                         },
                     }
 
-                    if let Some(pending_events) = pending_events_waiting_for_pane.remove(&pid) {
+                    if let Some(pending_events) = pending.waiting_for_pane.remove(&pid) {
                         for event in pending_events {
                             replay_pending_pane_event(&mut screen, event).non_fatal();
                         }
@@ -1867,7 +1880,8 @@ pub(crate) fn screen_thread_main(
                     match screen.tab_containing_pane_mut(pid) {
                         Some(tab) => tab.set_pane_selectable(pid, selectable),
                         // the pane's tab may simply not exist yet - retry once one does
-                        None => pending_events_waiting_for_tab
+                        None => pending
+                            .waiting_for_tab
                             .push(ScreenInstruction::SetSelectable(pid, selectable)),
                     }
                     screen.render(None)?;
@@ -1875,7 +1889,8 @@ pub(crate) fn screen_thread_main(
                 },
                 ScreenInstruction::ShowPluginCursor(pid, client_id, cursor_position) => {
                     if !screen.show_plugin_cursor(pid, client_id, cursor_position) {
-                        pending_events_waiting_for_pane
+                        pending
+                            .waiting_for_pane
                             .entry(PaneId::Plugin(pid))
                             .or_default()
                             .push(ScreenInstruction::ShowPluginCursor(
@@ -1893,9 +1908,12 @@ pub(crate) fn screen_thread_main(
                         })
                         .is_none()
                     {
-                        pending_events_waiting_for_tab.push(
-                            ScreenInstruction::SetMouseSelectionSupport(pid, selection_support),
-                        );
+                        pending
+                            .waiting_for_tab
+                            .push(ScreenInstruction::SetMouseSelectionSupport(
+                                pid,
+                                selection_support,
+                            ));
                     }
                     screen.render(None)?;
                     screen.log_and_report_session_state()?;
@@ -1927,7 +1945,7 @@ pub(crate) fn screen_thread_main(
                         if screen.tab_containing_pane(id).is_some() {
                             screen.close_pane_explicitly(id, completion_tx);
                         } else {
-                            pending_events_waiting_for_pane.entry(id).or_default().push(
+                            pending.waiting_for_pane.entry(id).or_default().push(
                                 ScreenInstruction::ClosePane(
                                     id,
                                     client_id,
@@ -1944,7 +1962,8 @@ pub(crate) fn screen_thread_main(
                                 screen.cleanup_closed_pane(id);
                             }
                         } else {
-                            pending_events_waiting_for_pane
+                            pending
+                                .waiting_for_pane
                                 .entry(id)
                                 .or_default()
                                 .push(ScreenInstruction::ClosePane(id, None, None, exit_status));
@@ -2003,7 +2022,8 @@ pub(crate) fn screen_thread_main(
                         }
                     }
                     if !found {
-                        pending_events_waiting_for_pane
+                        pending
+                            .waiting_for_pane
                             .entry(id)
                             .or_default()
                             .push(ScreenInstruction::HoldPane(id, exit_status, run_command));
@@ -2087,7 +2107,8 @@ pub(crate) fn screen_thread_main(
                         screen.render(None)?;
                         screen.log_and_report_session_state()?;
                     } else {
-                        pending_events_waiting_for_pane
+                        pending
+                            .waiting_for_pane
                             .entry(pane_id)
                             .or_default()
                             .push(ScreenInstruction::SetPaneCaption(pane_id, caption));
@@ -2293,7 +2314,7 @@ pub(crate) fn screen_thread_main(
                         }
                     }
                     if !screen.has_pending_tabs() {
-                        screen.apply_deferred_tab_switches(&mut pending_tab_switches)?;
+                        screen.apply_deferred_tab_switches(&mut pending.tab_switches)?;
                         if should_change_focus_to_new_tab {
                             if let Some(tab_position) = screen.get_tab_position_by_id(tab_id) {
                                 screen.switch_active_tab(tab_position, None, true, client_id)?;
@@ -2307,14 +2328,12 @@ pub(crate) fn screen_thread_main(
                             screen.active_tab_ids.keys().next().copied()
                         };
                         if let Some(client_id_to_switch) = client_id_to_switch {
-                            pending_tab_switches.insert((tab_id, client_id_to_switch));
+                            pending.tab_switches.insert((tab_id, client_id_to_switch));
                         }
                     }
 
                     for pane_id in new_terminal_pane_ids {
-                        if let Some(pending_events) =
-                            pending_events_waiting_for_pane.remove(&pane_id)
-                        {
+                        if let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
                             for event in pending_events {
                                 replay_pending_pane_event(&mut screen, event).non_fatal();
                             }
@@ -2329,7 +2348,7 @@ pub(crate) fn screen_thread_main(
                                 screen.tabs.values().any(|tab| tab.has_plugin(*plugin_id));
                             if plugin_exists {
                                 if let Some(pending_events) =
-                                    pending_events_waiting_for_pane.remove(&pane_id)
+                                    pending.waiting_for_pane.remove(&pane_id)
                                 {
                                     replay_pending_plugin_events(&mut screen, pending_events)?;
                                 }
@@ -2337,11 +2356,11 @@ pub(crate) fn screen_thread_main(
                         }
                     }
 
-                    for event in pending_events_waiting_for_client.drain(..) {
+                    for event in pending.waiting_for_client.drain(..) {
                         replay_pending_pane_event(&mut screen, event).non_fatal();
                     }
 
-                    for event in pending_events_waiting_for_tab.drain(..) {
+                    for event in pending.waiting_for_tab.drain(..) {
                         replay_pending_pane_event(&mut screen, event).non_fatal();
                     }
 
@@ -2378,7 +2397,7 @@ pub(crate) fn screen_thread_main(
                                 if let Some(tab_id) =
                                     screen.get_tab_id_at_position(tab_index.position())
                                 {
-                                    pending_tab_switches.insert((tab_id, client_id));
+                                    pending.tab_switches.insert((tab_id, client_id));
                                 }
                             }
                         },
@@ -2480,7 +2499,8 @@ pub(crate) fn screen_thread_main(
                         screen.render(None)?;
                     } else {
                         // Defer execution, forward completion_tx
-                        pending_events_waiting_for_tab
+                        pending
+                            .waiting_for_tab
                             .push(ScreenInstruction::MoveTabLeft(client_id, completion_tx));
                     }
                 },
@@ -2490,7 +2510,8 @@ pub(crate) fn screen_thread_main(
                         screen.render(None)?;
                     } else {
                         // Defer execution, forward completion_tx
-                        pending_events_waiting_for_tab
+                        pending
+                            .waiting_for_tab
                             .push(ScreenInstruction::MoveTabRight(client_id, completion_tx));
                     }
                 },
@@ -2778,7 +2799,7 @@ pub(crate) fn screen_thread_main(
                     "attach trace: screen client_id={client_id} pending events drain begin after {:?}",
                     attach_started_at.elapsed()
                 );
-                    for event in pending_events_waiting_for_client.drain(..) {
+                    for event in pending.waiting_for_client.drain(..) {
                         replay_pending_pane_event(&mut screen, event).non_fatal();
                     }
                     log::info!(
@@ -3082,16 +3103,16 @@ pub(crate) fn screen_thread_main(
                         }
                     }
 
-                    for event in pending_events_waiting_for_client.drain(..) {
+                    for event in pending.waiting_for_client.drain(..) {
                         replay_pending_pane_event(&mut screen, event).non_fatal();
                     }
 
-                    for event in pending_events_waiting_for_tab.drain(..) {
+                    for event in pending.waiting_for_tab.drain(..) {
                         replay_pending_pane_event(&mut screen, event).non_fatal();
                     }
 
                     if !screen.has_pending_tabs() {
-                        screen.apply_deferred_tab_switches(&mut pending_tab_switches)?;
+                        screen.apply_deferred_tab_switches(&mut pending.tab_switches)?;
                     }
 
                     // Single render and log after all tabs are updated (performance optimization)
@@ -3339,23 +3360,25 @@ pub(crate) fn screen_thread_main(
                         );
                     }
                     if screen.active_tab_ids.is_empty() && tab_index.is_none() {
-                        pending_events_waiting_for_client.push(ScreenInstruction::AddPlugin(
-                            maybe_should_float,
-                            should_be_in_place,
-                            close_replaced_pane,
-                            run_plugin_or_alias,
-                            pane_title,
-                            tab_index,
-                            plugin_id,
-                            pane_id_to_replace,
-                            cwd,
-                            start_suppressed,
-                            floating_pane_coordinates,
-                            should_focus_plugin,
-                            client_id,
-                            completion_tx,
-                            stated_overlay_placement,
-                        ));
+                        pending
+                            .waiting_for_client
+                            .push(ScreenInstruction::AddPlugin(
+                                maybe_should_float,
+                                should_be_in_place,
+                                close_replaced_pane,
+                                run_plugin_or_alias,
+                                pane_title,
+                                tab_index,
+                                plugin_id,
+                                pane_id_to_replace,
+                                cwd,
+                                start_suppressed,
+                                floating_pane_coordinates,
+                                should_focus_plugin,
+                                client_id,
+                                completion_tx,
+                                stated_overlay_placement,
+                            ));
                         break 'instruction;
                     }
                     let pane_title = pane_title.unwrap_or_else(|| {
@@ -3432,9 +3455,7 @@ pub(crate) fn screen_thread_main(
                     let pane_id = PaneId::Plugin(plugin_id);
                     let plugin_exists = screen.tabs.values().any(|tab| tab.has_plugin(plugin_id));
                     if plugin_exists {
-                        if let Some(pending_events) =
-                            pending_events_waiting_for_pane.remove(&pane_id)
-                        {
+                        if let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
                             replay_pending_plugin_events(&mut screen, pending_events)?;
                         }
                     }
@@ -3444,7 +3465,8 @@ pub(crate) fn screen_thread_main(
                     let found_plugin =
                         screen.update_plugin_loading_stage(pid, loading_indication.clone());
                     if !found_plugin {
-                        pending_events_waiting_for_pane
+                        pending
+                            .waiting_for_pane
                             .entry(PaneId::Plugin(pid))
                             .or_default()
                             .push(ScreenInstruction::UpdatePluginLoadingStage(
@@ -3456,7 +3478,8 @@ pub(crate) fn screen_thread_main(
                 },
                 ScreenInstruction::StartPluginLoadingIndication(pid, loading_indication) => {
                     if !screen.start_plugin_loading_indication(pid, loading_indication.clone()) {
-                        pending_events_waiting_for_pane
+                        pending
+                            .waiting_for_pane
                             .entry(PaneId::Plugin(pid))
                             .or_default()
                             .push(ScreenInstruction::StartPluginLoadingIndication(
@@ -3731,13 +3754,15 @@ pub(crate) fn screen_thread_main(
                         // itself. A plugin that spawned a pane into a tab made for it focuses the
                         // pane in the same breath, and that focus should land after the layout,
                         // on the tab as it really is.
-                        pending_events_waiting_for_tab.push(ScreenInstruction::FocusPaneWithId(
-                            pane_id,
-                            should_float_if_hidden,
-                            should_be_in_place_if_hidden,
-                            client_id,
-                            completion_tx,
-                        ));
+                        pending
+                            .waiting_for_tab
+                            .push(ScreenInstruction::FocusPaneWithId(
+                                pane_id,
+                                should_float_if_hidden,
+                                should_be_in_place_if_hidden,
+                                client_id,
+                                completion_tx,
+                            ));
                     } else {
                         let already_focused = screen
                             .get_active_pane_id(&client_id)
@@ -3945,7 +3970,7 @@ pub(crate) fn screen_thread_main(
 
                     if !found {
                         log::error!("PluginId '{}' not found - caching request", plugin_id);
-                        pending_events_waiting_for_client.push(
+                        pending.waiting_for_client.push(
                             ScreenInstruction::RequestPluginPermissions(
                                 plugin_id,
                                 plugin_permission,
@@ -4635,9 +4660,9 @@ pub(crate) fn screen_thread_main(
                     agent_pane_min_size,
                 } => {
                     screen.set_pane_animations(pane_animations);
-                    agent_double_escape = new_agent_double_escape;
+                    screen.agent_double_escape = new_agent_double_escape;
                     for tab in screen.tabs.values_mut() {
-                        tab.agent_double_escape = agent_double_escape;
+                        tab.agent_double_escape = new_agent_double_escape;
                         tab.pending_agent_escapes.clear();
                     }
                     screen.host_theme_dark_styling = host_theme_dark;
@@ -4745,7 +4770,8 @@ pub(crate) fn screen_thread_main(
                 },
                 ScreenInstruction::AgentReport(report, accepted_at) => {
                     if !apply_queued_agent_report(&mut screen, &report, accepted_at)? {
-                        pending_events_waiting_for_pane
+                        pending
+                            .waiting_for_pane
                             .entry(report.pane_id.into())
                             .or_default()
                             .push(ScreenInstruction::AgentReport(report, accepted_at));
@@ -4753,8 +4779,7 @@ pub(crate) fn screen_thread_main(
                 },
                 ScreenInstruction::SetPaneAgent(pane_id, agent, _completion) => {
                     if !apply_pane_agent_report(&mut screen, pane_id, agent.clone())? {
-                        let pending_events =
-                            pending_events_waiting_for_pane.entry(pane_id).or_default();
+                        let pending_events = pending.waiting_for_pane.entry(pane_id).or_default();
                         pending_events
                             .retain(|event| !matches!(event, ScreenInstruction::SetPaneAgent(..)));
                         pending_events.push(ScreenInstruction::SetPaneAgent(
@@ -5075,14 +5100,13 @@ pub(crate) fn screen_thread_main(
                         pane_ids_and_coordinates,
                         override_user_placement,
                     ) {
-                        pending_events_waiting_for_pane
-                            .entry(pane_id)
-                            .or_default()
-                            .push(ScreenInstruction::ChangeOverlayCoordinates(
+                        pending.waiting_for_pane.entry(pane_id).or_default().push(
+                            ScreenInstruction::ChangeOverlayCoordinates(
                                 vec![(pane_id, coordinates)],
                                 override_user_placement,
                                 None,
-                            ));
+                            ),
+                        );
                     }
                     let _ = screen.render(None);
                 },
@@ -5310,7 +5334,7 @@ pub(crate) fn screen_thread_main(
                 },
                 ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id } => {
                     screen.cleanup_closed_pane(pane_id);
-                    pending_events_waiting_for_pane.remove(&pane_id);
+                    pending.waiting_for_pane.remove(&pane_id);
                     screen.notify_pane_closed_to_subscribers(pane_id);
                 },
                 ScreenInstruction::SetCliEventSubscribersPresent(present) => {
@@ -5614,11 +5638,13 @@ pub(crate) fn screen_thread_main(
                         screen.move_tab_by_id(tab_id, direction)?;
                         screen.render(None)?;
                     } else {
-                        pending_events_waiting_for_tab.push(ScreenInstruction::MoveTabWithTabId(
-                            tab_id,
-                            direction,
-                            _completion_tx,
-                        ));
+                        pending
+                            .waiting_for_tab
+                            .push(ScreenInstruction::MoveTabWithTabId(
+                                tab_id,
+                                direction,
+                                _completion_tx,
+                            ));
                     }
                 },
                 ScreenInstruction::FocusHostSession(client_id, _completion_tx) => {
@@ -5654,9 +5680,13 @@ pub(crate) fn screen_thread_main(
             .context("failed to settle tabs after instruction")
             .non_fatal();
         // Teardown can finish before its queued close notification reaches this thread.
-        pending_events_waiting_for_pane.retain(|id, _| !screen.destroyed_panes.contains(id));
+        pending
+            .waiting_for_pane
+            .retain(|id, _| !screen.destroyed_panes.contains(id));
         // IDs can be reused after removal; discard stale focus before another tab is created.
-        pending_tab_switches.retain(|(id, _)| screen.tabs.contains_key(id));
+        pending
+            .tab_switches
+            .retain(|(id, _)| screen.tabs.contains_key(id));
     }
     Ok(())
 }
