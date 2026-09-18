@@ -16,7 +16,6 @@ use crate::plugins::PluginInstruction;
 #[cfg(not(test))]
 use crate::pty::get_default_shell;
 use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction};
-use crate::session_layout_metadata::SessionLayoutMetadata;
 use crate::tab::Tab;
 use crate::thread_bus::Bus;
 use crate::{ClientId, ServerInstruction};
@@ -25,23 +24,18 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use zellij_config::config::Config;
 use zellij_ipc::get_mode_info;
+use zellij_ipc::ipc::ClientAttributes;
 use zellij_ipc::nested_session;
 use zellij_ipc::nested_session::NestedSessionMessage;
 use zellij_types::diagnostics::ContextType;
 use zellij_types::pane_size::Size;
 use zellij_types::style::HostTerminalThemeMode;
 use zellij_types::{agent::AgentInfo, geometry::Direction};
-use {zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::ServerToClientMsg};
-use {
-    zellij_runtime::consts::session_info_folder_for_session,
-    zellij_runtime::consts::ZELLIJ_SOCK_DIR,
-};
 use {
     zellij_types::data::Event, zellij_types::data::GetFocusedPaneInfoResponse,
     zellij_types::data::InputMode, zellij_types::data::NewPanePlacement,
     zellij_types::data::NotificationInfo, zellij_types::data::OverlayPlacement,
     zellij_types::data::PaneScrollbackResponse, zellij_types::data::PluginCapabilities,
-    zellij_types::data::SessionInfo,
 };
 use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
 use {zellij_types::input::layout::Layout, zellij_types::input::layout::Run};
@@ -2724,97 +2718,14 @@ pub(crate) fn screen_thread_main(
                     tab_number_to_focus,
                     pane_id_to_focus,
                 ) => {
-                    let attach_started_at = Instant::now();
-                    attach_traces_waiting_for_first_render.insert(client_id, attach_started_at);
-                    log::info!(
-                    "attach trace: screen client_id={client_id} AddClient begin size={client_size:?}"
-                );
-                    screen.set_client_size(client_id, client_size);
-                    log::info!(
-                    "attach trace: screen client_id={client_id} client size recorded after {:?}; Screen::add_client begin",
-                    attach_started_at.elapsed()
-                );
-                    // the new client can shrink the shared surface, so every tab is reflowed - but
-                    // only the reflow: this handler reports and renders on its own way out.
-                    // Reject a client whose size leaves nothing to lay out: keeping its size in the
-                    // shared minimum would make every later render fail for all clients.
-                    let attach_result = screen.add_client(client_id);
-                    log::info!(
-                    "attach trace: screen client_id={client_id} Screen::add_client finished after {:?} ({})",
-                    attach_started_at.elapsed(),
-                    if attach_result.is_ok() { "ok" } else { "error" }
-                );
-                    let attach_result = attach_result.and_then(|_| {
-                    log::info!(
-                        "attach trace: screen client_id={client_id} reflow_all_tabs begin"
-                    );
-                    let result = screen.reflow_all_tabs();
-                    log::info!(
-                        "attach trace: screen client_id={client_id} reflow_all_tabs finished after {:?} ({})",
-                        attach_started_at.elapsed(),
-                        if result.is_ok() { "ok" } else { "error" }
-                    );
-                    result
-                });
-                    if let Err(error) = attach_result {
-                        Err::<(), _>(error)
-                            .context("failed to attach client at its reported size")
-                            .non_fatal();
-                        screen.remove_client(client_id).non_fatal();
-                        screen.resize_to_clients().non_fatal();
-                        screen
-                            .bus
-                            .senders
-                            .send_to_server(ServerInstruction::ClientExit(client_id, None))
-                            .non_fatal();
-                        attach_traces_waiting_for_first_render.remove(&client_id);
-                        break 'instruction;
-                    }
-                    if let Some(pane_id) = pane_id_to_focus {
-                        log::info!(
-                        "attach trace: screen client_id={client_id} restoring pane focus {pane_id:?}"
-                    );
-                        screen.focus_pane_with_id(pane_id, true, false, client_id)?;
-                    } else if let Some(tab_number_to_focus) = tab_number_to_focus {
-                        log::info!(
-                        "attach trace: screen client_id={client_id} restoring tab focus number={tab_number_to_focus}"
-                    );
-                        screen.go_to_tab(tab_number_to_focus, client_id)?;
-                    }
-                    log::info!(
-                    "attach trace: screen client_id={client_id} focus restoration complete after {:?}",
-                    attach_started_at.elapsed()
-                );
-                    screen.show_guest_modals_for_new_client(client_id);
-                    let focused_pane_id = screen.get_active_pane_id(&client_id);
-                    if let Some(focused) = focused_pane_id {
-                        screen.report_key_passthrough_state(client_id, focused, focused);
-                    }
-                    log::info!(
-                    "attach trace: screen client_id={client_id} sync_scroll_mode_on_focus begin"
-                );
-                    screen.sync_scroll_mode_on_focus(client_id)?;
-                    log::info!(
-                    "attach trace: screen client_id={client_id} pending events drain begin after {:?}",
-                    attach_started_at.elapsed()
-                );
-                    for event in pending.waiting_for_client.drain(..) {
-                        replay_pending_pane_event(&mut screen, event).non_fatal();
-                    }
-                    log::info!(
-                    "attach trace: screen client_id={client_id} log_and_report_session_state begin"
-                );
-                    screen.log_and_report_session_state()?;
-
-                    log::info!(
-                    "attach trace: screen client_id={client_id} scheduling first render after {:?}",
-                    attach_started_at.elapsed()
-                );
-                    screen.render(None)?;
-                    log::info!(
-                    "attach trace: screen client_id={client_id} AddClient handler complete after {:?}",
-                    attach_started_at.elapsed()
-                );
+                    screen.attach_client(
+                        client_id,
+                        client_size,
+                        tab_number_to_focus,
+                        pane_id_to_focus,
+                        &mut attach_traces_waiting_for_first_render,
+                        &mut pending,
+                    )?;
                 },
                 ScreenInstruction::RemoveClient(client_id) => {
                     attach_traces_waiting_for_first_render.remove(&client_id);
@@ -4125,68 +4036,7 @@ pub(crate) fn screen_thread_main(
                     }
                 },
                 ScreenInstruction::SaveSession(_client_id, completion_tx) => {
-                    let err_context = || "Failed to save session";
-
-                    screen.update_active_pane_ids();
-                    let pane_manifest = screen.generate_and_report_pane_state()?;
-                    let tab_infos = screen.generate_and_report_tab_state()?;
-
-                    #[cfg(not(test))]
-                    let (available_layouts, _layout_errors) =
-                        zellij_config::layout::list_available_layouts(
-                            screen.layout_dir.clone(),
-                            &screen.default_layout_name,
-                        );
-                    #[cfg(test)]
-                    let available_layouts = vec![];
-
-                    let creation_time = {
-                        let sock_path = ZELLIJ_SOCK_DIR.join(&screen.session_name);
-                        std::fs::metadata(&sock_path)
-                            .ok()
-                            .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
-                            .and_then(|d| d.elapsed().ok())
-                            .map(|d| Duration::from_secs(d.as_secs()))
-                            .unwrap_or_default()
-                    };
-                    let session_info = SessionInfo {
-                        name: screen.session_name.clone(),
-                        tabs: tab_infos,
-                        panes: pane_manifest,
-                        connected_clients: screen.active_tab_ids.keys().len(),
-                        is_current_session: true,
-                        available_layouts,
-                        plugins: Default::default(),
-                        tab_history: screen
-                            .tab_history
-                            .iter()
-                            .map(|(id, history)| (*id, history.clone()))
-                            .collect(),
-                        pane_history: screen
-                            .pane_history
-                            .iter()
-                            .map(|(k, v)| (*k, v.clone()))
-                            .collect(),
-                        creation_time,
-                    };
-
-                    let session_layout_metadata = if screen.session_serialization {
-                        screen.get_layout_metadata(Some(screen.default_shell.clone()), None)
-                    } else {
-                        // Create empty metadata if serialization is disabled
-                        SessionLayoutMetadata::new(screen.default_layout.clone())
-                    };
-
-                    screen
-                        .bus
-                        .senders
-                        .send_to_pty(PtyInstruction::SaveSessionToDisk {
-                            session_name: screen.session_name.clone(),
-                            session_info,
-                            session_layout_metadata,
-                            completion_tx,
-                        })
-                        .with_context(err_context)?;
+                    screen.save_session(completion_tx)?;
                 },
                 ScreenInstruction::Notify(
                     text,
@@ -4268,102 +4118,7 @@ pub(crate) fn screen_thread_main(
                     _completion_tx, // the action ends here, dropping this will release anything
                                     // waiting for it
                 ) => {
-                    if screen.peer_sessions_cache.contains_key(&name) {
-                        let error_text = "A session by this name already exists.";
-                        log::error!("{}", error_text);
-                        if let Some(os_input) = &mut screen.bus.os_input {
-                            let _ = os_input.send_to_client(
-                                client_id,
-                                ServerToClientMsg::LogError {
-                                    lines: vec![error_text.to_owned()],
-                                },
-                            );
-                        }
-                    } else if screen.resurrectable_sessions_cache.contains_key(&name) {
-                        let error_text =
-                            "A resurrectable session by this name exists, cannot use this name.";
-                        log::error!("{}", error_text);
-                        if let Some(os_input) = &mut screen.bus.os_input {
-                            let _ = os_input.send_to_client(
-                                client_id,
-                                ServerToClientMsg::LogError {
-                                    lines: vec![error_text.to_owned()],
-                                },
-                            );
-                        }
-                    } else {
-                        let err_context = || "Failed to rename session".to_string();
-                        let old_session_name = screen.session_name.clone();
-
-                        if let Some(os_input) = &screen.bus.os_input {
-                            if let Err(error) =
-                                os_input.rename_pty_host_session(&old_session_name, &name)
-                            {
-                                let error_text = format!("Failed to rename session: {error:#}");
-                                os_input
-                                    .send_to_client(
-                                        client_id,
-                                        ServerToClientMsg::LogError {
-                                            lines: vec![error_text],
-                                        },
-                                    )
-                                    .non_fatal();
-                                Err::<(), _>(error)
-                                    .context("Failed to rename session")
-                                    .non_fatal();
-                                break 'instruction;
-                            }
-                        }
-
-                        // update state
-                        screen.session_name = name.clone();
-                        screen.default_mode_info.session_name = Some(name.clone());
-                        for (_client_id, mode_info) in screen.mode_info.iter_mut() {
-                            mode_info.session_name = Some(name.clone());
-                        }
-                        for (_, tab) in screen.tabs.iter_mut() {
-                            tab.rename_session(name.clone()).with_context(err_context)?;
-                        }
-
-                        // rename socket file
-                        let old_socket_file_path = ZELLIJ_SOCK_DIR.join(&old_session_name);
-                        let new_socket_file_path = ZELLIJ_SOCK_DIR.join(&name);
-                        if let Err(e) = std::fs::rename(old_socket_file_path, new_socket_file_path)
-                        {
-                            log::error!("Failed to rename ipc socket: {:?}", e);
-                        }
-
-                        // rename session_info folder (TODO: make this atomic, right now there is a
-                        // chance background_jobs will re-create this folder before it knows the
-                        // session was renamed)
-                        let old_session_info_folder =
-                            session_info_folder_for_session(&old_session_name);
-                        let new_session_info_folder = session_info_folder_for_session(&name);
-                        if let Err(e) =
-                            std::fs::rename(old_session_info_folder, new_session_info_folder)
-                        {
-                            log::error!("Failed to rename session_info folder: {:?}", e);
-                        }
-
-                        // report
-                        screen
-                            .log_and_report_session_state()
-                            .with_context(err_context)?;
-
-                        if let Some(os_input) = &screen.bus.os_input {
-                            os_input.rename_firecracker_session(name.to_string());
-                        }
-                        let connected_client_ids: Vec<ClientId> =
-                            screen.active_tab_ids.keys().copied().collect();
-                        for client_id in connected_client_ids {
-                            if let Some(os_input) = &mut screen.bus.os_input {
-                                let _ = os_input.send_to_client(
-                                    client_id,
-                                    ServerToClientMsg::RenamedSession { name: name.clone() },
-                                );
-                            }
-                        }
-                    }
+                    screen.rename_session(name, client_id)?;
                 },
                 ScreenInstruction::Reconfigure {
                     agent_double_escape: new_agent_double_escape,
@@ -4404,11 +4159,7 @@ pub(crate) fn screen_thread_main(
                     agent_pane_min_size,
                 } => {
                     screen.set_pane_animations(pane_animations);
-                    screen.agent_double_escape = new_agent_double_escape;
-                    for tab in screen.tabs.values_mut() {
-                        tab.agent_double_escape = new_agent_double_escape;
-                        tab.pending_agent_escapes.clear();
-                    }
+                    screen.set_agent_double_escape(new_agent_double_escape);
                     screen.host_theme_dark_styling = host_theme_dark;
                     screen.host_theme_light_styling = host_theme_light;
                     screen
@@ -4446,17 +4197,7 @@ pub(crate) fn screen_thread_main(
                             client_id,
                         )
                         .non_fatal();
-                    // `reconfigure` painted the static theme; put the session's
-                    // effective hue back on top of it, against the possibly
-                    // changed dark/light definitions.
-                    if explicit_theme_hue != screen.configured_explicit_theme_hue {
-                        screen
-                            .apply_configured_explicit_theme_hue(explicit_theme_hue)
-                            .non_fatal();
-                    } else {
-                        screen.reapply_effective_theme_mode().non_fatal();
-                    }
-                    screen.resolve_default_theme_mode().non_fatal();
+                    screen.reapply_theme_after_reconfigure(explicit_theme_hue);
                 },
                 ScreenInstruction::RerunCommandPane(terminal_pane_id, completion_tx) => {
                     screen.rerun_command_pane_with_id(terminal_pane_id, completion_tx);
