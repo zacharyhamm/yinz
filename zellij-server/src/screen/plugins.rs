@@ -20,6 +20,52 @@ use zellij_types::input::layout::{Run, RunPluginOrAlias};
 use zellij_types::pane_size::Size;
 
 impl Screen {
+    /// The tab a plugin launched by id, rather than for a client, goes into: the one named,
+    /// else the first active one. Logs when there is none.
+    fn tab_for_plugin_launch(&self, explicit_tab_id: Option<TabId>) -> Option<TabId> {
+        let tab_index = explicit_tab_id.or_else(|| self.active_tab_ids.values().next().copied());
+        if tab_index.is_none() {
+            log::error!("Could not find an active tab - is there at least 1 connected user?");
+        }
+        tab_index
+    }
+
+    /// Asks the pty thread to resolve `run_plugin`'s cwd and load it into `tab_index`, replacing
+    /// `pane_id_to_replace` when one is named. The pty thread answers with `AddPlugin`.
+    fn fill_plugin_cwd(
+        &self,
+        should_float: bool,
+        should_open_in_place: bool,
+        close_replaced_pane: bool,
+        run_plugin: RunPluginOrAlias,
+        tab_index: TabId,
+        pane_id_to_replace: Option<PaneId>,
+        client_id: ClientId,
+        skip_cache: bool,
+        cwd: Option<PathBuf>,
+        no_focus: bool,
+        completion_tx: Option<NotificationEnd>,
+        overlay_placement: Option<OverlayPlacement>,
+    ) -> Result<()> {
+        self.bus.senders.send_to_pty(PtyInstruction::FillPluginCwd(
+            Some(should_float),
+            should_open_in_place,
+            close_replaced_pane,
+            None,
+            run_plugin,
+            tab_index,
+            pane_id_to_replace,
+            client_id,
+            Size::default(),
+            skip_cache,
+            cwd,
+            if no_focus { Some(false) } else { None },
+            None,
+            completion_tx,
+            overlay_placement,
+        ))
+    }
+
     /// Asks the pty thread to resolve a cwd for a plugin and load it, replacing `pane_id_to_replace`
     /// when one is named and otherwise opening beside the client's active pane.
     pub(super) fn launch_plugin(
@@ -37,68 +83,34 @@ impl Screen {
         no_focus: bool,
         overlay_placement: Option<OverlayPlacement>,
     ) -> Result<()> {
-        match pane_id_to_replace {
-            Some(pane_id_to_replace) => {
-                let resolved_tab_index =
-                    explicit_tab_id.or_else(|| self.active_tab_ids.values().next().copied());
-                match resolved_tab_index {
-                    Some(tab_index) => {
-                        let size = Size::default();
-                        self.bus.senders.send_to_pty(PtyInstruction::FillPluginCwd(
-                            Some(should_float),
-                            should_open_in_place,
-                            close_replaced_pane,
-                            None,
-                            run_plugin,
-                            tab_index,
-                            Some(pane_id_to_replace),
-                            client_id,
-                            size,
-                            skip_cache,
-                            cwd,
-                            if no_focus { Some(false) } else { None },
-                            None,
-                            completion_tx,
-                            overlay_placement,
-                        ))?;
-                    },
-                    None => {
-                        log::error!(
-                            "Could not find an active tab - is there at least 1 connected user?"
-                        );
-                    },
-                }
-            },
-            None => {
-                let resolved_tab_and_client =
-                    self.resolve_tab_and_client(client_id, explicit_tab_id);
-                match resolved_tab_and_client {
-                    Some((tab_index, client_id)) => {
-                        self.bus.senders.send_to_pty(PtyInstruction::FillPluginCwd(
-                            Some(should_float),
-                            should_open_in_place,
-                            close_replaced_pane,
-                            None,
-                            run_plugin,
-                            tab_index,
-                            None,
-                            client_id,
-                            Size::default(),
-                            skip_cache,
-                            cwd,
-                            if no_focus { Some(false) } else { None },
-                            None,
-                            completion_tx,
-                            overlay_placement,
-                        ))?;
-                    },
-                    None => {
-                        log::error!("No connected clients found - cannot load or focus plugin")
-                    },
-                }
-            },
-        }
-        Ok(())
+        let (tab_index, client_id) = if pane_id_to_replace.is_some() {
+            match self.tab_for_plugin_launch(explicit_tab_id) {
+                Some(tab_index) => (tab_index, client_id),
+                None => return Ok(()),
+            }
+        } else {
+            match self.resolve_tab_and_client(client_id, explicit_tab_id) {
+                Some(resolved) => resolved,
+                None => {
+                    log::error!("No connected clients found - cannot load or focus plugin");
+                    return Ok(());
+                },
+            }
+        };
+        self.fill_plugin_cwd(
+            should_float,
+            should_open_in_place,
+            close_replaced_pane,
+            run_plugin,
+            tab_index,
+            pane_id_to_replace,
+            client_id,
+            skip_cache,
+            cwd,
+            no_focus,
+            completion_tx,
+            overlay_placement,
+        )
     }
 
     /// Focuses the plugin's pane if one is already open, otherwise asks the pty thread to
@@ -118,74 +130,55 @@ impl Screen {
     ) -> Result<()> {
         match pane_id_to_replace {
             Some(pane_id_to_replace) if should_open_in_place => {
-                let resolved_tab_index =
-                    explicit_tab_id.or_else(|| self.active_tab_ids.values().next().copied());
-                match resolved_tab_index {
-                    Some(tab_index) => {
-                        let size = Size::default();
-                        self.bus.senders.send_to_pty(PtyInstruction::FillPluginCwd(
-                            Some(should_float),
-                            should_open_in_place,
-                            close_replaced_pane,
-                            None,
-                            run_plugin,
-                            tab_index,
-                            Some(pane_id_to_replace),
-                            client_id,
-                            size,
-                            skip_cache,
-                            None,
-                            None,
-                            None,
-                            completion_tx,
-                            None,
-                        ))?;
-                    },
-                    None => {
-                        log::error!(
-                            "Could not find an active tab - is there at least 1 connected user?"
-                        );
-                    },
+                if let Some(tab_index) = self.tab_for_plugin_launch(explicit_tab_id) {
+                    self.fill_plugin_cwd(
+                        should_float,
+                        should_open_in_place,
+                        close_replaced_pane,
+                        run_plugin,
+                        tab_index,
+                        Some(pane_id_to_replace),
+                        client_id,
+                        skip_cache,
+                        None,
+                        false,
+                        completion_tx,
+                        None,
+                    )?;
                 }
             },
             _ => {
-                let resolved_tab_and_client =
-                    self.resolve_tab_and_client(client_id, explicit_tab_id);
-                match resolved_tab_and_client {
-                    Some((tab_index, client_id)) => {
-                        if self.focus_plugin_pane(
-                            &run_plugin,
-                            should_float,
-                            move_to_focused_tab,
-                            should_open_in_place,
-                            client_id,
-                            &mut completion_tx,
-                        )? {
-                            self.render(None)?;
-                            self.log_and_report_session_state()?;
-                        } else {
-                            self.bus.senders.send_to_pty(PtyInstruction::FillPluginCwd(
-                                Some(should_float),
-                                should_open_in_place,
-                                close_replaced_pane,
-                                None,
-                                run_plugin,
-                                tab_index,
-                                None,
-                                client_id,
-                                Size::default(),
-                                skip_cache,
-                                None,
-                                None,
-                                None,
-                                completion_tx,
-                                None,
-                            ))?;
-                        }
-                    },
-                    None => {
-                        log::error!("No connected clients found - cannot load or focus plugin")
-                    },
+                let Some((tab_index, client_id)) =
+                    self.resolve_tab_and_client(client_id, explicit_tab_id)
+                else {
+                    log::error!("No connected clients found - cannot load or focus plugin");
+                    return Ok(());
+                };
+                if self.focus_plugin_pane(
+                    &run_plugin,
+                    should_float,
+                    move_to_focused_tab,
+                    should_open_in_place,
+                    client_id,
+                    &mut completion_tx,
+                )? {
+                    self.render(None)?;
+                    self.log_and_report_session_state()?;
+                } else {
+                    self.fill_plugin_cwd(
+                        should_float,
+                        should_open_in_place,
+                        close_replaced_pane,
+                        run_plugin,
+                        tab_index,
+                        None,
+                        client_id,
+                        skip_cache,
+                        None,
+                        false,
+                        completion_tx,
+                        None,
+                    )?;
                 }
             },
         }
@@ -377,40 +370,34 @@ impl Screen {
         explicit_tab_id: Option<TabId>,
         no_focus: bool,
     ) -> Result<()> {
-        let resolved_tab_index =
-            explicit_tab_id.or_else(|| self.active_tab_ids.values().next().copied());
-        match resolved_tab_index {
-            Some(tab_index) => {
-                let size = Size::default();
-                let should_float = Some(true);
-                let should_be_opened_in_place = false;
-                let should_focus_plugin = if no_focus { Some(false) } else { None };
-                let overlay_placement = match &placement {
-                    NewPanePlacement::Overlay(overlay) => Some(overlay.clone()),
-                    _ => None,
-                };
-                self.bus.senders.send_to_pty(PtyInstruction::FillPluginCwd(
-                    should_float,
-                    should_be_opened_in_place,
-                    false, // close_replaced_pane
-                    pane_title,
-                    run_plugin,
-                    tab_index,
-                    None,
-                    client_id,
-                    size,
-                    skip_cache,
-                    cwd,
-                    should_focus_plugin,
-                    placement.floating_pane_coordinates(),
-                    completion_tx,
-                    overlay_placement,
-                ))?;
-            },
-            None => {
-                log::error!("Could not find an active tab - is there at least 1 connected user?");
-            },
-        }
+        let Some(tab_index) = self.tab_for_plugin_launch(explicit_tab_id) else {
+            return Ok(());
+        };
+        let size = Size::default();
+        let should_float = Some(true);
+        let should_be_opened_in_place = false;
+        let should_focus_plugin = if no_focus { Some(false) } else { None };
+        let overlay_placement = match &placement {
+            NewPanePlacement::Overlay(overlay) => Some(overlay.clone()),
+            _ => None,
+        };
+        self.bus.senders.send_to_pty(PtyInstruction::FillPluginCwd(
+            should_float,
+            should_be_opened_in_place,
+            false, // close_replaced_pane
+            pane_title,
+            run_plugin,
+            tab_index,
+            None,
+            client_id,
+            size,
+            skip_cache,
+            cwd,
+            should_focus_plugin,
+            placement.floating_pane_coordinates(),
+            completion_tx,
+            overlay_placement,
+        ))?;
         Ok(())
     }
 }
