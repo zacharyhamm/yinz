@@ -1368,13 +1368,12 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
 
             let mut tabs = layout.tabs();
-            #[allow(clippy::needless_return)]
             if tabs.len() > 1 {
-                return Err(ConfigError::new_kdl_error(
+                Err(ConfigError::new_kdl_error(
                     "Tab layout cannot itself have tabs".to_string(),
                     kdl_action.span().offset(),
                     kdl_action.span().len(),
-                ));
+                ))
             } else if !tabs.is_empty() {
                 let (tab_name, mut layout, floating_panes_layout) = tabs.drain(..).next().unwrap();
                 // A name given with the action, filling in for a layout that gave none, is the
@@ -1484,13 +1483,12 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
 
             let mut tabs = layout.tabs();
-            #[allow(clippy::needless_return)]
             if tabs.len() > 1 {
-                return Err(ConfigError::new_kdl_error(
+                Err(ConfigError::new_kdl_error(
                     "Tab layout cannot itself have tabs".to_string(),
                     kdl_action.span().offset(),
                     kdl_action.span().len(),
-                ));
+                ))
             } else if !tabs.is_empty() {
                 let (tab_name, layout, floating_panes_layout) = tabs.drain(..).next().unwrap();
                 let name = tab_name.or(name);

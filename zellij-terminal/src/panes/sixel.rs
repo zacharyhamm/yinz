@@ -1,4 +1,3 @@
-#![allow(clippy::iter_kv_map)]
 use crate::output::SixelImageChunk;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -300,8 +299,8 @@ impl SixelGrid {
         match *self.character_cell_size.borrow() {
             Some(character_cell_size) => self
                 .sixel_image_locations
-                .iter()
-                .map(|(_image_id, pixel_rect)| {
+                .values()
+                .map(|pixel_rect| {
                     let scrollback_size_in_pixels = scrollback_height * character_cell_size.height;
                     let y_pixel_coordinates_in_viewport =
                         pixel_rect.y - scrollback_size_in_pixels as isize;

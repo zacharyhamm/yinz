@@ -1,5 +1,4 @@
 #![allow(clippy::type_complexity)]
-#![allow(clippy::iter_overeager_cloned)]
 use super::{PinnedExecutor, PluginId, PluginInstruction};
 use crate::pipes::{apply_pipe_message_to_plugin, pipes_to_block_or_unblock, PendingPipes};
 use crate::plugin_loader::PluginLoader;
@@ -1534,12 +1533,12 @@ impl WasmBridge {
             .unwrap()
             .running_plugins()
             .iter()
-            .cloned()
-            .filter(|(plugin_id, _client_id, _running_plugin)| {
+            .filter(|&(plugin_id, _client_id, _running_plugin)| {
                 !self
                     .cached_resizes_for_pending_plugins
                     .contains_key(plugin_id)
             })
+            .cloned()
             .collect();
         for (plugin_id, client_id, running_plugin) in plugins_to_resize {
             if plugin_id == pid {
@@ -1853,12 +1852,14 @@ impl WasmBridge {
             .unwrap()
             .running_plugins_and_subscriptions()
             .iter()
+            .filter(
+                |&(plugin_id, _client_id, _running_plugin, _subscriptions)| {
+                    !&self
+                        .cached_events_for_pending_plugins
+                        .contains_key(plugin_id)
+                },
+            )
             .cloned()
-            .filter(|(plugin_id, _client_id, _running_plugin, _subscriptions)| {
-                !&self
-                    .cached_events_for_pending_plugins
-                    .contains_key(plugin_id)
-            })
             .collect();
 
         // One job per plugin instance carrying every event of the batch it takes, so a batch of
@@ -2110,12 +2111,14 @@ impl WasmBridge {
             .unwrap()
             .running_plugins_and_subscriptions()
             .iter()
+            .filter(
+                |&(plugin_id, _client_id, _running_plugin, _subscriptions)| {
+                    !&self
+                        .cached_events_for_pending_plugins
+                        .contains_key(plugin_id)
+                },
+            )
             .cloned()
-            .filter(|(plugin_id, _client_id, _running_plugin, _subscriptions)| {
-                !&self
-                    .cached_events_for_pending_plugins
-                    .contains_key(plugin_id)
-            })
             .collect();
 
         // Execute each pipe message on its respective plugin's pinned thread

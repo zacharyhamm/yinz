@@ -1,4 +1,3 @@
-#![allow(clippy::unnecessary_to_owned)]
 #![allow(clippy::ptr_arg)]
 mod component_coordinates;
 mod nested_list;
@@ -64,7 +63,6 @@ impl<'a> UiComponentParser<'a> {
         // 6. Finally, we take this string, encode it back into bytes and pass it back through the ANSI
         //    parser (our `Grid`) in order to create a representation of it on screen
         let mut params: Vec<String> = String::from_utf8_lossy(&bytes)
-            .to_string()
             .split(';')
             .map(|c| c.to_owned())
             .collect();

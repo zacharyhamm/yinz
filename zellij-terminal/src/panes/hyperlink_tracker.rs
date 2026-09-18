@@ -1,4 +1,3 @@
-#![allow(clippy::clone_on_copy)]
 use crate::panes::grid::Row;
 use crate::panes::link_handler::LinkHandler;
 use crate::panes::terminal_character::{Cursor, LinkAnchor};
@@ -75,13 +74,13 @@ impl HyperlinkTracker {
                 self.finalize_and_apply(viewport, lines_above, link_handler);
             } else {
                 self.buffer.push(ch);
-                self.cursor_positions.push(current_pos.clone());
+                self.cursor_positions.push(current_pos);
             }
         } else {
             if matches!(ch, 'h' | 'f' | 'm') {
                 self.buffer.push(ch);
-                self.cursor_positions.push(current_pos.clone());
-                self.start_position = Some(current_pos.clone());
+                self.cursor_positions.push(current_pos);
+                self.start_position = Some(current_pos);
             }
         }
 
@@ -193,7 +192,7 @@ impl HyperlinkTracker {
 
             let detected_link = DetectedLink {
                 url: trimmed_url.clone(),
-                start_position: self.start_position.clone().unwrap(),
+                start_position: self.start_position.unwrap(),
                 end_position,
             };
 
@@ -251,13 +250,13 @@ impl HyperlinkTracker {
                         character.styles.update(|styles| {
                             if y == start_pos.y && char_index == start_char_index {
                                 // First character gets the start anchor
-                                styles.link_anchor = Some(link_anchor_start.clone());
+                                styles.link_anchor = Some(link_anchor_start);
                             } else if y == end_pos.y && char_index == end_char_index {
                                 // Last character gets the end anchor
                                 styles.link_anchor = Some(LinkAnchor::End);
                             } else {
                                 // Middle characters get the same start anchor
-                                styles.link_anchor = Some(link_anchor_start.clone());
+                                styles.link_anchor = Some(link_anchor_start);
                             }
                         });
                     }

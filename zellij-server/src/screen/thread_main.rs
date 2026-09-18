@@ -286,7 +286,7 @@ pub(crate) fn screen_thread_main(
     let default_shell = config_options
         .default_shell
         .clone()
-        .unwrap_or_else(|| get_default_shell());
+        .unwrap_or_else(get_default_shell);
     let default_shell_action = config_options.default_shell.clone().map(|shell| {
         TerminalAction::RunCommand(RunCommand {
             command: shell,
@@ -298,7 +298,7 @@ pub(crate) fn screen_thread_main(
     let default_editor = config_options
         .scrollback_editor
         .clone()
-        .or_else(|| get_default_editor());
+        .or_else(get_default_editor);
     let default_layout_name = config_options
         .default_layout
         .map(|l| format!("{}", l.display()));
@@ -3750,7 +3750,7 @@ pub(crate) fn screen_thread_main(
                     plugin_id,
                     highlights,
                 } => {
-                    let style = screen.style.clone();
+                    let style = screen.style;
                     if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                         tab.set_plugin_regex_highlights_for_pane(
                             pane_id, plugin_id, highlights, &style,

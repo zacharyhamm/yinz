@@ -88,10 +88,10 @@ fn deno_widgets_match_shared_rust_controls_and_markdown() {
         }
     }
     for mouse in [Mouse::LeftClick(3,3),Mouse::Release(3,3),Mouse::Hover(8,3)] {
-        let expected = super::ui::action(form.handle_mouse(mouse.clone()));
+        let expected = super::ui::action(form.handle_mouse(mouse));
         run(&mut runtime,&format!("check(JSON.stringify(form.handleMouse({})) === JSON.stringify({expected}));",json!(mouse)));
         // The raw event as it arrived is accepted too, and means the same thing.
-        let expected = super::ui::action(form.handle_mouse(mouse.clone()));
+        let expected = super::ui::action(form.handle_mouse(mouse));
         run(&mut runtime,&format!("check(JSON.stringify(form.handleMouse({{Mouse: {}}})) === JSON.stringify({expected}));",json!(mouse)));
     }
     let key = KeyWithModifier::new(BareKey::Tab);

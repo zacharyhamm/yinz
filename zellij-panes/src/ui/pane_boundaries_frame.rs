@@ -1,5 +1,4 @@
 #![allow(clippy::same_item_push)]
-#![allow(clippy::unnecessary_to_owned)]
 use crate::output::CharacterChunk;
 use crate::panes::{
     AnsiCode, CharacterStyles, RcCharacterStyles, TerminalCharacter, EMPTY_TERMINAL_CHARACTER,

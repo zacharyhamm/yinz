@@ -73,7 +73,7 @@ fn handle_reply_writes_to_pane_pty_and_releases_slot() {
         "slot released so the next queued forward can dispatch"
     );
     assert!(
-        screen.pending_forwarded_queries.get(&token).is_none(),
+        !screen.pending_forwarded_queries.contains_key(&token),
         "token entry must have been removed from the map"
     );
 }
@@ -581,7 +581,7 @@ fn plugin_pane_reply_is_dropped_without_write() {
         "plugin-pane token must not produce a pty write"
     );
     assert!(
-        screen.pending_forwarded_queries.get(&77).is_none(),
+        !screen.pending_forwarded_queries.contains_key(&77),
         "map entry must still be cleared even when the reply is dropped"
     );
     assert!(

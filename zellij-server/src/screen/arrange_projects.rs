@@ -180,7 +180,7 @@ impl Screen {
                 })
                 .unwrap_or(Ok(None));
             let layout = match loaded {
-                Ok(layout) => layout.unwrap_or_else(|| TiledPaneLayout::default()),
+                Ok(layout) => layout.unwrap_or_else(TiledPaneLayout::default),
                 Err(error) => {
                     self.arrangement_notice(format!("Arrange {}: {error}", group.name));
                     continue;

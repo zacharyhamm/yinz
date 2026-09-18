@@ -1,8 +1,6 @@
 #![allow(clippy::type_complexity)]
-#![allow(clippy::needless_return)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::bind_instead_of_map)]
-#![allow(clippy::for_kv_map)]
 #![allow(clippy::field_reassign_with_default)]
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::same_item_push)]
@@ -3443,7 +3441,7 @@ impl Tab {
                         }
                     },
                 }
-                return Ok(());
+                Ok(())
             },
             NewPanePlacement::Floating(floating_pane_coordinates) => self.new_floating_pane(
                 pid,
@@ -3879,7 +3877,7 @@ impl Tab {
                 self.add_stacked_pane_to_active_pane(new_pane, pid, client_id, should_focus_pane)
             } else {
                 log::error!("Must have client id or pane id to stack pane");
-                return Ok(());
+                Ok(())
             }
         }
     }
@@ -9344,7 +9342,7 @@ impl Tab {
         pane_info.append(&mut tiled_pane_info);
         pane_info.append(&mut floating_pane_info);
         pane_info.append(&mut overlay_pane_info);
-        for (_suppressed_pane_id, SuppressedPane { pane, .. }) in self.suppressed_panes.iter() {
+        for SuppressedPane { pane, .. } in self.suppressed_panes.values() {
             let mut pane_info_for_suppressed_pane =
                 pane_info_for_pane(&pane.pid(), pane.as_ref(), &current_pane_group);
             pane_info_for_suppressed_pane.is_floating = false;

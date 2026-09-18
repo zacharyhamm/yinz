@@ -1,15 +1,7 @@
 #![allow(clippy::type_complexity)]
-#![allow(clippy::unwrap_or_default)]
-#![allow(clippy::iter_kv_map)]
 #![allow(clippy::single_match)]
-#![allow(clippy::for_kv_map)]
 #![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::unnecessary_get_then_check)]
-#![allow(clippy::clone_on_copy)]
 #![allow(clippy::collapsible_if)]
-#![allow(clippy::needless_option_take)]
-#![allow(clippy::needless_return)]
 #![allow(clippy::option_map_unit_fn)]
 //! Things related to [`Screen`]s.
 //!
@@ -1709,7 +1701,7 @@ impl Screen {
             }
         });
 
-        let tab_name = tab_name.unwrap_or_else(String::new);
+        let tab_name = tab_name.unwrap_or_default();
 
         let position = TabPosition::new(self.tabs.len());
         let tab_size = self.size_for_client(client_id);
@@ -3649,7 +3641,7 @@ impl Screen {
         // keybinds and base mode must be kept in sync with reconfigures.
         self.default_mode_info.update_keybinds(new_keybinds.clone());
         self.default_mode_info.update_default_mode(new_default_mode);
-        self.default_shell = default_shell.clone().unwrap_or_else(|| get_default_shell());
+        self.default_shell = default_shell.clone().unwrap_or_else(get_default_shell);
         self.default_shell_action = default_shell.clone().map(|shell| {
             TerminalAction::RunCommand(RunCommand {
                 command: shell,
@@ -3658,7 +3650,7 @@ impl Screen {
                 ..Default::default()
             })
         });
-        self.default_editor = default_editor.clone().or_else(|| get_default_editor());
+        self.default_editor = default_editor.clone().or_else(get_default_editor);
         self.auto_layout = auto_layout;
         self.copy_options.command = copy_command.clone();
         self.copy_options.copy_on_select = copy_on_select;
@@ -4838,7 +4830,7 @@ impl Screen {
         for client_id in connected_clients {
             if let Some(active_pane_id) = self.get_active_pane_id(&client_id) {
                 let active_pane_id: PaneId = active_pane_id;
-                let history = self.pane_history.entry(client_id).or_insert_with(|| vec![]);
+                let history = self.pane_history.entry(client_id).or_default();
                 history.retain(|e| e != &active_pane_id);
                 history.push(active_pane_id);
             }
@@ -4900,7 +4892,7 @@ pub(crate) fn agent_hook_edges(
 fn get_default_editor() -> Option<PathBuf> {
     std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
-        .map(|e| PathBuf::from(e))
+        .map(PathBuf::from)
         .ok()
 }
 

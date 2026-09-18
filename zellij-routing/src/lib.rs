@@ -1,7 +1,5 @@
 #![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::clone_on_copy)]
 #![allow(clippy::borrowed_box)]
-#![allow(clippy::redundant_closure)]
 //! Synchronous action dispatch over the thread bus, shared by the server and plugin host.
 use std::collections::{BTreeMap, HashSet};
 use tokio::sync::oneshot;
@@ -1334,8 +1332,8 @@ pub fn route_action(
             if name != current_session_name {
                 let connect_to_session = SessionConnection {
                     name: Some(name.clone()),
-                    tab_position: tab_position.clone(),
-                    pane_id: pane_id.clone(),
+                    tab_position,
+                    pane_id,
                     layout: layout.clone(),
                     cwd: cwd.clone(),
                 };

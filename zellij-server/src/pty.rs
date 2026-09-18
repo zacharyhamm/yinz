@@ -1,6 +1,4 @@
 // Clippy allows kept as debt — see REVIEW_CHECKLIST.md.
-#![allow(clippy::clone_on_copy)]
-#![allow(clippy::redundant_closure)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::collapsible_match)]
 use crate::background_jobs::write_session_state_to_disk;
