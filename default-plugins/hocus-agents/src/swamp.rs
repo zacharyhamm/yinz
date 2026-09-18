@@ -5,6 +5,7 @@ use serde::Deserialize;
 const REFRESH_MS: i64 = 60_000;
 const REQUEST_ID: &str = "swamp_issue_request";
 const ISSUE_NUMBER: &str = "swamp_issue_number";
+const TYPES: [&str; 4] = ["", "bug", "feature", "security"];
 const STATUSES: [&str; 6] = ["", "open", "triaged", "in_progress", "shipped", "closed"];
 
 #[derive(Debug, Deserialize)]
@@ -70,9 +71,14 @@ pub(super) struct View {
     query: String,
     editing: Option<String>,
     status: usize,
+    kind: usize,
+    source: String,
+    editing_source: bool,
+    filter_cells: Vec<(usize, usize, usize, char)>, // row, column, width, shortcut
     search: Option<Search>,
     selected: usize,
     list_scroll: Option<usize>,
+    list_rows: Vec<(usize, String)>,
     list_error: Option<String>,
     opened: Option<u64>,
     detail: Option<Detail>,
@@ -106,6 +112,7 @@ impl View {
     }
 
     pub(super) fn clear_dimensions(&mut self) {
+        self.filter_cells.clear();
         self.last_body_rows = 0;
         self.last_body_top = 0;
         self.window = 0;
@@ -146,7 +153,8 @@ impl View {
 
     fn header(&self) -> String {
         if let Some(query) = &self.editing {
-            return format!("/{query} · Enter apply · Esc cancel");
+            let prefix = if self.editing_source { "Source: " } else { "/" };
+            return format!("{prefix}{query} · Enter apply · Esc cancel");
         }
         if let Some(number) = self.opened {
             return format!("#{number} · Esc back · r refresh");
@@ -163,10 +171,7 @@ impl View {
         } else {
             format!(" · {}", self.query)
         };
-        format!(
-            "{}{count}{query} · / search · s status · r refresh",
-            status_label(STATUSES[self.status])
-        )
+        format!("Issues{count}{query} · / search · r refresh")
     }
 }
 
@@ -253,7 +258,12 @@ impl State {
         }
         let (target, args) = if self.swamp.search_wanted {
             self.swamp.search_wanted = false;
-            let args = match search_args(&self.swamp.query, STATUSES[self.swamp.status]) {
+            let args = match search_args(
+                &self.swamp.query,
+                STATUSES[self.swamp.status],
+                TYPES[self.swamp.kind],
+                &self.swamp.source,
+            ) {
                 Ok(args) => args,
                 Err(error) => {
                     self.swamp.list_error = Some(error);
@@ -393,11 +403,25 @@ impl State {
             match key.bare_key {
                 BareKey::Esc => self.swamp.editing = None,
                 BareKey::Enter => {
-                    if let Err(error) = search_args(query.trim(), STATUSES[self.swamp.status]) {
+                    let (keyword, source) = if self.swamp.editing_source {
+                        (self.swamp.query.as_str(), query.trim())
+                    } else {
+                        (query.trim(), self.swamp.source.as_str())
+                    };
+                    if let Err(error) = search_args(
+                        keyword,
+                        STATUSES[self.swamp.status],
+                        TYPES[self.swamp.kind],
+                        source,
+                    ) {
                         self.swamp.list_error = Some(error);
                         return true;
                     }
-                    self.swamp.query = query.trim().to_owned();
+                    if self.swamp.editing_source {
+                        self.swamp.source = query.trim().to_owned();
+                    } else {
+                        self.swamp.query = query.trim().to_owned();
+                    }
                     self.swamp.editing = None;
                     self.search_swamp();
                 },
@@ -442,22 +466,54 @@ impl State {
                 self.poll_swamp(now_ms(), true);
             },
             BareKey::Char('/') if self.swamp.opened.is_none() => {
+                self.swamp.editing_source = false;
                 self.swamp.editing = Some(self.swamp.query.clone());
             },
             BareKey::Char('s') if self.swamp.opened.is_none() => {
                 self.swamp.status = (self.swamp.status + 1) % STATUSES.len();
                 self.search_swamp();
             },
+            BareKey::Char('t') if self.swamp.opened.is_none() => {
+                self.swamp.kind = (self.swamp.kind + 1) % TYPES.len();
+                self.search_swamp();
+            },
+            BareKey::Char('f') if self.swamp.opened.is_none() => {
+                self.swamp.editing_source = true;
+                self.swamp.editing = Some(self.swamp.source.clone());
+            },
             BareKey::Enter if self.swamp.opened.is_none() => self.open_swamp_issue(),
             BareKey::Up | BareKey::Char('k') => self.swamp_step(-1),
             BareKey::Down | BareKey::Char('j') => self.swamp_step(1),
-            BareKey::PageUp => self.swamp_step(-page),
-            BareKey::PageDown => self.swamp_step(page),
+            BareKey::PageUp => self.swamp_page(-page),
+            BareKey::PageDown => self.swamp_page(page),
             BareKey::Home => self.swamp_step(-isize::MAX),
             BareKey::End => self.swamp_step(isize::MAX),
             _ => return false,
         }
         true
+    }
+
+    fn swamp_page(&mut self, delta: isize) {
+        if self.swamp.opened.is_some() {
+            self.swamp_step(delta);
+            return;
+        }
+        let first = self
+            .swamp
+            .list_rows
+            .iter()
+            .position(|(index, _)| *index == self.swamp.selected)
+            .unwrap_or(0);
+        let target = first
+            .saturating_add_signed(delta)
+            .min(self.swamp.list_rows.len().saturating_sub(1));
+        let index = self
+            .swamp
+            .list_rows
+            .get(target)
+            .map_or(self.swamp.selected, |(index, _)| *index);
+        let step = index as isize - self.swamp.selected as isize;
+        self.swamp_step(if step == 0 { delta.signum() } else { step });
     }
 
     fn swamp_step(&mut self, delta: isize) {
@@ -478,6 +534,17 @@ impl State {
     }
 
     pub(super) fn swamp_mouse(&mut self, mouse: Mouse) -> bool {
+        if self.swamp.opened.is_none() && self.swamp.editing.is_none() {
+            if let Mouse::LeftClick(line, column) = mouse {
+                if let Some((_, _, _, shortcut)) =
+                    self.swamp.filter_cells.iter().find(|(row, x, width, _)| {
+                        line == *row as isize && column >= *x && column < x + width
+                    })
+                {
+                    return self.swamp_key(KeyWithModifier::new(BareKey::Char(*shortcut)));
+                }
+            }
+        }
         if self.swamp.last_body_rows == 0 {
             return false;
         }
@@ -508,10 +575,13 @@ impl State {
                     return false;
                 };
                 let index = self.swamp.window + row;
-                if row >= self.swamp.last_body_rows || index >= self.swamp.issues().len() {
+                if row >= self.swamp.last_body_rows {
                     return false;
                 }
-                self.swamp.selected = index;
+                let Some((issue, _)) = self.swamp.list_rows.get(index) else {
+                    return false;
+                };
+                self.swamp.selected = *issue;
                 self.open_swamp_issue();
                 true
             },
@@ -525,7 +595,52 @@ impl State {
             return;
         }
         let note = self.swamp.note();
-        let top = 1 + usize::from(note.is_some() && rows > 1);
+        let mut top = 1 + usize::from(note.is_some() && rows > 1);
+        self.swamp.filter_cells.clear();
+        if self.swamp.opened.is_none() {
+            let mut x = 0;
+            for (label, value, shortcut) in [
+                ("Status", status_label(STATUSES[self.swamp.status]), 's'),
+                (
+                    "Type",
+                    if self.swamp.kind == 0 {
+                        "All"
+                    } else {
+                        TYPES[self.swamp.kind]
+                    },
+                    't',
+                ),
+                (
+                    "Source",
+                    if self.swamp.source.is_empty() {
+                        "All"
+                    } else {
+                        &self.swamp.source
+                    },
+                    'f',
+                ),
+            ] {
+                let text = fit(&format!("[{label}: {value} ({shortcut})]"), cols);
+                let width = text.width();
+                if x > 0 && x + width > cols {
+                    top += 1;
+                    x = 0;
+                }
+                if top >= rows {
+                    break;
+                }
+                paint(
+                    Text::new(text).color_range(2, ..),
+                    x,
+                    top,
+                    Some(width),
+                    None,
+                );
+                self.swamp.filter_cells.push((top, x, width, shortcut));
+                x += width + 1;
+            }
+            top = (top + 1).min(rows);
+        }
         let room = rows.saturating_sub(top);
         self.swamp.last_body_top = top;
         self.swamp.last_body_rows = room;
@@ -578,11 +693,37 @@ impl State {
                 Some(cols),
                 None,
             );
-            self.swamp.max_scroll = self.swamp.issues().len().saturating_sub(room);
+            self.swamp.list_rows = self
+                .swamp
+                .issues()
+                .iter()
+                .enumerate()
+                .flat_map(|(index, issue)| {
+                    issue_lines(issue, index == self.swamp.selected, cols)
+                        .into_iter()
+                        .map(move |line| (index, line))
+                })
+                .collect();
+            let lines = &self.swamp.list_rows;
+            self.swamp.max_scroll = lines.len().saturating_sub(room);
+            let first = lines
+                .iter()
+                .position(|(index, _)| *index == self.swamp.selected)
+                .unwrap_or(0);
+            let end = lines
+                .iter()
+                .rposition(|(index, _)| *index == self.swamp.selected)
+                .map_or(0, |row| row + 1);
             let start = self
                 .swamp
                 .list_scroll
-                .unwrap_or_else(|| self.swamp.selected.saturating_sub(room / 2))
+                .unwrap_or_else(|| {
+                    if end - first >= room {
+                        first
+                    } else {
+                        self.swamp.window.min(first).max(end.saturating_sub(room))
+                    }
+                })
                 .min(self.swamp.max_scroll);
             self.swamp.window = start;
             if room > 0 {
@@ -598,21 +739,8 @@ impl State {
                         None,
                     );
                 }
-                for (row, issue) in self
-                    .swamp
-                    .issues()
-                    .iter()
-                    .skip(start)
-                    .take(room)
-                    .enumerate()
-                {
-                    let selected = start + row == self.swamp.selected;
-                    let text = Text::new(issue_line(issue, selected, cols));
-                    let text = if selected {
-                        text.selected().color_range(2, ..)
-                    } else {
-                        text
-                    };
+                for (row, (index, line)) in lines.iter().skip(start).take(room).enumerate() {
+                    let text = list_text(line, *index == self.swamp.selected);
                     paint(text, 0, top + row, Some(cols), None);
                 }
             }
@@ -631,18 +759,23 @@ impl State {
     }
 }
 
-fn search_args(query: &str, status: &str) -> Result<Vec<String>, String> {
+fn search_args(query: &str, status: &str, kind: &str, source: &str) -> Result<Vec<String>, String> {
     // The installed CLI ignores positionals after `--`. Reject an option-shaped
     // keyword rather than silently changing the meaning of the search.
     if query.starts_with('-') {
         return Err("Search must start with a keyword, not '-'".into());
     }
+    if source.starts_with('-') {
+        return Err("Source must start with a tag, not '-'".into());
+    }
     let mut args: Vec<String> = ["swamp", "issue", "search", "--json", "--limit", "100"]
         .into_iter()
         .map(str::to_owned)
         .collect();
-    if !status.is_empty() {
-        args.extend(["--status".into(), status.into()]);
+    for (flag, value) in [("--status", status), ("--type", kind), ("--source", source)] {
+        if !value.is_empty() {
+            args.extend([flag.into(), value.into()]);
+        }
     }
     if !query.is_empty() {
         args.push(query.into());
@@ -695,18 +828,34 @@ fn fit(text: &str, cols: usize) -> String {
     agents::cut_to_width(text, cols)
 }
 
-fn issue_line(issue: &Issue, selected: bool, cols: usize) -> String {
-    fit(
+fn list_text(line: &str, selected: bool) -> Text {
+    let text = Text::new(line);
+    if selected {
+        text.selected().color_range(2, ..)
+    } else {
+        text
+    }
+}
+
+fn issue_lines(issue: &Issue, selected: bool, cols: usize) -> Vec<String> {
+    let mut lines = vec![fit(
         &format!(
-            "{} #{} {} · {} · {}",
+            "{} #{} {} · {}",
             if selected { ">" } else { " " },
             issue.number,
             status_label(&issue.status),
             issue.kind,
-            issue.title
         ),
         cols,
-    )
+    )];
+    // Leave room for a wide Unicode character before adding the indentation.
+    let indent = if cols >= 4 { "  " } else { "" };
+    lines.extend(
+        zellij_tile::text::wrap(&issue.title, cols - indent.len())
+            .into_iter()
+            .map(|line| fit(&format!("{indent}{line}"), cols)),
+    );
+    lines
 }
 
 fn detail_lines(detail: &Detail, cols: usize) -> Vec<markdown::MdLine> {
@@ -867,12 +1016,119 @@ mod tests {
         assert!(empty.issues.is_empty());
         let unknown = SEARCH.replace("triaged", "reviewing");
         let search = decode::<Search>(Some(0), unknown.as_bytes(), &[]).unwrap();
-        assert!(issue_line(&search.issues[0], true, 100).contains("reviewing"));
+        assert!(issue_lines(&search.issues[0], true, 100)[0].contains("reviewing"));
         let empty = DETAIL.replace(r#"["skunk-ape"]"#, "[]");
         let mut value: serde_json::Value = serde_json::from_str(&empty).unwrap();
         value["comments"] = json!([]);
         let detail = decode::<Detail>(Some(0), value.to_string().as_bytes(), &[]).unwrap();
         assert!(detail.assignees.is_empty() && detail.comments.is_empty());
+    }
+
+    #[test]
+    fn filters_combine_coalesce_and_source_edits_apply_cancel_clear() {
+        let mut state = loaded();
+        key(&mut state, BareKey::Char('s'));
+        let stale = context(&state);
+        key(&mut state, BareKey::Char('t'));
+        key(&mut state, BareKey::Char('f'));
+        for ch in "  cli tag  ".chars() {
+            key(&mut state, BareKey::Char(ch));
+        }
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.source, "cli tag");
+        key(&mut state, BareKey::Char('/'));
+        for ch in "two words".chars() {
+            key(&mut state, BareKey::Char(ch));
+        }
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.commands.len(), 2);
+        state.swamp_result(Some(0), br#"{"issues":[],"total":0}"#, &[], &stale);
+        assert_eq!(state.swamp.issues().len(), 2, "superseded result discarded");
+        assert_eq!(
+            state.swamp.commands.last().unwrap().0,
+            [
+                "swamp",
+                "issue",
+                "search",
+                "--json",
+                "--limit",
+                "100",
+                "--status",
+                "open",
+                "--type",
+                "bug",
+                "--source",
+                "cli tag",
+                "two words",
+            ]
+        );
+        reply(&mut state, SEARCH);
+        key(&mut state, BareKey::Char('f'));
+        key(&mut state, BareKey::Backspace);
+        key(&mut state, BareKey::Esc);
+        assert_eq!(state.swamp.source, "cli tag");
+        key(&mut state, BareKey::Char('f'));
+        state.swamp.editing = Some("--help".into());
+        let count = state.swamp.commands.len();
+        key(&mut state, BareKey::Enter);
+        assert!(state.swamp.is_editing());
+        assert_eq!(state.swamp.commands.len(), count);
+        assert_eq!(state.swamp.source, "cli tag");
+        assert!(search_args("", "", "", "--help").is_err());
+        state.swamp.editing = Some("   ".into());
+        key(&mut state, BareKey::Enter);
+        assert!(state.swamp.source.is_empty());
+        assert!(!state.swamp.is_editing());
+        for _ in 1..STATUSES.len() {
+            key(&mut state, BareKey::Char('s'));
+        }
+        for _ in 1..TYPES.len() {
+            key(&mut state, BareKey::Char('t'));
+        }
+        assert_eq!((state.swamp.status, state.swamp.kind), (0, 0));
+        reply(&mut state, SEARCH);
+        assert_eq!(
+            state.swamp.commands.last().unwrap().0,
+            search_args("two words", "", "", "").unwrap()
+        );
+    }
+
+    #[test]
+    fn filter_chips_wrap_and_mouse_uses_rendered_positions() {
+        let mut state = loaded();
+        for cols in 1..80 {
+            state.render(12, cols);
+            assert_eq!(state.swamp.filter_cells.len(), 3);
+            for (row, x, width, _) in &state.swamp.filter_cells {
+                assert!(x + width <= cols);
+                assert!(*row < state.swamp.last_body_top);
+            }
+        }
+        state.render(12, 20);
+        let cells = state.swamp.filter_cells.clone();
+        assert!(cells.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        for (row, x, _, _) in cells {
+            assert!(state.on_mouse(Mouse::LeftClick(row as isize + 1, x)));
+        }
+        assert_eq!((state.swamp.status, state.swamp.kind), (1, 1));
+        assert!(state.swamp.editing_source && state.swamp.is_editing());
+        key(&mut state, BareKey::Esc);
+        reply(&mut state, SEARCH);
+        reply(&mut state, SEARCH);
+        state.render(12, 20);
+        assert!(state.on_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize + 1, 0)));
+        assert_eq!(state.swamp.opened, Some(2254));
+        assert_eq!((state.swamp.status, state.swamp.kind), (1, 1));
+        state.render(12, 20);
+        assert!(state.swamp.filter_cells.is_empty());
+        key(&mut state, BareKey::Esc);
+        state.switch_surface(Surface::Agents);
+        state.switch_surface(Surface::Swamp);
+        assert_eq!((state.swamp.status, state.swamp.kind), (1, 1));
+        state.render_swamp(2, 80);
+        assert_eq!(state.swamp.last_body_rows, 0);
+        state.swamp.clear_dimensions();
+        assert!(state.swamp.filter_cells.is_empty());
     }
 
     #[test]
@@ -923,12 +1179,12 @@ mod tests {
     #[test]
     fn keywords_are_single_arguments_and_statuses_use_the_cli_spelling() {
         assert_eq!(
-            search_args("", "").unwrap(),
+            search_args("", "", "", "").unwrap(),
             ["swamp", "issue", "search", "--json", "--limit", "100"]
         );
         let query = "two words; $(touch /tmp/no) `echo no`";
         assert_eq!(
-            search_args(query, "in_progress").unwrap(),
+            search_args(query, "in_progress", "", "").unwrap(),
             [
                 "swamp",
                 "issue",
@@ -941,12 +1197,12 @@ mod tests {
                 query
             ]
         );
-        assert!(search_args("--help", "").is_err());
+        assert!(search_args("--help", "", "", "").is_err());
         let mut state = loaded();
         for status in STATUSES.iter().skip(1).chain([&STATUSES[0]]) {
             key(&mut state, BareKey::Char('s'));
             let args = &state.swamp.commands.last().unwrap().0;
-            assert_eq!(*args, search_args("", status).unwrap());
+            assert_eq!(*args, search_args("", status, "", "").unwrap());
             reply(&mut state, SEARCH);
         }
         assert_eq!(state.swamp.status, 0);
@@ -999,7 +1255,7 @@ mod tests {
         key(&mut state, BareKey::Enter);
         assert_eq!(
             state.swamp.commands.last().unwrap().0,
-            search_args("", "").unwrap()
+            search_args("", "", "", "").unwrap()
         );
     }
 
@@ -1257,7 +1513,7 @@ mod tests {
         key(&mut state, BareKey::Esc);
         assert_eq!(state.panel_hides, 0);
         state.render(12, 80);
-        let line = state.swamp.last_body_top + 2; // second item plus tab bar
+        let line = state.swamp.last_body_top + 3; // second metadata row plus tab bar
         assert!(state.on_mouse(Mouse::LeftClick(line as isize, 4)));
         assert_eq!(state.swamp.opened, Some(2180));
         key(&mut state, BareKey::Esc);
@@ -1322,7 +1578,9 @@ mod tests {
                     .iter()
                     .all(|line| line.text.width() <= cols));
             }
-            assert!(issue_line(&state.swamp.issues()[0], true, cols).width() <= cols);
+            assert!(issue_lines(&state.swamp.issues()[0], true, cols)
+                .iter()
+                .all(|line| line.width() <= cols));
         }
         key(&mut state, BareKey::Esc);
         state.render(8, 4);
@@ -1338,10 +1596,123 @@ mod tests {
     }
 
     #[test]
+    fn titles_wrap_without_losing_words_and_stay_bounded() {
+        let mut state = loaded();
+        let issue = &mut state.swamp.search.as_mut().unwrap().issues[0];
+        issue.title = "alpha beta\ngamma\nabcdefghijk\n界面 é".into();
+        let lines = issue_lines(issue, true, 8);
+        assert_eq!(
+            &lines[1..],
+            &[
+                "  alpha",
+                "  beta",
+                "  gamma",
+                "  abcdef",
+                "  ghijk",
+                "  界面 é"
+            ]
+        );
+        assert!(!lines[0].contains("alpha"));
+        for cols in 0..20 {
+            assert!(issue_lines(issue, false, cols)
+                .iter()
+                .all(|line| line.width() <= cols));
+        }
+        for selected in [false, true] {
+            for line in &lines {
+                assert_eq!(
+                    list_text(line, selected).serialize().starts_with('x'),
+                    selected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn page_navigation_counts_rendered_rows_instead_of_issues() {
+        let mut state = loaded();
+        let issues = (0..20)
+            .map(|_| {
+                decode::<Search>(Some(0), SEARCH.as_bytes(), &[])
+                    .unwrap()
+                    .issues
+                    .remove(0)
+            })
+            .collect();
+        state.swamp.search = Some(Search { issues, total: 20 });
+        state.render_swamp(8, 80);
+        key(&mut state, BareKey::PageDown);
+        assert_eq!(state.swamp.selected, 2);
+        state.render_swamp(8, 80);
+        key(&mut state, BareKey::PageUp);
+        assert_eq!(state.swamp.selected, 0);
+        key(&mut state, BareKey::End);
+        state.render_swamp(8, 80);
+        assert_eq!(state.swamp.selected, 19);
+        assert_eq!(state.swamp.window, state.swamp.max_scroll);
+        key(&mut state, BareKey::Home);
+        state.render_swamp(8, 80);
+        assert_eq!(state.swamp.window, 0);
+    }
+
+    #[test]
+    fn wrapped_rows_drive_clicks_navigation_scroll_and_resize() {
+        let mut state = loaded();
+        state.swamp.search.as_mut().unwrap().issues[0].title = "word ".repeat(40);
+        state.render_swamp(10, 12);
+        let first_end = state
+            .swamp
+            .list_rows
+            .iter()
+            .position(|(index, _)| *index == 1)
+            .unwrap();
+        assert!(first_end > state.swamp.last_body_rows);
+        assert_eq!(state.swamp.window, 0);
+        state.swamp_mouse(Mouse::ScrollDown(3));
+        state.render_swamp(10, 12);
+        assert_eq!(state.swamp.window, 3);
+        assert_eq!(state.swamp.selected, 0);
+        assert!(state.swamp_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize, 0)));
+        assert_eq!(state.swamp.opened, Some(2254));
+        key(&mut state, BareKey::Esc);
+        state.render_swamp(10, 12);
+        key(&mut state, BareKey::Down);
+        state.render_swamp(10, 12);
+        assert_eq!(state.swamp.selected, 1);
+        assert!(state.swamp.window <= first_end);
+        assert!(state.swamp.window + state.swamp.last_body_rows >= state.swamp.list_rows.len());
+        key(&mut state, BareKey::Up);
+        state.render_swamp(10, 12);
+        assert_eq!(state.swamp.window, 0);
+        key(&mut state, BareKey::PageDown);
+        assert_eq!(state.swamp.selected, 1);
+        key(&mut state, BareKey::PageUp);
+        assert_eq!(state.swamp.selected, 0);
+        state.render_swamp(10, 12);
+        state.swamp_mouse(Mouse::ScrollDown(usize::MAX));
+        state.render_swamp(10, 12);
+        assert_eq!(state.swamp.window, state.swamp.max_scroll);
+        state.render_swamp(20, 100);
+        assert_eq!(state.swamp.window, 0);
+        assert_eq!(state.swamp.list_scroll, Some(0));
+        let continuation = state
+            .swamp
+            .list_rows
+            .iter()
+            .rposition(|(index, _)| *index == 1)
+            .unwrap();
+        assert!(state.swamp_mouse(Mouse::LeftClick(
+            (state.swamp.last_body_top + continuation) as isize,
+            0
+        )));
+        assert_eq!(state.swamp.opened, Some(2180));
+    }
+
+    #[test]
     #[ignore = "manual check: requires the installed authenticated Swamp CLI and network"]
     fn installed_swamp_cli() {
         let output = std::process::Command::new("swamp")
-            .args(&search_args("", "").unwrap()[1..])
+            .args(&search_args("", "", "", "").unwrap()[1..])
             .output()
             .unwrap();
         let search =
