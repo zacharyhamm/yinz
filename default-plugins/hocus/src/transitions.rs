@@ -445,7 +445,6 @@ impl State {
         match self.status {
             Status::AwaitingCommand
             | Status::AwaitingSearch
-            | Status::AwaitingLinear
             | Status::AwaitingExtension
             | Status::AwaitingPluginLoad
             | Status::AwaitingPluginTest
@@ -493,12 +492,6 @@ impl State {
             let args = head.and_then(|call| tools::Args::parse(&call.arguments).ok());
             if let Some(query) = args.and_then(|args| args.query) {
                 return Some(format!("{spinner} searching: {query}"));
-            }
-        } else if matches!(self.status, Status::AwaitingLinear) {
-            // The tool rather than the query, the way the Slack arm does it:
-            // `linear_issues` often has no query worth showing.
-            if let Some(call) = head {
-                return Some(format!("{spinner} linear: {}", call.name));
             }
         } else if matches!(self.status, Status::AwaitingExtension) {
             if let Some(call) = head {

@@ -103,7 +103,7 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 123);
+    assert_eq!(names.len(), 120);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
     assert_eq!(confirmed, 28);
 }

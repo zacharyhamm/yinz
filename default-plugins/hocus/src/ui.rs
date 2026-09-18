@@ -1709,7 +1709,6 @@ fn help_line(state: &State) -> &'static str {
         Status::ConfirmingTool => "<y> yes  <n> no  <PgUp/PgDn> scroll  <Ctrl c> abort  <Esc> hide",
         Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingLinear => "reading linear…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingExtension => "running extension…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingPluginTest => "testing plugin…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingPluginLoad => "loading plugin…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",

@@ -211,18 +211,6 @@ const TOOL_HELP: &[(&str, &str)] = &[
         "Search the web. The answer holds short extracts, not the full pages, and it gives eight results at the most. The search needs a SearxNG instance that answers in JSON: hocus uses search_url from its config block, or the SEARXNG_URL variable, or http://localhost:8888.",
     ),
     (
-        "linear_search",
-        "Search the text of Linear issues. The answer gives one line for each issue, 15 issues by default and 50 at the most. Use linear_issue to read one issue fully. Every Linear tool needs LINEAR_API_KEY in the environment that started this session.",
-    ),
-    (
-        "linear_issues",
-        "List Linear issues. Without arguments, the tool lists your own open issues. Give assignee as me or as a display name, which must match exactly, team as a key such as ENG, project as a part of the project name, and updated_since as an ISO date. The answer gives 15 issues by default and 50 at the most.",
-    ),
-    (
-        "linear_issue",
-        "Read one Linear issue fully: its description, its state, its labels and its comments. Give the identifier (for example ENG-123) or the UUID. Set comments to false to leave the comments out.",
-    ),
-    (
         "schedule",
         "Send a prompt again and again, after each interval, until you cancel the job. The shortest interval is five seconds. Use unschedule or /stop_jobs to cancel it. The job refuses a tool that needs approval, unless you set auto_confirm.",
     ),

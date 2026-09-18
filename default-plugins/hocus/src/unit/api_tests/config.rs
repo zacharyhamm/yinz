@@ -347,51 +347,6 @@ fn dobbs_env_carries_a_remote_daemon_and_nothing_otherwise() {
     assert_eq!(cfg.dobbs_token.as_deref(), Some("t"));
 }
 
-// -- linear -------------------------------------------------------------
-
-/// The secret itself never appears in KDL — only the *name* of the variable
-/// holding it, the same rule the LLM key and the dobbs token follow.
-#[test]
-fn the_linear_key_is_read_from_the_variable_the_config_names() {
-    let key = ("OPENAI_API_KEY", "sk-1");
-
-    // The default variable.
-    let cfg = Config::resolve(&map(&[]), &map(&[key, ("LINEAR_API_KEY", "lin_1")])).unwrap();
-    assert_eq!(cfg.linear_api_key_env, "LINEAR_API_KEY");
-    assert_eq!(cfg.linear_api_key.as_deref(), Some("lin_1"));
-
-    // ...and one named by the plugin configuration instead.
-    let cfg = Config::resolve(
-        &map(&[("linear_api_key_env", "WORK_LINEAR")]),
-        &map(&[key, ("LINEAR_API_KEY", "lin_1"), ("WORK_LINEAR", "lin_2")]),
-    )
-    .unwrap();
-    assert_eq!(cfg.linear_api_key_env, "WORK_LINEAR");
-    assert_eq!(cfg.linear_api_key.as_deref(), Some("lin_2"));
-}
-
-/// The regression this guards is the one that would matter most: hocus has to
-/// start for everyone who has never heard of Linear.
-#[test]
-fn a_missing_linear_key_is_not_a_configuration_error() {
-    let cfg = Config::resolve(&map(&[]), &map(&[("OPENAI_API_KEY", "sk-1")]))
-        .expect("hocus resolves without a Linear key");
-    assert_eq!(cfg.linear_api_key, None);
-    // Still named, so the tools can say which variable to set.
-    assert_eq!(cfg.linear_api_key_env, "LINEAR_API_KEY");
-}
-
-/// Exported-but-empty is the same as unset, as it is for every other key here.
-#[test]
-fn an_empty_linear_key_reads_as_absent() {
-    let cfg = Config::resolve(
-        &map(&[]),
-        &map(&[("OPENAI_API_KEY", "sk-1"), ("LINEAR_API_KEY", "   ")]),
-    )
-    .unwrap();
-    assert_eq!(cfg.linear_api_key, None);
-}
-
 #[test]
 fn context_bytes_default_and_override_are_positive() {
     let env = map(&[("OPENAI_API_KEY", "test")]);

@@ -351,38 +351,6 @@ fn agent_spawn_advertises_an_automatic_firecracker_switch() {
     );
 }
 
-/// The Linear tools are advertised whether or not a key is configured, the same
-/// as `web_search` and the Slack tools — "not configured" is answered as a tool
-/// result the model can read, rather than by withholding the tool.
-#[test]
-fn the_linear_tools_are_always_advertised() {
-    let names = crate::tools::names();
-    for name in LINEAR_TOOLS {
-        assert!(names.iter().any(|n| n == name), "{name} is not advertised");
-    }
-}
-
-/// A free-string state would let the model send a workflow *name* ("In
-/// Progress") where Linear wants a type, and get an empty list with no
-/// explanation.
-#[test]
-fn linear_issues_closes_the_state_enum() {
-    let specs = specs();
-    let spec = specs
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|spec| spec["function"]["name"] == "linear_issues")
-        .expect("linear_issues is advertised");
-    let states = spec["function"]["parameters"]["properties"]["state"]["enum"]
-        .as_array()
-        .expect("state is a closed enum");
-    assert_eq!(states.len(), crate::linear::STATES.len());
-    for state in crate::linear::STATES {
-        assert!(states.iter().any(|s| s == state), "{state} is missing");
-    }
-}
-
 /// The agents you may ask for are a closed set, and it is the *same* closed set the
 /// New agent modal offers — both read `launch::OFFERED`. An open string here would
 /// let the model invent `"claude-code"` and only find out when the shell reported no

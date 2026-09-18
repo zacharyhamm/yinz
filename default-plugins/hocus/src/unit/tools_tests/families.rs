@@ -66,7 +66,6 @@ fn deferred_families_match_the_dispatch_consts() {
     assert_eq!(tools_in("plugin"), PLUGIN_TOOLS.into_iter().collect());
     assert_eq!(tools_in("slack"), SLACK_TOOLS.into_iter().collect());
     assert_eq!(tools_in("skill"), SKILL_TOOLS.into_iter().collect());
-    assert_eq!(tools_in("linear"), LINEAR_TOOLS.into_iter().collect());
     // The always-on `code` family is `PROJECT_READ_TOOLS` under a different name,
     // plus `project_list`: that const is the dispatch route, not a family, and the
     // names differ so the `project` family is not confused with it. `project_list`
@@ -220,8 +219,8 @@ fn an_elided_call_still_loads_its_family() {
 
 #[test]
 fn loading_a_family_answers_with_the_tools_it_brought() {
-    let answer = load_family(Some("linear"), false);
-    for tool in LINEAR_TOOLS {
+    let answer = load_family(Some("slack"), false);
+    for tool in SLACK_TOOLS {
         assert!(answer.contains(tool), "{answer}");
     }
 }

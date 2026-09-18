@@ -809,7 +809,6 @@ mod extensions;
 mod file_tools;
 mod jobs;
 mod keys;
-mod linear_tools;
 mod note_tools;
 mod picker;
 mod plan_mode;
