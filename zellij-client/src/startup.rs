@@ -9,7 +9,7 @@
 
 use crate::os_input_output::ClientOsApi;
 use crate::terminal_escapes::ClientTeardown;
-use crate::{create_ipc_pipe, spawn_server_error_message, ClientInfo};
+use crate::{ipc_pipe_for_session, spawn_server_error_message, ClientInfo};
 use std::path::{Path, PathBuf};
 use zellij_cli::args::CliArgs;
 use zellij_runtime::envs;
@@ -144,8 +144,8 @@ impl<'a> StartupContext<'a> {
         match info {
             ClientInfo::Attach(name, config_options) => {
                 envs::set_session_name(name.clone());
+                let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);
                 os_input.update_session_name(name);
-                let ipc_pipe = create_ipc_pipe(self.teardown);
 
                 // Attach uses the options carried on the variant rather than
                 // self.config_options, since they were resolved against the
@@ -168,8 +168,8 @@ impl<'a> StartupContext<'a> {
             },
             ClientInfo::Watch(name, _config_options) => {
                 envs::set_session_name(name.clone());
+                let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);
                 os_input.update_session_name(name);
-                let ipc_pipe = create_ipc_pipe(self.teardown);
 
                 (
                     ClientToServerMsg::AttachWatcherClient {
@@ -190,8 +190,8 @@ impl<'a> StartupContext<'a> {
                     cwd,
                 );
 
+                let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);
                 os_input.update_session_name(name);
-                let ipc_pipe = create_ipc_pipe(self.teardown);
                 self.spawn_server(&**os_input, &ipc_pipe);
 
                 (
@@ -208,8 +208,8 @@ impl<'a> StartupContext<'a> {
                     layout_cwd,
                 );
 
+                let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);
                 os_input.update_session_name(name);
-                let ipc_pipe = create_ipc_pipe(self.teardown);
                 self.spawn_server(&**os_input, &ipc_pipe);
 
                 (
