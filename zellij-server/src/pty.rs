@@ -46,209 +46,34 @@ use {
     zellij_types::input::layout::TabLayoutInfo, zellij_types::input::layout::TiledPaneLayout,
 };
 
-#[allow(clippy::too_many_arguments)]
-fn new_terminal_screen_instruction(
-    pane_id: PaneId,
-    pane_title: Option<String>,
-    hold_for_command: Option<RunCommand>,
-    invoked_with: Option<Run>,
-    new_pane_placement: NewPanePlacement,
-    start_suppressed: bool,
-    client_or_tab_index: ClientTabIndexOrPaneId,
-    completion_tx: Option<NotificationEnd>,
-    set_blocking: bool,
-) -> ScreenInstruction {
-    ScreenInstruction::NewPane(
-        pane_id,
-        pane_title,
-        hold_for_command,
-        invoked_with,
-        new_pane_placement,
-        start_suppressed,
-        client_or_tab_index,
-        completion_tx,
-        set_blocking,
-    )
-}
-
-fn finish_terminal_spawn(
+/// A single pane's terminal has been spawned, or has failed to: put it on
+/// screen and tell the plugin that asked for it.
+fn finish_pane_spawn(
     pty: &mut Pty,
-    pending: PendingTerminalSpawn,
+    pending: PendingPaneSpawn,
     result: Result<(TerminalId, bool)>,
 ) -> Result<()> {
-    let err_context = || {
-        format!(
-            "failed to spawn terminal for {:?}",
-            pending.client_or_tab_index
-        )
-    };
-    let show_spawn_error = pending
-        .run_command
-        .as_ref()
-        .is_some_and(|command| command.shows_start_failure());
+    let client_or_tab_index = pending.client_or_tab_index;
+    let err_context = move || format!("failed to spawn terminal for {client_or_tab_index:?}");
     match result.with_context(err_context) {
-        Ok((pid, starts_held)) => {
+        Ok((terminal_id, starts_held)) => {
             let hold_for_command = starts_held.then(|| pending.run_command.clone()).flatten();
-            if let Some(originating_plugin) = pending
-                .run_command
-                .and_then(|command| command.originating_plugin)
-            {
-                pty.originating_plugins
-                    .insert(pid, originating_plugin.clone());
-                pty.bus
-                    .senders
-                    .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(originating_plugin.plugin_id),
-                        Some(originating_plugin.client_id),
-                        Event::CommandPaneOpened(pid, originating_plugin.context),
-                    )]))
-                    .with_context(err_context)?;
-            }
-            if let Some(originating_plugin) = pending
-                .open_file_payload
-                .and_then(|payload| payload.originating_plugin)
-            {
-                pty.bus
-                    .senders
-                    .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(originating_plugin.plugin_id),
-                        Some(originating_plugin.client_id),
-                        Event::EditPaneOpened(pid, originating_plugin.context),
-                    )]))
-                    .with_context(err_context)?;
-            }
+            pty.announce_pane_opened(
+                terminal_id,
+                pending.run_command.as_ref(),
+                pending.open_file_payload.as_ref(),
+            )
+            .with_context(err_context)?;
             pty.bus
                 .senders
-                .send_to_screen(new_terminal_screen_instruction(
-                    PaneId::Terminal(pid),
-                    pending.pane_title,
-                    hold_for_command,
-                    pending.invoked_with,
-                    pending.new_pane_placement,
-                    pending.start_suppressed,
-                    pending.client_or_tab_index,
-                    pending.completion_tx,
-                    pending.set_blocking,
-                ))
-                .with_context(err_context)?;
+                .send_to_screen(pending.screen_instruction(terminal_id, hold_for_command))
+                .with_context(err_context)
         },
-        Err(err) => match pane_start_failure(&err) {
-            Some((terminal_id, message)) if show_spawn_error => {
-                pty.bus
-                    .senders
-                    .send_to_screen(new_terminal_screen_instruction(
-                        PaneId::Terminal(terminal_id),
-                        pending.pane_title,
-                        None,
-                        pending.invoked_with,
-                        pending.new_pane_placement,
-                        pending.start_suppressed,
-                        pending.client_or_tab_index,
-                        pending.completion_tx,
-                        pending.set_blocking,
-                    ))
-                    .with_context(err_context)?;
-                if let Some(run_command) = pending.run_command {
-                    if let Some(originating_plugin) = run_command.originating_plugin.clone() {
-                        pty.bus
-                            .senders
-                            .send_to_plugin(PluginInstruction::Update(vec![(
-                                Some(originating_plugin.plugin_id),
-                                Some(originating_plugin.client_id),
-                                Event::CommandPaneExited(
-                                    terminal_id,
-                                    Some(2),
-                                    originating_plugin.context,
-                                ),
-                            )]))
-                            .with_context(err_context)?;
-                    }
-                    send_pane_error_to_screen(
-                        pty.bus.senders.clone(),
-                        terminal_id,
-                        message,
-                        run_command,
-                    )
-                    .with_context(err_context)?;
-                }
-            },
-            Some((terminal_id, _)) => {
-                Err::<(), _>(anyhow!("{err:?}"))
-                    .context("failed to spawn terminal")
-                    .non_fatal();
-                pty.close_pane(PaneId::Terminal(terminal_id))
-                    .with_context(err_context)?;
-            },
-            None => Err::<(), _>(err).non_fatal(),
+        Err(err) => {
+            let run_command = pending.run_command.clone();
+            report_pane_start_failure(pty, err, run_command, Some(pending), err_context)
         },
     }
-    Ok(())
-}
-
-fn finish_in_place_spawn(
-    pty: &mut Pty,
-    pending: PendingInPlaceSpawn,
-    result: Result<(TerminalId, bool)>,
-) -> Result<()> {
-    let err_context = || {
-        format!(
-            "failed to spawn terminal for {:?}",
-            pending.client_or_tab_index
-        )
-    };
-    let show_spawn_error = pending
-        .run_command
-        .as_ref()
-        .is_some_and(|command| command.shows_start_failure());
-    match result.with_context(err_context) {
-        Ok((pid, starts_held)) => pty
-            .bus
-            .senders
-            .send_to_screen(ScreenInstruction::ReplacePane(
-                PaneId::Terminal(pid),
-                starts_held.then_some(pending.run_command).flatten(),
-                pending.pane_title,
-                pending.invoked_with,
-                pending.close_replaced_pane,
-                pending.client_or_tab_index,
-                pending.completion_tx,
-            ))
-            .with_context(err_context)?,
-        Err(err) => match pane_start_failure(&err) {
-            Some((terminal_id, message)) if show_spawn_error => {
-                pty.bus
-                    .senders
-                    .send_to_screen(ScreenInstruction::ReplacePane(
-                        PaneId::Terminal(terminal_id),
-                        None,
-                        pending.pane_title,
-                        pending.invoked_with,
-                        pending.close_replaced_pane,
-                        pending.client_or_tab_index,
-                        pending.completion_tx,
-                    ))
-                    .with_context(err_context)?;
-                if let Some(run_command) = pending.run_command {
-                    send_pane_error_to_screen(
-                        pty.bus.senders.clone(),
-                        terminal_id,
-                        message,
-                        run_command,
-                    )
-                    .with_context(err_context)?;
-                }
-            },
-            Some((terminal_id, _)) => {
-                Err::<(), _>(anyhow!("{err:?}"))
-                    .context("failed to spawn terminal")
-                    .non_fatal();
-                pty.close_pane(PaneId::Terminal(terminal_id))
-                    .with_context(err_context)?;
-            },
-            None => Err::<(), _>(err).non_fatal(),
-        },
-    }
-    Ok(())
 }
 
 fn finish_command_rerun(
@@ -257,67 +82,134 @@ fn finish_command_rerun(
     run_command: RunCommand,
     result: Result<()>,
 ) -> Result<()> {
-    let err_context = || format!("failed to rerun command in pane {pane_id:?}");
-    if let Err(err) = result.with_context(err_context) {
-        match pane_start_failure(&err) {
-            Some((terminal_id, message)) if run_command.shows_start_failure() => {
-                if let Some(originating_plugin) = run_command.originating_plugin.clone() {
-                    pty.bus
-                        .senders
-                        .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(originating_plugin.plugin_id),
-                            Some(originating_plugin.client_id),
-                            Event::CommandPaneExited(
-                                terminal_id,
-                                Some(2),
-                                originating_plugin.context,
-                            ),
-                        )]))
-                        .with_context(err_context)?;
-                }
-                send_pane_error_to_screen(
-                    pty.bus.senders.clone(),
-                    terminal_id,
-                    message,
-                    run_command,
-                )
+    let err_context = move || format!("failed to rerun command in pane {pane_id:?}");
+    match result.with_context(err_context) {
+        Ok(()) => Ok(()),
+        Err(err) => report_pane_start_failure(pty, err, Some(run_command), None, err_context),
+    }
+}
+
+/// A pane's command could not start. When the command shows start failures,
+/// the reason is written into the pane and the plugin that asked for it is
+/// told the command exited; `placeholder` is the pane to put up for that
+/// message when Screen has not seen one yet (a spawn, as opposed to a rerun).
+/// Otherwise a pane Screen has not seen is released, and one it has is left
+/// as it was.
+fn report_pane_start_failure(
+    pty: &mut Pty,
+    err: anyhow::Error,
+    run_command: Option<RunCommand>,
+    placeholder: Option<PendingPaneSpawn>,
+    err_context: impl Fn() -> String + Copy,
+) -> Result<()> {
+    let shows_start_failure = run_command
+        .as_ref()
+        .is_some_and(|command| command.shows_start_failure());
+    match pane_start_failure(&err) {
+        Some((terminal_id, message)) if shows_start_failure => {
+            if let Some(placeholder) = placeholder {
+                pty.bus
+                    .senders
+                    .send_to_screen(placeholder.screen_instruction(terminal_id, None))
+                    .with_context(err_context)?;
+            }
+            let Some(run_command) = run_command else {
+                return Ok(());
+            };
+            if let Some(originating_plugin) = run_command.originating_plugin.clone() {
+                pty.bus
+                    .senders
+                    .send_to_plugin(PluginInstruction::Update(vec![(
+                        Some(originating_plugin.plugin_id),
+                        Some(originating_plugin.client_id),
+                        Event::CommandPaneExited(terminal_id, Some(2), originating_plugin.context),
+                    )]))
+                    .with_context(err_context)?;
+            }
+            send_pane_error_to_screen(pty.bus.senders.clone(), terminal_id, message, run_command)
                 .with_context(err_context)?;
-            },
-            Some(_) => {},
-            None => Err::<(), _>(err).non_fatal(),
-        }
+        },
+        Some((terminal_id, _)) => {
+            if placeholder.is_some() {
+                Err::<(), _>(anyhow!("{err:?}"))
+                    .context("failed to spawn terminal")
+                    .non_fatal();
+                pty.close_pane(PaneId::Terminal(terminal_id))
+                    .with_context(err_context)?;
+            }
+        },
+        None => Err::<(), _>(err).non_fatal(),
     }
     Ok(())
 }
 
-#[doc(hidden)]
+/// A pane whose terminal is being spawned: what Screen and the plugin that
+/// asked for it need once its id is known.
 #[derive(Clone, Debug)]
-pub struct PendingTerminalSpawn {
+struct PendingPaneSpawn {
     run_command: Option<RunCommand>,
-    pane_title: Option<String>,
     open_file_payload: Option<OpenFilePayload>,
-    invoked_with: Option<Run>,
-    new_pane_placement: NewPanePlacement,
-    start_suppressed: bool,
-    client_or_tab_index: ClientTabIndexOrPaneId,
-    completion_tx: Option<NotificationEnd>,
-    set_blocking: bool,
-}
-
-#[doc(hidden)]
-#[derive(Clone, Debug)]
-pub struct PendingInPlaceSpawn {
-    run_command: Option<RunCommand>,
     pane_title: Option<String>,
     invoked_with: Option<Run>,
-    close_replaced_pane: bool,
     client_or_tab_index: ClientTabIndexOrPaneId,
     completion_tx: Option<NotificationEnd>,
+    placement: PanePlacement,
 }
 
-#[doc(hidden)]
+/// Where a finished spawn goes on screen.
 #[derive(Clone, Debug)]
-pub struct PendingLayoutSpawn {
+enum PanePlacement {
+    /// A pane of its own: `ScreenInstruction::NewPane`.
+    New {
+        new_pane_placement: NewPanePlacement,
+        start_suppressed: bool,
+        set_blocking: bool,
+    },
+    /// The pane it was asked to take over: `ScreenInstruction::ReplacePane`.
+    InPlace { close_replaced_pane: bool },
+}
+
+impl PendingPaneSpawn {
+    /// The instruction that puts the pane on screen - the running pane, or the
+    /// placeholder that shows why it could not start.
+    fn screen_instruction(
+        self,
+        terminal_id: TerminalId,
+        hold_for_command: Option<RunCommand>,
+    ) -> ScreenInstruction {
+        match self.placement {
+            PanePlacement::New {
+                new_pane_placement,
+                start_suppressed,
+                set_blocking,
+            } => ScreenInstruction::NewPane(
+                PaneId::Terminal(terminal_id),
+                self.pane_title,
+                hold_for_command,
+                self.invoked_with,
+                new_pane_placement,
+                start_suppressed,
+                self.client_or_tab_index,
+                self.completion_tx,
+                set_blocking,
+            ),
+            PanePlacement::InPlace {
+                close_replaced_pane,
+            } => ScreenInstruction::ReplacePane(
+                PaneId::Terminal(terminal_id),
+                hold_for_command,
+                self.pane_title,
+                self.invoked_with,
+                close_replaced_pane,
+                self.client_or_tab_index,
+                self.completion_tx,
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingLayoutSpawn {
     layout: TiledPaneLayout,
     floating_panes_layout: Vec<FloatingPaneLayout>,
     default_shell: TerminalAction,
@@ -332,9 +224,8 @@ pub struct PendingLayoutSpawn {
     completion_tx: Option<NotificationEnd>,
 }
 
-#[doc(hidden)]
 #[derive(Clone, Debug)]
-pub struct PendingLayoutOverride {
+struct PendingLayoutOverride {
     cwd: Option<PathBuf>,
     default_shell: Option<TerminalAction>,
     tabs: Vec<(
@@ -357,6 +248,46 @@ type SpawnedPane = (
     Option<RunCommand>,
     Option<Result<Box<dyn AsyncReader>>>,
 );
+
+/// The panes one layout has spawned but not yet handed to Screen.
+#[derive(Default)]
+struct SpawnedLayoutPanes {
+    tiled: Vec<SpawnedPane>,
+    floating: Vec<SpawnedPane>,
+    /// Remote panes whose spawn goes to a worker once Screen knows their ids.
+    deferred: Vec<PendingRemoteSpawn>,
+    /// Command panes a plugin asked for, told once their readers are running.
+    originating_plugins: Vec<(TerminalId, OriginatingPlugin)>,
+}
+
+impl SpawnedLayoutPanes {
+    fn terminal_ids(&self) -> impl Iterator<Item = TerminalId> + '_ {
+        self.tiled
+            .iter()
+            .chain(&self.floating)
+            .map(|(terminal_id, ..)| *terminal_id)
+    }
+
+    /// The ids Screen places, tiled then floating, each with the command it
+    /// holds for - `Some` only for a pane that starts held.
+    fn placement_ids(&self) -> (PlacedPanes, PlacedPanes) {
+        (held_ids(&self.tiled), held_ids(&self.floating))
+    }
+}
+
+/// What Screen is told about a layout's panes: each id with the command it
+/// holds for.
+type PlacedPanes = Vec<(TerminalId, Option<RunCommand>)>;
+
+fn held_ids(panes: &[SpawnedPane]) -> PlacedPanes {
+    panes
+        .iter()
+        .map(|(terminal_id, starts_held, run_command, _)| {
+            let hold_for_command = starts_held.then(|| run_command.clone()).flatten();
+            (*terminal_id, hold_for_command)
+        })
+        .collect()
+}
 
 /// What a spawn worker was asked to do.
 enum SpawnJob {
@@ -698,30 +629,22 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     )),
                     _ => None,
                 };
-                let pending = PendingTerminalSpawn {
-                    run_command: run_command.clone(),
-                    pane_title,
-                    open_file_payload,
-                    invoked_with,
-                    new_pane_placement,
-                    start_suppressed,
-                    client_or_tab_index,
-                    completion_tx,
-                    set_blocking,
-                };
-                if run_command.as_ref().is_some_and(RunCommand::defers_spawn) {
-                    let terminal_action =
-                        pty.prepare_terminal_action(terminal_action, client_or_tab_index);
-                    let terminal_id = pty.reserve_terminal_id()?;
-                    finish_terminal_spawn(&mut pty, pending, Ok((terminal_id, false)))?;
-                    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-                        terminal_id,
-                        terminal_action,
-                    }))?;
-                    continue;
-                }
-                let result = pty.spawn_terminal(terminal_action, client_or_tab_index);
-                finish_terminal_spawn(&mut pty, pending, result)?;
+                pty.spawn_pane(
+                    terminal_action,
+                    PendingPaneSpawn {
+                        run_command,
+                        open_file_payload,
+                        pane_title,
+                        invoked_with,
+                        client_or_tab_index,
+                        completion_tx,
+                        placement: PanePlacement::New {
+                            new_pane_placement,
+                            start_suppressed,
+                            set_blocking,
+                        },
+                    },
+                )?;
             },
             PtyInstruction::SpawnResolved(resolved) => match resolved {
                 PendingSpawn::Terminal(pending, spawned) => {
@@ -738,7 +661,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 client_id_tab_index_or_pane_id,
                 completion_tx,
             ) => {
-                let (run_command, pane_title) = match &terminal_action {
+                let (run_command, pane_title, open_file_payload) = match &terminal_action {
                     Some(TerminalAction::RunCommand(run_command)) => (
                         Some(run_command.clone()),
                         if run_command.is_remote_default_shell() {
@@ -753,8 +676,12 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                         } else {
                             Some(name.unwrap_or_else(|| run_command.to_string()))
                         },
+                        None,
                     ),
-                    _ => (None, name),
+                    Some(TerminalAction::OpenFile(open_file_payload)) => {
+                        (None, name, Some(open_file_payload.clone()))
+                    },
+                    _ => (None, name, None),
                 };
                 let invoked_with = match &terminal_action {
                     Some(TerminalAction::RunCommand(run_command)) => {
@@ -767,27 +694,20 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     )),
                     _ => None,
                 };
-                let pending = PendingInPlaceSpawn {
-                    run_command: run_command.clone(),
-                    pane_title,
-                    invoked_with,
-                    close_replaced_pane,
-                    client_or_tab_index: client_id_tab_index_or_pane_id,
-                    completion_tx,
-                };
-                if run_command.as_ref().is_some_and(RunCommand::defers_spawn) {
-                    let terminal_action = pty
-                        .prepare_terminal_action(terminal_action, client_id_tab_index_or_pane_id);
-                    let terminal_id = pty.reserve_terminal_id()?;
-                    finish_in_place_spawn(&mut pty, pending, Ok((terminal_id, false)))?;
-                    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-                        terminal_id,
-                        terminal_action,
-                    }))?;
-                    continue;
-                }
-                let result = pty.spawn_terminal(terminal_action, client_id_tab_index_or_pane_id);
-                finish_in_place_spawn(&mut pty, pending, result)?;
+                pty.spawn_pane(
+                    terminal_action,
+                    PendingPaneSpawn {
+                        run_command,
+                        open_file_payload,
+                        pane_title,
+                        invoked_with,
+                        client_or_tab_index: client_id_tab_index_or_pane_id,
+                        completion_tx,
+                        placement: PanePlacement::InPlace {
+                            close_replaced_pane,
+                        },
+                    },
+                )?;
             },
             PtyInstruction::OpenInPlaceEditor(
                 temp_file,
@@ -1860,20 +1780,22 @@ impl Pty {
 
     /// Give up on a layout: close every pane it spawned, deferred or already
     /// running, so a failure part-way through leaves nothing behind.
-    fn abandon_layout(
+    fn abandon_layout(&mut self, panes: &SpawnedLayoutPanes) {
+        self.close_unplaced_layout_panes(panes.terminal_ids(), &panes.deferred);
+    }
+
+    /// Close the panes a layout spawned but never handed to Screen. A deferred
+    /// pane holds a slot in both lists - it is closed once, through the deferred
+    /// path, which names it in its own error context.
+    fn close_unplaced_layout_panes(
         &mut self,
-        tiled: &[SpawnedPane],
-        floating: &[SpawnedPane],
+        spawned: impl IntoIterator<Item = TerminalId>,
         deferred: &[PendingRemoteSpawn],
     ) {
-        // A deferred pane holds a slot in both lists - close it once, through the
-        // deferred path, which names it in its own error context.
         let deferred_ids: HashSet<TerminalId> =
             deferred.iter().map(|spawn| spawn.terminal_id).collect();
-        let spawned: Vec<TerminalId> = tiled
-            .iter()
-            .chain(floating)
-            .map(|(terminal_id, ..)| *terminal_id)
+        let spawned: Vec<TerminalId> = spawned
+            .into_iter()
             .filter(|terminal_id| !deferred_ids.contains(terminal_id))
             .collect();
         self.discard_layout_panes(spawned);
@@ -2062,92 +1984,17 @@ impl Pty {
             default_shell,
             plugin_ids,
             adopted_panes,
-            run_instructions: extracted_run_instructions,
-            floating_run_instructions: extracted_floating_run_instructions,
+            run_instructions,
+            floating_run_instructions,
             tab_index,
             block_on_first_terminal,
             should_change_focus_to_new_tab,
             client_id,
             completion_tx,
         } = pending;
-        let mut new_pane_pids: Vec<SpawnedPane> = vec![];
+        let panes =
+            self.spawn_layout_panes(run_instructions, floating_run_instructions, &default_shell)?;
 
-        let mut new_floating_panes_pids: Vec<SpawnedPane> = vec![];
-
-        let mut originating_plugins_to_inform = vec![];
-        let mut deferred_spawns = vec![];
-
-        for run_instruction in extracted_run_instructions {
-            let originating_plugin = run_instruction.as_ref().and_then(|r| {
-                if let Run::Command(run_command) = r {
-                    run_command.originating_plugin.clone()
-                } else {
-                    None
-                }
-            });
-            let mut terminal_id = None;
-            let applied = match self.apply_run_instruction(
-                run_instruction,
-                default_shell.clone(),
-                &mut deferred_spawns,
-            ) {
-                Ok(applied) => applied,
-                Err(error) => {
-                    self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
-                    return Err(error);
-                },
-            };
-            if let Some(new_pane_data) = applied {
-                terminal_id = Some(new_pane_data.0);
-                new_pane_pids.push(new_pane_data);
-            }
-            if let (Some(originating_plugin), Some(terminal_id)) = (originating_plugin, terminal_id)
-            {
-                originating_plugins_to_inform.push((terminal_id, originating_plugin));
-            }
-        }
-        for run_instruction in extracted_floating_run_instructions {
-            let originating_plugin = run_instruction.as_ref().and_then(|r| {
-                if let Run::Command(run_command) = r {
-                    run_command.originating_plugin.clone()
-                } else {
-                    None
-                }
-            });
-            let mut terminal_id = None;
-            let applied = match self.apply_run_instruction(
-                run_instruction,
-                default_shell.clone(),
-                &mut deferred_spawns,
-            ) {
-                Ok(applied) => applied,
-                Err(error) => {
-                    self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
-                    return Err(error);
-                },
-            };
-            if let Some(new_pane_data) = applied {
-                terminal_id = Some(new_pane_data.0);
-                new_floating_panes_pids.push(new_pane_data);
-            }
-            if let (Some(originating_plugin), Some(terminal_id)) = (originating_plugin, terminal_id)
-            {
-                originating_plugins_to_inform.push((terminal_id, originating_plugin));
-            }
-        }
-
-        // Option<RunCommand> should only be Some if the pane starts held
-        let spawned_ids = |pids: &Vec<SpawnedPane>| {
-            pids.iter()
-                .map(|(terminal_id, starts_held, run_command, _)| {
-                    if *starts_held {
-                        (*terminal_id, run_command.clone())
-                    } else {
-                        (*terminal_id, None)
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
         let adopted_ids = |terminals: &[AdoptedTabTerminal]| {
             terminals
                 .iter()
@@ -2156,10 +2003,7 @@ impl Pty {
         };
         let (new_tab_pane_ids, new_tab_floating_pane_ids) = match &adopted_panes {
             Some((tiled, floating)) => (adopted_ids(tiled), adopted_ids(floating)),
-            None => (
-                spawned_ids(&new_pane_pids),
-                spawned_ids(&new_floating_panes_pids),
-            ),
+            None => panes.placement_ids(),
         };
         let adopted_agents = match &adopted_panes {
             Some((tiled, floating)) => tiled
@@ -2176,9 +2020,8 @@ impl Pty {
         };
 
         // Track the first terminal_id if blocking is requested
-        let first_initial_pane_terminal_id = if block_on_first_terminal && !new_pane_pids.is_empty()
-        {
-            Some(new_pane_pids[0].0)
+        let first_initial_pane_terminal_id = if block_on_first_terminal {
+            panes.tiled.first().map(|(terminal_id, ..)| *terminal_id)
         } else {
             None
         };
@@ -2213,7 +2056,7 @@ impl Pty {
                 blocking_terminal,
             ))
         {
-            self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
+            self.abandon_layout(&panes);
             return Err(error).with_context(err_context);
         }
 
@@ -2258,11 +2101,84 @@ impl Pty {
             }
         }
 
-        let mut terminals_to_start = vec![];
+        for deferred in self.start_layout_panes(panes)? {
+            self.defer_spawn(SpawnJob::Terminal(deferred))?;
+        }
+        Ok(())
+    }
 
-        terminals_to_start.append(&mut new_pane_pids);
-        terminals_to_start.append(&mut new_floating_panes_pids);
-        for (terminal_id, starts_held, run_command, reader_result) in terminals_to_start {
+    /// Spawn the panes a layout asks for, one slot at a time. The first slot
+    /// that cannot be spawned abandons everything spawned so far: Screen has
+    /// not heard of any of it yet, so nothing else would ever close them.
+    fn spawn_layout_panes(
+        &mut self,
+        tiled: Vec<Option<Run>>,
+        floating: Vec<Option<Run>>,
+        default_shell: &TerminalAction,
+    ) -> Result<SpawnedLayoutPanes> {
+        let mut panes = SpawnedLayoutPanes::default();
+        for (instructions, is_floating) in [(tiled, false), (floating, true)] {
+            if let Err(error) =
+                self.spawn_layout_slots(instructions, default_shell, &mut panes, is_floating)
+            {
+                self.abandon_layout(&panes);
+                return Err(error);
+            }
+        }
+        Ok(panes)
+    }
+
+    fn spawn_layout_slots(
+        &mut self,
+        instructions: Vec<Option<Run>>,
+        default_shell: &TerminalAction,
+        panes: &mut SpawnedLayoutPanes,
+        is_floating: bool,
+    ) -> Result<()> {
+        for run_instruction in instructions {
+            // Taken before `apply_run_instruction` consumes the instruction.
+            let originating_plugin = match &run_instruction {
+                Some(Run::Command(run_command)) => run_command.originating_plugin.clone(),
+                _ => None,
+            };
+            let Some(spawned) = self.apply_run_instruction(
+                run_instruction,
+                default_shell.clone(),
+                &mut panes.deferred,
+            )?
+            else {
+                continue;
+            };
+            if let Some(originating_plugin) = originating_plugin {
+                panes
+                    .originating_plugins
+                    .push((spawned.0, originating_plugin));
+            }
+            if is_floating {
+                panes.floating.push(spawned);
+            } else {
+                panes.tiled.push(spawned);
+            }
+        }
+        Ok(())
+    }
+
+    /// Start listening to the panes a layout spawned, tiled then floating: a
+    /// pane that starts held is left alone, one whose spawn was deferred has no
+    /// reader yet, and one that could not start is shown its failure or closed.
+    /// Then the plugins that asked for command panes are told. Returns the
+    /// deferred spawns for the caller to hand to workers at its own moment.
+    fn start_layout_panes(&mut self, panes: SpawnedLayoutPanes) -> Result<Vec<PendingRemoteSpawn>> {
+        let err_context = || "failed to spawn terminals for layout for".to_string();
+        let SpawnedLayoutPanes {
+            tiled,
+            floating,
+            deferred,
+            originating_plugins,
+        } = panes;
+        for (terminal_id, starts_held, run_command, reader_result) in
+            tiled.into_iter().chain(floating)
+        {
             if starts_held {
                 // we do not run a command or start listening for bytes on held panes
                 continue;
@@ -2316,13 +2232,10 @@ impl Pty {
                 },
             }
         }
-        for (terminal_id, originating_plugin) in originating_plugins_to_inform {
-            self.inform_originating_plugin_of_open(terminal_id, originating_plugin);
+        for (terminal_id, originating_plugin) in originating_plugins {
+            let _ = self.inform_originating_plugin_of_open(terminal_id, originating_plugin);
         }
-        for deferred in deferred_spawns {
-            self.defer_spawn(SpawnJob::Terminal(deferred))?;
-        }
-        Ok(())
+        Ok(deferred)
     }
     fn finish_layout_override(&mut self, pending: PendingLayoutOverride) -> Result<()> {
         let err_context = || "failed to override layout";
@@ -2341,8 +2254,6 @@ impl Pty {
                 pending.client_id,
                 tab.swap_tiled_layouts,
                 tab.swap_floating_layouts,
-                pending.retain_existing_terminal_panes,
-                pending.retain_existing_plugin_panes,
             ) {
                 Ok((tab_result, mut tab_deferred_spawns)) => {
                     all_tab_results.push(tab_result);
@@ -2381,16 +2292,7 @@ impl Pty {
                     pending.completion_tx,
                 ))
         {
-            let deferred_ids: HashSet<TerminalId> = deferred_spawns
-                .iter()
-                .map(|spawn| spawn.terminal_id)
-                .collect();
-            self.discard_layout_panes(
-                spawned_ids
-                    .into_iter()
-                    .filter(|terminal_id| !deferred_ids.contains(terminal_id)),
-            );
-            self.discard_deferred_spawns(&deferred_spawns);
+            self.close_unplaced_layout_panes(spawned_ids, &deferred_spawns);
             return Err(error).with_context(err_context);
         }
         for deferred in deferred_spawns {
@@ -2399,7 +2301,7 @@ impl Pty {
         Ok(())
     }
 
-    pub fn spawn_terminals_for_layout_override(
+    fn spawn_terminals_for_layout_override(
         &mut self,
         cwd: Option<PathBuf>,
         layout: TiledPaneLayout,
@@ -2411,109 +2313,20 @@ impl Pty {
         client_id: ClientId,
         swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
         swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
-        _retain_existing_terminal_panes: bool,
-        _retain_existing_plugin_panes: bool,
     ) -> Result<(TabOverrideResult, Vec<PendingRemoteSpawn>)> {
-        let err_context = || "failed to spawn terminals for layout for".to_string();
-
         let mut default_shell =
             default_shell.unwrap_or_else(|| self.get_default_terminal(cwd, None));
         self.fill_cwd(&mut default_shell, client_id);
 
-        let extracted_run_instructions = layout.extract_run_instructions();
-        let extracted_floating_run_instructions = floating_panes_layout
+        let run_instructions = layout.extract_run_instructions();
+        let floating_run_instructions: Vec<Option<Run>> = floating_panes_layout
             .iter()
             .filter(|f| !f.already_running)
-            .map(|f| f.run.clone());
-        let mut new_pane_pids: Vec<SpawnedPane> = vec![];
-
-        let mut new_floating_panes_pids: Vec<SpawnedPane> = vec![];
-
-        let mut originating_plugins_to_inform = vec![];
-        let mut deferred_spawns = vec![];
-
-        for run_instruction in extracted_run_instructions {
-            let originating_plugin = run_instruction.as_ref().and_then(|r| {
-                if let Run::Command(run_command) = r {
-                    run_command.originating_plugin.clone()
-                } else {
-                    None
-                }
-            });
-            let mut terminal_id = None;
-            let applied = match self.apply_run_instruction(
-                run_instruction,
-                default_shell.clone(),
-                &mut deferred_spawns,
-            ) {
-                Ok(applied) => applied,
-                Err(error) => {
-                    self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
-                    return Err(error);
-                },
-            };
-            if let Some(new_pane_data) = applied {
-                terminal_id = Some(new_pane_data.0);
-                new_pane_pids.push(new_pane_data);
-            }
-            if let (Some(originating_plugin), Some(terminal_id)) = (originating_plugin, terminal_id)
-            {
-                originating_plugins_to_inform.push((terminal_id, originating_plugin));
-            }
-        }
-        for run_instruction in extracted_floating_run_instructions {
-            let originating_plugin = run_instruction.as_ref().and_then(|r| {
-                if let Run::Command(run_command) = r {
-                    run_command.originating_plugin.clone()
-                } else {
-                    None
-                }
-            });
-            let mut terminal_id = None;
-            let applied = match self.apply_run_instruction(
-                run_instruction,
-                default_shell.clone(),
-                &mut deferred_spawns,
-            ) {
-                Ok(applied) => applied,
-                Err(error) => {
-                    self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
-                    return Err(error);
-                },
-            };
-            if let Some(new_pane_data) = applied {
-                terminal_id = Some(new_pane_data.0);
-                new_floating_panes_pids.push(new_pane_data);
-            }
-            if let (Some(originating_plugin), Some(terminal_id)) = (originating_plugin, terminal_id)
-            {
-                originating_plugins_to_inform.push((terminal_id, originating_plugin));
-            }
-        }
-
-        // Option<RunCommand> should only be Some if the pane starts held
-        let new_tab_pane_ids: Vec<(TerminalId, Option<RunCommand>)> = new_pane_pids
-            .iter()
-            .map(|(terminal_id, starts_held, run_command, _)| {
-                if *starts_held {
-                    (*terminal_id, run_command.clone())
-                } else {
-                    (*terminal_id, None)
-                }
-            })
+            .map(|f| f.run.clone())
             .collect();
-        let new_tab_floating_pane_ids: Vec<(TerminalId, Option<RunCommand>)> =
-            new_floating_panes_pids
-                .iter()
-                .map(|(terminal_id, starts_held, run_command, _)| {
-                    if *starts_held {
-                        (*terminal_id, run_command.clone())
-                    } else {
-                        (*terminal_id, None)
-                    }
-                })
-                .collect();
-
+        let panes =
+            self.spawn_layout_panes(run_instructions, floating_run_instructions, &default_shell)?;
+        let (new_terminal_pids, new_floating_pane_pids) = panes.placement_ids();
         let tab_result = TabOverrideResult {
             tab_index,
             tab_name,
@@ -2521,90 +2334,84 @@ impl Pty {
             floating_layouts: floating_panes_layout,
             swap_tiled_layouts,
             swap_floating_layouts,
-            new_terminal_pids: new_tab_pane_ids,
-            new_floating_pane_pids: new_tab_floating_pane_ids,
+            new_terminal_pids,
+            new_floating_pane_pids,
             plugin_ids,
         };
-
-        let mut terminals_to_start = vec![];
-
-        terminals_to_start.append(&mut new_pane_pids);
-        terminals_to_start.append(&mut new_floating_panes_pids);
-        for (terminal_id, starts_held, run_command, reader_result) in terminals_to_start {
-            if starts_held {
-                // we do not run a command or start listening for bytes on held panes
-                continue;
-            }
-            let Some(reader_result) = reader_result else {
-                continue;
-            };
-            match reader_result {
-                Ok(reader) => {
-                    let activity_flag =
-                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    let terminal_bytes = async_runtime().spawn({
-                        let senders = self.bus.senders.clone();
-                        let debug_to_file = self.debug_to_file;
-                        let activity_flag = activity_flag.clone();
-                        async move {
-                            TerminalBytes::new(
-                                terminal_id,
-                                reader,
-                                senders,
-                                debug_to_file,
-                                activity_flag,
-                            )
-                            .listen()
-                            .await
-                            .context("failed to spawn terminals for layout")
-                            .fatal();
-                        }
-                    });
-                    self.task_handles.insert(terminal_id, terminal_bytes);
-                    self.pane_activity_flags.insert(terminal_id, activity_flag);
-                    self.report_terminal_host(terminal_id);
-                },
-                Err(err) => match run_command {
-                    Some(run_command) if run_command.shows_start_failure() => {
-                        let message = pane_start_failure(&err)
-                            .map(|(_, message)| message)
-                            .unwrap_or_else(|| format!("{err:#}"));
-                        send_pane_error_to_screen(
-                            self.bus.senders.clone(),
-                            terminal_id,
-                            message,
-                            run_command.clone(),
-                        )
-                        .with_context(err_context)?;
-                    },
-                    _ => {
-                        self.close_pane(PaneId::Terminal(terminal_id))
-                            .with_context(err_context)?;
-                    },
-                },
-            }
-        }
-        for (terminal_id, originating_plugin) in originating_plugins_to_inform {
-            self.inform_originating_plugin_of_open(terminal_id, originating_plugin);
-        }
-        Ok((tab_result, deferred_spawns))
+        let deferred = self.start_layout_panes(panes)?;
+        Ok((tab_result, deferred))
     }
+    /// Register a command pane as its plugin's, so a later rerun keeps the
+    /// plugin's context, and tell the plugin it is open.
     fn inform_originating_plugin_of_open(
         &mut self,
         terminal_id: TerminalId,
         originating_plugin: OriginatingPlugin,
-    ) {
+    ) -> Result<()> {
         self.originating_plugins
             .insert(terminal_id, originating_plugin.clone());
         let update_event = Event::CommandPaneOpened(terminal_id, originating_plugin.context);
-        let _ = self
-            .bus
+        self.bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 Some(originating_plugin.plugin_id),
                 Some(originating_plugin.client_id),
                 update_event,
-            )]));
+            )]))
+    }
+
+    /// Tell the plugin that asked for this pane that it is open: a command pane
+    /// gets `CommandPaneOpened` (and is registered as the plugin's), an edit
+    /// pane gets `EditPaneOpened`. A pane nobody asked for is told to no one.
+    fn announce_pane_opened(
+        &mut self,
+        terminal_id: TerminalId,
+        run_command: Option<&RunCommand>,
+        open_file_payload: Option<&OpenFilePayload>,
+    ) -> Result<()> {
+        if let Some(originating_plugin) =
+            run_command.and_then(|command| command.originating_plugin.clone())
+        {
+            self.inform_originating_plugin_of_open(terminal_id, originating_plugin)?;
+        }
+        if let Some(originating_plugin) =
+            open_file_payload.and_then(|payload| payload.originating_plugin.clone())
+        {
+            self.bus
+                .senders
+                .send_to_plugin(PluginInstruction::Update(vec![(
+                    Some(originating_plugin.plugin_id),
+                    Some(originating_plugin.client_id),
+                    Event::EditPaneOpened(terminal_id, originating_plugin.context),
+                )]))?;
+        }
+        Ok(())
+    }
+
+    /// Spawn one pane's terminal - now, or through a worker when the command
+    /// runs elsewhere - and finish the spawn once its id is known.
+    fn spawn_pane(
+        &mut self,
+        terminal_action: Option<TerminalAction>,
+        pending: PendingPaneSpawn,
+    ) -> Result<()> {
+        let client_or_tab_index = pending.client_or_tab_index;
+        if pending
+            .run_command
+            .as_ref()
+            .is_some_and(RunCommand::defers_spawn)
+        {
+            let terminal_action =
+                self.prepare_terminal_action(terminal_action, client_or_tab_index);
+            let terminal_id = self.reserve_terminal_id()?;
+            finish_pane_spawn(self, pending, Ok((terminal_id, false)))?;
+            return self.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
+                terminal_id,
+                terminal_action,
+            }));
+        }
+        let result = self.spawn_terminal(terminal_action, client_or_tab_index);
+        finish_pane_spawn(self, pending, result)
     }
 
     fn apply_run_instruction(

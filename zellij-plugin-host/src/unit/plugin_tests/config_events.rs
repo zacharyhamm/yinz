@@ -72,9 +72,8 @@ pub fn generate_random_name_permission_denied() {
         ),
     )]));
 
-    // Either outcome the fixture can print, or the crash: a denied command gets no reply and the
-    // fixture unwraps the reply, so denial in fact traps the guest. Listing the success too keeps
-    // a wrongly granted command from timing out here instead of failing the assertion below.
+    // Either outcome the fixture can print. Listing the success too keeps a wrongly granted
+    // command from timing out here instead of failing the assertion below.
     wait_for_plugin_to_handle(
         &received_screen_instructions,
         zellij_types::internal_ids::PluginId::new(0),
@@ -85,6 +84,25 @@ pub fn generate_random_name_permission_denied() {
     // the observer returns when the last sender is gone.
     teardown();
     screen_thread.join().unwrap();
+
+    // The denied command answers with an empty name; the guest does not trap on it.
+    let frames: Vec<String> = rendered_assets(&received_screen_instructions.lock())
+        .into_iter()
+        .map(|(_, frame)| frame)
+        .collect();
+    assert!(
+        frames.iter().any(|frame| frame.contains("empty name")),
+        "the fixture reports the empty name, got: {frames:?}"
+    );
+    assert!(
+        !received_screen_instructions.lock().iter().any(|instruction| {
+            matches!(
+                instruction,
+                ScreenInstruction::UpdatePluginLoadingStage(_, indication) if indication.is_error()
+            )
+        }),
+        "a denied command must not trap the guest"
+    );
 
     let plugin_bytes_with_name = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {

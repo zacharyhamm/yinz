@@ -744,6 +744,20 @@ impl ZellijPlugin for State {
                         self.explicit_string_to_render = Some("Error: got empty name".to_string());
                     }
                 },
+                BareKey::Char('l')
+                    if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) =>
+                {
+                    // Needs RunCommands: denied, the SDK answers `None` and the plugin lives on.
+                    let pane_id = open_command_pane(
+                        CommandToRun {
+                            path: std::path::PathBuf::from("/path/to/my/file.rs"),
+                            ..Default::default()
+                        },
+                        BTreeMap::new(),
+                    );
+                    self.explicit_string_to_render =
+                        Some(format!("open_command_pane: {pane_id:?}"));
+                },
                 BareKey::Char('b')
                     if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) =>
                 {

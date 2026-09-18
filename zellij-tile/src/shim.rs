@@ -1,4 +1,4 @@
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, HashSet};
 use std::{
     io,
@@ -131,34 +131,99 @@ use {
 pub use super::ui_components::*;
 pub use prost::{self, *};
 
+// -----------------------------------------------------------------------------------------
+// Talking to the host: one extern, one `unsafe`, one place that knows the wire format.
+// -----------------------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "zellij")]
+extern "C" {
+    fn host_run_plugin_command();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn host_run_plugin_command() {}
+
+/// The wire form of `command`. Fallible in name only: the only `Err` arms are u32 range
+/// checks on tab ids and positions.
+fn encode(command: PluginCommand) -> Result<Vec<u8>, String> {
+    let kind = CommandType::from(&command);
+    let protobuf: ProtobufPluginCommand = command
+        .try_into()
+        .map_err(|e| format!("Failed to encode the {kind} request: {e}"))?;
+    Ok(protobuf.encode_to_vec())
+}
+
+/// Hand an encoded command to the host; returns once the host has run it.
+fn dispatch(bytes: &[u8]) {
+    object_to_stdout(bytes);
+    unsafe { host_run_plugin_command() };
+}
+
+/// A command the host answers nothing to.
+fn send(command: PluginCommand) {
+    let bytes = encode(command).unwrap_or_else(|e| panic!("zellij-tile: {e}"));
+    dispatch(&bytes);
+}
+
+/// A command the host answers. This is the one policy for a reply that is missing or
+/// unreadable: `Err` naming the command and the reason - never a panic, never a hang. A
+/// denied permission is a host-side log and no reply at all, so the read comes back empty
+/// rather than blocking.
+fn call<P: prost::Message + Default>(command: PluginCommand) -> Result<P, String> {
+    let kind = CommandType::from(&command);
+    dispatch(&encode(command)?);
+    let bytes = command_response_bytes(kind)?;
+    P::decode(bytes.as_slice()).map_err(|e| format!("Malformed {kind} response: {e}"))
+}
+
+/// `call`, then the conversion from the wire type to the SDK's.
+fn call_as<T, P>(command: PluginCommand) -> Result<T, String>
+where
+    P: prost::Message + Default,
+    T: TryFrom<P>,
+    T::Error: std::fmt::Display,
+{
+    let kind = CommandType::from(&command);
+    let protobuf: P = call(command)?;
+    T::try_from(protobuf).map_err(|e| format!("Malformed {kind} response: {e}"))
+}
+
+/// For a function whose signature has no room for an error: the reason goes to the
+/// plugin's stderr, which zellij logs under the plugin's name, and the caller gets the
+/// neutral value - `None`, an empty collection, an empty string.
+fn or_default<T: Default>(result: Result<T, String>) -> T {
+    result.unwrap_or_else(|e| {
+        eprintln!("zellij-tile: {e}");
+        T::default()
+    })
+}
+
+/// For the two bootstrap queries no permission gates and whose reply has no neutral
+/// value: a missing reply is a fault in the host, and the plugin cannot run without it.
+fn or_panic<T>(result: Result<T, String>) -> T {
+    result.unwrap_or_else(|e| panic!("zellij-tile: {e}"))
+}
+
 // Subscription Handling
 
 /// Subscribe to a list of [`Event`]s represented by their [`EventType`]s that will then trigger the `update` method
 pub fn subscribe(event_types: &[EventType]) {
     let event_types: HashSet<EventType> = event_types.iter().cloned().collect();
-    let plugin_command = PluginCommand::Subscribe(event_types);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::Subscribe(event_types));
 }
 
 /// Unsubscribe to a list of [`Event`]s represented by their [`EventType`]s.
 pub fn unsubscribe(event_types: &[EventType]) {
     let event_types: HashSet<EventType> = event_types.iter().cloned().collect();
-    let plugin_command = PluginCommand::Unsubscribe(event_types);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::Unsubscribe(event_types));
 }
 
 // Plugin Settings
 
 /// Sets the plugin as selectable or unselectable to the user. Unselectable plugins might be desired when they do not accept user input.
 pub fn set_selectable(selectable: bool) {
-    let plugin_command = PluginCommand::SetSelectable(selectable);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetSelectable(selectable));
 }
 
 /// Shows the cursor at specific coordinates or hides it
@@ -168,10 +233,7 @@ pub fn set_selectable(selectable: bool) {
 pub fn show_cursor(cursor_position: Option<(usize, usize)>) {
     #[cfg(test)]
     LAST_CURSOR_POSITION.with(|last| *last.borrow_mut() = Some(cursor_position));
-    let plugin_command = PluginCommand::ShowCursor(cursor_position);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ShowCursor(cursor_position));
 }
 
 #[cfg(test)]
@@ -187,33 +249,20 @@ pub(crate) fn take_last_cursor_position() -> Option<Option<(usize, usize)>> {
 }
 
 pub fn request_permission(permissions: &[PermissionType]) {
-    let plugin_command = PluginCommand::RequestPluginPermissions(permissions.into());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::RequestPluginPermissions(permissions.into()));
 }
 
 // Query Functions
 /// Returns the unique Zellij pane ID for the plugin as well as the Zellij process id.
 pub fn get_plugin_ids() -> PluginIds {
     let plugin_command = PluginCommand::GetPluginIds;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let protobuf_plugin_ids =
-        ProtobufPluginIds::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    PluginIds::try_from(protobuf_plugin_ids).unwrap()
+    or_panic(call_as::<PluginIds, ProtobufPluginIds>(plugin_command))
 }
 
 /// Returns the version of the running Zellij instance - can be useful to check plugin compatibility
 pub fn get_zellij_version() -> String {
     let plugin_command = PluginCommand::GetZellijVersion;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let protobuf_zellij_version =
-        ProtobufZellijVersion::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    protobuf_zellij_version.version
+    or_panic(call::<ProtobufZellijVersion>(plugin_command)).version
 }
 
 /// Generates a random human-readable name using Zellij's curated word lists.
@@ -223,11 +272,7 @@ pub fn get_zellij_version() -> String {
 /// approximately 4,096 unique combinations.
 pub fn generate_random_name() -> String {
     let plugin_command = PluginCommand::GenerateRandomName;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response =
-        ProtobufGenerateRandomNameResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let response = or_default(call::<ProtobufGenerateRandomNameResponse>(plugin_command));
     response.name
 }
 
@@ -236,22 +281,8 @@ pub fn generate_random_name() -> String {
 /// Supports both built-in layouts (eg. "default", "compact", "welcome")
 /// and custom layouts from the plugin's layout directory.
 pub fn dump_layout(layout_name: &str) -> Result<String, String> {
-    // Create the plugin command with the layout name
     let plugin_command = PluginCommand::DumpLayout(layout_name.to_string());
-
-    // Convert to protobuf and encode
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-
-    // Call the host function (blocks until response)
-    unsafe { host_run_plugin_command() };
-
-    // Read and decode the response
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response from stdin: {:?}", e))?;
-
-    let protobuf_response = ProtobufDumpLayoutResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode protobuf response: {}", e))?;
+    let protobuf_response: ProtobufDumpLayoutResponse = call(plugin_command)?;
 
     // Extract result from the oneof field
     match protobuf_response.result {
@@ -274,11 +305,7 @@ pub fn dump_layout(layout_name: &str) -> Result<String, String> {
 /// Returns an empty string if the layout directory cannot be determined (rare edge case).
 pub fn get_layout_dir() -> String {
     let plugin_command = PluginCommand::GetLayoutDir;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response =
-        ProtobufGetLayoutDirResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let response = or_default(call::<ProtobufGetLayoutDirResponse>(plugin_command));
     response.layout_dir
 }
 
@@ -290,25 +317,15 @@ pub fn get_layout_dir() -> String {
 /// a plugin and the caller should say so rather than pick a path of its own.
 pub fn get_user_plugin_dir() -> String {
     let plugin_command = PluginCommand::GetUserPluginDir;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response =
-        ProtobufGetUserPluginDirResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let response = or_default(call::<ProtobufGetUserPluginDirResponse>(plugin_command));
     response.user_plugin_dir
 }
 
 pub fn get_session_environment_variables() -> BTreeMap<String, String> {
     let plugin_command = PluginCommand::GetSessionEnvironmentVariables;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response = ProtobufGetSessionEnvironmentVariablesResponse::decode(
-        bytes_from_stdin().unwrap().as_slice(),
-    )
-    .unwrap();
+    let response = or_default(call::<ProtobufGetSessionEnvironmentVariablesResponse>(
+        plugin_command,
+    ));
 
     response
         .env_vars
@@ -329,14 +346,9 @@ pub fn get_session_environment_variables() -> BTreeMap<String, String> {
 /// name", which is the same thing a declared-but-empty block means.
 pub fn get_plugin_alias_configuration(alias: &str) -> BTreeMap<String, String> {
     let plugin_command = PluginCommand::GetPluginAliasConfiguration(alias.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufGetPluginAliasConfigurationResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
+    let response = or_default(call::<ProtobufGetPluginAliasConfigurationResponse>(
+        plugin_command,
+    ));
 
     response.configuration.into_iter().collect()
 }
@@ -344,8 +356,7 @@ pub fn get_plugin_alias_configuration(alias: &str) -> BTreeMap<String, String> {
 /// Returns the focused pane ID and tab ID for the client associated with this plugin.
 pub fn get_focused_pane_info() -> Result<(TabId, PaneId), String> {
     let plugin_command = PluginCommand::GetFocusedPaneInfo;
-    let protobuf_response: ProtobufGetFocusedPaneInfoResponse =
-        command_response(plugin_command, "GetFocusedPaneInfo")?;
+    let protobuf_response: ProtobufGetFocusedPaneInfoResponse = call(plugin_command)?;
 
     match protobuf_response.result {
         Some(get_focused_pane_info_response::Result::FocusedPaneInfo(info)) => {
@@ -395,12 +406,7 @@ pub fn get_focused_pane_info() -> Result<(TabId, PaneId), String> {
 /// ```
 pub fn get_pane_info(pane_id: PaneId) -> Option<PaneInfo> {
     let plugin_command = PluginCommand::GetPaneInfo(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let protobuf_response =
-        ProtobufGetPaneInfoResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let protobuf_response = or_default(call::<ProtobufGetPaneInfoResponse>(plugin_command));
 
     protobuf_response
         .pane_info
@@ -440,12 +446,7 @@ pub fn get_pane_info(pane_id: PaneId) -> Option<PaneInfo> {
 /// ```
 pub fn get_tab_info(tab_id: TabId) -> Option<TabInfo> {
     let plugin_command = PluginCommand::GetTabInfo(tab_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let protobuf_response =
-        ProtobufGetTabInfoResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let protobuf_response = or_default(call::<ProtobufGetTabInfoResponse>(plugin_command));
 
     protobuf_response
         .tab_info
@@ -475,15 +476,7 @@ pub fn get_tab_info(tab_id: TabId) -> Option<TabInfo> {
 /// ```
 pub fn save_session() -> Result<(), String> {
     let plugin_command = PluginCommand::SaveSession;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-
-    unsafe { host_run_plugin_command() };
-
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response: {:?}", e))?;
-    let protobuf_response = ProtobufSaveSessionResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode response: {}", e))?;
+    let protobuf_response: ProtobufSaveSessionResponse = call(plugin_command)?;
 
     match protobuf_response.result {
         Some(save_session_response::Result::Success(_)) => Ok(()),
@@ -510,13 +503,9 @@ pub fn save_session() -> Result<(), String> {
 /// ```
 pub fn current_session_last_saved_time() -> Option<u64> {
     let plugin_command = PluginCommand::CurrentSessionLastSavedTime;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let protobuf_response =
-        ProtobufCurrentSessionLastSavedTimeResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
+    let protobuf_response = or_default(call::<ProtobufCurrentSessionLastSavedTimeResponse>(
+        plugin_command,
+    ));
 
     protobuf_response.timestamp_millis
 }
@@ -526,18 +515,9 @@ pub fn current_session_last_saved_time() -> Option<u64> {
 /// Open a file in the user's default `$EDITOR` in a new pane
 pub fn open_file(file_to_open: FileToOpen, context: BTreeMap<String, String>) -> Option<PaneId> {
     let plugin_command = PluginCommand::OpenFile(file_to_open, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response = match bytes_from_stdin() {
-        Ok(bytes_from_stdin) => ProtobufOpenFileResponse::decode(bytes_from_stdin.as_slice()).ok(),
-        Err(e) => {
-            eprintln!("{}", e);
-            None
-        },
-    };
-    response.and_then(|r| OpenFileResponse::try_from(r).ok().flatten())
+    or_default(call_as::<OpenFileResponse, ProtobufOpenFileResponse>(
+        plugin_command,
+    ))
 }
 
 /// Open a file in the user's default `$EDITOR` in a new floating pane
@@ -547,13 +527,10 @@ pub fn open_file_floating(
     context: BTreeMap<String, String>,
 ) -> Option<PaneId> {
     let plugin_command = PluginCommand::OpenFileFloating(file_to_open, coordinates, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenFileFloatingResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    OpenFileFloatingResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenFileFloatingResponse,
+        ProtobufOpenFileFloatingResponse,
+    >(plugin_command))
 }
 
 /// Open a file in the user's default `$EDITOR`, replacing the focused pane
@@ -562,13 +539,10 @@ pub fn open_file_in_place(
     context: BTreeMap<String, String>,
 ) -> Option<PaneId> {
     let plugin_command = PluginCommand::OpenFileInPlace(file_to_open, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenFileInPlaceResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    OpenFileInPlaceResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenFileInPlaceResponse,
+        ProtobufOpenFileInPlaceResponse,
+    >(plugin_command))
 }
 
 /// Open a file in the user's default `$EDITOR` in a new pane near th eplugin
@@ -577,13 +551,10 @@ pub fn open_file_near_plugin(
     context: BTreeMap<String, String>,
 ) -> Option<PaneId> {
     let plugin_command = PluginCommand::OpenFileNearPlugin(file_to_open, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenFileNearPluginResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    OpenFileNearPluginResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenFileNearPluginResponse,
+        ProtobufOpenFileNearPluginResponse,
+    >(plugin_command))
 }
 
 /// Open a file in the user's default `$EDITOR` in a new floating pane near the plugin
@@ -594,14 +565,10 @@ pub fn open_file_floating_near_plugin(
 ) -> Option<PaneId> {
     let plugin_command =
         PluginCommand::OpenFileFloatingNearPlugin(file_to_open, coordinates, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenFileFloatingNearPluginResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenFileFloatingNearPluginResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenFileFloatingNearPluginResponse,
+        ProtobufOpenFileFloatingNearPluginResponse,
+    >(plugin_command))
 }
 
 /// Open a file in the user's default `$EDITOR`, replacing the plugin pane
@@ -612,26 +579,16 @@ pub fn open_file_in_place_of_plugin(
 ) -> Option<PaneId> {
     let plugin_command =
         PluginCommand::OpenFileInPlaceOfPlugin(file_to_open, close_plugin_after_replace, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenFileInPlaceOfPluginResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenFileInPlaceOfPluginResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenFileInPlaceOfPluginResponse,
+        ProtobufOpenFileInPlaceOfPluginResponse,
+    >(plugin_command))
 }
 /// Open a new terminal pane to the specified location on the host filesystem
 pub fn open_terminal<P: AsRef<Path>>(path: P) -> Option<PaneId> {
     let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminal(file_to_open);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenTerminalResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    OpenTerminalResponse::try_from(response).unwrap()
+    or_default(call_as::<OpenTerminalResponse, ProtobufOpenTerminalResponse>(plugin_command))
 }
 
 /// Open a new terminal pane to the specified location on the host filesystem
@@ -640,14 +597,10 @@ pub fn open_terminal<P: AsRef<Path>>(path: P) -> Option<PaneId> {
 pub fn open_terminal_near_plugin<P: AsRef<Path>>(path: P) -> Option<PaneId> {
     let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminalNearPlugin(file_to_open);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenTerminalNearPluginResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenTerminalNearPluginResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenTerminalNearPluginResponse,
+        ProtobufOpenTerminalNearPluginResponse,
+    >(plugin_command))
 }
 
 /// Open a new floating terminal pane to the specified location on the host filesystem
@@ -657,14 +610,10 @@ pub fn open_terminal_floating<P: AsRef<Path>>(
 ) -> Option<PaneId> {
     let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminalFloating(file_to_open, coordinates);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenTerminalFloatingResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenTerminalFloatingResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenTerminalFloatingResponse,
+        ProtobufOpenTerminalFloatingResponse,
+    >(plugin_command))
 }
 
 /// Open a new floating terminal pane to the specified location on the host filesystem
@@ -676,15 +625,10 @@ pub fn open_terminal_floating_near_plugin<P: AsRef<Path>>(
 ) -> Option<PaneId> {
     let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminalFloatingNearPlugin(file_to_open, coordinates);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response = ProtobufOpenTerminalFloatingNearPluginResponse::decode(
-        bytes_from_stdin().unwrap().as_slice(),
-    )
-    .unwrap();
-    OpenTerminalFloatingNearPluginResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenTerminalFloatingNearPluginResponse,
+        ProtobufOpenTerminalFloatingNearPluginResponse,
+    >(plugin_command))
 }
 
 /// Open a new terminal pane to the specified location on the host filesystem, temporarily
@@ -692,14 +636,10 @@ pub fn open_terminal_floating_near_plugin<P: AsRef<Path>>(
 pub fn open_terminal_in_place<P: AsRef<Path>>(path: P) -> Option<PaneId> {
     let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command = PluginCommand::OpenTerminalInPlace(file_to_open);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenTerminalInPlaceResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenTerminalInPlaceResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenTerminalInPlaceResponse,
+        ProtobufOpenTerminalInPlaceResponse,
+    >(plugin_command))
 }
 
 /// Open a new terminal pane to the specified location on the host filesystem, temporarily
@@ -711,14 +651,10 @@ pub fn open_terminal_in_place_of_plugin<P: AsRef<Path>>(
     let file_to_open = FileToOpen::new(path.as_ref());
     let plugin_command =
         PluginCommand::OpenTerminalInPlaceOfPlugin(file_to_open, close_plugin_after_replace);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenTerminalInPlaceOfPluginResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenTerminalInPlaceOfPluginResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenTerminalInPlaceOfPluginResponse,
+        ProtobufOpenTerminalInPlaceOfPluginResponse,
+    >(plugin_command))
 }
 
 /// Open a new command pane with the specified command and args (this sort of pane allows the user to control the command, re-run it and see its exit status through the Zellij UI).
@@ -727,13 +663,10 @@ pub fn open_command_pane(
     context: BTreeMap<String, String>,
 ) -> Option<PaneId> {
     let plugin_command = PluginCommand::OpenCommandPane(command_to_run, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenCommandPaneResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    OpenCommandPaneResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenCommandPaneResponse,
+        ProtobufOpenCommandPaneResponse,
+    >(plugin_command))
 }
 
 /// Open a new command pane with the specified command and args (this sort of pane allows the user to control the command, re-run it and see its exit status through the Zellij UI).
@@ -744,14 +677,10 @@ pub fn open_command_pane_near_plugin(
     context: BTreeMap<String, String>,
 ) -> Option<PaneId> {
     let plugin_command = PluginCommand::OpenCommandPaneNearPlugin(command_to_run, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenCommandPaneNearPluginResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenCommandPaneNearPluginResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenCommandPaneNearPluginResponse,
+        ProtobufOpenCommandPaneNearPluginResponse,
+    >(plugin_command))
 }
 
 /// Perform local Git checkout setup on the host, then open a command pane in its root.
@@ -782,15 +711,7 @@ pub fn open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_
         checkout,
         automatic_firecracker_vm,
     );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response = ProtobufOpenCommandPaneInGitCheckoutResponse::decode(
-        bytes_from_stdin()
-            .map_err(|error| format!("Failed to read response: {error}"))?
-            .as_slice(),
-    )
-    .map_err(|error| format!("Failed to decode response: {error}"))?;
+    let response: ProtobufOpenCommandPaneInGitCheckoutResponse = call(plugin_command)?;
     OpenCommandPaneInGitCheckoutResponse::try_from(response).map_err(|error| error.to_owned())?
 }
 
@@ -818,15 +739,7 @@ pub fn spawn_agent(
         automatic_firecracker_vm,
         start_suppressed,
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response = ProtobufSpawnAgentResponse::decode(
-        bytes_from_stdin()
-            .map_err(|error| format!("Failed to read response: {error}"))?
-            .as_slice(),
-    )
-    .map_err(|error| format!("Failed to decode response: {error}"))?;
+    let response: ProtobufSpawnAgentResponse = call(plugin_command)?;
     SpawnAgentResponse::try_from(response).map_err(|error| error.to_owned())?
 }
 
@@ -838,14 +751,10 @@ pub fn open_command_pane_floating(
 ) -> Option<PaneId> {
     let plugin_command =
         PluginCommand::OpenCommandPaneFloating(command_to_run, coordinates, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenCommandPaneFloatingResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenCommandPaneFloatingResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenCommandPaneFloatingResponse,
+        ProtobufOpenCommandPaneFloatingResponse,
+    >(plugin_command))
 }
 
 /// Open a command pane as an overlay: over the whole session surface, above the tab's own panes,
@@ -859,14 +768,10 @@ pub fn open_command_pane_overlay(
     context: BTreeMap<String, String>,
 ) -> Option<PaneId> {
     let plugin_command = PluginCommand::OpenCommandPaneOverlay(command_to_run, placement, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenCommandPaneOverlayResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenCommandPaneOverlayResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenCommandPaneOverlayResponse,
+        ProtobufOpenCommandPaneOverlayResponse,
+    >(plugin_command))
 }
 
 /// Open a new floating command pane with the specified command and args (this sort of pane allows the user to control the command, re-run it and see its exit status through the Zellij UI).
@@ -879,15 +784,10 @@ pub fn open_command_pane_floating_near_plugin(
 ) -> Option<PaneId> {
     let plugin_command =
         PluginCommand::OpenCommandPaneFloatingNearPlugin(command_to_run, coordinates, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response = ProtobufOpenCommandPaneFloatingNearPluginResponse::decode(
-        bytes_from_stdin().unwrap().as_slice(),
-    )
-    .unwrap();
-    OpenCommandPaneFloatingNearPluginResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenCommandPaneFloatingNearPluginResponse,
+        ProtobufOpenCommandPaneFloatingNearPluginResponse,
+    >(plugin_command))
 }
 
 /// Open a new in place command pane with the specified command and args (this sort of pane allows the user to control the command, re-run it and see its exit status through the Zellij UI).
@@ -896,14 +796,10 @@ pub fn open_command_pane_in_place(
     context: BTreeMap<String, String>,
 ) -> Option<PaneId> {
     let plugin_command = PluginCommand::OpenCommandPaneInPlace(command_to_run, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenCommandPaneInPlaceResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenCommandPaneInPlaceResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenCommandPaneInPlaceResponse,
+        ProtobufOpenCommandPaneInPlaceResponse,
+    >(plugin_command))
 }
 
 /// Open a new in place command pane with the specified command and args (this sort of pane allows the user to control the command, re-run it and see its exit status through the Zellij UI).
@@ -919,15 +815,11 @@ pub fn open_command_pane_in_place_of_plugin(
         close_plugin_after_replace,
         context,
     );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let response = ProtobufOpenCommandPaneInPlaceOfPluginResponse::decode(
-        bytes_from_stdin().unwrap().as_slice(),
-    )
-    .unwrap();
-    OpenCommandPaneInPlaceOfPluginResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenCommandPaneInPlaceOfPluginResponse,
+        ProtobufOpenCommandPaneInPlaceOfPluginResponse,
+    >(plugin_command))
 }
 
 /// Opens a command pane in place of the pane identified by `pane_id`.
@@ -947,15 +839,11 @@ pub fn open_command_pane_in_place_of_pane_id(
         close_replaced_pane,
         context,
     );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let response = ProtobufOpenCommandPaneInPlaceOfPaneIdResponse::decode(
-        bytes_from_stdin().unwrap().as_slice(),
-    )
-    .unwrap();
-    OpenCommandPaneInPlaceOfPaneIdResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenCommandPaneInPlaceOfPaneIdResponse,
+        ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
+    >(plugin_command))
 }
 
 /// Opens a terminal pane in place of the pane identified by `pane_id`.
@@ -975,15 +863,10 @@ pub fn open_terminal_pane_in_place_of_pane_id<P: AsRef<Path>>(
     };
     let plugin_command =
         PluginCommand::OpenTerminalPaneInPlaceOfPaneId(pane_id, file_to_open, close_replaced_pane);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response = ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse::decode(
-        bytes_from_stdin().unwrap().as_slice(),
-    )
-    .unwrap();
-    OpenTerminalPaneInPlaceOfPaneIdResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenTerminalPaneInPlaceOfPaneIdResponse,
+        ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
+    >(plugin_command))
 }
 
 /// Opens an editor pane in place of the pane identified by `pane_id`.
@@ -1003,14 +886,11 @@ pub fn open_edit_pane_in_place_of_pane_id(
         close_replaced_pane,
         context,
     );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let response =
-        ProtobufOpenEditPaneInPlaceOfPaneIdResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenEditPaneInPlaceOfPaneIdResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenEditPaneInPlaceOfPaneIdResponse,
+        ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
+    >(plugin_command))
 }
 
 /// Open a new hidden (background) command pane with the specified command and args (this sort of pane allows the user to control the command, re-run it and see its exit status through the Zellij UI).
@@ -1019,55 +899,40 @@ pub fn open_command_pane_background(
     context: BTreeMap<String, String>,
 ) -> Option<PaneId> {
     let plugin_command = PluginCommand::OpenCommandPaneBackground(command_to_run, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenCommandPaneBackgroundResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenCommandPaneBackgroundResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenCommandPaneBackgroundResponse,
+        ProtobufOpenCommandPaneBackgroundResponse,
+    >(plugin_command))
 }
 
 /// Change the focused tab to the specified index (corresponding with the default tab names, to starting at `1`, `0` will be considered as `1`).
 pub fn switch_tab_to(tab_idx: TabNumber) {
-    let plugin_command = PluginCommand::SwitchTabTo(tab_idx);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SwitchTabTo(tab_idx));
 }
 
 /// Set a timeout in seconds (or fractions thereof) after which the plugins [update](./plugin-api-events#update) method will be called with the [`Timer`](./plugin-api-events.md#timer) event.
 pub fn set_timeout(secs: FractionalSeconds) {
-    let plugin_command = PluginCommand::SetTimeout(secs);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetTimeout(secs));
 }
 
 #[doc(hidden)]
 pub fn exec_cmd(cmd: &[&str]) {
     let plugin_command =
         PluginCommand::ExecCmd(cmd.iter().cloned().map(|s| s.to_owned()).collect());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(plugin_command);
 }
 
 /// Run this command in the background on the host machine, optionally being notified of its output
 /// if subscribed to the `RunCommandResult` Event
 pub fn run_command(cmd: &[&str], context: BTreeMap<String, String>) {
-    let plugin_command = PluginCommand::RunCommand(
+    send(PluginCommand::RunCommand(
         cmd.iter().cloned().map(|s| s.to_owned()).collect(),
         BTreeMap::new(),
         PathBuf::from("."),
         context,
         None,
         None,
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 /// Run this command in the background on the host machine, providing environment variables and a
@@ -1078,17 +943,14 @@ pub fn run_command_with_env_variables_and_cwd(
     cwd: PathBuf,
     context: BTreeMap<String, String>,
 ) {
-    let plugin_command = PluginCommand::RunCommand(
+    send(PluginCommand::RunCommand(
         cmd.iter().cloned().map(|s| s.to_owned()).collect(),
         env_variables,
         cwd,
         context,
         None,
         None,
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 /// Run this command in the background on the host machine while retaining at most
@@ -1100,17 +962,14 @@ pub fn run_command_with_output_limit(
     context: BTreeMap<String, String>,
     max_output_bytes: usize,
 ) {
-    let plugin_command = PluginCommand::RunCommand(
+    send(PluginCommand::RunCommand(
         cmd.iter().cloned().map(|s| s.to_owned()).collect(),
         env_variables,
         cwd,
         context,
         Some(max_output_bytes),
         None,
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 /// Stream stdout/stderr as `RunCommandOutput`, then receive `RunCommandResult` after drain.
@@ -1130,19 +989,13 @@ pub fn run_command_stream(
         Some(max_output_bytes),
         Some(true),
     );
-    let protobuf: ProtobufPluginCommand = command.try_into().unwrap();
-    object_to_stdout(&protobuf.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(command);
 }
 
 /// Observe terminal output matching a nonempty command context. `None` removes the
 /// subscription without stopping any process. Subscribe to `PaneOutput` before dispatch.
 pub fn subscribe_pane_output(context: Option<BTreeMap<String, String>>) {
-    let protobuf: ProtobufPluginCommand = PluginCommand::SubscribePaneOutput(context)
-        .try_into()
-        .unwrap();
-    object_to_stdout(&protobuf.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SubscribePaneOutput(context));
 }
 
 /// Make a web request, optionally being notified of its output
@@ -1160,9 +1013,7 @@ pub fn web_request<S>(
 {
     let plugin_command =
         PluginCommand::WebRequest(url.to_string(), verb, headers, body, context, None, proxy);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(plugin_command);
 }
 
 /// Make a web request whose response body is streamed back in chunks rather than buffered,
@@ -1191,7 +1042,7 @@ pub fn web_request_stream<I: ToString, S: ToString>(
     context: BTreeMap<String, String>,
     proxy: Option<String>,
 ) {
-    let plugin_command = PluginCommand::WebRequest(
+    send(PluginCommand::WebRequest(
         url.to_string(),
         verb,
         headers,
@@ -1199,69 +1050,46 @@ pub fn web_request_stream<I: ToString, S: ToString>(
         context,
         Some(stream_id.to_string()),
         proxy,
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 /// Cancel an in-flight [`web_request_stream`]. A final `WebRequestStreamChunk` with `done: true`
 /// and `error: Some(_)` is still delivered. Cancelling an unknown or already finished stream is
 /// a no-op.
 pub fn cancel_web_request<S: ToString>(stream_id: S) {
-    let plugin_command = PluginCommand::CancelWebRequest(stream_id.to_string());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CancelWebRequest(stream_id.to_string()));
 }
 
 /// Hide the plugin pane (suppress it) from the UI
 pub fn hide_self() {
-    let plugin_command = PluginCommand::HideSelf;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::HideSelf);
 }
 
 /// Hide the pane (suppress it) with the specified [PaneId] from the UI
 pub fn hide_pane_with_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::HidePaneWithId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::HidePaneWithId(pane_id));
 }
 
 /// Show the plugin pane (unsuppress it if it is suppressed), focus it and switch to its tab
 pub fn show_self(should_float_if_hidden: bool) {
-    let plugin_command = PluginCommand::ShowSelf(should_float_if_hidden);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ShowSelf(should_float_if_hidden));
 }
 
 /// Show the pane (unsuppress it if it is suppressed) with the specified [PaneId], focus it and switch to its tab
 pub fn show_pane_with_id(pane_id: PaneId, should_float_if_hidden: bool, should_focus_pane: bool) {
     let plugin_command =
         PluginCommand::ShowPaneWithId(pane_id, should_float_if_hidden, should_focus_pane);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(plugin_command);
 }
 
 /// Close this plugin pane
 pub fn close_self() {
-    let plugin_command = PluginCommand::CloseSelf;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CloseSelf);
 }
 
 /// Switch to the specified Input Mode (eg. `Normal`, `Tab`, `Pane`)
 pub fn switch_to_input_mode(mode: &InputMode) {
-    let plugin_command = PluginCommand::SwitchToMode(*mode);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SwitchToMode(*mode));
 }
 
 /// Provide a stringified [`layout`](https://zellij.dev/documentation/layouts.html) to be applied to the current session. If the layout has multiple tabs, they will all be opened.
@@ -1269,12 +1097,9 @@ pub fn switch_to_input_mode(mode: &InputMode) {
 /// the layout starts.
 pub fn new_tabs_with_layout(layout: &str) -> Vec<TabId> {
     let plugin_command = PluginCommand::NewTabsWithLayout(layout.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response = ProtobufNewTabsResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    NewTabsResponse::try_from(response).unwrap()
+    or_default(call_as::<NewTabsResponse, ProtobufNewTabsResponse>(
+        plugin_command,
+    ))
 }
 
 /// Provide a LayoutInfo to be applied to the current session in a new tab. If the layout has multiple tabs, they will all be opened.
@@ -1283,12 +1108,9 @@ pub fn new_tabs_with_layout(layout: &str) -> Vec<TabId> {
 /// built-in layouts require only the capabilities they actually start.
 pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<TabId> {
     let plugin_command = PluginCommand::NewTabsWithLayoutInfo(layout_info.as_ref().clone());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response = ProtobufNewTabsResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    NewTabsResponse::try_from(response).unwrap()
+    or_default(call_as::<NewTabsResponse, ProtobufNewTabsResponse>(
+        plugin_command,
+    ))
 }
 
 /// Open a new tab with the default layout
@@ -1299,12 +1121,9 @@ where
     let name = name.map(|s| s.to_string());
     let cwd = cwd.map(|s| s.to_string());
     let plugin_command = PluginCommand::NewTab { name, cwd };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response = ProtobufNewTabResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    NewTabResponse::try_from(response).unwrap()
+    or_default(call_as::<NewTabResponse, ProtobufNewTabResponse>(
+        plugin_command,
+    ))
 }
 
 pub fn new_tab_unfocused<S>(name: Option<S>, cwd: Option<S>) -> Option<TabId>
@@ -1314,24 +1133,18 @@ where
     let name = name.map(|s| s.to_string());
     let cwd = cwd.map(|s| s.to_string());
     let plugin_command = PluginCommand::NewTabUnfocused { name, cwd };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufNewTabUnfocusedResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    NewTabUnfocusedResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        NewTabUnfocusedResponse,
+        ProtobufNewTabUnfocusedResponse,
+    >(plugin_command))
 }
 
 pub fn new_tiled_pane_in_tab(tab_id: TabId) -> Option<PaneId> {
     let plugin_command = PluginCommand::NewTiledPaneInTab { tab_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufNewTiledPaneInTabResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    NewTiledPaneInTabResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        NewTiledPaneInTabResponse,
+        ProtobufNewTiledPaneInTabResponse,
+    >(plugin_command))
 }
 
 /// Opens a new tab with a command pane running `command_to_run`.
@@ -1341,14 +1154,10 @@ pub fn open_command_pane_in_new_tab(
     context: BTreeMap<String, String>,
 ) -> (Option<TabId>, Option<PaneId>) {
     let plugin_command = PluginCommand::OpenCommandPaneInNewTab(command_to_run, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenPaneInNewTabResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    let result = OpenPaneInNewTabResponse::try_from(response).unwrap();
-    (result.tab_id, result.pane_id)
+    or_default(
+        call_as::<OpenPaneInNewTabResponse, ProtobufOpenPaneInNewTabResponse>(plugin_command)
+            .map(|result| (result.tab_id, result.pane_id)),
+    )
 }
 
 /// Opens a new tab with a plugin pane loaded from `plugin_url`.
@@ -1364,14 +1173,11 @@ pub fn open_plugin_pane_in_new_tab(
         configuration,
         context,
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let response =
-        ProtobufOpenPaneInNewTabResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    let result = OpenPaneInNewTabResponse::try_from(response).unwrap();
-    (result.tab_id, result.pane_id)
+    or_default(
+        call_as::<OpenPaneInNewTabResponse, ProtobufOpenPaneInNewTabResponse>(plugin_command)
+            .map(|result| (result.tab_id, result.pane_id)),
+    )
 }
 
 /// Open a new floating plugin pane with the specified plugin URL and configuration.
@@ -1388,14 +1194,11 @@ pub fn open_plugin_pane_floating(
         floating_pane_coordinates: coordinates,
         context,
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let response =
-        ProtobufOpenPluginPaneFloatingResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    OpenPluginPaneFloatingResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        OpenPluginPaneFloatingResponse,
+        ProtobufOpenPluginPaneFloatingResponse,
+    >(plugin_command))
 }
 
 /// Opens a new tab with an editor pane for `file_to_open`.
@@ -1405,30 +1208,20 @@ pub fn open_editor_pane_in_new_tab(
     context: BTreeMap<String, String>,
 ) -> (Option<TabId>, Option<PaneId>) {
     let plugin_command = PluginCommand::OpenEditorPaneInNewTab(file_to_open, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufOpenPaneInNewTabResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    let result = OpenPaneInNewTabResponse::try_from(response).unwrap();
-    (result.tab_id, result.pane_id)
+    or_default(
+        call_as::<OpenPaneInNewTabResponse, ProtobufOpenPaneInNewTabResponse>(plugin_command)
+            .map(|result| (result.tab_id, result.pane_id)),
+    )
 }
 
 /// Change focus to the next tab or loop back to the first
 pub fn go_to_next_tab() {
-    let plugin_command = PluginCommand::GoToNextTab;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::GoToNextTab);
 }
 
 /// Change focus to the previous tab or loop back to the last
 pub fn go_to_previous_tab() {
-    let plugin_command = PluginCommand::GoToPreviousTab;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::GoToPreviousTab);
 }
 
 pub fn report_panic(info: &std::panic::PanicHookInfo) {
@@ -1438,18 +1231,12 @@ pub fn report_panic(info: &std::panic::PanicHookInfo) {
         "<NO PAYLOAD>".to_string()
     };
     let panic_stringified = format!("{}\n\r{:#?}", panic_payload, info).replace("\n", "\r\n");
-    let plugin_command = PluginCommand::ReportPanic(panic_stringified);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ReportPanic(panic_stringified));
 }
 
 /// Either Increase or Decrease the size of the focused pane
 pub fn resize_focused_pane(resize: Resize) {
-    let plugin_command = PluginCommand::Resize(resize);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::Resize(resize));
 }
 
 /// Either Increase or Decrease the size of the focused pane in a specified direction (eg. `Left`, `Right`, `Up`, `Down`).
@@ -1459,82 +1246,52 @@ pub fn resize_focused_pane_with_direction(resize: Resize, direction: Direction) 
         direction: Some(direction),
         invert_on_boundaries: false,
     };
-    let plugin_command = PluginCommand::ResizeWithDirection(resize_strategy);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ResizeWithDirection(resize_strategy));
 }
 
 /// Change focus tot he next pane in chronological order
 pub fn focus_next_pane() {
-    let plugin_command = PluginCommand::FocusNextPane;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::FocusNextPane);
 }
 
 /// Change focus to the previous pane in chronological order
 pub fn focus_previous_pane() {
-    let plugin_command = PluginCommand::FocusPreviousPane;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::FocusPreviousPane);
 }
 
 /// Change focus to the previously focused pane
 pub fn focus_last_pane() {
-    let plugin_command = PluginCommand::FocusLastPane;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::FocusLastPane);
 }
 
 /// Change the focused pane in the specified direction
 pub fn move_focus(direction: Direction) {
-    let plugin_command = PluginCommand::MoveFocus(direction);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::MoveFocus(direction));
 }
 
 /// Change the focused pane in the specified direction, if the pane is on the edge of the screen, the next tab is focused (next if right edge, previous if left edge).
 pub fn move_focus_or_tab(direction: Direction) {
-    let plugin_command = PluginCommand::MoveFocusOrTab(direction);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::MoveFocusOrTab(direction));
 }
 
 /// Detach the user from the active session
 pub fn detach() {
-    let plugin_command = PluginCommand::Detach;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::Detach);
 }
 
 /// Edit the scrollback of the focused pane in the user's default `$EDITOR`
 pub fn edit_scrollback() {
-    let plugin_command = PluginCommand::EditScrollback;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::EditScrollback);
 }
 
 /// Write bytes to the `STDIN` of the focused pane
 pub fn write(bytes: Vec<u8>) {
-    let plugin_command = PluginCommand::Write(bytes);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::Write(bytes));
 }
 
 /// Write characters to the `STDIN` of the focused pane
 pub fn write_chars(chars: &str) {
-    let plugin_command = PluginCommand::WriteChars(chars.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::WriteChars(chars.to_owned()));
 }
 
 /// Copy arbitrary text to the user's clipboard
@@ -1542,274 +1299,172 @@ pub fn write_chars(chars: &str) {
 /// Respects the user's configured clipboard destination (system clipboard or primary selection).
 /// Requires the WriteToClipboard permission.
 pub fn copy_to_clipboard(text: impl Into<String>) {
-    let plugin_command = PluginCommand::CopyToClipboard(text.into());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CopyToClipboard(text.into()));
 }
 
 /// Focused the previously focused tab (regardless of the tab position)
 pub fn toggle_tab() {
-    let plugin_command = PluginCommand::ToggleTab;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ToggleTab);
 }
 
 /// Switch the position of the focused pane with a different pane
 pub fn move_pane() {
-    let plugin_command = PluginCommand::MovePane;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::MovePane);
 }
 
 /// Switch the position of the focused pane with a different pane in the specified direction (eg. `Down`, `Up`, `Left`, `Right`).
 pub fn move_pane_with_direction(direction: Direction) {
-    let plugin_command = PluginCommand::MovePaneWithDirection(direction);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::MovePaneWithDirection(direction));
 }
 
 /// Clear the scroll buffer of the focused pane
 pub fn clear_screen() {
-    let plugin_command = PluginCommand::ClearScreen;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ClearScreen);
 }
 
 /// Scroll the focused pane up 1 line
 pub fn scroll_up() {
-    let plugin_command = PluginCommand::ScrollUp;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ScrollUp);
 }
 
 /// Scroll the focused pane down 1 line
 pub fn scroll_down() {
-    let plugin_command = PluginCommand::ScrollDown;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ScrollDown);
 }
 
 /// Scroll the focused pane all the way to the top of the scrollbuffer
 pub fn scroll_to_top() {
-    let plugin_command = PluginCommand::ScrollToTop;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ScrollToTop);
 }
 
 /// Scroll the focused pane all the way to the bottom of the scrollbuffer
 pub fn scroll_to_bottom() {
-    let plugin_command = PluginCommand::ScrollToBottom;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ScrollToBottom);
 }
 
 /// Scroll the focused pane up one page
 pub fn page_scroll_up() {
-    let plugin_command = PluginCommand::PageScrollUp;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::PageScrollUp);
 }
 
 /// Scroll the focused pane down one page
 pub fn page_scroll_down() {
-    let plugin_command = PluginCommand::PageScrollDown;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::PageScrollDown);
 }
 
 /// Toggle the focused pane to be fullscreen or normal sized
 pub fn toggle_focus_fullscreen() {
-    let plugin_command = PluginCommand::ToggleFocusFullscreen;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ToggleFocusFullscreen);
 }
 
 pub fn toggle_focus_no_ui_fullscreen() {
-    let plugin_command = PluginCommand::ToggleFocusNoUiFullscreen;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ToggleFocusNoUiFullscreen);
 }
 
 pub fn focus_host_session() {
-    let plugin_command = PluginCommand::FocusHostSession;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::FocusHostSession);
 }
 
 /// Toggle the UI pane frames on or off
 pub fn toggle_pane_frames() {
-    let plugin_command = PluginCommand::TogglePaneFrames;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::TogglePaneFrames);
 }
 
 pub fn set_pane_frame_style(pane_frame_style: PaneFrameStyle) {
-    let plugin_command = PluginCommand::SetPaneFrameStyle(pane_frame_style);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetPaneFrameStyle(pane_frame_style));
 }
 
 /// Embed the currently focused pane (make it stop floating) or turn it to a float pane if it is not
 pub fn toggle_pane_embed_or_eject() {
-    let plugin_command = PluginCommand::TogglePaneEmbedOrEject;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::TogglePaneEmbedOrEject);
 }
 
 pub fn undo_rename_pane() {
-    let plugin_command = PluginCommand::UndoRenamePane;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::UndoRenamePane);
 }
 
 /// Close the focused pane
 pub fn close_focus() {
-    let plugin_command = PluginCommand::CloseFocus;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CloseFocus);
 }
 
 pub fn new_pane() {
-    let plugin_command = PluginCommand::NewPane;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::NewPane);
 }
 
 pub fn toggle_floating_panes(tab_id: Option<TabId>) {
-    let plugin_command = PluginCommand::ToggleFloatingPanes { tab_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ToggleFloatingPanes { tab_id });
 }
 
 /// Turn the `STDIN` synchronization of the current tab on or off
 pub fn toggle_active_tab_sync() {
-    let plugin_command = PluginCommand::ToggleActiveTabSync;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ToggleActiveTabSync);
 }
 
 /// Close the focused tab
 pub fn close_focused_tab() {
-    let plugin_command = PluginCommand::CloseFocusedTab;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CloseFocusedTab);
 }
 
 pub fn undo_rename_tab() {
-    let plugin_command = PluginCommand::UndoRenameTab;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::UndoRenameTab);
 }
 
 /// Compeltely quit Zellij for this and all other connected clients
 pub fn quit_zellij() {
-    let plugin_command = PluginCommand::QuitZellij;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::QuitZellij);
 }
 
 /// Change to the previous [swap layout](https://zellij.dev/documentation/swap-layouts.html)
 pub fn previous_swap_layout() {
-    let plugin_command = PluginCommand::PreviousSwapLayout;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::PreviousSwapLayout);
 }
 
 /// Change to the next [swap layout](https://zellij.dev/documentation/swap-layouts.html)
 pub fn next_swap_layout() {
-    let plugin_command = PluginCommand::NextSwapLayout;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::NextSwapLayout);
 }
 
 /// Change focus to the tab with the specified name
 pub fn go_to_tab_name(tab_name: &str) {
-    let plugin_command = PluginCommand::GoToTabName(tab_name.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::GoToTabName(tab_name.to_owned()));
 }
 
 /// Change focus to the tab with the specified name or create it if it does not exist
 pub fn focus_or_create_tab(tab_name: &str) -> Option<TabId> {
     let plugin_command = PluginCommand::FocusOrCreateTab(tab_name.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response =
-        ProtobufFocusOrCreateTabResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    FocusOrCreateTabResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        FocusOrCreateTabResponse,
+        ProtobufFocusOrCreateTabResponse,
+    >(plugin_command))
 }
 
 pub fn go_to_tab(tab_index: TabPosition) {
-    let plugin_command = PluginCommand::GoToTab(tab_index);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::GoToTab(tab_index));
 }
 
 /// Grant `permissions` to the plugin at `plugin_url` before it asks, as if the user had answered
 /// its prompt. Only a builtin plugin may call this; for anything else the host refuses and logs.
 /// The grant is remembered in the permissions cache and applied to any running instance.
 pub fn grant_plugin_permissions(plugin_url: &str, permissions: &[PermissionType]) {
-    let plugin_command = PluginCommand::GrantPluginPermissions {
+    send(PluginCommand::GrantPluginPermissions {
         plugin_url: plugin_url.to_owned(),
         permissions: permissions.to_vec(),
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    });
 }
 
 pub fn start_or_reload_plugin(url: &str) {
-    let plugin_command = PluginCommand::StartOrReloadPlugin(url.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::StartOrReloadPlugin(url.to_owned()));
 }
 
 /// Closes a terminal pane with the specified id
 pub fn close_terminal_pane(terminal_pane_id: zellij_types::internal_ids::TerminalId) {
-    let plugin_command = PluginCommand::CloseTerminalPane(terminal_pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CloseTerminalPane(terminal_pane_id));
 }
 
 /// Closes a plugin pane with the specified id
 pub fn close_plugin_pane(plugin_pane_id: zellij_types::internal_ids::PluginId) {
-    let plugin_command = PluginCommand::ClosePluginPane(plugin_pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ClosePluginPane(plugin_pane_id));
 }
 
 /// Changes the focus to the terminal pane with the specified id, unsuppressing it if it was suppressed and switching to its tab and layer (eg. floating/tiled).
@@ -1818,14 +1473,11 @@ pub fn focus_terminal_pane(
     should_float_if_hidden: bool,
     should_be_in_place_if_hidden: bool,
 ) {
-    let plugin_command = PluginCommand::FocusTerminalPane(
+    send(PluginCommand::FocusTerminalPane(
         terminal_pane_id,
         should_float_if_hidden,
         should_be_in_place_if_hidden,
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 /// Changes the focus to the plugin pane with the specified id, unsuppressing it if it was suppressed and switching to its tab and layer (eg. floating/tiled).
@@ -1834,14 +1486,11 @@ pub fn focus_plugin_pane(
     should_float_if_hidden: bool,
     should_be_in_place_if_hidden: bool,
 ) {
-    let plugin_command = PluginCommand::FocusPluginPane(
+    send(PluginCommand::FocusPluginPane(
         plugin_pane_id,
         should_float_if_hidden,
         should_be_in_place_if_hidden,
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 /// Changes the name (the title that appears in the UI) of the terminal pane with the specified id.
@@ -1851,10 +1500,10 @@ pub fn rename_terminal_pane<S>(
 ) where
     S: AsRef<str> + ToString,
 {
-    let plugin_command = PluginCommand::RenameTerminalPane(terminal_pane_id, new_name.to_string());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::RenameTerminalPane(
+        terminal_pane_id,
+        new_name.to_string(),
+    ));
 }
 
 /// Changes the name (the title that appears in the UI) of the plugin pane with the specified id.
@@ -1862,10 +1511,10 @@ pub fn rename_plugin_pane<S>(plugin_pane_id: zellij_types::internal_ids::PluginI
 where
     S: AsRef<str> + ToString,
 {
-    let plugin_command = PluginCommand::RenamePluginPane(plugin_pane_id, new_name.to_string());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::RenamePluginPane(
+        plugin_pane_id,
+        new_name.to_string(),
+    ));
 }
 
 /// Changes the name (the title that appears in the UI) of the tab with the specified position.
@@ -1877,10 +1526,7 @@ pub fn rename_tab<S>(tab_position: TabPosition, new_name: S)
 where
     S: AsRef<str> + ToString,
 {
-    let plugin_command = PluginCommand::RenameTab(tab_position, new_name.to_string());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::RenameTab(tab_position, new_name.to_string()));
 }
 
 /// Changes the name (the title that appears in the UI) of the tab with the specified id.
@@ -1888,20 +1534,12 @@ pub fn rename_tab_with_id<S>(tab_id: TabId, new_name: S)
 where
     S: AsRef<str> + ToString,
 {
-    let plugin_command = PluginCommand::RenameTabWithId(tab_id, new_name.to_string());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::RenameTabWithId(tab_id, new_name.to_string()));
 }
 
 /// Arrange existing terminals by project; requires ChangeApplicationState permission.
 pub fn arrange_project_panes(groups: Vec<ProjectPaneGroup>) {
-    let plugin_command = PluginCommand::ArrangeProjectPanes(groups);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe {
-        host_run_plugin_command();
-    }
+    send(PluginCommand::ArrangeProjectPanes(groups));
 }
 
 /// Tells the host which project each tab is working on, keyed by tab id.
@@ -1911,21 +1549,15 @@ pub fn arrange_project_panes(groups: Vec<ProjectPaneGroup>) {
 /// apart with a `#1`/`#2` suffix. The map is the whole truth each time it is
 /// sent, so a tab left out of it goes back to its own name.
 pub fn set_tab_projects(tab_projects: BTreeMap<TabId, String>) {
-    let plugin_command = PluginCommand::SetTabProjects(tab_projects);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetTabProjects(tab_projects));
 }
 
 /// Switch to a session with the given name, create one if no name is given
 pub fn switch_session(name: Option<&SessionName>) {
-    let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
+    send(PluginCommand::SwitchSession(ConnectToSession {
         name: name.cloned(),
         ..Default::default()
-    });
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    }));
 }
 
 /// Switch to a session with the given name, creating one from `layout` if needed. Layout
@@ -1935,27 +1567,21 @@ pub fn switch_session_with_layout(
     layout: LayoutInfo,
     cwd: Option<PathBuf>,
 ) {
-    let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
+    send(PluginCommand::SwitchSession(ConnectToSession {
         name: name.cloned(),
         layout: Some(layout),
         cwd,
         ..Default::default()
-    });
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    }));
 }
 
 /// Switch to a session with the given name, create one if no name is given
 pub fn switch_session_with_cwd(name: Option<&SessionName>, cwd: Option<PathBuf>) {
-    let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
+    send(PluginCommand::SwitchSession(ConnectToSession {
         name: name.cloned(),
         cwd,
         ..Default::default()
-    });
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    }));
 }
 
 /// Switch to a session with the given name, focusing either the provided pane_id or the provided
@@ -1965,15 +1591,12 @@ pub fn switch_session_with_focus(
     tab_position: Option<TabPosition>,
     pane_id: Option<zellij_types::pane_id::PaneId>,
 ) {
-    let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
+    send(PluginCommand::SwitchSession(ConnectToSession {
         name: Some(name.clone()),
         tab_position,
         pane_id,
         ..Default::default()
-    });
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    }));
 }
 
 /// Permanently delete a resurrectable session with the given name.
@@ -1982,14 +1605,7 @@ pub fn switch_session_with_focus(
 /// if the underlying `remove_dir_all` failed (e.g. permissions, missing path).
 pub fn delete_dead_session(name: &SessionName) -> Result<(), String> {
     let plugin_command = PluginCommand::DeleteDeadSessionAndReply(name.clone());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response_bytes = bytes_from_stdin()
-        .map_err(|e| format!("Failed to read DeleteDeadSession response: {}", e))?;
-    let protobuf_response = ProtobufDeleteDeadSessionResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Malformed DeleteDeadSession response: {}", e))?;
+    let protobuf_response: ProtobufDeleteDeadSessionResponse = call(plugin_command)?;
     match protobuf_response.error {
         Some(err) => Err(err),
         None => Ok(()),
@@ -2002,15 +1618,7 @@ pub fn delete_dead_session(name: &SessionName) -> Result<(), String> {
 /// pathological filesystem cannot freeze the calling plugin.
 pub fn delete_all_dead_sessions() -> Result<(), String> {
     let plugin_command = PluginCommand::DeleteAllDeadSessionsAndReply;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response_bytes = bytes_from_stdin()
-        .map_err(|e| format!("Failed to read DeleteAllDeadSessions response: {}", e))?;
-    let protobuf_response =
-        ProtobufDeleteAllDeadSessionsResponse::decode(response_bytes.as_slice())
-            .map_err(|e| format!("Malformed DeleteAllDeadSessions response: {}", e))?;
+    let protobuf_response: ProtobufDeleteAllDeadSessionsResponse = call(plugin_command)?;
     match protobuf_response.error {
         Some(err) => Err(err),
         None => Ok(()),
@@ -2019,27 +1627,18 @@ pub fn delete_all_dead_sessions() -> Result<(), String> {
 
 /// Rename the current session
 pub fn rename_session(name: &SessionName) {
-    let plugin_command = PluginCommand::RenameSession(name.clone());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::RenameSession(name.clone()));
 }
 
 /// Show a notification that dismisses itself after a timeout. Its corner and timeout come from the
 /// `notification_position` and `notification_timeout` config options.
 pub fn notify(text: &str) {
-    let plugin_command = PluginCommand::Notify(text.to_owned(), None, None);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::Notify(text.to_owned(), None, None));
 }
 
 /// Show a notification that focuses `pane_id` when clicked.
 pub fn notify_with_pane_id(text: &str, pane_id: PaneId) {
-    let plugin_command = PluginCommand::Notify(text.to_owned(), Some(pane_id), None);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::Notify(text.to_owned(), Some(pane_id), None));
 }
 
 /// Show a notification that focuses `pane_id` when clicked *and* tells this plugin that it was,
@@ -2050,57 +1649,42 @@ pub fn notify_with_pane_id(text: &str, pane_id: PaneId) {
 /// say - wants this rather than [`notify_with_pane_id`]. Requires a subscription to
 /// `EventType::CustomMessage`; the message arrives after the focus has landed.
 pub fn notify_with_click(text: &str, pane_id: PaneId, message: &str, payload: &str) {
-    let plugin_command = PluginCommand::Notify(
+    send(PluginCommand::Notify(
         text.to_owned(),
         Some(pane_id),
         Some(NotifyClick {
             message: message.to_owned(),
             payload: payload.to_owned(),
         }),
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 /// Unblock the input side of a pipe, requesting the next message be sent if there is one
 pub fn unblock_cli_pipe_input(pipe_name: &str) {
-    let plugin_command = PluginCommand::UnblockCliPipeInput(pipe_name.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::UnblockCliPipeInput(pipe_name.to_owned()));
 }
 
 /// Block the input side of a pipe, will only be released once this or another plugin unblocks it
 pub fn block_cli_pipe_input(pipe_name: &str) {
-    let plugin_command = PluginCommand::BlockCliPipeInput(pipe_name.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::BlockCliPipeInput(pipe_name.to_owned()));
 }
 
 /// Send output to the output side of a pipe, ths does not affect the input side of same pipe
 pub fn cli_pipe_output(pipe_name: &str, output: &str) {
-    let plugin_command = PluginCommand::CliPipeOutput(pipe_name.to_owned(), output.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CliPipeOutput(
+        pipe_name.to_owned(),
+        output.to_owned(),
+    ));
 }
 
 /// Send a message to a plugin, it will be launched if it is not already running
 pub fn pipe_message_to_plugin(message_to_plugin: MessageToPlugin) {
-    let plugin_command = PluginCommand::MessageToPlugin(message_to_plugin);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::MessageToPlugin(message_to_plugin));
 }
 
 /// Disconnect all other clients from the current session
 pub fn disconnect_other_clients() {
-    let plugin_command = PluginCommand::DisconnectOtherClients;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::DisconnectOtherClients);
 }
 
 /// Kill all Zellij sessions in the list.
@@ -2112,14 +1696,7 @@ pub fn disconnect_other_clients() {
 /// peer is bounded by a short server-side wedge timeout.
 pub fn kill_sessions(session_names: &[SessionName]) -> Result<(), String> {
     let plugin_command = PluginCommand::KillSessionsAndReply(session_names.to_vec());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read KillSessions response: {}", e))?;
-    let protobuf_response = ProtobufKillSessionsResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Malformed KillSessions response: {}", e))?;
+    let protobuf_response: ProtobufKillSessionsResponse = call(plugin_command)?;
     match protobuf_response.error {
         Some(err) => Err(err),
         None => Ok(()),
@@ -2233,18 +1810,9 @@ pub fn adopt_orphaned_pane(
 }
 
 fn warp_request(plugin_command: PluginCommand) -> Result<String, String> {
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read warp response: {}", e))?;
-    let protobuf_response = ProtobufWarpPaneResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Malformed warp response: {}", e))?;
-    match WarpPaneResponse::try_from(protobuf_response) {
-        Ok(WarpPaneResponse::Ok(message)) => Ok(message),
-        Ok(WarpPaneResponse::Err(error)) => Err(error),
-        Err(e) => Err(format!("Malformed warp response: {}", e)),
+    match call_as::<WarpPaneResponse, ProtobufWarpPaneResponse>(plugin_command)? {
+        WarpPaneResponse::Ok(message) => Ok(message),
+        WarpPaneResponse::Err(error) => Err(error),
     }
 }
 
@@ -2259,14 +1827,7 @@ fn warp_request(plugin_command: PluginCommand) -> Result<String, String> {
 /// * `ReadApplicationState`
 pub fn list_orphaned_panes() -> Result<Vec<OrphanedPane>, String> {
     let plugin_command = PluginCommand::ListOrphanedPanes;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response_bytes = bytes_from_stdin()
-        .map_err(|e| format!("Failed to read ListOrphanedPanes response: {}", e))?;
-    let protobuf_response = ProtobufListOrphanedPanesResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Malformed ListOrphanedPanes response: {}", e))?;
+    let protobuf_response: ProtobufListOrphanedPanesResponse = call(plugin_command)?;
     match ListOrphanedPanesResponse::try_from(protobuf_response) {
         Ok(ListOrphanedPanesResponse::Ok(panes)) => Ok(panes),
         Ok(ListOrphanedPanesResponse::Err(error)) => Err(error),
@@ -2275,31 +1836,6 @@ pub fn list_orphaned_panes() -> Result<Vec<OrphanedPane>, String> {
 }
 
 // ------------------------------------------------------------------ data store
-
-/// Issue a data store command and decode its response.
-///
-/// Every one of these is a blocking round trip: the request goes out on stdout, the host handles it
-/// on this plugin's own executor thread, and the response is waiting on stdin by the time
-/// `host_run_plugin_command` returns.
-fn data_request<T, P>(plugin_command: PluginCommand, what: &str) -> Result<T, String>
-where
-    P: Message + Default,
-    T: TryFrom<P, Error = &'static str>,
-{
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command
-        .try_into()
-        .map_err(|e| format!("Failed to encode the {} request: {}", what, e))?;
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    // A denied permission is a host-side log and no response at all, so this read comes back empty
-    // rather than hanging — which is why these return `Result` instead of unwrapping.
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read the {} response: {}", what, e))?;
-    let protobuf_response = P::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Malformed {} response: {}", what, e))?;
-    T::try_from(protobuf_response).map_err(|e| format!("Malformed {} response: {}", what, e))
-}
 
 /// Declare an entity in the data store, creating or migrating its storage to match.
 ///
@@ -2338,14 +1874,12 @@ pub fn data_define_entity(
     // Checked here as well as in the host so that a typo is caught without a round trip, and with
     // the same message either way.
     def.validate().map_err(|e| e.to_string())?;
-    let response: DataDefineResponse = data_request::<_, ProtobufDataDefineResponse>(
-        PluginCommand::DataDefineEntity {
+    let response: DataDefineResponse =
+        call_as::<_, ProtobufDataDefineResponse>(PluginCommand::DataDefineEntity {
             namespace: namespace.map(str::to_owned),
             def: def.clone(),
             allow_destructive,
-        },
-        "define entity",
-    )?;
+        })?;
     match response {
         DataDefineResponse::Ok(info) => Ok(info),
         DataDefineResponse::Err(error) => Err(error),
@@ -2379,14 +1913,12 @@ pub fn data_apply(
             .validate()
             .map_err(|e| WriteError::Failed(e.to_string()))?;
     }
-    let response: DataApplyResponse = data_request::<_, ProtobufDataApplyResponse>(
-        PluginCommand::DataApply {
+    let response: DataApplyResponse =
+        call_as::<_, ProtobufDataApplyResponse>(PluginCommand::DataApply {
             namespace: namespace.map(str::to_owned),
             mutations,
-        },
-        "apply",
-    )
-    .map_err(WriteError::Failed)?;
+        })
+        .map_err(WriteError::Failed)?;
     match response {
         DataApplyResponse::Ok(report) => Ok(report),
         DataApplyResponse::Conflict(message) => Err(WriteError::Conflict(message)),
@@ -2404,12 +1936,10 @@ pub fn data_apply(
 /// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
 pub fn data_fetch(request: &FetchRequest) -> Result<DataRows, String> {
     request.validate().map_err(|e| e.to_string())?;
-    let response: DataFetchResponse = data_request::<_, ProtobufDataFetchResponse>(
-        PluginCommand::DataFetch {
+    let response: DataFetchResponse =
+        call_as::<_, ProtobufDataFetchResponse>(PluginCommand::DataFetch {
             request: request.clone(),
-        },
-        "fetch",
-    )?;
+        })?;
     match response {
         DataFetchResponse::Ok(rows) => Ok(rows),
         DataFetchResponse::Err(error) => Err(error),
@@ -2423,12 +1953,10 @@ pub fn data_fetch(request: &FetchRequest) -> Result<DataRows, String> {
 /// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
 pub fn data_count(request: &FetchRequest) -> Result<u64, String> {
     request.validate().map_err(|e| e.to_string())?;
-    let response: DataCountResponse = data_request::<_, ProtobufDataCountResponse>(
-        PluginCommand::DataCount {
+    let response: DataCountResponse =
+        call_as::<_, ProtobufDataCountResponse>(PluginCommand::DataCount {
             request: request.clone(),
-        },
-        "count",
-    )?;
+        })?;
     match response {
         DataCountResponse::Ok(count) => Ok(count),
         DataCountResponse::Err(error) => Err(error),
@@ -2449,12 +1977,10 @@ pub fn data_count(request: &FetchRequest) -> Result<u64, String> {
 ///
 /// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
 pub fn data_catalog(namespace: Option<&str>) -> Result<Vec<DataEntityInfo>, String> {
-    let response: DataCatalogResponse = data_request::<_, ProtobufDataCatalogResponse>(
-        PluginCommand::DataCatalog {
+    let response: DataCatalogResponse =
+        call_as::<_, ProtobufDataCatalogResponse>(PluginCommand::DataCatalog {
             namespace: namespace.map(str::to_owned),
-        },
-        "catalog",
-    )?;
+        })?;
     match response {
         DataCatalogResponse::Ok(entities) => Ok(entities),
         DataCatalogResponse::Err(error) => Err(error),
@@ -2476,13 +2002,11 @@ pub fn data_catalog(namespace: Option<&str>) -> Result<Vec<DataEntityInfo>, Stri
 /// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
 pub fn data_watch(request: &FetchRequest, mode: WatchMode) -> Result<DataWatchHandle, String> {
     request.validate().map_err(|e| e.to_string())?;
-    let response: DataWatchResponse = data_request::<_, ProtobufDataWatchResponse>(
-        PluginCommand::DataWatch {
+    let response: DataWatchResponse =
+        call_as::<_, ProtobufDataWatchResponse>(PluginCommand::DataWatch {
             request: request.clone(),
             mode,
-        },
-        "watch",
-    )?;
+        })?;
     match response {
         DataWatchResponse::Ok(handle) => Ok(handle),
         DataWatchResponse::Err(error) => Err(error),
@@ -2498,10 +2022,8 @@ pub fn data_watch(request: &FetchRequest, mode: WatchMode) -> Result<DataWatchHa
 ///
 /// `PermissionType::PluginData`
 pub fn data_unwatch(watch_id: DataWatchId) -> Result<(), String> {
-    let response: DataUnwatchResponse = data_request::<_, ProtobufDataUnwatchResponse>(
-        PluginCommand::DataUnwatch { watch_id },
-        "unwatch",
-    )?;
+    let response: DataUnwatchResponse =
+        call_as::<_, ProtobufDataUnwatchResponse>(PluginCommand::DataUnwatch { watch_id })?;
     match response {
         DataUnwatchResponse::Ok => Ok(()),
         DataUnwatchResponse::Err(error) => Err(error),
@@ -2552,19 +2074,15 @@ impl FetchRequestExt for FetchRequest {
 /// Scan a specific folder in the host filesystem (this is a hack around some WASI runtime performance
 /// issues), will not follow symlinks
 pub fn scan_host_folder<S: AsRef<Path>>(folder_to_scan: &S) {
-    let plugin_command = PluginCommand::ScanHostFolder(folder_to_scan.as_ref().to_path_buf());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ScanHostFolder(
+        folder_to_scan.as_ref().to_path_buf(),
+    ));
 }
 
 /// Start watching the host folder for filesystem changes (Note: somewhat unstable at the time
 /// being)
 pub fn watch_filesystem() {
-    let plugin_command = PluginCommand::WatchFilesystem;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::WatchFilesystem);
 }
 
 /// Get the serialized session layout in KDL format synchronously
@@ -2585,15 +2103,7 @@ fn dump_session_layout_impl(
     tab_index: Option<TabId>,
 ) -> Result<(String, Option<LayoutMetadata>), String> {
     let plugin_command = PluginCommand::DumpSessionLayout { tab_index };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-
-    unsafe { host_run_plugin_command() };
-
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response from stdin: {:?}", e))?;
-    let protobuf_response = ProtobufDumpSessionLayoutResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode protobuf response: {}", e))?;
+    let protobuf_response: ProtobufDumpSessionLayoutResponse = call(plugin_command)?;
 
     // Extract metadata if present
     let metadata = protobuf_response
@@ -2629,15 +2139,7 @@ fn dump_session_layout_impl(
 /// draw one.
 pub fn get_local_utc_offset(epoch_ms: SignedUnixMillis) -> Result<i32, String> {
     let plugin_command = PluginCommand::GetLocalUtcOffset { epoch_ms };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command
-        .try_into()
-        .map_err(|e| format!("Failed to encode the GetLocalUtcOffset request: {}", e))?;
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response_bytes = bytes_from_stdin()
-        .map_err(|e| format!("Failed to read the GetLocalUtcOffset response: {}", e))?;
-    let response = ProtobufGetLocalUtcOffsetResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Malformed GetLocalUtcOffset response: {}", e))?;
+    let response: ProtobufGetLocalUtcOffsetResponse = call(plugin_command)?;
     Ok(response.offset_seconds)
 }
 
@@ -2648,14 +2150,11 @@ pub fn check_plugin(
     mode: zellij_types::authoring::PluginCheckMode,
 ) -> Result<zellij_types::authoring::PluginCheckReport, String> {
     use zellij_plugin_api::plugin_command::{check_plugin_response, ProtobufCheckPluginResponse};
-    let response: ProtobufCheckPluginResponse = command_response(
-        PluginCommand::CheckPlugin {
-            name: name.to_owned(),
-            source: source.to_owned(),
-            mode,
-        },
-        "CheckPlugin",
-    )?;
+    let response: ProtobufCheckPluginResponse = call(PluginCommand::CheckPlugin {
+        name: name.to_owned(),
+        source: source.to_owned(),
+        mode,
+    })?;
     match response.result {
         Some(check_plugin_response::Result::ReportJson(json)) => {
             serde_json::from_str(&json).map_err(|e| e.to_string())
@@ -2676,25 +2175,12 @@ pub fn check_plugin(
 // what makes these safer than reaching the same folders through WASI directly. Each answers
 // synchronously, so a plugin can read a file in one expression.
 
-fn command_response<T: prost::Message + Default>(
-    plugin_command: PluginCommand,
-    what: &str,
-) -> Result<T, String> {
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command
-        .try_into()
-        .map_err(|e| format!("Failed to encode the {what} request: {e}"))?;
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response_bytes = command_response_bytes(what)?;
-    T::decode(response_bytes.as_slice()).map_err(|e| format!("Malformed {what} response: {e}"))
-}
-
-fn command_response_bytes(what: &str) -> Result<Vec<u8>, String> {
+fn command_response_bytes(kind: CommandType) -> Result<Vec<u8>, String> {
     #[cfg(test)]
     if let Some(response) = TEST_COMMAND_RESPONSE.with(|response| response.borrow_mut().take()) {
-        return response.map_err(|e| format!("Failed to read the {what} response: {e}"));
+        return response.map_err(|e| format!("Failed to read the {kind} response: {e}"));
     }
-    bytes_from_stdin().map_err(|e| format!("Failed to read the {what} response: {e}"))
+    bytes_from_stdin().map_err(|e| format!("Failed to read the {kind} response: {e}"))
 }
 
 #[cfg(test)]
@@ -2708,14 +2194,8 @@ fn set_test_command_response(response: Result<Vec<u8>, String>) {
     TEST_COMMAND_RESPONSE.with(|slot| *slot.borrow_mut() = Some(response));
 }
 
-fn fs_command_response<T: prost::Message + Default>(
-    plugin_command: PluginCommand,
-) -> Result<T, String> {
-    command_response(plugin_command, "filesystem command")
-}
-
 fn fs_mutate(plugin_command: PluginCommand) -> Result<(), String> {
-    let response: ProtobufFsMutateResponse = fs_command_response(plugin_command)?;
+    let response: ProtobufFsMutateResponse = call(plugin_command)?;
     match response.result {
         Some(fs_mutate_response::Result::Success(_)) => Ok(()),
         Some(fs_mutate_response::Result::Error(error)) => Err(error),
@@ -2727,11 +2207,10 @@ fn fs_mutate(plugin_command: PluginCommand) -> Result<(), String> {
 /// any loader error naming its file - the way `zellij plugins log` reads them. Empty when the
 /// plugin has not logged yet; an error when the log or the plugin folder cannot be found.
 pub fn read_plugin_log(name: &str, lines: usize) -> Result<String, String> {
-    let response: ProtobufReadPluginLogResponse =
-        fs_command_response(PluginCommand::ReadPluginLog {
-            name: name.to_owned(),
-            lines,
-        })?;
+    let response: ProtobufReadPluginLogResponse = call(PluginCommand::ReadPluginLog {
+        name: name.to_owned(),
+        lines,
+    })?;
     match response.result {
         Some(read_plugin_log_response::Result::Lines(lines)) => Ok(lines),
         Some(read_plugin_log_response::Result::Error(error)) => Err(error),
@@ -2741,7 +2220,7 @@ pub fn read_plugin_log(name: &str, lines: usize) -> Result<String, String> {
 
 /// The contents of `path`, up to `max_bytes` (the host's own cap otherwise).
 pub fn fs_read(path: &Path, max_bytes: Option<usize>) -> Result<Vec<u8>, String> {
-    let response: ProtobufFsReadResponse = fs_command_response(PluginCommand::FsRead {
+    let response: ProtobufFsReadResponse = call(PluginCommand::FsRead {
         path: path.to_path_buf(),
         max_bytes,
     })?;
@@ -2754,7 +2233,7 @@ pub fn fs_read(path: &Path, max_bytes: Option<usize>) -> Result<Vec<u8>, String>
 
 /// The entries of the folder at `path`, one level deep.
 pub fn fs_list(path: &Path) -> Result<Vec<FsEntry>, String> {
-    let response: ProtobufFsListResponse = fs_command_response(PluginCommand::FsList {
+    let response: ProtobufFsListResponse = call(PluginCommand::FsList {
         path: path.to_path_buf(),
     })?;
     match response.result {
@@ -2776,7 +2255,7 @@ pub fn fs_list(path: &Path) -> Result<Vec<FsEntry>, String> {
 
 /// What is at `path`: `Ok(None)` when nothing is, which is an answer rather than an error.
 pub fn fs_metadata(path: &Path) -> Result<Option<FileMetadata>, String> {
-    let response: ProtobufFsMetadataResponse = fs_command_response(PluginCommand::FsMetadata {
+    let response: ProtobufFsMetadataResponse = call(PluginCommand::FsMetadata {
         path: path.to_path_buf(),
     })?;
     match response.result {
@@ -2832,15 +2311,9 @@ pub fn fs_rename(from: &Path, to: &Path) -> Result<(), String> {
 /// Parses a KDL layout string and returns LayoutMetadata
 pub fn parse_layout(layout_string: &str) -> Result<LayoutMetadata, LayoutParsingError> {
     let plugin_command = PluginCommand::ParseLayout(layout_string.to_string());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
 
-    unsafe { host_run_plugin_command() };
-
-    let response_bytes = bytes_from_stdin().map_err(|_| LayoutParsingError::SyntaxError)?;
-
-    let protobuf_response = ProtobufParseLayoutResponse::decode(response_bytes.as_slice())
-        .map_err(|_| LayoutParsingError::SyntaxError)?;
+    let protobuf_response: ProtobufParseLayoutResponse =
+        call(plugin_command).map_err(|_| LayoutParsingError::SyntaxError)?;
 
     match protobuf_response.result {
         Some(parse_layout_response::Result::Metadata(metadata)) => metadata
@@ -2858,12 +2331,7 @@ pub fn parse_layout(layout_string: &str) -> Result<LayoutMetadata, LayoutParsing
 /// Requires the `ReadPaneContents` permission.
 pub fn list_recordings() -> Vec<RecordingSummary> {
     let plugin_command = PluginCommand::ListRecordings;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let protobuf_response =
-        ProtobufListRecordingsResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let protobuf_response = or_default(call::<ProtobufListRecordingsResponse>(plugin_command));
     protobuf_response
         .recordings
         .into_iter()
@@ -2876,14 +2344,7 @@ pub fn list_recordings() -> Vec<RecordingSummary> {
 /// Requires the `ReadApplicationState` permission.
 pub fn list_notifications() -> Result<Vec<NotificationInfo>, String> {
     let plugin_command = PluginCommand::ListNotifications;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let response_bytes = bytes_from_stdin()
-        .map_err(|error| format!("Failed to read ListNotifications response: {error}"))?;
-    let response = ProtobufListNotificationsResponse::decode(response_bytes.as_slice())
-        .map_err(|error| format!("Malformed ListNotifications response: {error}"))?;
+    let response: ProtobufListNotificationsResponse = call(plugin_command)?;
     match response.error {
         Some(error) => Err(error),
         None => Ok(response.notifications.into_iter().map(Into::into).collect()),
@@ -2900,12 +2361,8 @@ pub fn search_recordings(query: &str, limit: usize) -> Vec<SearchHit> {
         query: query.to_owned(),
         limit,
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let protobuf_response =
-        ProtobufSearchRecordingsResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let protobuf_response = or_default(call::<ProtobufSearchRecordingsResponse>(plugin_command));
     protobuf_response
         .hits
         .into_iter()
@@ -2916,26 +2373,20 @@ pub fn search_recordings(query: &str, limit: usize) -> Vec<SearchHit> {
 /// Get a list of clients, their focused pane and running command or focused plugin back as an
 /// Event::ListClients (note: this event must be subscribed to)
 pub fn list_clients() {
-    let plugin_command = PluginCommand::ListClients;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ListClients);
 }
 
 /// Change configuration for the current user
 pub fn reconfigure(new_config: String, save_configuration_file: bool) {
-    let plugin_command = PluginCommand::Reconfigure(new_config, save_configuration_file);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::Reconfigure(
+        new_config,
+        save_configuration_file,
+    ));
 }
 
 /// Re-run command in pane
 pub fn rerun_command_pane(terminal_pane_id: zellij_types::internal_ids::TerminalId) {
-    let plugin_command = PluginCommand::RerunCommandPane(terminal_pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::RerunCommandPane(terminal_pane_id));
 }
 
 /// Run a *different* command in an existing command pane, reusing its pane id. The `context`
@@ -2949,15 +2400,12 @@ pub fn run_command_in_pane(
     context: BTreeMap<String, String>,
     keep_scrollback: bool,
 ) {
-    let plugin_command = PluginCommand::RunCommandInPane {
+    send(PluginCommand::RunCommandInPane {
         pane_id,
         command,
         context,
         keep_scrollback,
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    });
 }
 
 /// Sugar for close_terminal_pane and close_plugin_pane
@@ -2966,17 +2414,15 @@ pub fn close_pane_with_id(pane_id: PaneId) {
         PaneId::Terminal(terminal_pane_id) => PluginCommand::CloseTerminalPane(terminal_pane_id),
         PaneId::Plugin(plugin_pane_id) => PluginCommand::ClosePluginPane(plugin_pane_id),
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(plugin_command);
 }
 
 /// Resize the specified pane (increase/decrease) with an optional direction (left/right/up/down)
 pub fn resize_pane_with_id(resize_strategy: ResizeStrategy, pane_id: PaneId) {
-    let plugin_command = PluginCommand::ResizePaneIdWithDirection(resize_strategy, pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ResizePaneIdWithDirection(
+        resize_strategy,
+        pane_id,
+    ));
 }
 
 /// Changes the focus to the pane with the specified id, unsuppressing it if it was suppressed and switching to its tab and layer (eg. floating/tiled).
@@ -2997,18 +2443,13 @@ pub fn focus_pane_with_id(
             should_be_in_place_if_hidden,
         ),
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(plugin_command);
 }
 
 /// Edit the scrollback of the specified pane in the user's default `$EDITOR` (currently only works
 /// for terminal panes)
 pub fn edit_scrollback_for_pane_with_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::EditScrollbackForPaneWithId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::EditScrollbackForPaneWithId(pane_id));
 }
 
 /// Retrieves the scrollback contents from the specified pane
@@ -3028,17 +2469,7 @@ pub fn get_pane_scrollback(
         pane_id,
         get_full_scrollback,
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    // Read response from stdin
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response from stdin: {:?}", e))?;
-
-    // Decode protobuf response
-    let protobuf_response = ProtobufPaneScrollbackResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode protobuf response: {}", e))?;
+    let protobuf_response: ProtobufPaneScrollbackResponse = call(plugin_command)?;
 
     // Convert to Rust type
     let response = PaneScrollbackResponse::try_from(protobuf_response)
@@ -3053,50 +2484,28 @@ pub fn get_pane_scrollback(
 
 /// Write bytes to the `STDIN` of the specified pane
 pub fn write_to_pane_id(bytes: Vec<u8>, pane_id: PaneId) {
-    let plugin_command = PluginCommand::WriteToPaneId(bytes, pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::WriteToPaneId(bytes, pane_id));
 }
 
 /// Write characters to the `STDIN` of the specified pane
 pub fn write_chars_to_pane_id(chars: &str, pane_id: PaneId) {
-    let plugin_command = PluginCommand::WriteCharsToPaneId(chars.to_owned(), pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::WriteCharsToPaneId(chars.to_owned(), pane_id));
 }
 
 /// Send SIGINT to the process running inside a terminal pane identified by this PaneId
 pub fn send_sigint_to_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::SendSigintToPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SendSigintToPaneId(pane_id));
 }
 
 /// Send SIGKILL to the process running inside a terminal pane identified by this PaneId
 pub fn send_sigkill_to_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::SendSigkillToPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SendSigkillToPaneId(pane_id));
 }
 
 /// Get the PID of the process running inside a terminal pane
 pub fn get_pane_pid(pane_id: PaneId) -> Result<ProcessId, String> {
     let plugin_command = PluginCommand::GetPanePid { pane_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    // Read response from stdin
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response from stdin: {:?}", e))?;
-
-    // Decode protobuf response
-    let protobuf_response = ProtobufGetPanePidResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode protobuf response: {}", e))?;
+    let protobuf_response: ProtobufGetPanePidResponse = call(plugin_command)?;
 
     // Convert to Rust type
     let response = GetPanePidResponse::try_from(protobuf_response)
@@ -3141,8 +2550,7 @@ pub fn get_pane_pid(pane_id: PaneId) -> Result<ProcessId, String> {
 /// ```
 pub fn get_pane_running_command(pane_id: PaneId) -> Result<Vec<String>, String> {
     let plugin_command = PluginCommand::GetPaneRunningCommand { pane_id };
-    let protobuf_response: ProtobufGetPaneRunningCommandResponse =
-        command_response(plugin_command, "GetPaneRunningCommand")?;
+    let protobuf_response: ProtobufGetPaneRunningCommandResponse = call(plugin_command)?;
 
     match protobuf_response.result {
         Some(get_pane_running_command_response::Result::Command(cmd)) => Ok(cmd.args),
@@ -3157,8 +2565,7 @@ pub fn get_pane_running_command(pane_id: PaneId) -> Result<Vec<String>, String> 
 /// * `ReadApplicationState`
 pub fn get_session_list() -> Result<SessionListSnapshot, String> {
     let plugin_command = PluginCommand::GetSessionList;
-    let protobuf_response: ProtobufGetSessionListResponse =
-        command_response(plugin_command, "GetSessionList")?;
+    let protobuf_response: ProtobufGetSessionListResponse = call(plugin_command)?;
 
     match GetSessionListResponse::try_from(protobuf_response)
         .map_err(|e| format!("Malformed GetSessionList response: {e}"))?
@@ -3200,8 +2607,7 @@ pub fn get_session_list() -> Result<SessionListSnapshot, String> {
 /// ```
 pub fn get_pane_cwd(pane_id: PaneId) -> Result<PathBuf, String> {
     let plugin_command = PluginCommand::GetPaneCwd { pane_id };
-    let protobuf_response: ProtobufGetPaneCwdResponse =
-        command_response(plugin_command, "GetPaneCwd")?;
+    let protobuf_response: ProtobufGetPaneCwdResponse = call(plugin_command)?;
 
     match protobuf_response.result {
         Some(get_pane_cwd_response::Result::Cwd(cwd_str)) => Ok(PathBuf::from(cwd_str)),
@@ -3239,8 +2645,7 @@ pub fn get_pane_git_probe_with_refresh(
         pane_id,
         cwd: cwd.into(),
     };
-    let protobuf_response: ProtobufGetPaneGitProbeResponse =
-        command_response(plugin_command, "GetPaneGitProbe")?;
+    let protobuf_response: ProtobufGetPaneGitProbeResponse = call(plugin_command)?;
 
     match protobuf_response.result {
         Some(get_pane_git_probe_response::Result::Probe(probe)) => Ok(Some(probe.into())),
@@ -3270,17 +2675,7 @@ pub fn save_layout<S: AsRef<str>>(
         layout_kdl: layout_kdl.as_ref().to_owned(),
         overwrite,
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    // Read response from stdin
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response from stdin: {:?}", e))?;
-
-    // Decode protobuf response
-    let protobuf_response = ProtobufSaveLayoutResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode protobuf response: {}", e))?;
+    let protobuf_response: ProtobufSaveLayoutResponse = call(plugin_command)?;
 
     // Convert to Rust type
     let response = SaveLayoutResponse::try_from(protobuf_response)
@@ -3324,17 +2719,7 @@ pub fn delete_layout<S: AsRef<str>>(layout_name: S) -> Result<(), String> {
     let plugin_command = PluginCommand::DeleteLayout {
         layout_name: layout_name.as_ref().to_owned(),
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    // Read response from stdin
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response from stdin: {:?}", e))?;
-
-    // Decode protobuf response
-    let protobuf_response = ProtobufDeleteLayoutResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode protobuf response: {}", e))?;
+    let protobuf_response: ProtobufDeleteLayoutResponse = call(plugin_command)?;
 
     // Convert to Rust type
     let response = DeleteLayoutResponse::try_from(protobuf_response)
@@ -3388,17 +2773,7 @@ pub fn rename_layout(
         old_layout_name: old_layout_name.into(),
         new_layout_name: new_layout_name.into(),
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    // Read response from stdin
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response from stdin: {:?}", e))?;
-
-    // Decode protobuf response
-    let protobuf_response = ProtobufRenameLayoutResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode protobuf response: {}", e))?;
+    let protobuf_response: ProtobufRenameLayoutResponse = call(plugin_command)?;
 
     // Convert to native response type
     let response: RenameLayoutResponse = protobuf_response
@@ -3421,17 +2796,7 @@ pub fn edit_layout<S: AsRef<str>>(
         layout_name,
         context,
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    // Read response from stdin
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response from stdin: {:?}", e))?;
-
-    // Decode protobuf response
-    let protobuf_response = ProtobufEditLayoutResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode protobuf response: {}", e))?;
+    let protobuf_response: ProtobufEditLayoutResponse = call(plugin_command)?;
 
     // Convert to Rust type
     let response = EditLayoutResponse::try_from(protobuf_response)
@@ -3446,98 +2811,64 @@ pub fn edit_layout<S: AsRef<str>>(
 
 /// Switch the position of the pane with this id with a different pane
 pub fn move_pane_with_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::MovePaneWithPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::MovePaneWithPaneId(pane_id));
 }
 
 /// Switch the position of the pane with this id with a different pane in the specified direction (eg. `Down`, `Up`, `Left`, `Right`).
 pub fn move_pane_with_pane_id_in_direction(pane_id: PaneId, direction: Direction) {
-    let plugin_command = PluginCommand::MovePaneWithPaneIdInDirection(pane_id, direction);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::MovePaneWithPaneIdInDirection(
+        pane_id, direction,
+    ));
 }
 
 /// Clear the scroll buffer of the specified pane
 pub fn clear_screen_for_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::ClearScreenForPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ClearScreenForPaneId(pane_id));
 }
 
 /// Scroll the specified pane up 1 line
 pub fn scroll_up_in_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::ScrollUpInPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ScrollUpInPaneId(pane_id));
 }
 
 /// Scroll the specified pane down 1 line
 pub fn scroll_down_in_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::ScrollDownInPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ScrollDownInPaneId(pane_id));
 }
 
 /// Scroll the specified pane all the way to the top of the scrollbuffer
 pub fn scroll_to_top_in_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::ScrollToTopInPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ScrollToTopInPaneId(pane_id));
 }
 
 /// Scroll the specified pane all the way to the bottom of the scrollbuffer
 pub fn scroll_to_bottom_in_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::ScrollToBottomInPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ScrollToBottomInPaneId(pane_id));
 }
 
 /// Scroll the specified pane up one page
 pub fn page_scroll_up_in_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::PageScrollUpInPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::PageScrollUpInPaneId(pane_id));
 }
 
 /// Scroll the specified pane down one page
 pub fn page_scroll_down_in_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::PageScrollDownInPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::PageScrollDownInPaneId(pane_id));
 }
 
 /// Toggle the specified pane to be fullscreen or normal sized
 pub fn toggle_pane_id_fullscreen(pane_id: PaneId) {
-    let plugin_command = PluginCommand::TogglePaneIdFullscreen(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::TogglePaneIdFullscreen(pane_id));
 }
 
 /// Embed the specified pane (make it stop floating) or turn it to a float pane if it is not
 pub fn toggle_pane_embed_or_eject_for_pane_id(pane_id: PaneId) {
-    let plugin_command = PluginCommand::TogglePaneEmbedOrEjectForPaneId(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::TogglePaneEmbedOrEjectForPaneId(pane_id));
 }
 
 /// Close the focused tab
 pub fn close_tab_with_index(tab_index: TabPosition) {
-    let plugin_command = PluginCommand::CloseTabWithIndex(tab_index);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CloseTabWithIndex(tab_index));
 }
 
 /// Close the tab with the given stable ID.
@@ -3546,10 +2877,7 @@ pub fn close_tab_with_index(tab_index: TabPosition) {
 /// `tab_id` rather than its display position, which may change as tabs are moved
 /// or closed. The tab_id can be obtained from `TabInfo.tab_id`.
 pub fn close_tab_with_id(tab_id: TabId) {
-    let plugin_command = PluginCommand::CloseTabWithId(tab_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CloseTabWithId(tab_id));
 }
 
 /// Focus the tab with the given stable ID.
@@ -3558,10 +2886,7 @@ pub fn close_tab_with_id(tab_id: TabId) {
 /// rather than its display position, which may change as tabs are moved or
 /// closed. The tab_id can be obtained from `TabInfo.tab_id`.
 pub fn go_to_tab_with_id(tab_id: TabId) {
-    let plugin_command = PluginCommand::GoToTabWithId(tab_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::GoToTabWithId(tab_id));
 }
 
 /// Rename the specified pane
@@ -3577,9 +2902,7 @@ where
             PluginCommand::RenamePluginPane(plugin_pane_id, new_name.to_string())
         },
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(plugin_command);
 }
 
 /// Compose a decoration in front of a pane's title, or drop it with `None`.
@@ -3590,24 +2913,18 @@ where
 /// the pane rather than a name for it. It shows wherever a human looks at the pane:
 /// its frame, and its row in a stack list. Terminal panes only.
 pub fn set_pane_title_prefix(pane_id: PaneId, prefix: Option<&str>) {
-    let plugin_command = PluginCommand::SetPaneTitlePrefix {
+    send(PluginCommand::SetPaneTitlePrefix {
         pane_id,
         prefix: prefix.map(ToOwned::to_owned),
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    });
 }
 
 /// Set the reserved row below a pane title; `None` or empty text clears it.
 pub fn set_pane_subtitle(pane_id: PaneId, subtitle: Option<&str>) {
-    let plugin_command = PluginCommand::SetPaneSubtitle {
+    send(PluginCommand::SetPaneSubtitle {
         pane_id,
         subtitle: subtitle.map(ToOwned::to_owned),
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    });
 }
 
 /// Create a new tab that includes the specified pane ids
@@ -3621,13 +2938,11 @@ pub fn break_panes_to_new_tab(
         new_tab_name,
         should_change_focus_to_new_tab,
     );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let response =
-        ProtobufBreakPanesToNewTabResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    BreakPanesToNewTabResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        BreakPanesToNewTabResponse,
+        ProtobufBreakPanesToNewTabResponse,
+    >(plugin_command))
 }
 
 /// Move the pane ids to the tab with the specified index
@@ -3641,14 +2956,11 @@ pub fn break_panes_to_tab_with_index(
         tab_index,
         should_change_focus_to_new_tab,
     );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let response =
-        ProtobufBreakPanesToTabWithIndexResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    BreakPanesToTabWithIndexResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        BreakPanesToTabWithIndexResponse,
+        ProtobufBreakPanesToTabWithIndexResponse,
+    >(plugin_command))
 }
 
 /// Move the pane ids to the tab with the specified id
@@ -3662,22 +2974,16 @@ pub fn break_panes_to_tab_with_id(
         tab_id,
         should_change_focus_to_target_tab,
     );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let response =
-        ProtobufBreakPanesToTabWithIdResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
-    BreakPanesToTabWithIdResponse::try_from(response).unwrap()
+    or_default(call_as::<
+        BreakPanesToTabWithIdResponse,
+        ProtobufBreakPanesToTabWithIdResponse,
+    >(plugin_command))
 }
 
 /// Reload an already-running plugin in this session
 pub fn reload_plugin_with_id(plugin_id: zellij_types::internal_ids::PluginId) {
-    let plugin_command = PluginCommand::ReloadPlugin(plugin_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ReloadPlugin(plugin_id));
 }
 
 /// Load a plugin into this session. Requires `OpenTerminalsOrPlugins`.
@@ -3689,15 +2995,12 @@ pub fn load_new_plugin<S>(
 ) where
     S: AsRef<str> + ToString,
 {
-    let plugin_command = PluginCommand::LoadNewPlugin {
+    send(PluginCommand::LoadNewPlugin {
         url: url.to_string(),
         config,
         load_in_background,
         skip_plugin_cache,
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    });
 }
 
 // Work queues
@@ -3726,8 +3029,7 @@ where
         config,
         context,
     };
-    let protobuf_response: ProtobufEnqueueQueueJobResponse =
-        command_response(plugin_command, "EnqueueQueueJob")?;
+    let protobuf_response: ProtobufEnqueueQueueJobResponse = call(plugin_command)?;
     match EnqueueQueueJobResponse::try_from(protobuf_response) {
         Ok(EnqueueQueueJobResponse::Ok(job_id)) => Ok(job_id),
         Ok(EnqueueQueueJobResponse::Err(error)) => Err(error),
@@ -3738,22 +3040,16 @@ where
 /// Set how many jobs `queue` may run at once, creating it if needed. Lowering the limit below
 /// the number of running jobs evicts none of them. Needs `ChangeApplicationState`.
 pub fn configure_queue<Q: ToString>(queue: Q, concurrency: usize) {
-    let plugin_command = PluginCommand::ConfigureQueue {
+    send(PluginCommand::ConfigureQueue {
         queue: queue.to_string(),
         concurrency,
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    });
 }
 
 /// Drop a pending job, or unload a running one. Its enqueuer is told `Cancelled`. Needs
 /// `ChangeApplicationState`.
 pub fn cancel_queue_job(job_id: QueueJobId) {
-    let plugin_command = PluginCommand::CancelQueueJob { job_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CancelQueueJob { job_id });
 }
 
 /// Every queue, or just the named one, with its pending and running jobs. Needs
@@ -3763,22 +3059,16 @@ pub fn queue_status(queue: Option<&str>) -> Vec<QueueSnapshot> {
     let plugin_command = PluginCommand::QueueStatus {
         queue: queue.map(ToOwned::to_owned),
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
 
-    let protobuf_response =
-        ProtobufQueueStatusResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    QueueStatusResponse::try_from(protobuf_response).unwrap_or_default()
+    or_default(call_as::<QueueStatusResponse, ProtobufQueueStatusResponse>(
+        plugin_command,
+    ))
 }
 
 /// Called by a job to report its outcome. The host unloads this plugin afterwards, so anything
 /// still to do should be done before. Ignored when the caller is not a queued job.
 pub fn finish_queue_job(success: bool, payload: Option<String>) {
-    let plugin_command = PluginCommand::FinishQueueJob { success, payload };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::FinishQueueJob { success, payload });
 }
 
 /// Rebind keys for the current user
@@ -3787,44 +3077,34 @@ pub fn rebind_keys(
     keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,
     write_config_to_disk: bool,
 ) {
-    let plugin_command = PluginCommand::RebindKeys {
+    send(PluginCommand::RebindKeys {
         keys_to_rebind,
         keys_to_unbind,
         write_config_to_disk,
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    });
 }
 
 pub fn change_host_folder(new_host_folder: PathBuf) {
-    let plugin_command = PluginCommand::ChangeHostFolder(new_host_folder);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ChangeHostFolder(new_host_folder));
 }
 
 pub fn set_floating_pane_pinned(pane_id: PaneId, should_be_pinned: bool) {
-    let plugin_command = PluginCommand::SetFloatingPanePinned(pane_id, should_be_pinned);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetFloatingPanePinned(
+        pane_id,
+        should_be_pinned,
+    ));
 }
 
 pub fn stack_panes(pane_ids: Vec<PaneId>) {
-    let plugin_command = PluginCommand::StackPanes(pane_ids);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::StackPanes(pane_ids));
 }
 
 pub fn change_floating_panes_coordinates(
     pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
 ) {
-    let plugin_command = PluginCommand::ChangeFloatingPanesCoordinates(pane_ids_and_coordinates);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ChangeFloatingPanesCoordinates(
+        pane_ids_and_coordinates,
+    ));
 }
 
 /// Move or resize an overlay - a pane drawn over the whole session surface.
@@ -3854,13 +3134,10 @@ fn change_overlay_coordinates_with(
     placements: Vec<(PaneId, FloatingPaneCoordinates)>,
     override_user_placement: bool,
 ) {
-    let plugin_command = PluginCommand::ChangeOverlayCoordinates {
+    send(PluginCommand::ChangeOverlayCoordinates {
         placements,
         override_user_placement,
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    });
 }
 
 /// Toggle the borderless state of a pane identified by pane_id
@@ -3868,10 +3145,7 @@ fn change_overlay_coordinates_with(
 /// # Arguments
 /// * `pane_id` - The ID of the pane to toggle (PaneId::Terminal or PaneId::Plugin)
 pub fn toggle_pane_borderless(pane_id: PaneId) {
-    let plugin_command = PluginCommand::TogglePaneBorderless(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::TogglePaneBorderless(pane_id));
 }
 
 /// Set the borderless state of a pane explicitly
@@ -3880,28 +3154,19 @@ pub fn toggle_pane_borderless(pane_id: PaneId) {
 /// * `pane_id` - The ID of the pane (PaneId::Terminal or PaneId::Plugin)
 /// * `borderless` - true for borderless, false for bordered
 pub fn set_pane_borderless(pane_id: PaneId, borderless: bool) {
-    let plugin_command = PluginCommand::SetPaneBorderless(pane_id, borderless);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetPaneBorderless(pane_id, borderless));
 }
 
 /// Reload every running instance of the plugin at `url` in place, opening nothing; a plugin
 /// that is not running is left alone. Needs `AuthorPlugins`.
 pub fn reload_plugin_by_url(url: &str) {
-    let plugin_command = PluginCommand::ReloadPluginByUrl(url.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ReloadPluginByUrl(url.to_owned()));
 }
 
 /// Set what agent runs in `pane_id` and what it is doing, or clear the record with `None`. The
 /// record replaces the pane's whole one; every reader of the manifest sees it next report.
 pub fn set_pane_agent(pane_id: PaneId, agent: Option<AgentInfo>) {
-    let plugin_command = PluginCommand::SetPaneAgent { pane_id, agent };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetPaneAgent { pane_id, agent });
 }
 
 /// Set the id of the run record this plugin keeps for `pane_id`'s agent, or clear it with
@@ -3911,10 +3176,7 @@ pub fn set_pane_agent(pane_id: PaneId, agent: Option<AgentInfo>) {
 /// of the record as the agent last reported it. A pane with no record has nothing for a run id
 /// to name, so one sent for it is dropped.
 pub fn set_pane_agent_run(pane_id: PaneId, run_id: Option<String>) {
-    let plugin_command = PluginCommand::SetPaneAgentRun { pane_id, run_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetPaneAgentRun { pane_id, run_id });
 }
 
 /// Say what this plugin wants said, and decided, when the session is about to end.
@@ -3928,10 +3190,7 @@ pub fn set_pane_agent_run(pane_id: PaneId, run_id: Option<String>) {
 /// plugin that keeps one up with nothing to show for it leaves the session unable to close its
 /// last pane.
 pub fn set_quit_notice(notice: Option<String>, guard: bool) {
-    let plugin_command = PluginCommand::SetQuitNotice { notice, guard };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetQuitNotice { notice, guard });
 }
 
 /// Set the default foreground and/or background color of a pane
@@ -3941,10 +3200,7 @@ pub fn set_quit_notice(notice: Option<String>, guard: bool) {
 /// * `fg` - Optional foreground color string (e.g. "#00e000"), None to leave unchanged
 /// * `bg` - Optional background color string (e.g. "#001a3a"), None to leave unchanged
 pub fn set_pane_color(pane_id: PaneId, fg: Option<String>, bg: Option<String>) {
-    let plugin_command = PluginCommand::SetPaneColor(pane_id, fg, bg);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetPaneColor(pane_id, fg, bg));
 }
 
 pub fn group_and_ungroup_panes(
@@ -3952,14 +3208,11 @@ pub fn group_and_ungroup_panes(
     pane_ids_to_ungroup: Vec<PaneId>,
     for_all_clients: bool,
 ) {
-    let plugin_command = PluginCommand::GroupAndUngroupPanes(
+    send(PluginCommand::GroupAndUngroupPanes(
         pane_ids_to_group,
         pane_ids_to_ungroup,
         for_all_clients,
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 pub fn highlight_and_unhighlight_panes(
@@ -3968,9 +3221,7 @@ pub fn highlight_and_unhighlight_panes(
 ) {
     let plugin_command =
         PluginCommand::HighlightAndUnhighlightPanes(pane_ids_to_highlight, pane_ids_to_unhighlight);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(plugin_command);
 }
 
 /// Mark these panes as kin of the focused one, so the session draws them with a gentle
@@ -3984,10 +3235,7 @@ pub fn highlight_and_unhighlight_panes(
 /// Unlike [`highlight_and_unhighlight_panes`], this does not touch the pane's one frame
 /// override slot, so a bell flash or a failed command still shows through.
 pub fn set_related_panes(pane_ids: Vec<PaneId>) {
-    let plugin_command = PluginCommand::SetRelatedPanes(pane_ids);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetRelatedPanes(pane_ids));
 }
 
 /// Bring a pane into view for this client and highlight its frame, without
@@ -4003,52 +3251,33 @@ pub fn set_related_panes(pane_ids: Vec<PaneId>) {
 /// out; a pane in another tab is left where it stands, with the highlight applied
 /// there and the client's view untouched - that is the promise, focus does not move.
 pub fn reveal_pane_with_id(pane_id: PaneId, label: Option<String>) {
-    let plugin_command = PluginCommand::RevealPaneWithId(pane_id, label);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::RevealPaneWithId(pane_id, label));
 }
 
 pub fn close_multiple_panes(pane_ids: Vec<PaneId>) {
-    let plugin_command = PluginCommand::CloseMultiplePanes(pane_ids);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::CloseMultiplePanes(pane_ids));
 }
 
 pub fn float_multiple_panes(pane_ids: Vec<PaneId>) {
-    let plugin_command = PluginCommand::FloatMultiplePanes(pane_ids);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::FloatMultiplePanes(pane_ids));
 }
 
 pub fn embed_multiple_panes(pane_ids: Vec<PaneId>) {
-    let plugin_command = PluginCommand::EmbedMultiplePanes(pane_ids);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::EmbedMultiplePanes(pane_ids));
 }
 
 pub fn set_self_mouse_selection_support(selection_support: bool) {
-    let plugin_command = PluginCommand::SetSelfMouseSelectionSupport(selection_support);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetSelfMouseSelectionSupport(
+        selection_support,
+    ));
 }
 
 pub fn intercept_key_presses() {
-    let plugin_command = PluginCommand::InterceptKeyPresses;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::InterceptKeyPresses);
 }
 
 pub fn clear_key_presses_intercepts() {
-    let plugin_command = PluginCommand::ClearKeyPressesIntercepts;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ClearKeyPressesIntercepts);
 }
 
 pub fn replace_pane_with_existing_pane(
@@ -4056,14 +3285,11 @@ pub fn replace_pane_with_existing_pane(
     existing_pane_id: PaneId,
     suppress_replaced_pane: bool,
 ) {
-    let plugin_command = PluginCommand::ReplacePaneWithExistingPane(
+    send(PluginCommand::ReplacePaneWithExistingPane(
         pane_id_to_replace,
         existing_pane_id,
         suppress_replaced_pane,
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 // Utility Functions
@@ -4104,16 +3330,13 @@ pub fn override_layout<L: AsRef<LayoutInfo>>(
     apply_only_to_active_tab: bool,
     context: BTreeMap<String, String>,
 ) {
-    let plugin_command = PluginCommand::OverrideLayout(
+    send(PluginCommand::OverrideLayout(
         layout_info.as_ref().clone(),
         retain_existing_terminal_panes,
         retain_existing_plugin_panes,
         apply_only_to_active_tab,
         context,
-    );
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    ));
 }
 
 // Internal Functions
@@ -4127,42 +3350,35 @@ pub fn object_from_stdin<T: DeserializeOwned>() -> Result<T> {
     serde_json::from_str(&json).with_context(err_context)
 }
 
-#[doc(hidden)]
-pub fn bytes_from_stdin() -> Result<Vec<u8>> {
+/// The host's reply: one line of JSON-encoded protobuf bytes.
+fn bytes_from_stdin() -> Result<Vec<u8>> {
     let err_context = || "failed to deserialize bytes from stdin".to_string();
     let mut json = String::new();
     io::stdin().read_line(&mut json).with_context(err_context)?;
     serde_json::from_str(&json).with_context(err_context)
 }
 
-#[doc(hidden)]
-pub fn object_to_stdout(object: &impl Serialize) {
-    // TODO: no crashy
-    println!("{}", serde_json::to_string(object).unwrap());
+/// One request to the host: the protobuf bytes, JSON-encoded on a line of their own.
+fn object_to_stdout(bytes: &[u8]) {
+    println!(
+        "{}",
+        serde_json::to_string(bytes).expect("a byte slice always serializes")
+    );
 }
 
 /// Post a message to a worker of this plugin, for more information please see [Plugin Workers](https://zellij.dev/documentation/plugin-api-workers.md)
 pub fn post_message_to(plugin_message: PluginMessage) {
-    let plugin_command = PluginCommand::PostMessageTo(plugin_message);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::PostMessageTo(plugin_message));
 }
 
 /// Post a message to this plugin, for more information please see [Plugin Workers](https://zellij.dev/documentation/plugin-api-workers.md)
 pub fn post_message_to_plugin(plugin_message: PluginMessage) {
-    let plugin_command = PluginCommand::PostMessageToPlugin(plugin_message);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::PostMessageToPlugin(plugin_message));
 }
 
 pub fn run_action(action: Action, context: BTreeMap<String, String>) {
     // TODO: also accept reference
-    let plugin_command = PluginCommand::RunAction(action, context);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::RunAction(action, context));
 }
 
 /// Show all floating panes in the specified tab, or the active tab if `tab_id` is `None`.
@@ -4174,13 +3390,7 @@ pub fn run_action(action: Action, context: BTreeMap<String, String>) {
 /// or `Err(String)` if the specified tab was not found.
 pub fn show_floating_panes(tab_id: Option<TabId>) -> Result<bool, String> {
     let plugin_command = PluginCommand::ShowFloatingPanes { tab_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response: {:?}", e))?;
-    let response = ProtobufShowFloatingPanesResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode response: {}", e))?;
+    let response: ProtobufShowFloatingPanesResponse = call(plugin_command)?;
     match response.result {
         Some(show_floating_panes_response::Result::Success(changed)) => Ok(changed),
         Some(show_floating_panes_response::Result::Error(e)) => Err(e),
@@ -4197,13 +3407,7 @@ pub fn show_floating_panes(tab_id: Option<TabId>) -> Result<bool, String> {
 /// or `Err(String)` if the specified tab was not found.
 pub fn hide_floating_panes(tab_id: Option<TabId>) -> Result<bool, String> {
     let plugin_command = PluginCommand::HideFloatingPanes { tab_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response_bytes =
-        bytes_from_stdin().map_err(|e| format!("Failed to read response: {:?}", e))?;
-    let response = ProtobufHideFloatingPanesResponse::decode(response_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode response: {}", e))?;
+    let response: ProtobufHideFloatingPanesResponse = call(plugin_command)?;
     match response.result {
         Some(hide_floating_panes_response::Result::Success(changed)) => Ok(changed),
         Some(hide_floating_panes_response::Result::Error(e)) => Err(e),
@@ -4229,10 +3433,7 @@ pub fn hide_floating_panes(tab_id: Option<TabId>) -> Result<bool, String> {
 ///
 /// Requires `ChangeApplicationState` permission.
 pub fn set_pane_regex_highlights(pane_id: PaneId, highlights: Vec<RegexHighlight>) {
-    let plugin_command = PluginCommand::SetPaneRegexHighlights(pane_id, highlights);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetPaneRegexHighlights(pane_id, highlights));
 }
 
 /// Answer a `Event::ContextMenuRequested` with the menu the user should see.
@@ -4248,10 +3449,7 @@ pub fn set_pane_regex_highlights(pane_id: PaneId, highlights: Vec<RegexHighlight
 ///
 /// Requires `RunActionsAsUser` permission.
 pub fn set_context_menu(request_id: ContextMenuRequestId, items: Vec<ContextMenuItem>) {
-    let plugin_command = PluginCommand::SetContextMenu { request_id, items };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::SetContextMenu { request_id, items });
 }
 
 /// Remove all regex highlights this plugin has set on the given pane.
@@ -4260,20 +3458,8 @@ pub fn set_context_menu(request_id: ContextMenuRequestId, items: Vec<ContextMenu
 ///
 /// Requires `ChangeApplicationState` permission.
 pub fn clear_pane_highlights(pane_id: PaneId) {
-    let plugin_command = PluginCommand::ClearPaneHighlights(pane_id);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    send(PluginCommand::ClearPaneHighlights(pane_id));
 }
-
-#[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "zellij")]
-extern "C" {
-    fn host_run_plugin_command();
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn host_run_plugin_command() {}
 
 /// Read project workflow settings; requires ReadFiles.
 pub fn project_config_read(
@@ -4298,7 +3484,7 @@ pub fn project_config_write(
 fn project_config_response(
     command: PluginCommand,
 ) -> Result<zellij_config::project_config::Snapshot, String> {
-    let response: ProtobufFsReadResponse = fs_command_response(command)?;
+    let response: ProtobufFsReadResponse = call(command)?;
     match response.result {
         Some(fs_read_response::Result::Contents(contents)) => {
             serde_json::from_slice(&contents).map_err(|e| e.to_string())
@@ -4320,19 +3506,11 @@ pub fn test_plugin(
         options,
         request_id: request_id.to_owned(),
     };
-    let protobuf_command = ProtobufPluginCommand::try_from(command).unwrap();
-    object_to_stdout(&protobuf_command.encode_to_vec());
-    unsafe {
-        host_run_plugin_command();
-    }
+    send(command);
 }
 pub fn cancel_plugin_test(request_id: &str) {
     let command = PluginCommand::CancelPluginTest(request_id.to_owned());
-    let protobuf_command = ProtobufPluginCommand::try_from(command).unwrap();
-    object_to_stdout(&protobuf_command.encode_to_vec());
-    unsafe {
-        host_run_plugin_command();
-    }
+    send(command);
 }
 
 #[cfg(test)]
@@ -4523,5 +3701,52 @@ mod tests {
             EnqueueQueueJobResponse::Ok(zellij_types::internal_ids::QueueJobId::new(99)),
         ));
         assert_eq!(enqueue_test_job(), Ok(QueueJobId::new(99)));
+    }
+    fn a_command() -> CommandToRun {
+        CommandToRun {
+            path: PathBuf::from("htop"),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_missing_reply_is_none_not_a_panic() {
+        fail_next_read();
+        assert_eq!(open_command_pane(a_command(), BTreeMap::new()), None);
+        fail_next_read();
+        assert_eq!(new_tab(None::<&str>, None), None);
+    }
+
+    #[test]
+    fn a_missing_reply_is_an_empty_collection() {
+        fail_next_read();
+        assert!(new_tabs_with_layout("layout {}").is_empty());
+        fail_next_read();
+        assert!(queue_status(None).is_empty());
+        fail_next_read();
+        assert_eq!(generate_random_name(), "");
+    }
+
+    #[test]
+    fn a_malformed_reply_is_none() {
+        set_test_command_response(Ok(vec![0xff]));
+        assert_eq!(open_command_pane(a_command(), BTreeMap::new()), None);
+    }
+
+    #[test]
+    fn a_valid_reply_reaches_an_option_returner() {
+        let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7));
+        respond(ProtobufOpenCommandPaneResponse::from(Some(pane_id)));
+        assert_eq!(
+            open_command_pane(a_command(), BTreeMap::new()),
+            Some(pane_id)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "GetPluginIds")]
+    fn a_missing_plugin_ids_reply_panics_naming_the_command() {
+        fail_next_read();
+        let _ = get_plugin_ids();
     }
 }

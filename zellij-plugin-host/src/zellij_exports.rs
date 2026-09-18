@@ -10,7 +10,6 @@ use std::{
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     process,
-    str::FromStr,
     sync::{atomic, OnceLock},
     thread,
     time::{Duration, Instant},
@@ -1108,14 +1107,21 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             ),
         },
         (PermissionStatus::Denied, permission) => {
+            let kind = CommandType::from(&command);
             log::error!(
                 "Plugin '{}' permission '{}' denied - Command '{:?}' denied",
                 env.name(),
                 permission
                     .map(|p| p.to_string())
                     .unwrap_or("UNKNOWN".to_owned()),
-                CommandType::from_str(&command.to_string()).with_context(err_context)?
+                kind
             );
+            // A command the plugin is waiting on an answer to gets an empty one, which every
+            // decoder reads as "nothing": a guest that `unwrap`s the reply (one built against an
+            // older SDK) would otherwise trap on the denial instead of seeing `None`.
+            if crate::response::decode_response(kind, &[]).is_some() {
+                wasi_write_object(env, &Vec::<u8>::new()).with_context(err_context)?;
+            }
         },
     };
     Ok(())

@@ -346,3 +346,113 @@ pub fn denied_permission_request_result() {
 
     assert_snapshot!(format!("{:#?}", permissions));
 }
+
+/// A denied command the guest waits on an answer to must not kill the guest: the SDK reads no
+/// reply and answers `None`, and the plugin goes on handling keys.
+#[test]
+#[serial(plugin_tests)]
+pub fn open_command_pane_without_run_commands_returns_none_and_plugin_survives() {
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let client_id = ClientId::new(1);
+    let screen_thread = deny_permissions_and_log_until_disconnect(
+        &received_screen_instructions,
+        screen_receiver,
+        cache_path,
+        plugin_thread_sender.clone(),
+        client_id,
+    );
+
+    let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
+        _allow_exec_host_cmd: false,
+        location: RunPluginLocation::File(PathBuf::from(&*PLUGIN_FIXTURE)),
+        configuration: Default::default(),
+        ..Default::default()
+    });
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false, // close_replaced_pane
+        Some("test_plugin".to_owned()),
+        run_plugin,
+        Some(TabId::new(1)),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+    ));
+    wait_for_permissions_to_be_denied(&received_screen_instructions);
+
+    // Ctrl+Shift+L: `open_command_pane`, which needs RunCommands.
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::Key(
+            KeyWithModifier::new(BareKey::Char('l'))
+                .with_ctrl_modifier()
+                .with_shift_modifier(),
+        ),
+    )]));
+    wait_for_plugin_to_handle(
+        &received_screen_instructions,
+        zellij_types::internal_ids::PluginId::new(0),
+        &["open_command_pane: None", "open_command_pane: Some"],
+    );
+    // A second key proves the guest is still there to handle it.
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::Key(
+            KeyWithModifier::new(BareKey::Char('a'))
+                .with_ctrl_modifier()
+                .with_shift_modifier(),
+        ),
+    )]));
+    wait_for_render_containing(&received_screen_instructions, "empty name");
+
+    teardown();
+    screen_thread.join().unwrap();
+
+    let log = received_screen_instructions.lock();
+    let frames: Vec<String> = rendered_assets(&log)
+        .into_iter()
+        .map(|(_, frame)| frame)
+        .collect();
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame.contains("open_command_pane: None")),
+        "the denied open answers None, got: {frames:?}"
+    );
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame.contains("open_command_pane: Some")),
+        "a denied command must not open a pane, got: {frames:?}"
+    );
+    assert!(
+        !log.iter().any(|instruction| {
+            matches!(
+                instruction,
+                ScreenInstruction::UpdatePluginLoadingStage(_, indication) if indication.is_error()
+            )
+        }),
+        "the guest must not trap on a denied command"
+    );
+}
