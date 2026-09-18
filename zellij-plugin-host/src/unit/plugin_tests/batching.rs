@@ -283,7 +283,7 @@ pub fn a_batch_of_scrolls_renders_once() {
 
     harness.update((0..20).map(|_| (ClientId::new(1), scroll_up(3))).collect());
 
-    let frame = harness.wait_for(&"ScrollUp 3 client=1\n".repeat(19).to_string());
+    let frame = harness.wait_for(&"ScrollUp 3 client=1\n".repeat(19));
     assert_eq!(
         logged_after_ready(&frame),
         vec!["ScrollUp 3 client=1"; 20],

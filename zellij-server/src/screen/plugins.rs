@@ -21,11 +21,14 @@ use zellij_types::pane_size::Size;
 
 impl Screen {
     /// The tab a plugin launched by id, rather than for a client, goes into: the one named,
-    /// else the first active one. Logs when there is none.
+    /// else the first active one. Reports a non-fatal error when there is none.
     fn tab_for_plugin_launch(&self, explicit_tab_id: Option<TabId>) -> Option<TabId> {
         let tab_index = explicit_tab_id.or_else(|| self.active_tab_ids.values().next().copied());
         if tab_index.is_none() {
-            log::error!("Could not find an active tab - is there at least 1 connected user?");
+            Err::<(), _>(anyhow!(
+                "Could not find an active tab - is there at least 1 connected user?"
+            ))
+            .non_fatal();
         }
         tab_index
     }
@@ -92,7 +95,10 @@ impl Screen {
             match self.resolve_tab_and_client(client_id, explicit_tab_id) {
                 Some(resolved) => resolved,
                 None => {
-                    log::error!("No connected clients found - cannot load or focus plugin");
+                    Err::<(), _>(anyhow!(
+                        "No connected clients found - cannot load or focus plugin"
+                    ))
+                    .non_fatal();
                     return Ok(());
                 },
             }
@@ -151,7 +157,10 @@ impl Screen {
                 let Some((tab_index, client_id)) =
                     self.resolve_tab_and_client(client_id, explicit_tab_id)
                 else {
-                    log::error!("No connected clients found - cannot load or focus plugin");
+                    Err::<(), _>(anyhow!(
+                        "No connected clients found - cannot load or focus plugin"
+                    ))
+                    .non_fatal();
                     return Ok(());
                 };
                 if self.focus_plugin_pane(
@@ -310,9 +319,10 @@ impl Screen {
                     client_tab_index_or_pane_id,
                 )?;
             } else {
-                log::error!(
+                Err::<(), _>(anyhow!(
                     "Must have pane id to replace or connected client_id if replacing a pane"
-                );
+                ))
+                .non_fatal();
             }
         } else if let Some(active_tab) =
             tab_index.and_then(|tab_index| self.tabs.get_mut(&tab_index))
@@ -342,7 +352,7 @@ impl Screen {
             )
         }, ?);
         } else {
-            log::error!("Tab index not found: {:?}", tab_index);
+            Err::<(), _>(anyhow!("Tab index not found: {:?}", tab_index)).non_fatal();
         }
         let pane_id = PaneId::Plugin(plugin_id);
         let plugin_exists = self.tabs.values().any(|tab| tab.has_plugin(plugin_id));
