@@ -1,6 +1,4 @@
 use super::*;
-
-#[allow(clippy::result_large_err)]
 pub fn from_kdl(kdl_plugin_aliases: &KdlNode) -> Result<PluginAliases, ConfigError> {
     let mut aliases: BTreeMap<String, RunPlugin> = BTreeMap::new();
     if let Some(kdl_plugin_aliases) = kdl_children_nodes!(kdl_plugin_aliases) {

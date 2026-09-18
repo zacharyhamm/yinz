@@ -1,6 +1,4 @@
 use super::*;
-
-#[allow(clippy::result_large_err)]
 fn bind_keys_in_block(
     block: &KdlNode,
     input_mode_keybinds: &mut HashMap<KeyWithModifier, Vec<Action>>,
@@ -31,7 +29,6 @@ fn bind_keys_in_block(
     }
     Ok(())
 }
-#[allow(clippy::result_large_err)]
 pub fn from_kdl(
     kdl_keybinds: &KdlNode,
     base_keybinds: Keybinds,
@@ -102,7 +99,6 @@ pub fn from_kdl(
     };
     Ok(keybinds_from_config)
 }
-#[allow(clippy::result_large_err)]
 fn bind_actions_for_each_key(
     key_block: &KdlNode,
     input_mode_keybinds: &mut HashMap<KeyWithModifier, Vec<Action>>,
@@ -115,7 +111,6 @@ fn bind_actions_for_each_key(
     }
     Ok(())
 }
-#[allow(clippy::result_large_err)]
 fn unbind_keys(
     key_block: &KdlNode,
     input_mode_keybinds: &mut HashMap<KeyWithModifier, Vec<Action>>,
@@ -126,7 +121,6 @@ fn unbind_keys(
     }
     Ok(())
 }
-#[allow(clippy::result_large_err)]
 fn unbind_keys_in_all_modes(
     global_unbind: &KdlNode,
     keybinds_from_config: &mut Keybinds,
@@ -139,7 +133,6 @@ fn unbind_keys_in_all_modes(
     }
     Ok(())
 }
-#[allow(clippy::result_large_err)]
 fn input_mode_keybindings<'a>(
     mode: &KdlNode,
     keybinds_from_config: &'a mut Keybinds,
@@ -159,7 +152,6 @@ fn input_mode_keybindings<'a>(
     }
     Ok(input_mode_keybinds)
 }
-#[allow(clippy::result_large_err)]
 pub fn from_string(
     stringified_keybindings: String,
     base_keybinds: Keybinds,

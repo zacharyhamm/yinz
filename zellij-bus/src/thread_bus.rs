@@ -1,4 +1,3 @@
-#![allow(clippy::result_large_err)]
 //! Definitions and helpers for sending and receiving messages between threads.
 
 use crate::{

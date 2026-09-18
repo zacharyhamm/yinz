@@ -1,6 +1,4 @@
 use super::*;
-
-#[allow(clippy::result_large_err)]
 pub fn from_kdl(
     raw_layout: &str,
     file_name: Option<String>,

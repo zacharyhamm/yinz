@@ -254,7 +254,6 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
 }
 
 impl Config {
-    #[allow(clippy::result_large_err)]
     pub fn load(
         config_path: Option<&Path>,
         config_dir: Option<&Path>,
@@ -388,7 +387,6 @@ impl Config {
         }
     }
     /// Gets default configuration from assets
-    #[allow(clippy::result_large_err)]
     pub fn from_default_assets() -> ConfigResult {
         let cfg = String::from_utf8(crate::assets::DEFAULT_CONFIG.to_vec())?;
         match Self::from_kdl(&cfg, None) {
@@ -399,7 +397,6 @@ impl Config {
             Err(e) => Err(e),
         }
     }
-    #[allow(clippy::result_large_err)]
     pub fn from_path(path: &PathBuf, default_config: Option<Config>) -> ConfigResult {
         if path.extension().and_then(|extension| extension.to_str()) == Some("lua") {
             return Err(ConfigError::UnsupportedFormat(
@@ -450,7 +447,6 @@ impl Config {
             Err(e) => Err(ConfigError::IoPath(e, path.into())),
         }
     }
-    #[allow(clippy::result_large_err)]
     pub fn merge(&mut self, other: Config) -> Result<(), ConfigError> {
         self.options = self.options.merge(other.options);
         self.keybinds.merge(other.keybinds.clone());
@@ -1023,8 +1019,6 @@ pub async fn watch_layout_dir_changes<F, Fut>(
         }
     }
 }
-
-#[allow(clippy::result_large_err)]
 pub fn load_layout_and_config(
     cli_config_options: Option<&Options>,
     config: Config,
@@ -1079,7 +1073,6 @@ pub fn load_layout_and_config(
         },
     }
 }
-#[allow(clippy::result_large_err)]
 pub fn apply_themes(
     config: &mut Config,
     cli_config_options: Option<Options>,

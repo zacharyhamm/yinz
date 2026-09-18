@@ -784,7 +784,6 @@ pub struct TiledPaneLayout {
 }
 
 impl TiledPaneLayout {
-    #[allow(clippy::result_large_err)]
     pub fn insert_children_layout(&mut self, children_layout: &mut TiledPaneLayout) -> bool {
         // returns true if successfully inserted and false otherwise
         match self.external_children_index {
@@ -804,7 +803,6 @@ impl TiledPaneLayout {
             },
         }
     }
-    #[allow(clippy::result_large_err)]
     pub fn insert_children_nodes(&mut self, children_nodes: &mut Vec<TiledPaneLayout>) -> bool {
         // returns true if successfully inserted and false otherwise
         match self.external_children_index {
@@ -1128,7 +1126,6 @@ impl LayoutParts {
             LayoutParts::Tabs(tabs) => tabs.is_empty(),
         }
     }
-    #[allow(clippy::result_large_err)]
     pub fn insert_pane(&mut self, index: usize, layout: Layout) -> Result<(), &'static str> {
         match self {
             LayoutParts::Panes(panes) => {

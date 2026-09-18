@@ -1,4 +1,3 @@
-#![allow(clippy::result_large_err)]
 #![allow(clippy::type_complexity)]
 use crate::{ClientId, PaneId};
 use zellij_types::internal_ids::TerminalId;

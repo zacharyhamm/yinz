@@ -2,8 +2,6 @@ use super::*;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
-
-#[allow(clippy::result_large_err)]
 pub fn new_from_bytes(
     action_name: &str,
     bytes: Vec<u8>,
@@ -37,7 +35,6 @@ pub fn new_from_bytes(
         )),
     }
 }
-#[allow(clippy::result_large_err)]
 pub fn new_from_string(
     action_name: &str,
     string: String,
@@ -1028,8 +1025,6 @@ pub fn to_kdl(value: &Action) -> Option<KdlNode> {
         _ => None,
     }
 }
-
-#[allow(clippy::result_large_err)]
 pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Action, ConfigError> {
     let action_name = kdl_name!(kdl_action);
     let action_arguments: Vec<&KdlEntry> = kdl_argument_values!(kdl_action);
