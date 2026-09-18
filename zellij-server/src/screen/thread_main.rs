@@ -30,9 +30,9 @@ use zellij_types::pane_size::Size;
 use zellij_types::style::HostTerminalThemeMode;
 use zellij_types::{agent::AgentInfo, geometry::Direction};
 use {
-    zellij_types::data::Event, zellij_types::data::GetFocusedPaneInfoResponse,
-    zellij_types::data::InputMode, zellij_types::data::NotificationInfo,
-    zellij_types::data::PaneScrollbackResponse, zellij_types::data::PluginCapabilities,
+    zellij_types::data::GetFocusedPaneInfoResponse, zellij_types::data::InputMode,
+    zellij_types::data::NotificationInfo, zellij_types::data::PaneScrollbackResponse,
+    zellij_types::data::PluginCapabilities,
 };
 use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
 use {
@@ -140,7 +140,7 @@ pub(super) fn replay_pending_pane_event(
 /// The bracketed-paste markers this used to name explicitly are covered by the same check: both
 /// begin with ESC. Real pastes never reach this path - they arrive as `TabNameInput`,
 /// `PaneNameInput` or `SearchInput` with the pasted text alone.
-fn is_typable_text(raw_bytes: &[u8]) -> bool {
+pub(super) fn is_typable_text(raw_bytes: &[u8]) -> bool {
     !raw_bytes.starts_with(&[0x1b])
 }
 
@@ -717,97 +717,15 @@ pub(crate) fn screen_thread_main(
                     _completion_tx, // the action ends here, dropping this will release anything
                                     // waiting for it
                 ) => {
-                    if let Some(plugin_id) = keybind_intercepts.get(&client_id) {
-                        if let Some(key_with_modifier) = key_with_modifier {
-                            let _ =
-                                screen
-                                    .bus
-                                    .senders
-                                    .send_to_plugin(PluginInstruction::Update(vec![(
-                                        Some(*plugin_id),
-                                        Some(client_id),
-                                        Event::InterceptedKeyPress(key_with_modifier),
-                                    )]));
-                            break 'instruction;
-                        }
-                    }
-                    // An open context menu takes the keys it uses - arrows, Enter, Esc - before any
-                    // pane sees them. Anything else falls through and reaches the pane as usual; the
-                    // focus or layout change it causes then closes the menu, which is what pressing an
-                    // unrelated key while a menu is up means anyway.
-                    if screen.context_menu_handles_key(&key_with_modifier, client_id) {
-                        for tab in screen.tabs.values_mut() {
-                            tab.pending_agent_escapes
-                                .retain(|(client, _), _| *client != client_id);
-                        }
-                        break 'instruction;
-                    }
-                    // A key the menu did not want is about to do something else - reach the pane, or
-                    // fire whatever the current mode binds it to. Either way the menu is answering a
-                    // question about a moment that has passed, so it gets out of the way. This is the
-                    // same discipline `defocus_dismissible_panes` applies to dismissible overlays.
-                    if screen.close_context_menu(client_id) {
+                    if screen.write_character(
+                        key_with_modifier,
+                        raw_bytes,
+                        is_kitty_keyboard_protocol,
+                        client_id,
+                        &keybind_intercepts,
+                    )? {
                         screen.render(None)?;
                     }
-                    let mut state_changed = false;
-                    let client_input_mode = screen.get_client_input_mode(client_id);
-                    match client_input_mode {
-                        Some(InputMode::RenameTab) => {
-                            if is_typable_text(&raw_bytes) {
-                                screen.update_active_tab_name(raw_bytes, client_id)?;
-                                state_changed = true;
-                            }
-                        },
-                        _ => {
-                            active_tab_and_connected_client_id!(
-                                screen,
-                                client_id,
-                                |tab: &mut Tab, client_id: ClientId| {
-                                    match client_input_mode {
-                                        Some(InputMode::EnterSearch) => {
-                                            if is_typable_text(&raw_bytes) {
-                                                tab.update_search_term(raw_bytes, client_id);
-                                            }
-                                            state_changed = true;
-                                        },
-                                        Some(InputMode::RenamePane) => {
-                                            if is_typable_text(&raw_bytes) {
-                                                if let Err(e) = tab
-                                                    .update_active_pane_name(raw_bytes, client_id)
-                                                {
-                                                    log::error!("{}", e);
-                                                }
-                                                state_changed = true;
-                                            }
-                                        },
-                                        _ => {
-                                            let write_result = match tab.is_sync_panes_active() {
-                                                true => tab.write_to_terminals_on_current_tab(
-                                                    &key_with_modifier,
-                                                    raw_bytes,
-                                                    is_kitty_keyboard_protocol,
-                                                    client_id,
-                                                ),
-                                                false => tab.write_to_active_terminal(
-                                                    &key_with_modifier,
-                                                    raw_bytes,
-                                                    is_kitty_keyboard_protocol,
-                                                    client_id,
-                                                ),
-                                            };
-                                            if let Ok(true) = write_result {
-                                                state_changed = true;
-                                            }
-                                        },
-                                    }
-                                }
-                            );
-                        },
-                    };
-                    if state_changed {
-                        screen.log_and_report_session_state()?;
-                    }
-                    screen.render(None)?;
                 },
                 ScreenInstruction::Resize(
                     client_id,
