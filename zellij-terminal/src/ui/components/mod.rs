@@ -1,5 +1,4 @@
 #![allow(clippy::unnecessary_to_owned)]
-#![allow(clippy::useless_format)]
 #![allow(clippy::ptr_arg)]
 mod component_coordinates;
 mod nested_list;
@@ -72,7 +71,7 @@ impl<'a> UiComponentParser<'a> {
         let mut params_iter = params.iter_mut().peekable();
         let component_name = params_iter
             .next()
-            .with_context(|| format!("ui component must have a name"))?;
+            .with_context(|| "ui component must have a name".to_string())?;
 
         // parse coordinates
         let mut component_coordinates = None;
@@ -100,7 +99,7 @@ impl<'a> UiComponentParser<'a> {
             let stringified_params = parse_text_params(params_iter)
                 .into_iter()
                 .next()
-                .with_context(|| format!("a ribbon must have text"))?;
+                .with_context(|| "a ribbon must have text".to_string())?;
             let encoded_text = ribbon(
                 stringified_params,
                 &self.style,

@@ -1,6 +1,5 @@
 // Clippy allows kept as debt — see REVIEW_CHECKLIST.md.
 #![allow(clippy::clone_on_copy)]
-#![allow(clippy::useless_format)]
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::collapsible_match)]
@@ -1124,10 +1123,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 pty.bus
                     .senders
                     .send_to_server(ServerInstruction::Log(
-                        vec![format!(
-                            "{}",
-                            session_layout_metadata.list_clients_metadata(),
-                        )],
+                        vec![session_layout_metadata.list_clients_metadata().to_string()],
                         client_id,
                         completion_tx,
                     ))

@@ -32,7 +32,7 @@ pub fn screen_can_suppress_pane() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -113,7 +113,7 @@ pub fn screen_can_break_pane_to_a_new_tab() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -147,7 +147,7 @@ pub fn screen_cannot_break_last_selectable_pane_to_a_new_tab() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -230,7 +230,7 @@ pub fn screen_can_break_floating_pane_to_a_new_tab() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -333,7 +333,7 @@ pub fn screen_can_break_multiple_stacked_panes_to_a_new_tab() {
         eprintln!("{}", snapshot);
     }
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -639,7 +639,7 @@ pub fn screen_can_move_pane_to_a_new_tab_right() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -710,7 +710,7 @@ pub fn screen_can_move_pane_to_a_new_tab_left() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -760,7 +760,7 @@ pub fn send_cli_stack_panes_action() {
         },
     );
     mock_screen.teardown(vec![server_thread, screen_thread]);
-    assert_snapshot!(format!("{}", snapshot));
+    assert_snapshot!(snapshot.to_string());
 }
 
 #[test]
@@ -802,7 +802,7 @@ pub fn send_cli_change_floating_pane_coordinates_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }

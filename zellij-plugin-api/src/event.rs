@@ -3592,10 +3592,9 @@ impl TryFrom<PaneId> for ProtobufPaneId {
     }
 }
 
-#[allow(clippy::from_over_into)]
-impl Into<ProtobufPaneFrameStyle> for zellij_types::input::options::PaneFrameStyle {
-    fn into(self) -> ProtobufPaneFrameStyle {
-        match self {
+impl From<zellij_types::input::options::PaneFrameStyle> for ProtobufPaneFrameStyle {
+    fn from(val: zellij_types::input::options::PaneFrameStyle) -> Self {
+        match val {
             zellij_types::input::options::PaneFrameStyle::Full => ProtobufPaneFrameStyle::Full,
             zellij_types::input::options::PaneFrameStyle::Titles => ProtobufPaneFrameStyle::Titles,
             zellij_types::input::options::PaneFrameStyle::None => ProtobufPaneFrameStyle::None,
@@ -3603,10 +3602,9 @@ impl Into<ProtobufPaneFrameStyle> for zellij_types::input::options::PaneFrameSty
     }
 }
 
-#[allow(clippy::from_over_into)]
-impl Into<zellij_types::input::options::PaneFrameStyle> for ProtobufPaneFrameStyle {
-    fn into(self) -> zellij_types::input::options::PaneFrameStyle {
-        match self {
+impl From<ProtobufPaneFrameStyle> for zellij_types::input::options::PaneFrameStyle {
+    fn from(val: ProtobufPaneFrameStyle) -> Self {
+        match val {
             ProtobufPaneFrameStyle::Full => zellij_types::input::options::PaneFrameStyle::Full,
             ProtobufPaneFrameStyle::Titles => zellij_types::input::options::PaneFrameStyle::Titles,
             ProtobufPaneFrameStyle::None => zellij_types::input::options::PaneFrameStyle::None,

@@ -1,6 +1,5 @@
 #![allow(clippy::single_match)]
 #![allow(clippy::ptr_arg)]
-#![allow(clippy::useless_format)]
 use super::{
     is_too_wide, parse_disabled, parse_indices, parse_opaque, parse_selected, Coordinates,
 };
@@ -297,7 +296,7 @@ pub fn parse_text(stringified: &mut String) -> Result<String> {
             stringified_character
                 .to_string()
                 .parse::<u8>()
-                .with_context(|| format!("Failed to parse utf8"))?,
+                .with_context(|| "Failed to parse utf8".to_string())?,
         );
     }
     Ok(String::from_utf8_lossy(&utf8).to_string())

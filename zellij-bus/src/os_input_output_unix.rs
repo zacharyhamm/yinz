@@ -152,10 +152,7 @@ fn set_terminal_size_using_fd(
     // TIOCGWINSZ is an u32, but the second argument to ioctl is u64 on
     // some platforms. When checked on Linux, clippy will complain about
     // useless conversion.
-    #[allow(clippy::useless_conversion)]
-    unsafe {
-        ioctl(fd, TIOCSWINSZ.into(), &winsize)
-    };
+    unsafe { ioctl(fd, TIOCSWINSZ, &winsize) };
 }
 
 /// Handle some signals for the child process. This will loop until the child

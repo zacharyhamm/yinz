@@ -1,4 +1,3 @@
-#![allow(clippy::useless_format)]
 #![allow(clippy::unwrap_or_default)]
 use super::{is_too_high, is_too_wide, stringify_text, Coordinates, Text};
 use crate::panes::{

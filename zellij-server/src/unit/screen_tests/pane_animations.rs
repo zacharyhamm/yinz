@@ -58,7 +58,7 @@ fn panel_half(
     .unwrap();
     tab.get_pane_with_id_mut(pane_id)
         .unwrap()
-        .handle_plugin_bytes(ClientId::new(1), b"\x1b[HCONTENTS".to_vec().into());
+        .handle_plugin_bytes(ClientId::new(1), b"\x1b[HCONTENTS".to_vec());
     (run, pane_id)
 }
 
@@ -104,7 +104,7 @@ fn opening_ripple_placement_cache_and_clock_shutdown() {
     tab.request_plugin_permissions(PluginId::new(7), None);
     tab.get_pane_with_id_mut(pane_id)
         .unwrap()
-        .handle_plugin_bytes(ClientId::new(1), b"\x1b[2J\x1b[HCONTENTS".to_vec().into());
+        .handle_plugin_bytes(ClientId::new(1), b"\x1b[2J\x1b[HCONTENTS".to_vec());
 
     let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
     let coordinates = tab

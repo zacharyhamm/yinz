@@ -47,7 +47,7 @@ fn screen_with_menu_configured() -> Screen {
 /// fills them in.
 fn click_context(pane_id: PaneId, click: (usize, usize)) -> ContextMenuContext {
     ContextMenuContext {
-        pane_id: pane_id.into(),
+        pane_id,
         click,
         ..Default::default()
     }

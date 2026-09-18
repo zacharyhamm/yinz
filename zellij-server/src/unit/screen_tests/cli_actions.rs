@@ -330,7 +330,7 @@ pub fn send_cli_resize_action_to_screen() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -562,7 +562,7 @@ pub fn send_cli_move_pane_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -759,7 +759,7 @@ pub fn send_cli_scroll_down_action() {
         size,
     );
     let (_cursor_position, last_snapshot) = snapshots.last().unwrap();
-    assert_snapshot!(format!("{}", last_snapshot));
+    assert_snapshot!(last_snapshot.to_string());
 }
 
 #[test]
@@ -811,7 +811,7 @@ pub fn send_cli_scroll_to_bottom_action() {
         size,
     );
     let (_cursor_position, last_snapshot) = snapshots.last().unwrap();
-    assert_snapshot!(format!("{}", last_snapshot));
+    assert_snapshot!(last_snapshot.to_string());
 }
 
 #[test]
@@ -853,7 +853,7 @@ pub fn send_cli_scroll_to_top_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -897,7 +897,7 @@ pub fn send_cli_page_scroll_up_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -951,7 +951,7 @@ pub fn send_cli_page_scroll_down_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -994,7 +994,7 @@ pub fn send_cli_half_page_scroll_up_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -1055,7 +1055,7 @@ pub fn send_cli_half_page_scroll_down_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -1089,7 +1089,7 @@ pub fn send_cli_toggle_full_screen_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -1123,7 +1123,7 @@ pub fn send_cli_toggle_pane_frames_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -1715,7 +1715,7 @@ pub fn send_cli_toggle_pane_embed_or_float() {
         eprintln!("{}", snapshot);
     }
     for (_cursor_coordinates, snapshot) in last_three_snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
 }
 
@@ -1756,7 +1756,7 @@ pub fn send_cli_toggle_floating_panes() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -1791,7 +1791,7 @@ pub fn send_cli_close_pane_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -1934,7 +1934,7 @@ pub fn send_cli_next_tab_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -1974,7 +1974,7 @@ pub fn send_cli_previous_tab_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -2016,7 +2016,7 @@ pub fn send_cli_goto_tab_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }
@@ -2056,7 +2056,7 @@ pub fn send_cli_close_tab_action() {
     );
     let snapshot_count = snapshots.len();
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
     assert_snapshot!(format!("{}", snapshot_count));
 }

@@ -1,4 +1,3 @@
-#![allow(clippy::unnecessary_fallible_conversions)]
 use std::str::FromStr;
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::SupervisorId;
@@ -346,7 +345,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                         .ok_or_else(|| anyhow!("Missing cli_assets"))?
                         .try_into()?,
                     tab_number_to_focus: attach.tab_number_to_focus.map(TabNumber::new),
-                    pane_to_focus: attach.pane_to_focus.map(|p| p.try_into()).transpose()?,
+                    pane_to_focus: attach.pane_to_focus.map(Into::into),
                 })
             },
             Some(client_to_server_msg::Message::AttachWatcherClient(attach_watcher)) => {
@@ -1886,7 +1885,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                 command: command.map(|c| c.into()),
                 pane_name,
                 near_current_pane,
-                pane_id_to_replace: pane_id_to_replace.and_then(|p| p.try_into().ok()),
+                pane_id_to_replace: pane_id_to_replace.map(Into::into),
                 close_replaced_pane,
                 tab_id: tab_id
                     .map(|t| u32::try_from(t.get()))

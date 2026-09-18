@@ -67,7 +67,7 @@ fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
             ] {
                 screen.subscribe_to_pane_renders(
                     ClientId::new(client),
-                    panes.into_iter().map(Into::into).collect(),
+                    panes.into_iter().collect(),
                     None,
                     false,
                 );
@@ -113,11 +113,8 @@ fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
                     }
                 }
             }
-            let expected: Vec<zellij_types::data::PaneId> = if failed {
-                vec![]
-            } else {
-                departing.iter().copied().map(Into::into).collect()
-            };
+            let expected: Vec<zellij_types::data::PaneId> =
+                if failed { vec![] } else { departing.to_vec() };
             assert_eq!(closed.len(), expected.len(), "{scenario}, failed={failed}");
             for id in &expected {
                 assert_eq!(closed.iter().filter(|closed| *closed == id).count(), 1);
@@ -156,7 +153,7 @@ fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
             if !failed {
                 assert_eq!(
                     screen.pane_render_subscribers[&ClientId::new(101)].pane_ids,
-                    remaining.into_iter().map(Into::into).collect()
+                    remaining.into_iter().collect()
                 );
             }
             for (instruction, _) in pty.try_iter() {

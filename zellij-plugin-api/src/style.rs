@@ -25,12 +25,11 @@ impl TryFrom<ProtobufStyle> for Style {
 }
 
 #[allow(deprecated)]
-#[allow(clippy::unnecessary_fallible_conversions)]
 impl TryFrom<Style> for ProtobufStyle {
     type Error = &'static str;
     fn try_from(style: Style) -> Result<Self, &'static str> {
         let s = ProtobufStyling::try_from(style.colors)?;
-        let palette = Palette::try_from(style.colors).map_err(|_| "malformed style payload")?;
+        let palette = Palette::from(style.colors);
         Ok(ProtobufStyle {
             palette: Some(palette.try_into()?),
             rounded_corners: style.rounded_corners,

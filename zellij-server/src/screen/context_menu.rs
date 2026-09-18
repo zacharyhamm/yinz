@@ -121,7 +121,7 @@ impl Screen {
             ContextMenuState {
                 request_id,
                 anchor,
-                pane_id: context.pane_id.into(),
+                pane_id: context.pane_id,
                 context,
                 plugin_id: None,
                 items: ContextMenuItems::AwaitingPlugin { configured },

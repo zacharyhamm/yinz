@@ -27,7 +27,7 @@ impl Screen {
             .copied();
 
         for pane_id in &pane_ids {
-            let server_pane_id: PaneId = (*pane_id).into();
+            let server_pane_id: PaneId = *pane_id;
             let mut found = false;
 
             for tab in self.tabs.values() {
@@ -118,7 +118,7 @@ impl Screen {
         let mut pane_map: HashMap<zellij_types::data::PaneId, PaneContents> = HashMap::new();
         let mut ansi_pane_map: HashMap<zellij_types::data::PaneId, PaneContents> = HashMap::new();
         for pane_id in &all_subscribed_ids {
-            let server_pane_id: PaneId = (*pane_id).into();
+            let server_pane_id: PaneId = *pane_id;
             for tab in self.tabs.values() {
                 if let Some(pane) = tab.get_pane_with_id(server_pane_id) {
                     pane_map.insert(*pane_id, pane.pane_contents(None, false, None));
