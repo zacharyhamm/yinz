@@ -1,6 +1,7 @@
 //! Panes as the pty thread and the CLI see them: bytes arriving for a terminal, a new pane to
 //! place, a pane to close, focus or dump.
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 
 use super::agent_placement::AgentPlacement;
@@ -299,12 +300,17 @@ impl Screen {
             start_suppressed,
             client_or_tab_index,
         );
+        // The tab the pane went into, so that holding it for its command below reaches the
+        // same tab whichever way it was chosen - including a tab whose layout has not landed,
+        // which queues both the placement and the hold.
+        let mut placed_in: Option<TabId> = None;
         match client_or_tab_index {
             ClientTabIndexOrPaneId::ClientId(client_id)
             | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
                 let should_focus_pane =
                     matches!(client_or_tab_index, ClientTabIndexOrPaneId::ClientId(_));
                 active_tab_and_connected_client_id_with_first_tab_fallback!(self, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
+                placed_in = Some(tab.id);
                 tab.new_pane(pid,
                    initial_pane_title,
                    invoked_with,
@@ -315,19 +321,6 @@ impl Screen {
                    blocking_notification
                )
             }, ?);
-                if let Some(hold_for_command) = hold_for_command {
-                    let is_first_run = true;
-                    active_tab_and_connected_client_id_with_first_tab_fallback!(
-                        self,
-                        client_id,
-                        |tab: &mut Tab, _client_id: Option<ClientId>| tab.hold_pane(
-                            pid,
-                            None,
-                            is_first_run,
-                            hold_for_command
-                        )
-                    )
-                }
                 if should_focus_pane {
                     self.sync_scroll_mode_on_focus(client_id)?;
                 }
@@ -369,10 +362,7 @@ impl Screen {
                         client_id,
                         blocking_notification,
                     )?;
-                    if let Some(hold_for_command) = hold_for_command {
-                        let is_first_run = true;
-                        let _ = active_tab.hold_pane(pid, None, is_first_run, hold_for_command);
-                    }
+                    placed_in = Some(tab_index);
                 } else {
                     self.forget_unplaced_pane(pid, format!("tab index {tab_index:?} not found"));
                 }
@@ -424,10 +414,7 @@ impl Screen {
                                 )?;
                             },
                         }
-                        if let Some(hold_for_command) = hold_for_command {
-                            let is_first_run = true;
-                            let _ = tab.hold_pane(pid, None, is_first_run, hold_for_command);
-                        }
+                        placed_in = Some(tab.id);
                         found = true;
                         break;
                     }
@@ -437,6 +424,12 @@ impl Screen {
                 }
             },
         };
+        if let (Some(hold_for_command), Some(tab_id)) = (hold_for_command, placed_in) {
+            if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                let is_first_run = true;
+                tab.hold_pane(pid, None, is_first_run, hold_for_command);
+            }
+        }
         // A `TabIndex` target places without a client, so a pane redirected to a tab
         // that already exists is brought to its client here. A tab made for the pane
         // needs nothing: `apply_layout` moves the client when the layout lands.
