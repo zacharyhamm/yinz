@@ -1070,18 +1070,20 @@ fn a_firecracker_preflight_does_not_block_other_pty_work() {
         },
         ..Default::default()
     };
-    finish_terminal_spawn(
+    finish_pane_spawn(
         &mut pty,
-        PendingTerminalSpawn {
+        PendingPaneSpawn {
             run_command: Some(command.clone()),
             pane_title: None,
             open_file_payload: None,
             invoked_with: Some(Run::Command(command.clone())),
-            new_pane_placement: NewPanePlacement::default(),
-            start_suppressed: false,
             client_or_tab_index: ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1)),
             completion_tx: None,
-            set_blocking: false,
+            placement: PanePlacement::New {
+                new_pane_placement: NewPanePlacement::default(),
+                start_suppressed: false,
+                set_blocking: false,
+            },
         },
         Ok((crate::TerminalId::new(41), false)),
     )
@@ -1823,27 +1825,7 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let (pty_tx, _pty_rx) = channels::unbounded();
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
-    let local = || RunCommand {
-        command: PathBuf::from("sh"),
-        ..Default::default()
-    };
-    let layout = TiledPaneLayout {
-        children: vec![
-            TiledPaneLayout {
-                run: Some(Run::Command(local())),
-                ..Default::default()
-            },
-            TiledPaneLayout {
-                run: Some(Run::Command(firecracker_command())),
-                ..Default::default()
-            },
-            TiledPaneLayout {
-                run: Some(Run::Command(local())),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
+    let layout = failing_three_slot_layout();
     // The first local pane starts for real, the second one fails.
     *os_api.local_spawns_to_allow.lock().unwrap() = 1;
     *os_api.fail_local_spawns.lock().unwrap() = true;
@@ -1887,27 +1869,7 @@ fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let (pty_tx, _pty_rx) = channels::unbounded();
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
-    let local = || RunCommand {
-        command: PathBuf::from("sh"),
-        ..Default::default()
-    };
-    let layout = TiledPaneLayout {
-        children: vec![
-            TiledPaneLayout {
-                run: Some(Run::Command(local())),
-                ..Default::default()
-            },
-            TiledPaneLayout {
-                run: Some(Run::Command(firecracker_command())),
-                ..Default::default()
-            },
-            TiledPaneLayout {
-                run: Some(Run::Command(local())),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
+    let layout = failing_three_slot_layout();
     *os_api.local_spawns_to_allow.lock().unwrap() = 1;
     *os_api.fail_local_spawns.lock().unwrap() = true;
 
@@ -1922,8 +1884,6 @@ fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
         crate::ClientId::new(1),
         None,
         None,
-        false,
-        false,
     );
 
     assert!(result.is_err(), "the local failure is still reported");
@@ -3341,4 +3301,365 @@ fn workflow_ownership_follows_spawn_rerun_and_removal() {
     .unwrap();
     pty.close_pane(PaneId::Terminal(id)).unwrap();
     assert!(!pty.workflow_owners.contains_key(&id));
+}
+
+/// A layout whose second local pane fails to start: shared by the new-tab and
+/// the override path, so the two can be held to the same cleanup.
+fn failing_three_slot_layout() -> TiledPaneLayout {
+    let local = || RunCommand {
+        command: PathBuf::from("sh"),
+        ..Default::default()
+    };
+    TiledPaneLayout {
+        children: vec![
+            TiledPaneLayout {
+                run: Some(Run::Command(local())),
+                ..Default::default()
+            },
+            TiledPaneLayout {
+                run: Some(Run::Command(firecracker_command())),
+                ..Default::default()
+            },
+            TiledPaneLayout {
+                run: Some(Run::Command(local())),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+/// Every event the plugins were sent, in order.
+fn collect_plugin_events(rx: &PluginReceiver) -> Vec<Event> {
+    let mut events = Vec::new();
+    while let Ok((instruction, _)) = rx.try_recv() {
+        if let PluginInstruction::Update(updates) = instruction {
+            events.extend(updates.into_iter().map(|(_, _, event)| event));
+        }
+    }
+    events
+}
+
+/// A pane spawned to take over another one, as `SpawnInPlaceTerminal` asks.
+fn in_place_spawn(
+    run_command: Option<RunCommand>,
+    open_file_payload: Option<OpenFilePayload>,
+) -> PendingPaneSpawn {
+    PendingPaneSpawn {
+        run_command,
+        open_file_payload,
+        pane_title: None,
+        invoked_with: None,
+        client_or_tab_index: ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1)),
+        completion_tx: None,
+        placement: PanePlacement::InPlace {
+            close_replaced_pane: true,
+        },
+    }
+}
+
+#[test]
+fn an_in_place_command_pane_tells_its_plugin_it_opened() {
+    let (mut pty, plugin_rx, screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
+    let command = RunCommand {
+        command: PathBuf::from("htop"),
+        originating_plugin: Some(step_origin("x")),
+        ..Default::default()
+    };
+    finish_pane_spawn(
+        &mut pty,
+        in_place_spawn(Some(command), None),
+        Ok((TerminalId::new(0), false)),
+    )
+    .unwrap();
+
+    let events = collect_plugin_events(&plugin_rx);
+    assert!(
+        matches!(
+            &events[..],
+            [Event::CommandPaneOpened(id, context)]
+                if *id == TerminalId::new(0) && context.get("__step").map(String::as_str) == Some("x")
+        ),
+        "the plugin that asked for the pane is told it opened, got: {events:?}"
+    );
+    assert_eq!(
+        pty.originating_plugins
+            .get(&TerminalId::new(0))
+            .and_then(|plugin| plugin.context.get("__step").cloned()),
+        Some("x".to_owned()),
+        "the pane is registered as the plugin's, so a rerun keeps its context"
+    );
+    let screen = drain_screen(&screen_rx);
+    assert!(
+        matches!(
+            &screen[..],
+            [ScreenInstruction::ReplacePane(PaneId::Terminal(id), None, _, _, true, _, _)]
+                if *id == TerminalId::new(0)
+        ),
+        "the pane takes over the one it was asked to, got: {screen:?}"
+    );
+}
+
+#[test]
+fn an_in_place_edit_pane_tells_its_plugin_it_opened() {
+    let (mut pty, plugin_rx, _screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
+    let payload = OpenFilePayload::new(PathBuf::from("notes.md"), None, None)
+        .with_originating_plugin(step_origin("e"));
+    finish_pane_spawn(
+        &mut pty,
+        in_place_spawn(None, Some(payload)),
+        Ok((TerminalId::new(0), false)),
+    )
+    .unwrap();
+
+    let events = collect_plugin_events(&plugin_rx);
+    assert!(
+        matches!(
+            &events[..],
+            [Event::EditPaneOpened(id, context)]
+                if *id == TerminalId::new(0) && context.get("__step").map(String::as_str) == Some("e")
+        ),
+        "the plugin that asked for the editor is told it opened, got: {events:?}"
+    );
+    assert!(
+        pty.originating_plugins.is_empty(),
+        "an edit pane is not a command pane to rerun"
+    );
+}
+
+#[test]
+fn an_in_place_command_pane_that_cannot_start_tells_its_plugin_it_exited() {
+    let not_found = || -> anyhow::Error {
+        ZellijError::CommandNotFound {
+            terminal_id: TerminalId::new(41),
+            command: "htop".to_owned(),
+        }
+        .into()
+    };
+    let shown = RunCommand {
+        command: PathBuf::from("htop"),
+        hold_on_close: true,
+        originating_plugin: Some(step_origin("x")),
+        ..Default::default()
+    };
+
+    let os_api = MockOsApi::new();
+    let (mut pty, plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    finish_pane_spawn(
+        &mut pty,
+        in_place_spawn(Some(shown.clone()), None),
+        Err(not_found()),
+    )
+    .unwrap();
+
+    let screen = drain_screen(&screen_rx);
+    assert!(
+        matches!(
+            &screen[..],
+            [
+                ScreenInstruction::ReplacePane(PaneId::Terminal(placeholder), None, ..),
+                ScreenInstruction::PtyBytes(reason_for, reason),
+                ScreenInstruction::HoldPane(PaneId::Terminal(held), Some(2), _),
+            ] if *placeholder == TerminalId::new(41)
+                && *reason_for == TerminalId::new(41)
+                && *held == TerminalId::new(41)
+                && String::from_utf8_lossy(reason).contains("htop")
+        ),
+        "the pane is put up, told why, and held, got: {screen:?}"
+    );
+    let events = collect_plugin_events(&plugin_rx);
+    assert!(
+        matches!(&events[..], [Event::CommandPaneExited(id, Some(2), _)] if *id == TerminalId::new(41)),
+        "the plugin is told the command exited, got: {events:?}"
+    );
+    assert!(
+        os_api.cleared_terminal_ids.lock().unwrap().is_empty(),
+        "the pane stays up to show the reason"
+    );
+
+    // Without `hold_on_close` nothing shows the failure: the reserved pane is
+    // released and nobody is told.
+    let silent = RunCommand {
+        hold_on_close: false,
+        ..shown
+    };
+    let os_api = MockOsApi::new();
+    let (mut pty, plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    finish_pane_spawn(
+        &mut pty,
+        in_place_spawn(Some(silent), None),
+        Err(not_found()),
+    )
+    .unwrap();
+    assert_eq!(
+        *os_api.cleared_terminal_ids.lock().unwrap(),
+        vec![TerminalId::new(41)]
+    );
+    let screen = drain_screen(&screen_rx);
+    assert!(
+        !screen.iter().any(|instruction| {
+            matches!(
+                instruction,
+                ScreenInstruction::ReplacePane(..)
+                    | ScreenInstruction::PtyBytes(..)
+                    | ScreenInstruction::HoldPane(..)
+            )
+        }),
+        "nothing shows the failure; only the closed pane's bookkeeping remains, got: {screen:?}"
+    );
+    assert!(collect_plugin_events(&plugin_rx).is_empty());
+}
+
+/// The two layout paths spawn the same panes for the same layout.
+#[test]
+fn a_layout_override_places_the_same_panes_as_a_new_tab() {
+    let local = || RunCommand {
+        command: PathBuf::from("sh"),
+        ..Default::default()
+    };
+    let held = || RunCommand {
+        command: PathBuf::from("make"),
+        hold_on_start: true,
+        ..Default::default()
+    };
+    let layout = || TiledPaneLayout {
+        children: vec![
+            TiledPaneLayout {
+                run: Some(Run::Command(local())),
+                ..Default::default()
+            },
+            TiledPaneLayout {
+                run: Some(Run::Command(held())),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let floating = || {
+        vec![FloatingPaneLayout {
+            run: Some(Run::Command(local())),
+            ..Default::default()
+        }]
+    };
+    let default_shell = Some(TerminalAction::RunCommand(RunCommand::default()));
+
+    let os_api = MockOsApi::new();
+    *os_api.local_spawns_to_allow.lock().unwrap() = 2;
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    pty.spawn_terminals_for_layout(
+        None,
+        layout(),
+        floating(),
+        default_shell.clone(),
+        HashMap::new(),
+        None,
+        TabId::new(0),
+        false,
+        true,
+        crate::ClientId::new(1),
+        None,
+    )
+    .unwrap();
+    let new_tab = drain_screen(&screen_rx)
+        .into_iter()
+        .find_map(|instruction| match instruction {
+            ScreenInstruction::ApplyLayout(_, _, tiled, floating, ..) => Some((tiled, floating)),
+            _ => None,
+        })
+        .expect("a new tab is applied");
+    let new_tab_cleared = os_api.cleared_terminal_ids.lock().unwrap().clone();
+    let new_tab_readers = pty.task_handles.len();
+
+    let os_api = MockOsApi::new();
+    *os_api.local_spawns_to_allow.lock().unwrap() = 2;
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (tab_result, deferred) = pty
+        .spawn_terminals_for_layout_override(
+            None,
+            layout(),
+            floating(),
+            default_shell,
+            HashMap::new(),
+            TabId::new(0),
+            None,
+            crate::ClientId::new(1),
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        (
+            tab_result.new_terminal_pids,
+            tab_result.new_floating_pane_pids
+        ),
+        new_tab,
+        "the override places exactly what a new tab would"
+    );
+    assert_eq!(
+        new_tab.0[1]
+            .1
+            .as_ref()
+            .map(|command| command.command.clone()),
+        Some(PathBuf::from("make")),
+        "the held slot carries its command"
+    );
+    assert!(deferred.is_empty());
+    assert_eq!(
+        *os_api.cleared_terminal_ids.lock().unwrap(),
+        new_tab_cleared
+    );
+    assert_eq!(pty.task_handles.len(), new_tab_readers);
+}
+
+/// The two layout paths give up on a failing layout the same way.
+#[test]
+fn a_layout_override_and_a_new_tab_abandon_the_same_panes() {
+    let run = |override_layout: bool| {
+        let os_api = MockOsApi::new();
+        let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+        let (pty_tx, _pty_rx) = channels::unbounded();
+        pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        *os_api.local_spawns_to_allow.lock().unwrap() = 1;
+        *os_api.fail_local_spawns.lock().unwrap() = true;
+        let default_shell = Some(TerminalAction::RunCommand(RunCommand::default()));
+        let failed = if override_layout {
+            pty.spawn_terminals_for_layout_override(
+                None,
+                failing_three_slot_layout(),
+                vec![],
+                default_shell,
+                HashMap::new(),
+                TabId::new(0),
+                None,
+                crate::ClientId::new(1),
+                None,
+                None,
+            )
+            .is_err()
+        } else {
+            pty.spawn_terminals_for_layout(
+                None,
+                failing_three_slot_layout(),
+                vec![],
+                default_shell,
+                HashMap::new(),
+                None,
+                TabId::new(0),
+                false,
+                true,
+                crate::ClientId::new(1),
+                None,
+            )
+            .is_err()
+        };
+        assert!(failed, "the local failure is reported on both paths");
+        let mut cleared = os_api.cleared_terminal_ids.lock().unwrap().clone();
+        cleared.sort_unstable();
+        (cleared, os_api.local_signals())
+    };
+    let new_tab = run(false);
+    let override_layout = run(true);
+    assert_eq!(new_tab, override_layout);
+    assert_eq!(new_tab.0, vec![TerminalId::new(0), TerminalId::new(1)]);
 }

@@ -3,8 +3,8 @@
 //! Split in two halves. Everything above the dispatch section is pure and
 //! host-testable; `dispatch` and its helpers call the Zellij host and are not.
 //! That split is load-bearing rather than stylistic: `host_run_plugin_command`
-//! is a no-op on non-wasm32 targets, and most value-returning shims `.unwrap()`
-//! the protobuf decode, so calling one from a host-triple test panics.
+//! is a no-op on non-wasm32 targets, so a value-returning shim called from a
+//! host-triple test reads no reply and answers with its neutral value.
 
 // Most of the pure half exists for `mod host`, which only compiles on wasm32 - so linting this
 // crate for the host triple (as a workspace-wide `cargo clippy` does) reads those helpers as dead.

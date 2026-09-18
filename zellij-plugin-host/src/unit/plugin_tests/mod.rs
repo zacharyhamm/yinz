@@ -373,9 +373,8 @@ fn wait_for_render_containing(log: &Watched<Vec<ScreenInstruction>>, needle: &st
 ///
 /// For a key whose handling ends in a frame that names its outcome, list every outcome the
 /// fixture can print - the success too - so that a wrongly permitted command gets past this wait
-/// and fails on the assertion that names it, not on a timeout. A host command whose reply the
-/// guest `unwrap`s (`generate_random_name`) has no reply when denied, so the guest panics instead
-/// of rendering; the crash report is then the only sign the key was handled at all.
+/// and fails on the assertion that names it, not on a timeout. The crash is listened for as well
+/// so that a guest which does trap fails the assertion after this wait, not the wait itself.
 fn wait_for_plugin_to_handle(
     log: &Watched<Vec<ScreenInstruction>>,
     plugin_id: zellij_types::internal_ids::PluginId,

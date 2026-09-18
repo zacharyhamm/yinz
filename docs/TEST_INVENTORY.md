@@ -3,6 +3,10 @@
 Generated 2026-09-18 from `8b0b64e5a` by `scripts/test-inventory.sh`.
 One item per automated test; the heading above each block is the gate that runs it.
 
+> Generated with `--fast`: no `--all-features`, so the **e2e** group
+> (feature `e2e`) and the **postgres** half of the plugin-data store are
+> missing. Re-run without `--fast` for the whole tree.
+
 ## Totals
 
 | gate | tests | ignored |
@@ -2680,6 +2684,12 @@ Run: `cargo x test`
 - [ ] `build::tests::profile_flag_wins_over_release`
 - [ ] `firecracker_test::tests::temporary_network_names_fit_linux_interfaces_and_use_a_process_subnet`
 - [ ] `firecracker_test::tests::temporary_network_never_shares_the_users_pool_subnet`
+- [ ] `lint::tests::a_one_line_allow_is_found`
+- [ ] `lint::tests::a_reason_containing_brackets_does_not_end_the_attribute_early`
+- [ ] `lint::tests::an_allow_inside_cfg_attr_is_found`
+- [ ] `lint::tests::an_allow_rustfmt_wrapped_across_lines_is_found_whole`
+- [ ] `lint::tests::an_expect_keeps_its_kind_and_drops_its_reason`
+- [ ] `lint::tests::other_inner_attributes_and_item_attributes_are_not_suppressions`
 - [ ] `metadata::tests::boundaries_cover_all_dependency_kinds_targets_and_aliases`
 - [ ] `owned_dir::tests::concurrent_creation_preserves_live_roots_and_reclaims_killed_owners`
 - [ ] `owned_dir::tests::externally_removed_directories_are_already_clean`
@@ -5177,6 +5187,7 @@ Run: `cargo x test`
 - [ ] `plugin_tests::pane_id_commands::write_to_pane_id_plugin_command`
 - [ ] `plugin_tests::permissions::denied_permission_request_result`
 - [ ] `plugin_tests::permissions::granted_permission_request_result`
+- [ ] `plugin_tests::permissions::open_command_pane_without_run_commands_returns_none_and_plugin_survives`
 - [ ] `plugin_tests::permissions::request_plugin_permissions`
 - [ ] `plugin_tests::permissions::send_configuration_to_plugins`
 - [ ] `plugin_tests::plugin_lifecycle_commands::before_close_plugin_event`
@@ -6036,6 +6047,8 @@ Run: `cargo x test`
 - [ ] `pty::pty_tests::a_firecracker_loading_screen_names_the_vm_image_worktree_and_phase`
 - [ ] `pty::pty_tests::a_firecracker_preflight_does_not_block_other_pty_work`
 - [ ] `pty::pty_tests::a_firecracker_rerun_does_not_block_the_pty_during_transport`
+- [ ] `pty::pty_tests::a_layout_override_and_a_new_tab_abandon_the_same_panes`
+- [ ] `pty::pty_tests::a_layout_override_places_the_same_panes_as_a_new_tab`
 - [ ] `pty::pty_tests::a_local_pane_announces_no_host`
 - [ ] `pty::pty_tests::a_local_pane_has_no_git_probe_to_give`
 - [ ] `pty::pty_tests::a_local_pane_is_still_signalled_by_pid`
@@ -6070,6 +6083,9 @@ Run: `cargo x test`
 - [ ] `pty::pty_tests::a_tabs_panes_are_released_together_rather_than_one_after_another`
 - [ ] `pty::pty_tests::activity_flag_reset_after_poll`
 - [ ] `pty::pty_tests::an_empty_spawn_slot_for_a_closed_pane_does_not_fail_the_pty_thread`
+- [ ] `pty::pty_tests::an_in_place_command_pane_tells_its_plugin_it_opened`
+- [ ] `pty::pty_tests::an_in_place_command_pane_that_cannot_start_tells_its_plugin_it_exited`
+- [ ] `pty::pty_tests::an_in_place_edit_pane_tells_its_plugin_it_opened`
 - [ ] `pty::pty_tests::an_initial_cwd_reaches_screen`
 - [ ] `pty::pty_tests::an_initial_cwd_reports_once_and_the_ticker_stays_quiet`
 - [ ] `pty::pty_tests::an_initial_cwd_the_os_cannot_answer_falls_back_to_the_requested_one`
@@ -7977,6 +7993,11 @@ Run: `cargo x test`
 - [ ] `clock::tests::leap_day_is_a_day`
 - [ ] `clock::tests::the_epoch_is_a_thursday`
 - [ ] `clock::tests::wall_clock_states_its_offset`
+- [ ] `shim::tests::a_malformed_reply_is_none`
+- [ ] `shim::tests::a_missing_plugin_ids_reply_panics_naming_the_command`
+- [ ] `shim::tests::a_missing_reply_is_an_empty_collection`
+- [ ] `shim::tests::a_missing_reply_is_none_not_a_panic`
+- [ ] `shim::tests::a_valid_reply_reaches_an_option_returner`
 - [ ] `shim::tests::plugin_queries_decode_valid_responses`
 - [ ] `shim::tests::plugin_queries_preserve_server_errors`
 - [ ] `shim::tests::plugin_queries_return_stdin_read_errors`
@@ -8442,20 +8463,20 @@ Run: `cargo x test`
 - [ ] `/home/zacharyhamm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deno_core-0.405.0/extensions.rs - deno::zellij_host (line 483)`
 - [ ] `zellij-runtime/src/common_path.rs - common_path::common_path (line 61)`
 - [ ] `zellij-runtime/src/common_path.rs - common_path::common_path_all (line 33)`
-- [ ] `zellij-runtime/src/errors.rs - errors::LoggableError::print_error (line 52)`
+- [ ] `zellij-runtime/src/errors.rs - errors::LoggableError::print_error (line 50)`
 - [ ] `zellij-tile/src/lib.rs - register_plugin (line 110)`
 - [ ] `zellij-tile/src/lib.rs - register_worker (line 214)`
-- [ ] `zellij-tile/src/shim.rs - shim::FetchRequestExt (line 2516)`
-- [ ] `zellij-tile/src/shim.rs - shim::current_session_last_saved_time (line 502)`
-- [ ] `zellij-tile/src/shim.rs - shim::data_apply (line 2357)`
-- [ ] `zellij-tile/src/shim.rs - shim::data_define_entity (line 2314)`
-- [ ] `zellij-tile/src/shim.rs - shim::delete_layout (line 3314)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_cwd (line 3192)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_info (line 382)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_pane_running_command (line 3133)`
-- [ ] `zellij-tile/src/shim.rs - shim::get_tab_info (line 426)`
-- [ ] `zellij-tile/src/shim.rs - shim::rename_layout (line 3374)`
-- [ ] `zellij-tile/src/shim.rs - shim::save_session (line 467)`
+- [ ] `zellij-tile/src/shim.rs - shim::FetchRequestExt (line 2076)`
+- [ ] `zellij-tile/src/shim.rs - shim::current_session_last_saved_time (line 500)`
+- [ ] `zellij-tile/src/shim.rs - shim::data_apply (line 1929)`
+- [ ] `zellij-tile/src/shim.rs - shim::data_define_entity (line 1888)`
+- [ ] `zellij-tile/src/shim.rs - shim::delete_layout (line 2750)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_cwd (line 2640)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_info (line 395)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_pane_running_command (line 2583)`
+- [ ] `zellij-tile/src/shim.rs - shim::get_tab_info (line 435)`
+- [ ] `zellij-tile/src/shim.rs - shim::rename_layout (line 2800)`
+- [ ] `zellij-tile/src/shim.rs - shim::save_session (line 472)`
 - [ ] `zellij-tile/src/ui_components/forms/mod.rs - ui_components::forms (line 19)`
 - [ ] `zellij-types/src/internal_ids.rs - internal_ids::ClientId (line 72)`
 - [ ] `zellij-types/src/internal_ids.rs - internal_ids::ClientId (line 77)`
@@ -9233,16 +9254,6 @@ Run: `cargo x integration-test`
 - [ ] `warp_adoption_failure_returns_all_editor_companions_and_their_relationships`
 - [ ] `warping_a_visible_editor_carries_its_subject_and_restores_it_on_close`
 
-## zellij (bin/zellij) — the `tests::e2e` half — all `#[ignore]`d
-
-Run: `cargo x ci e2e --test`
-
-- [ ] `tests::e2e::cases::quit_and_resurrect_session`
-- [ ] `tests::e2e::cases::resize_terminal_window`
-- [ ] `tests::e2e::cases::send_blocking_command_through_the_cli`
-- [ ] `tests::e2e::cases::starts_with_one_terminal`
-- [ ] `tests::e2e::cases::typing_exit_closes_pane`
-
 ## zellij-server (test/remote_pane_ssh) — all `#[ignore]`d
 
 Run: `cargo x remote-test --build && cargo x remote-test --test`
@@ -9298,119 +9309,6 @@ Run: `cargo x firecracker-test --build && cargo x firecracker-test --test`
 - [ ] `project_workflows_observe_and_sync_a_real_guest`
 - [ ] `two_sessions_share_a_worktree_vm_until_the_last_one_leaves`
 
-## zellij-storage (lib/zellij_storage) — the `postgres` half
-
-Run: `cargo x postgres-test --build && cargo x postgres-test --test`
-
-- [ ] `plugin_data_store::postgres::deadline_tests::a_stalled_row_stream_has_one_deadline_and_reconnects`
-- [ ] `plugin_data_store::postgres::deadline_tests::a_timed_out_write_is_rolled_back_and_never_replayed`
-- [ ] `plugin_data_store::postgres::deadline_tests::blocked_bootstrap_and_query_discard_connections_and_reconnect`
-- [ ] `plugin_data_store::postgres::snapshot_tests::guarded_batches_exclude_unguarded_writers_on_all_touched_tables_until_commit`
-- [ ] `plugin_data_store::tests::postgres::a_constraint_violation_includes_the_operation_and_server_explanation`
-- [ ] `plugin_data_store::tests::postgres::a_database_from_before_rev_is_migrated_in_place`
-- [ ] `plugin_data_store::tests::postgres::a_lost_connection_is_reconnected_on_the_next_call`
-- [ ] `plugin_data_store::tests::postgres::a_schema_from_a_newer_zellij_is_refused`
-- [ ] `plugin_data_store::tests::postgres::concurrency::a_conflict_rolls_back_the_whole_batch`
-- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_update_conflicts_when_the_revision_has_moved`
-- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_update_still_honours_its_filter`
-- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_write_against_a_deleted_row_conflicts_rather_than_resurrecting_it`
-- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_write_at_a_stale_revision_conflicts_and_changes_nothing`
-- [ ] `plugin_data_store::tests::postgres::concurrency::a_guarded_write_at_the_current_revision_applies`
-- [ ] `plugin_data_store::tests::postgres::concurrency::a_new_row_starts_at_revision_one`
-- [ ] `plugin_data_store::tests::postgres::concurrency::an_unguarded_write_that_matches_nothing_is_not_a_conflict`
-- [ ] `plugin_data_store::tests::postgres::concurrency::an_update_advances_the_revision`
-- [ ] `plugin_data_store::tests::postgres::concurrency::an_update_guarded_on_a_stale_rev_matches_nothing`
-- [ ] `plugin_data_store::tests::postgres::concurrency::an_update_that_matches_nothing_advances_no_revision`
-- [ ] `plugin_data_store::tests::postgres::concurrency::an_upsert_advances_the_revision_rather_than_resetting_it`
-- [ ] `plugin_data_store::tests::postgres::concurrency::assertions_match_the_complete_set_without_changing_rows_or_report_ids`
-- [ ] `plugin_data_store::tests::postgres::concurrency::expect_absent_inserts_once_and_conflicts_after`
-- [ ] `plugin_data_store::tests::postgres::concurrency::guards_that_could_never_hold_are_rejected`
-- [ ] `plugin_data_store::tests::postgres::concurrency::independent_writers_of_the_same_snapshot_cannot_both_commit`
-- [ ] `plugin_data_store::tests::postgres::concurrency::per_mutation_counts_line_up_with_the_mutations_given`
-- [ ] `plugin_data_store::tests::postgres::concurrency::per_mutation_distinguishes_a_hand_written_guard_that_missed`
-- [ ] `plugin_data_store::tests::postgres::concurrency::rev_can_be_selected_filtered_and_sorted_on`
-- [ ] `plugin_data_store::tests::postgres::concurrency::rev_is_reserved_against_declaration_and_direct_writes`
-- [ ] `plugin_data_store::tests::postgres::concurrency::revisions_are_per_row`
-- [ ] `plugin_data_store::tests::postgres::concurrency::stale_assertions_roll_back_earlier_writes_and_deletes`
-- [ ] `plugin_data_store::tests::postgres::from_backends_pairs_postgres_plugin_data_with_sqlite_recordings`
-- [ ] `plugin_data_store::tests::postgres::model::the_store_agrees_with_a_map_over_any_sequence_of_writes`
-- [ ] `plugin_data_store::tests::postgres::oracle::a_filter_selects_exactly_the_rows_that_satisfy_it`
-- [ ] `plugin_data_store::tests::postgres::oracle::a_guarded_write_never_loses_an_update`
-- [ ] `plugin_data_store::tests::postgres::oracle::a_watch_reports_a_change_exactly_when_the_rows_differ`
-- [ ] `plugin_data_store::tests::postgres::pagination::a_cursor_is_withheld_when_the_ordering_it_pages_through_does_not_apply`
-- [ ] `plugin_data_store::tests::postgres::pagination::a_fetch_is_capped_at_the_maximum_however_much_it_asks_for`
-- [ ] `plugin_data_store::tests::postgres::pagination::a_truncated_fetch_says_so_and_hands_back_a_cursor`
-- [ ] `plugin_data_store::tests::postgres::pagination::combining_a_cursor_with_a_sort_is_an_error_rather_than_wrong_results`
-- [ ] `plugin_data_store::tests::postgres::pagination::count_ignores_the_limit`
-- [ ] `plugin_data_store::tests::postgres::pagination::count_respects_the_filter_and_the_search`
-- [ ] `plugin_data_store::tests::postgres::properties::a_put_round_trips_through_a_fetch`
-- [ ] `plugin_data_store::tests::postgres::properties::any_search_string_searches_rather_than_erroring`
-- [ ] `plugin_data_store::tests::postgres::properties::declaring_an_index_changes_the_plan_but_never_the_results`
-- [ ] `plugin_data_store::tests::postgres::properties::paging_by_cursor_yields_every_row_exactly_once`
-- [ ] `plugin_data_store::tests::postgres::queries::a_blob_round_trips`
-- [ ] `plugin_data_store::tests::postgres::queries::a_bool_column_reads_back_as_a_bool`
-- [ ] `plugin_data_store::tests::postgres::queries::a_fetch_can_sort_and_select_the_stores_own_columns`
-- [ ] `plugin_data_store::tests::postgres::queries::a_filter_selects_rows`
-- [ ] `plugin_data_store::tests::postgres::queries::a_prefix_filter_matches_the_start_and_contains_matches_anywhere`
-- [ ] `plugin_data_store::tests::postgres::queries::an_underscore_in_a_needle_is_matched_literally_too`
-- [ ] `plugin_data_store::tests::postgres::queries::comparing_a_column_against_the_wrong_kind_is_an_error`
-- [ ] `plugin_data_store::tests::postgres::queries::filtering_on_an_undeclared_attribute_is_an_error_rather_than_an_empty_result`
-- [ ] `plugin_data_store::tests::postgres::queries::like_wildcards_in_a_needle_are_matched_literally`
-- [ ] `plugin_data_store::tests::postgres::queries::nulls_sort_first_ascending_and_last_descending`
-- [ ] `plugin_data_store::tests::postgres::queries::prefix_and_contains_are_rejected_on_a_non_text_column`
-- [ ] `plugin_data_store::tests::postgres::queries::prefix_and_contains_ignore_ascii_case_but_eq_does_not`
-- [ ] `plugin_data_store::tests::postgres::queries::sorting_and_selecting_work_together`
-- [ ] `plugin_data_store::tests::postgres::schema::a_private_namespace_is_derived_from_the_plugin_url`
-- [ ] `plugin_data_store::tests::postgres::schema::a_required_attribute_added_with_a_default_backfills_the_existing_rows`
-- [ ] `plugin_data_store::tests::postgres::schema::a_required_attribute_added_without_a_default_is_refused`
-- [ ] `plugin_data_store::tests::postgres::schema::a_second_plugin_may_extend_a_shared_entity_but_not_shrink_it`
-- [ ] `plugin_data_store::tests::postgres::schema::adding_an_attribute_preserves_existing_rows`
-- [ ] `plugin_data_store::tests::postgres::schema::changing_the_type_of_an_attribute_is_refused`
-- [ ] `plugin_data_store::tests::postgres::schema::defining_an_entity_reports_that_it_was_created`
-- [ ] `plugin_data_store::tests::postgres::schema::dropping_an_attribute_also_needs_a_version_above_the_stored_one`
-- [ ] `plugin_data_store::tests::postgres::schema::dropping_an_attribute_is_refused_unless_it_is_asked_for`
-- [ ] `plugin_data_store::tests::postgres::schema::dropping_an_attribute_works_when_asked_for_with_a_new_version`
-- [ ] `plugin_data_store::tests::postgres::schema::long_attribute_indexes_enforce_uniqueness_independently_and_can_be_removed`
-- [ ] `plugin_data_store::tests::postgres::schema::marking_an_attribute_searchable_later_indexes_the_rows_already_stored`
-- [ ] `plugin_data_store::tests::postgres::schema::namespaces_are_separate_stores`
-- [ ] `plugin_data_store::tests::postgres::schema::redeclaring_an_identical_definition_changes_nothing`
-- [ ] `plugin_data_store::tests::postgres::schema::reserved_attributes_cannot_create_or_migrate_an_entity`
-- [ ] `plugin_data_store::tests::postgres::schema::the_catalog_lists_declared_entities_with_their_definitions`
-- [ ] `plugin_data_store::tests::postgres::schema::the_catalog_of_an_unknown_namespace_is_empty`
-- [ ] `plugin_data_store::tests::postgres::schema::the_catalog_spans_namespaces_and_filters_to_one`
-- [ ] `plugin_data_store::tests::postgres::schema::using_an_undeclared_entity_says_so`
-- [ ] `plugin_data_store::tests::postgres::search::search_combines_with_a_filter`
-- [ ] `plugin_data_store::tests::postgres::search::search_finds_a_row_by_its_text`
-- [ ] `plugin_data_store::tests::postgres::search::searching_an_entity_with_nothing_searchable_says_so`
-- [ ] `plugin_data_store::tests::postgres::search::the_full_text_index_follows_updates_and_deletes`
-- [ ] `plugin_data_store::tests::postgres::two_backends_share_one_schema`
-- [ ] `plugin_data_store::tests::postgres::watches::a_deletion_that_empties_the_results_still_notifies`
-- [ ] `plugin_data_store::tests::postgres::watches::a_plugin_cannot_unwatch_another_plugins_watch`
-- [ ] `plugin_data_store::tests::postgres::watches::a_watch_is_only_notified_once_per_change`
-- [ ] `plugin_data_store::tests::postgres::watches::a_watch_respects_its_filter`
-- [ ] `plugin_data_store::tests::postgres::watches::a_watch_returns_the_current_rows_when_it_is_registered`
-- [ ] `plugin_data_store::tests::postgres::watches::a_write_in_another_namespace_does_not_notify`
-- [ ] `plugin_data_store::tests::postgres::watches::a_write_that_changes_the_results_notifies_the_watch`
-- [ ] `plugin_data_store::tests::postgres::watches::a_write_to_another_entity_does_not_notify`
-- [ ] `plugin_data_store::tests::postgres::watches::an_ids_only_watch_sends_just_the_id_column`
-- [ ] `plugin_data_store::tests::postgres::watches::unloading_a_plugin_drops_its_watches_and_leaves_the_others`
-- [ ] `plugin_data_store::tests::postgres::watches::unwatching_stops_the_notifications`
-- [ ] `plugin_data_store::tests::postgres::watches::watch_ids_are_not_reused_after_a_watch_is_dropped`
-- [ ] `plugin_data_store::tests::postgres::watches::watches_work_with_a_backend_that_has_no_sqlite_types`
-- [ ] `plugin_data_store::tests::postgres::watches::watching_an_undeclared_entity_fails_rather_than_registering`
-- [ ] `plugin_data_store::tests::postgres::watches::writing_the_same_values_again_is_silent`
-- [ ] `plugin_data_store::tests::postgres::writes::a_batch_is_all_or_nothing`
-- [ ] `plugin_data_store::tests::postgres::writes::a_batch_with_a_nul_uid_leaves_stored_data_unchanged`
-- [ ] `plugin_data_store::tests::postgres::writes::a_json_attribute_is_validated_on_write`
-- [ ] `plugin_data_store::tests::postgres::writes::a_put_with_a_uid_upserts_and_keeps_the_original_created_at`
-- [ ] `plugin_data_store::tests::postgres::writes::a_put_without_a_uid_always_inserts`
-- [ ] `plugin_data_store::tests::postgres::writes::a_unique_attribute_rejects_a_duplicate`
-- [ ] `plugin_data_store::tests::postgres::writes::an_apply_reports_which_entities_it_touched`
-- [ ] `plugin_data_store::tests::postgres::writes::an_int_written_to_a_real_attribute_reads_back_as_a_real`
-- [ ] `plugin_data_store::tests::postgres::writes::the_stores_own_columns_cannot_be_written_directly`
-- [ ] `plugin_data_store::tests::postgres::writes::update_and_delete_report_how_many_rows_they_touched`
-- [ ] `plugin_data_store::tests::postgres::writes::writing_the_wrong_kind_to_a_column_is_rejected`
-
 ## Not run by any gate above
 
 Hand-maintained; these are the tests that are not Rust test functions.
@@ -9426,7 +9324,8 @@ which appear under `cargo x integration-test` above.
 
 ## Unmatched by nextest
 
-None: every `#[test]` function in the sources appears in the listing above.
+Source `#[test]` functions whose name nextest never listed. Each is either
+behind a `cfg` this run did not enable, or in a suite that failed to build.
 
 Scanned 8540 source test functions; 0 unmatched.
 
