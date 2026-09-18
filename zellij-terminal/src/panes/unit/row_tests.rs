@@ -96,12 +96,15 @@ fn zero_width_characters_are_not_all_single_width() {
 
 // -- every mutation invalidates ------------------------------------------------------------
 
+/// A named change to a row, applied once its caches are warm.
+type Mutation = (&'static str, Box<dyn Fn(&mut Row)>);
+
 /// Each case warms the caches on an all-single-width row, applies one mutation that introduces a
 /// wide or zero-width character, and checks both caches followed suit.
 #[test]
 fn every_mutation_keeps_the_caches_honest() {
     // (name, mutation)
-    let mutations: Vec<(&str, Box<dyn Fn(&mut Row)>)> = vec![
+    let mutations: Vec<Mutation> = vec![
         ("push", Box::new(|row: &mut Row| row.push(character(WIDE)))),
         (
             "add_character_at past the end",

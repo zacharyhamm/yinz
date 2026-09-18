@@ -1,4 +1,3 @@
-#![allow(clippy::upper_case_acronyms)]
 //! Continuous, parser for host-terminal replies arriving on
 //! stdin.
 //!
@@ -26,8 +25,8 @@ use zellij_runtime::vendored::termwiz::input::{InputEvent, InputParser};
 /// Describe the terminal implementation of synchronised output
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum SyncOutput {
-    DCS,
-    CSI,
+    Dcs,
+    Csi,
 }
 
 impl SyncOutput {
@@ -35,8 +34,8 @@ impl SyncOutput {
         static CSI_BSU_SEQ: &[u8] = "\u{1b}[?2026h".as_bytes();
         static DCS_BSU_SEQ: &[u8] = "\u{1b}P=1s\u{1b}".as_bytes();
         match self {
-            SyncOutput::DCS => DCS_BSU_SEQ,
-            SyncOutput::CSI => CSI_BSU_SEQ,
+            SyncOutput::Dcs => DCS_BSU_SEQ,
+            SyncOutput::Csi => CSI_BSU_SEQ,
         }
     }
 
@@ -44,8 +43,8 @@ impl SyncOutput {
         static CSI_ESU_SEQ: &[u8] = "\u{1b}[?2026l".as_bytes();
         static DCS_ESU_SEQ: &[u8] = "\u{1b}P=2s\u{1b}".as_bytes();
         match self {
-            SyncOutput::DCS => DCS_ESU_SEQ,
-            SyncOutput::CSI => CSI_ESU_SEQ,
+            SyncOutput::Dcs => DCS_ESU_SEQ,
+            SyncOutput::Csi => CSI_ESU_SEQ,
         }
     }
 }

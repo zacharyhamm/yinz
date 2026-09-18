@@ -671,7 +671,7 @@ pub fn start_client(
     // client loop tells the server what this comes to, and tells it again if a probe reply later
     // changes the answer - see `ClientLoop::announce_synchronised_output`.
     let synchronised_output = match os_input.env_variable("TERM").as_deref() {
-        Some("alacritty") => Some(SyncOutput::DCS),
+        Some("alacritty") => Some(SyncOutput::Dcs),
         _ => None,
     };
 

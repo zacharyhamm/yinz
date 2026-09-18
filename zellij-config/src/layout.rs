@@ -191,12 +191,13 @@ pub fn from_layout_info_with_config(
     let config = Config::from_kdl(&raw_layout, config)?; // this merges the two config, with
     layout.map(|l| (l, config))
 }
-#[allow(clippy::type_complexity)]
+/// A layout file read to a string: `(layout path, layout text, Some((swap layout path, swap layout text)))`.
+pub type StringifiedLayout = (String, String, Option<(String, String)>);
+
 pub fn stringified_from_path_or_default(
     layout_path: Option<&PathBuf>,
     layout_dir: Option<PathBuf>,
-) -> Result<(String, String, Option<(String, String)>), ConfigError> {
-    // (path_to_layout as String, stringified_layout, Option<path_to_swap_layout as String, stringified_swap_layout>)
+) -> Result<StringifiedLayout, ConfigError> {
     match layout_path {
         Some(layout_path) => {
             // The way we determine where to look for the layout is similar to
@@ -337,12 +338,10 @@ pub fn from_str(
 ) -> Result<Layout, ConfigError> {
     crate::kdl::layout::from_kdl(raw, Some(path_to_raw_layout), swap_layouts, cwd)
 }
-#[allow(clippy::type_complexity)]
 pub fn stringified_from_dir(
     layout: &PathBuf,
     layout_dir: Option<&PathBuf>,
-) -> Result<(String, String, Option<(String, String)>), ConfigError> {
-    // (path_to_layout as String, stringified_layout, Option<path_to_swap_layout as String, stringified_swap_layout>)
+) -> Result<StringifiedLayout, ConfigError> {
     match layout_dir {
         Some(dir) => {
             let layout_path = &dir.join(layout);
@@ -363,11 +362,7 @@ pub fn stringified_from_dir(
         },
     }
 }
-#[allow(clippy::type_complexity)]
-pub fn stringified_from_path(
-    layout_path: &Path,
-) -> Result<(String, String, Option<(String, String)>), ConfigError> {
-    // (path_to_layout as String, stringified_layout, Option<path_to_swap_layout as String, stringified_swap_layout>)
+pub fn stringified_from_path(layout_path: &Path) -> Result<StringifiedLayout, ConfigError> {
     let mut layout_file = File::open(layout_path)
         .or_else(|_| File::open(layout_path.with_extension("kdl")))
         .map_err(|e| ConfigError::IoPath(e, layout_path.into()))?;
@@ -384,11 +379,7 @@ pub fn stringified_from_path(
         swap_layout_and_path,
     ))
 }
-#[allow(clippy::type_complexity)]
-pub fn stringified_from_default_assets(
-    path: &Path,
-) -> Result<(String, String, Option<(String, String)>), ConfigError> {
-    // (path_to_layout as String, stringified_layout, Option<path_to_swap_layout as String, stringified_swap_layout>)
+pub fn stringified_from_default_assets(path: &Path) -> Result<StringifiedLayout, ConfigError> {
     // TODO: ideally these should not be hard-coded
     // we should load layouts by name from the config
     // and load them from a hashmap or some such

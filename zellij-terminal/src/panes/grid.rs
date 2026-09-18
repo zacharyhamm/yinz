@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 use super::kitty_graphics::diacritic_value;
 use super::kitty_graphics::{
     format_kitty_error, format_kitty_reply, KittyAction, KittyCommand, KittyCommandParser,
@@ -688,6 +687,10 @@ fn utf8_mouse_coordinates(column: usize, line: isize) -> Vec<u8> {
     coordinates
 }
 
+/// A logical line rebuilt from wrapped rows: `(canonical row index, row count, text, per-row
+/// byte-offset boundaries)`.
+type LogicalLine = (usize, usize, String, Vec<(usize, usize)>);
+
 /// Find the canonical root row for a logical line group containing `row_idx`,
 /// collect the non-canonical tail rows, and build the concatenated text with
 /// a byte-offset boundary table.
@@ -695,10 +698,7 @@ fn utf8_mouse_coordinates(column: usize, line: isize) -> Vec<u8> {
 /// Returns `(canonical_idx, group_len, text, boundaries)` where `group_len`
 /// is the total number of viewport rows in the group (1 + tail count).
 /// Returns `None` if `row_idx` is out of bounds.
-fn collect_and_build_logical_line(
-    viewport: &VecDeque<Row>,
-    row_idx: usize,
-) -> Option<(usize, usize, String, Vec<(usize, usize)>)> {
+fn collect_and_build_logical_line(viewport: &VecDeque<Row>, row_idx: usize) -> Option<LogicalLine> {
     if row_idx >= viewport.len() {
         return None;
     }
@@ -1198,6 +1198,25 @@ fn resolve_highlight_colors(
         },
     }
 }
+
+/// One rendered frame of a grid: its character chunks, the raw VTE output to pass through if
+/// there is any, and its sixel and kitty image chunks.
+pub type RenderedGridFrame = (
+    Vec<CharacterChunk>,
+    Option<String>,
+    Vec<SixelImageChunk>,
+    Vec<KittyImageChunk>,
+);
+
+/// The plugin highlight found under a position so far, ranked by its layer:
+/// `(layer, plugin, pattern, matched text, context)`.
+type RankedHighlight = (
+    HighlightLayer,
+    PluginId,
+    String,
+    String,
+    BTreeMap<String, String>,
+);
 
 impl Grid {
     #[allow(clippy::too_many_arguments)]
@@ -2235,14 +2254,7 @@ impl Grid {
         content_x: usize,
         content_y: usize,
         style: &Style,
-    ) -> Result<
-        Option<(
-            Vec<CharacterChunk>,
-            Option<String>,
-            Vec<SixelImageChunk>,
-            Vec<KittyImageChunk>,
-        )>,
-    > {
+    ) -> Result<Option<RenderedGridFrame>> {
         if self.lock_renders {
             return Ok(None);
         }
@@ -3268,13 +3280,7 @@ impl Grid {
         let (_canonical, _group_len, logical_text, boundaries) =
             collect_and_build_logical_line(&self.viewport, click_row)?;
 
-        let mut best: Option<(
-            HighlightLayer,
-            PluginId,
-            String,
-            String,
-            BTreeMap<String, String>,
-        )> = None;
+        let mut best: Option<RankedHighlight> = None;
         for (plugin_id, pattern_map) in &self.plugin_highlights {
             for (pattern, compiled) in pattern_map {
                 for captures in compiled.regex.captures_iter(&logical_text) {

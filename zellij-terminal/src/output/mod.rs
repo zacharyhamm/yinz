@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 use std::collections::VecDeque;
 
 use crate::panes::Row;
@@ -386,17 +385,20 @@ pub struct KittyChunkKey {
     pub sub_index: u32,
 }
 
+/// An image as the host holds it: the internal image and the size variant it was transmitted as.
+pub type HostImageKey = (InternalImageId, Option<(u16, u16)>);
+
 #[derive(Debug, Clone)]
 pub struct HostPlacementRecord {
     pub host_image_id: u32,
     pub host_placement_id: u32,
-    pub image_key: (InternalImageId, Option<(u16, u16)>),
+    pub image_key: HostImageKey,
     pub geometry: KittyImageChunk,
 }
 
 #[derive(Debug, Clone)]
 pub struct HostKittyState {
-    pub transmitted: HashMap<(InternalImageId, Option<(u16, u16)>), u32>,
+    pub transmitted: HashMap<HostImageKey, u32>,
     pub live_placements: HashMap<KittyChunkKey, HostPlacementRecord>,
     next_host_image_id: u32,
     next_host_placement_id: u32,
@@ -488,7 +490,7 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput) -> Result<String> {
         host_state.live_placements.clear();
         host_state.transmitted.clear();
     }
-    let mut freed: Vec<((InternalImageId, Option<(u16, u16)>), u32)> = host_state
+    let mut freed: Vec<(HostImageKey, u32)> = host_state
         .transmitted
         .iter()
         .filter(|(image_key, _)| kitty_image_store.get(image_key.0).is_none())

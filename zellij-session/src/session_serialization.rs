@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -65,7 +64,7 @@ fn serialize_tab(
     hide_floating_panes: bool,
     user_named: bool,
     tiled_panes: &Vec<PaneLayoutManifest>,
-    floating_panes: &Vec<PaneLayoutManifest>,
+    floating_panes: &[PaneLayoutManifest],
     pane_contents: &mut BTreeMap<String, String>,
 ) -> KdlNode {
     let mut serialized_tab = KdlNode::new("tab");
@@ -1184,7 +1183,7 @@ fn all_geoms_are_from_the_same_stack(manifests: &Vec<Vec<PaneLayoutManifest>>) -
 }
 
 pub(crate) fn get_floating_panes_layout_from_panegeoms(
-    manifests: &Vec<PaneLayoutManifest>,
+    manifests: &[PaneLayoutManifest],
 ) -> Vec<FloatingPaneLayout> {
     manifests
         .iter()
@@ -1219,7 +1218,7 @@ pub(crate) fn get_floating_panes_layout_from_panegeoms(
         .collect()
 }
 
-fn get_x_lims(geoms: &Vec<PaneLayoutManifest>) -> Option<(usize, usize)> {
+fn get_x_lims(geoms: &[PaneLayoutManifest]) -> Option<(usize, usize)> {
     match (
         geoms.iter().map(|g| g.geom.x).min(),
         geoms
@@ -1232,7 +1231,7 @@ fn get_x_lims(geoms: &Vec<PaneLayoutManifest>) -> Option<(usize, usize)> {
     }
 }
 
-fn get_y_lims(geoms: &Vec<PaneLayoutManifest>) -> Option<(usize, usize)> {
+fn get_y_lims(geoms: &[PaneLayoutManifest]) -> Option<(usize, usize)> {
     match (
         geoms.iter().map(|g| g.geom.y).min(),
         geoms
@@ -1249,7 +1248,7 @@ fn get_y_lims(geoms: &Vec<PaneLayoutManifest>) -> Option<(usize, usize)> {
 /// perpendicular the `SplitDirection`, for which there is a split spanning
 /// the max_cols or max_rows of the domain. The values are ordered
 /// increasingly and contains the boundaries of the domain.
-fn get_splits(geoms: &Vec<PaneLayoutManifest>) -> Option<(SplitDirection, Vec<usize>)> {
+fn get_splits(geoms: &[PaneLayoutManifest]) -> Option<(SplitDirection, Vec<usize>)> {
     if geoms.len() == 1 {
         return None;
     }
@@ -1281,13 +1280,13 @@ fn get_splits(geoms: &Vec<PaneLayoutManifest>) -> Option<(SplitDirection, Vec<us
 /// Returns a vector containing the abscisse (x) of the cols that split the
 /// domain including the boundaries, ie the min and max abscisse values.
 fn get_col_splits(
-    geoms: &Vec<PaneLayoutManifest>,
+    geoms: &[PaneLayoutManifest],
     (_, x_max): &(usize, usize),
     (y_min, y_max): &(usize, usize),
 ) -> Vec<usize> {
     let max_rows = y_max - y_min;
     let mut splits = Vec::new();
-    let mut sorted_geoms = geoms.clone();
+    let mut sorted_geoms = geoms.to_vec();
     sorted_geoms.sort_by_key(|g| g.geom.x);
     for x in sorted_geoms.iter().map(|g| g.geom.x) {
         if splits.contains(&x) {
@@ -1310,13 +1309,13 @@ fn get_col_splits(
 /// Returns a vector containing the coordinate (y) of the rows that split the
 /// domain including the boundaries, ie the min and max coordinate values.
 fn get_row_splits(
-    geoms: &Vec<PaneLayoutManifest>,
+    geoms: &[PaneLayoutManifest],
     (x_min, x_max): &(usize, usize),
     (_, y_max): &(usize, usize),
 ) -> Vec<usize> {
     let max_cols = x_max - x_min;
     let mut splits = Vec::new();
-    let mut sorted_geoms = geoms.clone();
+    let mut sorted_geoms = geoms.to_vec();
     sorted_geoms.sort_by_key(|g| g.geom.y);
 
     //  here we make sure the various panes in all the stacks aren't counted as splits, since
@@ -1368,7 +1367,7 @@ fn get_row_splits(
 /// Get the constraint of the domain considered, base on the rows or columns,
 /// depending on the split direction provided.
 fn get_domain_constraint(
-    geoms: &Vec<PaneLayoutManifest>,
+    geoms: &[PaneLayoutManifest],
     split_direction: &SplitDirection,
     (v_min, v_max): (usize, usize),
 ) -> Option<Constraint> {
@@ -1379,7 +1378,7 @@ fn get_domain_constraint(
 }
 
 fn get_domain_col_constraint(
-    geoms: &Vec<PaneLayoutManifest>,
+    geoms: &[PaneLayoutManifest],
     (x_min, x_max): (usize, usize),
 ) -> Option<Constraint> {
     let mut percent = 0.0;
@@ -1412,7 +1411,7 @@ fn get_domain_col_constraint(
 }
 
 fn get_domain_row_constraint(
-    geoms: &Vec<PaneLayoutManifest>,
+    geoms: &[PaneLayoutManifest],
     (y_min, y_max): (usize, usize),
 ) -> Option<Constraint> {
     let mut percent = 0.0;

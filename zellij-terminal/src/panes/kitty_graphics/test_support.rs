@@ -340,20 +340,18 @@ pub fn png(width: u32, height: u32, kind: PngKind) -> Vec<u8> {
     use flate2::Compression;
     use std::io::Write;
 
-    let samples = kind.samples_per_pixel();
-    let mut raw = Vec::with_capacity((height as usize) * (1 + width as usize * samples));
+    let samples_per_scanline = width as usize * kind.samples_per_pixel();
+    let mut raw = Vec::with_capacity((height as usize) * (1 + samples_per_scanline));
     let mut next = 0u8;
-    // Every scanline really does begin with the same byte - PNG filter type 0 ("None") - so the
-    // repeated push below is the format, not an oversight.
-    #[allow(clippy::same_item_push)]
     for _ in 0..height {
-        raw.push(0);
-        for _ in 0..width {
-            for _ in 0..samples {
-                raw.push(next);
+        // Every scanline is PNG filter type 0 ("None") followed by its samples.
+        raw.extend(
+            std::iter::once(0u8).chain((0..samples_per_scanline).map(|_| {
+                let sample = next;
                 next = next.wrapping_add(1);
-            }
-        }
+                sample
+            })),
+        );
     }
 
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
