@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 use base64::alphabet::STANDARD as BASE64_STANDARD_ALPHABET;
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
 use base64::engine::{DecodePaddingMode, Engine as _};
@@ -383,7 +382,10 @@ fn split_control_payload(raw: &[u8]) -> (&[u8], &[u8]) {
     }
 }
 
-fn tokenize(control: &[u8]) -> Result<Vec<(&[u8], &[u8])>, ()> {
+/// The `key=value` pairs of a kitty graphics control string, borrowed from it.
+type ControlPairs<'a> = Vec<(&'a [u8], &'a [u8])>;
+
+fn tokenize(control: &[u8]) -> Result<ControlPairs<'_>, ()> {
     let mut pairs = Vec::new();
     if control.is_empty() {
         return Ok(pairs);

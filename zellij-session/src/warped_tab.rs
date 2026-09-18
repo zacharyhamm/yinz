@@ -106,7 +106,7 @@ pub fn layout_for_warped_tab(
         .collect();
     let tiled_layout = tiled_layout_from_panegeoms_lossy(&tiled.to_vec());
 
-    let mut floating_layout = get_floating_panes_layout_from_panegeoms(&floating.to_vec());
+    let mut floating_layout = get_floating_panes_layout_from_panegeoms(floating);
     scale_floating_to_viewport(&mut floating_layout, viewport);
     let floating_order = floating
         .iter()

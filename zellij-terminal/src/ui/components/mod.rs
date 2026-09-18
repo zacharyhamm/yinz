@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 mod component_coordinates;
 mod nested_list;
 mod ribbon;

@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 use super::{
     is_too_wide, parse_disabled, parse_indices, parse_opaque, parse_selected, Coordinates,
 };
@@ -282,7 +281,7 @@ impl Text {
     }
 }
 
-pub fn parse_text(stringified: &mut String) -> Result<String> {
+pub fn parse_text(stringified: &str) -> Result<String> {
     // An empty param is a present-but-empty text (eg. a plugin rendering a blank
     // line as `Text::new("")`) — legal, and renders as nothing.
     if stringified.is_empty() {
@@ -306,7 +305,7 @@ mod tests {
 
     #[test]
     fn empty_param_parses_as_empty_text() {
-        assert_eq!(parse_text(&mut String::new()).unwrap(), "");
+        assert_eq!(parse_text("").unwrap(), "");
     }
 
     #[test]

@@ -73,16 +73,16 @@ use {
     zellij_types::data::ContextMenuLink, zellij_types::data::CopyDestination,
     zellij_types::data::DataRows, zellij_types::data::Event, zellij_types::data::EventType,
     zellij_types::data::FileMetadata, zellij_types::data::InputMode,
-    zellij_types::data::LayoutInfo, zellij_types::data::LayoutMetadata,
-    zellij_types::data::ModeInfo, zellij_types::data::Mouse, zellij_types::data::PaneContents,
-    zellij_types::data::PaneId, zellij_types::data::PaneInfo, zellij_types::data::PaneManifest,
-    zellij_types::data::PaneMetadata, zellij_types::data::PaneScrollbackResponse,
-    zellij_types::data::PermissionStatus, zellij_types::data::PluginCapabilities,
-    zellij_types::data::PluginInfo, zellij_types::data::QueueJobInfo,
-    zellij_types::data::QueueJobOutcome, zellij_types::data::QueueJobState,
-    zellij_types::data::QueueSnapshot, zellij_types::data::SelectedText,
-    zellij_types::data::SessionInfo, zellij_types::data::StyledText, zellij_types::data::TabInfo,
-    zellij_types::data::TabMetadata,
+    zellij_types::data::KeybindsVec, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutMetadata, zellij_types::data::ModeInfo, zellij_types::data::Mouse,
+    zellij_types::data::PaneContents, zellij_types::data::PaneId, zellij_types::data::PaneInfo,
+    zellij_types::data::PaneManifest, zellij_types::data::PaneMetadata,
+    zellij_types::data::PaneScrollbackResponse, zellij_types::data::PermissionStatus,
+    zellij_types::data::PluginCapabilities, zellij_types::data::PluginInfo,
+    zellij_types::data::QueueJobInfo, zellij_types::data::QueueJobOutcome,
+    zellij_types::data::QueueJobState, zellij_types::data::QueueSnapshot,
+    zellij_types::data::SelectedText, zellij_types::data::SessionInfo,
+    zellij_types::data::StyledText, zellij_types::data::TabInfo, zellij_types::data::TabMetadata,
 };
 
 use zellij_runtime::errors::prelude::*;
@@ -2502,28 +2502,26 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
         let base_mode: Option<InputMode> = protobuf_mode_update_payload
             .base_mode
             .and_then(|b_m| ProtobufInputMode::try_from(b_m).ok()?.try_into().ok());
-        #[allow(clippy::type_complexity)]
-        let keybinds: Vec<(InputMode, Vec<(KeyWithModifier, Vec<Action>)>)> =
-            protobuf_mode_update_payload
-                .keybinds
-                .iter_mut()
-                .filter_map(|k| {
-                    let input_mode: InputMode =
-                        ProtobufInputMode::try_from(k.mode).ok()?.try_into().ok()?;
-                    let mut keybinds: Vec<(KeyWithModifier, Vec<Action>)> = vec![];
-                    for mut protobuf_keybind in k.key_bind.drain(..) {
-                        let key: KeyWithModifier = protobuf_keybind.key.unwrap().try_into().ok()?;
-                        let mut actions: Vec<Action> = vec![];
-                        for action in protobuf_keybind.action.drain(..) {
-                            if let Ok(action) = action.try_into() {
-                                actions.push(action);
-                            }
+        let keybinds: KeybindsVec = protobuf_mode_update_payload
+            .keybinds
+            .iter_mut()
+            .filter_map(|k| {
+                let input_mode: InputMode =
+                    ProtobufInputMode::try_from(k.mode).ok()?.try_into().ok()?;
+                let mut keybinds: Vec<(KeyWithModifier, Vec<Action>)> = vec![];
+                for mut protobuf_keybind in k.key_bind.drain(..) {
+                    let key: KeyWithModifier = protobuf_keybind.key.unwrap().try_into().ok()?;
+                    let mut actions: Vec<Action> = vec![];
+                    for action in protobuf_keybind.action.drain(..) {
+                        if let Ok(action) = action.try_into() {
+                            actions.push(action);
                         }
-                        keybinds.push((key, actions));
                     }
-                    Some((input_mode, keybinds))
-                })
-                .collect();
+                    keybinds.push((key, actions));
+                }
+                Some((input_mode, keybinds))
+            })
+            .collect();
         let style: Style = protobuf_mode_update_payload
             .style
             .and_then(|m| m.try_into().ok())

@@ -110,7 +110,7 @@ impl HostReply {
         if let Some(caps) = SYNC_RE.captures(s) {
             let code: usize = caps[1].parse().ok()?;
             return match code {
-                1..=3 => Some(HostReply::SynchronizedOutput(Some(SyncOutput::CSI))),
+                1..=3 => Some(HostReply::SynchronizedOutput(Some(SyncOutput::Csi))),
                 _ => Some(HostReply::SynchronizedOutput(None)),
             };
         }

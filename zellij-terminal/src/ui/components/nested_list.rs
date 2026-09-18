@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 use super::{
     is_too_high, parse_disabled, parse_indices, parse_opaque, parse_selected, parse_text,
     stringify_text, Coordinates, Text,
