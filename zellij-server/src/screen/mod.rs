@@ -156,6 +156,7 @@ mod nested;
 mod notification_browser;
 mod notifications;
 mod plugin_state;
+mod plugins;
 mod render;
 mod session;
 mod sizing;
