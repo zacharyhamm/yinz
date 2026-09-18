@@ -1677,8 +1677,8 @@ impl TiledPanes {
             if let Some(pane_ids_to_resize) = pane_grid.stack_pane_up(&pane_id) {
                 for pane_id in pane_ids_to_resize {
                     if let Some(pane) = self.panes.get_mut(&pane_id) {
-                        let _ =
-                            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size);
+                        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                            .non_fatal();
                     }
                 }
                 return true;
@@ -1705,8 +1705,8 @@ impl TiledPanes {
             if let Some(pane_ids_to_resize) = pane_grid.stack_pane_down(&pane_id) {
                 for pane_id in pane_ids_to_resize {
                     if let Some(pane) = self.panes.get_mut(&pane_id) {
-                        let _ =
-                            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size);
+                        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                            .non_fatal();
                     }
                 }
                 return true;
@@ -1733,8 +1733,8 @@ impl TiledPanes {
             if let Some(pane_ids_to_resize) = pane_grid.stack_pane_left(&pane_id) {
                 for pane_id in pane_ids_to_resize {
                     if let Some(pane) = self.panes.get_mut(&pane_id) {
-                        let _ =
-                            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size);
+                        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                            .non_fatal();
                     }
                 }
                 return true;
@@ -1761,8 +1761,8 @@ impl TiledPanes {
             if let Some(pane_ids_to_resize) = pane_grid.stack_pane_right(&pane_id) {
                 for pane_id in pane_ids_to_resize {
                     if let Some(pane) = self.panes.get_mut(&pane_id) {
-                        let _ =
-                            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size);
+                        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                            .non_fatal();
                     }
                 }
                 return true;
@@ -1977,7 +1977,7 @@ impl TiledPanes {
                     for pane_id in pane_ids_to_resize {
                         if let Some(pane) = self.panes.get_mut(&pane_id) {
                             resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
-                                .unwrap();
+                                .non_fatal();
                         }
                     }
                     self.reapply_pane_frames();
@@ -2502,6 +2502,44 @@ impl TiledPanes {
             None => false,
         }
     }
+    /// The senders this container resizes through, for a test that needs to replace one.
+    #[cfg(test)]
+    pub(crate) fn senders_mut(&mut self) -> &mut ThreadSenders {
+        &mut self.senders
+    }
+
+    /// Exchange the on-screen positions of two panes: each takes the other's geometry and
+    /// geometry override, is told its new size, and is marked for render. Focus and frames are
+    /// the caller's business. Nothing changes if either id is unknown.
+    ///
+    /// A failed resize is logged, not returned: by the time it is sent the geometry has already
+    /// moved, and aborting would leave one pane moved and the other not. The next
+    /// `set_pane_frames` resends every pane's size anyway.
+    fn swap_pane_geoms(&mut self, a: PaneId, b: PaneId) -> Result<()> {
+        let err_context = || format!("failed to swap panes {a:?} and {b:?}");
+        let (a_geom, a_geom_override) = {
+            let pane = self.panes.get(&a).with_context(err_context)?;
+            (pane.position_and_size(), pane.geom_override())
+        };
+
+        let pane_b = self.panes.get_mut(&b).with_context(err_context)?;
+        let (b_geom, b_geom_override) = (pane_b.position_and_size(), pane_b.geom_override());
+        pane_b.set_geom(a_geom);
+        if let Some(geom) = a_geom_override {
+            pane_b.set_geom_override(geom);
+        }
+        resize_pty!(pane_b, self.os_api, self.senders, self.character_cell_size).non_fatal();
+        pane_b.set_should_render(true);
+
+        let pane_a = self.panes.get_mut(&a).with_context(err_context)?;
+        pane_a.set_geom(b_geom);
+        if let Some(geom) = b_geom_override {
+            pane_a.set_geom_override(geom);
+        }
+        resize_pty!(pane_a, self.os_api, self.senders, self.character_cell_size).non_fatal();
+        pane_a.set_should_render(true);
+        Ok(())
+    }
     pub fn switch_active_pane_with(&mut self, pane_id: PaneId) {
         if let Some(active_pane_id) = self.first_active_pane_id() {
             if let PaneId::Plugin(_) = active_pane_id {
@@ -2510,39 +2548,7 @@ impl TiledPanes {
                 // plugin API
                 return;
             }
-            let current_position = self.panes.get(&active_pane_id).unwrap();
-            let prev_geom = current_position.position_and_size();
-            let prev_geom_override = current_position.geom_override();
-
-            let new_position = self.panes.get_mut(&pane_id).unwrap();
-            let next_geom = new_position.position_and_size();
-            let next_geom_override = new_position.geom_override();
-            new_position.set_geom(prev_geom);
-            if let Some(geom) = prev_geom_override {
-                new_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                new_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            new_position.set_should_render(true);
-
-            let current_position = self.panes.get_mut(&active_pane_id).unwrap();
-            current_position.set_geom(next_geom);
-            if let Some(geom) = next_geom_override {
-                current_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                current_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            current_position.set_should_render(true);
+            self.swap_pane_geoms(active_pane_id, pane_id).non_fatal();
             self.focus_pane_for_all_clients(active_pane_id);
             self.set_pane_frames(self.pane_frame_style);
         }
@@ -2576,39 +2582,7 @@ impl TiledPanes {
             self.reapply_pane_frames();
         }
 
-        let current_position = self.panes.get(&pane_id).unwrap();
-        let prev_geom = current_position.position_and_size();
-        let prev_geom_override = current_position.geom_override();
-
-        let new_position = self.panes.get_mut(&new_position_id).unwrap();
-        let next_geom = new_position.position_and_size();
-        let next_geom_override = new_position.geom_override();
-        new_position.set_geom(prev_geom);
-        if let Some(geom) = prev_geom_override {
-            new_position.set_geom_override(geom);
-        }
-        resize_pty!(
-            new_position,
-            self.os_api,
-            self.senders,
-            self.character_cell_size
-        )
-        .unwrap();
-        new_position.set_should_render(true);
-
-        let current_position = self.panes.get_mut(&pane_id).unwrap();
-        current_position.set_geom(next_geom);
-        if let Some(geom) = next_geom_override {
-            current_position.set_geom_override(geom);
-        }
-        resize_pty!(
-            current_position,
-            self.os_api,
-            self.senders,
-            self.character_cell_size
-        )
-        .unwrap();
-        current_position.set_should_render(true);
+        self.swap_pane_geoms(pane_id, new_position_id).non_fatal();
         self.reapply_pane_focus();
         self.set_pane_frames(self.pane_frame_style);
     }
@@ -2628,39 +2602,7 @@ impl TiledPanes {
             .next_selectable_pane_id_below(&pane_id, false)
             .or_else(|| pane_grid.progress_stack_down_if_in_stack(&pane_id));
         if let Some(p) = next_index {
-            let current_position = self.panes.get(&pane_id).unwrap();
-            let prev_geom = current_position.position_and_size();
-            let prev_geom_override = current_position.geom_override();
-
-            let new_position = self.panes.get_mut(&p).unwrap();
-            let next_geom = new_position.position_and_size();
-            let next_geom_override = new_position.geom_override();
-            new_position.set_geom(prev_geom);
-            if let Some(geom) = prev_geom_override {
-                new_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                new_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            new_position.set_should_render(true);
-
-            let current_position = self.panes.get_mut(&pane_id).unwrap();
-            current_position.set_geom(next_geom);
-            if let Some(geom) = next_geom_override {
-                current_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                current_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            current_position.set_should_render(true);
+            self.swap_pane_geoms(pane_id, p).non_fatal();
             self.reapply_pane_focus();
             self.set_pane_frames(self.pane_frame_style);
         }
@@ -2679,39 +2621,7 @@ impl TiledPanes {
         );
         let next_index = pane_grid.next_selectable_pane_id_to_the_left(&pane_id);
         if let Some(p) = next_index {
-            let current_position = self.panes.get(&pane_id).unwrap();
-            let prev_geom = current_position.position_and_size();
-            let prev_geom_override = current_position.geom_override();
-
-            let new_position = self.panes.get_mut(&p).unwrap();
-            let next_geom = new_position.position_and_size();
-            let next_geom_override = new_position.geom_override();
-            new_position.set_geom(prev_geom);
-            if let Some(geom) = prev_geom_override {
-                new_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                new_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            new_position.set_should_render(true);
-
-            let current_position = self.panes.get_mut(&pane_id).unwrap();
-            current_position.set_geom(next_geom);
-            if let Some(geom) = next_geom_override {
-                current_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                current_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            current_position.set_should_render(true);
+            self.swap_pane_geoms(pane_id, p).non_fatal();
             self.reapply_pane_focus();
             self.set_pane_frames(self.pane_frame_style);
         }
@@ -2730,39 +2640,7 @@ impl TiledPanes {
         );
         let next_index = pane_grid.next_selectable_pane_id_to_the_right(&pane_id);
         if let Some(p) = next_index {
-            let current_position = self.panes.get(&pane_id).unwrap();
-            let prev_geom = current_position.position_and_size();
-            let prev_geom_override = current_position.geom_override();
-
-            let new_position = self.panes.get_mut(&p).unwrap();
-            let next_geom = new_position.position_and_size();
-            let next_geom_override = new_position.geom_override();
-            new_position.set_geom(prev_geom);
-            if let Some(geom) = prev_geom_override {
-                new_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                new_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            new_position.set_should_render(true);
-
-            let current_position = self.panes.get_mut(&pane_id).unwrap();
-            current_position.set_geom(next_geom);
-            if let Some(geom) = next_geom_override {
-                current_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                current_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            current_position.set_should_render(true);
+            self.swap_pane_geoms(pane_id, p).non_fatal();
             self.reapply_pane_focus();
             self.set_pane_frames(self.pane_frame_style);
         }
@@ -2783,39 +2661,7 @@ impl TiledPanes {
             .next_selectable_pane_id_above(&pane_id, false)
             .or_else(|| pane_grid.progress_stack_up_if_in_stack(&pane_id));
         if let Some(p) = next_index {
-            let current_position = self.panes.get(&pane_id).unwrap();
-            let prev_geom = current_position.position_and_size();
-            let prev_geom_override = current_position.geom_override();
-
-            let new_position = self.panes.get_mut(&p).unwrap();
-            let next_geom = new_position.position_and_size();
-            let next_geom_override = new_position.geom_override();
-            new_position.set_geom(prev_geom);
-            if let Some(geom) = prev_geom_override {
-                new_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                new_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            new_position.set_should_render(true);
-
-            let current_position = self.panes.get_mut(&pane_id).unwrap();
-            current_position.set_geom(next_geom);
-            if let Some(geom) = next_geom_override {
-                current_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                current_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            current_position.set_should_render(true);
+            self.swap_pane_geoms(pane_id, p).non_fatal();
             self.reapply_pane_focus();
             self.set_pane_frames(self.pane_frame_style);
         }

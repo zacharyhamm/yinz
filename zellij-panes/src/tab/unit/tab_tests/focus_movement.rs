@@ -220,6 +220,43 @@ pub fn move_focus_right_to_the_most_recently_used_pane() {
     );
 }
 
+/// The pty writer is told a moved pane's new size. Its channel being gone - the thread has
+/// exited, the session is on its way down - is logged, not fatal: the geometry has already
+/// moved, and a keystroke racing teardown must not take the screen thread with it.
+#[test]
+pub fn moving_a_pane_after_the_pty_writer_exited_swaps_it_without_panicking() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let stacked_resize = true;
+    let client_id = crate::ClientId::new(1);
+    let mut tab = create_new_tab(size, stacked_resize);
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.horizontal_split(new_pane_id, None, client_id, None, None)
+        .unwrap();
+    tab.move_focus_up(client_id).unwrap();
+    let (tx, rx) = unbounded();
+    drop(rx);
+    let senders = tab.tiled_panes.senders_mut();
+    senders.replace_to_pty_writer(SenderWithContext::new(tx));
+    // the test default swallows send errors, which would hide the case under test
+    senders.should_silently_fail = false;
+
+    tab.move_active_pane_down(client_id);
+
+    assert_eq!(
+        tab.get_active_pane(client_id).unwrap().y(),
+        10,
+        "the pane moved to the bottom"
+    );
+    assert_eq!(
+        tab.get_active_pane(client_id).unwrap().pid(),
+        PaneId::Terminal(crate::TerminalId::new(1)),
+        "the same pane is still focused"
+    );
+}
+
 #[test]
 pub fn move_active_pane_down() {
     let size = Size {
