@@ -2220,6 +2220,9 @@ impl State {
     /// Asked of every source that draws one, in the order the pane draws them, so the answer
     /// cannot claim an age nothing on screen is showing.
     fn shows_an_age(&self) -> bool {
+        if self.surface == Surface::Swamp {
+            return self.swamp.shows_an_age();
+        }
         // The reader is the whole pane, so what it says is the only thing that can go stale.
         if let Some(reading) = self.reading.as_ref() {
             return reading.created_at_ms.is_some();

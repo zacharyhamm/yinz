@@ -8,6 +8,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }
 hocus-proto = { path = "../hocus-proto" }
 serde = { workspace = true }
