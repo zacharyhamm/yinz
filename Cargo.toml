@@ -124,7 +124,9 @@ rust-version = "1.97"
 # The gate is `-D warnings` (see `cargo x lint`), so everything not named here must be fixed
 # rather than tolerated. Each entry below is a standing decision with a reason, and the list is
 # the ratchet: removing an entry is a self-contained piece of work, and adding one should be
-# argued for. Prefer a narrowly scoped `#[allow]` with a comment over a new entry here.
+# argued for. Prefer `#[expect(lint, reason = "...")]` on the one item over a new entry here.
+# File-level `#![allow]`s are refused by `cargo x lint` unless `FILE_LEVEL_ALLOWS` in
+# `xtask/src/lint.rs` names them with a reason.
 
 # The wide instruction enums - `ScreenInstruction`, `PluginCommand`, `Action` - carry their
 # payloads by value because those payloads are the wire format. Boxing the large variants would
