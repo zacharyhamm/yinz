@@ -136,6 +136,13 @@ large_enum_variant = "allow"
 # fix.
 too_many_arguments = "allow"
 
+# `ConfigError` carries the KDL span of what went wrong and the plugin host's errors carry the
+# `PluginCommand` they failed on, so the `Result`s that return them are wide - by the same
+# decision as `large_enum_variant` above, and for the same reason: the payload is the
+# diagnostic. Boxing every error to satisfy the lint would buy a smaller `Result` on paths
+# that are cold by definition.
+result_large_err = "allow"
+
 [workspace.dependencies]
 zellij-cli = { path = "zellij-cli", version = "0.45.0" }
 zellij-session = { path = "zellij-session", version = "0.45.0" }

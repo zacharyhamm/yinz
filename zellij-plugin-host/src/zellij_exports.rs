@@ -1,4 +1,3 @@
-#![allow(clippy::result_large_err)]
 use super::PluginInstruction;
 use crate::plugin_map::{PluginEnv, ResponseSink};
 use crate::wasm_bridge::handle_plugin_crash;

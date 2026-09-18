@@ -142,8 +142,6 @@ pub struct Setup {
     #[clap(long, value_parser, hide = true)]
     pub print_builtin_plugin_dir: bool,
 }
-
-#[allow(clippy::result_large_err)]
 pub fn load_config(args: &CliArgs) -> Result<Config, ConfigError> {
     let clean = matches!(&args.command, Some(Command::Setup(setup)) if setup.clean);
     Config::load(args.config.as_deref(), args.config_dir.as_deref(), clean)
@@ -158,7 +156,6 @@ impl Setup {
     /// 2. layout options
     ///    (`layout.kdl` / `zellij --layout`)
     /// 3. config options (`config.kdl`)
-    #[allow(clippy::result_large_err)]
     pub fn from_cli_args(
         cli_args: &CliArgs,
     ) -> Result<(Config, Option<LayoutInfo>, Options, Config, Options), ConfigError> {

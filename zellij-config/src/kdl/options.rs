@@ -1,7 +1,5 @@
 use super::*;
 use zellij_types::internal_ids::HostId;
-
-#[allow(clippy::result_large_err)]
 pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let on_force_close =
         match kdl_property_first_arg_as_string_or_error!(kdl_options, "on_force_close") {
@@ -401,7 +399,6 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         dangerously_enable_paste_buffer_read,
     })
 }
-#[allow(clippy::result_large_err)]
 pub fn from_string(stringified_keybindings: &str) -> Result<Options, ConfigError> {
     let document: KdlDocument = stringified_keybindings.parse()?;
     crate::kdl::options::from_kdl(&document)

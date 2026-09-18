@@ -1509,7 +1509,6 @@ mod refresh_tests;
 #[cfg(test)]
 mod tests {
     // tungstenite requires a full HTTP response as the handshake error.
-    #![allow(clippy::result_large_err)]
     use super::*;
 
     #[test]

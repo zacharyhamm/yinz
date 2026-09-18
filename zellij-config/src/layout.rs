@@ -99,7 +99,6 @@ pub fn list_available_layouts(
     });
     (available_layouts, layouts_with_errors)
 }
-#[allow(clippy::result_large_err)]
 pub fn from_layout_info(
     layout_dir: &Option<PathBuf>,
     layout_info: LayoutInfo,
@@ -145,7 +144,6 @@ pub fn from_layout_info(
     }
     layout
 }
-#[allow(clippy::result_large_err)]
 pub fn from_layout_info_with_config(
     layout_dir: &Option<PathBuf>,
     layout_info: &LayoutInfo,
@@ -193,7 +191,6 @@ pub fn from_layout_info_with_config(
     let config = Config::from_kdl(&raw_layout, config)?; // this merges the two config, with
     layout.map(|l| (l, config))
 }
-#[allow(clippy::result_large_err)]
 #[allow(clippy::type_complexity)]
 pub fn stringified_from_path_or_default(
     layout_path: Option<&PathBuf>,
@@ -220,19 +217,16 @@ pub fn stringified_from_path_or_default(
     }
 }
 #[cfg(not(target_family = "wasm"))]
-#[allow(clippy::result_large_err)]
 pub fn stringified_from_url(url: &str) -> Result<String, ConfigError> {
     Downloader::download_without_cache_blocking(url)
         .map_err(|e| ConfigError::DownloadError(format!("{}", e)))
 }
 #[cfg(target_family = "wasm")]
-#[allow(clippy::result_large_err)]
 pub fn stringified_from_url(_url: &str) -> Result<String, ConfigError> {
     // silently fail - this should not happen in plugins and legacy architecture is hard
     let raw_layout = String::new();
     Ok(raw_layout)
 }
-#[allow(clippy::result_large_err)]
 pub fn from_path_without_config(layout_path: &Path) -> Result<Layout, ConfigError> {
     // (path_to_layout as String, stringified_layout, Option<path_to_swap_layout as String, stringified_swap_layout>)
     let (path_to_layout, raw_layout, raw_swap_layouts) =
@@ -246,7 +240,6 @@ pub fn from_path_without_config(layout_path: &Path) -> Result<Layout, ConfigErro
         None,
     )
 }
-#[allow(clippy::result_large_err)]
 pub fn from_path_or_default(
     layout_path: Option<&PathBuf>,
     layout_dir: Option<PathBuf>,
@@ -266,7 +259,6 @@ pub fn from_path_or_default(
     Ok((layout, config))
 }
 #[cfg(not(target_family = "wasm"))]
-#[allow(clippy::result_large_err)]
 pub fn from_url(url: &str, config: Config) -> Result<(Layout, Config), ConfigError> {
     let raw_layout = Downloader::download_without_cache_blocking(url)
         .map_err(|e| ConfigError::DownloadError(format!("{}", e)))?;
@@ -275,7 +267,6 @@ pub fn from_url(url: &str, config: Config) -> Result<(Layout, Config), ConfigErr
     let config = Config::from_kdl(&raw_layout, Some(config))?; // this merges the two config, with
     Ok((layout, config))
 }
-#[allow(clippy::result_large_err)]
 pub fn from_stringified_layout(
     stringified_layout: &str,
     config: Config,
@@ -290,7 +281,6 @@ pub fn from_url(_url: &str, _config: Config) -> Result<(Layout, Config), ConfigE
         "Unsupported platform, cannot download layout from the web".to_owned(),
     ))
 }
-#[allow(clippy::result_large_err)]
 pub fn from_path_or_default_without_config(
     layout_path: Option<&PathBuf>,
     layout_dir: Option<PathBuf>,
@@ -307,7 +297,6 @@ pub fn from_path_or_default_without_config(
     )?;
     Ok(layout)
 }
-#[allow(clippy::result_large_err)]
 pub fn from_default_assets(
     layout_name: &Path,
     _layout_dir: Option<PathBuf>,
@@ -340,7 +329,6 @@ pub fn default_layout_asset() -> Layout {
     )
     .unwrap()
 }
-#[allow(clippy::result_large_err)]
 pub fn from_str(
     raw: &str,
     path_to_raw_layout: String,
@@ -349,7 +337,6 @@ pub fn from_str(
 ) -> Result<Layout, ConfigError> {
     crate::kdl::layout::from_kdl(raw, Some(path_to_raw_layout), swap_layouts, cwd)
 }
-#[allow(clippy::result_large_err)]
 #[allow(clippy::type_complexity)]
 pub fn stringified_from_dir(
     layout: &PathBuf,
@@ -376,7 +363,6 @@ pub fn stringified_from_dir(
         },
     }
 }
-#[allow(clippy::result_large_err)]
 #[allow(clippy::type_complexity)]
 pub fn stringified_from_path(
     layout_path: &Path,
@@ -398,7 +384,6 @@ pub fn stringified_from_path(
         swap_layout_and_path,
     ))
 }
-#[allow(clippy::result_large_err)]
 #[allow(clippy::type_complexity)]
 pub fn stringified_from_default_assets(
     path: &Path,
@@ -456,59 +441,43 @@ pub fn stringified_from_default_assets(
         )),
     }
 }
-#[allow(clippy::result_large_err)]
 pub fn stringified_default_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(crate::assets::DEFAULT_LAYOUT.to_vec())?)
 }
-#[allow(clippy::result_large_err)]
 pub fn stringified_default_swap_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(
         crate::assets::DEFAULT_SWAP_LAYOUT.to_vec(),
     )?)
 }
-#[allow(clippy::result_large_err)]
 pub fn stringified_strider_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(crate::assets::STRIDER_LAYOUT.to_vec())?)
 }
-#[allow(clippy::result_large_err)]
 pub fn stringified_strider_swap_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(
         crate::assets::STRIDER_SWAP_LAYOUT.to_vec(),
     )?)
 }
-
-#[allow(clippy::result_large_err)]
 pub fn stringified_disable_status_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(crate::assets::NO_STATUS_LAYOUT.to_vec())?)
 }
-
-#[allow(clippy::result_large_err)]
 pub fn stringified_compact_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(
         crate::assets::COMPACT_BAR_LAYOUT.to_vec(),
     )?)
 }
-
-#[allow(clippy::result_large_err)]
 pub fn stringified_compact_swap_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(
         crate::assets::COMPACT_BAR_SWAP_LAYOUT.to_vec(),
     )?)
 }
-
-#[allow(clippy::result_large_err)]
 pub fn stringified_classic_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(crate::assets::CLASSIC_LAYOUT.to_vec())?)
 }
-
-#[allow(clippy::result_large_err)]
 pub fn stringified_classic_swap_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(
         crate::assets::CLASSIC_SWAP_LAYOUT.to_vec(),
     )?)
 }
-
-#[allow(clippy::result_large_err)]
 pub fn stringified_welcome_from_assets() -> Result<String, ConfigError> {
     Ok(String::from_utf8(crate::assets::WELCOME_LAYOUT.to_vec())?)
 }

@@ -411,8 +411,6 @@ macro_rules! actions_from_kdl {
             .collect::<Result<_, _>>()?
     };
 }
-
-#[allow(clippy::result_large_err)]
 pub fn kdl_arguments_that_are_strings<'a>(
     arguments: impl Iterator<Item = &'a KdlEntry>,
 ) -> Result<Vec<String>, ConfigError> {
@@ -431,8 +429,6 @@ pub fn kdl_arguments_that_are_strings<'a>(
     }
     Ok(args)
 }
-
-#[allow(clippy::result_large_err)]
 pub fn kdl_arguments_that_are_digits<'a>(
     arguments: impl Iterator<Item = &'a KdlEntry>,
 ) -> Result<Vec<i64>, ConfigError> {
@@ -475,7 +471,6 @@ pub fn kdl_child_bool_value_for_entry<'a>(
 }
 
 // Keep the parser's existing diagnostic payload and error propagation.
-#[allow(clippy::result_large_err)]
 pub fn palette_color_from_kdl(
     color_name: &str,
     theme_colors: &KdlDocument,
@@ -1008,8 +1003,6 @@ fn kdl_layout_error(kdl_error: kdl::KdlError, file_name: String, raw_layout: &st
     };
     ConfigError::KdlError(kdl_error)
 }
-
-#[allow(clippy::result_large_err)]
 pub fn environment_variables_from_kdl(
     kdl_env_variables: &KdlNode,
 ) -> Result<EnvironmentVariables, ConfigError> {
@@ -1060,7 +1053,6 @@ pub fn environment_variables_to_kdl(variables: &EnvironmentVariables) -> Option<
 /// in the same file used to parse successfully and silently contribute nothing. Merging across
 /// *files* is unaffected: each `config.d` fragment and layout is its own `Config::from_kdl` call
 /// over `base_config`.
-#[allow(clippy::result_large_err)]
 fn single_top_level_block<'a>(
     document: &'a KdlDocument,
     name: &str,
@@ -1077,7 +1069,6 @@ fn single_top_level_block<'a>(
 }
 
 impl Config {
-    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl_config: &str, base_config: Option<Config>) -> Result<Config, ConfigError> {
         let mut config = base_config.unwrap_or_default();
         let kdl_config: KdlDocument = kdl_config.parse()?;
@@ -1260,7 +1251,6 @@ pub fn load_plugins_to_kdl(
 ///
 /// Unbinding has to be applied to the config being built rather than returned, because the
 /// result is merged additively over it and an absent key means "unchanged", not "removed".
-#[allow(clippy::result_large_err)]
 fn hooks_from_kdl(kdl_hooks: &KdlNode, config_hooks: &mut Hooks) -> Result<Hooks, ConfigError> {
     let mut hooks = Hooks::from_data(BTreeMap::new());
     if let Some(kdl_hooks) = kdl_children_nodes!(kdl_hooks) {
@@ -1313,7 +1303,6 @@ fn hooks_from_kdl(kdl_hooks: &KdlNode, config_hooks: &mut Hooks) -> Result<Hooks
 ///
 /// The block *replaces* the default menu rather than adding to it - see `input::context_menu` for
 /// why - so an empty block is meaningful and is not an error.
-#[allow(clippy::result_large_err)]
 fn context_menu_from_kdl(
     kdl_context_menu: &KdlNode,
     config_options: &Options,
@@ -1416,8 +1405,6 @@ pub fn hooks_to_kdl(hooks: &Hooks) -> KdlNode {
     hooks_node.set_children(children);
     hooks_node
 }
-
-#[allow(clippy::result_large_err)]
 fn load_plugins_from_kdl(
     kdl_load_plugins: &KdlNode,
 ) -> Result<BTreeSet<RunPluginOrAlias>, ConfigError> {
@@ -1451,7 +1438,6 @@ fn load_plugins_from_kdl(
 }
 
 impl UiConfig {
-    #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl_ui_config: &KdlNode) -> Result<UiConfig, ConfigError> {
         let mut ui_config = UiConfig::default();
         if let Some(pane_frames) = kdl_get_child!(kdl_ui_config, "pane_frames") {
@@ -1498,7 +1484,6 @@ impl UiConfig {
 }
 
 impl Themes {
-    #[allow(clippy::result_large_err)]
     fn style_declaration_from_node(
         style_node: &KdlNode,
         style_descriptor: &str,
@@ -1524,8 +1509,6 @@ impl Themes {
             None => Ok(None),
         }
     }
-
-    #[allow(clippy::result_large_err)]
     fn multiplayer_colors(style_node: &KdlNode) -> Result<MultiplayerColors, ConfigError> {
         let descriptor_node = kdl_child_with_name!(style_node, "multiplayer_user_colors");
         match descriptor_node {
@@ -1560,8 +1543,6 @@ impl Themes {
             None => Ok(DEFAULT_STYLES.multiplayer_user_colors),
         }
     }
-
-    #[allow(clippy::result_large_err)]
     pub fn from_kdl(
         themes_from_kdl: &KdlNode,
         sourced_from_external_file: bool,
@@ -1685,8 +1666,6 @@ impl Themes {
         let themes = Themes::from_data(themes);
         Ok(themes)
     }
-
-    #[allow(clippy::result_large_err)]
     pub fn from_string(
         raw_string: &str,
         sourced_from_external_file: bool,
@@ -1701,8 +1680,6 @@ impl Themes {
         let all_themes_in_file = Themes::from_kdl(kdl_themes, sourced_from_external_file)?;
         Ok(all_themes_in_file)
     }
-
-    #[allow(clippy::result_large_err)]
     pub fn from_path(path_to_theme_file: PathBuf) -> Result<Self, ConfigError> {
         // String is the theme name
         let kdl_config = std::fs::read_to_string(&path_to_theme_file)
@@ -1715,8 +1692,6 @@ impl Themes {
             e => e,
         })
     }
-
-    #[allow(clippy::result_large_err)]
     pub fn from_dir(path_to_theme_dir: PathBuf) -> Result<Self, ConfigError> {
         let mut themes = Themes::default();
         for entry in std::fs::read_dir(&path_to_theme_dir)
@@ -1855,7 +1830,6 @@ impl Themes {
 }
 
 impl PermissionCache {
-    #[allow(clippy::result_large_err)]
     pub fn from_string(raw_string: String) -> Result<GrantedPermission, ConfigError> {
         let kdl_document: KdlDocument = raw_string.parse()?;
 
@@ -1901,8 +1875,6 @@ impl PermissionCache {
         kdl_doucment.to_string()
     }
 }
-
-#[allow(clippy::result_large_err)]
 pub fn parse_plugin_user_configuration(
     plugin_block: &KdlNode,
 ) -> Result<BTreeMap<String, String>, ConfigError> {
