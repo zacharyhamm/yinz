@@ -608,6 +608,18 @@ impl ZellijPlugin for State {
     fn render(&mut self, rows: usize, cols: usize) {
         self.last_rows = rows;
         self.last_cols = cols;
+        // Host commands must precede drawing; keep the dropdown output until
+        // after the issue list so it paints over the rows beneath it.
+        let swamp_form = if self.surface == Surface::Swamp {
+            self.swamp_filter_buffer(rows.saturating_sub(1), cols)
+        } else {
+            None
+        };
+        show_cursor(
+            swamp_form
+                .as_ref()
+                .and_then(|buffer| buffer.cursor.flatten()),
+        );
         if rows <= 1 || cols == 0 {
             // Forget the hidden geometry, but keep selections and scrolls for when it returns.
             self.last_window_start = 0;
@@ -691,6 +703,9 @@ impl ZellijPlugin for State {
         match self.surface {
             Surface::Swamp => {
                 self.render_swamp(rows, cols);
+                if let Some(buffer) = swamp_form {
+                    print!("{}", buffer.output);
+                }
                 return;
             },
             Surface::Todos => {
@@ -1033,6 +1048,7 @@ impl State {
         if self.surface == surface {
             return;
         }
+        self.swamp.cancel_filter();
         self.surface = surface;
         if surface == Surface::Vms {
             self.poll_vms();
@@ -1452,10 +1468,14 @@ impl State {
                 .find(|cell| column >= cell.x && column < cell.x + cell.width)
                 .map(|cell| cell.target)
             {
+                self.swamp.cancel_filter();
                 self.tabs_focused = true;
                 self.switch_surface(target);
                 return true;
             }
+        }
+        if self.surface == Surface::Swamp && self.swamp.has_filter_editor() {
+            return self.swamp_filter_mouse(mouse_event);
         }
         if self.last_rows <= 1 || self.mouse_position.is_some_and(|(line, _)| line == 0) {
             return false;
@@ -1677,6 +1697,7 @@ impl State {
     /// Both keys that dismiss come through here: `Esc`, which is the whole of what it does, and
     /// `Enter`, which follows it with a focus.
     fn hide_the_panel(&mut self) {
+        self.swamp.cancel_filter();
         self.swamp.pane_visible = false;
         self.vms.visible = false;
         #[cfg(test)]
