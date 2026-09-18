@@ -6,8 +6,7 @@ use super::agent_placement::AgentPlacement;
 use super::{
     active_tab, active_tab_and_connected_client_id,
     active_tab_and_connected_client_id_with_first_tab_fallback, denormalize_notification_response,
-    get_default_editor, replay_pending_plugin_events, CopyOptions, Notification,
-    NotificationRecord, Screen, ScreenInstruction,
+    get_default_editor, CopyOptions, Notification, NotificationRecord, Screen, ScreenInstruction,
 };
 use crate::background_jobs::BackgroundJob;
 use crate::os_input_output::ResizeCache;
@@ -2209,44 +2208,20 @@ pub(crate) fn screen_thread_main(
                     client_id,
                     completion_tx,
                 ) => {
-                    let tab_index = screen.get_new_tab_id();
-                    let client_id_for_new_tab = if should_change_focus_to_new_tab {
-                        Some(client_id)
-                    } else {
-                        None
-                    };
-                    let resolved_swap_layouts = (
-                        swap_tiled_layouts
-                            .unwrap_or_else(|| screen.default_layout.swap_tiled_layouts.clone()),
-                        swap_floating_layouts
-                            .unwrap_or_else(|| screen.default_layout.swap_floating_layouts.clone()),
-                    );
-                    screen.new_tab(
-                        tab_index,
-                        resolved_swap_layouts,
-                        tab_name.clone(),
-                        client_id_for_new_tab,
+                    screen.open_new_tab(
+                        cwd,
+                        default_shell,
+                        layout,
+                        floating_panes_layout,
+                        tab_name,
+                        swap_tiled_layouts,
+                        swap_floating_layouts,
+                        initial_panes,
+                        block_on_first_terminal,
+                        should_change_focus_to_new_tab,
+                        client_id,
+                        completion_tx,
                     )?;
-                    let user_named =
-                        Screen::tab_name_is_users(tab_name.as_deref(), layout.as_ref());
-                    if let Some(tab) = screen.tabs.get_mut(&tab_index) {
-                        tab.set_user_named(user_named);
-                    }
-                    screen
-                        .bus
-                        .senders
-                        .send_to_plugin(PluginInstruction::NewTab(
-                            cwd,
-                            default_shell,
-                            layout,
-                            (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
-                            tab_index,
-                            initial_panes,
-                            block_on_first_terminal,
-                            should_change_focus_to_new_tab,
-                            client_id,
-                            completion_tx,
-                        ))?;
                 },
                 ScreenInstruction::ApplyLayout(
                     layout,
@@ -2258,105 +2233,23 @@ pub(crate) fn screen_thread_main(
                     tab_id,
                     should_change_focus_to_new_tab,
                     client_id,
-                    mut completion_tx,
+                    completion_tx,
                     blocking_terminal,
                 ) => {
-                    log::info!(
-                        "ScreenInstruction::ApplyLayout: applying layout for tab {}",
-                        tab_id
-                    );
-                    // tab_id is a stable identifier from NewTab instruction
-                    if let Some(first_terminal_pane) = new_pane_pids.first() {
-                        completion_tx.as_mut().map(|c| {
-                            c.set_affected_pane_id(PaneId::Terminal(first_terminal_pane.0))
-                        });
-                    } else if let Some(plugin_id) =
-                        new_plugin_ids.values().next().and_then(|v| v.first())
-                    {
-                        completion_tx
-                            .as_mut()
-                            .map(|c| c.set_affected_pane_id(PaneId::Plugin(*plugin_id)));
-                    }
-                    // Set the affected tab ID for plugin API return value
-                    completion_tx
-                        .as_mut()
-                        .map(|c| c.set_affected_tab_id(tab_id));
-                    let new_terminal_pane_ids: Vec<_> = new_pane_pids
-                        .iter()
-                        .chain(&new_floating_pane_pids)
-                        .map(|(terminal_id, _)| PaneId::Terminal(*terminal_id))
-                        .collect();
-                    screen.apply_layout(
+                    screen.land_layout(
                         layout,
                         floating_panes_layout,
-                        new_pane_pids.clone(),
+                        new_pane_pids,
                         new_floating_pane_pids,
-                        new_plugin_ids.clone(),
+                        adopted_agents,
+                        new_plugin_ids,
                         tab_id,
                         should_change_focus_to_new_tab,
                         client_id,
+                        completion_tx,
                         blocking_terminal,
+                        &mut pending,
                     )?;
-                    for (terminal_id, agent) in adopted_agents {
-                        let pane_id = PaneId::Terminal(terminal_id);
-                        if !apply_pane_agent_report(&mut screen, pane_id, Some(agent))? {
-                            Err::<(), _>(anyhow!(
-                            "adopted agent record refers to missing terminal pane {terminal_id}"
-                        ))
-                            .non_fatal();
-                        }
-                    }
-                    if !screen.has_pending_tabs() {
-                        screen.apply_deferred_tab_switches(&mut pending.tab_switches)?;
-                        if should_change_focus_to_new_tab {
-                            if let Some(tab_position) = screen.get_tab_position_by_id(tab_id) {
-                                screen.switch_active_tab(tab_position, None, true, client_id)?;
-                            }
-                        }
-                    } else if should_change_focus_to_new_tab {
-                        let client_id_to_switch = if screen.active_tab_ids.contains_key(&client_id)
-                        {
-                            Some(client_id)
-                        } else {
-                            screen.active_tab_ids.keys().next().copied()
-                        };
-                        if let Some(client_id_to_switch) = client_id_to_switch {
-                            pending.tab_switches.insert((tab_id, client_id_to_switch));
-                        }
-                    }
-
-                    for pane_id in new_terminal_pane_ids {
-                        if let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
-                            for event in pending_events {
-                                replay_pending_pane_event(&mut screen, event).non_fatal();
-                            }
-                        }
-                    }
-
-                    for plugin_ids in new_plugin_ids.values() {
-                        for plugin_id in plugin_ids {
-                            let pane_id = PaneId::Plugin(*plugin_id);
-                            screen.render_blocker.register_blocking_plugin(*plugin_id);
-                            let plugin_exists =
-                                screen.tabs.values().any(|tab| tab.has_plugin(*plugin_id));
-                            if plugin_exists {
-                                if let Some(pending_events) =
-                                    pending.waiting_for_pane.remove(&pane_id)
-                                {
-                                    replay_pending_plugin_events(&mut screen, pending_events)?;
-                                }
-                            }
-                        }
-                    }
-
-                    for event in pending.waiting_for_client.drain(..) {
-                        replay_pending_pane_event(&mut screen, event).non_fatal();
-                    }
-
-                    for event in pending.waiting_for_tab.drain(..) {
-                        replay_pending_pane_event(&mut screen, event).non_fatal();
-                    }
-
                     screen.render(None)?;
                 },
                 ScreenInstruction::GoToTab(
@@ -2401,68 +2294,15 @@ pub(crate) fn screen_thread_main(
                     default_shell,
                     create,
                     client_id,
-                    mut completion_tx,
+                    completion_tx,
                 ) => {
-                    let swap_layouts = (
-                        screen.default_layout.swap_tiled_layouts.clone(),
-                        screen.default_layout.swap_floating_layouts.clone(),
-                    );
-                    let client_id = if client_id.is_none() {
-                        None
-                    } else if screen
-                        .active_tab_ids
-                        .contains_key(&client_id.expect("This is checked above"))
-                    {
-                        client_id
-                    } else {
-                        screen.active_tab_ids.keys().next().copied()
-                    };
-                    if let Some(client_id) = client_id {
-                        if let Ok(tab_exists) = screen.go_to_tab_name(tab_name.clone(), client_id) {
-                            screen.render(None)?;
-                            if tab_exists {
-                                // Tab already exists - find its ID and set in completion
-                                if let Some(existing_tab) =
-                                    screen.tabs.values().find(|t| t.name == tab_name)
-                                {
-                                    completion_tx
-                                        .as_mut()
-                                        .map(|c| c.set_affected_tab_id(existing_tab.id));
-                                }
-                            }
-                            if create && !tab_exists {
-                                let tab_index = screen.get_new_tab_id();
-                                let should_change_focus_to_new_tab = true;
-                                // The name was typed in the command that asked for the tab.
-                                let user_named = !tab_name.is_empty();
-                                screen.new_tab(
-                                    tab_index,
-                                    swap_layouts,
-                                    Some(tab_name),
-                                    Some(client_id),
-                                )?;
-                                if let Some(tab) = screen.tabs.get_mut(&tab_index) {
-                                    tab.set_user_named(user_named);
-                                }
-                                screen
-                                    .bus
-                                    .senders
-                                    .send_to_plugin(PluginInstruction::NewTab(
-                                        None,
-                                        default_shell,
-                                        None,
-                                        None,
-                                        tab_index,
-                                        None,  // initial_panes
-                                        false, // block_on_first_terminal
-                                        should_change_focus_to_new_tab,
-                                        client_id,
-                                        completion_tx,
-                                    ))?;
-                                break 'instruction; // so we don't get to the completion signalling below
-                            }
-                        }
-                    }
+                    screen.go_to_or_create_tab_by_name(
+                        tab_name,
+                        default_shell,
+                        create,
+                        client_id,
+                        completion_tx,
+                    )?;
                 },
                 ScreenInstruction::UpdateTabName(c, client_id, completion_tx) => {
                     if screen.has_no_client_to_act_for(client_id) {
@@ -2940,92 +2780,14 @@ pub(crate) fn screen_thread_main(
                     client_id,
                     completion_tx,
                 ) => {
-                    // Process each tab result
-                    for tab_result in tab_results {
-                        if let Some(tab) = screen.tabs.get_mut(&tab_result.tab_index) {
-                            if let Err(e) = tab.override_layout(
-                                tab_result.tiled_layout,
-                                tab_result.floating_layouts,
-                                tab_result.swap_tiled_layouts.clone(),
-                                tab_result.swap_floating_layouts.clone(),
-                                tab_result.new_terminal_pids,
-                                tab_result.new_floating_pane_pids,
-                                tab_result.plugin_ids,
-                                retain_existing_terminal_panes,
-                                retain_existing_plugin_panes,
-                                client_id,
-                                None,
-                            ) {
-                                log::error!(
-                                    "Failed to override layout for tab {}: {:?}",
-                                    tab_result.tab_index,
-                                    e
-                                );
-                            }
-                        } else {
-                            // Tab doesn't exist - create it
-                            let swap_layouts = (
-                                tab_result.swap_tiled_layouts.clone().unwrap_or_default(),
-                                tab_result.swap_floating_layouts.clone().unwrap_or_default(),
-                            );
-                            if let Err(e) = screen.new_tab(
-                                tab_result.tab_index,
-                                swap_layouts,
-                                tab_result.tab_name.clone(),
-                                None,
-                            ) {
-                                log::error!(
-                                    "Failed to create new tab {} during override completion: {:?}",
-                                    tab_result.tab_index,
-                                    e
-                                );
-                                continue;
-                            }
-
-                            // Now override the newly created tab's layout
-                            if let Some(tab) = screen.tabs.get_mut(&tab_result.tab_index) {
-                                if let Err(e) = tab.override_layout(
-                                    tab_result.tiled_layout,
-                                    tab_result.floating_layouts,
-                                    tab_result.swap_tiled_layouts,
-                                    tab_result.swap_floating_layouts,
-                                    tab_result.new_terminal_pids,
-                                    tab_result.new_floating_pane_pids,
-                                    tab_result.plugin_ids,
-                                    retain_existing_terminal_panes,
-                                    retain_existing_plugin_panes,
-                                    client_id,
-                                    None,
-                                ) {
-                                    log::error!(
-                                        "Failed to override layout for new tab {}: {:?}",
-                                        tab_result.tab_index,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    for tab_id in failed_tabs {
-                        if screen.tabs.get(&tab_id).is_some_and(Tab::is_pending) {
-                            screen.close_tab_by_id(tab_id)?;
-                        }
-                    }
-
-                    for event in pending.waiting_for_client.drain(..) {
-                        replay_pending_pane_event(&mut screen, event).non_fatal();
-                    }
-
-                    for event in pending.waiting_for_tab.drain(..) {
-                        replay_pending_pane_event(&mut screen, event).non_fatal();
-                    }
-
-                    if !screen.has_pending_tabs() {
-                        screen.apply_deferred_tab_switches(&mut pending.tab_switches)?;
-                    }
-
-                    // Single render and log after all tabs are updated (performance optimization)
+                    screen.complete_override_layout(
+                        tab_results,
+                        failed_tabs,
+                        retain_existing_terminal_panes,
+                        retain_existing_plugin_panes,
+                        client_id,
+                        &mut pending,
+                    )?;
                     screen.log_and_report_session_state()?;
                     let _ = screen.render(None);
                     drop(completion_tx); // action ends here, notify the action initiator

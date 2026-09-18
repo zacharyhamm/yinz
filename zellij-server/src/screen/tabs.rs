@@ -13,12 +13,131 @@ use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane, SuppressedPanes, Ta
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use zellij_types::data::CommandOrPlugin;
 use zellij_types::geometry::Direction;
 use zellij_types::input::command::{RunCommand, TerminalAction};
-use zellij_types::input::layout::TabLayoutInfo;
+use zellij_types::input::layout::{
+    FloatingPaneLayout, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
+};
 use {zellij_types::data::Event, zellij_types::data::ModeInfo};
 
 impl Screen {
+    /// Switches the client to the tab called `tab_name`, creating it first when `create` is set
+    /// and no tab has that name. A client that is not connected falls back to the first one.
+    pub(super) fn go_to_or_create_tab_by_name(
+        &mut self,
+        tab_name: String,
+        default_shell: Option<TerminalAction>,
+        create: bool,
+        client_id: Option<ClientId>,
+        mut completion_tx: Option<NotificationEnd>,
+    ) -> Result<()> {
+        let swap_layouts = (
+            self.default_layout.swap_tiled_layouts.clone(),
+            self.default_layout.swap_floating_layouts.clone(),
+        );
+        let client_id = if client_id.is_none() {
+            None
+        } else if self
+            .active_tab_ids
+            .contains_key(&client_id.expect("This is checked above"))
+        {
+            client_id
+        } else {
+            self.active_tab_ids.keys().next().copied()
+        };
+        if let Some(client_id) = client_id {
+            if let Ok(tab_exists) = self.go_to_tab_name(tab_name.clone(), client_id) {
+                self.render(None)?;
+                if tab_exists {
+                    // Tab already exists - find its ID and set in completion
+                    if let Some(existing_tab) = self.tabs.values().find(|t| t.name == tab_name) {
+                        completion_tx
+                            .as_mut()
+                            .map(|c| c.set_affected_tab_id(existing_tab.id));
+                    }
+                }
+                if create && !tab_exists {
+                    let tab_index = self.get_new_tab_id();
+                    let should_change_focus_to_new_tab = true;
+                    // The name was typed in the command that asked for the tab.
+                    let user_named = !tab_name.is_empty();
+                    self.new_tab(tab_index, swap_layouts, Some(tab_name), Some(client_id))?;
+                    if let Some(tab) = self.tabs.get_mut(&tab_index) {
+                        tab.set_user_named(user_named);
+                    }
+                    self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
+                        None,
+                        default_shell,
+                        None,
+                        None,
+                        tab_index,
+                        None,  // initial_panes
+                        false, // block_on_first_terminal
+                        should_change_focus_to_new_tab,
+                        client_id,
+                        completion_tx,
+                    ))?;
+                    return Ok(()); // so we don't get to the completion signalling below
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Creates an empty tab and asks the plugin thread to fill it: the layout lands later as
+    /// `ApplyLayout`. `None` swap layouts fall back to the default layout's.
+    pub(super) fn open_new_tab(
+        &mut self,
+        cwd: Option<PathBuf>,
+        default_shell: Option<TerminalAction>,
+        layout: Option<TiledPaneLayout>,
+        floating_panes_layout: Vec<FloatingPaneLayout>,
+        tab_name: Option<String>,
+        swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
+        swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
+        initial_panes: Option<Vec<CommandOrPlugin>>,
+        block_on_first_terminal: bool,
+        should_change_focus_to_new_tab: bool,
+        client_id: ClientId,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Result<()> {
+        let tab_index = self.get_new_tab_id();
+        let client_id_for_new_tab = if should_change_focus_to_new_tab {
+            Some(client_id)
+        } else {
+            None
+        };
+        let resolved_swap_layouts = (
+            swap_tiled_layouts.unwrap_or_else(|| self.default_layout.swap_tiled_layouts.clone()),
+            swap_floating_layouts
+                .unwrap_or_else(|| self.default_layout.swap_floating_layouts.clone()),
+        );
+        self.new_tab(
+            tab_index,
+            resolved_swap_layouts,
+            tab_name.clone(),
+            client_id_for_new_tab,
+        )?;
+        let user_named = Screen::tab_name_is_users(tab_name.as_deref(), layout.as_ref());
+        if let Some(tab) = self.tabs.get_mut(&tab_index) {
+            tab.set_user_named(user_named);
+        }
+        self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
+            cwd,
+            default_shell,
+            layout,
+            (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
+            tab_index,
+            initial_panes,
+            block_on_first_terminal,
+            should_change_focus_to_new_tab,
+            client_id,
+            completion_tx,
+        ))?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn override_layout(
         &mut self,
