@@ -1684,7 +1684,8 @@ fn run_hook(
             // its own id (`TerminalPane::framed_title`) because that is how the pane is named
             // from outside; a plugin frame does not label itself at all, so the id is written
             // into the name here - and it is this plugin pane's, or it names something else.
-            let pane_title = agent_pane_title.map(|title| format!("[{plugin_id}] {title}"));
+            let pane_title =
+                agent_pane_title.map(|title| format!("[{}] {title}", PaneId::Plugin(plugin_id)));
             drop(bus.senders.send_to_screen(add_plugin_pane_in_place_of(
                 RunPluginOrAlias::RunPlugin(run_plugin),
                 plugin_id,
