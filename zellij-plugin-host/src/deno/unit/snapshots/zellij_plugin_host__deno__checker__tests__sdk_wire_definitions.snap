@@ -1,6 +1,6 @@
 ---
 source: zellij-plugin-host/src/deno/unit/checker.rs
-assertion_line: 943
+assertion_line: 955
 expression: wire
 ---
 commands
@@ -637,6 +637,7 @@ optional string firecracker_image = 15;
 optional string effort = 16;
 optional bool reuse = 17;
 optional bool allow_outside_worktree = 18;
+optional string reuse_prompt = 19;
 }
 message SpawnAgentPayload {
 AgentSpawnSpec spec = 1;

@@ -2856,6 +2856,7 @@ fn spawn_agent(
             WorktreeGuard::Required
         };
         let prepared = agent_folder(checkout, cwd, source, spec.reuse.unwrap_or(false), guard)?;
+        command = prepared.agent_command(&spec)?;
         let branch = prepared.branch.or_else(|| {
             worktree_at(&prepared.path, &prepared.path)
                 .ok()
@@ -2970,6 +2971,7 @@ fn agent_folder(
         (GitCheckout::Current, Some(cwd)) => {
             guard.check(&cwd)?;
             Ok(PreparedCheckout {
+                reused_worktree: false,
                 path: cwd,
                 branch: None,
             })
@@ -2977,6 +2979,7 @@ fn agent_folder(
         (GitCheckout::Current, None) => {
             guard.check(&source)?;
             Ok(PreparedCheckout {
+                reused_worktree: false,
                 path: source,
                 branch: None,
             })
@@ -3072,6 +3075,19 @@ fn prepare_git_checkout(
 struct PreparedCheckout {
     path: PathBuf,
     branch: Option<String>,
+    reused_worktree: bool,
+}
+
+impl PreparedCheckout {
+    fn agent_command(&self, spec: &AgentSpawnSpec) -> Result<CommandToRun, String> {
+        let mut spec = spec.clone();
+        if self.reused_worktree {
+            if let Some(prompt) = spec.reuse_prompt.take() {
+                spec.prompt = Some(prompt);
+            }
+        }
+        zellij_runtime::agent::launch::plan(&spec).map(|(command, _)| command)
+    }
 }
 
 /// Put the repository into the state the request describes, and answer with the
@@ -3107,6 +3123,7 @@ fn prepare_git_checkout_in(
         GitCheckout::Current => {
             guard.check(&root)?;
             Ok(PreparedCheckout {
+                reused_worktree: false,
                 path: root,
                 branch: None,
             })
@@ -3120,6 +3137,7 @@ fn prepare_git_checkout_in(
                 if let Some(worktree) = worktree_holding(&root, &branch)? {
                     guard.check(&worktree)?;
                     return Ok(PreparedCheckout {
+                        reused_worktree: true,
                         path: worktree,
                         branch: Some(branch),
                     });
@@ -3132,6 +3150,7 @@ fn prepare_git_checkout_in(
             if reuse && branch_exists(&root, &branch) {
                 run_git(&root, &["switch", &branch], "switch to the branch")?;
                 return Ok(PreparedCheckout {
+                    reused_worktree: false,
                     path: root,
                     branch: Some(branch),
                 });
@@ -3147,6 +3166,7 @@ fn prepare_git_checkout_in(
                 "create and switch to the branch",
             )?;
             Ok(PreparedCheckout {
+                reused_worktree: false,
                 path: root,
                 branch: Some(branch),
             })
@@ -3172,6 +3192,7 @@ fn prepare_git_checkout_in(
                 if let Some(existing) = worktree_at(&root, &path)? {
                     guard.check(&existing.path)?;
                     return Ok(PreparedCheckout {
+                        reused_worktree: true,
                         path: existing.path,
                         branch: existing.branch,
                     });
@@ -3179,6 +3200,7 @@ fn prepare_git_checkout_in(
                 if let Some(existing) = worktree_holding(&root, &branch)? {
                     guard.check(&existing)?;
                     return Ok(PreparedCheckout {
+                        reused_worktree: true,
                         path: existing,
                         branch: Some(branch),
                     });
@@ -3196,6 +3218,7 @@ fn prepare_git_checkout_in(
                 };
                 run_git(&root, &args, "create the worktree")?;
                 return Ok(PreparedCheckout {
+                    reused_worktree: false,
                     path,
                     branch: Some(branch),
                 });
@@ -3210,6 +3233,7 @@ fn prepare_git_checkout_in(
                 "create the worktree",
             )?;
             Ok(PreparedCheckout {
+                reused_worktree: false,
                 path,
                 branch: Some(branch),
             })
@@ -9054,6 +9078,60 @@ mod permission_tests {
         assert_eq!(branch_of(&existing).as_deref(), Some("topic"));
         // Nothing was created for the branch that was asked for and not used.
         assert!(!branch_exists(repository.path(), "other"));
+    }
+
+    #[test]
+    fn triage_prompts_follow_each_actual_worktree_outcome() {
+        let first = repository();
+        let second = repository();
+        let mut spec = AgentSpawnSpec {
+            kind: Some("claude".into()),
+            model: Some("opus".into()),
+            branch: Some("issue-2180".into()),
+            reuse: Some(true),
+            prompt: Some("triage issue 2180".into()),
+            reuse_prompt: Some("resume issue 2180".into()),
+            ..Default::default()
+        };
+        let prepare = |root: &std::path::Path, spec: &AgentSpawnSpec| {
+            let (_, checkout) = zellij_runtime::agent::launch::plan(spec).unwrap();
+            prepare_git_checkout_in(root.to_owned(), checkout, true, WorktreeGuard::Required)
+                .unwrap()
+        };
+        // A branch without a checkout is still a new worktree.
+        branch(first.path(), "issue-2180");
+        let new = prepare(first.path(), &spec);
+        assert!(!new.reused_worktree);
+        assert_eq!(
+            new.agent_command(&spec).unwrap().args.last().unwrap(),
+            "triage issue 2180"
+        );
+        let reused = prepare(first.path(), &spec);
+        let other_new = prepare(second.path(), &spec);
+        assert!(reused.reused_worktree);
+        assert!(!other_new.reused_worktree);
+        assert_eq!(
+            reused.agent_command(&spec).unwrap().args.last().unwrap(),
+            "resume issue 2180"
+        );
+        assert_eq!(
+            other_new.agent_command(&spec).unwrap().args.last().unwrap(),
+            "triage issue 2180"
+        );
+        // Branch lookup at a different path is reuse too.
+        spec.worktree_dir = Some("elsewhere".into());
+        let moved = prepare(first.path(), &spec);
+        assert!(moved.reused_worktree);
+        assert_eq!(moved.path, reused.path);
+        assert_eq!(
+            moved.agent_command(&spec).unwrap().args.last().unwrap(),
+            "resume issue 2180"
+        );
+        spec.reuse_prompt = None;
+        assert_eq!(
+            moved.agent_command(&spec).unwrap().args.last().unwrap(),
+            "triage issue 2180"
+        );
     }
 
     /// Git allows one checkout of a branch at a time, so the worktree holding it

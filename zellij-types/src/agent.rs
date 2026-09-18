@@ -180,6 +180,8 @@ pub struct AgentSpawnSpec {
     /// host cuts the next free one (`<branch>-2`, `<branch>-3`, …) for the branch and its
     /// worktree together, so an agent never silently joins somebody else's work.
     pub reuse: Option<bool>,
+    /// Opening prompt used only when checkout preparation reuses an existing worktree.
+    pub reuse_prompt: Option<String>,
     /// Whether this agent may start somewhere that is not a linked worktree - the repository's
     /// primary checkout, or a folder that is no repository at all. Defaults to *false*: an
     /// agent left loose in the checkout the user is working in is a thing to ask for

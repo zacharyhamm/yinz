@@ -99,7 +99,12 @@ fn names_a_command(call: &ToolCall) -> bool {
 /// the same `unwrap_or(true)` reasoning as `names_a_command`.
 fn has_prompt(call: &ToolCall) -> bool {
     Args::parse(&call.arguments)
-        .map(|args| args.prompt.as_deref().is_some_and(|p| !p.trim().is_empty()))
+        .map(|args| {
+            [args.prompt, args.reuse_prompt]
+                .iter()
+                .flatten()
+                .any(|p| !p.trim().is_empty())
+        })
         .unwrap_or(true)
 }
 
@@ -1617,6 +1622,7 @@ pub fn specs() -> Value {
                         "type": "string",
                         "description": "Overrides saved default.",
                     },
+                    "reuse_prompt": { "type": "string", "description": "Opening prompt when an existing worktree is reused; a newly created worktree uses prompt." },
                     "reuse": {
                         "type": "boolean",
                         "description": "Join the existing branch or worktree of this name \
@@ -2830,6 +2836,7 @@ pub struct Args {
     pub worktree: Option<bool>,
     pub worktree_dir: Option<String>,
     pub reuse: Option<bool>,
+    pub reuse_prompt: Option<String>,
     pub allow_outside_worktree: Option<bool>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -3101,6 +3108,7 @@ impl Args {
             worktree: self.worktree,
             worktree_dir: self.worktree_dir.clone(),
             reuse: self.reuse,
+            reuse_prompt: self.reuse_prompt.clone(),
             allow_outside_worktree: self.allow_outside_worktree,
             env: self.env.clone(),
             permission_mode: self.permission_mode.clone(),

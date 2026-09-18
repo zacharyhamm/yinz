@@ -6784,6 +6784,7 @@ impl From<AgentSpawnSpec> for ProtobufAgentSpawnSpec {
             firecracker: spec.firecracker,
             firecracker_image: spec.firecracker_image,
             reuse: spec.reuse,
+            reuse_prompt: spec.reuse_prompt,
             allow_outside_worktree: spec.allow_outside_worktree,
         }
     }
@@ -6813,6 +6814,7 @@ impl From<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
             firecracker: spec.firecracker,
             firecracker_image: spec.firecracker_image,
             reuse: spec.reuse,
+            reuse_prompt: spec.reuse_prompt,
             allow_outside_worktree: spec.allow_outside_worktree,
         }
     }
@@ -7299,6 +7301,7 @@ mod tests {
                 worktree: Some(true),
                 worktree_dir: Some(".worktrees".to_owned()),
                 reuse: Some(true),
+                reuse_prompt: Some("resume the parser fix".into()),
                 allow_outside_worktree: Some(true),
                 env: BTreeMap::from([("TOKEN".to_owned(), "t".to_owned())]),
                 permission_mode: Some("skip".to_owned()),
