@@ -1,4 +1,3 @@
-#![allow(clippy::for_kv_map)]
 #![allow(clippy::ptr_arg)]
 use crate::tab::Pane;
 
@@ -82,12 +81,12 @@ impl ActivePanes {
         self.active_panes.remove(client_id)
     }
     pub fn unfocus_all_panes(&self, panes: &impl PaneLookup) {
-        for (_client_id, pane_id) in &self.active_panes {
+        for pane_id in self.active_panes.values() {
             self.unfocus_pane(*pane_id, panes);
         }
     }
     pub fn focus_all_panes(&self, panes: &impl PaneLookup) {
-        for (_client_id, pane_id) in &self.active_panes {
+        for pane_id in self.active_panes.values() {
             self.focus_pane(*pane_id, panes);
         }
     }

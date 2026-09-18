@@ -1,4 +1,3 @@
-#![allow(clippy::unnecessary_lazy_evaluations)]
 #![allow(clippy::if_same_then_else)]
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::kitty_graphics::{
@@ -426,7 +425,7 @@ impl Pane for TerminalPane {
                     BareKey::Char(c @ '1'..='2') if k.key_modifiers.is_empty() => Some(c),
                     _ => None,
                 })
-                .or_else(|| match raw_input_bytes.as_slice() {
+                .or(match raw_input_bytes.as_slice() {
                     b"1" => Some('1'),
                     b"2" => Some('2'),
                     _ => None,

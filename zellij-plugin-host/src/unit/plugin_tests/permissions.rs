@@ -245,9 +245,8 @@ pub fn granted_permission_request_result() {
     teardown();
 
     let permission_cache = PermissionCache::from_path_or_default(Some(cache_path));
-    let mut permissions = permission_cache
-        .get_permissions(PathBuf::from(&*PLUGIN_FIXTURE).display().to_string())
-        .clone();
+    let mut permissions =
+        permission_cache.get_permissions(PathBuf::from(&*PLUGIN_FIXTURE).display().to_string());
     let permissions = permissions.as_mut().map(|p| {
         let mut permissions = p.clone();
         permissions.sort_unstable();

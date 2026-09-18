@@ -1,5 +1,4 @@
 #![allow(clippy::type_complexity)]
-#![allow(clippy::implicit_saturating_sub)]
 use super::kitty_graphics::diacritic_value;
 use super::kitty_graphics::{
     format_kitty_error, format_kitty_reply, KittyAction, KittyCommand, KittyCommandParser,
@@ -801,7 +800,6 @@ fn match_to_selection(
 /// context such as surrounding whitespace in the full match while
 /// highlighting only the content in group 1). Otherwise the full match
 /// (group 0) is returned.
-#[allow(clippy::get_first)]
 fn highlight_match<'t>(captures: &regex::Captures<'t>) -> Option<regex::Match<'t>> {
     captures.get(1).or_else(|| captures.get(0))
 }
@@ -2936,11 +2934,7 @@ impl Grid {
             self.cursor.y = std::cmp::max(self.cursor.y.saturating_sub(count), scroll_region_top);
             return;
         }
-        self.cursor.y = if self.cursor.y < count {
-            0
-        } else {
-            self.cursor.y - count
-        };
+        self.cursor.y = self.cursor.y.saturating_sub(count);
     }
     pub fn move_cursor_up_with_scrolling(&mut self, count: usize) {
         let (scroll_region_top, scroll_region_bottom) = self.scroll_region;

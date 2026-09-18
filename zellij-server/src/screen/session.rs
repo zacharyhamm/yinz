@@ -73,10 +73,10 @@ impl Screen {
             // update state
             self.session_name = name.clone();
             self.default_mode_info.session_name = Some(name.clone());
-            for (_client_id, mode_info) in self.mode_info.iter_mut() {
+            for mode_info in self.mode_info.values_mut() {
                 mode_info.session_name = Some(name.clone());
             }
-            for (_, tab) in self.tabs.iter_mut() {
+            for tab in self.tabs.values_mut() {
                 tab.rename_session(name.clone()).with_context(err_context)?;
             }
 

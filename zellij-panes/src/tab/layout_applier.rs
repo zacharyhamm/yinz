@@ -2,7 +2,6 @@
 #![allow(clippy::explicit_counter_loop)]
 #![allow(clippy::ptr_arg)]
 #![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_return)]
 #![allow(clippy::question_mark)]
 use zellij_runtime::errors::prelude::*;
 use zellij_types::internal_ids::PluginId;
@@ -1238,7 +1237,7 @@ impl ExistingTabState {
             self.existing_panes
                 .remove(&current_pane_id_with_same_logical_position)
         } else {
-            return None;
+            None
         }
     }
     pub fn find_and_extract_pane(

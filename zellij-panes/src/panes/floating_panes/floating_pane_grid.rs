@@ -1,5 +1,3 @@
-#![allow(clippy::get_first)]
-#![allow(clippy::needless_return)]
 use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use crate::{panes::PaneId, tab::Pane};
 use std::cmp::Ordering;
@@ -654,7 +652,7 @@ impl<'a> FloatingPaneGrid<'a> {
 
         let next_active_pane_id = panes
             .get(active_pane_position + 1)
-            .or_else(|| panes.get(0))
+            .or_else(|| panes.first())
             .map(|p| p.0)?;
         Some(next_active_pane_id)
     }
@@ -735,7 +733,7 @@ impl<'a> FloatingPaneGrid<'a> {
             &self.viewport,
             &pane_geoms
         );
-        return None;
+        None
     }
 }
 

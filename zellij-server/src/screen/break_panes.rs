@@ -138,7 +138,7 @@ impl Screen {
                 let carried_respawn = tab.take_pending_respawn(pane_id);
                 // here we pass None instead of the client_id we have because we do not need to
                 // necessarily trigger a relayout for this tab
-                if let Some(pane) = tab.extract_pane(pane_id, true).take() {
+                if let Some(pane) = tab.extract_pane(pane_id, true) {
                     extracted_panes.push((placement, pane, carried_respawn));
                     break;
                 } else if let Some(entry) = carried_respawn {

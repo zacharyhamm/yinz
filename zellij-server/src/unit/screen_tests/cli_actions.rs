@@ -1884,13 +1884,7 @@ pub fn send_cli_new_tab_action_with_name_and_layout() {
         .lock()
         .iter()
         .rev()
-        .find(|i| {
-            if let PluginInstruction::NewTab(..) = i {
-                return true;
-            } else {
-                return false;
-            }
-        })
+        .find(|i| matches!(i, PluginInstruction::NewTab(..)))
         .unwrap()
         .clone();
     let output = format!("{:#?}", new_tab_instruction);

@@ -1,5 +1,3 @@
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::unwrap_or_default)]
 use super::{text::stringify_text, Coordinates, Text};
 use crate::panes::terminal_character::{AnsiCode, CharacterStyles, RESET_STYLES};
 use zellij_types::data::PaletteColor;

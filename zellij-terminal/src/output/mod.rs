@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_or_default)]
 #![allow(clippy::type_complexity)]
 use std::collections::VecDeque;
 

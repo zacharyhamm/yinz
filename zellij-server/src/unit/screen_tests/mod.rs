@@ -328,7 +328,7 @@ impl ServerOsApi for FakeInputOutput {
             .lock()
             .unwrap()
             .entry(client_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(msg);
         Ok(())
     }

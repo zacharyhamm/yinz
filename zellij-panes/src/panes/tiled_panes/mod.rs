@@ -1,7 +1,5 @@
-#![allow(clippy::needless_return)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::option_map_unit_fn)]
-#![allow(clippy::manual_inspect)]
 mod pane_resizer;
 mod stacked_panes;
 mod tiled_pane_grid;
@@ -228,7 +226,7 @@ impl TiledPanes {
         if self.pane_frame_style.draws_full_frames() && !with_pane.borderless() {
             with_pane.set_content_offset(Offset::frame(1));
         }
-        let removed_pane = self.panes.remove(&pane_id).map(|removed_pane| {
+        let removed_pane = self.panes.remove(&pane_id).inspect(|removed_pane| {
             let with_pane_id = with_pane.pid();
             let removed_pane_geom = removed_pane.position_and_size();
             let removed_pane_geom_override = removed_pane.geom_override();
@@ -248,7 +246,6 @@ impl TiledPanes {
             if self.panes_to_hide.remove(&pane_id) {
                 self.panes_to_hide.insert(with_pane_id);
             }
-            removed_pane
         });
 
         // move clients from the previously active pane to the new pane we just inserted
@@ -519,15 +516,9 @@ impl TiledPanes {
                     Ok(new_pane_geom) => {
                         pane.set_geom(new_pane_geom);
                         self.panes.insert(pane_id, pane); // TODO: is set_geom the right one?
-                        return None;
+                        None
                     },
-                    Err(_e) => {
-                        return self.add_pane_without_stacked_resize(
-                            pane_id,
-                            pane,
-                            should_relayout,
-                        );
-                    },
+                    Err(_e) => self.add_pane_without_stacked_resize(pane_id, pane, should_relayout),
                 }
             },
         }
@@ -560,7 +551,6 @@ impl TiledPanes {
                 pane.set_geom(new_pane_geom);
                 self.panes.insert(pane_id, pane);
                 self.set_force_render(); // TODO: why do we need this?
-                return;
             },
             Err(e) => {
                 log::error!("Failed to add pane to stack: {}", e);
@@ -593,7 +583,6 @@ impl TiledPanes {
                 pane.set_geom(new_pane_geom);
                 self.panes.insert(pane_id, pane);
                 self.set_force_render(); // TODO: why do we need this?
-                return;
             },
             Err(e) => {
                 log::error!("Failed to add pane to stack: {}", e);
@@ -1943,7 +1932,7 @@ impl TiledPanes {
                                 return Ok(false);
                             }
                         }
-                        return Ok(size_changed);
+                        Ok(size_changed)
                     },
                     Err(e) => Err(e),
                 }
@@ -3107,7 +3096,7 @@ impl TiledPanes {
         self.unset_fullscreen();
         let ret = self.move_focus_left(client_id);
         self.reenter_active_pane_fullscreen(client_id, covers_ui);
-        return ret;
+        ret
     }
 
     pub fn focus_pane_right_fullscreen(&mut self, client_id: ClientId) -> bool {
@@ -3115,7 +3104,7 @@ impl TiledPanes {
         self.unset_fullscreen();
         let ret = self.move_focus_right(client_id);
         self.reenter_active_pane_fullscreen(client_id, covers_ui);
-        return ret;
+        ret
     }
 
     pub fn focus_pane_up_fullscreen(&mut self, client_id: ClientId) -> bool {
@@ -3123,7 +3112,7 @@ impl TiledPanes {
         self.unset_fullscreen();
         let ret = self.move_focus_up(client_id);
         self.reenter_active_pane_fullscreen(client_id, covers_ui);
-        return ret;
+        ret
     }
 
     pub fn focus_pane_down_fullscreen(&mut self, client_id: ClientId) -> bool {
@@ -3131,7 +3120,7 @@ impl TiledPanes {
         self.unset_fullscreen();
         let ret = self.move_focus_down(client_id);
         self.reenter_active_pane_fullscreen(client_id, covers_ui);
-        return ret;
+        ret
     }
 
     pub fn switch_next_pane_fullscreen(&mut self, client_id: ClientId) {

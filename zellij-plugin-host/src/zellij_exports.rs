@@ -1,6 +1,4 @@
 #![allow(clippy::result_large_err)]
-#![allow(clippy::clone_on_copy)]
-#![allow(clippy::redundant_closure)]
 use super::PluginInstruction;
 use crate::plugin_map::{PluginEnv, ResponseSink};
 use crate::wasm_bridge::handle_plugin_crash;
@@ -6470,11 +6468,8 @@ fn fs_list(env: &mut PluginEnv, path: PathBuf) {
 }
 
 fn fs_metadata(env: &mut PluginEnv, path: PathBuf) {
-    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Read).map(|real| {
-        fs::symlink_metadata(&real)
-            .ok()
-            .map(|m| FileMetadata::from(m))
-    });
+    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Read)
+        .map(|real| fs::symlink_metadata(&real).ok().map(FileMetadata::from));
 
     let response = ProtobufFsMetadataResponse {
         result: Some(match result {
@@ -7185,7 +7180,7 @@ fn rename_layout(env: &mut PluginEnv, old_layout_name: String, new_layout_name: 
 
     let response = try_rename_layout(env, &old_layout_name, &new_layout_name)
         .map(|_| RenameLayoutResponse::Ok(()))
-        .unwrap_or_else(|e| RenameLayoutResponse::Err(e));
+        .unwrap_or_else(RenameLayoutResponse::Err);
 
     let protobuf_response: ProtobufRenameLayoutResponse = response.into();
     let serialized = protobuf_response.encode_to_vec();
@@ -7268,7 +7263,7 @@ fn edit_layout(env: &mut PluginEnv, layout_name: String, context: BTreeMap<Strin
 
     let response = try_edit_layout(env, &layout_name, context)
         .map(|_| EditLayoutResponse::Ok(()))
-        .unwrap_or_else(|e| EditLayoutResponse::Err(e));
+        .unwrap_or_else(EditLayoutResponse::Err);
 
     let protobuf_response: ProtobufEditLayoutResponse = response.into();
     let serialized = protobuf_response.encode_to_vec();
@@ -7334,7 +7329,7 @@ fn try_edit_layout(
         env.senders.clone(),
         env.default_shell.clone(),
         None,
-        env.default_mode.clone(),
+        env.default_mode,
         None,
         false,
     )

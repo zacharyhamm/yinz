@@ -1,4 +1,3 @@
-#![allow(clippy::derivable_impls)]
 use std::convert::From;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::{Index, IndexMut};
@@ -772,31 +771,21 @@ pub enum LinkAnchor {
     End,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum CharsetIndex {
+    #[default]
     G0,
     G1,
     G2,
     G3,
 }
 
-impl Default for CharsetIndex {
-    fn default() -> Self {
-        CharsetIndex::G0
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum StandardCharset {
+    #[default]
     Ascii,
     UK,
     SpecialCharacterAndLineDrawing,
-}
-
-impl Default for StandardCharset {
-    fn default() -> Self {
-        StandardCharset::Ascii
-    }
 }
 
 impl StandardCharset {

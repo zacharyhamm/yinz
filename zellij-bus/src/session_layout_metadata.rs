@@ -1,4 +1,3 @@
-#![allow(clippy::clone_on_copy)]
 #![allow(clippy::ptr_arg)]
 #![allow(clippy::bind_instead_of_map)]
 use crate::ClientId;
