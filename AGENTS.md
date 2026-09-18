@@ -68,6 +68,14 @@ cargo x postgres-test --build && cargo x postgres-test --test  # plugin-data sto
 
 Requires `protoc` (protobufs cross the plugin wasm boundary).
 
+`cargo x lint` also refuses file-level lint suppressions: a `#![allow(..)]` or `#![expect(..)]`
+at the top of a source file fails the task before clippy runs, unless `FILE_LEVEL_ALLOWS` in
+`xtask/src/lint.rs` names that file and lint with a reason (generated prost output, vendored
+code, a test harness built around the very thing the lint warns about). Fix the warning, or
+suppress it on the one item with `#[expect(lint, reason = "…")]`; a lint that is wrong
+everywhere is argued into `[workspace.lints.clippy]` in `Cargo.toml`, next to the reasons
+already there.
+
 **Never set `CARGO_TARGET_DIR` or change `build.target-dir`.** Checkout builds look for
 plugins in `<repo>/target/wasm32-wasip1/{debug,release}`, resolved at compile time; moving
 the target dir leaves them with no builtins. Symlink `target/` instead. See CONTRIBUTING.md.
