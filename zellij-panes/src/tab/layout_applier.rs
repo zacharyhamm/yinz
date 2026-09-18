@@ -1,6 +1,3 @@
-#![allow(clippy::borrowed_box)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::field_reassign_with_default)]
 use zellij_runtime::errors::prelude::*;
 use zellij_types::internal_ids::PluginId;
 use zellij_types::internal_ids::TerminalId;
@@ -72,7 +69,7 @@ impl<'a> LayoutApplier<'a> {
         floating_panes: &'a mut FloatingPanes,
         pane_frame_style: PaneFrameStyle,
         focus_pane_id: &'a mut Option<PaneId>,
-        os_api: &Box<dyn ServerOsApi>,
+        os_api: &dyn ServerOsApi,
         debug: bool,
         arrow_fonts: bool,
         styled_underlines: bool,
@@ -91,7 +88,7 @@ impl<'a> LayoutApplier<'a> {
         let connected_clients = connected_clients.clone();
         let style = *style;
         let display_area = display_area.clone();
-        let os_api = os_api.clone();
+        let os_api = os_api.box_clone();
         LayoutApplier {
             viewport,
             senders,
@@ -477,7 +474,7 @@ impl<'a> LayoutApplier<'a> {
     }
     fn position_run_instructions_to_ignore(
         &mut self,
-        run_instructions_to_ignore: &Vec<Option<Run>>,
+        run_instructions_to_ignore: &[Option<Run>],
         positions_in_layout: &mut Vec<(TiledPaneLayout, PaneGeom)>,
     ) -> Vec<Option<Run>> {
         // here we try to find rooms for the panes that are already running (represented by
@@ -486,7 +483,7 @@ impl<'a> LayoutApplier<'a> {
         // (the new layout has a pane with None as its run instruction, eg. just `pane` in the
         // layout)
         let mut run_instructions_without_a_location = vec![];
-        for run_instruction in run_instructions_to_ignore.clone().drain(..) {
+        for run_instruction in run_instructions_to_ignore.iter().cloned() {
             if self
                 .place_running_pane_in_exact_match_location(&run_instruction, positions_in_layout)
             {
@@ -893,10 +890,10 @@ impl<'a> LayoutApplier<'a> {
     }
     pub fn apply_floating_panes_layout_to_existing_panes(
         &mut self,
-        floating_panes_layout: &Vec<FloatingPaneLayout>,
+        floating_panes_layout: &[FloatingPaneLayout],
     ) -> Result<bool> {
         let layout_has_floating_panes = self.floating_panes.has_panes();
-        let mut positions_in_layout = floating_panes_layout.clone();
+        let mut positions_in_layout = floating_panes_layout.to_vec();
         let mut logical_position = 0;
         for floating_pane_layout in positions_in_layout.iter_mut() {
             floating_pane_layout.logical_position = Some(logical_position);
@@ -964,14 +961,14 @@ impl<'a> LayoutApplier<'a> {
     }
     pub fn override_floating_panes_layout_for_existing_panes(
         &mut self,
-        floating_panes_layout: &Vec<FloatingPaneLayout>,
+        floating_panes_layout: &[FloatingPaneLayout],
         new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
         new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         retain_existing_terminal_panes: bool,
         retain_existing_plugin_panes: bool,
     ) -> Result<bool> {
         let layout_has_floating_panes = !floating_panes_layout.is_empty();
-        let mut positions_in_layout = floating_panes_layout.clone();
+        let mut positions_in_layout = floating_panes_layout.to_vec();
         let mut logical_position = 0;
         for floating_pane_layout in positions_in_layout.iter_mut() {
             floating_pane_layout.logical_position = Some(logical_position);
@@ -1263,8 +1260,12 @@ impl ExistingTabState {
     pub fn remove_pane(&mut self, pane_id: &PaneId) -> Option<Box<dyn Pane>> {
         self.existing_panes.remove(pane_id)
     }
-    fn pane_candidates(&self) -> Vec<(&PaneId, &Box<dyn Pane>)> {
-        let mut candidates: Vec<_> = self.existing_panes.iter().collect();
+    fn pane_candidates(&self) -> Vec<(&PaneId, &dyn Pane)> {
+        let mut candidates: Vec<_> = self
+            .existing_panes
+            .iter()
+            .map(|(id, pane)| (id, pane.as_ref()))
+            .collect();
         candidates.sort_by(|(a_id, a), (b_id, b)| {
             if let Some(order) = &self.order {
                 let rank = |id: &PaneId| {
@@ -1290,7 +1291,7 @@ impl ExistingTabState {
     }
     fn find_pane_id_with_same_contents(
         &self,
-        candidates: &Vec<(&PaneId, &Box<dyn Pane>)>,
+        candidates: &[(&PaneId, &dyn Pane)],
         run: &Option<Run>,
         pane_logical_position: Option<usize>,
     ) -> Option<PaneId> {
@@ -1322,7 +1323,7 @@ impl ExistingTabState {
     }
     fn find_pane_id_with_same_logical_position(
         &self,
-        candidates: &Vec<(&PaneId, &Box<dyn Pane>)>,
+        candidates: &[(&PaneId, &dyn Pane)],
         logical_position: Option<usize>,
     ) -> Option<PaneId> {
         candidates

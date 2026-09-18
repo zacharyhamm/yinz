@@ -33,6 +33,11 @@ use {
     zellij_ipc::ipc::ServerToClientMsg,
 };
 
+/// The plugin thread's end of the bus a test pty sends on.
+type PluginReceiver = channels::Receiver<(PluginInstruction, ErrorContext)>;
+/// The screen thread's end of the bus a test pty sends on.
+type ScreenReceiver = channels::Receiver<(ScreenInstruction, ErrorContext)>;
+
 #[derive(Clone)]
 struct MockOsApi {
     cwds: Arc<Mutex<HashMap<ProcessId, PathBuf>>>,
@@ -525,9 +530,7 @@ impl ServerOsApi for MockOsApi {
     }
 }
 
-fn make_pty_with_plugin_receiver(
-    mock: MockOsApi,
-) -> (Pty, channels::Receiver<(PluginInstruction, ErrorContext)>) {
+fn make_pty_with_plugin_receiver(mock: MockOsApi) -> (Pty, PluginReceiver) {
     let (plugin_tx, plugin_rx) = channels::unbounded();
     let plugin_sender = SenderWithContext::new(plugin_tx);
     let mut bus: Bus<PtyInstruction> = Bus::empty().should_silently_fail();
@@ -537,13 +540,7 @@ fn make_pty_with_plugin_receiver(
     (pty, plugin_rx)
 }
 
-fn make_pty_with_screen_receiver(
-    mock: MockOsApi,
-) -> (
-    Pty,
-    channels::Receiver<(PluginInstruction, ErrorContext)>,
-    channels::Receiver<(ScreenInstruction, ErrorContext)>,
-) {
+fn make_pty_with_screen_receiver(mock: MockOsApi) -> (Pty, PluginReceiver, ScreenReceiver) {
     let (plugin_tx, plugin_rx) = channels::unbounded();
     let (screen_tx, screen_rx) = channels::unbounded();
     let mut bus: Bus<PtyInstruction> = Bus::empty().should_silently_fail();
@@ -554,9 +551,7 @@ fn make_pty_with_screen_receiver(
     (pty, plugin_rx, screen_rx)
 }
 
-fn collect_pane_host_instructions(
-    rx: &channels::Receiver<(ScreenInstruction, ErrorContext)>,
-) -> Vec<(TerminalId, Option<String>)> {
+fn collect_pane_host_instructions(rx: &ScreenReceiver) -> Vec<(TerminalId, Option<String>)> {
     let mut updates = Vec::new();
     while let Ok((instruction, _)) = rx.try_recv() {
         if let ScreenInstruction::UpdatePaneHost(terminal_id, host, _) = instruction {
@@ -566,9 +561,7 @@ fn collect_pane_host_instructions(
     updates
 }
 
-fn collect_pane_cwd_instructions(
-    rx: &channels::Receiver<(ScreenInstruction, ErrorContext)>,
-) -> Vec<(TerminalId, Option<PathBuf>)> {
+fn collect_pane_cwd_instructions(rx: &ScreenReceiver) -> Vec<(TerminalId, Option<PathBuf>)> {
     let mut updates = Vec::new();
     while let Ok((instruction, _)) = rx.try_recv() {
         if let ScreenInstruction::UpdatePaneCwd(terminal_id, cwd) = instruction {
@@ -584,9 +577,7 @@ fn set_active_terminal(pty: &mut Pty, terminal_id: TerminalId, child_pid: Proces
     pty.pane_activity_flags.insert(terminal_id, flag);
 }
 
-fn collect_cwd_changed_events(
-    rx: &channels::Receiver<(PluginInstruction, ErrorContext)>,
-) -> Vec<(PaneId, PathBuf)> {
+fn collect_cwd_changed_events(rx: &PluginReceiver) -> Vec<(PaneId, PathBuf)> {
     let mut events = Vec::new();
     while let Ok((instruction, _)) = rx.try_recv() {
         if let PluginInstruction::Update(updates) = instruction {
@@ -600,9 +591,7 @@ fn collect_cwd_changed_events(
     events
 }
 
-fn collect_command_changed_events(
-    rx: &channels::Receiver<(PluginInstruction, ErrorContext)>,
-) -> Vec<(PaneId, Vec<String>, bool)> {
+fn collect_command_changed_events(rx: &PluginReceiver) -> Vec<(PaneId, Vec<String>, bool)> {
     let mut events = Vec::new();
     while let Ok((instruction, _)) = rx.try_recv() {
         if let PluginInstruction::Update(updates) = instruction {
@@ -2153,12 +2142,7 @@ fn a_remote_panes_pid_is_not_handed_to_plugins() {
 fn remote_pane(
     terminal_id: TerminalId,
     status: RemoteStatus,
-) -> (
-    Pty,
-    MockOsApi,
-    channels::Receiver<(PluginInstruction, ErrorContext)>,
-    channels::Receiver<(ScreenInstruction, ErrorContext)>,
-) {
+) -> (Pty, MockOsApi, PluginReceiver, ScreenReceiver) {
     let mock = MockOsApi::new();
     mock.set_remote_status(terminal_id, status);
     let (pty, plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
@@ -2763,9 +2747,7 @@ fn set_warpable_terminal(pty: &mut Pty, terminal_id: TerminalId) {
         .insert(terminal_id, async_runtime().spawn(async {}));
 }
 
-fn drain_screen(
-    rx: &channels::Receiver<(ScreenInstruction, ErrorContext)>,
-) -> Vec<ScreenInstruction> {
+fn drain_screen(rx: &ScreenReceiver) -> Vec<ScreenInstruction> {
     std::iter::from_fn(|| rx.try_recv().ok())
         .map(|(instruction, _)| instruction)
         .collect()
@@ -3149,9 +3131,7 @@ fn step_origin(step: &str) -> zellij_types::data::OriginatingPlugin {
     )
 }
 
-fn collect_command_pane_rerun_steps(
-    rx: &channels::Receiver<(PluginInstruction, ErrorContext)>,
-) -> Vec<String> {
+fn collect_command_pane_rerun_steps(rx: &PluginReceiver) -> Vec<String> {
     let mut steps = Vec::new();
     while let Ok((instruction, _)) = rx.try_recv() {
         if let PluginInstruction::Update(updates) = instruction {

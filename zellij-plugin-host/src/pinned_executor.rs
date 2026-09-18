@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 use crate::plugin_map::PluginMap;
 use crate::wasm_bridge::PluginCache;
 use crate::ClientId;
@@ -76,6 +75,7 @@ struct ExecutionThread {
     jobs_in_flight: Arc<AtomicUsize>, // Busy state tracking
 }
 
+/// A job's closure, handed the executor's shared state when it runs on its pinned thread.
 type JobWork = Box<
     dyn FnOnce(ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>, PluginCache, Engine)
         + Send
@@ -674,14 +674,18 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    // Test fixtures
-    fn create_test_dependencies() -> (
+    /// The executor's shared state as `create_test_dependencies` builds it, in the order a
+    /// job receives it.
+    type JobDependencies = (
         ThreadSenders,
         Arc<Mutex<PluginMap>>,
         Arc<Mutex<Vec<ClientId>>>,
         PluginCache,
         Engine,
-    ) {
+    );
+
+    // Test fixtures
+    fn create_test_dependencies() -> JobDependencies {
         use zellij_runtime::channels::{self, SenderWithContext};
 
         let (send_to_pty, _receive_pty) = channels::bounded(1);
@@ -732,19 +736,10 @@ mod tests {
     }
 
     // Helper to create a job that signals completion via channel
-    fn make_signaling_job(
-        tx: Sender<()>,
-    ) -> impl FnOnce(
-        ThreadSenders,
-        Arc<Mutex<PluginMap>>,
-        Arc<Mutex<Vec<ClientId>>>,
-        PluginCache,
-        Engine,
-    ) + Send
-           + 'static {
-        move |_senders, _plugin_map, _clients, _cache, _engine| {
+    fn make_signaling_job(tx: Sender<()>) -> JobWork {
+        Box::new(move |_senders, _plugin_map, _clients, _cache, _engine| {
             tx.send(()).unwrap();
-        }
+        })
     }
 
     // Helper to verify thread assignment by capturing thread name in job

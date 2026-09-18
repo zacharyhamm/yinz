@@ -2923,11 +2923,15 @@ pub fn cannot_resize_down_when_pane_has_fixed_rows() {
         rows: 20,
     };
 
-    let mut initial_layout = TiledPaneLayout::default();
-    initial_layout.children_split_direction = SplitDirection::Horizontal;
-    let mut fixed_child = TiledPaneLayout::default();
-    fixed_child.split_size = Some(SplitSize::Fixed(10));
-    initial_layout.children = vec![fixed_child, TiledPaneLayout::default()];
+    let fixed_child = TiledPaneLayout {
+        split_size: Some(SplitSize::Fixed(10)),
+        ..Default::default()
+    };
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Horizontal,
+        children: vec![fixed_child, TiledPaneLayout::default()],
+        ..Default::default()
+    };
     let mut tab = create_new_tab_with_layout(size, initial_layout);
     tab_resize_down(&mut tab, crate::ClientId::new(1));
 
@@ -2969,11 +2973,15 @@ pub fn cannot_resize_down_when_pane_below_has_fixed_rows() {
         rows: 20,
     };
 
-    let mut initial_layout = TiledPaneLayout::default();
-    initial_layout.children_split_direction = SplitDirection::Horizontal;
-    let mut fixed_child = TiledPaneLayout::default();
-    fixed_child.split_size = Some(SplitSize::Fixed(10));
-    initial_layout.children = vec![TiledPaneLayout::default(), fixed_child];
+    let fixed_child = TiledPaneLayout {
+        split_size: Some(SplitSize::Fixed(10)),
+        ..Default::default()
+    };
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Horizontal,
+        children: vec![TiledPaneLayout::default(), fixed_child],
+        ..Default::default()
+    };
     let mut tab = create_new_tab_with_layout(size, initial_layout);
     tab_resize_down(&mut tab, crate::ClientId::new(1));
 
@@ -3015,11 +3023,15 @@ pub fn cannot_resize_up_when_pane_below_has_fixed_rows() {
         rows: 20,
     };
 
-    let mut initial_layout = TiledPaneLayout::default();
-    initial_layout.children_split_direction = SplitDirection::Horizontal;
-    let mut fixed_child = TiledPaneLayout::default();
-    fixed_child.split_size = Some(SplitSize::Fixed(10));
-    initial_layout.children = vec![TiledPaneLayout::default(), fixed_child];
+    let fixed_child = TiledPaneLayout {
+        split_size: Some(SplitSize::Fixed(10)),
+        ..Default::default()
+    };
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Horizontal,
+        children: vec![TiledPaneLayout::default(), fixed_child],
+        ..Default::default()
+    };
     let mut tab = create_new_tab_with_layout(size, initial_layout);
     tab_resize_up(&mut tab, crate::ClientId::new(1));
 

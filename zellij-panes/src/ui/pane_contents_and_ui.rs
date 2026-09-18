@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 use crate::output::{CharacterChunk, Output};
 use crate::panes::terminal_character::AnsiCode;
 use crate::panes::PaneId;
@@ -16,7 +15,7 @@ use {
     zellij_types::data::PaletteColor,
 };
 
-pub fn dim_character_chunks(character_chunks: &mut Vec<CharacterChunk>) {
+pub fn dim_character_chunks(character_chunks: &mut [CharacterChunk]) {
     for chunk in character_chunks.iter_mut() {
         for terminal_character in chunk.terminal_characters.iter_mut() {
             terminal_character.styles.update(|styles| {

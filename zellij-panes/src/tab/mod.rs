@@ -1,8 +1,3 @@
-#![allow(clippy::type_complexity)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::borrowed_box)]
-#![allow(clippy::same_item_push)]
-#![allow(clippy::if_same_then_else)]
 //! `Tab`s holds multiple panes. It tracks their coordinates (x/y) and size,
 //! as well as how they should be resized
 
@@ -423,6 +418,15 @@ pub struct Tab {
     tab_visible: bool,
 }
 
+/// One rendered frame of a pane: its character chunks, the raw vte output to forward to the
+/// client (if any), and its sixel and kitty image chunks.
+pub type RenderedPane = (
+    Vec<CharacterChunk>,
+    Option<String>,
+    Vec<SixelImageChunk>,
+    Vec<KittyImageChunk>,
+);
+
 // FIXME: Use a struct that has a pane_type enum, to reduce all of the duplication
 pub trait Pane {
     fn x(&self) -> usize;
@@ -466,17 +470,7 @@ pub trait Pane {
     fn selectable(&self) -> bool;
     fn set_selectable(&mut self, selectable: bool);
     fn request_permissions_from_user(&mut self, _permissions: Option<PluginPermission>) {}
-    fn render(
-        &mut self,
-        client_id: Option<ClientId>,
-    ) -> Result<
-        Option<(
-            Vec<CharacterChunk>,
-            Option<String>,
-            Vec<SixelImageChunk>,
-            Vec<KittyImageChunk>,
-        )>,
-    >; // TODO: better
+    fn render(&mut self, client_id: Option<ClientId>) -> Result<Option<RenderedPane>>;
     /// Clients whose next Esc confirms input to this pane; only their frame shows the hint.
     fn set_pending_agent_escape_clients(&mut self, _clients: HashSet<ClientId>) {}
 
@@ -1540,7 +1534,7 @@ impl Tab {
     pub fn hidden_stack_list_members_for_serialization(
         &self,
         floating: bool,
-    ) -> Vec<(PaneId, &Box<dyn Pane>, PaneGeom)> {
+    ) -> Vec<(PaneId, &dyn Pane, PaneGeom)> {
         let synthetic_geoms = self.stack_list_serialization_geoms();
         let mut hidden_members = vec![];
         for list in self.stack_lists.values() {
@@ -1566,7 +1560,11 @@ impl Tab {
                     .scrollback_editor_subject(*member)
                     .or_else(|| self.suppressed_panes.get(member));
                 if let Some(suppressed) = resolved_pane {
-                    hidden_members.push((suppressed.pane.pid(), &suppressed.pane, member_geom));
+                    hidden_members.push((
+                        suppressed.pane.pid(),
+                        suppressed.pane.as_ref(),
+                        member_geom,
+                    ));
                 }
             }
         }
@@ -2208,10 +2206,7 @@ impl Tab {
                     )?;
                 }
             }
-            let mut padding_row = Vec::with_capacity(entry_cols);
-            for _ in 0..entry_cols {
-                padding_row.push(EMPTY_TERMINAL_CHARACTER);
-            }
+            let padding_row = vec![EMPTY_TERMINAL_CHARACTER; entry_cols];
             let padding_chunk =
                 CharacterChunk::new(padding_row, entry_x, rect.y + list.members.len());
             output.add_character_chunks_to_multiple_clients(
@@ -2252,7 +2247,7 @@ impl Tab {
             &mut self.floating_panes,
             self.pane_frame_style,
             &mut self.focus_pane_id,
-            &self.os_api,
+            self.os_api.as_ref(),
             self.debug,
             self.arrow_fonts,
             self.styled_underlines,
@@ -2269,10 +2264,9 @@ impl Tab {
             client_id,
         ) {
             Ok(should_show_floating_panes) => {
-                if should_show_floating_panes && !self.floating_panes.panes_are_visible() {
-                    self.toggle_floating_panes(Some(client_id), None, None)
-                        .non_fatal();
-                } else if !should_show_floating_panes && self.floating_panes.panes_are_visible() {
+                // the layout wants floating panes shown while they are hidden, or hidden while
+                // they are shown: toggle either way
+                if should_show_floating_panes != self.floating_panes.panes_are_visible() {
                     self.toggle_floating_panes(Some(client_id), None, None)
                         .non_fatal();
                 }
@@ -2345,7 +2339,7 @@ impl Tab {
             &mut self.floating_panes,
             self.pane_frame_style,
             &mut self.focus_pane_id,
-            &self.os_api,
+            self.os_api.as_ref(),
             self.debug,
             self.arrow_fonts,
             self.styled_underlines,
@@ -2364,10 +2358,9 @@ impl Tab {
             client_id,
         ) {
             Ok(should_show_floating_panes) => {
-                if should_show_floating_panes && !self.floating_panes.panes_are_visible() {
-                    self.toggle_floating_panes(Some(client_id), None, None)
-                        .non_fatal();
-                } else if !should_show_floating_panes && self.floating_panes.panes_are_visible() {
+                // the layout wants floating panes shown while they are hidden, or hidden while
+                // they are shown: toggle either way
+                if should_show_floating_panes != self.floating_panes.panes_are_visible() {
                     self.toggle_floating_panes(Some(client_id), None, None)
                         .non_fatal();
                 }
@@ -2441,7 +2434,7 @@ impl Tab {
                 &mut self.floating_panes,
                 self.pane_frame_style,
                 &mut self.focus_pane_id,
-                &self.os_api,
+                self.os_api.as_ref(),
                 self.debug,
                 self.arrow_fonts,
                 self.styled_underlines,
@@ -2567,7 +2560,7 @@ impl Tab {
             &mut self.floating_panes,
             self.pane_frame_style,
             &mut self.focus_pane_id,
-            &self.os_api,
+            self.os_api.as_ref(),
             self.debug,
             self.arrow_fonts,
             self.styled_underlines,
@@ -2613,7 +2606,7 @@ impl Tab {
                 &mut self.floating_panes,
                 self.pane_frame_style,
                 &mut self.focus_pane_id,
-                &self.os_api,
+                self.os_api.as_ref(),
                 self.debug,
                 self.arrow_fonts,
                 self.styled_underlines,
@@ -8428,7 +8421,7 @@ impl Tab {
                 .stacked_pane_ids_under_and_over_flexible_panes()
                 .with_context(err_context)?
         };
-        let pane_contains_point = |p: &Box<dyn Pane>,
+        let pane_contains_point = |p: &dyn Pane,
                                    point: &Position,
                                    stacked_pane_ids_under_flexible_pane: &HashSet<PaneId>|
          -> bool {
@@ -8460,11 +8453,15 @@ impl Tab {
 
         let found_pane_id = if search_selectable {
             self.get_selectable_tiled_panes()
-                .find(|(_, p)| pane_contains_point(p, point, &stacked_pane_ids_under_flexible_pane))
+                .find(|(_, p)| {
+                    pane_contains_point(p.as_ref(), point, &stacked_pane_ids_under_flexible_pane)
+                })
                 .map(|(&id, _)| id)
         } else {
             self.get_tiled_panes()
-                .find(|(_, p)| pane_contains_point(p, point, &stacked_pane_ids_under_flexible_pane))
+                .find(|(_, p)| {
+                    pane_contains_point(p.as_ref(), point, &stacked_pane_ids_under_flexible_pane)
+                })
                 .map(|(&id, _)| id)
         };
         let resolved_pane_id = found_pane_id.map(|id| self.stack_list_member_at_point(id, point));
@@ -10546,26 +10543,6 @@ pub fn pane_info_for_pane(
     pane: &dyn Pane,
     current_pane_group: &HashMap<ClientId, Vec<PaneId>>,
 ) -> PaneInfo {
-    let mut pane_info = PaneInfo::default();
-    pane_info.pane_x = zellij_types::position::Column::new(pane.x());
-    pane_info.pane_content_x = zellij_types::position::Column::new(pane.get_content_x());
-    pane_info.pane_y = zellij_types::position::Row::new(pane.y());
-    pane_info.pane_content_y = zellij_types::position::Row::new(pane.get_content_y());
-    pane_info.pane_rows = zellij_types::position::RowCount::new(pane.rows());
-    pane_info.pane_content_rows = zellij_types::position::RowCount::new(pane.get_content_rows());
-    pane_info.pane_columns = zellij_types::position::ColumnCount::new(pane.cols());
-    pane_info.pane_content_columns =
-        zellij_types::position::ColumnCount::new(pane.get_content_columns());
-    pane_info.cursor_coordinates_in_pane = pane
-        .cursor_coordinates(None)
-        .and_then(|(x, y, is_visible)| if is_visible { Some((x, y)) } else { None })
-        .map(Into::into);
-    pane_info.is_selectable = pane.selectable();
-    pane_info.title = pane.current_title();
-    pane_info.exited = pane.exited();
-    pane_info.exit_status = pane.exit_status();
-    pane_info.is_held = pane.is_held();
-    pane_info.restart_error = pane.restart_error();
     let index_in_pane_group: BTreeMap<ClientId, usize> = current_pane_group
         .iter()
         .filter_map(|(client_id, pane_ids)| {
@@ -10575,12 +10552,32 @@ pub fn pane_info_for_pane(
                 .map(|position| (*client_id, position))
         })
         .collect();
-    pane_info.index_in_pane_group = index_in_pane_group;
-
     let (default_fg, default_bg) = pane.get_pane_default_colors();
-    pane_info.default_fg = default_fg;
-    pane_info.default_bg = default_bg;
-    pane_info.agent = pane.agent_info().cloned();
+    let mut pane_info = PaneInfo {
+        pane_x: zellij_types::position::Column::new(pane.x()),
+        pane_content_x: zellij_types::position::Column::new(pane.get_content_x()),
+        pane_y: zellij_types::position::Row::new(pane.y()),
+        pane_content_y: zellij_types::position::Row::new(pane.get_content_y()),
+        pane_rows: zellij_types::position::RowCount::new(pane.rows()),
+        pane_content_rows: zellij_types::position::RowCount::new(pane.get_content_rows()),
+        pane_columns: zellij_types::position::ColumnCount::new(pane.cols()),
+        pane_content_columns: zellij_types::position::ColumnCount::new(pane.get_content_columns()),
+        cursor_coordinates_in_pane: pane
+            .cursor_coordinates(None)
+            .and_then(|(x, y, is_visible)| if is_visible { Some((x, y)) } else { None })
+            .map(Into::into),
+        is_selectable: pane.selectable(),
+        title: pane.current_title(),
+        exited: pane.exited(),
+        exit_status: pane.exit_status(),
+        is_held: pane.is_held(),
+        restart_error: pane.restart_error(),
+        index_in_pane_group,
+        default_fg,
+        default_bg,
+        agent: pane.agent_info().cloned(),
+        ..Default::default()
+    };
 
     match pane_id {
         PaneId::Terminal(terminal_id) => {

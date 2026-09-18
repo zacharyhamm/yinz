@@ -1,5 +1,3 @@
-#![allow(clippy::type_complexity)]
-#![allow(clippy::unnecessary_unwrap)]
 //! Things related to [`Screen`]s.
 //!
 //! # Tab Identification
@@ -536,6 +534,26 @@ pub(super) enum ThemePolicy {
     Pinned(HostTerminalThemeMode),
 }
 
+/// The channel a warp's caller waits on for the serialized pane or tab, or for the reason it
+/// could not be produced.
+type WarpReplySender<T> = crossbeam::channel::Sender<Result<Box<T>, String>>;
+
+/// Where a warped-in group of panes goes once its tab exists: the placement asked for, the tab
+/// it is relative to, the client that asked, and the channel told when the placement is done.
+type PendingGroupPlacement = (
+    zellij_types::data::WarpPlacement,
+    Option<TabId>,
+    ClientId,
+    Option<crossbeam::channel::Sender<Result<()>>>,
+);
+
+/// A plugin's subscription to pane output: the context a pane's originating plugin must match
+/// for its output to be forwarded, and the plugin generation the events are stamped with.
+type PaneOutputSubscription = (BTreeMap<String, String>, Option<u64>);
+
+/// The panes of a tab as a layout lists them, each with the metadata it is serialized from.
+type LayoutPanes = Vec<(PaneId, PaneLayoutMetadata)>;
+
 pub(crate) struct Screen {
     /// A Bus for sending and receiving messages with the other threads.
     pub bus: Bus<ScreenInstruction>,
@@ -676,13 +694,7 @@ pub(crate) struct Screen {
     /// what closes it: by the time a send could report that nobody is
     /// listening, the pane is already gone and its process unwatched. Comparing
     /// against this before starting is the only chance to notice in time.
-    pending_warps: HashMap<
-        TerminalId,
-        (
-            crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
-            std::time::Instant,
-        ),
-    >,
+    pending_warps: HashMap<TerminalId, (WarpReplySender<WarpedPane>, std::time::Instant)>,
     /// The same idea as `pending_warps`, keyed by tab id rather than terminal id
     /// because a tab's release is answered once for the whole tab — and carrying
     /// the arrangement, which was worked out before the release so that a tab
@@ -697,25 +709,17 @@ pub(crate) struct Screen {
     pending_pane_groups: HashMap<
         TabId,
         (
-            crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
+            WarpReplySender<WarpedPane>,
             PreparedTabWarp,
             std::time::Instant,
         ),
     >,
-    pending_group_placements: HashMap<
-        TabId,
-        (
-            zellij_types::data::WarpPlacement,
-            Option<TabId>,
-            ClientId,
-            Option<crossbeam::channel::Sender<Result<()>>>,
-        ),
-    >,
+    pending_group_placements: HashMap<TabId, PendingGroupPlacement>,
     pending_warp_relationships: HashMap<TabId, zellij_types::data::WarpRelationships>,
     pending_tab_warps: HashMap<
         TabId,
         (
-            crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
+            WarpReplySender<WarpedTab>,
             PreparedTabWarp,
             std::time::Instant,
         ),
@@ -815,8 +819,7 @@ pub(crate) struct Screen {
     /// Session-lifetime tombstones, relying on terminal and plugin IDs not being reused.
     /// Absent panes with these IDs are already closed; unknown IDs may be awaiting creation.
     destroyed_panes: HashSet<PaneId>,
-    pane_output_subscriptions:
-        HashMap<(PluginId, ClientId), (BTreeMap<String, String>, Option<u64>)>,
+    pane_output_subscriptions: HashMap<(PluginId, ClientId), PaneOutputSubscription>,
 
     /// Whether each client's host terminal currently has keyboard focus, as reported through
     /// DECSET 1004. A client that never reported counts as focused.
@@ -4247,21 +4250,18 @@ impl Screen {
         tab: &Tab,
         with_contents: bool,
         for_warp: bool,
-    ) -> (
-        Vec<(PaneId, PaneLayoutMetadata)>,
-        Vec<(PaneId, PaneLayoutMetadata)>,
-        bool,
-    ) {
+    ) -> (LayoutPanes, LayoutPanes, bool) {
         {
             let hide_floating_panes = !tab.are_floating_panes_visible();
             // keyed by the stand-in, which is what the loops below are walking:
             // a slot occupied by a scrollback editor serializes as the pane the
             // editor is editing
-            let mut scrollback_editor_subjects: HashMap<PaneId, &Box<dyn Pane>> = HashMap::new();
+            let mut scrollback_editor_subjects: HashMap<PaneId, &dyn Pane> = HashMap::new();
             for (_pane_id, suppressed) in tab.get_suppressed_panes() {
                 if let Some(stand_in) = suppressed.restored_by {
                     if stand_in.is_scrollback_editor && !for_warp {
-                        scrollback_editor_subjects.insert(stand_in.pane_id, &suppressed.pane);
+                        scrollback_editor_subjects
+                            .insert(stand_in.pane_id, suppressed.pane.as_ref());
                     }
                 }
             }
@@ -4298,7 +4298,7 @@ impl Screen {
                     let geom_override = stack_list_geoms.get(pane_id).copied();
                     let (pane_id, p) = match scrollback_editor_subjects.remove(pane_id) {
                         Some(subject) => (subject.pid(), subject),
-                        None => (*pane_id, p),
+                        None => (*pane_id, p.as_ref()),
                     };
                     (
                         pane_id,
@@ -4354,7 +4354,7 @@ impl Screen {
                 // editor pane
                 match scrollback_editor_subjects.remove(pane_id) {
                     Some(subject) => (subject.pid(), subject, p.position_and_size()),
-                    None => (*pane_id, p, p.position_and_size()),
+                    None => (*pane_id, p.as_ref(), p.position_and_size()),
                 }
             }))
             .map(|(pane_id, p, geom)| {

@@ -1793,15 +1793,12 @@ pub(crate) fn screen_thread_main(
                     _completion_tx, // the action ends here, dropping this will release anything
                                     // waiting for it
                 ) => {
-                    let client_id_to_switch = if client_id.is_none() {
-                        None
-                    } else if screen
-                        .active_tab_ids
-                        .contains_key(&client_id.expect("This is checked above"))
-                    {
-                        client_id
-                    } else {
-                        screen.active_tab_ids.keys().next().copied()
+                    let client_id_to_switch = match client_id {
+                        None => None,
+                        Some(client_id) if screen.active_tab_ids.contains_key(&client_id) => {
+                            Some(client_id)
+                        },
+                        Some(_) => screen.active_tab_ids.keys().next().copied(),
                     };
                     match client_id_to_switch {
                         // we must make sure no tab is pending because otherwise we cannot be

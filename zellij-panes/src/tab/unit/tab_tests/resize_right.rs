@@ -2971,11 +2971,15 @@ pub fn cannot_resize_right_when_pane_has_fixed_columns() {
         rows: 20,
     };
 
-    let mut initial_layout = TiledPaneLayout::default();
-    initial_layout.children_split_direction = SplitDirection::Vertical;
-    let mut fixed_child = TiledPaneLayout::default();
-    fixed_child.split_size = Some(SplitSize::Fixed(60));
-    initial_layout.children = vec![fixed_child, TiledPaneLayout::default()];
+    let fixed_child = TiledPaneLayout {
+        split_size: Some(SplitSize::Fixed(60)),
+        ..Default::default()
+    };
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: vec![fixed_child, TiledPaneLayout::default()],
+        ..Default::default()
+    };
     let mut tab = create_new_tab_with_layout(size, initial_layout);
     tab_resize_down(&mut tab, crate::ClientId::new(1));
 

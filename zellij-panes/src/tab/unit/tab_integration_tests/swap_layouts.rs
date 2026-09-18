@@ -49,12 +49,16 @@ fn layout_with_plugins_and_commands_swaped_properly() {
             .template
             .unwrap();
 
-    let mut command_1 = RunCommand::default();
-    command_1.command = PathBuf::from("command1");
-    command_1.hold_on_close = true;
-    let mut command_2 = RunCommand::default();
-    command_2.command = PathBuf::from("command2");
-    command_2.hold_on_close = true;
+    let command_1 = RunCommand {
+        command: PathBuf::from("command1"),
+        hold_on_close: true,
+        ..Default::default()
+    };
+    let command_2 = RunCommand {
+        command: PathBuf::from("command2"),
+        hold_on_close: true,
+        ..Default::default()
+    };
     let new_terminal_ids = vec![
         (TerminalId::new(1), Some(command_1)),
         (TerminalId::new(2), None),
@@ -178,10 +182,14 @@ fn base_layout_is_included_in_swap_layouts() {
             .template
             .unwrap();
 
-    let mut command_1 = RunCommand::default();
-    command_1.command = PathBuf::from("command1");
-    let mut command_2 = RunCommand::default();
-    command_2.command = PathBuf::from("command2");
+    let command_1 = RunCommand {
+        command: PathBuf::from("command1"),
+        ..Default::default()
+    };
+    let command_2 = RunCommand {
+        command: PathBuf::from("command2"),
+        ..Default::default()
+    };
     let new_terminal_ids = vec![
         (TerminalId::new(1), Some(command_1)),
         (TerminalId::new(2), None),
@@ -429,10 +437,14 @@ fn swap_layouts_not_including_command_panes_present_in_existing_layout() {
             .template
             .unwrap();
 
-    let mut command_1 = RunCommand::default();
-    command_1.command = PathBuf::from("command1");
-    let mut command_2 = RunCommand::default();
-    command_2.command = PathBuf::from("command2");
+    let command_1 = RunCommand {
+        command: PathBuf::from("command1"),
+        ..Default::default()
+    };
+    let command_2 = RunCommand {
+        command: PathBuf::from("command2"),
+        ..Default::default()
+    };
     let new_terminal_ids = vec![
         (TerminalId::new(1), Some(command_1)),
         (TerminalId::new(2), None),
@@ -645,10 +657,14 @@ fn swap_layouts_not_including_plugin_panes_present_in_existing_layout() {
             .template
             .unwrap();
 
-    let mut command_1 = RunCommand::default();
-    command_1.command = PathBuf::from("command1");
-    let mut command_2 = RunCommand::default();
-    command_2.command = PathBuf::from("command2");
+    let command_1 = RunCommand {
+        command: PathBuf::from("command1"),
+        ..Default::default()
+    };
+    let command_2 = RunCommand {
+        command: PathBuf::from("command2"),
+        ..Default::default()
+    };
     let new_terminal_ids = vec![
         (TerminalId::new(1), Some(command_1)),
         (TerminalId::new(2), None),
@@ -1300,10 +1316,14 @@ fn floating_layout_with_plugins_and_commands_swaped_properly() {
             .template
             .unwrap();
 
-    let mut command_1 = RunCommand::default();
-    command_1.command = PathBuf::from("command1");
-    let mut command_2 = RunCommand::default();
-    command_2.command = PathBuf::from("command2");
+    let command_1 = RunCommand {
+        command: PathBuf::from("command1"),
+        ..Default::default()
+    };
+    let command_2 = RunCommand {
+        command: PathBuf::from("command2"),
+        ..Default::default()
+    };
     let new_floating_terminal_ids = vec![
         (TerminalId::new(1), Some(command_1)),
         (TerminalId::new(2), None),
@@ -1425,10 +1445,14 @@ fn base_floating_layout_is_included_in_swap_layouts() {
             .template
             .unwrap();
 
-    let mut command_1 = RunCommand::default();
-    command_1.command = PathBuf::from("command1");
-    let mut command_2 = RunCommand::default();
-    command_2.command = PathBuf::from("command2");
+    let command_1 = RunCommand {
+        command: PathBuf::from("command1"),
+        ..Default::default()
+    };
+    let command_2 = RunCommand {
+        command: PathBuf::from("command2"),
+        ..Default::default()
+    };
     let new_floating_terminal_ids = vec![
         (TerminalId::new(1), Some(command_1)),
         (TerminalId::new(2), None),
@@ -1676,10 +1700,14 @@ fn swap_floating_layouts_not_including_command_panes_present_in_existing_layout(
             .template
             .unwrap();
 
-    let mut command_1 = RunCommand::default();
-    command_1.command = PathBuf::from("command1");
-    let mut command_2 = RunCommand::default();
-    command_2.command = PathBuf::from("command2");
+    let command_1 = RunCommand {
+        command: PathBuf::from("command1"),
+        ..Default::default()
+    };
+    let command_2 = RunCommand {
+        command: PathBuf::from("command2"),
+        ..Default::default()
+    };
     let new_floating_terminal_ids = vec![
         (TerminalId::new(1), Some(command_1)),
         (TerminalId::new(2), None),
@@ -1877,10 +1905,14 @@ fn swap_floating_layouts_not_including_plugin_panes_present_in_existing_layout()
             .template
             .unwrap();
 
-    let mut command_1 = RunCommand::default();
-    command_1.command = PathBuf::from("command1");
-    let mut command_2 = RunCommand::default();
-    command_2.command = PathBuf::from("command2");
+    let command_1 = RunCommand {
+        command: PathBuf::from("command1"),
+        ..Default::default()
+    };
+    let command_2 = RunCommand {
+        command: PathBuf::from("command2"),
+        ..Default::default()
+    };
     let new_floating_terminal_ids = vec![
         (TerminalId::new(1), Some(command_1)),
         (TerminalId::new(2), None),

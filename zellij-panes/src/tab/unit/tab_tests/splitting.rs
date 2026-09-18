@@ -503,11 +503,15 @@ pub fn cannot_split_largest_pane_when_there_is_no_room() {
 #[test]
 pub fn cannot_split_panes_vertically_when_active_pane_has_fixed_columns() {
     let size = Size { cols: 50, rows: 20 };
-    let mut initial_layout = TiledPaneLayout::default();
-    initial_layout.children_split_direction = SplitDirection::Vertical;
-    let mut fixed_child = TiledPaneLayout::default();
-    fixed_child.split_size = Some(SplitSize::Fixed(30));
-    initial_layout.children = vec![fixed_child, TiledPaneLayout::default()];
+    let fixed_child = TiledPaneLayout {
+        split_size: Some(SplitSize::Fixed(30)),
+        ..Default::default()
+    };
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: vec![fixed_child, TiledPaneLayout::default()],
+        ..Default::default()
+    };
     let mut tab = create_new_tab_with_layout(size, initial_layout);
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(3)),
@@ -523,11 +527,15 @@ pub fn cannot_split_panes_vertically_when_active_pane_has_fixed_columns() {
 #[test]
 pub fn cannot_split_panes_horizontally_when_active_pane_has_fixed_rows() {
     let size = Size { cols: 50, rows: 20 };
-    let mut initial_layout = TiledPaneLayout::default();
-    initial_layout.children_split_direction = SplitDirection::Horizontal;
-    let mut fixed_child = TiledPaneLayout::default();
-    fixed_child.split_size = Some(SplitSize::Fixed(12));
-    initial_layout.children = vec![fixed_child, TiledPaneLayout::default()];
+    let fixed_child = TiledPaneLayout {
+        split_size: Some(SplitSize::Fixed(12)),
+        ..Default::default()
+    };
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Horizontal,
+        children: vec![fixed_child, TiledPaneLayout::default()],
+        ..Default::default()
+    };
     let mut tab = create_new_tab_with_layout(size, initial_layout);
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(3)),

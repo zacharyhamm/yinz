@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 use crate::{ClientId, PaneId};
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::internal_ids::{ProcessId, SessionName};
@@ -590,13 +589,17 @@ impl FirecrackerRenames {
     }
 }
 
+/// A resize held back while resizes are being cached: columns, rows, and the pixel width
+/// and height when the client reported them.
+type CachedResize = (u16, u16, Option<u16>, Option<u16>);
+
 #[derive(Clone)]
 pub struct ServerOsInputOutput {
     pty_backend: PtyBackendImpl,
     client_senders: Arc<Mutex<HashMap<ClientId, ClientSender>>>,
     /// Writer threads that have not finished draining yet. See `LiveWriters`.
     live_writers: Arc<LiveWriters>,
-    cached_resizes: Arc<Mutex<Option<BTreeMap<TerminalId, (u16, u16, Option<u16>, Option<u16>)>>>>,
+    cached_resizes: Arc<Mutex<Option<BTreeMap<TerminalId, CachedResize>>>>,
     /// ssh forwards to the machines this session has remote panes on. One per
     /// host and option set, shared by every matching pane.
     remote_hosts: Arc<RemoteHosts>,
