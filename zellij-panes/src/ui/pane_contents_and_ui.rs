@@ -1,5 +1,4 @@
 #![allow(clippy::ptr_arg)]
-#![allow(clippy::too_many_arguments)]
 use crate::output::{CharacterChunk, Output};
 use crate::panes::terminal_character::AnsiCode;
 use crate::panes::PaneId;

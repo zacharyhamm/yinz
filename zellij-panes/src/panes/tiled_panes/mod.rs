@@ -1,7 +1,6 @@
 #![allow(clippy::needless_return)]
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::collapsible_if)]
-#![allow(clippy::match_like_matches_macro)]
 #![allow(clippy::option_map_unit_fn)]
 #![allow(clippy::manual_inspect)]
 mod pane_resizer;

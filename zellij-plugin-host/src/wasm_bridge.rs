@@ -1,6 +1,4 @@
 #![allow(clippy::type_complexity)]
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::large_enum_variant)]
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::iter_overeager_cloned)]
 use super::{PinnedExecutor, PluginId, PluginInstruction};

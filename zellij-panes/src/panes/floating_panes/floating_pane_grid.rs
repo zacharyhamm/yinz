@@ -1,5 +1,4 @@
 #![allow(clippy::needless_borrow)]
-#![allow(clippy::borrow_deref_ref)]
 #![allow(clippy::get_first)]
 #![allow(clippy::needless_return)]
 use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};

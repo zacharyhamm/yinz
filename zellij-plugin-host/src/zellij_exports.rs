@@ -2,10 +2,7 @@
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::useless_borrows_in_formatting)]
 #![allow(clippy::clone_on_copy)]
-#![allow(clippy::manual_flatten)]
 #![allow(clippy::useless_conversion)]
-#![allow(clippy::let_unit_value)]
-#![allow(clippy::needless_borrows_for_generic_args)]
 #![allow(clippy::redundant_closure)]
 use super::PluginInstruction;
 use crate::plugin_map::{PluginEnv, ResponseSink};

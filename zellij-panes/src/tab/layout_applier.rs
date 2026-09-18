@@ -1,5 +1,4 @@
 #![allow(clippy::borrowed_box)]
-#![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::explicit_counter_loop)]
 #![allow(clippy::ptr_arg)]

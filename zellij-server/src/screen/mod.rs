@@ -1,9 +1,3 @@
-// Clippy allows are intentional for this large file; they suppress lints that
-// would otherwise churn the branch. Keep with comment or fix incrementally.
-// See REVIEW_CHECKLIST.md "Many clippy allows hide warnings".
-#![allow(clippy::large_enum_variant)]
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::manual_pattern_char_comparison)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::unwrap_or_default)]
 #![allow(clippy::iter_kv_map)]
@@ -12,7 +6,6 @@
 #![allow(clippy::unnecessary_unwrap)]
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::unnecessary_get_then_check)]
-#![allow(clippy::unnecessary_sort_by)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::collapsible_if)]
@@ -20,12 +13,7 @@
 #![allow(clippy::needless_option_take)]
 #![allow(clippy::needless_return)]
 #![allow(clippy::option_map_unit_fn)]
-#![allow(clippy::unnecessary_map_or)]
 #![allow(clippy::useless_conversion)]
-#![allow(clippy::manual_filter)]
-#![allow(clippy::redundant_pattern_matching)]
-#![allow(clippy::iter_next_slice)]
-#![allow(clippy::unnecessary_cast)]
 //! Things related to [`Screen`]s.
 //!
 //! # Tab Identification

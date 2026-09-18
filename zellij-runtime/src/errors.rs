@@ -1,5 +1,4 @@
 // false positive: thiserror's derive macro triggers unused_assignments on struct-style enum variant fields
-#![allow(unused_assignments)]
 //! Error context system based on a thread-local representation of the call stack, itself based on
 //! the instructions that are sent between threads.
 //!
