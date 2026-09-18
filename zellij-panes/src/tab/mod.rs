@@ -94,31 +94,6 @@ use {
 
 #[macro_export]
 macro_rules! resize_pty {
-    ($pane:expr, $os_input:expr, $senders:expr) => {{
-        match $pane.pid() {
-            PaneId::Terminal(ref pid) => {
-                $senders
-                    .send_to_pty_writer(PtyWriteInstruction::ResizePty(
-                        *pid,
-                        $pane.get_content_columns() as u16,
-                        $pane.get_content_rows() as u16,
-                        None,
-                        None,
-                    ))
-                    .with_context(err_context);
-            },
-            PaneId::Plugin(ref pid) => {
-                let err_context = || format!("failed to resize plugin {pid}");
-                $senders
-                    .send_to_plugin(PluginInstruction::Resize(
-                        *pid,
-                        $pane.get_content_columns(),
-                        $pane.get_content_rows(),
-                    ))
-                    .with_context(err_context)
-            },
-        }
-    }};
     ($pane:expr, $os_input:expr, $senders:expr, $character_cell_size:expr) => {{
         let (width_in_pixels, height_in_pixels) = {
             let character_cell_size = $character_cell_size.borrow();

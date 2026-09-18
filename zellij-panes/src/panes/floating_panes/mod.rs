@@ -1473,12 +1473,13 @@ impl FloatingPanes {
                 pane.set_content_offset(Offset::default());
             }
         }
-        let _ = resize_pty!(
+        resize_pty!(
             self.panes.get_mut(&pane_id).unwrap(),
             os_api,
             self.senders,
             self.character_cell_size
-        );
+        )
+        .non_fatal();
         self.fullscreen_pane_id = Some(pane_id);
         self.floating_fullscreen_covers_ui = covers_ui;
         self.focus_pane_for_all_clients(pane_id);
@@ -1494,7 +1495,7 @@ impl FloatingPanes {
                 } else {
                     pane.set_content_offset(Offset::default());
                 }
-                let _ = resize_pty!(pane, os_api, self.senders, self.character_cell_size);
+                resize_pty!(pane, os_api, self.senders, self.character_cell_size).non_fatal();
             }
             self.floating_fullscreen_covers_ui = false;
             self.set_force_render();
