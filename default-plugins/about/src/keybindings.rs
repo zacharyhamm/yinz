@@ -56,7 +56,10 @@ pub enum ApplyStatus {
     NotApplied,
     Applying,
     Applied,
-    Failed(Option<String>),
+    Failed {
+        file_path: Option<String>,
+        reason: Option<String>,
+    },
 }
 
 #[derive(Debug)]

@@ -24,7 +24,7 @@ export interface EventPayloads {
   WebRequestStreamChunk: {stream_id: string; chunk: number[]; done: boolean; error: string | null};
   CommandPaneOpened: [number, StringMap]; CommandPaneExited: [number, number | null, StringMap]; PaneClosed: PaneId;
   EditPaneOpened: [number, StringMap]; EditPaneExited: [number, number | null, StringMap]; CommandPaneReRun: [number, StringMap];
-  FailedToWriteConfigToDisk: string | null; ListClients: ClientInfo[]; HostFolderChanged: string; FailedToChangeHostFolder: string | null;
+  FailedToWriteConfigToDisk: {file_path: string | null; reason: string | null}; ListClients: ClientInfo[]; HostFolderChanged: string; FailedToChangeHostFolder: string | null;
   PastedText: string; InterceptedKeyPress: KeyWithModifier; UserAction: [Action, number, number | null, number | null];
   PaneRenderReport: Record<`terminal_${number}` | `plugin_${number}`, PaneContents>; ActionComplete: [Action, PaneId | null, StringMap];
   CwdChanged: [PaneId, string, number[]]; CommandChanged: [PaneId, string[], boolean, number[]]; AvailableLayoutInfo: [LayoutInfo[], LayoutWithError[]];

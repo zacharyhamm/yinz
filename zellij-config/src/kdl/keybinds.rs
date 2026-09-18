@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::NotWritableIn;
 fn bind_keys_in_block(
     block: &KdlNode,
     input_mode_keybinds: &mut HashMap<KeyWithModifier, Vec<Action>>,
@@ -222,23 +223,34 @@ fn serialize_mode_title_node(_value: &Keybinds, input_modes: &BTreeSet<InputMode
         node
     }
 }
+/// The `bind` lines of one mode block. An action with no KDL spelling is an error naming the
+/// binding it sits in, never a line quietly left out: a binding that vanishes on save is a
+/// binding the user loses.
 fn serialize_mode_keybinds(
-    _value: &Keybinds,
+    input_modes: &BTreeSet<InputMode>,
     keybinds: &BTreeMap<KeyWithModifier, Vec<Action>>,
-) -> KdlDocument {
+) -> Result<KdlDocument, NotWritableIn> {
     let mut mode_keybinds = KdlDocument::new();
     for keybind in keybinds {
         let mut keybind_node = KdlNode::new("bind");
         keybind_node.push(keybind.0.to_keybind_string());
         let mut actions = KdlDocument::new();
         let mut actions_have_children = false;
-        for action in keybind.1 {
-            if let Some(kdl_action) = action::to_kdl(action) {
-                if kdl_action.children().is_some() {
-                    actions_have_children = true;
-                }
-                actions.nodes_mut().push(kdl_action);
+        for (index, action) in keybind.1.iter().enumerate() {
+            let kdl_action = action::to_kdl(action).map_err(|source| NotWritableIn::Keybind {
+                modes: input_modes
+                    .iter()
+                    .map(|mode| format!("{:?}", mode).to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                key: keybind.0.to_keybind_string(),
+                index,
+                source,
+            })?;
+            if kdl_action.children().is_some() {
+                actions_have_children = true;
             }
+            actions.nodes_mut().push(kdl_action);
         }
         if !actions_have_children {
             for action in actions.nodes_mut() {
@@ -251,9 +263,9 @@ fn serialize_mode_keybinds(
         keybind_node.set_children(actions);
         mode_keybinds.nodes_mut().push(keybind_node);
     }
-    mode_keybinds
+    Ok(mode_keybinds)
 }
-pub fn to_kdl(value: &Keybinds, should_clear_defaults: bool) -> KdlNode {
+pub fn to_kdl(value: &Keybinds, should_clear_defaults: bool) -> Result<KdlNode, NotWritableIn> {
     let mut keybinds_node = KdlNode::new("keybinds");
     if should_clear_defaults {
         keybinds_node.insert("clear-defaults", true);
@@ -263,10 +275,11 @@ pub fn to_kdl(value: &Keybinds, should_clear_defaults: bool) -> KdlNode {
 
     macro_rules! encode_single_input_mode {
         ($mode_name:ident) => {{
-            if let Some(keybinds) = minimized.remove(&BTreeSet::from([InputMode::$mode_name])) {
+            let input_modes = BTreeSet::from([InputMode::$mode_name]);
+            if let Some(keybinds) = minimized.remove(&input_modes) {
                 let mut mode_node =
                     KdlNode::new(format!("{:?}", InputMode::$mode_name).to_lowercase());
-                let mode_keybinds = serialize_mode_keybinds(value, &keybinds);
+                let mode_keybinds = serialize_mode_keybinds(&input_modes, &keybinds)?;
                 mode_node.set_children(mode_keybinds);
                 keybinds_children.nodes_mut().push(mode_node);
             }
@@ -292,10 +305,10 @@ pub fn to_kdl(value: &Keybinds, should_clear_defaults: bool) -> KdlNode {
             continue;
         }
         let mut mode_node = serialize_mode_title_node(value, &input_modes);
-        let mode_keybinds = serialize_mode_keybinds(value, &keybinds);
+        let mode_keybinds = serialize_mode_keybinds(&input_modes, &keybinds)?;
         mode_node.set_children(mode_keybinds);
         keybinds_children.nodes_mut().push(mode_node);
     }
     keybinds_node.set_children(keybinds_children);
-    keybinds_node
+    Ok(keybinds_node)
 }

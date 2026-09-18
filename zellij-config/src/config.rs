@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use super::theme::{Themes, UiConfig};
+use crate::kdl::action::NotWritable;
 use zellij_runtime::home;
 use zellij_types::envs::EnvironmentVariables;
 use zellij_types::input::context_menu::ContextMenu;
@@ -146,6 +147,43 @@ impl Diagnostic for KdlError {
     }
 }
 
+/// Where in the configuration an action with no KDL spelling was found, and why it has none.
+#[derive(Error, Debug)]
+pub enum NotWritableIn {
+    #[error("keybinding `{key}` in {modes} mode, action {index}: {source}")]
+    Keybind {
+        modes: String,
+        key: String,
+        index: usize,
+        #[source]
+        source: NotWritable,
+    },
+    #[error("context menu item `{label}`, action {index}: {source}")]
+    ContextMenu {
+        label: String,
+        index: usize,
+        #[source]
+        source: NotWritable,
+    },
+}
+
+/// Why `Config::write_config_to_disk` did not write, or refused what it had written.
+#[derive(Debug)]
+pub struct ConfigWriteError {
+    /// The file that could not be written, or `None` when the text itself was refused before
+    /// the file was touched.
+    pub path: Option<PathBuf>,
+    pub reason: String,
+}
+
+impl std::fmt::Display for ConfigWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for ConfigWriteError {}
+
 #[derive(Error, Debug, Diagnostic)]
 pub enum ConfigError {
     // Deserialization error
@@ -172,6 +210,8 @@ pub enum ConfigError {
     Async(#[from] std::io::Error),
     #[error("unsupported configuration format: {0}; use config.kdl")]
     UnsupportedFormat(String),
+    #[error("the configuration cannot be written: {0}")]
+    NotWritable(#[from] NotWritableIn),
 }
 
 impl ConfigError {
@@ -473,61 +513,76 @@ impl Config {
     pub fn default_config_file_path() -> Option<PathBuf> {
         home::find_default_config_dir().map(|config_dir| config_dir.join(DEFAULT_CONFIG_FILE_NAME))
     }
+    /// Write `config` - this configuration's own text, from `Config::to_string` - to
+    /// `config_file_path`, backing the existing file up first. Refused before the file is
+    /// touched when the text does not load back as this configuration's keybindings and
+    /// context menu, and after when what was written does not read back as what was parsed.
     pub fn write_config_to_disk(
         &self,
         config: String,
         config_file_path: &Path,
-    ) -> Result<Config, Option<PathBuf>> {
-        use zellij_runtime::errors::prelude::*;
-
-        // if we fail, try to return the PathBuf of the file we were not able to write to
+    ) -> Result<Config, ConfigWriteError> {
         let config_file_path = config_file_path.to_path_buf();
-        Config::from_kdl(&config, None)
-            .map_err(|e| {
-                log::error!("Failed to parse config: {}", e);
-                None
-            })
-            .and_then(|parsed_config| {
-                // Checking two parses of the serialized text cannot detect state
-                // the serializer discarded. Check NewTab against the source too.
-                if !self.preserves_new_tab_bindings(&parsed_config) {
-                    Err::<(), _>(anyhow!("Refusing to save configuration: a NewTab binding's layout is not what its saved form loads. If the default layout changed on disk, save or touch the config file so the session re-reads it, then save again")).non_fatal();
-                    return Err(Some(config_file_path.clone()));
-                }
-                let backed_up_file_name = Config::backup_current_config(&config_file_path)?;
-                let config = match backed_up_file_name {
-                    Some(backed_up_file_name) => {
-                        format!(
-                            "{}{}",
-                            Config::autogen_config_message(backed_up_file_name),
-                            config
-                        )
-                    },
-                    None => config,
-                };
-                std::fs::write(&config_file_path, config.as_bytes()).map_err(|e| {
-                    log::error!("Failed to write config: {}", e);
-                    Some(config_file_path.clone())
-                })?;
-                let written_config = std::fs::read_to_string(&config_file_path).map_err(|e| {
-                    log::error!("Failed to read written config: {}", e);
-                    Some(config_file_path.clone())
-                })?;
-                let parsed_written_config =
-                    Config::from_kdl(&written_config, None).map_err(|e| {
-                        log::error!("Failed to parse written config: {}", e);
-                        None
-                    })?;
-                if parsed_written_config == parsed_config {
-                    Ok(parsed_config)
-                } else {
-                    log::error!("Configuration corrupted when writing to disk");
-                    Err(Some(config_file_path))
-                }
-            })
+        let at = |path: &Path, reason: String| ConfigWriteError {
+            path: Some(path.to_path_buf()),
+            reason,
+        };
+        let parsed_config = Config::from_kdl(&config, None).map_err(|e| ConfigWriteError {
+            path: None,
+            reason: format!("the configuration text does not parse: {e}"),
+        })?;
+        // Two parses of the same text agree whatever the serializer left out; only the source
+        // can say what it should have said.
+        self.keybinds_survive_the_written_form(&parsed_config)
+            .map_err(|reason| at(&config_file_path, reason))?;
+        let backed_up_file_name =
+            Config::backup_current_config(&config_file_path).map_err(|path| ConfigWriteError {
+                reason: "failed to back up the current configuration".to_owned(),
+                path,
+            })?;
+        let config = match backed_up_file_name {
+            Some(backed_up_file_name) => {
+                format!(
+                    "{}{}",
+                    Config::autogen_config_message(backed_up_file_name),
+                    config
+                )
+            },
+            None => config,
+        };
+        std::fs::write(&config_file_path, config.as_bytes()).map_err(|e| {
+            at(
+                &config_file_path,
+                format!("failed to write the configuration: {e}"),
+            )
+        })?;
+        let written_config = std::fs::read_to_string(&config_file_path).map_err(|e| {
+            at(
+                &config_file_path,
+                format!("failed to read the written configuration back: {e}"),
+            )
+        })?;
+        let parsed_written_config = Config::from_kdl(&written_config, None).map_err(|e| {
+            at(
+                &config_file_path,
+                format!("the written configuration does not parse: {e}"),
+            )
+        })?;
+        if parsed_written_config == parsed_config {
+            Ok(parsed_config)
+        } else {
+            Err(at(
+                &config_file_path,
+                "the configuration was corrupted when written to disk".to_owned(),
+            ))
+        }
     }
 
-    fn preserves_new_tab_bindings(&self, parsed: &Config) -> bool {
+    /// Whether every keybinding and context menu item in this configuration is in `parsed`,
+    /// the parse of its written form, and nothing else is. `Err` names the first binding that
+    /// differs. Layouts are compared after the normalization a `NewTab` binding needs (see the
+    /// helpers), which leaves every other action untouched.
+    fn keybinds_survive_the_written_form(&self, parsed: &Config) -> Result<(), String> {
         use zellij_types::input::actions::Action;
 
         use {
@@ -628,9 +683,6 @@ impl Config {
             for (mode, bindings) in &source.keybinds.0 {
                 for (key, actions) in bindings {
                     for (index, action) in actions.iter().enumerate() {
-                        if !matches!(action, Action::NewTab { .. }) {
-                            continue;
-                        }
                         let counterpart = destination
                             .keybinds
                             .0
@@ -639,16 +691,32 @@ impl Config {
                             .and_then(|actions| actions.get(index));
                         let strip_layout =
                             implicit_default(action) || counterpart.is_some_and(implicit_default);
-                        if counterpart.map(|a| normalized(a, strip_layout))
-                            != Some(normalized(action, strip_layout))
-                        {
-                            return false;
+                        let expected = normalized(action, strip_layout);
+                        let found = counterpart.map(|a| normalized(a, strip_layout));
+                        if found.as_ref() != Some(&expected) {
+                            let hint = if matches!(action, Action::NewTab { .. }) {
+                                " If the default layout changed on disk, save or touch the config file so the session re-reads it, then save again."
+                            } else {
+                                ""
+                            };
+                            return Err(format!(
+                                "keybinding `{}` in {:?} mode, action {}: saved as {:?}, was {:?}.{}",
+                                key.to_keybind_string(),
+                                mode,
+                                index,
+                                found,
+                                expected,
+                                hint
+                            ));
                         }
                     }
                 }
             }
         }
-        true
+        if self.context_menu != parsed.context_menu {
+            return Err("the context menu is not what its saved form loads".to_owned());
+        }
+        Ok(())
     }
     // returns true if the config was not previouly written to disk and we successfully wrote it
     pub fn write_config_to_disk_if_it_does_not_exist(
@@ -1918,7 +1986,7 @@ mod config_test {
             None,
         )
         .unwrap();
-        let round_tripped = Config::from_kdl(&config.to_string(false), None).unwrap();
+        let round_tripped = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
         assert_eq!(round_tripped.context_menu, config.context_menu);
     }
 
@@ -1985,7 +2053,7 @@ mod config_test {
                 Some(format!("file:/tmp/{point}.ts")),
                 "{point}"
             );
-            let round_tripped = Config::from_kdl(&config.to_string(false), None).unwrap();
+            let round_tripped = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
             assert_eq!(round_tripped.hooks, config.hooks, "{point}");
         }
     }
@@ -1996,11 +2064,11 @@ mod config_test {
         // stay unbound rather than falling back to the default.
         let bound =
             Config::from_kdl("hooks {\n agent_exit \"file:/tmp/mine.ts\"\n}", None).unwrap();
-        let round_tripped = Config::from_kdl(&bound.to_string(false), None).unwrap();
+        let round_tripped = Config::from_kdl(&bound.to_string(false).unwrap(), None).unwrap();
         assert_eq!(round_tripped.hooks, bound.hooks);
 
         let unbound = Config::from_kdl("hooks {\n agent_exit \"\"\n}", None).unwrap();
-        let round_tripped = Config::from_kdl(&unbound.to_string(false), None).unwrap();
+        let round_tripped = Config::from_kdl(&unbound.to_string(false).unwrap(), None).unwrap();
         assert!(round_tripped.hooks.get(HookPoint::AgentExit).is_none());
 
         // A hook is a whole plugin declaration, so its cwd and configuration have to survive
@@ -2018,16 +2086,17 @@ mod config_test {
             None,
         )
         .unwrap();
-        let round_tripped = Config::from_kdl(&configured.to_string(false), None).unwrap();
+        let round_tripped = Config::from_kdl(&configured.to_string(false).unwrap(), None).unwrap();
         assert_eq!(round_tripped.hooks, configured.hooks);
         // And the written form has to be stable, not merely re-readable: `cwd` is parsed into
         // the configuration as well as into the cwd, so a naive writer duplicates it and the
         // copies multiply with every write.
         assert_eq!(
-            Config::from_kdl(&round_tripped.to_string(false), None)
+            Config::from_kdl(&round_tripped.to_string(false).unwrap(), None)
                 .unwrap()
-                .to_string(false),
-            round_tripped.to_string(false)
+                .to_string(false)
+                .unwrap(),
+            round_tripped.to_string(false).unwrap()
         );
     }
 
@@ -2071,13 +2140,14 @@ mod config_test {
         )
         .unwrap();
         let round_tripped =
-            Config::from_kdl(&cleared.to_string(false), Some(base.clone())).unwrap();
+            Config::from_kdl(&cleared.to_string(false).unwrap(), Some(base.clone())).unwrap();
         assert_eq!(names(&round_tripped), vec!["zellij:about"]);
 
         // the additive case must not grow a clear-defaults out of nowhere
         let merged =
             Config::from_kdl("load_plugins {\n \"zellij:about\"\n}", Some(base.clone())).unwrap();
-        let round_tripped = Config::from_kdl(&merged.to_string(false), Some(base)).unwrap();
+        let round_tripped =
+            Config::from_kdl(&merged.to_string(false).unwrap(), Some(base)).unwrap();
         assert_eq!(names(&round_tripped), vec!["zellij:about", "zellij:link"]);
     }
 }

@@ -487,15 +487,23 @@ fn keybinding_status_text(status: &ApplyStatus) -> Text {
         ApplyStatus::Applied => {
             Text::new("Keybindings added and saved to your config file.").color_range(2, ..)
         },
-        ApplyStatus::Failed(Some(config_file)) => Text::new(format!(
-            "Keybindings added to this session, but {} could not be written.",
-            config_file
-        ))
-        .color_range(3, ..),
-        ApplyStatus::Failed(None) => Text::new(
-            "Keybindings added to this session, but the config file could not be written.",
-        )
-        .color_range(3, ..),
+        ApplyStatus::Failed { file_path, reason } => {
+            let mut text = match file_path {
+                Some(config_file) => format!(
+                    "Keybindings added to this session, but {} could not be written.",
+                    config_file
+                ),
+                None => {
+                    "Keybindings added to this session, but the config file could not be written."
+                        .to_owned()
+                },
+            };
+            if let Some(reason) = reason {
+                text.push(' ');
+                text.push_str(reason);
+            }
+            Text::new(text).color_range(3, ..)
+        },
         ApplyStatus::NotApplied => Text::new(""),
     }
 }

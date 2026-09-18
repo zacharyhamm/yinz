@@ -1566,7 +1566,7 @@ mod tests {
             ),
         ] {
             let config = Config::from_kdl(&text, Some(canonical.clone())).unwrap();
-            let reparsed = Config::from_kdl(&config.to_string(false), None).unwrap();
+            let reparsed = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
             for config in [&config, &reparsed] {
                 let key = |key: &str| -> KeyWithModifier { key.parse().unwrap() };
                 assert_eq!(
@@ -1663,7 +1663,7 @@ mod tests {
             ),
         ] {
             let config = Config::from_kdl(&text, Some(canonical.clone())).unwrap();
-            let reparsed = Config::from_kdl(&config.to_string(false), None).unwrap();
+            let reparsed = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
             assert_eq!(
                 config.keybinds.0[&InputMode::Agent],
                 reparsed.keybinds.0[&InputMode::Agent]

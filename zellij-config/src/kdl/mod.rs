@@ -14,7 +14,10 @@ use zellij_types::keys::KeyWithModifier;
 use zellij_types::style::{
     MultiplayerColors, Palette, StyleDeclaration, Styling, ThemeHue, DEFAULT_STYLES,
 };
-use {crate::config::Config, crate::config::ConfigError, crate::config::KdlError};
+use {
+    crate::config::Config, crate::config::ConfigError, crate::config::KdlError,
+    crate::config::NotWritableIn,
+};
 use {crate::permission::GrantedPermission, crate::permission::PermissionCache};
 use {
     crate::theme::FrameConfig, crate::theme::Theme, crate::theme::Themes, crate::theme::UiConfig,
@@ -1120,11 +1123,13 @@ impl Config {
         }
         Ok(config)
     }
-    pub fn to_string(&self, add_comments: bool) -> String {
+    /// The whole configuration as KDL text. `Err` when a keybinding or context menu item holds
+    /// an action with no config spelling: the text is refused rather than written without it.
+    pub fn to_string(&self, add_comments: bool) -> Result<String, ConfigError> {
         let mut document = KdlDocument::new();
 
         let clear_defaults = true;
-        let keybinds = keybinds::to_kdl(&self.keybinds, clear_defaults);
+        let keybinds = keybinds::to_kdl(&self.keybinds, clear_defaults)?;
         document.nodes_mut().push(keybinds);
 
         if let Some(themes) = self.themes.to_kdl() {
@@ -1144,7 +1149,7 @@ impl Config {
         document.nodes_mut().push(hooks_to_kdl(&self.hooks));
         document
             .nodes_mut()
-            .push(context_menu_to_kdl(&self.context_menu));
+            .push(context_menu_to_kdl(&self.context_menu)?);
 
         if let Some(ui_config) = self.ui.to_kdl() {
             document.nodes_mut().push(ui_config);
@@ -1158,7 +1163,7 @@ impl Config {
             .nodes_mut()
             .append(&mut options::to_kdl(&self.options, add_comments));
 
-        document.to_string()
+        Ok(document.to_string())
     }
 }
 
@@ -1357,7 +1362,7 @@ fn context_menu_from_kdl(
     Ok(ContextMenu::from_items(items))
 }
 
-pub fn context_menu_to_kdl(context_menu: &ContextMenu) -> KdlNode {
+pub fn context_menu_to_kdl(context_menu: &ContextMenu) -> Result<KdlNode, NotWritableIn> {
     let mut menu_node = KdlNode::new("context_menu");
     let mut children = KdlDocument::new();
     for item in context_menu.items() {
@@ -1370,18 +1375,22 @@ pub fn context_menu_to_kdl(context_menu: &ContextMenu) -> KdlNode {
             item_node.push(("shortcut", KdlValue::String(shortcut.clone())));
         }
         let mut actions = KdlDocument::new();
-        for action in &item.actions {
-            // An action with no KDL spelling is dropped rather than written wrong - the same rule
-            // keybinding serialization already follows.
-            if let Some(action_node) = action::to_kdl(action) {
-                actions.nodes_mut().push(action_node);
-            }
+        for (index, action) in item.actions.iter().enumerate() {
+            // An action with no KDL spelling is an error naming the item, never a line left
+            // out - the same rule keybinding serialization follows.
+            let action_node =
+                action::to_kdl(action).map_err(|source| NotWritableIn::ContextMenu {
+                    label: item.label.clone(),
+                    index,
+                    source,
+                })?;
+            actions.nodes_mut().push(action_node);
         }
         item_node.set_children(actions);
         children.nodes_mut().push(item_node);
     }
     menu_node.set_children(children);
-    menu_node
+    Ok(menu_node)
 }
 
 pub fn hooks_to_kdl(hooks: &Hooks) -> KdlNode {

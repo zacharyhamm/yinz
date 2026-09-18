@@ -19,6 +19,9 @@ pub mod args;
 #[cfg(test)]
 #[path = "unit/cross_contracts.rs"]
 mod cross_contracts;
+#[cfg(test)]
+#[path = "unit/kdl_action_props.rs"]
+mod kdl_action_props;
 pub mod options;
 #[cfg(all(test, not(target_family = "wasm")))]
 #[path = "unit/session_checkpoint_tests.rs"]

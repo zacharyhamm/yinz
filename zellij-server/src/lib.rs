@@ -172,9 +172,9 @@ use zellij_types::style::Style;
 use {
     zellij_config::config::watch_config_file_changes,
     zellij_config::config::watch_layout_dir_changes, zellij_config::config::Config,
-    zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::ExitReason,
-    zellij_ipc::ipc::ServerToClientMsg, zellij_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE,
-    zellij_runtime::consts::SCROLL_BUFFER_SIZE,
+    zellij_config::config::ConfigWriteError, zellij_ipc::ipc::ClientAttributes,
+    zellij_ipc::ipc::ExitReason, zellij_ipc::ipc::ServerToClientMsg,
+    zellij_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE, zellij_runtime::consts::SCROLL_BUFFER_SIZE,
     zellij_runtime::consts::ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE, zellij_types::data::InputMode,
     zellij_types::data::LayoutInfo, zellij_types::data::LayoutWithError,
     zellij_types::input::actions::Action, zellij_types::input::command::RunCommand,
@@ -646,10 +646,11 @@ impl SessionMetaData {
             .non_fatal();
     }
 
-    /// Tell the plugins that a config write failed, naming the file when one was reached.
-    fn report_config_write_failure(&self, file_path: Option<PathBuf>) {
+    /// Tell the plugins that a config write failed: the file, when one was reached, and why,
+    /// when it is known.
+    fn report_config_write_failure(&self, file_path: Option<PathBuf>, reason: Option<String>) {
         self.senders
-            .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk { file_path })
+            .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk { file_path, reason })
             .context("reporting a failed config write to the plugins")
             .non_fatal();
     }
@@ -1162,10 +1163,20 @@ pub fn start_server_impl(
                     == Some(LayoutInfo::BuiltIn("welcome".to_owned()))
                     || config.options.default_layout == Some(PathBuf::from("welcome"));
 
-                let successfully_written_config = Config::write_config_to_disk_if_it_does_not_exist(
-                    config.to_string(true),
-                    &cli_assets.config_file_path,
-                );
+                // A default config that cannot be written faithfully is not written at all -
+                // and then there is nothing for the setup wizard to edit.
+                let successfully_written_config = match config.to_string(true) {
+                    Ok(text) => Config::write_config_to_disk_if_it_does_not_exist(
+                        text,
+                        &cli_assets.config_file_path,
+                    ),
+                    Err(e) => {
+                        Err::<(), _>(anyhow!("{e}"))
+                            .context("not writing the initial config")
+                            .non_fatal();
+                        false
+                    },
+                };
                 // if we successfully wrote the config to disk, it means two things:
                 // 1. It did not exist beforehand
                 // 2. The config folder is writeable
@@ -2837,11 +2848,15 @@ fn update_new_saved_config(
             let written = match overlay_dir {
                 Some(dir) => Config::write_managed_fragment(&dir, &fragment).map_err(|e| {
                     log::error!("Failed to persist the config fragment: {}", e);
-                    Some(dir.join(zellij_config::config::MANAGED_CONFIG_FILE_NAME))
+                    (
+                        Some(dir.join(zellij_config::config::MANAGED_CONFIG_FILE_NAME)),
+                        e.to_string(),
+                    )
                 }),
                 None => {
-                    log::error!("No config directory to persist the config fragment in.");
-                    Err(None)
+                    let reason = "no config directory to persist the config fragment in";
+                    log::error!("{reason}");
+                    Err((None, reason.to_owned()))
                 },
             };
             match written {
@@ -2855,9 +2870,9 @@ fn update_new_saved_config(
                         session.propagate_configuration_changes(changes, true);
                     });
                 },
-                Err(file_path) => {
+                Err((file_path, reason)) => {
                     with_session(session_data, |session| {
-                        session.report_config_write_failure(file_path)
+                        session.report_config_write_failure(file_path, Some(reason))
                     });
                     if runtime_config_changed {
                         with_session_mut(session_data, |session| {
@@ -2872,20 +2887,29 @@ fn update_new_saved_config(
             return;
         }
         if matches!(persistence, ConfigPersistence::WholeConfig) {
-            let clear_defaults = true;
+            let add_comments = true;
             let config_file_path =
                 with_session(session_data, |session| session.config_file_path.clone()).flatten();
 
             let Some(config_file_path) = config_file_path.as_ref() else {
-                log::error!("No config file path found.");
+                let reason = "the session has no config file path to write to";
+                log::error!("{reason}");
                 with_session(session_data, |session| {
-                    session.report_config_write_failure(None)
+                    session.report_config_write_failure(None, Some(reason.to_owned()))
                 });
                 return;
             };
-            match new_config
-                .write_config_to_disk(new_config.to_string(clear_defaults), config_file_path)
-            {
+            // Serialized first, on its own: a binding whose action has no config spelling
+            // refuses the save here, with the mode, key and action in the reason, before
+            // anything on disk is touched.
+            let written = new_config
+                .to_string(add_comments)
+                .map_err(|e| ConfigWriteError {
+                    path: None,
+                    reason: e.to_string(),
+                })
+                .and_then(|text| new_config.write_config_to_disk(text, config_file_path));
+            match written {
                 Ok(written_config) => {
                     with_session_mut(session_data, |session| {
                         let changes = session
@@ -2896,14 +2920,17 @@ fn update_new_saved_config(
                             .propagate_configuration_changes(changes, config_was_written_to_disk);
                     });
                 },
-                Err(e) => {
-                    let error_path = e
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(String::new);
-                    log::error!("Failed to write config to disk: {}", error_path);
+                Err(ConfigWriteError { path, reason }) => {
+                    Err::<(), _>(anyhow!("{reason}"))
+                        .with_context(|| match &path {
+                            Some(path) => {
+                                format!("refusing to save the configuration to {}", path.display())
+                            },
+                            None => "refusing to save the configuration".to_owned(),
+                        })
+                        .non_fatal();
                     with_session(session_data, |session| {
-                        session.report_config_write_failure(e)
+                        session.report_config_write_failure(path, Some(reason))
                     });
                 },
             }

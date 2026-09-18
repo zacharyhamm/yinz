@@ -247,6 +247,9 @@ pub enum PluginInstruction {
     },
     FailedToWriteConfigToDisk {
         file_path: Option<PathBuf>,
+        /// Why, when the server knows: the serializer refused an action, the written form
+        /// differed from the source, or the filesystem said no.
+        reason: Option<String>,
     },
     WatchFilesystem,
     ListClientsToPlugin(SessionLayoutMetadata, PluginId, ClientId),

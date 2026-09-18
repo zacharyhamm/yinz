@@ -37,7 +37,10 @@ fn new_tab_without_swap_layouts_can_be_saved_after_ipc() {
     let wire: zellij_plugin_api::action::ProtobufAction = binding[0].clone().try_into().unwrap();
     binding[0] = wire.try_into().unwrap();
     config
-        .write_config_to_disk(config.to_string(false), &dir.path().join("config.kdl"))
+        .write_config_to_disk(
+            config.to_string(false).unwrap(),
+            &dir.path().join("config.kdl"),
+        )
         .unwrap();
 }
 #[test]
@@ -77,7 +80,10 @@ layout {
         binding[0] = wire.try_into().unwrap();
         assert!(!format!("{:?}", binding[0]).contains("default_fg: Some("));
         config
-            .write_config_to_disk(config.to_string(false), &dir.path().join("config.kdl"))
+            .write_config_to_disk(
+                config.to_string(false).unwrap(),
+                &dir.path().join("config.kdl"),
+            )
             .unwrap_or_else(|e| panic!("{metadata}: {e:?}"));
     }
 }

@@ -42,7 +42,9 @@ fn launch_or_focus_plugin_preserves_overlay_and_modal_configuration() {
                 .is_some_and(|value| value == "true")
         })
     }));
-    let serialized = crate::kdl::keybinds::to_kdl(&keybinds, true).to_string();
+    let serialized = crate::kdl::keybinds::to_kdl(&keybinds, true)
+        .unwrap()
+        .to_string();
     assert!(serialized.contains("overlay true"));
     assert!(serialized.contains("modal true"));
     let reparsed = crate::kdl::keybinds::from_kdl(
@@ -102,7 +104,9 @@ fn plugin_configuration_keys_named_global_edge_and_size_round_trip() {
         Some("large")
     );
 
-    let serialized = crate::kdl::keybinds::to_kdl(&keybinds, true).to_string();
+    let serialized = crate::kdl::keybinds::to_kdl(&keybinds, true)
+        .unwrap()
+        .to_string();
     assert!(serialized.contains("global \"false\""));
     assert!(serialized.contains("edge \"soft\""));
     assert!(serialized.contains("size \"large\""));
@@ -207,7 +211,9 @@ fn awaits_placement_reaches_the_configuration_beside_overlay() {
         &Default::default(),
     )
     .unwrap();
-    let serialized = crate::kdl::keybinds::to_kdl(&keybinds, true).to_string();
+    let serialized = crate::kdl::keybinds::to_kdl(&keybinds, true)
+        .unwrap()
+        .to_string();
     assert!(
         serialized.contains("awaits_placement true"),
         "not in the dump: {serialized}"
