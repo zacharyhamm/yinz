@@ -268,7 +268,11 @@ fn extension_fingerprint(root: &Path) -> Result<String> {
         root.join(".swamp.yaml"),
     ];
     if root.join(".swamp-sources.yaml").exists() {
-        let sources = cli(root, &["extension", "source", "list"])?;
+        let sources = cli(
+            root,
+            "extension source list",
+            &["extension", "source", "list"],
+        )?;
         for source in sources["sources"]
             .as_array()
             .context("invalid extension source list")?
@@ -570,7 +574,7 @@ fn publish(endpoint: &Endpoint) -> Result<()> {
     Ok(())
 }
 
-fn cli(root: &Path, args: &[&str]) -> Result<Value> {
+fn cli(root: &Path, operation: &'static str, args: &[&str]) -> Result<Value> {
     let mut command = Command::new("swamp");
     for (key, _) in std::env::vars_os() {
         if matches!(
@@ -591,137 +595,93 @@ fn cli(root: &Path, args: &[&str]) -> Result<Value> {
         .args(args)
         .args(["--json", "--no-telemetry"])
         .stdin(Stdio::null())
-        .output()
-        .context("cannot execute Swamp bootstrap command")?;
-    if !output.status.success() {
-        // Never echo token-command stdout/stderr or arguments.
-        return Err(anyhow!(
-            "Swamp credential bootstrap failed; inspect local vault configuration"
-        ));
-    }
-    serde_json::from_slice(&output.stdout).context("invalid Swamp bootstrap response")
+        .output();
+    bootstrap_response(root, operation, output)
 }
 
-// The service vault is machine-local. Its generated definition must not make the
-// control checkout dirty and prevent the workflow's guarded Git operations.
-fn exclude_service_vault(root: &Path) -> Result<()> {
-    let vault = cli(root, &["vault", "get", SERVICE])?;
-    let storage = Path::new(
-        vault["storagePath"]
-            .as_str()
-            .context("missing service vault path")?,
-    );
-    if storage.is_absolute()
-        || storage
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_)))
-    {
-        return Err(anyhow!("invalid service vault path"));
+fn bootstrap_response(
+    root: &Path,
+    operation: &'static str,
+    output: std::io::Result<std::process::Output>,
+) -> Result<Value> {
+    // Never include arguments, command output, or parser errors: they can contain credentials.
+    let context = format!("Swamp bootstrap {operation} in {}", root.display());
+    let output = output
+        .map_err(|error| anyhow!("{context}: cannot execute command ({:?})", error.kind()))?;
+    if !output.status.success() {
+        return Err(anyhow!("{context}: command failed ({})", output.status));
     }
-    let git_path = |args: &[&str]| -> Result<Option<PathBuf>> {
-        let output = Command::new("git")
-            .current_dir(root)
-            .args(args)
-            .output()
-            .context("cannot locate Git exclusion file")?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        Ok(Some(PathBuf::from(
-            String::from_utf8(output.stdout)
-                .context("invalid Git path")?
-                .trim_end_matches('\n'),
-        )))
-    };
-    let Some(top) = git_path(&["rev-parse", "--show-toplevel"])? else {
-        return Ok(());
-    };
-    let exclude = git_path(&[
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-path",
-        "info/exclude",
-    ])?
-    .context("missing Git exclusion file")?;
-    let relative = root
-        .join(storage)
-        .strip_prefix(top)
-        .context("service vault is outside Git checkout")?
-        .to_owned();
-    let pattern = format!(
-        "/{}",
-        relative
-            .to_str()
-            .context("invalid service vault filename")?
-    );
-    if pattern.contains(['\n', '\r', '*', '?', '[', '\\']) {
-        return Err(anyhow!("unsupported service vault filename"));
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .read(true)
-        .open(&exclude)
-        .context("cannot exclude service vault")?;
-    file.lock().context("cannot lock Git exclusions")?;
-    let existing = std::fs::read_to_string(&exclude).context("cannot read Git exclusions")?;
-    if !existing.lines().any(|line| line == pattern) {
-        writeln!(file, "\n# Zellij managed Swamp service vault\n{pattern}")
-            .context("cannot exclude service vault")?;
-    }
-    Ok(())
+    serde_json::from_slice(&output.stdout)
+        .map_err(|_| anyhow!("{context}: invalid JSON response ({})", output.status))
 }
 
 fn credential(root: &Path) -> Result<String> {
-    let vaults = cli(root, &["vault", "search", SERVICE])?;
-    if !vaults["results"]
-        .as_array()
-        .is_some_and(|rows| rows.iter().any(|row| row["name"] == SERVICE))
-    {
-        cli(root, &["vault", "create", "local_encryption", SERVICE])?;
+    service_token(root, |operation, args| cli(root, operation, args))
+}
+
+fn service_token(
+    root: &Path,
+    mut run: impl FnMut(&'static str, &[&str]) -> Result<Value>,
+) -> Result<String> {
+    let listing = run("token list", &["access", "token", "list"])?;
+    let invalid_listing = || {
+        anyhow!(
+            "Swamp bootstrap token list in {}: invalid token listing",
+            root.display()
+        )
+    };
+    let tokens = listing.as_array().ok_or_else(invalid_listing)?;
+    // Validate every row before treating a missing name as permission to mint.
+    for token in tokens {
+        if !token["name"].as_str().is_some_and(|name| !name.is_empty())
+            || !matches!(
+                token["state"].as_str(),
+                Some("active" | "expired" | "revoked")
+            )
+        {
+            return Err(invalid_listing());
+        }
     }
-    exclude_service_vault(root)?;
-    let existing = cli(root, &["access", "token", "reveal", SERVICE, "--yes"]);
-    match existing {
-        Ok(_) => {
-            cli(
-                root,
-                &[
-                    "access",
-                    "token",
-                    "rotate",
-                    SERVICE,
-                    "--vault",
-                    SERVICE,
-                    "--duration",
-                    "7d",
-                ],
-            )?;
-        },
-        Err(_) => {
-            cli(
-                root,
-                &[
-                    "access",
-                    "token",
-                    "mint",
-                    SERVICE,
-                    "--principal",
-                    "user:zellij-service",
-                    "--duration",
-                    "7d",
-                    "--vault",
-                    SERVICE,
-                ],
-            )?;
-        },
+    if let Some(token) = tokens.iter().find(|token| token["name"] == SERVICE) {
+        if token["state"] == "revoked" {
+            return Err(anyhow!(
+                "Swamp bootstrap token list in {}: zellij-service token is revoked",
+                root.display()
+            ));
+        }
+        run(
+            "token rotate",
+            &["access", "token", "rotate", SERVICE, "--duration", "7d"],
+        )?;
+    } else {
+        run(
+            "token mint",
+            &[
+                "access",
+                "token",
+                "mint",
+                SERVICE,
+                "--principal",
+                "user:zellij-service",
+                "--duration",
+                "7d",
+            ],
+        )?;
     }
-    let value = cli(root, &["access", "token", "reveal", SERVICE, "--yes"])?;
+    let value = run(
+        "token reveal",
+        &["access", "token", "reveal", SERVICE, "--yes"],
+    )?;
     value["token"]
         .as_str()
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
-        .context("Swamp returned no service credential")
+        .with_context(|| {
+            format!(
+                "Swamp bootstrap token reveal in {}: missing service credential",
+                root.display()
+            )
+        })
 }
 
 fn http(endpoint: &Endpoint, path: &str, post: bool) -> Result<Value> {
@@ -772,7 +732,7 @@ pub fn supervise(root: PathBuf) -> Result<()> {
             "managed Swamp server exited; inspect runs, then use zellij workflow server restart"
         ));
     }
-    let help = cli(&root, &["help", "serve"])?;
+    let help = cli(&root, "serve help", &["help", "serve"])?;
     if help["version"]
         .as_str()
         .is_some_and(|version| version.ends_with("375d7eca"))
@@ -1551,6 +1511,210 @@ mod tests {
     // tungstenite requires a full HTTP response as the handshake error.
     #![allow(clippy::result_large_err)]
     use super::*;
+
+    #[test]
+    fn service_token_mints_only_when_absent_and_rotates_existing_tokens() {
+        for state in [None, Some("active"), Some("expired")] {
+            let mut calls = Vec::new();
+            let token = service_token(Path::new("/control"), |operation, args| {
+                calls.push(operation);
+                match operation {
+                    "token list" => {
+                        assert_eq!(args, ["access", "token", "list"]);
+                        let mut listing = json!([{"name":"unrelated","state":"active"}]);
+                        if let Some(state) = state {
+                            listing
+                                .as_array_mut()
+                                .unwrap()
+                                .push(json!({"name":SERVICE,"state":state}));
+                        }
+                        Ok(listing)
+                    },
+                    "token mint" => {
+                        assert_eq!(
+                            args,
+                            [
+                                "access",
+                                "token",
+                                "mint",
+                                SERVICE,
+                                "--principal",
+                                "user:zellij-service",
+                                "--duration",
+                                "7d",
+                            ]
+                        );
+                        Ok(json!({}))
+                    },
+                    "token rotate" => {
+                        assert_eq!(
+                            args,
+                            ["access", "token", "rotate", SERVICE, "--duration", "7d"]
+                        );
+                        Ok(json!({}))
+                    },
+                    "token reveal" => {
+                        assert_eq!(args, ["access", "token", "reveal", SERVICE, "--yes"]);
+                        Ok(json!({"token":"test-credential"}))
+                    },
+                    _ => panic!("unexpected operation"),
+                }
+            })
+            .unwrap();
+            assert_eq!(token, "test-credential");
+            assert_eq!(
+                calls,
+                [
+                    "token list",
+                    if state.is_some() {
+                        "token rotate"
+                    } else {
+                        "token mint"
+                    },
+                    "token reveal"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn service_token_rejects_revoked_tokens_and_malformed_listings_before_mutating() {
+        for listing in [
+            json!([{"name":SERVICE,"state":"revoked"}]),
+            json!(null),
+            json!({}),
+            json!({"results":[]}),
+            json!([null]),
+            json!([{"state":"active"}]),
+            json!([{"name":"","state":"active"}]),
+            json!([{"name":42,"state":"active"}]),
+            json!([{"name":SERVICE}]),
+            json!([{"name":SERVICE,"state":"unknown"}]),
+            json!([{"name":SERVICE,"state":"active"},{"name":"other","state":null}]),
+        ] {
+            let mut calls = Vec::new();
+            let error = service_token(Path::new("/control"), |operation, _| {
+                calls.push(operation);
+                Ok(listing.clone())
+            })
+            .unwrap_err();
+            assert_eq!(calls, ["token list"]);
+            let message = format!("{error:#}");
+            assert!(message.contains("token list") && message.contains("/control"));
+            assert!(message.contains(if listing[0]["state"] == "revoked" {
+                "revoked"
+            } else {
+                "invalid token listing"
+            }));
+        }
+    }
+
+    #[test]
+    fn service_token_stops_at_each_command_failure_without_fallback_minting() {
+        for existing in [false, true] {
+            let operations = [
+                "token list",
+                if existing {
+                    "token rotate"
+                } else {
+                    "token mint"
+                },
+                "token reveal",
+            ];
+            for failed in 0..operations.len() {
+                let mut calls = Vec::new();
+                let error = service_token(Path::new("/control"), |operation, _| {
+                    calls.push(operation);
+                    if operation == operations[failed] {
+                        return Err(anyhow!("injected command failure"));
+                    }
+                    Ok(if operation == "token list" && existing {
+                        json!([{"name":SERVICE,"state":"active"}])
+                    } else {
+                        json!([])
+                    })
+                })
+                .unwrap_err();
+                assert_eq!(calls, operations[..=failed]);
+                assert_eq!(error.to_string(), "injected command failure");
+            }
+        }
+    }
+
+    #[test]
+    fn service_token_rejects_missing_or_empty_revealed_credentials() {
+        for revealed in [
+            json!({}),
+            json!({"token":""}),
+            json!({"token":null}),
+            json!({"token":42}),
+        ] {
+            let mut calls = Vec::new();
+            let error = service_token(Path::new("/control"), |operation, _| {
+                calls.push(operation);
+                Ok(if operation == "token reveal" {
+                    revealed.clone()
+                } else {
+                    json!([])
+                })
+            })
+            .unwrap_err();
+            assert_eq!(calls, ["token list", "token mint", "token reveal"]);
+            let message = format!("{error:#}");
+            assert!(message.contains("token reveal") && message.contains("/control"));
+            assert!(message.contains("missing service credential"));
+        }
+    }
+
+    #[test]
+    fn bootstrap_response_preserves_context_without_leaking_secrets() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{ExitStatus, Output};
+
+        let root = Path::new("/control checkout");
+        let output = |status, stdout: &[u8]| {
+            Ok(Output {
+                status: ExitStatus::from_raw(status),
+                stdout: stdout.to_vec(),
+                stderr: b"stderr-secret-sentinel".to_vec(),
+            })
+        };
+        assert_eq!(
+            bootstrap_response(
+                root,
+                "token reveal",
+                output(0, br#"{"token":"test-credential"}"#)
+            )
+            .unwrap(),
+            json!({"token":"test-credential"})
+        );
+        for (response, expected) in [
+            (
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "underlying-secret-sentinel",
+                )),
+                "cannot execute command (PermissionDenied)",
+            ),
+            (
+                output(7 << 8, b"stdout-secret-sentinel"),
+                "command failed (exit status: 7)",
+            ),
+            (
+                output(0, b"stdout-secret-sentinel"),
+                "invalid JSON response (exit status: 0)",
+            ),
+        ] {
+            let error = bootstrap_response(root, "token reveal", response).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("token reveal") && message.contains("/control checkout"));
+            assert!(message.contains(expected), "{message}");
+            for cause in error.chain() {
+                assert!(!format!("{cause:?}").contains("secret-sentinel"));
+            }
+            assert!(!message.contains("secret-sentinel"));
+        }
+    }
 
     #[test]
     fn timing_records_are_opt_in_and_correlated_on_success_and_failure() {
