@@ -1,6 +1,5 @@
 // Clippy allows kept as debt — see REVIEW_CHECKLIST.md.
 #![allow(clippy::type_complexity)]
-#![allow(clippy::collapsible_match)]
 use crate::background_jobs::write_session_state_to_disk;
 use crate::background_jobs::BackgroundJob;
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
@@ -2315,24 +2314,19 @@ impl Pty {
                     self.report_terminal_host(terminal_id);
                 },
                 Err(err) => match run_command {
-                    Some(run_command) => {
-                        if run_command.shows_start_failure() {
-                            let message = pane_start_failure(&err)
-                                .map(|(_, message)| message)
-                                .unwrap_or_else(|| format!("{err:#}"));
-                            send_pane_error_to_screen(
-                                self.bus.senders.clone(),
-                                terminal_id,
-                                message,
-                                run_command.clone(),
-                            )
-                            .with_context(err_context)?;
-                        } else {
-                            self.close_pane(PaneId::Terminal(terminal_id))
-                                .with_context(err_context)?;
-                        }
+                    Some(run_command) if run_command.shows_start_failure() => {
+                        let message = pane_start_failure(&err)
+                            .map(|(_, message)| message)
+                            .unwrap_or_else(|| format!("{err:#}"));
+                        send_pane_error_to_screen(
+                            self.bus.senders.clone(),
+                            terminal_id,
+                            message,
+                            run_command.clone(),
+                        )
+                        .with_context(err_context)?;
                     },
-                    None => {
+                    _ => {
                         self.close_pane(PaneId::Terminal(terminal_id))
                             .with_context(err_context)?;
                     },
@@ -2598,24 +2592,19 @@ impl Pty {
                     self.report_terminal_host(terminal_id);
                 },
                 Err(err) => match run_command {
-                    Some(run_command) => {
-                        if run_command.shows_start_failure() {
-                            let message = pane_start_failure(&err)
-                                .map(|(_, message)| message)
-                                .unwrap_or_else(|| format!("{err:#}"));
-                            send_pane_error_to_screen(
-                                self.bus.senders.clone(),
-                                terminal_id,
-                                message,
-                                run_command.clone(),
-                            )
-                            .with_context(err_context)?;
-                        } else {
-                            self.close_pane(PaneId::Terminal(terminal_id))
-                                .with_context(err_context)?;
-                        }
+                    Some(run_command) if run_command.shows_start_failure() => {
+                        let message = pane_start_failure(&err)
+                            .map(|(_, message)| message)
+                            .unwrap_or_else(|| format!("{err:#}"));
+                        send_pane_error_to_screen(
+                            self.bus.senders.clone(),
+                            terminal_id,
+                            message,
+                            run_command.clone(),
+                        )
+                        .with_context(err_context)?;
                     },
-                    None => {
+                    _ => {
                         self.close_pane(PaneId::Terminal(terminal_id))
                             .with_context(err_context)?;
                     },

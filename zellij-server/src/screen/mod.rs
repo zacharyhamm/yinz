@@ -1,8 +1,5 @@
 #![allow(clippy::type_complexity)]
-#![allow(clippy::single_match)]
 #![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::option_map_unit_fn)]
 //! Things related to [`Screen`]s.
 //!
 //! # Tab Identification
@@ -3992,9 +3989,9 @@ impl Screen {
             .unwrap_or(false);
 
         if root_pane_id_is_floating {
-            self.tabs.get_mut(&root_tab_id).map(|tab| {
+            if let Some(tab) = self.tabs.get_mut(&root_tab_id) {
                 let _ = tab.toggle_pane_embed_or_floating_for_pane_id(root_pane_id, None);
-            });
+            }
         }
 
         let mut panes_to_stack = vec![];
@@ -4036,9 +4033,9 @@ impl Screen {
                 }
             }
         }
-        self.tabs
-            .get_mut(&root_tab_id)
-            .map(|t| t.stack_panes(root_pane_id, panes_to_stack));
+        if let Some(t) = self.tabs.get_mut(&root_tab_id) {
+            t.stack_panes(root_pane_id, panes_to_stack)
+        }
         if let Some(dest) = self.tabs.get_mut(&root_tab_id) {
             for (pane_id, entry) in pending_respawns_to_restore {
                 dest.restore_pending_respawn(pane_id, entry);

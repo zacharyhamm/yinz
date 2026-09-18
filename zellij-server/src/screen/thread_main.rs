@@ -2831,9 +2831,9 @@ pub(crate) fn screen_thread_main(
                     )?;
                     match outcome.affected_tab_id() {
                         Some(affected_tab_id) => {
-                            completion_tx
-                                .as_mut()
-                                .map(|c| c.set_affected_tab_id(affected_tab_id));
+                            if let Some(c) = completion_tx.as_mut() {
+                                c.set_affected_tab_id(affected_tab_id)
+                            }
                             let pane_group = screen.get_client_pane_group(&client_id);
                             if !pane_group.is_empty() {
                                 let _ = screen.bus.senders.send_to_background_jobs(
@@ -3001,9 +3001,9 @@ pub(crate) fn screen_thread_main(
                     client_id_tab_index_or_pane_id,
                     mut completion_tx,
                 ) => {
-                    completion_tx
-                        .as_mut()
-                        .map(|c| c.set_affected_pane_id(new_pane_id));
+                    if let Some(c) = completion_tx.as_mut() {
+                        c.set_affected_pane_id(new_pane_id)
+                    }
                     screen.replace_pane(
                         new_pane_id,
                         hold_for_command,
@@ -3478,9 +3478,9 @@ pub(crate) fn screen_thread_main(
                         client_id,
                     )?;
                     // Set affected tab ID for plugin API return value
-                    completion_tx
-                        .as_mut()
-                        .map(|c| c.set_affected_tab_id(tab_id));
+                    if let Some(c) = completion_tx.as_mut() {
+                        c.set_affected_tab_id(tab_id)
+                    }
                     // TODO: is this a race?
                     let pane_group = screen.get_client_pane_group(&client_id);
                     if !pane_group.is_empty() {
@@ -3515,9 +3515,8 @@ pub(crate) fn screen_thread_main(
                     )?;
                     match outcome.affected_tab_id() {
                     Some(affected_tab_id) => {
-                        completion_tx
-                            .as_mut()
-                            .map(|c| c.set_affected_tab_id(affected_tab_id));
+                        if let Some(c) = completion_tx
+                            .as_mut() { c.set_affected_tab_id(affected_tab_id) }
                         let pane_group = screen.get_client_pane_group(&client_id);
                         if !pane_group.is_empty() {
                             let _ = screen.bus.senders.send_to_background_jobs(

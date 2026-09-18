@@ -957,15 +957,12 @@ fn integration_no_scrollback_when_not_requested() {
     let subscriber_msgs = msgs.get(&ClientId::new(100)).unwrap_or(&vec![]).clone();
 
     for msg in &subscriber_msgs {
-        match msg {
-            ServerToClientMsg::PaneRenderUpdate { scrollback, .. } => {
-                assert!(
-                    scrollback.is_none(),
-                    "Scrollback should be None when not requested. Got: {:?}",
-                    scrollback
-                );
-            },
-            _ => {},
+        if let ServerToClientMsg::PaneRenderUpdate { scrollback, .. } = msg {
+            assert!(
+                scrollback.is_none(),
+                "Scrollback should be None when not requested. Got: {:?}",
+                scrollback
+            );
         }
     }
 }

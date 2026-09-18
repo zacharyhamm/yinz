@@ -1374,16 +1374,14 @@ pub fn route_action(
             // no-op, these are deprecated and should be removed when we upgrade the server/client
             // contract
         },
-        #[allow(clippy::single_match)]
-        Action::SkipConfirm { action } => match *action {
-            Action::Quit => {
+        Action::SkipConfirm { action } => {
+            if *action == Action::Quit {
                 drop(completion_tx);
                 senders
                     .send_to_server(ServerInstruction::ClientExit(client_id, None))
                     .with_context(err_context)?;
                 should_break = true;
-            },
-            _ => {},
+            }
         },
         Action::NoOp => {
             drop(completion_tx);

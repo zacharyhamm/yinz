@@ -280,7 +280,9 @@ impl Screen {
         set_blocking: bool,
         pending: &mut PendingEvents,
     ) -> Result<()> {
-        completion_tx.as_mut().map(|c| c.set_affected_pane_id(pid));
+        if let Some(c) = completion_tx.as_mut() {
+            c.set_affected_pane_id(pid)
+        }
 
         let blocking_notification = if set_blocking { completion_tx } else { None };
 

@@ -1,4 +1,3 @@
-#![allow(clippy::single_match)]
 #![allow(clippy::ptr_arg)]
 use super::{
     is_too_wide, parse_disabled, parse_indices, parse_opaque, parse_selected, Coordinates,
@@ -107,23 +106,22 @@ pub fn stringify_text(
         }
     }
     let coordinates_width = coordinates.as_ref().and_then(|c| c.width);
-    match (coordinates_width, base_text_style.background) {
-        (Some(coordinates_width), Some(_background_style)) => {
-            let text_width_with_left_padding = text_width + left_padding.unwrap_or(0);
-            let background_padding_length =
-                coordinates_width.saturating_sub(text_width_with_left_padding);
-            if text_width_with_left_padding < coordinates_width {
-                // here we pad the string with whitespace until the end so that the background
-                // style will apply the whole length of the coordinates
-                stringified.push_str(&format!(
-                    "{:width$}",
-                    " ",
-                    width = background_padding_length
-                ));
-            }
-            text_width += background_padding_length;
-        },
-        _ => {},
+    if let (Some(coordinates_width), Some(_background_style)) =
+        (coordinates_width, base_text_style.background)
+    {
+        let text_width_with_left_padding = text_width + left_padding.unwrap_or(0);
+        let background_padding_length =
+            coordinates_width.saturating_sub(text_width_with_left_padding);
+        if text_width_with_left_padding < coordinates_width {
+            // here we pad the string with whitespace until the end so that the background
+            // style will apply the whole length of the coordinates
+            stringified.push_str(&format!(
+                "{:width$}",
+                " ",
+                width = background_padding_length
+            ));
+        }
+        text_width += background_padding_length;
     }
     (stringified, text_width)
 }

@@ -326,10 +326,8 @@ impl Screen {
         }
         // Background plugins subscribed to this event type
         for ((bg_pid, bg_cid), subs) in &self.background_plugin_subscriptions {
-            if subs.contains(&event_type) && *bg_cid == client_id {
-                if !plugin_ids.contains(bg_pid) {
-                    plugin_ids.push(*bg_pid);
-                }
+            if subs.contains(&event_type) && *bg_cid == client_id && !plugin_ids.contains(bg_pid) {
+                plugin_ids.push(*bg_pid);
             }
         }
         plugin_ids

@@ -141,18 +141,18 @@ impl Screen {
         );
         // tab_id is a stable identifier from NewTab instruction
         if let Some(first_terminal_pane) = new_pane_pids.first() {
-            completion_tx
-                .as_mut()
-                .map(|c| c.set_affected_pane_id(PaneId::Terminal(first_terminal_pane.0)));
+            if let Some(c) = completion_tx.as_mut() {
+                c.set_affected_pane_id(PaneId::Terminal(first_terminal_pane.0))
+            }
         } else if let Some(plugin_id) = new_plugin_ids.values().next().and_then(|v| v.first()) {
-            completion_tx
-                .as_mut()
-                .map(|c| c.set_affected_pane_id(PaneId::Plugin(*plugin_id)));
+            if let Some(c) = completion_tx.as_mut() {
+                c.set_affected_pane_id(PaneId::Plugin(*plugin_id))
+            }
         }
         // Set the affected tab ID for plugin API return value
-        completion_tx
-            .as_mut()
-            .map(|c| c.set_affected_tab_id(tab_id));
+        if let Some(c) = completion_tx.as_mut() {
+            c.set_affected_tab_id(tab_id)
+        }
         let new_terminal_pane_ids: Vec<_> = new_pane_pids
             .iter()
             .chain(&new_floating_pane_pids)

@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::option_map_unit_fn)]
 mod pane_resizer;
 mod stacked_panes;
 mod tiled_pane_grid;
@@ -1857,9 +1855,9 @@ impl TiledPanes {
                         if let Some(last_state) = tombstone_pane_state.pop() {
                             if last_state.len() == self.panes.len() {
                                 for (pane_id, pane_geom) in last_state {
-                                    self.panes
-                                        .get_mut(&pane_id)
-                                        .map(|pane| pane.set_geom(pane_geom));
+                                    if let Some(pane) = self.panes.get_mut(&pane_id) {
+                                        pane.set_geom(pane_geom)
+                                    }
                                 }
                                 self.reapply_pane_frames();
                                 return Ok(true);
@@ -1895,29 +1893,29 @@ impl TiledPanes {
                         pane_grid.direct_neighboring_pane_ids_to_the_right(&pane_id),
                     )
                 };
-                if !direct_neighboring_pane_ids_above.is_empty() {
-                    if self.resize_or_stack_pane_up(pane_id, resize_percent) {
-                        self.update_tombstones_before_increase(pane_id, current_pane_state);
-                        return Ok(true);
-                    }
+                if !direct_neighboring_pane_ids_above.is_empty()
+                    && self.resize_or_stack_pane_up(pane_id, resize_percent)
+                {
+                    self.update_tombstones_before_increase(pane_id, current_pane_state);
+                    return Ok(true);
                 }
-                if !direct_neighboring_pane_ids_below.is_empty() {
-                    if self.resize_or_stack_pane_down(pane_id, resize_percent) {
-                        self.update_tombstones_before_increase(pane_id, current_pane_state);
-                        return Ok(true);
-                    }
+                if !direct_neighboring_pane_ids_below.is_empty()
+                    && self.resize_or_stack_pane_down(pane_id, resize_percent)
+                {
+                    self.update_tombstones_before_increase(pane_id, current_pane_state);
+                    return Ok(true);
                 }
-                if !direct_neighboring_pane_ids_to_the_left.is_empty() {
-                    if self.resize_or_stack_pane_left(pane_id, resize_percent) {
-                        self.update_tombstones_before_increase(pane_id, current_pane_state);
-                        return Ok(true);
-                    }
+                if !direct_neighboring_pane_ids_to_the_left.is_empty()
+                    && self.resize_or_stack_pane_left(pane_id, resize_percent)
+                {
+                    self.update_tombstones_before_increase(pane_id, current_pane_state);
+                    return Ok(true);
                 }
-                if !direct_neighboring_pane_ids_to_the_right.is_empty() {
-                    if self.resize_or_stack_pane_right(pane_id, resize_percent) {
-                        self.update_tombstones_before_increase(pane_id, current_pane_state);
-                        return Ok(true);
-                    }
+                if !direct_neighboring_pane_ids_to_the_right.is_empty()
+                    && self.resize_or_stack_pane_right(pane_id, resize_percent)
+                {
+                    self.update_tombstones_before_increase(pane_id, current_pane_state);
+                    return Ok(true);
                 }
                 // normal resize if we can't do anything...
                 match self.resize_pane_with_id(*strategy, pane_id, None) {
@@ -1950,9 +1948,9 @@ impl TiledPanes {
                         if let Some(last_state) = tombstone_pane_state.pop() {
                             if last_state.len() == self.panes.len() {
                                 for (pane_id, pane_geom) in last_state {
-                                    self.panes
-                                        .get_mut(&pane_id)
-                                        .map(|pane| pane.set_geom(pane_geom));
+                                    if let Some(pane) = self.panes.get_mut(&pane_id) {
+                                        pane.set_geom(pane_geom)
+                                    }
                                 }
                                 self.reapply_pane_frames();
                                 return Ok(true);
@@ -2913,9 +2911,9 @@ impl TiledPanes {
         is_first_run: bool,
         run_command: RunCommand,
     ) {
-        self.panes
-            .get_mut(&pane_id)
-            .map(|p| p.hold(exit_status, is_first_run, run_command));
+        if let Some(p) = self.panes.get_mut(&pane_id) {
+            p.hold(exit_status, is_first_run, run_command)
+        }
     }
     pub fn panes_to_hide_contains(&self, pane_id: PaneId) -> bool {
         self.panes_to_hide.contains(&pane_id)

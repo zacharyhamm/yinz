@@ -1,4 +1,3 @@
-#![allow(clippy::question_mark)]
 use crate::panes::AnsiCode;
 use std::convert::TryFrom;
 
@@ -78,13 +77,11 @@ pub fn parse_number(input: &[u8]) -> Option<u8> {
     let mut num: u8 = 0;
     for c in input {
         let c = *c as char;
-        if let Some(digit) = c.to_digit(10) {
-            num = match num.checked_mul(10).and_then(|v| v.checked_add(digit as u8)) {
-                Some(v) => v,
-                None => return None,
-            }
-        } else {
-            return None;
+        {
+            let digit = c.to_digit(10)?;
+            num = num
+                .checked_mul(10)
+                .and_then(|v| v.checked_add(digit as u8))?
         }
     }
     Some(num)
