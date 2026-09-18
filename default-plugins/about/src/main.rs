@@ -107,20 +107,24 @@ impl ZellijPlugin for App {
     fn update(&mut self, event: Event) -> bool {
         let mut should_render = false;
         match event {
-            Event::FailedToWriteConfigToDisk(file_path) => {
+            Event::FailedToWriteConfigToDisk { file_path, reason } => {
                 if self.applying_keybindings() {
                     self.keybinding_state
                         .borrow_mut()
-                        .set_status(ApplyStatus::Failed(file_path));
+                        .set_status(ApplyStatus::Failed { file_path, reason });
                     self.refresh_active_page();
                     should_render = true;
                 } else if self.waiting_for_config_to_be_written {
-                    let error = match file_path {
+                    let mut error = match file_path {
                         Some(file_path) => {
                             format!("Failed to write config to disk at: {}", file_path)
                         },
                         None => "Failed to write config to disk.".to_string(),
                     };
+                    if let Some(reason) = reason {
+                        error.push(' ');
+                        error.push_str(&reason);
+                    }
                     eprintln!("{}", error);
                     self.error = Some(error);
                     should_render = true;

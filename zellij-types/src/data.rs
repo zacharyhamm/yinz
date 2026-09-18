@@ -252,7 +252,12 @@ pub enum Event {
     EditPaneOpened(crate::internal_ids::TerminalId, Context), // u32 - terminal_pane_id
     EditPaneExited(crate::internal_ids::TerminalId, Option<i32>, Context), // u32 - terminal_pane_id, Option<i32> - exit code
     CommandPaneReRun(crate::internal_ids::TerminalId, Context), // u32 - terminal_pane_id, Option<i32> -
-    FailedToWriteConfigToDisk(Option<String>), // String -> the file path we failed to write
+    /// The config could not be written: the file that was meant to be written, when one was
+    /// reached, and why, when the server knows.
+    FailedToWriteConfigToDisk {
+        file_path: Option<String>,
+        reason: Option<String>,
+    },
     ListClients(Vec<ClientInfo>),
     HostFolderChanged(PathBuf),               // PathBuf -> new host folder
     FailedToChangeHostFolder(Option<String>), // String -> the error we got when changing

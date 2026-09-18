@@ -337,7 +337,7 @@ fn config_options_to_string_with_some_options() {
 #[test]
 fn bare_config_from_default_assets_to_string() {
     let fake_config = Config::from_default_assets().unwrap();
-    let fake_config_stringified = fake_config.to_string(false);
+    let fake_config_stringified = fake_config.to_string(false).unwrap();
     let deserialized_from_serialized = Config::from_kdl(&fake_config_stringified, None).unwrap();
     assert_eq!(
         fake_config, deserialized_from_serialized,
@@ -349,7 +349,7 @@ fn bare_config_from_default_assets_to_string() {
 #[test]
 fn bare_config_from_default_assets_to_string_with_comments() {
     let fake_config = Config::from_default_assets().unwrap();
-    let fake_config_stringified = fake_config.to_string(true);
+    let fake_config_stringified = fake_config.to_string(true).unwrap();
     let deserialized_from_serialized = Config::from_kdl(&fake_config_stringified, None).unwrap();
     assert_eq!(
         fake_config, deserialized_from_serialized,
@@ -373,7 +373,7 @@ fn osc8_hyperlinks_config_parsing() {
     assert_eq!(config.options.osc8_hyperlinks, Some(true));
 
     // Test serialization roundtrip
-    let serialized = config.to_string(false);
+    let serialized = config.to_string(false).unwrap();
     let deserialized = Config::from_kdl(&serialized, None).unwrap();
     assert_eq!(deserialized.options.osc8_hyperlinks, Some(true));
 }

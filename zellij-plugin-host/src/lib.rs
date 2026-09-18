@@ -1261,11 +1261,14 @@ pub fn plugin_thread_main(
                         .non_fatal();
                 }
             },
-            PluginInstruction::FailedToWriteConfigToDisk { file_path } => {
+            PluginInstruction::FailedToWriteConfigToDisk { file_path, reason } => {
                 let updates = vec![(
                     None,
                     None,
-                    Event::FailedToWriteConfigToDisk(file_path.map(|f| f.display().to_string())),
+                    Event::FailedToWriteConfigToDisk {
+                        file_path: file_path.map(|f| f.display().to_string()),
+                        reason,
+                    },
                 )];
                 wasm_bridge
                     .update_plugins(updates, shutdown_send.clone())

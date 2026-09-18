@@ -49,27 +49,43 @@ keybinds clear-defaults=true {
         bind "Ctrl Alt k" { FocusLastPane; }
         bind "Alt k" { CloseTab; }
         bind "Ctrl l" { MovePaneBackwards; }
+        bind "Ctrl Alt l" { Clear; }
         bind "Alt l" { GoToTab 1; }
         bind "Ctrl m" { Resize "Decrease down"; }
+        bind "Ctrl Alt m" { Confirm; }
         bind "Alt m" { ToggleTab; }
         bind "Ctrl n" { DumpScreen "/tmp/dumped"; }
+        bind "Ctrl Alt n" { Deny; }
         bind "Alt n" { TabNameInput 0; }
         bind "Ctrl o" { DumpLayout; }
+        bind "Ctrl Alt o" { NoOp; }
         bind "Alt o" { UndoRenameTab; }
         bind "Ctrl p" { EditScrollback; }
+        bind "Ctrl Alt p" { RenameSession "work"; }
         bind "Alt p" { MoveTab "right"; }
         bind "Ctrl q" { ScrollUp; }
+        bind "Ctrl Alt q" {
+            MessagePluginId 3 {
+                name "n"
+                payload "p"
+            }
+        }
         bind "Alt q" {
             Run "ls" "-l" {
                 cwd "/tmp"
+                start_suspended true
+                close_on_exit true
                 name "my cool pane"
             }
         }
         bind "Ctrl r" { ScrollDown; }
+        bind "Ctrl Alt r" { OverrideLayout; }
         bind "Alt r" {
             Run "ls" "-l" {
                 floating true
                 cwd "/tmp"
+                start_suspended true
+                close_on_exit true
                 name "my cool pane"
             }
         }
@@ -78,6 +94,8 @@ keybinds clear-defaults=true {
             Run "ls" "-l" {
                 in_place true
                 cwd "/tmp"
+                start_suspended true
+                close_on_exit true
                 name "my cool pane"
             }
         }

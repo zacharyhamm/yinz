@@ -2009,6 +2009,7 @@ bool is_current_client = 4;
 }
 message FailedToWriteConfigToDiskPayload {
 optional string file_path = 1;
+optional string reason = 2;
 }
 message CommandPaneReRunPayload {
 uint32 terminal_pane_id = 1;

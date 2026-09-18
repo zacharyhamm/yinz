@@ -410,6 +410,8 @@ pub struct ClientInfo {
 pub struct FailedToWriteConfigToDiskPayload {
     #[prost(string, optional, tag="1")]
     pub file_path: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="2")]
+    pub reason: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

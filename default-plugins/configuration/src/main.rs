@@ -152,18 +152,18 @@ impl ZellijPlugin for State {
                     };
                 }
             },
-            Event::FailedToWriteConfigToDisk(config_file_path) => {
-                match config_file_path {
+            Event::FailedToWriteConfigToDisk { file_path, reason } => {
+                let mut notification = match file_path {
                     Some(failed_path) => {
-                        self.notification = Some(format!(
-                            "Failed to write configuration file: {}",
-                            failed_path
-                        ));
+                        format!("Failed to write configuration file: {}", failed_path)
                     },
-                    None => {
-                        self.notification = Some("Failed to write configuration file.".to_string());
-                    },
+                    None => "Failed to write configuration file.".to_string(),
+                };
+                if let Some(reason) = reason {
+                    notification.push(' ');
+                    notification.push_str(&reason);
                 }
+                self.notification = Some(notification);
                 should_render = true;
             },
             _ => (),

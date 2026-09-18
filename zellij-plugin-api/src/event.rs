@@ -417,9 +417,10 @@ impl TryFrom<ProtobufEvent> for Event {
             Ok(ProtobufEventType::FailedToWriteConfigToDisk) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::FailedToWriteConfigToDiskPayload(
                     failed_to_write_configuration_payload,
-                )) => Ok(Event::FailedToWriteConfigToDisk(
-                    failed_to_write_configuration_payload.file_path,
-                )),
+                )) => Ok(Event::FailedToWriteConfigToDisk {
+                    file_path: failed_to_write_configuration_payload.file_path,
+                    reason: failed_to_write_configuration_payload.reason,
+                }),
                 _ => Err("Malformed payload for the FailedToWriteConfigToDisk Event"),
             },
             Ok(ProtobufEventType::ListClients) => match protobuf_event.payload {
@@ -1236,10 +1237,10 @@ impl TryFrom<Event> for ProtobufEvent {
                     )),
                 })
             },
-            Event::FailedToWriteConfigToDisk(file_path) => Ok(ProtobufEvent {
+            Event::FailedToWriteConfigToDisk { file_path, reason } => Ok(ProtobufEvent {
                 name: ProtobufEventType::FailedToWriteConfigToDisk as i32,
                 payload: Some(event::Payload::FailedToWriteConfigToDiskPayload(
-                    FailedToWriteConfigToDiskPayload { file_path },
+                    FailedToWriteConfigToDiskPayload { file_path, reason },
                 )),
             }),
             Event::ListClients(mut client_info_list) => Ok(ProtobufEvent {
@@ -4375,9 +4376,10 @@ mod tests {
                     ),
                     context(tc),
                 ),
-                22 => Event::FailedToWriteConfigToDisk(
-                    tc.draw(generators::optional(generators::text())),
-                ),
+                22 => Event::FailedToWriteConfigToDisk {
+                    file_path: tc.draw(generators::optional(generators::text())),
+                    reason: tc.draw(generators::optional(generators::text())),
+                },
                 23 => Event::HostFolderChanged(PathBuf::from(strings(tc))),
                 24 => Event::FailedToChangeHostFolder(
                     tc.draw(generators::optional(generators::text())),
