@@ -348,6 +348,24 @@ fn a_branch_is_what_sends_a_spawn_through_the_git_route() {
     );
 }
 
+#[test]
+fn triage_agent_spawn_refuses_missing_projects_instead_of_using_the_active_one() {
+    let mut state = state_with_project();
+    tools::test_seams::reset();
+    for project in ["swamp", "swamp-extensions"] {
+        let args = serde_json::json!({
+            "agent": "claude", "model": "opus", "project": project,
+            "branch": "issue-2180", "reuse": true,
+            "prompt": "triage issue 2180", "reuse_prompt": "resume issue 2180",
+        });
+        assert_eq!(
+            state.run_local(&agent_call("agent_spawn", &args.to_string())),
+            Some(format!("unknown project {project}; call project_list"))
+        );
+    }
+    tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| assert!(calls.is_empty()));
+}
+
 /// Outside a project, `cwd` is the caller's own directory, and the `new_pane` route
 /// would pass it into the guest untranslated. The refusal comes before the host
 /// call; the same spawn without a cwd reaches it.

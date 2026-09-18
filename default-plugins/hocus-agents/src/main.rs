@@ -490,6 +490,9 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == wire::ASK_ACK {
+            return self.swamp_ack(&pipe_message);
+        }
         if let Some(changed) = self.vm_pipe(&pipe_message) {
             return changed;
         }

@@ -517,7 +517,7 @@ export interface AgentInfo {kind: string; state: AgentState; source?: 'Spawned' 
 export interface AgentSpawnSpec {
   kind?: string | null; command?: string | null; args?: string[]; model?: string | null; effort?: string | null; prompt?: string | null;
   branch?: string | null; base?: string | null; worktree?: boolean | null; worktree_dir?: string | null; env?: StringMap; permission_mode?: string | null;
-  resume?: string | null; hooks?: boolean | null; firecracker?: string | null; firecracker_image?: string | null; reuse?: boolean | null; allow_outside_worktree?: boolean | null;
+  resume?: string | null; hooks?: boolean | null; firecracker?: string | null; firecracker_image?: string | null; reuse?: boolean | null; reuse_prompt?: string | null; allow_outside_worktree?: boolean | null;
 }
 export interface SpawnedAgent {pane_id: PaneId; branch: string | null; cwd: string | null;}
 export interface AgentEvent {pane_id: number; kind: string; hook: string; session_id: string | null; state: AgentState | null; detail: string | null; prompt: string | null; last_message: string | null; tool_name: string | null; cwd: string | null; raw: string;}

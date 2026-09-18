@@ -579,6 +579,16 @@ fn spawning_with_a_prompt_stops() {
     )));
 }
 
+#[test]
+fn agent_spawn_with_only_a_reuse_prompt_still_requires_confirmation() {
+    let call = call(
+        "agent_spawn",
+        r#"{"agent":"claude","reuse":true,"reuse_prompt":"resume issue 2180"}"#,
+    );
+    assert!(call_needs_confirmation(&call));
+    assert!(consequence(&call).is_some());
+}
+
 /// Arguments the model got wrong are not a bare spawn — they are a call nobody
 /// can read, the one case that most needs a human to look at it.
 #[test]

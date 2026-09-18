@@ -124,6 +124,7 @@ pub(crate) fn agent_spawn_specs(tc: &hegel::TestCase) -> AgentSpawnSpec {
         firecracker: optional_strings(tc),
         firecracker_image: optional_strings(tc),
         reuse: optional_booleans(tc),
+        reuse_prompt: optional_strings(tc),
         allow_outside_worktree: optional_booleans(tc),
     }
 }
