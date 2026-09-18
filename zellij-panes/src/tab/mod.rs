@@ -1,6 +1,4 @@
 #![allow(clippy::type_complexity)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::bind_instead_of_map)]
 #![allow(clippy::field_reassign_with_default)]
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::same_item_push)]
@@ -7472,12 +7470,11 @@ impl Tab {
         if !ignore_suppressed_panes
             && !id_stands_in_for_a_pane
             && self.pane_is_stack_list_member(&id)
+            && self.close_stack_list_member(id, exit_status)
         {
-            if self.close_stack_list_member(id, exit_status) {
-                self.announce_pane_closed(id);
-                self.repair_focus_after_pane_removal();
-                return;
-            }
+            self.announce_pane_closed(id);
+            self.repair_focus_after_pane_removal();
+            return;
         }
         // we need to ignore suppressed panes when we toggle a pane to be floating/embedded(tiled)
         // this is because in that case, while we do use this logic, we're not actually closing the
@@ -8545,11 +8542,7 @@ impl Tab {
                         self.senders
                             .send_to_server(ServerInstruction::Render(Some(serialized_output)))
                     })
-                    .and_then(|_| {
-                        Ok(Event::CopyToClipboard(
-                            self.clipboard_provider.as_copy_destination(),
-                        ))
-                    })
+                    .map(|_| Event::CopyToClipboard(self.clipboard_provider.as_copy_destination()))
                     .with_context(err_context)?,
                 Err(err) => {
                     Err::<(), _>(err).with_context(err_context).non_fatal();

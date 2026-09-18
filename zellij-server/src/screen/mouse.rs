@@ -104,11 +104,9 @@ impl Screen {
                         should_render = true;
                     }
                 }
-                if mouse_effect.ungroup {
-                    if self.advanced_mouse_actions {
-                        self.clear_pane_group(&client_id);
-                        should_render = true;
-                    }
+                if mouse_effect.ungroup && self.advanced_mouse_actions {
+                    self.clear_pane_group(&client_id);
+                    should_render = true;
                 }
                 if mouse_effect.state_changed {
                     if !is_bare_motion {

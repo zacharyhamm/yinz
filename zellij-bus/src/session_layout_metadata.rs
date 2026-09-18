@@ -1,5 +1,4 @@
 #![allow(clippy::ptr_arg)]
-#![allow(clippy::bind_instead_of_map)]
 use crate::ClientId;
 use crate::PaneId;
 use std::collections::{BTreeMap, HashMap};
@@ -421,17 +420,17 @@ impl SessionLayoutMetadata {
                     }
                 } else if is_helix(binary) {
                     if args.len() == 1 {
-                        args.first().and_then(|arg| {
+                        args.first().map(|arg| {
                             if let Some(colon_pos) = arg.rfind(':') {
                                 let file_part = &arg[..colon_pos];
                                 if let Some(line) = arg
                                     .get(colon_pos + 1..)
                                     .and_then(|s| s.parse::<usize>().ok())
                                 {
-                                    return Some((PathBuf::from(file_part), Some(line)));
+                                    return (PathBuf::from(file_part), Some(line));
                                 }
                             }
-                            Some((PathBuf::from(arg.as_str()), None))
+                            (PathBuf::from(arg.as_str()), None)
                         })
                     } else {
                         None

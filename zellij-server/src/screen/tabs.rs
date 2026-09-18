@@ -52,9 +52,9 @@ impl Screen {
                 if tab_exists {
                     // Tab already exists - find its ID and set in completion
                     if let Some(existing_tab) = self.tabs.values().find(|t| t.name == tab_name) {
-                        completion_tx
-                            .as_mut()
-                            .map(|c| c.set_affected_tab_id(existing_tab.id));
+                        if let Some(c) = completion_tx.as_mut() {
+                            c.set_affected_tab_id(existing_tab.id)
+                        }
                     }
                 }
                 if create && !tab_exists {
@@ -677,14 +677,11 @@ impl Screen {
                             self.connected_clients.borrow().iter().copied().collect();
                         for client_id in all_connected_clients {
                             self.update_client_tab_focus(client_id, new_tab_index);
-                            match (
+                            if let (Some(direction), Some(new_tab)) = (
                                 should_change_pane_focus,
                                 self.get_tab_by_id_mut(new_tab_index),
                             ) {
-                                (Some(direction), Some(new_tab)) => {
-                                    new_tab.focus_pane_on_edge(direction, client_id);
-                                },
-                                _ => {},
+                                new_tab.focus_pane_on_edge(direction, client_id);
                             }
                         }
                     } else {
@@ -695,14 +692,11 @@ impl Screen {
                             Some(vec![client_id]),
                         )
                         .with_context(err_context)?;
-                        match (
+                        if let (Some(direction), Some(new_tab)) = (
                             should_change_pane_focus,
                             self.get_tab_by_id_mut(new_tab_index),
                         ) {
-                            (Some(direction), Some(new_tab)) => {
-                                new_tab.focus_pane_on_edge(direction, client_id);
-                            },
-                            _ => {},
+                            new_tab.focus_pane_on_edge(direction, client_id);
                         }
                         self.update_client_tab_focus(client_id, new_tab_index);
                     }
