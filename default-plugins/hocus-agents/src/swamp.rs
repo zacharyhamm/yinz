@@ -107,7 +107,7 @@ pub(super) struct View {
     search: Option<Search>,
     selected: usize,
     list_scroll: Option<usize>,
-    list_rows: Vec<(usize, String)>,
+    list_rows: Vec<(usize, markdown::MdLine)>,
     list_error: Option<String>,
     opened: Option<u64>,
     detail: Option<Detail>,
@@ -1046,24 +1046,88 @@ fn fit(text: &str, cols: usize) -> String {
     agents::cut_to_width(text, cols)
 }
 
-fn list_text(line: &str, selected: bool) -> Text {
-    let text = Text::new(line);
+const METADATA: markdown::MdStyle = markdown::MdStyle {
+    dim: true,
+    bold: false,
+    color: None,
+    error: false,
+    strike: false,
+};
+const TITLE: markdown::MdStyle = markdown::MdStyle {
+    bold: true,
+    dim: false,
+    color: Some(1),
+    ..METADATA
+};
+
+fn status_style(status: &str) -> markdown::MdStyle {
+    markdown::MdStyle {
+        color: match status {
+            "open" => Some(1),
+            "triaged" => Some(0),
+            "in_progress" => Some(3),
+            "shipped" => Some(2),
+            _ => None,
+        },
+        ..Default::default()
+    }
+}
+
+fn styled_line(runs: &[(&str, markdown::MdStyle)]) -> markdown::MdLine {
+    runs.iter()
+        .rev()
+        .fold(markdown::MdLine::blank(), |line, (text, style)| {
+            line.prepend(&zellij_tile::text::sanitize(text), *style)
+        })
+}
+
+fn clip_line(mut line: markdown::MdLine, cols: usize) -> markdown::MdLine {
+    line.text = fit(&line.text, cols);
+    line.styles.truncate(line.text.chars().count());
+    line
+}
+
+fn wrap_line(line: markdown::MdLine, cols: usize) -> Vec<markdown::MdLine> {
+    let chars = line
+        .text
+        .chars()
+        .zip(line.styles)
+        .map(|(ch, style)| markdown::StyledChar { ch, style })
+        .collect::<Vec<_>>();
+    markdown::word_wrap_styled(&chars, cols)
+        .into_iter()
+        .map(|chars| {
+            clip_line(
+                markdown::MdLine {
+                    text: chars.iter().map(|ch| ch.ch).collect(),
+                    styles: chars.iter().map(|ch| ch.style).collect(),
+                },
+                cols,
+            )
+        })
+        .collect()
+}
+
+fn list_text(line: &markdown::MdLine, selected: bool) -> Text {
+    let text = markdown::style_text(&line.text, &line.styles, false);
     if selected {
-        text.selected().color_range(2, ..)
+        text.selected()
     } else {
         text
     }
 }
 
-fn issue_lines(issue: &Issue, selected: bool, cols: usize, now: i64) -> Vec<String> {
-    let mut lines = vec![fit(
-        &format!(
-            "{} #{} {} · {}",
-            if selected { ">" } else { " " },
-            issue.number,
-            status_label(&issue.status),
-            issue.kind,
-        ),
+fn issue_lines(issue: &Issue, selected: bool, cols: usize, now: i64) -> Vec<markdown::MdLine> {
+    let mut lines = vec![clip_line(
+        styled_line(&[
+            (
+                if selected { ">" } else { " " },
+                markdown::MdStyle::default(),
+            ),
+            (&format!(" #{} ", issue.number), METADATA),
+            (status_label(&issue.status), status_style(&issue.status)),
+            (&format!(" · {}", issue.kind), METADATA),
+        ]),
         cols,
     )];
     // Leave room for a wide Unicode character before adding the indentation.
@@ -1082,11 +1146,11 @@ fn issue_lines(issue: &Issue, selected: bool, cols: usize, now: i64) -> Vec<Stri
         age(issue.created_at),
         age(issue.updated_at),
     );
-    for text in [&issue.title, &timestamps] {
+    for (text, style) in [(&issue.title, TITLE), (&timestamps, METADATA)] {
         lines.extend(
-            zellij_tile::text::wrap(text, cols - indent.len())
+            wrap_line(styled_line(&[(text, style)]), cols - indent.len())
                 .into_iter()
-                .map(|line| fit(&format!("{indent}{line}"), cols)),
+                .map(|line| line.indent(indent.len())),
         );
     }
     lines
@@ -1103,24 +1167,24 @@ fn detail_lines(detail: &Detail, cols: usize) -> Vec<markdown::MdLine> {
     let precise = |timestamp: Option<DateTime<FixedOffset>>| {
         timestamp.map_or_else(|| "unknown".into(), |timestamp| timestamp.to_rfc3339())
     };
-    for text in [
-        format!("#{} {}", issue.number, issue.title),
-        format!(
-            "{} · {} · by {}",
-            status_label(&issue.status),
-            issue.kind,
-            issue.author
-        ),
-        format!("Created: {}", precise(issue.created_at)),
-        format!("Updated: {}", precise(issue.updated_at)),
-        format!("Assignees: {assignees}"),
-        issue.url.clone(),
+    for line in [
+        styled_line(&[
+            (&format!("#{} ", issue.number), METADATA),
+            (&issue.title, TITLE),
+        ]),
+        styled_line(&[
+            (status_label(&issue.status), status_style(&issue.status)),
+            (
+                &format!(" · {} · by {}", issue.kind, issue.author),
+                METADATA,
+            ),
+        ]),
+        styled_line(&[(&format!("Created: {}", precise(issue.created_at)), METADATA)]),
+        styled_line(&[(&format!("Updated: {}", precise(issue.updated_at)), METADATA)]),
+        styled_line(&[(&format!("Assignees: {assignees}"), METADATA)]),
+        styled_line(&[(&issue.url, METADATA)]),
     ] {
-        lines.extend(
-            zellij_tile::text::wrap(&text, cols)
-                .into_iter()
-                .map(markdown::MdLine::plain),
-        );
+        lines.extend(wrap_line(line, cols));
     }
     lines.push(markdown::MdLine::plain(""));
     lines.extend(markdown::render(
@@ -1134,14 +1198,13 @@ fn detail_lines(detail: &Detail, cols: usize) -> Vec<markdown::MdLine> {
             .map(markdown::MdLine::plain),
     );
     for comment in &detail.comments {
-        lines.extend(
-            zellij_tile::text::wrap(
+        lines.extend(wrap_line(
+            styled_line(&[(
                 &format!("{} · {}", comment.author, comment.created_at),
-                cols,
-            )
-            .into_iter()
-            .map(markdown::MdLine::plain),
-        );
+                METADATA,
+            )]),
+            cols,
+        ));
         lines.extend(markdown::render(
             &comment.body,
             cols,
@@ -1255,7 +1318,9 @@ mod tests {
         assert!(empty.issues.is_empty());
         let unknown = SEARCH.replace("triaged", "reviewing");
         let search = decode::<Search>(Some(0), unknown.as_bytes(), &[]).unwrap();
-        assert!(issue_lines(&search.issues[0], true, 100, now_ms())[0].contains("reviewing"));
+        assert!(issue_lines(&search.issues[0], true, 100, now_ms())[0]
+            .text
+            .contains("reviewing"));
         let empty = DETAIL.replace(r#"["skunk-ape"]"#, "[]");
         let mut value: serde_json::Value = serde_json::from_str(&empty).unwrap();
         value["comments"] = json!([]);
@@ -1273,10 +1338,14 @@ mod tests {
             .unwrap()
             .timestamp_millis();
         let lines = issue_lines(&detail.issue, true, 100, now);
-        assert_eq!(lines.last().unwrap(), "  Created 2h ago · Updated 5m ago");
+        assert_eq!(
+            lines.last().unwrap().text,
+            "  Created 2h ago · Updated 5m ago"
+        );
         assert!(issue_lines(&detail.issue, true, 100, now + REFRESH_MS)
             .last()
             .unwrap()
+            .text
             .contains("Updated 6m ago"));
         let precise = detail_lines(&detail, 100)
             .into_iter()
@@ -1287,7 +1356,7 @@ mod tests {
         for cols in 1..50 {
             assert!(issue_lines(&detail.issue, true, cols, now)
                 .iter()
-                .all(|line| line.width() <= cols));
+                .all(|line| line.text.width() <= cols));
             assert!(detail_lines(&detail, cols)
                 .iter()
                 .all(|line| line.text.width() <= cols));
@@ -1295,6 +1364,7 @@ mod tests {
         assert!(issue_lines(&detail.issue, false, 100, 0)
             .last()
             .unwrap()
+            .text
             .contains("Created now · Updated now"));
     }
 
@@ -1321,7 +1391,8 @@ mod tests {
             assert_eq!(
                 issue_lines(&detail.issue, false, 100, now_ms())
                     .last()
-                    .unwrap(),
+                    .unwrap()
+                    .text,
                 "  Created unknown · Updated unknown"
             );
             let precise = detail_lines(&detail, 100);
@@ -2195,7 +2266,7 @@ mod tests {
             }
             assert!(issue_lines(&state.swamp.issues()[0], true, cols, now_ms())
                 .iter()
-                .all(|line| line.width() <= cols));
+                .all(|line| line.text.width() <= cols));
         }
         key(&mut state, BareKey::Esc);
         state.render(8, 4);
@@ -2217,7 +2288,10 @@ mod tests {
         issue.title = "alpha beta\ngamma\nabcdefghijk\n界面 é".into();
         let lines = issue_lines(issue, true, 8, now_ms());
         assert_eq!(
-            &lines[1..7],
+            lines[1..7]
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
             &[
                 "  alpha",
                 "  beta",
@@ -2227,11 +2301,15 @@ mod tests {
                 "  界面 é"
             ]
         );
-        assert!(!lines[0].contains("alpha"));
+        assert!(!lines[0].text.contains("alpha"));
+        for line in &lines[1..7] {
+            assert_eq!(line.styles.len(), line.text.chars().count());
+            assert!(line.styles[2..].iter().all(|style| *style == TITLE));
+        }
         for cols in 0..20 {
             assert!(issue_lines(issue, false, cols, now_ms())
                 .iter()
-                .all(|line| line.width() <= cols));
+                .all(|line| line.text.width() <= cols));
         }
         for selected in [false, true] {
             for line in &lines {
@@ -2239,6 +2317,97 @@ mod tests {
                     list_text(line, selected).serialize().starts_with('x'),
                     selected
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn issue_colors_survive_selection_wrapping_and_clipping() {
+        let mut detail = decode::<Detail>(Some(0), DETAIL.as_bytes(), &[]).unwrap();
+        detail.issue.title = "界面 é title".into();
+        detail.issue.kind = "種類".into();
+        for (status, color) in [
+            ("open", Some(1)),
+            ("triaged", Some(0)),
+            ("in_progress", Some(3)),
+            ("shipped", Some(2)),
+            ("closed", None),
+            ("未知", None),
+        ] {
+            detail.issue.status = status.into();
+            let expected_status = markdown::MdStyle {
+                color,
+                ..Default::default()
+            };
+            for selected in [false, true] {
+                let lines = issue_lines(&detail.issue, selected, 100, 0);
+                assert_eq!(lines[0].text.starts_with('>'), selected);
+                let start = format!("  #{} ", detail.issue.number).chars().count();
+                let end = start + status_label(status).chars().count();
+                assert!(lines[0].styles[1..start].iter().all(|s| *s == METADATA));
+                assert!(lines[0].styles[start..end]
+                    .iter()
+                    .all(|s| *s == expected_status));
+                assert!(lines[0].styles[end..].iter().all(|s| *s == METADATA));
+                assert!(lines[1].styles[2..].iter().all(|s| *s == TITLE));
+                assert!(lines[2].styles[2..].iter().all(|s| *s == METADATA));
+                for cols in 0..30 {
+                    let clipped = issue_lines(&detail.issue, selected, cols, 0).remove(0);
+                    assert_eq!(
+                        clipped.styles,
+                        lines[0].styles[..clipped.text.chars().count()]
+                    );
+                }
+                for line in &lines {
+                    assert_eq!(
+                        list_text(line, true).serialize(),
+                        format!("x{}", list_text(line, false).serialize())
+                    );
+                }
+            }
+            let headers = detail_lines(&detail, 100);
+            let title_start = format!("#{} ", detail.issue.number).chars().count();
+            assert!(headers[0].styles[..title_start]
+                .iter()
+                .all(|s| *s == METADATA));
+            assert!(headers[0].styles[title_start..].iter().all(|s| *s == TITLE));
+            let status_end = status_label(status).chars().count();
+            assert!(headers[1].styles[..status_end]
+                .iter()
+                .all(|s| *s == expected_status));
+            assert!(headers[1].styles[status_end..]
+                .iter()
+                .all(|s| *s == METADATA));
+            assert!(headers[2..6]
+                .iter()
+                .flat_map(|line| &line.styles)
+                .all(|s| *s == METADATA));
+            for cols in 1..30 {
+                let wrapped = detail_lines(&detail, cols);
+                // Wrapping may discard spaces, but every visible header character keeps its style.
+                let expected = headers[..6]
+                    .iter()
+                    .flat_map(|line| line.text.chars().zip(&line.styles))
+                    .filter(|(ch, _)| !ch.is_whitespace())
+                    .collect::<Vec<_>>();
+                let actual = wrapped
+                    .iter()
+                    .take_while(|line| !line.text.is_empty())
+                    .flat_map(|line| line.text.chars().zip(&line.styles))
+                    .filter(|(ch, _)| !ch.is_whitespace())
+                    .collect::<Vec<_>>();
+                if cols >= 2 {
+                    assert_eq!(actual, expected, "width {cols}");
+                }
+                for line in wrapped
+                    .iter()
+                    .chain(issue_lines(&detail.issue, true, cols, 0).iter())
+                {
+                    assert!(line.text.width() <= cols);
+                    assert!(
+                        line.styles.is_empty() || line.styles.len() == line.text.chars().count()
+                    );
+                }
             }
         }
     }
