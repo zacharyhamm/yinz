@@ -77,12 +77,10 @@ pub fn parse_number(input: &[u8]) -> Option<u8> {
     let mut num: u8 = 0;
     for c in input {
         let c = *c as char;
-        {
-            let digit = c.to_digit(10)?;
-            num = num
-                .checked_mul(10)
-                .and_then(|v| v.checked_add(digit as u8))?
-        }
+        let digit = c.to_digit(10)?;
+        num = num
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(digit as u8))?;
     }
     Some(num)
 }

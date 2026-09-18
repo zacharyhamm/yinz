@@ -196,9 +196,6 @@ pub(crate) fn apply_pane_agent_report(
     Ok(true)
 }
 
-// The box is here in order to make the
-// NewClient enum smaller
-#[allow(clippy::boxed_local)]
 /// Work the screen thread has accepted but cannot act on yet.
 ///
 /// An instruction that names a tab, client or pane which does not exist yet is parked here and

@@ -149,9 +149,6 @@ fn set_terminal_size_using_fd(
         ws_xpixel,
         ws_ypixel,
     };
-    // TIOCGWINSZ is an u32, but the second argument to ioctl is u64 on
-    // some platforms. When checked on Linux, clippy will complain about
-    // useless conversion.
     unsafe { ioctl(fd, TIOCSWINSZ, &winsize) };
 }
 

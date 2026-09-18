@@ -161,7 +161,7 @@ impl Screen {
         self.apply_layout(
             layout,
             floating_panes_layout,
-            new_pane_pids.clone(),
+            new_pane_pids,
             new_floating_pane_pids,
             new_plugin_ids.clone(),
             tab_id,

@@ -69,7 +69,8 @@ cargo x postgres-test --build && cargo x postgres-test --test  # plugin-data sto
 Requires `protoc` (protobufs cross the plugin wasm boundary).
 
 `cargo x lint` also refuses file-level lint suppressions: a `#![allow(..)]` or `#![expect(..)]`
-at the top of a source file fails the task before clippy runs, unless `FILE_LEVEL_ALLOWS` in
+at the top of a source file, including one reached through `#![cfg_attr(.., allow(..))]`, fails
+the task before clippy runs, unless `FILE_LEVEL_ALLOWS` in
 `xtask/src/lint.rs` names that file and lint with a reason (generated prost output, vendored
 code, a test harness built around the very thing the lint warns about). Fix the warning, or
 suppress it on the one item with `#[expect(lint, reason = "…")]`; a lint that is wrong
