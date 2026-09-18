@@ -334,9 +334,9 @@ impl Screen {
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
                 None,
-                Event::PaneClosed(pane_id.into()),
+                Event::PaneClosed(pane_id),
             )]));
-        self.notify_pane_closed_to_subscribers(pane_id.into());
+        self.notify_pane_closed_to_subscribers(pane_id);
         // not checking the result: this may be happening while the app is closing, at
         // which point the pty thread is already gone
         let _ = self

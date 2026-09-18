@@ -1169,13 +1169,13 @@ impl Screen {
             pane_ids
                 .iter()
                 .copied()
-                .map(|p_id| (None, None, Event::PaneClosed(p_id.into())))
+                .map(|p_id| (None, None, Event::PaneClosed(p_id)))
                 .collect(),
         ));
 
         // Notify pane render subscribers of each closed pane
         for p_id in &pane_ids {
-            self.notify_pane_closed_to_subscribers((*p_id).into());
+            self.notify_pane_closed_to_subscribers(*p_id);
         }
 
         // below we don't check the result of sending the CloseTab instruction to the pty thread

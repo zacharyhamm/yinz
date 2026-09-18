@@ -101,9 +101,9 @@ fn pane_sequence_timeout_cancel_grace_refusal_and_cleanup() {
     let mut runtime = sdk();
     run(&mut runtime, "globalThis.now=100;Date.now=()=>now;globalThis.results=[];globalThis.errors=[];");
     for timeout in [false, true] {
-        run(&mut runtime, &format!(r#"
-          bind({{load(){{globalThis.seq=zellij.paneSequence({{steps:[{{path:'cat',timeoutMs:10}}],killGraceMs:20}});seq.done.then(r=>results.push(r),e=>errors.push(e.message));}}}});bridge('load',{{}},2);
-        "#));
+        run(&mut runtime, r#"
+          bind({load(){globalThis.seq=zellij.paneSequence({steps:[{path:'cat',timeoutMs:10}],killGraceMs:20});seq.done.then(r=>results.push(r),e=>errors.push(e.message));}});bridge('load',{},2);
+        "#);
         pane_context(&mut runtime);
         run(&mut runtime, "now+=100;bridge('update',{Timer:0},2);check(seq.status==='running');event('CommandPaneOpened');");
         if timeout {

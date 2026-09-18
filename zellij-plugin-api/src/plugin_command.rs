@@ -1,4 +1,3 @@
-#![allow(clippy::unnecessary_fallible_conversions)]
 use super::generated_api::api::plugin_command as generated;
 pub use super::generated_api::api::{
     action::{Action as ProtobufAction, PaneIdAndShouldFloat, SwitchToModePayload},
@@ -248,11 +247,10 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
 
-#[allow(clippy::from_over_into)]
-impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
-    fn into(self) -> FloatingPaneCoordinates {
+impl From<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
+    fn from(val: ProtobufFloatingPaneCoordinates) -> Self {
         FloatingPaneCoordinates {
-            x: self
+            x: val
                 .x
                 .and_then(|x| match ProtobufFixedOrPercent::try_from(x.r#type).ok() {
                     Some(ProtobufFixedOrPercent::Percent) => {
@@ -263,7 +261,7 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
                     },
                     None => None,
                 }),
-            y: self
+            y: val
                 .y
                 .and_then(|y| match ProtobufFixedOrPercent::try_from(y.r#type).ok() {
                     Some(ProtobufFixedOrPercent::Percent) => {
@@ -274,7 +272,7 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
                     },
                     None => None,
                 }),
-            width: self.width.and_then(|width| {
+            width: val.width.and_then(|width| {
                 match ProtobufFixedOrPercent::try_from(width.r#type).ok() {
                     Some(ProtobufFixedOrPercent::Percent) => {
                         Some(PercentOrFixed::Percent(width.value as usize))
@@ -285,7 +283,7 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
                     None => None,
                 }
             }),
-            height: self.height.and_then(|height| {
+            height: val.height.and_then(|height| {
                 match ProtobufFixedOrPercent::try_from(height.r#type).ok() {
                     Some(ProtobufFixedOrPercent::Percent) => {
                         Some(PercentOrFixed::Percent(height.value as usize))
@@ -296,17 +294,16 @@ impl Into<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
                     None => None,
                 }
             }),
-            pinned: self.pinned,
-            borderless: self.borderless,
+            pinned: val.pinned,
+            borderless: val.borderless,
         }
     }
 }
 
-#[allow(clippy::from_over_into)]
-impl Into<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
-    fn into(self) -> ProtobufFloatingPaneCoordinates {
+impl From<FloatingPaneCoordinates> for ProtobufFloatingPaneCoordinates {
+    fn from(val: FloatingPaneCoordinates) -> Self {
         ProtobufFloatingPaneCoordinates {
-            x: match self.x {
+            x: match val.x {
                 Some(PercentOrFixed::Percent(percent)) => Some(ProtobufFixedOrPercentValue {
                     r#type: ProtobufFixedOrPercent::Percent as i32,
                     value: percent as u32,
@@ -317,7 +314,7 @@ impl Into<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
                 }),
                 None => None,
             },
-            y: match self.y {
+            y: match val.y {
                 Some(PercentOrFixed::Percent(percent)) => Some(ProtobufFixedOrPercentValue {
                     r#type: ProtobufFixedOrPercent::Percent as i32,
                     value: percent as u32,
@@ -328,7 +325,7 @@ impl Into<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
                 }),
                 None => None,
             },
-            width: match self.width {
+            width: match val.width {
                 Some(PercentOrFixed::Percent(percent)) => Some(ProtobufFixedOrPercentValue {
                     r#type: ProtobufFixedOrPercent::Percent as i32,
                     value: percent as u32,
@@ -339,7 +336,7 @@ impl Into<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
                 }),
                 None => None,
             },
-            height: match self.height {
+            height: match val.height {
                 Some(PercentOrFixed::Percent(percent)) => Some(ProtobufFixedOrPercentValue {
                     r#type: ProtobufFixedOrPercent::Percent as i32,
                     value: percent as u32,
@@ -350,16 +347,15 @@ impl Into<ProtobufFloatingPaneCoordinates> for FloatingPaneCoordinates {
                 }),
                 None => None,
             },
-            pinned: self.pinned,
-            borderless: self.borderless,
+            pinned: val.pinned,
+            borderless: val.borderless,
         }
     }
 }
 
-#[allow(clippy::from_over_into)]
-impl Into<HttpVerb> for ProtobufHttpVerb {
-    fn into(self) -> HttpVerb {
-        match self {
+impl From<ProtobufHttpVerb> for HttpVerb {
+    fn from(val: ProtobufHttpVerb) -> Self {
+        match val {
             ProtobufHttpVerb::Get => HttpVerb::Get,
             ProtobufHttpVerb::Post => HttpVerb::Post,
             ProtobufHttpVerb::Put => HttpVerb::Put,
@@ -368,10 +364,9 @@ impl Into<HttpVerb> for ProtobufHttpVerb {
     }
 }
 
-#[allow(clippy::from_over_into)]
-impl Into<ProtobufHttpVerb> for HttpVerb {
-    fn into(self) -> ProtobufHttpVerb {
-        match self {
+impl From<HttpVerb> for ProtobufHttpVerb {
+    fn from(val: HttpVerb) -> Self {
+        match val {
             HttpVerb::Get => ProtobufHttpVerb::Get,
             HttpVerb::Post => ProtobufHttpVerb::Post,
             HttpVerb::Put => ProtobufHttpVerb::Put,
@@ -1760,8 +1755,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         }),
                         destination_plugin_id: destination_plugin_id
                             .map(zellij_types::internal_ids::PluginId::new),
-                        floating_pane_coordinates: floating_pane_coordinates
-                            .and_then(|f| f.try_into().ok()),
+                        floating_pane_coordinates: floating_pane_coordinates.map(Into::into),
                     }))
                 },
                 _ => Err("Mismatched payload for MessageToPlugin"),
@@ -2486,7 +2480,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                             .filter_map(|p_id_a_fp| {
                                 let pane_id: PaneId = p_id_a_fp.pane_id?.try_into().ok()?;
                                 let floating_pane_coordinates: FloatingPaneCoordinates =
-                                    p_id_a_fp.floating_pane_coordinates?.try_into().ok()?;
+                                    p_id_a_fp.floating_pane_coordinates?.into();
                                 Some((pane_id, floating_pane_coordinates))
                             })
                             .collect(),
@@ -2504,7 +2498,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         .filter_map(|p_id_a_fp| {
                             let pane_id: PaneId = p_id_a_fp.pane_id?.try_into().ok()?;
                             let coordinates: FloatingPaneCoordinates =
-                                p_id_a_fp.floating_pane_coordinates?.try_into().ok()?;
+                                p_id_a_fp.floating_pane_coordinates?.into();
                             Some((pane_id, coordinates))
                         })
                         .collect(),
@@ -4296,7 +4290,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                             .map(|id| id.get()),
                         floating_pane_coordinates: message_to_plugin
                             .floating_pane_coordinates
-                            .and_then(|f| f.try_into().ok()),
+                            .map(Into::into),
                     })),
                 })
             },
@@ -4954,7 +4948,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                                     Some(PaneIdAndFloatingPaneCoordinates {
                                         pane_id: Some(p_id.try_into().ok()?),
                                         floating_pane_coordinates: Some(
-                                            floating_pane_coordinates.try_into().ok()?,
+                                            floating_pane_coordinates.into(),
                                         ),
                                     })
                                 })
@@ -4975,7 +4969,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                             .filter_map(|(p_id, coordinates)| {
                                 Some(PaneIdAndFloatingPaneCoordinates {
                                     pane_id: Some(p_id.try_into().ok()?),
-                                    floating_pane_coordinates: Some(coordinates.try_into().ok()?),
+                                    floating_pane_coordinates: Some(coordinates.into()),
                                 })
                             })
                             .collect(),

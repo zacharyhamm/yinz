@@ -1,5 +1,4 @@
 #![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::unnecessary_fallible_conversions)]
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::redundant_closure)]

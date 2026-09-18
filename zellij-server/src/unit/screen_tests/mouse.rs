@@ -348,7 +348,7 @@ pub fn mouse_hover_effect() {
         size,
     );
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
 }
 
@@ -387,7 +387,7 @@ pub fn disabled_mouse_hover_effect() {
         size,
     );
     for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
+        assert_snapshot!(snapshot.to_string());
     }
 }
 

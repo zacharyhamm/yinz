@@ -365,10 +365,10 @@ impl Screen {
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
                 None,
-                zellij_types::data::Event::PaneClosed(pane_id.into()),
+                zellij_types::data::Event::PaneClosed(pane_id),
             )]))
             .non_fatal();
-        self.notify_pane_closed_to_subscribers(pane_id.into());
+        self.notify_pane_closed_to_subscribers(pane_id);
     }
 
     pub(super) fn finish_warp_group(

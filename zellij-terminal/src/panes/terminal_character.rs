@@ -1,4 +1,3 @@
-#![allow(clippy::useless_format)]
 #![allow(clippy::derivable_impls)]
 use std::convert::From;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -1048,7 +1047,7 @@ pub fn render_first_run_banner(
             )
         },
         None => {
-            let bare_text = format!("Waiting to start...");
+            let bare_text = "Waiting to start...".to_string();
             let bare_text_width = bare_text.width();
             let column_start_postion = middle_column.saturating_sub(bare_text_width / 2);
             let bold_text = RESET_STYLES.bold(Some(AnsiCode::On));

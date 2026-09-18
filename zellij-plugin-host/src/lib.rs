@@ -16,7 +16,6 @@
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::option_map_unit_fn)]
 #![allow(clippy::manual_inspect)]
-#![allow(clippy::useless_format)]
 //! The plugin host: loads Wasm and Deno plugins, runs them on the plugin thread, and turns their
 //! commands into instructions for the other server threads. It talks to the rest of the server
 //! over [`zellij_bus`], using [`zellij_routing`] to dispatch actions. It owns plugin job queues.

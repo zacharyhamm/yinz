@@ -1,5 +1,3 @@
-#![allow(clippy::useless_format)]
-#![allow(clippy::useless_borrows_in_formatting)]
 #![allow(clippy::same_item_push)]
 #![allow(clippy::unnecessary_to_owned)]
 use crate::output::CharacterChunk;
@@ -609,7 +607,7 @@ impl PaneFrame {
     fn render_title_left_side(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
         let middle_truncated_sign = "[..]";
         let middle_truncated_sign_long = "[...]";
-        let full_text = format!(" {} ", &self.title);
+        let full_text = format!(" {} ", self.title);
         if max_length <= 6 || self.title.is_empty() {
             None
         } else if full_text.width() <= max_length {

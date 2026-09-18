@@ -1,7 +1,5 @@
 #![allow(clippy::result_large_err)]
-#![allow(clippy::useless_borrows_in_formatting)]
 #![allow(clippy::clone_on_copy)]
-#![allow(clippy::useless_conversion)]
 #![allow(clippy::redundant_closure)]
 use super::PluginInstruction;
 use crate::plugin_map::{PluginEnv, ResponseSink};
@@ -675,10 +673,10 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 rename_plugin_pane(env, plugin_pane_id, &new_name)
             },
             PluginCommand::SetPaneTitlePrefix { pane_id, prefix } => {
-                set_pane_title_prefix(env, pane_id.into(), prefix)
+                set_pane_title_prefix(env, pane_id, prefix)
             },
             PluginCommand::SetPaneSubtitle { pane_id, subtitle } => {
-                set_pane_subtitle(env, pane_id.into(), subtitle)
+                set_pane_subtitle(env, pane_id, subtitle)
             },
             PluginCommand::RenameTab(tab_index, new_name) => rename_tab(
                 env,
@@ -724,9 +722,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 context,
             ),
             PluginCommand::RenameSession(new_session_name) => rename_session(env, new_session_name),
-            PluginCommand::Notify(text, pane_id, click) => {
-                notify(env, text, pane_id.map(Into::into), click)
-            },
+            PluginCommand::Notify(text, pane_id, click) => notify(env, text, pane_id, click),
             PluginCommand::UnblockCliPipeInput(pipe_name) => unblock_cli_pipe_input(env, pipe_name),
             PluginCommand::BlockCliPipeInput(pipe_name) => block_cli_pipe_input(env, pipe_name),
             PluginCommand::CliPipeOutput(pipe_name, output) => {
@@ -746,12 +742,12 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 pane_id,
                 to_session,
                 placement,
-            } => warp_pane_to_session(env, pane_id.into(), to_session, placement),
+            } => warp_pane_to_session(env, pane_id, to_session, placement),
             PluginCommand::WarpPaneFromSession {
                 pane_id,
                 from_session,
                 placement,
-            } => warp_pane_from_session(env, pane_id.into(), from_session, placement),
+            } => warp_pane_from_session(env, pane_id, from_session, placement),
             PluginCommand::ListOrphanedPanes => list_orphaned_panes(env),
             PluginCommand::WarpTabToSession { tab_id, to_session } => {
                 warp_tab_to_session(env, tab_id, to_session)
@@ -818,14 +814,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::Reconfigure(new_config, write_config_to_disk) => {
                 reconfigure(env, new_config, write_config_to_disk)?
             },
-            PluginCommand::HidePaneWithId(pane_id) => hide_pane_with_id(env, pane_id.into())?,
+            PluginCommand::HidePaneWithId(pane_id) => hide_pane_with_id(env, pane_id)?,
             PluginCommand::ShowPaneWithId(pane_id, should_float_if_hidden, should_focus_pane) => {
-                show_pane_with_id(
-                    env,
-                    pane_id.into(),
-                    should_float_if_hidden,
-                    should_focus_pane,
-                )
+                show_pane_with_id(env, pane_id, should_float_if_hidden, should_focus_pane)
             },
             PluginCommand::OpenCommandPaneBackground(command_to_run, context) => {
                 open_command_pane_background(env, command_to_run, context)
@@ -838,69 +829,53 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 command,
                 context,
                 keep_scrollback,
-            } => run_command_in_pane(env, pane_id.into(), command, context, keep_scrollback),
+            } => run_command_in_pane(env, pane_id, command, context, keep_scrollback),
             PluginCommand::ResizePaneIdWithDirection(resize, pane_id) => {
-                resize_pane_with_id(env, resize, pane_id.into())
+                resize_pane_with_id(env, resize, pane_id)
             },
             PluginCommand::EditScrollbackForPaneWithId(pane_id) => {
-                edit_scrollback_for_pane_with_id(env, pane_id.into())
+                edit_scrollback_for_pane_with_id(env, pane_id)
             },
             PluginCommand::GetPaneScrollback {
                 pane_id,
                 get_full_scrollback,
-            } => get_pane_scrollback(env, pane_id.into(), get_full_scrollback),
-            PluginCommand::WriteToPaneId(bytes, pane_id) => {
-                write_to_pane_id(env, bytes, pane_id.into())
-            },
+            } => get_pane_scrollback(env, pane_id, get_full_scrollback),
+            PluginCommand::WriteToPaneId(bytes, pane_id) => write_to_pane_id(env, bytes, pane_id),
             PluginCommand::WriteCharsToPaneId(chars, pane_id) => {
-                write_chars_to_pane_id(env, chars, pane_id.into())
+                write_chars_to_pane_id(env, chars, pane_id)
             },
-            PluginCommand::SendSigintToPaneId(pane_id) => {
-                send_sigint_to_pane_id(env, pane_id.into())
-            },
-            PluginCommand::SendSigkillToPaneId(pane_id) => {
-                send_sigkill_to_pane_id(env, pane_id.into())
-            },
-            PluginCommand::GetPanePid { pane_id } => get_pane_pid(env, pane_id.into()),
+            PluginCommand::SendSigintToPaneId(pane_id) => send_sigint_to_pane_id(env, pane_id),
+            PluginCommand::SendSigkillToPaneId(pane_id) => send_sigkill_to_pane_id(env, pane_id),
+            PluginCommand::GetPanePid { pane_id } => get_pane_pid(env, pane_id),
             PluginCommand::GetPaneRunningCommand { pane_id } => {
-                get_pane_running_command(env, pane_id.into())
+                get_pane_running_command(env, pane_id)
             },
-            PluginCommand::GetPaneCwd { pane_id } => get_pane_cwd(env, pane_id.into()),
+            PluginCommand::GetPaneCwd { pane_id } => get_pane_cwd(env, pane_id),
             PluginCommand::GetPaneGitProbe {
                 pane_id,
                 cwd,
                 refresh_token,
-            } => get_pane_git_probe(env, pane_id.into(), cwd, refresh_token),
-            PluginCommand::MovePaneWithPaneId(pane_id) => {
-                move_pane_with_pane_id(env, pane_id.into())
-            },
+            } => get_pane_git_probe(env, pane_id, cwd, refresh_token),
+            PluginCommand::MovePaneWithPaneId(pane_id) => move_pane_with_pane_id(env, pane_id),
             PluginCommand::MovePaneWithPaneIdInDirection(pane_id, direction) => {
-                move_pane_with_pane_id_in_direction(env, pane_id.into(), direction)
+                move_pane_with_pane_id_in_direction(env, pane_id, direction)
             },
-            PluginCommand::ClearScreenForPaneId(pane_id) => {
-                clear_screen_for_pane_id(env, pane_id.into())
-            },
-            PluginCommand::ScrollUpInPaneId(pane_id) => scroll_up_in_pane_id(env, pane_id.into()),
-            PluginCommand::ScrollDownInPaneId(pane_id) => {
-                scroll_down_in_pane_id(env, pane_id.into())
-            },
-            PluginCommand::ScrollToTopInPaneId(pane_id) => {
-                scroll_to_top_in_pane_id(env, pane_id.into())
-            },
+            PluginCommand::ClearScreenForPaneId(pane_id) => clear_screen_for_pane_id(env, pane_id),
+            PluginCommand::ScrollUpInPaneId(pane_id) => scroll_up_in_pane_id(env, pane_id),
+            PluginCommand::ScrollDownInPaneId(pane_id) => scroll_down_in_pane_id(env, pane_id),
+            PluginCommand::ScrollToTopInPaneId(pane_id) => scroll_to_top_in_pane_id(env, pane_id),
             PluginCommand::ScrollToBottomInPaneId(pane_id) => {
-                scroll_to_bottom_in_pane_id(env, pane_id.into())
+                scroll_to_bottom_in_pane_id(env, pane_id)
             },
-            PluginCommand::PageScrollUpInPaneId(pane_id) => {
-                page_scroll_up_in_pane_id(env, pane_id.into())
-            },
+            PluginCommand::PageScrollUpInPaneId(pane_id) => page_scroll_up_in_pane_id(env, pane_id),
             PluginCommand::PageScrollDownInPaneId(pane_id) => {
-                page_scroll_down_in_pane_id(env, pane_id.into())
+                page_scroll_down_in_pane_id(env, pane_id)
             },
             PluginCommand::TogglePaneIdFullscreen(pane_id) => {
-                toggle_pane_id_fullscreen(env, pane_id.into())
+                toggle_pane_id_fullscreen(env, pane_id)
             },
             PluginCommand::TogglePaneEmbedOrEjectForPaneId(pane_id) => {
-                toggle_pane_embed_or_eject_for_pane_id(env, pane_id.into())
+                toggle_pane_embed_or_eject_for_pane_id(env, pane_id)
             },
             PluginCommand::CloseTabWithIndex(tab_index) => close_tab_with_index(env, tab_index),
             PluginCommand::BreakPanesToNewTab(
@@ -909,7 +884,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 should_change_focus_to_new_tab,
             ) => break_panes_to_new_tab(
                 env,
-                pane_ids.into_iter().map(|p_id| p_id.into()).collect(),
+                pane_ids.into_iter().collect(),
                 new_tab_name,
                 should_change_focus_to_new_tab,
             ),
@@ -919,7 +894,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 tab_index,
             ) => break_panes_to_tab_with_index(
                 env,
-                pane_ids.into_iter().map(|p_id| p_id.into()).collect(),
+                pane_ids.into_iter().collect(),
                 tab_index,
                 should_change_focus_to_new_tab,
             ),
@@ -941,7 +916,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::BreakPanesToTabWithId(pane_ids, tab_id, should_change_focus) => {
                 break_panes_to_tab_with_id(
                     env,
-                    pane_ids.into_iter().map(|p_id| p_id.into()).collect(),
+                    pane_ids.into_iter().collect(),
                     should_change_focus,
                     tab_id,
                 )
@@ -966,29 +941,20 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 change_host_folder(env, new_host_folder)
             },
             PluginCommand::SetFloatingPanePinned(pane_id, should_be_pinned) => {
-                set_floating_pane_pinned(env, pane_id.into(), should_be_pinned)
+                set_floating_pane_pinned(env, pane_id, should_be_pinned)
             },
-            PluginCommand::StackPanes(pane_ids) => {
-                stack_panes(env, pane_ids.into_iter().map(|p_id| p_id.into()).collect())
-            },
+            PluginCommand::StackPanes(pane_ids) => stack_panes(env, pane_ids.into_iter().collect()),
             PluginCommand::ChangeFloatingPanesCoordinates(pane_ids_and_coordinates) => {
                 change_floating_panes_coordinates(
                     env,
-                    pane_ids_and_coordinates
-                        .into_iter()
-                        .map(|(p_id, coordinates)| (p_id.into(), coordinates))
-                        .collect(),
+                    pane_ids_and_coordinates.into_iter().collect(),
                 )
             },
-            PluginCommand::TogglePaneBorderless(pane_id) => {
-                toggle_pane_borderless(env, pane_id.into())
-            },
+            PluginCommand::TogglePaneBorderless(pane_id) => toggle_pane_borderless(env, pane_id),
             PluginCommand::SetPaneBorderless(pane_id, borderless) => {
-                set_pane_borderless(env, pane_id.into(), borderless)
+                set_pane_borderless(env, pane_id, borderless)
             },
-            PluginCommand::SetPaneColor(pane_id, fg, bg) => {
-                set_pane_color(env, pane_id.into(), fg, bg)
-            },
+            PluginCommand::SetPaneColor(pane_id, fg, bg) => set_pane_color(env, pane_id, fg, bg),
             PluginCommand::OpenFileNearPlugin(file_to_open, context) => {
                 open_file_near_plugin(env, file_to_open, context)
             },
@@ -1015,8 +981,8 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 for_all_clients,
             ) => group_and_ungroup_panes(
                 env,
-                panes_to_group.into_iter().map(|p| p.into()).collect(),
-                panes_to_ungroup.into_iter().map(|p| p.into()).collect(),
+                panes_to_group.into_iter().collect(),
+                panes_to_ungroup.into_iter().collect(),
                 for_all_clients,
             ),
             PluginCommand::HighlightAndUnhighlightPanes(
@@ -1024,23 +990,23 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 panes_to_unhighlight,
             ) => highlight_and_unhighlight_panes(
                 env,
-                panes_to_highlight.into_iter().map(|p| p.into()).collect(),
-                panes_to_unhighlight.into_iter().map(|p| p.into()).collect(),
+                panes_to_highlight.into_iter().collect(),
+                panes_to_unhighlight.into_iter().collect(),
             ),
             PluginCommand::SetRelatedPanes(pane_ids) => {
-                set_related_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
+                set_related_panes(env, pane_ids.into_iter().collect())
             },
             PluginCommand::RevealPaneWithId(pane_id, label) => {
-                reveal_pane_with_id(env, pane_id.into(), label)
+                reveal_pane_with_id(env, pane_id, label)
             },
             PluginCommand::CloseMultiplePanes(pane_ids) => {
-                close_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
+                close_multiple_panes(env, pane_ids.into_iter().collect())
             },
             PluginCommand::FloatMultiplePanes(pane_ids) => {
-                float_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
+                float_multiple_panes(env, pane_ids.into_iter().collect())
             },
             PluginCommand::EmbedMultiplePanes(pane_ids) => {
-                embed_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
+                embed_multiple_panes(env, pane_ids.into_iter().collect())
             },
             PluginCommand::SetSelfMouseSelectionSupport(selection_support) => {
                 set_self_mouse_selection_support(env, selection_support);
@@ -1053,8 +1019,8 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 suppress_replaced_pane,
             ) => replace_pane_with_existing_pane(
                 env,
-                pane_id_to_replace.into(),
-                existing_pane_id.into(),
+                pane_id_to_replace,
+                existing_pane_id,
                 suppress_replaced_pane,
             ),
             PluginCommand::RunAction(action, context) => run_action(env, action, context),
@@ -1140,10 +1106,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 override_user_placement,
             } => change_overlay_coordinates(
                 env,
-                placements
-                    .into_iter()
-                    .map(|(p_id, coordinates)| (p_id.into(), coordinates))
-                    .collect(),
+                placements.into_iter().collect(),
                 override_user_placement,
             ),
         },
@@ -1543,10 +1506,7 @@ fn open_command_pane_in_new_tab(
     let result = apply_action!(action, error_msg, env);
 
     let tab_id = result.as_ref().and_then(|r| r.affected_tab_id);
-    let pane_id = result
-        .as_ref()
-        .and_then(|r| r.affected_pane_id)
-        .map(|p| p.into());
+    let pane_id = result.as_ref().and_then(|r| r.affected_pane_id);
     let response =
         ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
     wasi_write_object(env, &response.encode_to_vec())
@@ -1598,10 +1558,7 @@ fn open_plugin_pane_in_new_tab(
     let result = apply_action!(action, error_msg, env);
 
     let tab_id = result.as_ref().and_then(|r| r.affected_tab_id);
-    let pane_id = result
-        .as_ref()
-        .and_then(|r| r.affected_pane_id)
-        .map(|p| p.into());
+    let pane_id = result.as_ref().and_then(|r| r.affected_pane_id);
     let response =
         ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
     wasi_write_object(env, &response.encode_to_vec())
@@ -1650,8 +1607,7 @@ fn open_plugin_pane_floating(
     let error_msg = || "Failed to open floating plugin pane".to_string();
     let result = apply_action!(action, error_msg, env);
 
-    let pane_id: OpenPluginPaneFloatingResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenPluginPaneFloatingResponse = result.and_then(|r| r.affected_pane_id);
     let response = ProtobufOpenPluginPaneFloatingResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_plugin_pane_floating response".to_string())
@@ -1691,10 +1647,7 @@ fn open_editor_pane_in_new_tab(
     let result = apply_action!(action, error_msg, env);
 
     let tab_id = result.as_ref().and_then(|r| r.affected_tab_id);
-    let pane_id = result
-        .as_ref()
-        .and_then(|r| r.affected_pane_id)
-        .map(|p| p.into());
+    let pane_id = result.as_ref().and_then(|r| r.affected_pane_id);
     let response =
         ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
     wasi_write_object(env, &response.encode_to_vec())
@@ -1991,7 +1944,7 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
     let result = apply_action!(action, error_msg, env);
 
     // Extract pane_id from result and convert to zellij_types PaneId
-    let pane_id: OpenFileResponse = result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenFileResponse = result.and_then(|r| r.affected_pane_id);
 
     // Write response to plugin
     let response = ProtobufOpenFileResponse::from(pane_id);
@@ -2043,7 +1996,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
 
         // After action completes, send ActionComplete event with context
         // Convert server PaneId to zellij_types PaneId
-        let pane_id_for_event = pane_id.map(|p| p.into());
+        let pane_id_for_event = pane_id;
         let instruction = PluginInstruction::for_plugin_event(
             plugin_id,
             client_id,
@@ -2090,8 +2043,7 @@ fn open_file_floating(
     let result = apply_action!(action, error_msg, env);
 
     // Extract pane_id from result and convert to zellij_types PaneId
-    let pane_id: OpenFileFloatingResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenFileFloatingResponse = result.and_then(|r| r.affected_pane_id);
 
     // Write response to plugin
     let response = ProtobufOpenFileFloatingResponse::from(pane_id);
@@ -2132,8 +2084,7 @@ fn open_file_in_place(
     let result = apply_action!(action, error_msg, env);
 
     // Extract pane_id from result and convert to zellij_types PaneId
-    let pane_id: OpenFileInPlaceResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenFileInPlaceResponse = result.and_then(|r| r.affected_pane_id);
 
     // Write response to plugin
     let response = ProtobufOpenFileInPlaceResponse::from(pane_id);
@@ -2175,7 +2126,7 @@ fn open_file_near_plugin(
 
     // Wait for completion
     let result = wait_for_action_completion(completion_rx, "open_file_near_plugin", false);
-    let pane_id: OpenFileNearPluginResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenFileNearPluginResponse = result.affected_pane_id;
 
     // Write response to plugin
     let response = ProtobufOpenFileNearPluginResponse::from(pane_id);
@@ -2218,7 +2169,7 @@ fn open_file_floating_near_plugin(
 
     // Wait for completion
     let result = wait_for_action_completion(completion_rx, "open_file_floating_near_plugin", false);
-    let pane_id: OpenFileFloatingNearPluginResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenFileFloatingNearPluginResponse = result.affected_pane_id;
 
     // Write response to plugin
     let response = ProtobufOpenFileFloatingNearPluginResponse::from(pane_id);
@@ -2258,7 +2209,7 @@ fn open_file_in_place_of_plugin(
 
     // Wait for completion
     let result = wait_for_action_completion(completion_rx, "open_file_in_place_of_plugin", false);
-    let pane_id: OpenFileInPlaceOfPluginResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenFileInPlaceOfPluginResponse = result.affected_pane_id;
 
     // Write response to plugin
     let response = ProtobufOpenFileInPlaceOfPluginResponse::from(pane_id);
@@ -2294,7 +2245,7 @@ fn open_terminal(env: &mut PluginEnv, cwd: PathBuf) {
     let result = apply_action!(action, error_msg, env);
 
     // Extract pane_id from result and convert to zellij_types PaneId
-    let pane_id: OpenTerminalResponse = result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenTerminalResponse = result.and_then(|r| r.affected_pane_id);
 
     // Write response to plugin
     let response = ProtobufOpenTerminalResponse::from(pane_id);
@@ -2332,7 +2283,7 @@ fn open_terminal_near_plugin(env: &mut PluginEnv, cwd: PathBuf) {
 
     // Wait for completion
     let result = wait_for_action_completion(completion_rx, "open_terminal_near_plugin", false);
-    let pane_id: OpenTerminalNearPluginResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenTerminalNearPluginResponse = result.affected_pane_id;
 
     // Write response to plugin
     let response = ProtobufOpenTerminalNearPluginResponse::from(pane_id);
@@ -2371,8 +2322,7 @@ fn open_terminal_floating(
     let result = apply_action!(action, error_msg, env);
 
     // Extract pane_id from result and convert to zellij_types PaneId
-    let pane_id: OpenTerminalFloatingResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenTerminalFloatingResponse = result.and_then(|r| r.affected_pane_id);
 
     // Write response to plugin
     let response = ProtobufOpenTerminalFloatingResponse::from(pane_id);
@@ -2412,7 +2362,7 @@ fn open_terminal_floating_near_plugin(
     // Wait for completion
     let result =
         wait_for_action_completion(completion_rx, "open_terminal_floating_near_plugin", false);
-    let pane_id: OpenTerminalFloatingNearPluginResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenTerminalFloatingNearPluginResponse = result.affected_pane_id;
 
     // Write response to plugin
     let response = ProtobufOpenTerminalFloatingNearPluginResponse::from(pane_id);
@@ -2448,8 +2398,7 @@ fn open_terminal_in_place(env: &mut PluginEnv, cwd: PathBuf) {
     let result = apply_action!(action, error_msg, env);
 
     // Extract pane_id from result and convert to zellij_types PaneId
-    let pane_id: OpenTerminalInPlaceResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenTerminalInPlaceResponse = result.and_then(|r| r.affected_pane_id);
 
     // Write response to plugin
     let response = ProtobufOpenTerminalInPlaceResponse::from(pane_id);
@@ -2489,7 +2438,7 @@ fn open_terminal_in_place_of_plugin(
     // Wait for completion
     let result =
         wait_for_action_completion(completion_rx, "open_terminal_in_place_of_plugin", false);
-    let pane_id: OpenTerminalInPlaceOfPluginResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenTerminalInPlaceOfPluginResponse = result.affected_pane_id;
 
     // Write response to plugin
     let response = ProtobufOpenTerminalInPlaceOfPluginResponse::from(pane_id);
@@ -2523,7 +2472,7 @@ fn open_command_pane_in_place_of_plugin(
     // Wait for completion
     let result =
         wait_for_action_completion(completion_rx, "open_command_pane_in_place_of_plugin", false);
-    let pane_id: OpenCommandPaneInPlaceOfPluginResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenCommandPaneInPlaceOfPluginResponse = result.affected_pane_id;
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneInPlaceOfPluginResponse::from(pane_id);
@@ -2558,7 +2507,7 @@ fn open_terminal_pane_in_place_of_pane_id(
             Some(default_shell),
             name,
             close_replaced_pane,
-            ClientTabIndexOrPaneId::PaneId(pane_id_to_replace.into()),
+            ClientTabIndexOrPaneId::PaneId(pane_id_to_replace),
             Some(NotificationEnd::new(completion_tx)),
         ));
 
@@ -2567,8 +2516,7 @@ fn open_terminal_pane_in_place_of_pane_id(
         "open_terminal_pane_in_place_of_pane_id",
         false,
     );
-    let pane_id: OpenTerminalPaneInPlaceOfPaneIdResponse =
-        result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenTerminalPaneInPlaceOfPaneIdResponse = result.affected_pane_id;
 
     let response = ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
@@ -2596,7 +2544,7 @@ fn open_command_pane_in_place_of_pane_id(
             Some(run_cmd),
             name,
             close_replaced_pane,
-            ClientTabIndexOrPaneId::PaneId(pane_id_to_replace.into()),
+            ClientTabIndexOrPaneId::PaneId(pane_id_to_replace),
             Some(NotificationEnd::new(completion_tx)),
         ));
 
@@ -2605,7 +2553,7 @@ fn open_command_pane_in_place_of_pane_id(
         "open_command_pane_in_place_of_pane_id",
         false,
     );
-    let pane_id: OpenCommandPaneInPlaceOfPaneIdResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenCommandPaneInPlaceOfPaneIdResponse = result.affected_pane_id;
 
     let response = ProtobufOpenCommandPaneInPlaceOfPaneIdResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
@@ -2639,14 +2587,14 @@ fn open_edit_pane_in_place_of_pane_id(
         Some(open_file),
         Some(title),
         close_replaced_pane,
-        ClientTabIndexOrPaneId::PaneId(pane_id_to_replace.into()),
+        ClientTabIndexOrPaneId::PaneId(pane_id_to_replace),
         Some(NotificationEnd::new(completion_tx)),
     );
     let _ = env.senders.send_to_pty(pty_instr);
 
     let result =
         wait_for_action_completion(completion_rx, "open_edit_pane_in_place_of_pane_id", false);
-    let pane_id: OpenEditPaneInPlaceOfPaneIdResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenEditPaneInPlaceOfPaneIdResponse = result.affected_pane_id;
 
     let response = ProtobufOpenEditPaneInPlaceOfPaneIdResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
@@ -2675,8 +2623,7 @@ fn open_command_pane(
     let result = apply_action!(action, error_msg, env);
 
     // Extract pane_id from result and convert to zellij_types PaneId
-    let pane_id: OpenCommandPaneResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenCommandPaneResponse = result.and_then(|r| r.affected_pane_id);
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneResponse::from(pane_id);
@@ -2731,7 +2678,7 @@ fn spawn_command_pane_near_plugin(
 
     // Wait for completion
     let result = wait_for_action_completion(completion_rx, "open_command_pane_near_plugin", false);
-    result.affected_pane_id.map(|p| p.into())
+    result.affected_pane_id
 }
 
 fn open_command_pane_in_git_checkout_near_plugin(
@@ -3487,8 +3434,7 @@ fn open_command_pane_floating(
     let result = apply_action!(action, error_msg, env);
 
     // Extract pane_id from result and convert to zellij_types PaneId
-    let pane_id: OpenCommandPaneFloatingResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenCommandPaneFloatingResponse = result.and_then(|r| r.affected_pane_id);
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneFloatingResponse::from(pane_id);
@@ -3520,8 +3466,7 @@ fn open_command_pane_overlay(
     };
     let result = apply_action!(action, error_msg, env);
 
-    let pane_id: OpenCommandPaneOverlayResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenCommandPaneOverlayResponse = result.and_then(|r| r.affected_pane_id);
     let response = ProtobufOpenCommandPaneOverlayResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_overlay response".to_string())
@@ -3556,8 +3501,7 @@ fn open_command_pane_floating_near_plugin(
         "open_command_pane_floating_near_plugin",
         false,
     );
-    let pane_id: OpenCommandPaneFloatingNearPluginResponse =
-        result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenCommandPaneFloatingNearPluginResponse = result.affected_pane_id;
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneFloatingNearPluginResponse::from(pane_id);
@@ -3588,8 +3532,7 @@ fn open_command_pane_in_place(
     let result = apply_action!(action, error_msg, env);
 
     // Extract pane_id from result and convert to zellij_types PaneId
-    let pane_id: OpenCommandPaneInPlaceResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: OpenCommandPaneInPlaceResponse = result.and_then(|r| r.affected_pane_id);
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneInPlaceResponse::from(pane_id);
@@ -3624,7 +3567,7 @@ fn open_command_pane_background(
     // The pane can start after the generic one-second UI deadline. Its caller needs
     // the actual identity to observe that process without dispatching it twice.
     let result = wait_for_action_completion(completion_rx, "open_command_pane_background", true);
-    let pane_id: OpenCommandPaneBackgroundResponse = result.affected_pane_id.map(|p| p.into());
+    let pane_id: OpenCommandPaneBackgroundResponse = result.affected_pane_id;
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneBackgroundResponse::from(pane_id);
@@ -4468,8 +4411,7 @@ fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_id: TabId) {
     };
     let result = apply_action!(action, error_msg, env);
 
-    let pane_id: NewTiledPaneInTabResponse =
-        result.and_then(|r| r.affected_pane_id).map(|p| p.into());
+    let pane_id: NewTiledPaneInTabResponse = result.and_then(|r| r.affected_pane_id);
 
     let response = ProtobufNewTiledPaneInTabResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
@@ -5858,7 +5800,7 @@ fn set_pane_regex_highlights(
     highlights: Vec<RegexHighlight>,
 ) {
     let err_context = || "failed to set pane regex highlights".to_string();
-    let pane_id: PaneId = pane_id.into();
+    let pane_id: PaneId = pane_id;
     env.senders
         .send_to_screen(ScreenInstruction::SetPluginRegexHighlights {
             pane_id,
@@ -5871,7 +5813,7 @@ fn set_pane_regex_highlights(
 
 fn clear_pane_highlights(env: &PluginEnv, pane_id: zellij_types::data::PaneId) {
     let err_context = || "failed to clear pane highlights".to_string();
-    let pane_id: PaneId = pane_id.into();
+    let pane_id: PaneId = pane_id;
     env.senders
         .send_to_screen(ScreenInstruction::ClearPluginHighlights {
             pane_id,
@@ -5928,7 +5870,7 @@ fn get_pane_info(env: &mut PluginEnv, pane_id: zellij_types::data::PaneId) {
     let (response_sender, response_receiver) = crossbeam::channel::bounded(1);
 
     // Convert from plugin PaneId to server PaneId
-    let server_pane_id: PaneId = pane_id.into();
+    let server_pane_id: PaneId = pane_id;
 
     // Send request to screen thread
     env.senders
@@ -6186,9 +6128,9 @@ fn set_pane_borderless(env: &PluginEnv, pane_id: PaneId, borderless: bool) {
 }
 
 fn set_pane_agent(env: &PluginEnv, pane_id: zellij_types::data::PaneId, agent: Option<AgentInfo>) {
-    let _ =
-        env.senders
-            .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id.into(), agent, None));
+    let _ = env
+        .senders
+        .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, agent, None));
 }
 
 fn set_pane_agent_run(
@@ -6198,11 +6140,7 @@ fn set_pane_agent_run(
 ) {
     let _ = env
         .senders
-        .send_to_screen(ScreenInstruction::SetPaneAgentRun(
-            pane_id.into(),
-            run_id,
-            None,
-        ));
+        .send_to_screen(ScreenInstruction::SetPaneAgentRun(pane_id, run_id, None));
 }
 
 /// What this plugin wants said, and decided, when the session is about to end.

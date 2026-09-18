@@ -5884,7 +5884,7 @@ fn an_overlay_that_outlives_its_tab_is_not_unloaded() {
 
     let reported_closed = panes_reported_closed_to_plugins(&plugin_receiver);
     assert!(
-        !reported_closed.contains(&popup_id.into()),
+        !reported_closed.contains(&popup_id),
         "a pane that moved tabs did not close, and plugins must not be told it did: {reported_closed:?}"
     );
 }

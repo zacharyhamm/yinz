@@ -1,10 +1,6 @@
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::ptr_arg)]
-#![allow(clippy::useless_conversion)]
 #![allow(clippy::bind_instead_of_map)]
-#![allow(clippy::from_over_into)]
-#![allow(clippy::useless_format)]
-#![allow(clippy::format_in_format_args)]
 use crate::ClientId;
 use crate::PaneId;
 use std::collections::{BTreeMap, HashMap};
@@ -321,7 +317,7 @@ impl SessionLayoutMetadata {
                     *p = PathBuf::from(stripped)
                 }
             });
-            self.global_cwd = Some(PathBuf::from(common_path_between_cwds));
+            self.global_cwd = Some(common_path_between_cwds);
         }
         let mut update_cwd_in_pane_metadata = |pane_layout_metadata: &mut PaneLayoutMetadata| {
             if let PaneId::Terminal(id) = pane_layout_metadata.id {
@@ -488,13 +484,13 @@ impl SessionLayoutMetadata {
     }
 }
 
-impl Into<GlobalLayoutManifest> for SessionLayoutMetadata {
-    fn into(self) -> GlobalLayoutManifest {
+impl From<SessionLayoutMetadata> for GlobalLayoutManifest {
+    fn from(val: SessionLayoutMetadata) -> Self {
         GlobalLayoutManifest {
-            default_layout: self.default_layout,
-            default_shell: self.default_shell,
-            global_cwd: self.global_cwd,
-            tabs: self
+            default_layout: val.default_layout,
+            default_shell: val.default_shell,
+            global_cwd: val.global_cwd,
+            tabs: val
                 .tabs
                 .into_iter()
                 .map(|t| (t.name.clone().unwrap_or_default(), t.into()))
@@ -503,14 +499,14 @@ impl Into<GlobalLayoutManifest> for SessionLayoutMetadata {
     }
 }
 
-impl Into<TabLayoutManifest> for TabLayoutMetadata {
-    fn into(self) -> TabLayoutManifest {
+impl From<TabLayoutMetadata> for TabLayoutManifest {
+    fn from(val: TabLayoutMetadata) -> Self {
         TabLayoutManifest {
-            tiled_panes: self.tiled_panes.into_iter().map(|t| t.into()).collect(),
-            floating_panes: self.floating_panes.into_iter().map(|t| t.into()).collect(),
-            is_focused: self.is_focused,
-            hide_floating_panes: self.hide_floating_panes,
-            user_named: self.user_named,
+            tiled_panes: val.tiled_panes.into_iter().map(|t| t.into()).collect(),
+            floating_panes: val.floating_panes.into_iter().map(|t| t.into()).collect(),
+            is_focused: val.is_focused,
+            hide_floating_panes: val.hide_floating_panes,
+            user_named: val.user_named,
         }
     }
 }
@@ -536,18 +532,18 @@ impl TabLayoutMetadata {
     }
 }
 
-impl Into<PaneLayoutManifest> for PaneLayoutMetadata {
-    fn into(self) -> PaneLayoutManifest {
+impl From<PaneLayoutMetadata> for PaneLayoutManifest {
+    fn from(val: PaneLayoutMetadata) -> Self {
         PaneLayoutManifest {
-            geom: self.geom,
-            run: self.run,
-            cwd: self.cwd,
-            is_borderless: self.is_borderless,
-            title: self.title,
-            is_focused: self.is_focused,
-            pane_contents: self.pane_contents,
-            default_fg: self.default_fg,
-            default_bg: self.default_bg,
+            geom: val.geom,
+            run: val.run,
+            cwd: val.cwd,
+            is_borderless: val.is_borderless,
+            title: val.title,
+            is_focused: val.is_focused,
+            pane_contents: val.pane_contents,
+            default_fg: val.default_fg,
+            default_bg: val.default_bg,
         }
     }
 }
@@ -665,7 +661,7 @@ impl ClientMetadata {
             },
             Some(Run::Plugin(..)) => {
                 let (plugin, _plugin_config) = extract_plugin_and_config(&self.command);
-                plugin.map(|p| format!("{}", p))
+                plugin.map(|p| p.to_string())
             },
             _ => None,
         };
@@ -684,13 +680,10 @@ impl ClientMetadata {
         for (client_id, client_metadata) in clients_metadata.iter() {
             // 9 - CLIENT_ID, 14 - ZELLIJ_PANE_ID, 15 - RUNNING_COMMAND
             lines.push(format!(
-                "{} {} {}",
-                format!("{0: <9}", client_id),
-                format!("{0: <14}", client_metadata.stringify_pane_id()),
-                format!(
-                    "{0: <15}",
-                    client_metadata.stringify_command(default_editor)
-                )
+                "{: <9} {: <14} {: <15}",
+                client_id,
+                client_metadata.stringify_pane_id(),
+                client_metadata.stringify_command(default_editor)
             ));
         }
         lines.join("\n")

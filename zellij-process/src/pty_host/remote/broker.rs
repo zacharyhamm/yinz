@@ -1010,10 +1010,7 @@ fn set_winsize(fd: std::os::unix::io::RawFd, cols: u16, rows: u16, xpixel: u16, 
         ws_xpixel: xpixel,
         ws_ypixel: ypixel,
     };
-    #[allow(clippy::useless_conversion)]
-    unsafe {
-        libc::ioctl(fd, libc::TIOCSWINSZ.into(), &winsize)
-    };
+    unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &winsize) };
 }
 
 /// Resolve a symbolic signal against the child this broker owns.

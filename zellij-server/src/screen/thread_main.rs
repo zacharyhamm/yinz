@@ -49,7 +49,7 @@ fn apply_queued_agent_report(
     accepted_at: std::time::Instant,
 ) -> Result<bool> {
     use zellij_types::agent::report::AgentReportState;
-    let pane_id = report.pane_id.into();
+    let pane_id = report.pane_id;
     if screen.tab_containing_pane(pane_id).is_none() {
         return Ok(false);
     }
@@ -1046,7 +1046,7 @@ pub(crate) fn screen_thread_main(
                         Some(&focused_tab_id) => match screen.get_active_pane_id(&client_id) {
                             Some(focused_pane_id) => GetFocusedPaneInfoResponse::Ok {
                                 tab_id: focused_tab_id,
-                                pane_id: focused_pane_id.into(),
+                                pane_id: focused_pane_id,
                             },
                             None => GetFocusedPaneInfoResponse::Err(format!(
                                 "No active pane found for client {:?}",
@@ -3244,7 +3244,7 @@ pub(crate) fn screen_thread_main(
                     if !apply_queued_agent_report(&mut screen, &report, accepted_at)? {
                         pending
                             .waiting_for_pane
-                            .entry(report.pane_id.into())
+                            .entry(report.pane_id)
                             .or_default()
                             .push(ScreenInstruction::AgentReport(report, accepted_at));
                     }

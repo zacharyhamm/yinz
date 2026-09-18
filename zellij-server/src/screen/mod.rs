@@ -6,13 +6,11 @@
 #![allow(clippy::unnecessary_unwrap)]
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::unnecessary_get_then_check)]
-#![allow(clippy::useless_format)]
 #![allow(clippy::clone_on_copy)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::needless_option_take)]
 #![allow(clippy::needless_return)]
 #![allow(clippy::option_map_unit_fn)]
-#![allow(clippy::useless_conversion)]
 //! Things related to [`Screen`]s.
 //!
 //! # Tab Identification

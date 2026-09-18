@@ -247,10 +247,8 @@ impl Screen {
             };
         }
         if should_be_in_place {
-            new_pane_placement = NewPanePlacement::with_pane_id_to_replace(
-                pane_id_to_replace.map(|id| id.into()),
-                close_replaced_pane,
-            );
+            new_pane_placement =
+                NewPanePlacement::with_pane_id_to_replace(pane_id_to_replace, close_replaced_pane);
         }
         if self.active_tab_ids.is_empty() && tab_index.is_none() {
             pending
