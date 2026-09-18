@@ -3,7 +3,6 @@ use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 
 use super::agent_placement::AgentPlacement;
-use super::warp_ops::{PANE_WARP_SCREEN_RESERVE, TAB_WARP_SCREEN_RESERVE};
 use super::{
     active_tab, active_tab_and_connected_client_id,
     active_tab_and_connected_client_id_with_first_tab_fallback, denormalize_notification_response,
@@ -3987,76 +3986,15 @@ pub(crate) fn screen_thread_main(
                     response_channel,
                     deadline,
                 } => {
-                    // Every check that can fail happens before the pty thread is asked
-                    // for anything: a warp that is going to be refused must leave the
-                    // pane exactly where it was.
-                    match screen.prepare_pane_group(pane_id, client_id) {
-                        Ok(Some((tab_index, terminal_ids, prepared))) => {
-                            if !supports_companions {
-                                let _ = response_channel.send(Err(
-                                    "destination does not support companion pane transfers".into(),
-                                ));
-                                break 'instruction;
-                            }
-                            if screen.pending_pane_groups.contains_key(&tab_index)
-                                || screen.pending_tab_warps.contains_key(&tab_index)
-                            {
-                                let _ = response_channel
-                                    .send(Err("this tab already has a warp in progress".into()));
-                                break 'instruction;
-                            }
-                            let deadline = deadline
-                                .checked_sub(TAB_WARP_SCREEN_RESERVE)
-                                .unwrap_or_else(Instant::now);
-                            screen
-                                .pending_pane_groups
-                                .insert(tab_index, (response_channel, prepared, deadline));
-                            screen.bus.senders.send_to_pty(
-                                PtyInstruction::ReleaseTerminalsForWarp {
-                                    tab_index,
-                                    terminal_ids,
-                                    deadline,
-                                },
-                            )?;
-                            break 'instruction;
-                        },
-                        Err(e) => {
-                            let _ = response_channel.send(Err(e));
-                            break 'instruction;
-                        },
-                        Ok(None) => {},
-                    }
-                    match screen.check_pane_can_be_warped(pane_id, client_id) {
-                        Ok(terminal_id) => {
-                            // Minus what this thread needs to serialize the pane
-                            // once the release lands, so the answer still beats
-                            // the caller's clock. `checked_sub` because `Instant -
-                            // Duration` panics rather than saturating, and a panic
-                            // here would take the screen thread with it; a deadline
-                            // that has already passed is the honest answer for a
-                            // caller with nothing left to spend. The same instant
-                            // is what `PaneReleasedForWarp` checks before it starts
-                            // that serialization, for the same reason.
-                            let deadline = deadline
-                                .checked_sub(PANE_WARP_SCREEN_RESERVE)
-                                .unwrap_or_else(Instant::now);
-                            screen
-                                .pending_warps
-                                .insert(terminal_id, (response_channel, deadline));
-                            screen.bus.senders.send_to_pty(
-                                PtyInstruction::ReleaseTerminalForWarp {
-                                    terminal_id,
-                                    to_session,
-                                    placement,
-                                    client_id,
-                                    deadline,
-                                },
-                            )?;
-                        },
-                        Err(e) => {
-                            let _ = response_channel.send(Err(e));
-                        },
-                    }
+                    screen.warp_pane(
+                        supports_companions,
+                        pane_id,
+                        to_session,
+                        placement,
+                        client_id,
+                        response_channel,
+                        deadline,
+                    )?;
                 },
                 ScreenInstruction::PaneReleasedForWarp {
                     terminal_id,
@@ -4065,59 +4003,7 @@ pub(crate) fn screen_thread_main(
                     client_id: _,
                     released,
                 } => {
-                    // Asked before the pane is taken apart, exactly as
-                    // `TabReleasedForWarp` asks below and for the same reason:
-                    // `take_released_pane_for_warp` is what closes the pane, so a
-                    // caller found to be gone on the far side of it has already
-                    // cost the user the pane, with its process running unwatched
-                    // and a log line as the only record. A caller past its
-                    // deadline has stopped waiting; the pane stays where it is,
-                    // held and told why.
-                    let still_waiting = match screen.pending_warps.remove(&terminal_id) {
-                        Some((_, deadline)) if Instant::now() >= deadline => None,
-                        other => other,
-                    };
-                    if let Some((response_channel, _)) = still_waiting {
-                        let result = screen.take_released_pane_for_warp(terminal_id, released);
-                        if let Err(crossbeam::channel::SendError(Ok(payload))) =
-                            response_channel.send(result)
-                        {
-                            // The caller timed out between asking and being
-                            // answered. The pane is out of this session by now and
-                            // its process is running unwatched, so the recovery
-                            // line has to go somewhere: this log is the only place
-                            // left that it can.
-                            log::error!(
-                            "pane {terminal_id} was released for a warp nobody was waiting on; \
-                             it is still running and can be recovered with `{}`",
-                            crate::warp::recovery_command(&payload)
-                        );
-                        }
-                    } else {
-                        // Nobody is waiting, which means the supervisor has been
-                        // released with no one to hand it to. The pane is still
-                        // on screen and now talking to nothing, so it has to say
-                        // so itself — a log line alone leaves the user with a pane
-                        // that looks alive and answers nothing. A release that
-                        // *failed* was already stranded by the pty thread, with
-                        // the failure as its reason.
-                        log::error!(
-                        "pane {terminal_id} was released for a warp nobody was waiting on; it is \
-                         still running and can be recovered with `zellij pty-host adopt <id>`"
-                    );
-                        if let Ok(released) = released {
-                            screen
-                            .bus
-                            .senders
-                            .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
-                                terminal_id,
-                                why: "this pane was moved to another session, but nothing took it"
-                                    .to_owned(),
-                                recovery: Some(released.recovery_command()),
-                            })
-                            .non_fatal();
-                        }
-                    }
+                    screen.pane_released_for_warp(terminal_id, released);
                     screen.log_and_report_session_state().non_fatal();
                     screen.render(None)?;
                 },
@@ -4149,161 +4035,19 @@ pub(crate) fn screen_thread_main(
                     response_channel,
                     deadline,
                 } => {
-                    // Every check that can fail happens before the pty thread is
-                    // asked for anything, so a tab whose warp is going to be refused
-                    // stays exactly where it was.
-                    match screen.check_tab_can_be_warped(tab_id, client_id) {
-                        Ok((tab_index, terminal_ids, prepared)) => {
-                            if prepared.relationships.is_some() && !supports_companions {
-                                let _ = response_channel.send(Err(
-                                    "destination does not support companion pane transfers".into(),
-                                ));
-                                break 'instruction;
-                            }
-                            if screen.pending_pane_groups.contains_key(&tab_index)
-                                || screen.pending_tab_warps.contains_key(&tab_index)
-                            {
-                                let _ = response_channel
-                                    .send(Err("this tab already has a warp in progress".into()));
-                                break 'instruction;
-                            }
-                            // The caller's deadline less what this thread will
-                            // need afterwards: `take_released_tab_for_warp`
-                            // serializes every pane's scrollback, and a release
-                            // that used the whole budget would leave no time to do
-                            // it in. `checked_sub` for the reason given in
-                            // `WarpPane` above. One number for both the pty thread
-                            // and the check in `TabReleasedForWarp`: a release
-                            // that lands inside the reserve is one this thread can
-                            // no longer serialize in time, however punctual the
-                            // pty thread was.
-                            let deadline = deadline
-                                .checked_sub(TAB_WARP_SCREEN_RESERVE)
-                                .unwrap_or_else(Instant::now);
-                            screen
-                                .pending_tab_warps
-                                .insert(tab_index, (response_channel, prepared, deadline));
-                            screen.bus.senders.send_to_pty(
-                                PtyInstruction::ReleaseTerminalsForWarp {
-                                    tab_index,
-                                    terminal_ids,
-                                    deadline,
-                                },
-                            )?;
-                        },
-                        Err(e) => {
-                            let _ = response_channel.send(Err(e));
-                        },
-                    }
+                    screen.warp_tab(
+                        supports_companions,
+                        tab_id,
+                        client_id,
+                        response_channel,
+                        deadline,
+                    )?;
                 },
                 ScreenInstruction::TabReleasedForWarp {
                     tab_index,
                     released,
                 } => {
-                    // Asked before the tab is taken apart rather than after.
-                    // `take_released_tab_for_warp` is what closes the tab, so a
-                    // caller found to be gone on the far side of it has already
-                    // cost this session the whole tab, with every process in it
-                    // running unwatched and a log line as the only record. A caller
-                    // whose deadline has passed — less the reserve this thread
-                    // needs, which is what the stored instant already is — is a
-                    // caller that has stopped waiting, so the tab stays where it
-                    // is and its panes are held and told why — visible, and
-                    // recoverable — below.
-                    if let Some((response_channel, prepared, deadline)) =
-                        screen.pending_pane_groups.remove(&tab_index)
-                    {
-                        if Instant::now() < deadline {
-                            let result = screen
-                                .take_released_tab_for_warp(tab_index, released, prepared)
-                                .map(|group| {
-                                    Box::new(zellij_types::data::WarpedPane {
-                                        group: Some(group),
-                                        ..Default::default()
-                                    })
-                                });
-                            if let Err(crossbeam::channel::SendError(Ok(payload))) =
-                                response_channel.send(result)
-                            {
-                                log::error!(
-                                    "unclaimed pane group: {}",
-                                    crate::warp::recovery_command(&payload)
-                                );
-                            }
-                        } else {
-                            for (terminal_id, released) in released {
-                                if let Ok(released) = released {
-                                    screen
-                                        .bus
-                                        .senders
-                                        .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
-                                            terminal_id,
-                                            why: "pane group transfer timed out".into(),
-                                            recovery: Some(released.recovery_command()),
-                                        })
-                                        .non_fatal();
-                                }
-                            }
-                        }
-                        screen.log_and_report_session_state().non_fatal();
-                        screen.render(None)?;
-                        break 'instruction;
-                    }
-                    let still_waiting = match screen.pending_tab_warps.remove(&tab_index) {
-                        Some((_, _, deadline)) if Instant::now() >= deadline => None,
-                        other => other,
-                    };
-                    if let Some((response_channel, prepared, _)) = still_waiting {
-                        let result =
-                            screen.take_released_tab_for_warp(tab_index, released, prepared);
-                        if let Err(crossbeam::channel::SendError(Ok(payload))) =
-                            response_channel.send(result)
-                        {
-                            // The caller timed out between asking and being
-                            // answered. The tab is out of this session by now and
-                            // every process in it is running unwatched.
-                            log::error!(
-                            "tab {tab_index} was released for a warp nobody was waiting on; its \
-                             panes are still running and can be recovered with: {}",
-                            payload
-                                .tiled_panes
-                                .iter()
-                                .chain(payload.floating_panes.iter())
-                                .map(crate::warp::recovery_command)
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        );
-                        }
-                    } else {
-                        // Nobody is waiting — the caller gave up, or left too
-                        // little time to serialize the tab in — which means the
-                        // supervisors have been released with no one to hand them
-                        // to. The tab is still on screen and every pane in it is
-                        // now talking to nothing, so saying where the processes
-                        // went in the log is not enough — each pane has to say it
-                        // too, or the user is left with a tab that looks alive and
-                        // answers nothing.
-                        log::error!(
-                            "tab {tab_index} was released for a warp nobody was waiting on any \
-                         more; the tab was kept, and its panes are still running and can be \
-                         recovered with `zellij pty-host adopt <id>`"
-                        );
-                        for (terminal_id, released) in released {
-                            if let Ok(released) = released {
-                                screen
-                                .bus
-                                .senders
-                                .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
-                                    terminal_id,
-                                    why:
-                                        "this tab was moved to another session, but nothing took it"
-                                            .to_owned(),
-                                    recovery: Some(released.recovery_command()),
-                                })
-                                .non_fatal();
-                            }
-                        }
-                    }
+                    screen.tab_released_for_warp(tab_index, released);
                     screen.log_and_report_session_state().non_fatal();
                     screen.render(None)?;
                 },
