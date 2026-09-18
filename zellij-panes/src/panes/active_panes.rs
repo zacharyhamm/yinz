@@ -1,6 +1,5 @@
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::for_kv_map)]
-#![allow(clippy::borrow_deref_ref)]
 #![allow(clippy::ptr_arg)]
 use crate::tab::Pane;
 

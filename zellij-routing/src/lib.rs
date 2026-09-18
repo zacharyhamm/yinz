@@ -1,27 +1,9 @@
-// test comment line 1 - this is just harmless placeholder text for a test change
-// test comment line 2 - this is just harmless placeholder text for a test change
-// test comment line 3 - this is just harmless placeholder text for a test change
-// test comment line 4 - this is just harmless placeholder text for a test change
-// test comment line 5 - this is just harmless placeholder text for a test change
-// test comment line 6 - this is just harmless placeholder text for a test change
-// test comment line 7 - this is just harmless placeholder text for a test change
-// test comment line 8 - this is just harmless placeholder text for a test change
-// test comment line 9 - this is just harmless placeholder text for a test change
-// test comment line 10 - this is just harmless placeholder text for a test change
-// test comment 1
-// test comment 2
-// test comment 3
-// test comment 4
-// test comment 5
-#![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::unnecessary_unwrap)]
 #![allow(clippy::unnecessary_fallible_conversions)]
 #![allow(clippy::clone_on_copy)]
-#![allow(clippy::needless_borrows_for_generic_args)]
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::redundant_closure)]
-#![allow(clippy::option_as_ref_deref)]
 //! Synchronous action dispatch over the thread bus, shared by the server and plugin host.
 use std::collections::{BTreeMap, HashSet};
 use tokio::sync::oneshot;

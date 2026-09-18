@@ -4,7 +4,6 @@
 #![allow(clippy::useless_conversion)]
 #![allow(clippy::bind_instead_of_map)]
 #![allow(clippy::from_over_into)]
-#![allow(clippy::too_many_arguments)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::format_in_format_args)]
 use crate::ClientId;

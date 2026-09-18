@@ -1,5 +1,3 @@
-#![allow(clippy::wrong_self_convention)]
-#![allow(clippy::drain_collect)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::useless_borrows_in_formatting)]
 #![allow(clippy::same_item_push)]
