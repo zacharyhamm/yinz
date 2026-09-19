@@ -96,8 +96,10 @@ async function inspectCheckout(): Promise<void> {
   } catch {
     // A non-repository or unavailable identity simply has no destructive action.
   }
-  status = "Agent exited.";
   z.requestRender();
+}
+function workflowHidden(): boolean {
+  return confirming || busy || status.startsWith("Deletion failed:");
 }
 function close(): void {
   if (pane != null) z.command("CloseTerminalPane", pane);
@@ -220,9 +222,34 @@ async function deleteCheckout(): Promise<void> {
 }
 async function remove(): Promise<void> {
   busy = true;
-  status = "Deleting worktree...";
+  status = "Cancelling workflow and stopping owned operations...";
   z.requestRender();
   try {
+    if (launchToken) {
+      const deadline = Date.now() + 60000;
+      for (;;) {
+        if (Date.now() >= deadline)
+          throw new Error("Cleanup is still pending; retry after reconciliation.");
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Cleanup readiness must precede deletion.
+        const result = await z.rpc.call({
+          pluginUrl: "zellij:swamp-bridge",
+          name: "swamp",
+          timeoutMs: 60000,
+          payload: { method: "cleanup_prepare", work: launchToken },
+        });
+        if (
+          result != null &&
+          typeof result === "object" &&
+          !Array.isArray(result) &&
+          result["ready"] === true
+        )
+          break;
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Poll readiness without overlapping requests.
+        await z.sleep(250);
+      }
+    }
+    status = "Deleting worktree...";
+    z.requestRender();
     await deleteCheckout();
   } catch (error) {
     status = `Deletion failed: ${String(error)}`;
@@ -253,6 +280,7 @@ async function launch(config: Record<string, string>): Promise<void> {
   } else {
     await placed;
   }
+  if (busy) return;
   const token = config["agent_exit_token"];
   if (!token) throw new Error("Missing host exit correlation token");
   view.watch(token);
@@ -278,7 +306,6 @@ async function launch(config: Record<string, string>): Promise<void> {
     // A failed reply can follow dispatch; keep reconciling.
   }
   view.attach({ directory: required(directory), launch: token });
-  busy = false;
   z.requestRender();
 }
 export default definePlugin({
@@ -296,18 +323,42 @@ export default definePlugin({
       status = "No local control checkout is available.";
       return;
     }
-    let projectWorkflow: string | null;
+    const inspect = (): void => {
+      if (config["agent_target"] !== "local" && config["agent_target"] !== "firecracker") {
+        status = "Checkout identity is unavailable.";
+        return;
+      }
+      if (config["agent_target"] === "firecracker") {
+        const executable = config["agent_zellij_executable"] ?? z.serverBinary;
+        const name = config["agent_firecracker_vm"];
+        const session = config["agent_session"];
+        if (!executable || !name || !session) {
+          status = "Firecracker identity is unavailable.";
+          return;
+        }
+        const env: Record<string, string> = {};
+        if (config["agent_zellij_config_file"])
+          env["ZELLIJ_CONFIG_FILE"] = config["agent_zellij_config_file"];
+        if (config["agent_zellij_config_dir"])
+          env["ZELLIJ_CONFIG_DIR"] = config["agent_zellij_config_dir"];
+        firecracker = { env, executable, name, session };
+      }
+
+      void inspectCheckout().catch((error: unknown) => {
+        status = String(error);
+        z.requestRender();
+      });
+    };
+    let projectWorkflow: string | null = null;
     try {
       const snapshot = z.projectConfig.read(directory);
       if (snapshot.error) {
         status = snapshot.error;
-        return;
-      }
-      projectWorkflow = snapshot.config.workflow;
+      } else projectWorkflow = snapshot.config.workflow;
     } catch (error) {
       status = String(error);
-      return;
     }
+    inspect();
     if (projectWorkflow) {
       view.active = true;
       const paneAction = (action: string, key: string): void => {
@@ -345,74 +396,48 @@ export default definePlugin({
       });
       view.status = "Starting workflow...";
       workflow = true;
-      busy = true;
       void launch(config).catch((error: unknown) => {
         view.status = String(error);
         z.requestRender();
       });
-      return;
     }
-    if (config["agent_target"] !== "local" && config["agent_target"] !== "firecracker") {
-      status = "Checkout identity is unavailable.";
-      return;
-    }
-    if (config["agent_target"] === "firecracker") {
-      const executable = config["agent_zellij_executable"] ?? z.serverBinary;
-      const name = config["agent_firecracker_vm"];
-      const session = config["agent_session"];
-      if (!executable || !name || !session) {
-        status = "Firecracker identity is unavailable.";
-        return;
-      }
-      const env: Record<string, string> = {};
-      if (config["agent_zellij_config_file"])
-        env["ZELLIJ_CONFIG_FILE"] = config["agent_zellij_config_file"];
-      if (config["agent_zellij_config_dir"])
-        env["ZELLIJ_CONFIG_DIR"] = config["agent_zellij_config_dir"];
-      firecracker = { env, executable, name, session };
-    }
-    status = "Inspecting checkout...";
-    void inspectCheckout().catch((error: unknown) => {
-      status = String(error);
-      z.requestRender();
-    });
   },
-  // oxlint-disable-next-line eslint/complexity, typescript/prefer-readonly-parameter-types -- Workflow and fallback key handling share mutable lifecycle state.
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- Workflow and fallback key handling share mutable lifecycle state.
   update(event: Event) {
+    if (typeof event === "object" && "Key" in event) {
+      if (busy) return true;
+      if (event.Key.bare_key === "Delete" && checkout) {
+        if (confirming)
+          void remove().catch((error: unknown) => {
+            z.log(String(error));
+          });
+        else confirming = true;
+        z.requestRender();
+        return true;
+      }
+      if (confirming) {
+        if (event.Key.bare_key === "Esc") confirming = false;
+        z.requestRender();
+        return true;
+      }
+      if (event.Key.bare_key === "Esc") {
+        close();
+        return true;
+      }
+    }
     if (workflow) {
       if (
         typeof event === "object" &&
-        "Key" in event &&
-        view.pending.length === 0 &&
-        event.Key.bare_key === "Delete"
-      ) {
-        if (!busy && !view.active && !view.submitting && pane != null) {
-          z.command("CloseTerminalPane", pane);
-          z.command("CloseSelf");
-        }
+        ("Key" in event || "Mouse" in event || "PastedText" in event) &&
+        workflowHidden()
+      )
         return true;
-      }
       return view.update(event);
     }
     if (typeof event !== "object" || !("Key" in event)) return false;
-    if (event.Key.bare_key === "Esc") {
-      if (busy) return true;
-      if (confirming) {
-        confirming = false;
-        z.requestRender();
-      } else close();
-    } else if (event.Key.bare_key === "Enter" && !busy) {
+    if (event.Key.bare_key === "Enter") {
       if (pane != null) z.command("RerunCommandPane", pane);
       z.command("CloseSelf");
-    } else if (event.Key.bare_key === "Delete" && !busy && checkout) {
-      if (confirming)
-        void remove().catch((error: unknown) => {
-          z.log(String(error));
-        });
-      else {
-        confirming = true;
-        z.requestRender();
-      }
     }
     return true;
   },
@@ -420,30 +445,33 @@ export default definePlugin({
     view.pipe(message);
   },
   render(rows, cols) {
-    if (workflow)
+    const destructive = checkout ? "Delete: Delete worktree & branch and close pane" : "";
+    if (workflow && !workflowHidden())
       return (
         view.render(Math.max(0, rows - 1), cols) +
         z.ui
           .text(
             z.text.truncate(
-              busy || view.active || view.submitting
-                ? "Enter: activate button. Restart/Fork: cancel run and continue. Cancel run: explicit cancellation."
-                : "Enter: activate button  Delete: leave and close held pane",
+              "Esc: close pane  " +
+                (destructive || "Enter: activate button. Restart/Fork: cancel run and continue."),
               cols,
             ),
           )
           .dim()
           .render({ x: 0, y: Math.max(0, rows - 1), width: cols, height: 1 })
       );
-    const destructive = checkout
-      ? confirming
-        ? `Delete again: remove ${checkout.path} and ${checkout.branch ?? "its detached checkout"}${firecracker ? ` after closing VM ${firecracker.name}` : ""}. Esc: cancel.`
-        : `  Delete: delete worktree${checkout.branch ? " and branch" : ""}`
-      : "";
     return [
       ...status.split("\n").filter(Boolean),
       `Directory: ${directory ?? "unknown"}`,
-      `Enter: restart agent  Esc: close pane${destructive}`,
+      ...(confirming && checkout
+        ? [
+            `Worktree: ${checkout.path}`,
+            `Branch: ${checkout.branch ?? "detached HEAD (checkout only)"}`,
+            ...(firecracker ? [`VM: ${firecracker.name}`] : []),
+            "This cancels the workflow and removes uncommitted work.",
+            "Delete again: confirm deletion. Esc: cancel.",
+          ]
+        : ["Enter: restart agent  Esc: close pane", destructive]),
     ]
       .slice(0, rows)
       .map((line, y) =>

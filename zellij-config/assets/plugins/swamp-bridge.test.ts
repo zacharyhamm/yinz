@@ -76,3 +76,479 @@ test("swamp-bridge correlates persisted attachments and rejects conflicting dupl
     ),
   );
 });
+
+async function cleanupFixture() {
+  const store = storeReplies();
+  const p = await loadPlugin("./swamp-bridge.ts", {
+    replies: {
+      ...store.replies,
+      GetPluginIds: { host_id: "test", plugin_id: 1 },
+      MessageToPlugin: null,
+      GetPaneInfo: { plugin_url: "zellij:agent-exit" },
+      SetPaneSubtitle: null,
+      RunCommand: null,
+      SwampRequest: null,
+      CloseTerminalPane: null,
+      OpenCommandPaneBackground: { Terminal: 9 },
+      ProjectConfigRead: { root: "/repo", config: { workflow: "fixture" } },
+    },
+  });
+  let id = 0;
+  async function request(payload: unknown, source = 2, name = "swamp") {
+    const call_id = String(++id);
+    await p.pipe({
+      name: "zellij_rpc_call",
+      source: { Plugin: source },
+      payload: JSON.stringify({ version: 1, call_id, name, payload }),
+    });
+    return {
+      call_id,
+      reply: () => {
+        const messages = p.commands as {
+          MessageToPlugin?: { message_name: string; message_payload: string };
+        }[];
+        return messages
+          .filter((entry) => entry.MessageToPlugin?.message_name === "zellij_rpc_reply")
+          .map((entry) => JSON.parse(entry.MessageToPlugin!.message_payload))
+          .find((entry) => entry.call_id === call_id);
+      },
+    };
+  }
+  const identity = (await request({ method: "identity" })).reply().result;
+  function seed(work: string, key: string, value: Record<string, unknown>) {
+    const uid = JSON.stringify([identity.host_id, identity.session, work, key]);
+    store.rows.set(uid, {
+      value: JSON.stringify({ work, key, incarnation: identity.incarnation, ...value }),
+      rev: 1,
+    });
+  }
+  async function hostReply(rows: unknown[]) {
+    const command = [...p.commands]
+      .reverse()
+      .find((entry) => typeof entry === "object" && entry != null && "RunCommand" in entry) as {
+      RunCommand: unknown[];
+    };
+    assert(command);
+    const text = JSON.stringify(rows);
+    await p.event({
+      RunCommandResult: [
+        0,
+        [...text].map((c) => c.charCodeAt(0)),
+        [],
+        command.RunCommand[3] as Record<string, string>,
+      ],
+    });
+  }
+  async function swampReply(operation: string, payload: unknown) {
+    const commands = p.commands as { SwampRequest?: { id: string; operation: string } }[];
+    const command = commands
+      .filter((entry) => entry.SwampRequest?.operation === operation)
+      .at(-1)?.SwampRequest;
+    assert(command, operation);
+    await p.event({
+      CustomMessage: [
+        "swamp-response",
+        JSON.stringify({ id: command.id, type: "result", payload }),
+      ],
+    });
+  }
+  return { p, store, request, identity, seed, hostReply, swampReply };
+}
+
+test("cleanup preparation authenticates the owning exit pane, blocks late launch and permits retries", async () => {
+  const f = await cleanupFixture();
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: true,
+  });
+  assert(
+    (await f.request({ method: "cleanup_prepare", work: "exit" }, 3))
+      .reply()
+      .error.includes("another hook"),
+  );
+  assert(
+    (await f.request({ method: "workflow_run", work: "exit", key: "launch" }))
+      .reply()
+      .error.includes("lifecycle is closed"),
+  );
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: true,
+  });
+});
+
+test("cleanup refuses an uncertain launch and can retry after ownership is reconciled", async () => {
+  const f = await cleanupFixture();
+  f.seed("exit", "command", {
+    request: JSON.stringify({ method: "command" }),
+    owner: { ...f.identity, work: "exit", agent: "command" },
+    outcome: "unknown",
+  });
+  assert(
+    (await f.request({ method: "cleanup_prepare", work: "exit" }))
+      .reply()
+      .error.includes("termination is uncertain"),
+  );
+  f.seed("exit", "command", {
+    request: JSON.stringify({ method: "command" }),
+    outcome: "cancelled",
+    terminationVerified: true,
+  });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: true,
+  });
+});
+
+for (const outcome of ["pending", "completed", "failed"]) {
+  test(`cleanup verifies process-group termination for ${outcome} operations`, async () => {
+    const f = await cleanupFixture();
+    f.seed("exit", "command", {
+      request: JSON.stringify({ method: "command" }),
+      outcome,
+      owner: { ...f.identity, work: "exit", agent: "command" },
+      pane: 9,
+      supervisor: "host-9",
+      process: 123,
+    });
+    const first = await f.request({ method: "cleanup_prepare", work: "exit" });
+    const duplicate = await f.request({ method: "cleanup_prepare", work: "exit" });
+    assert(!first.reply());
+    assert(!duplicate.reply());
+    assertEquals(closedHelpers(f.p), []);
+    await f.hostReply([
+      {
+        terminal_id: 9,
+        host_id: "host-9",
+        child_pid: 123,
+        session_name: f.identity.session,
+        attached: true,
+        child_group_terminated: true,
+        child_exit_status: 0,
+      },
+    ]);
+    assertEquals(first.reply().result, { ready: true });
+    assertEquals(duplicate.reply().result, { ready: true });
+    assertEquals(closedHelpers(f.p), [{ CloseTerminalPane: 9 }]);
+  });
+}
+
+test("cleanup refuses a replacement process without signalling it", async () => {
+  const f = await cleanupFixture();
+  f.seed("exit", "command", {
+    request: JSON.stringify({ method: "command" }),
+    outcome: "pending",
+    owner: { ...f.identity, work: "exit", agent: "command" },
+    pane: 9,
+    supervisor: "host-9",
+    process: 123,
+  });
+  const pending = await f.request({ method: "cleanup_prepare", work: "exit" });
+  await f.hostReply([
+    {
+      terminal_id: 9,
+      host_id: "host-9",
+      child_pid: 456,
+      session_name: f.identity.session,
+      attached: true,
+    },
+  ]);
+  assert(pending.reply().error.includes("ownership changed"));
+  assertEquals(closedHelpers(f.p), []);
+});
+
+test("cleanup waits for a command launch to publish supervisor identity", async () => {
+  const f = await cleanupFixture();
+  const launch = await f.request({
+    method: "command",
+    work: "exit",
+    key: "command",
+    argv: ["helper"],
+    cwd: "/repo",
+  });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: false,
+  });
+  const host = {
+    terminal_id: 9,
+    host_id: "host-9",
+    child_pid: 123,
+    session_name: f.identity.session,
+    attached: true,
+  };
+  await f.hostReply([host]);
+  assert(launch.reply().error.includes("lifecycle is closed"));
+  const cleanup = await f.request({ method: "cleanup_prepare", work: "exit" });
+  assert(!cleanup.reply());
+  await f.hostReply([{ ...host, child_group_terminated: true }]);
+  assertEquals(cleanup.reply().result, { ready: true });
+});
+
+test("cleanup blocks a workflow launch still validating", async () => {
+  const f = await cleanupFixture();
+  const launch = await f.request({
+    method: "workflow_run",
+    work: "exit",
+    key: "launch",
+    directory: "/repo",
+    exactInputs: true,
+  });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: false,
+  });
+  await f.swampReply("workflow.get", { name: "fixture" });
+  await f.swampReply("workflow.validate", { passed: true });
+  assert(launch.reply().error.includes("lifecycle is closed"));
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: true,
+  });
+  assert(!JSON.stringify(f.p.commands).includes('"operation":"workflow.run"'));
+});
+
+for (const failure of ["cancel failed", "still running", "none"]) {
+  test(`cleanup waits for authoritative workflow cancellation: ${failure}`, async () => {
+    const f = await cleanupFixture();
+    f.seed("exit", "launch", {
+      request: JSON.stringify({ method: "workflow_run" }),
+      checkout: "/repo",
+      run: "run-1",
+      outcome: "pending",
+    });
+    const cleanup = await f.request({ method: "cleanup_prepare", work: "exit" });
+    await f.swampReply("workflow.history.get", { status: "running" });
+    assert(!cleanup.reply());
+    await f.swampReply(
+      "workflow.cancel",
+      failure === "cancel failed" ? { error: { code: "unavailable" } } : {},
+    );
+    if (failure !== "cancel failed") {
+      assert(!cleanup.reply());
+      await f.swampReply("workflow.history.get", {
+        status: failure === "none" ? "cancelled" : "running",
+      });
+    }
+    if (failure === "none") assertEquals(cleanup.reply().result, { ready: true });
+    else {
+      assert(cleanup.reply().error);
+      const retry = await f.request({ method: "cleanup_prepare", work: "exit" });
+      await f.swampReply("workflow.history.get", { status: "cancelled" });
+      assertEquals(retry.reply().result, { ready: true });
+    }
+  });
+}
+
+for (const status of ["succeeded", "suspended", "failed", "cancelled"]) {
+  test(`cleanup accepts a settled ${status} workflow after closing its lifecycle`, async () => {
+    const f = await cleanupFixture();
+    f.seed("exit", "launch", {
+      request: JSON.stringify({ method: "workflow_run" }),
+      checkout: "/repo",
+      run: "run-1",
+      outcome: "completed",
+    });
+    const cleanup = await f.request({ method: "cleanup_prepare", work: "exit" });
+    await f.swampReply("workflow.history.get", { status });
+    assertEquals(cleanup.reply().result, { ready: true });
+  });
+}
+
+test("cleanup cancels a workflow whose dispatch acknowledgement arrives late", async () => {
+  const f = await cleanupFixture();
+  const launch = await f.request({
+    method: "workflow_run",
+    work: "exit",
+    key: "launch",
+    directory: "/repo",
+    exactInputs: true,
+  });
+  await f.swampReply("workflow.get", { name: "fixture" });
+  await f.swampReply("workflow.validate", { passed: true });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: false,
+  });
+  await f.swampReply("workflow.history.search", { results: [] });
+  await f.swampReply("workflow.run", { runId: "late-run" });
+  assert(launch.reply().error.includes("lifecycle is closed"));
+  await f.swampReply("workflow.history.get", { status: "running" });
+  await f.swampReply("workflow.cancel", {});
+  await f.swampReply("workflow.history.get", { status: "cancelled" });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: true,
+  });
+});
+
+test("cleanup waits for an answer already submitting and recancels its resumed run", async () => {
+  const f = await cleanupFixture();
+  f.seed("exit", "launch", {
+    request: JSON.stringify({ method: "workflow_run" }),
+    checkout: "/repo",
+    run: "run-1",
+    outcome: "completed",
+  });
+  f.seed("run-1", "attachment", { work: "exit", root: "/repo", run: "run-1" });
+  const answer = await f.request({
+    method: "workflow_answer",
+    directory: "/repo",
+    model: "question",
+    inputs: { run: "run-1", question: "q", answer: "continue" },
+  });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: false,
+  });
+  await f.swampReply("workflow.history.get", { status: "suspended" });
+  await f.swampReply("model.method.run", {});
+  assert(answer.reply().result);
+  await f.swampReply("workflow.history.get", { status: "running" });
+  await f.swampReply("workflow.cancel", {});
+  await f.swampReply("workflow.history.get", { status: "cancelled" });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: true,
+  });
+});
+
+function closedHelpers(p: Awaited<ReturnType<typeof loadPlugin>>) {
+  return p.commands.filter(
+    (command) => typeof command === "object" && command != null && "CloseTerminalPane" in command,
+  );
+}
+test("cleanup closes only owned helpers, deduplicates panes and preserves the source on retries", async () => {
+  const f = await cleanupFixture();
+  f.seed("exit", "view", { view: 2, source: 7 });
+  const owner = { ...f.identity, work: "exit", agent: "helper" };
+  for (const [key, pane] of [
+    ["source", 7],
+    ["helper", 9],
+    ["duplicate", 9],
+  ] as const)
+    f.seed("exit", key, { owner, pane, terminationVerified: true });
+  for (const field of ["host_id", "session", "incarnation", "work"])
+    f.seed("exit", field, { owner: { ...owner, [field]: "foreign" }, pane: 10 });
+  f.seed("other", "helper", { owner: { ...owner, work: "other" }, pane: 11 });
+  f.seed("exit", "method", {
+    request: JSON.stringify({ operation: "model.method.run" }),
+    outcome: "pending",
+  });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: false,
+  });
+  assertEquals(closedHelpers(f.p), []);
+  f.seed("exit", "method", {
+    request: JSON.stringify({ operation: "model.method.run" }),
+    outcome: "completed",
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const count = f.p.commands.length;
+    assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+      ready: true,
+    });
+    assertEquals(closedHelpers(f.p).length, attempt + 1);
+    assertEquals(closedHelpers(f.p).at(-1), { CloseTerminalPane: 9 });
+    assert(!JSON.stringify(f.p.commands.slice(count)).includes("ClosePluginPane"));
+  }
+});
+
+test("cleanup does not ignore an unsettled owned Swamp method", async () => {
+  const f = await cleanupFixture();
+  const operation = {
+    request: JSON.stringify({ method: "swamp_dispatch", operation: "model.method.run" }),
+    transport: "serve",
+  };
+  f.seed("exit", "method", { ...operation, outcome: "pending" });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: false,
+  });
+  f.seed("exit", "method", { ...operation, outcome: "unknown" });
+  assert(
+    (await f.request({ method: "cleanup_prepare", work: "exit" }))
+      .reply()
+      .error.includes("termination is uncertain"),
+  );
+  f.seed("exit", "method", { ...operation, outcome: "completed" });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: true,
+  });
+});
+
+for (const closed of [false, true]) {
+  test(`Hocus approval ${closed ? "rejects a closed lifecycle" : "blocks cleanup until cancellation completes"}`, async () => {
+    const f = await cleanupFixture();
+    const run = "00000000-0000-4000-8000-000000000001";
+    f.seed("exit", "launch", {
+      request: JSON.stringify({ method: "workflow_run" }),
+      checkout: "/repo",
+      run,
+      outcome: "completed",
+    });
+    f.seed(run, "attachment", { work: "exit", root: "/repo", run });
+    if (closed) {
+      const cleanup = await f.request({ method: "cleanup_prepare", work: "exit" });
+      await f.swampReply("workflow.history.get", { status: "suspended" });
+      assertEquals(cleanup.reply().result, { ready: true });
+    }
+    f.p.stub("GetPaneInfo", { plugin_url: "zellij:hocus" });
+    const approval = await f.request(
+      {
+        tool: "workflow_approve",
+        directory: "/repo",
+        args: { run, step: "review", reason: "proceed" },
+      },
+      3,
+      "hocus_workflow",
+    );
+    await f.swampReply("workflow.history.get", {
+      id: run,
+      workflowId: "fixture-id",
+      workflowName: "fixture",
+      status: "suspended",
+    });
+    const requests = f.p.commands as {
+      SwampRequest?: { id: string; operation: string; payload: string };
+    }[];
+    const dispatched = requests.filter(
+      (entry) => entry.SwampRequest?.operation === "workflow.approve",
+    );
+    if (closed) {
+      assertEquals(dispatched.length, 0);
+      assert(approval.reply().result.error.message.includes("lifecycle is closed"));
+      return;
+    }
+    assertEquals(dispatched.length, 1);
+    const command = dispatched[0]!.SwampRequest!;
+    assertEquals(JSON.parse(command.payload), {
+      workflowIdOrName: "fixture-id",
+      runId: run,
+      stepName: "review",
+      reason: "proceed",
+    });
+    await f.p.event({
+      CustomMessage: [
+        "swamp-response",
+        JSON.stringify({
+          id: command.id,
+          type: "managed.progress",
+          payload: { status: "approving" },
+        }),
+      ],
+    });
+    assert(JSON.stringify(f.p.commands).includes("zellij_rpc_progress"));
+    f.p.stub("GetPaneInfo", { plugin_url: "zellij:agent-exit" });
+    assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+      ready: false,
+    });
+    await f.swampReply("workflow.history.get", { status: "suspended" });
+    assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+      ready: false,
+    });
+    await f.swampReply("workflow.approve", { approved: true });
+    assertEquals(approval.reply().result, { approved: true });
+    await f.swampReply("workflow.history.get", { status: "running" });
+    assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+      ready: false,
+    });
+    await f.swampReply("workflow.cancel", {});
+    assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+      ready: false,
+    });
+    await f.swampReply("workflow.history.get", { status: "cancelled" });
+    assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+      ready: true,
+    });
+  });
+}

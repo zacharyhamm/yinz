@@ -14,7 +14,9 @@ async function reply(
   exitCode = 0,
   stderr = "",
 ): Promise<void> {
-  const captured = plugin.commands.at(-1);
+  const captured = [...plugin.commands]
+    .reverse()
+    .find((entry) => typeof entry === "object" && entry != null && "RunCommand" in entry);
   assert(typeof captured === "object" && captured != null && "RunCommand" in captured);
   const payload = captured.RunCommand;
   assert(Array.isArray(payload));
@@ -24,6 +26,7 @@ async function reply(
 }
 async function checkout(
   configuration: Record<string, string> = {},
+  listingOutput = listing(),
 ): Promise<Awaited<ReturnType<typeof loadPlugin>>> {
   const plugin = await loadPlugin("./agent-exit.ts", {
     configuration: {
@@ -42,7 +45,7 @@ async function checkout(
     },
   });
   await reply(plugin, "/repo/topic\n");
-  await reply(plugin, listing());
+  await reply(plugin, listingOutput);
   return plugin;
 }
 
@@ -76,7 +79,7 @@ test("agent-exit offers no deletion without a secondary worktree", async () => {
     plugin.commands.filter((command) => command === "CloseSelf"),
     [],
   );
-  assert(!(await plugin.render()).includes("delete worktree"));
+  assert(!(await plugin.render()).includes("Delete worktree"));
 });
 test("agent-exit offers no deletion for a primary checkout", async () => {
   const plugin = await loadPlugin("./agent-exit.ts", {
@@ -88,7 +91,7 @@ test("agent-exit offers no deletion for a primary checkout", async () => {
   });
   await reply(plugin, "/repo\n");
   await reply(plugin, listing(false));
-  assert(!(await plugin.render()).includes("delete worktree"));
+  assert(!(await plugin.render()).includes("Delete worktree"));
 });
 test("agent-exit offers no deletion outside a repository", async () => {
   const plugin = await loadPlugin("./agent-exit.ts", {
@@ -99,30 +102,36 @@ test("agent-exit offers no deletion outside a repository", async () => {
     },
   });
   await reply(plugin, "", 128, "not a repository");
-  assert(!(await plugin.render()).includes("delete worktree"));
+  assert(!(await plugin.render()).includes("Delete worktree"));
 });
-test("agent-exit shows project configuration errors without inspecting Git", async () => {
+test("agent-exit shows project configuration errors while inspecting Git", async () => {
   const plugin = await loadPlugin("./agent-exit.ts", {
     configuration: { agent_cwd: "/repo/topic", agent_target: "local" },
     replies: {
       ProjectConfigRead: { config: { workflow: null }, error: "malformed project config" },
+      RunCommand: null,
     },
   });
+  await reply(plugin, "/repo/topic\n");
+  await reply(plugin, listing());
   assert((await plugin.render()).includes("malformed project config"));
-  assert(!JSON.stringify(plugin.commands).includes("RunCommand"));
-  assert(!(await plugin.render()).includes("Delete:"));
+  assert(JSON.stringify(plugin.commands).includes("RunCommand"));
+  assert((await plugin.render()).includes("Delete worktree"));
 });
-test("agent-exit shows thrown project reads without inspecting Git", async () => {
+test("agent-exit shows thrown project reads while inspecting Git", async () => {
   const plugin = await loadPlugin("./agent-exit.ts", {
     configuration: { agent_cwd: "/repo/topic", agent_target: "local" },
+    replies: { RunCommand: null },
   });
+  await reply(plugin, "/repo/topic\n");
+  await reply(plugin, listing());
   assert((await plugin.render()).includes("unstubbed host operation ProjectConfigRead"));
-  assert(!JSON.stringify(plugin.commands).includes("RunCommand"));
-  assert(!(await plugin.render()).includes("Delete:"));
+  assert(JSON.stringify(plugin.commands).includes("RunCommand"));
+  assert((await plugin.render()).includes("Delete worktree"));
 });
 test("agent-exit confirms and cancels secondary worktree deletion", async () => {
   const plugin = await checkout();
-  assert((await plugin.render()).includes("Delete: delete worktree and branch"));
+  assert((await plugin.render()).includes("Delete: Delete worktree & branch and close pane"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
   const confirmation = await plugin.render();
   assert(confirmation.includes("/repo/topic"));
@@ -194,7 +203,7 @@ test("agent-exit closes a guarded Firecracker VM before Git deletion", async () 
     agent_zellij_config_dir: "/config",
   });
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  assert((await plugin.render(24, 200)).includes("VM review"));
+  assert((await plugin.render(24, 200)).includes("VM: review"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
   const first = plugin.commands.at(-1);
   assert(typeof first === "object" && first != null && "RunCommand" in first);
@@ -329,3 +338,208 @@ test("agent-exit leaves configured workflow behavior unchanged", async () => {
   });
   assert(JSON.stringify(plugin.commands).includes("workflow_show"));
 });
+
+function rpcRequest(plugin: Awaited<ReturnType<typeof loadPlugin>>, method: string) {
+  const messages = plugin.commands as { MessageToPlugin?: { message_payload: string } }[];
+  return messages
+    .filter((entry) => entry.MessageToPlugin)
+    .map((entry) => JSON.parse(entry.MessageToPlugin!.message_payload))
+    .filter((entry) => entry.payload?.method === method)
+    .at(-1);
+}
+async function rpcReply(
+  plugin: Awaited<ReturnType<typeof loadPlugin>>,
+  method: string,
+  result: unknown,
+  error?: string,
+) {
+  const request = rpcRequest(plugin, method);
+  assert(request);
+  await plugin.pipe({
+    name: "zellij_rpc_reply",
+    source: { Plugin: 2 },
+    payload: JSON.stringify({
+      version: 1,
+      call_id: request.call_id,
+      ...(error ? { error } : { result }),
+    }),
+  });
+}
+async function assertHiddenControls(plugin: Awaited<ReturnType<typeof loadPlugin>>) {
+  const count = plugin.commands.length;
+  // The workflow was rendered at 24x80: its input and buttons occupy these rows.
+  for (const row of [21, 22]) {
+    for (let column = 0; column < 80; column++) {
+      await plugin.event({ Mouse: { LeftClick: [row, column] } });
+      await plugin.event({ Mouse: { Release: [row, column] } });
+    }
+  }
+  await plugin.event({ Key: { bare_key: "Tab", key_modifiers: [] } });
+  await plugin.event({ Key: { bare_key: "Enter", key_modifiers: [] } });
+  await plugin.event({ PastedText: "hidden answer" });
+  assertEquals(plugin.commands.length, count);
+}
+for (const state of ["absent", "starting", "running", "question", "completed", "failed"]) {
+  test(`agent-exit cleanup is available while workflow is ${state}`, async () => {
+    const plugin = await loadPlugin("./agent-exit.ts", {
+      configuration: {
+        agent_cwd: "/repo/topic",
+        agent_target: "local",
+        agent_pane_id: "7",
+        agent_exit_token: "exit-1",
+      },
+      replies: {
+        GetPluginIds: { plugin_id: 1 },
+        GetPaneInfo: { is_suppressed: false },
+        ProjectConfigRead: { config: { workflow: state === "absent" ? null : "fixture" } },
+        RunCommand: null,
+        MessageToPlugin: null,
+        SetSelfMouseSelectionSupport: null,
+        SubscribePaneOutput: null,
+        SetPaneSubtitle: null,
+        CloseTerminalPane: null,
+        CloseSelf: null,
+      },
+    });
+    await reply(plugin, "/repo/topic\n");
+    await reply(plugin, listing());
+    if (state !== "absent" && state !== "starting") {
+      await rpcReply(plugin, "workflow_run", { outcome: "completed" });
+      await rpcReply(plugin, "workflow_show", {
+        launch: "exit-1",
+        run: "run-1",
+        root: "/repo",
+        active: state === "running" || state === "question",
+        history: {
+          id: "run-1",
+          workflowName: "fixture",
+          status: state === "question" ? "running" : state,
+        },
+        questions: {
+          results:
+            state === "question"
+              ? [
+                  {
+                    model: "question",
+                    version: 1,
+                    attributes: {
+                      run: "run-1",
+                      question: "q",
+                      state: "pending",
+                      kind: "text",
+                      prompt: "What next?",
+                    },
+                  },
+                ]
+              : [],
+        },
+      });
+    }
+    assert((await plugin.render()).includes("Delete worktree & branch and close pane"));
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    assert((await plugin.render()).includes("This cancels the workflow"));
+    assert(!rpcRequest(plugin, "cleanup_prepare"));
+    if (state !== "absent") await assertHiddenControls(plugin);
+    await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
+    assert(!(await plugin.render()).includes("Delete again"));
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await plugin.render();
+    if (state !== "absent") await assertHiddenControls(plugin);
+    const count = plugin.commands.length;
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
+    assertEquals(plugin.commands.length, count);
+    assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
+    await rpcReply(plugin, "cleanup_prepare", null, "termination uncertain");
+    assert((await plugin.render()).includes("termination uncertain"));
+    if (state !== "absent") await assertHiddenControls(plugin);
+    if (state !== "absent" && state !== "starting") {
+      const before = rpcRequest(plugin, "workflow_show")?.call_id;
+      await plugin.event({ CommandPaneExited: [9, 0, { swamp_work: "exit-1" }] });
+      assert(rpcRequest(plugin, "workflow_show")?.call_id !== before);
+    }
+    assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await rpcReply(plugin, "cleanup_prepare", { ready: true });
+    await reply(plugin, listing());
+    await reply(plugin, "");
+    await reply(plugin, "");
+    assertEquals(plugin.commands.at(-1), "CloseSelf");
+  });
+}
+
+test("agent-exit removes a detached secondary checkout without deleting a branch", async () => {
+  const detached = listing().replace("branch refs/heads/topic", "detached");
+  const plugin = await checkout({}, detached);
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  assert((await plugin.render()).includes("detached HEAD"));
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await reply(plugin, detached);
+  await reply(plugin, "");
+  assertEquals(plugin.commands.at(-1), "CloseSelf");
+  assert(!JSON.stringify(plugin.commands).includes("update-ref"));
+});
+for (const field of ["head", "branch"]) {
+  test(`agent-exit refuses cleanup when the confirmed ${field} changes`, async () => {
+    const plugin = await checkout();
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await reply(
+      plugin,
+      field === "head"
+        ? listing().replaceAll(head, "1".repeat(40))
+        : listing().replace("refs/heads/topic", "refs/heads/other"),
+    );
+    assert((await plugin.render()).includes("identity changed"));
+    assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
+  });
+}
+test("agent-exit never inspects an SSH pane's path locally", async () => {
+  const plugin = await loadPlugin("./agent-exit.ts", {
+    configuration: { agent_cwd: "/repo/topic", agent_target: "ssh" },
+  });
+  assert(!(await plugin.render()).includes("Delete worktree"));
+  assert(!JSON.stringify(plugin.commands).includes("RunCommand"));
+});
+
+for (const secondary of [false, true]) {
+  test(`agent-exit Esc closes configured workflow panes in a ${secondary ? "secondary" : "primary"} checkout`, async () => {
+    const directory = secondary ? "/repo/topic" : "/repo";
+    const plugin = await loadPlugin("./agent-exit.ts", {
+      configuration: {
+        agent_cwd: directory,
+        agent_target: "local",
+        agent_pane_id: "7",
+        agent_exit_token: "exit-1",
+      },
+      replies: {
+        GetPluginIds: { plugin_id: 1 },
+        GetPaneInfo: { is_suppressed: false },
+        ProjectConfigRead: { config: { workflow: "fixture" } },
+        RunCommand: null,
+        MessageToPlugin: null,
+        SetSelfMouseSelectionSupport: null,
+        SubscribePaneOutput: null,
+        SetPaneSubtitle: null,
+        CloseTerminalPane: null,
+        CloseSelf: null,
+      },
+    });
+    await reply(plugin, directory + "\n");
+    await reply(plugin, listing(secondary));
+    assert((await plugin.render(24, 200)).includes("Esc: close pane"));
+    if (secondary) {
+      await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+      await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
+      assert(!plugin.commands.includes("CloseSelf"));
+    }
+    const count = plugin.commands.length;
+    await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
+    assertEquals(plugin.commands.slice(count), [{ CloseTerminalPane: 7 }, "CloseSelf"]);
+    assert(!rpcRequest(plugin, "cleanup_prepare"));
+    assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
+    assert(!JSON.stringify(plugin.commands).includes('"update-ref"'));
+  });
+}
