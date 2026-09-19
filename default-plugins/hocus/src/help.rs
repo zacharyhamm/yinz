@@ -367,6 +367,14 @@ const TOOL_HELP: &[(&str, &str)] = &[
         "Show one commit of the active project. The commit is a hash of 4 to 64 hexadecimal characters, which git_log gives you: HEAD, a branch name and a tag are all errors. Set patch to true to see the changed lines.",
     ),
     (
+        "swamp_issue_search",
+        "Search swamp-club Lab issues using the swamp program on the server PATH and its existing login. No active project or workflow server is needed. Optional query, type, status and source filters narrow the search. All statuses are searched by default. limit defaults to 100 and must be 1 to 100. Queries and source tags cannot start with '-'.",
+    ),
+    (
+        "swamp_issue_get",
+        "Read a swamp-club Lab issue by its positive integer number, including its body, assignees, URL and comments. Uses the server's swamp program and existing login. No active project or workflow server is needed. This tool changes nothing.",
+    ),
+    (
         "github_read",
         "Read from the GitHub API for the active project. The tool sends GET requests only, thus it changes nothing. The endpoint is relative to the repository, because hocus writes repos/<owner>/<repo> in front of it; a full URL is an error. Without an endpoint, the tool reads the repository itself. The tool needs the gh program on your PATH, with a login, and the active project needs a git remote.",
     ),

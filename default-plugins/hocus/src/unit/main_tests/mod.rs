@@ -823,6 +823,7 @@ mod skill_tools;
 mod slash_commands;
 mod streaming;
 mod strip;
+mod swamp;
 mod todo_tools;
 mod token_usage;
 mod tool_families;
