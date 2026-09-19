@@ -593,3 +593,41 @@ fn continuations_are_marked_without_changing_history_order_or_keys() {
         ]
     );
 }
+
+#[test]
+fn predecessors_load_beyond_archive_pages_and_resolve_the_active_anchor() {
+    let mut state = state_with_panes();
+    settle(&mut state);
+    seed_run(&state, "old", None, true);
+    let mut near = header("near", None);
+    near.previous_run_id = Some("claude:old".into());
+    let mut anchor = header("anchor", None);
+    anchor.previous_run_id = Some(near.id.clone());
+    state.active_runs.insert(3, anchor);
+    state.archived_runs = vec![near, header("unrelated", None)];
+    let request = wire::PredecessorsRequest {
+        request_id: "request".into(),
+        pane_id: 3,
+    };
+    let reply = state.agent_predecessors(request.clone());
+    assert_eq!(reply.request_id, "request");
+    assert_eq!(reply.anchor.unwrap().id, "claude:anchor");
+    assert_eq!(
+        reply
+            .runs
+            .iter()
+            .map(|run| run.id.as_str())
+            .collect::<Vec<_>>(),
+        ["claude:near", "claude:old"]
+    );
+    assert!(reply.diagnostic.is_empty());
+    assert_eq!(
+        state.archived_runs.len(),
+        2,
+        "reading predecessors does not page the archive"
+    );
+    state.active_runs.clear();
+    let reply = state.agent_predecessors(request);
+    assert!(reply.anchor.is_none());
+    assert!(reply.diagnostic.contains("No recorded active run"));
+}

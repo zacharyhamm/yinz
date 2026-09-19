@@ -136,6 +136,11 @@ pub const STOP_INPUT: &str = "input";
 pub const AGENT_RUN_DETAIL: &str = "agent_run_detail";
 /// hocus-agents → hocus: fetch the next page of completed run headers.
 pub const AGENT_ARCHIVE_MORE: &str = "agent_archive_more";
+/// hocus-agents → hocus: resolve an active run and read its recorded predecessors.
+pub const AGENT_PREDECESSORS: &str = "agent_predecessors";
+/// hocus → hocus-agents: the anchored chain and any incomplete-chain diagnostic.
+pub const AGENT_PREDECESSORS_RESULT: &str = "agent_predecessors_result";
+
 /// hocus-agents → hocus: search recorded run entries.
 pub const AGENT_SEARCH: &str = "agent_search";
 /// hocus → hocus-agents: one search page.
@@ -353,6 +358,21 @@ pub struct ResumeResult {
     pub run_id: String,
     #[serde(default)]
     pub detail: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PredecessorsRequest {
+    pub request_id: String,
+    pub pane_id: u32,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PredecessorsResult {
+    pub request_id: String,
+    pub pane_id: u32,
+    pub anchor: Option<crate::agents::AgentRunHeader>,
+    pub runs: Vec<crate::agents::AgentRunHeader>,
+    pub diagnostic: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

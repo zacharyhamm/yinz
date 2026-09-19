@@ -365,6 +365,34 @@ pub fn run_header(backend: &impl Backend, run_id: &str) -> Result<Option<AgentRu
         .map(|run| run.header()))
 }
 
+/// Follow only recorded links, retaining the reachable prefix if the chain is incomplete.
+pub fn predecessors(
+    anchor: &AgentRunHeader,
+    mut load: impl FnMut(&str) -> Result<Option<AgentRunHeader>, String>,
+) -> (Vec<AgentRunHeader>, String) {
+    let mut seen = BTreeSet::from([anchor.id.clone()]);
+    let mut next = anchor.previous_run_id.clone();
+    let mut runs = Vec::new();
+    while let Some(id) = next {
+        if !seen.insert(id.clone()) {
+            return (runs, format!("Incomplete chain: repeated run {id}"));
+        }
+        let run = match load(&id) {
+            Ok(Some(run)) => run,
+            Ok(None) => return (runs, format!("Incomplete chain: missing run {id}")),
+            Err(error) => {
+                return (
+                    runs,
+                    format!("Incomplete chain: could not read {id}: {error}"),
+                )
+            },
+        };
+        next = run.previous_run_id.clone();
+        runs.push(run);
+    }
+    (runs, String::new())
+}
+
 /// The headers of these runs, for annotating search hits.
 fn headers_by_id(
     backend: &impl Backend,
@@ -872,6 +900,56 @@ mod tests {
     use crate::agents::{AgentRun, RunOutcome};
     use crate::store::{self, shared_defs};
     use zellij_tile::prelude::EntityDef;
+
+    #[test]
+    fn predecessors_follow_only_links_and_report_incomplete_prefixes() {
+        let mut anchor = run("anchor", "claude", "main", 30).header();
+        let (empty, diagnostic) = predecessors(&anchor, |_| panic!("no link to load"));
+        assert!(empty.is_empty());
+        assert!(diagnostic.is_empty());
+        anchor.previous_run_id = Some("near".into());
+        let mut near = run("near", "claude", "main", 20).header();
+        near.previous_run_id = Some("old".into());
+        let old = run("old", "claude", "elsewhere", 10).header();
+        let (chain, diagnostic) = predecessors(&anchor, |id| {
+            Ok(match id {
+                "near" => Some(near.clone()),
+                "old" => Some(old.clone()),
+                _ => panic!("unrecorded link"),
+            })
+        });
+        assert_eq!(
+            chain.iter().map(|run| run.id.as_str()).collect::<Vec<_>>(),
+            ["near", "old"]
+        );
+        assert!(diagnostic.is_empty());
+        for failure in ["missing", "cycle", "self", "store"] {
+            let mut near = near.clone();
+            if failure == "cycle" {
+                near.previous_run_id = Some("anchor".into());
+            }
+            if failure == "self" {
+                near.previous_run_id = Some("near".into());
+            }
+            let (chain, diagnostic) = predecessors(&anchor, |id| {
+                if id == "near" {
+                    return Ok(Some(near.clone()));
+                }
+                if failure == "store" {
+                    Err("store offline".into())
+                } else {
+                    Ok(None)
+                }
+            });
+            assert_eq!(chain.len(), 1);
+            assert!(diagnostic.starts_with("Incomplete chain:"));
+            assert!(diagnostic.contains(match failure {
+                "missing" => "missing run old",
+                "store" => "store offline",
+                _ => "repeated run",
+            }));
+        }
+    }
 
     fn backend() -> store::Local {
         let backend = store::Local::shared("hocus");
