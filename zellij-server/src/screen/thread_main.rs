@@ -4,14 +4,12 @@ use zellij_types::internal_ids::TabId;
 
 use super::{
     active_tab, active_tab_and_connected_client_id, denormalize_notification_response,
-    get_default_editor, CopyOptions, Notification, NotificationRecord, Screen, ScreenInstruction,
+    Notification, NotificationRecord, Screen, ScreenInstruction,
 };
 use crate::background_jobs::BackgroundJob;
 use crate::os_input_output::ResizeCache;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
-#[cfg(not(test))]
-use crate::pty::get_default_shell;
 use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction};
 use crate::tab::Tab;
 use crate::thread_bus::Bus;
@@ -20,12 +18,14 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use zellij_config::config::Config;
+use zellij_config::screen_config::ScreenConfig;
 use zellij_ipc::get_mode_info;
 use zellij_ipc::ipc::ClientAttributes;
 use zellij_ipc::nested_session;
 use zellij_ipc::nested_session::NestedSessionMessage;
 use zellij_types::diagnostics::ContextType;
 use zellij_types::input::layout::Layout;
+use zellij_types::input::options::PaneFrameStyle;
 use zellij_types::pane_size::Size;
 use zellij_types::style::HostTerminalThemeMode;
 use zellij_types::{agent::AgentInfo, geometry::Direction};
@@ -33,14 +33,6 @@ use {
     zellij_types::data::GetFocusedPaneInfoResponse, zellij_types::data::InputMode,
     zellij_types::data::NotificationInfo, zellij_types::data::PaneScrollbackResponse,
     zellij_types::data::PluginCapabilities,
-};
-use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
-use {
-    zellij_types::input::options::PaneFrameStyle,
-    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_COLUMNS,
-    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_ROWS,
-    zellij_types::input::options::DEFAULT_NOTIFICATION_TIMEOUT_SECS,
-    zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
 
 fn apply_queued_agent_report(
@@ -220,185 +212,34 @@ pub(crate) fn screen_thread_main(
     config_dir: Option<PathBuf>,
     default_layout: Box<Layout>,
 ) -> Result<()> {
-    // Resolve `theme_dark` / `theme_light` to concrete `Styling` from the
-    // bundled themes BEFORE `config.options` is moved out below. These
-    // populate Screen's auto-switch state at startup; runtime updates
-    // continue to flow through `propagate_configuration_changes`.
-    let host_theme_dark_styling = config
-        .options
-        .theme_dark
-        .as_ref()
-        .and_then(|name| config.themes.get_theme(name).map(|t| t.palette));
-    let host_theme_light_styling = config
-        .options
-        .theme_light
-        .as_ref()
-        .and_then(|name| config.themes.get_theme(name).map(|t| t.palette));
-    if config.options.theme_dark.is_some() && host_theme_dark_styling.is_none() {
-        log::warn!(
-            "theme_dark='{}' not found in themes; auto-theme switch disabled for dark.",
-            config.options.theme_dark.as_deref().unwrap_or("?")
-        );
-    }
-    if config.options.theme_light.is_some() && host_theme_light_styling.is_none() {
-        log::warn!(
-            "theme_light='{}' not found in themes; auto-theme switch disabled for light.",
-            config.options.theme_light.as_deref().unwrap_or("?")
-        );
-    }
-
-    let context_menu = config.context_menu.clone();
-    let explicit_theme_hue = config.options.explicit_theme_hue;
-    let config_options = config.options;
-    let agent_double_escape = config_options.agent_double_escape.unwrap_or(false);
-    let arrow_fonts = !config_options.simplified_ui.unwrap_or_default();
-    let pane_frame_style = PaneFrameStyle::from_options(&config_options);
-    let auto_layout = config_options.auto_layout.unwrap_or(true);
-    let session_serialization = config_options.session_serialization.unwrap_or(true);
-    let serialize_pane_viewport = config_options.serialize_pane_viewport.unwrap_or(false);
-    let scrollback_lines_to_serialize = config_options.scrollback_lines_to_serialize;
-    let session_is_mirrored = config_options.mirror_session.unwrap_or(false);
-    let notification_position = config_options.notification_position.unwrap_or_default();
-    let notification_timeout_secs =
-        config_options
-            .notification_timeout
-            .unwrap_or(zellij_types::units::ElapsedSeconds::new(
-                DEFAULT_NOTIFICATION_TIMEOUT_SECS,
-            ));
-    let agent_pane_min_size = Size {
-        cols: config_options
-            .agent_pane_min_columns
-            .unwrap_or(DEFAULT_AGENT_PANE_MIN_COLUMNS),
-        rows: config_options
-            .agent_pane_min_rows
-            .unwrap_or(DEFAULT_AGENT_PANE_MIN_ROWS),
-    };
-    let layout_dir = config_options.layout_dir;
-    #[cfg(test)]
-    let default_shell = config_options
-        .default_shell
-        .clone()
-        .unwrap_or(PathBuf::from("/bin/sh"));
-    #[cfg(not(test))]
-    let default_shell = config_options
-        .default_shell
-        .clone()
-        .unwrap_or_else(get_default_shell);
-    let default_shell_action = config_options.default_shell.clone().map(|shell| {
-        TerminalAction::RunCommand(RunCommand {
-            command: shell,
-            cwd: config_options.default_cwd.clone(),
-            use_terminal_title: true,
-            ..Default::default()
-        })
-    });
-    let default_editor = config_options
-        .scrollback_editor
-        .clone()
-        .or_else(get_default_editor);
-    let default_layout_name = config_options
-        .default_layout
-        .map(|l| format!("{}", l.display()));
-    let copy_options = CopyOptions::new(
-        config_options.copy_command,
-        config_options.copy_clipboard.unwrap_or_default(),
-        config_options.copy_on_select.unwrap_or(true),
+    let screen_config = ScreenConfig::from_config(&config);
+    let explicit_theme_hue = screen_config.explicit_theme_hue;
+    let default_mode = screen_config.default_mode;
+    let mode_info = get_mode_info(
+        default_mode.unwrap_or_default(),
+        &client_attributes,
+        PluginCapabilities {
+            //  ¯\_(ツ)_/¯
+            arrow_fonts: screen_config.simplified_ui,
+            // Not known until a client's startup probe answers; see
+            // `Screen::update_kitty_graphics_support`.
+            kitty_graphics: false,
+        },
+        &config.keybinds,
+        default_mode,
     );
-    let styled_underlines = config_options.styled_underlines.unwrap_or(true);
-    let osc8_hyperlinks = config_options.osc8_hyperlinks.unwrap_or(true);
-    let explicitly_disable_kitty_keyboard_protocol = config_options
-        .support_kitty_keyboard_protocol
-        .map(|e| !e) // this is due to the config options wording, if
-        // "support_kitty_keyboard_protocol" is true,
-        // explicitly_disable_kitty_keyboard_protocol is false and vice versa
-        .unwrap_or(false); // by default, we try to support this if the terminal supports it and
-                           // the program running inside a pane requests it
-    let support_kitty_graphics_protocol = config_options
-        .support_kitty_graphics_protocol
-        .unwrap_or(true);
-    let stacked_resize = config_options.stacked_resize.unwrap_or(true);
-    let stacked_pane_list = config_options.stacked_pane_list.unwrap_or(true);
-    let advanced_mouse_actions = config_options.advanced_mouse_actions.unwrap_or(true);
-    let osc133_command_selection = config_options.osc133_command_selection.unwrap_or(true);
-    let word_separators = config_options
-        .word_separators
-        .clone()
-        .unwrap_or_else(|| DEFAULT_WORD_SEPARATORS.to_owned());
-    let mouse_scroll_resize = config_options.mouse_scroll_resize.unwrap_or(true);
-    let mouse_hover_effects = config_options.mouse_hover_effects.unwrap_or(true);
-    let visual_bell = config_options.visual_bell.unwrap_or(true);
-    let pane_animations = config_options.pane_animations.unwrap_or(true);
-    let focus_follows_mouse = config_options.focus_follows_mouse.unwrap_or(false);
-    let mouse_click_through = config_options.mouse_click_through.unwrap_or(false);
-    let context_menu_on_right_click = config_options.context_menu_on_right_click.unwrap_or(false);
-    let nested_session_handling = config_options.nested_session_handling.unwrap_or_default();
-    let dangerously_enable_paste_buffer_read = config_options
-        .dangerously_enable_paste_buffer_read
-        .unwrap_or(false);
-    let host_notification_protocol = config_options
-        .host_notification_protocol
-        .unwrap_or_default();
-
     let thread_senders = bus.senders.clone();
     let mut screen = Screen::new(
         bus,
         &client_attributes,
         max_panes,
-        get_mode_info(
-            config_options.default_mode.unwrap_or_default(),
-            &client_attributes,
-            PluginCapabilities {
-                //  ¯\_(ツ)_/¯
-                arrow_fonts: !arrow_fonts,
-                // Not known until a client's startup probe answers; see
-                // `Screen::update_kitty_graphics_support`.
-                kitty_graphics: false,
-            },
-            &config.keybinds,
-            config_options.default_mode,
-        ),
-        pane_frame_style,
-        auto_layout,
-        session_is_mirrored,
-        copy_options,
+        mode_info,
         debug,
         default_layout,
-        default_layout_name,
-        default_shell,
-        default_shell_action,
-        session_serialization,
-        serialize_pane_viewport,
-        scrollback_lines_to_serialize,
-        styled_underlines,
-        osc8_hyperlinks,
-        arrow_fonts,
-        layout_dir,
-        explicitly_disable_kitty_keyboard_protocol,
-        support_kitty_graphics_protocol,
-        stacked_resize,
-        stacked_pane_list,
-        default_editor,
-        advanced_mouse_actions,
-        osc133_command_selection,
-        word_separators,
-        mouse_scroll_resize,
-        mouse_hover_effects,
-        visual_bell,
-        focus_follows_mouse,
-        mouse_click_through,
-        context_menu_on_right_click,
-        context_menu,
-        nested_session_handling,
-        notification_position,
-        notification_timeout_secs,
-        agent_pane_min_size,
+        screen_config,
     );
-    screen.set_pane_animations(pane_animations);
     screen.config_file_path = config_file_path;
     screen.config_dir = config_dir;
-    screen.host_theme_dark_styling = host_theme_dark_styling;
-    screen.host_theme_light_styling = host_theme_light_styling;
-    screen.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;
     // Resolve the session's hue before the first render: an explicit pin
     // wins; otherwise a dark/light pair defaults to dark until the host
     // terminal reports.
@@ -409,8 +250,6 @@ pub(crate) fn screen_thread_main(
     } else {
         screen.resolve_default_theme_mode().non_fatal();
     }
-    screen.set_host_notification_protocol(host_notification_protocol);
-    screen.agent_double_escape = agent_double_escape;
 
     let mut pending = PendingEvents::default();
     let mut attach_traces_waiting_for_first_render: HashMap<ClientId, Instant> = HashMap::new();
