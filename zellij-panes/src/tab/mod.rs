@@ -6637,53 +6637,82 @@ impl Tab {
             self.overlay_panes.set_pane_frames().non_fatal();
         }
     }
-    pub fn resize(&mut self, client_id: ClientId, strategy: ResizeStrategy) -> Result<()> {
+    /// Resize a pane in its own layer. One core for the by-client and by-id entry points, so
+    /// that they cannot disagree about the rules:
+    ///
+    /// - an overlay is dispatched first. The layers below are a two-way floating/tiled split,
+    ///   and without this the request fell through to the tiled grid and resized whatever the
+    ///   overlay was covering. `OverlayPanes` refuses a modal on its own, and writes the new
+    ///   size back into the overlay's coordinates rather than onto its geometry - an overlay's
+    ///   geometry stays a function of its coordinates and the surface;
+    /// - a floating resize is refused while a floating pane is fullscreen: that pane has no size
+    ///   of its own to change, and the others are hidden under it. The guard is the floating
+    ///   layer's own, so it reaches neither an overlay, which is resizable by ctrl-drag in this
+    ///   state either way, nor a tiled pane named by id, whose grid the fullscreen does not
+    ///   touch. Otherwise the resize marks the floating layout damaged and forces a render, so
+    ///   the panes under it repaint and no "garbage" is left behind by a decrease; the tiled
+    ///   grid was not touched, so it is not marked;
+    /// - a tiled resize dissolves the stack lists first, being a classic mutation of the grid
+    ///   (a hidden list member is only in the grid once its list is dissolved), and marks the
+    ///   tiled layout damaged on success, which is what stops the next swap-layout request from
+    ///   discarding the layout the user just adjusted. A pane that cannot be resized because a
+    ///   neighbour is fixed is flashed rather than reported.
+    fn resize_pane_in_layer(
+        &mut self,
+        subject: PaneSubject,
+        strategy: ResizeStrategy,
+    ) -> Result<()> {
         let err_context = || "unable to resize pane".to_string();
-        // The branch below is a two-way floating/tiled split, so an overlay has to be dispatched
-        // before it: without this the keystroke fell through to `tiled_panes.resize_active_pane`
-        // and resized whatever the overlay was covering. `OverlayPanes::resize_active_pane`
-        // refuses a modal on its own, and writes the new size back into the overlay's
-        // coordinates rather than onto its geometry - an overlay's geometry stays a function of
-        // its coordinates and the surface.
-        //
-        // It precedes the fullscreen guard for the same reason: that guard is about the floating
-        // layer, where a fullscreen pane has no size of its own to change. An overlay is not on
-        // that layer, and is resizable by ctrl-drag in this state either way, so the restriction
-        // must not reach it.
-        if self
-            .get_active_pane_id(client_id)
-            .is_some_and(|pane_id| self.pane_is_overlay(pane_id))
-        {
+        let pane_id = match subject {
+            PaneSubject::Active(client_id) => self.get_active_pane_id(client_id),
+            PaneSubject::Pane(pane_id) => Some(pane_id),
+        };
+        let Some(pane_id) = pane_id else {
+            return Ok(());
+        };
+        if self.overlay_panes.panes_contain(&pane_id) {
             let resized = self
                 .overlay_panes
-                .resize_active_pane(client_id, &strategy)
+                .resize_pane_with_id(pane_id, strategy)
                 .with_context(err_context)?;
             if resized {
                 self.set_force_render();
             }
             return Ok(());
         }
-        if self.floating_panes.fullscreen_is_active() {
-            return Ok(());
-        }
-        let active_pane_is_floating = self
-            .get_active_pane_id(client_id)
-            .is_some_and(|pane_id| self.floating_panes.panes_contain(&pane_id));
-        if active_pane_is_floating {
+        if self.floating_panes.panes_contain(&pane_id) {
+            // a fullscreen floating pane has no size of its own to change, and the other floating
+            // panes are hidden under it; the tiled grid beneath is touched by neither, so a tiled
+            // pane named by id still resizes
+            if self.floating_panes.fullscreen_is_active() {
+                return Ok(());
+            }
             let successfully_resized = self
                 .floating_panes
-                .resize_active_pane(client_id, &mut self.os_api, &strategy)
+                .resize_pane_with_id(strategy, pane_id)
                 .with_context(err_context)?;
             if successfully_resized {
                 self.swap_layouts.set_is_floating_damaged();
-                self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" in case of a decrease
+                self.set_force_render();
             }
-        } else {
-            self.dissolve_stack_lists_for_classic_mutation();
-            match self.tiled_panes.resize_active_pane(client_id, &strategy) {
-                Ok(_) => {
-                    self.swap_layouts.set_is_tiled_damaged();
+            return Ok(());
+        }
+        self.dissolve_stack_lists_for_classic_mutation();
+        if self.tiled_panes.panes_contain(&pane_id) {
+            // By subject, not by id: a keyboard resize of an undirected strategy is a stacked
+            // resize when `stacked_resize` is on, which `TiledPanes::resize_active_pane` does
+            // and the by-id manager call never has.
+            let outcome = match subject {
+                PaneSubject::Active(client_id) => {
+                    self.tiled_panes.resize_active_pane(client_id, &strategy)
                 },
+                PaneSubject::Pane(pane_id) => self
+                    .tiled_panes
+                    .resize_pane_with_id(strategy, pane_id, None)
+                    .map(|_| ()),
+            };
+            match outcome {
+                Ok(()) => self.swap_layouts.set_is_tiled_damaged(),
                 Err(err) => match err.downcast_ref::<ZellijError>() {
                     Some(ZellijError::CantResizeFixedPanes { pane_ids }) => {
                         self.senders
@@ -6696,8 +6725,13 @@ impl Tab {
                     _ => Err::<(), _>(err).non_fatal(),
                 },
             }
+        } else if self.suppressed_panes.contains_key(&pane_id) {
+            log::error!("Cannot resize suppressed panes");
         }
         Ok(())
+    }
+    pub fn resize(&mut self, client_id: ClientId, strategy: ResizeStrategy) -> Result<()> {
+        self.resize_pane_in_layer(PaneSubject::Active(client_id), strategy)
     }
     fn set_pane_active_at(&mut self, pane_id: PaneId) {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
@@ -9517,52 +9551,7 @@ impl Tab {
         }
     }
     pub fn resize_pane_with_id(&mut self, strategy: ResizeStrategy, pane_id: PaneId) -> Result<()> {
-        let err_context = || "unable to resize pane".to_string();
-        if self.pane_is_stack_list_member(&pane_id) {
-            self.dissolve_stack_lists_for_classic_mutation();
-        }
-        if self.floating_panes.panes_contain(&pane_id) {
-            let successfully_resized = self
-                .floating_panes
-                .resize_pane_with_id(strategy, pane_id)
-                .with_context(err_context)?;
-            if successfully_resized {
-                self.swap_layouts.set_is_floating_damaged();
-                self.swap_layouts.set_is_tiled_damaged();
-                self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" in case of a decrease
-            }
-        } else if self.overlay_panes.panes_contain(&pane_id) {
-            // ahead of the tiled branch, which an overlay is not a member of but used to reach by
-            // falling through. No swap-layout damage: an overlay is not part of one.
-            let successfully_resized = self
-                .overlay_panes
-                .resize_pane_with_id(pane_id, strategy)
-                .with_context(err_context)?;
-            if successfully_resized {
-                self.set_force_render();
-            }
-        } else if self.tiled_panes.panes_contain(&pane_id) {
-            match self
-                .tiled_panes
-                .resize_pane_with_id(strategy, pane_id, None)
-            {
-                Ok(_) => {},
-                Err(err) => match err.downcast_ref::<ZellijError>() {
-                    Some(ZellijError::CantResizeFixedPanes { pane_ids }) => {
-                        self.senders
-                            .send_to_background_jobs(BackgroundJob::DisplayPaneError(
-                                pane_ids.clone(),
-                                "FIXED!".into(),
-                            ))
-                            .with_context(err_context)?;
-                    },
-                    _ => Err::<(), _>(err).non_fatal(),
-                },
-            }
-        } else if self.suppressed_panes.contains_key(&pane_id) {
-            log::error!("Cannot resize suppressed panes");
-        }
-        Ok(())
+        self.resize_pane_in_layer(PaneSubject::Pane(pane_id), strategy)
     }
     pub fn update_theme(&mut self, theme: Styling) {
         self.style.colors = theme;
