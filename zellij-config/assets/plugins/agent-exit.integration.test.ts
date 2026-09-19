@@ -62,7 +62,7 @@ test(
       configuration: { agent_cwd: `${root}/repo`, agent_target: "local" },
     });
     await session.waitForText("Agent exited.");
-    assert(!session.screen.includes("delete worktree"));
+    assert(!session.screen.includes("Delete worktree"));
   },
 );
 
@@ -76,12 +76,12 @@ test(
       configuration: { agent_cwd: root, agent_target: "local" },
     });
     await session.waitForText("No usable Git worktree");
-    assert(!session.screen.includes("delete worktree"));
+    assert(!session.screen.includes("Delete worktree"));
   },
 );
 
 test(
-  "agent-exit shows malformed project configuration without inspecting the checkout",
+  "agent-exit shows malformed project configuration while inspecting the checkout",
   { grants: ["ReadFiles", "RunCommands"] },
   async () => {
     const root = session.fixture(
@@ -93,7 +93,7 @@ test(
       configuration: { agent_cwd: `${root}/topic`, agent_target: "local" },
     });
     await session.waitForText("must contain only one agent_exit block");
-    assert(!session.screen.includes("delete worktree"));
+    await session.waitForText("Delete worktree & branch and close pane");
   },
 );
 
@@ -106,13 +106,13 @@ test(
     session.loadPlugin("zellij:agent-exit", {
       configuration: { agent_cwd: `${root}/topic`, agent_target: "local" },
     });
-    await session.waitForText("Delete: delete worktree and branch");
+    await session.waitForText("Delete: Delete worktree & branch and close pane");
     session.key("Delete");
     await session.waitForText("Delete again");
     session.key("Delete");
     await session.waitFor(
       "confirmed deletion closes the exit view",
-      () => !session.screen.includes("delete worktree"),
+      () => !session.screen.includes("Delete worktree"),
     );
     assert(!session.screen.includes("Deletion failed"));
   },
@@ -139,13 +139,13 @@ test(
         agent_zellij_executable: "zellij-fixture",
       },
     });
-    await session.waitForText("Delete: delete worktree and branch");
+    await session.waitForText("Delete: Delete worktree & branch and close pane");
     session.key("Delete");
     await session.waitForText("Delete again");
     session.key("Delete");
     await session.waitFor(
       "VM close permits Git deletion",
-      () => !session.screen.includes("delete worktree"),
+      () => !session.screen.includes("Delete worktree"),
     );
     assert(!session.screen.includes("Deletion failed"));
   },
@@ -169,12 +169,12 @@ test(
         agent_zellij_executable: "zellij-fixture",
       },
     });
-    await session.waitForText("Delete: delete worktree and branch");
+    await session.waitForText("Delete: Delete worktree & branch and close pane");
     session.key("Delete");
     await session.waitForText("Delete again");
     session.key("Delete");
     await session.waitForText("Worktree is still leased by");
-    assert(session.screen.includes("Delete: delete worktree and branch"));
+    assert(session.screen.includes("Delete: Delete worktree & branch and close pane"));
   },
 );
 
@@ -198,5 +198,41 @@ test(
     session.resize(30, 100);
     session.key("Home");
     await session.waitForText("failed");
+  },
+);
+
+test(
+  "agent-exit deletes a secondary worktree after a configured launch fails",
+  { grants: ["ReadFiles", "RunCommands"] },
+  async () => {
+    const root = session.fixture(
+      { "repo/.zellij/swamp-workflows.kdl": 'agent_exit { workflow "fixture-exit"; }' },
+      { git: gitFixture, swamp: "echo fixture-swamp-unavailable >&2; exit 1" },
+    );
+    session.start({ backgroundPlugins: ["zellij:swamp-bridge"] });
+    session.loadPlugin("zellij:agent-exit", {
+      configuration: {
+        agent_cwd: `${root}/topic`,
+        agent_target: "local",
+        agent_exit_token: "cleanup-launch",
+      },
+    });
+    await session.waitForText("failed");
+    await session.waitForText("Delete worktree & branch and close pane");
+    session.key("Delete");
+    await session.waitForText("This cancels the workflow");
+    session.key("Esc");
+    await session.waitForText("Delete worktree & branch and close pane");
+    session.key("Delete");
+    await session.waitForText("Delete again");
+    session.key("Delete");
+    await session.waitFor("cleanup readiness persists", () =>
+      deliveryValues().some((entry) => entry.cleanup && entry.closed && !entry.cancel_pending),
+    );
+    await session.waitFor(
+      "exit pane closes after cleanup",
+      () => !session.screen.includes("Delete again") && !session.screen.includes("Delete worktree"),
+    );
+    assert(!session.screen.includes("Deletion failed"));
   },
 );

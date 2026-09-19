@@ -94,6 +94,7 @@ type Delivery = {
   run?: string | undefined;
   closed?: boolean | undefined;
   cancel_pending?: boolean | undefined;
+  cleanup?: boolean | undefined;
   transition?: string | undefined;
   source?: number | undefined;
   current?: number | undefined;
@@ -272,6 +273,8 @@ function workflowSubtitle(snapshot: { history: History; children?: History[] }):
   return `${main.workflowName ?? "Workflow"} · ${entries.length > 0 ? entries.join(", ") : main.status}`;
 }
 const cancelling = new Set<string>();
+const preparing = new Map<string, Promise<{ ready: boolean }>>();
+const inFlight = new Set<{ work: string | undefined }>();
 function lifecycleWork(work: string): string {
   return read<Attachment>(scope(work, "attachment"))[0]?.work ?? work;
 }
@@ -741,13 +744,30 @@ async function swamp(request: SwampRequest, directory: string): Promise<string> 
     return (reply["log"].lines ?? []).join("\n");
   return encode(reply);
 }
-async function cancelRun(run: string, root: string): Promise<unknown> {
+async function cancelRun(run: string, root: string, verify = false): Promise<unknown> {
   // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
   const history: History = JSON.parse(
     await swamp({ operation: "workflow.history.get", payload: { workflowIdOrName: run } }, root),
   );
-  if (history.status === "running")
-    return JSON.parse(await swamp({ operation: "workflow.cancel", payload: { runId: run } }, root));
+  if (history.status === "running") {
+    const cancelled = await swamp({ operation: "workflow.cancel", payload: { runId: run } }, root);
+    if (!verify) return JSON.parse(cancelled);
+    const final = parsedObject(
+      await swamp({ operation: "workflow.history.get", payload: { workflowIdOrName: run } }, root),
+    );
+    assert(
+      ["succeeded", "suspended", "completed", "failed", "cancelled", "interrupted"].includes(
+        String(final["status"]),
+      ),
+      "Workflow cancellation is not complete; retry cleanup",
+    );
+  } else if (verify)
+    assert(
+      ["succeeded", "suspended", "completed", "failed", "cancelled", "interrupted"].includes(
+        history.status,
+      ),
+      "Workflow termination is uncertain; reconcile before cleanup",
+    );
   return undefined;
 }
 function cancelIfClosed(work: string): boolean {
@@ -1270,7 +1290,7 @@ async function handle(
       "Unsupported bridge request",
     );
     return JSON.parse(
-      await swamp({ operation: args.operation, payload: args.payload }, args.directory),
+      await swamp({ operation: args.operation, payload: args.payload, onProgress }, args.directory),
     );
   }
   if (args.method === "workflow_report") {
@@ -1988,7 +2008,6 @@ async function handle(
     } else host = await supervisor(required(value.pane));
     [value, row] = read(required(uid));
     assert(value, "No operation with that identity");
-    ensureOpen(args.work);
     Object.assign(value, {
       supervisor: host.host_id,
       process: host.child_pid,
@@ -1997,6 +2016,7 @@ async function handle(
     });
     if (!value.processExited) value.outcome = args.waitForExit ? "pending" : "completed";
     put(required(uid), value, row);
+    ensureOpen(args.work);
     const placement = placements.get(args.work);
     if (args.waitForExit && placement && !placement.detached) {
       placement.queue.push(required(uid));
@@ -2080,12 +2100,12 @@ async function handle(
       present(args.work);
     }
     const host = await supervisor(value.pane);
-    ensureOpen(args.work);
     [value, row] = read(required(uid));
     assert(value, "No operation with that identity");
     value.supervisor = host.host_id;
     value.process = host.child_pid;
     put(required(uid), value, row);
+    ensureOpen(args.work);
   } else if (["source_sync", "vm_inspect", "vm_sync", "vm_status"].includes(args.method)) {
     const agent: Partial<Delivery> =
       args.method === "source_sync"
@@ -2257,7 +2277,7 @@ async function invoke(
     }
   }
 }
-// oxlint-disable-next-line eslint/max-lines-per-function -- This lifecycle handler keeps its ordered protocol transitions together.
+// oxlint-disable-next-line eslint/max-lines-per-function, eslint/complexity -- Keep request ownership, completion and error persistence in one ordered lifecycle.
 async function invokeInner(
   // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
   args: Partial<Request>,
@@ -2269,7 +2289,22 @@ async function invokeInner(
     args?.method === "workflow_run" && !read(scope(required(args.work), required(args.key)))[0];
   let response: unknown;
   try {
-    response = await handle(args, manualView, onProgress);
+    const run = args.inputs?.["run"] ?? args.payload?.["runId"];
+    const flight = {
+      work: args.work ?? args.run ?? args.launch ?? (typeof run === "string" ? run : undefined),
+    };
+    inFlight.add(flight);
+    try {
+      response = await handle(args, manualView, onProgress);
+    } finally {
+      inFlight.delete(flight);
+      if (
+        flight.work &&
+        (args.method === "workflow_answer" ||
+          (args.method === "swamp_read" && args.operation === "workflow.approve"))
+      )
+        cancelIfClosed(flight.work);
+    }
   } catch (error) {
     if (args?.method === "workflow_show") {
       for (const [work, placement] of placements)
@@ -2672,17 +2707,28 @@ async function hocusWorkflow(input: Json, call: RpcCall): Promise<Json> {
         progress,
       );
     }
-    if (request.tool === "workflow_approve" || request.tool === "workflow_reject")
-      return await query(
-        request.tool === "workflow_approve" ? "workflow.approve" : "workflow.reject",
+    if (request.tool === "workflow_approve" || request.tool === "workflow_reject") {
+      const payload = {
+        workflowIdOrName: history.workflowId,
+        runId: run,
+        stepName: argument("step"),
+        // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
+        ...(Boolean(a["reason"]) ? { reason: argument("reason") } : {}),
+      };
+      if (request.tool === "workflow_reject") return await query("workflow.reject", payload);
+      return await invoke(
         {
-          workflowIdOrName: history.workflowId,
-          runId: run,
-          stepName: argument("step"),
-          // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
-          ...(Boolean(a["reason"]) ? { reason: argument("reason") } : {}),
+          method: "swamp_read",
+          work: work ?? run,
+          run,
+          directory: root,
+          operation: "workflow.approve",
+          payload,
         },
+        undefined,
+        progress,
       );
+    }
     if (request.tool === "workflow_answer") {
       const model = argument("model"),
         question = argument("question");
@@ -2785,6 +2831,7 @@ export default definePlugin({
         stopOperation(entry.uid);
     }
     z.rpc.handle("hocus_workflow", hocusWorkflow);
+    // oxlint-disable-next-line eslint/max-lines-per-function -- Authentication and lifecycle ownership must precede privileged dispatch.
     z.rpc.handle("swamp", async (payload, call) => {
       const from = call.source?.Plugin;
       assert(from != null, "Workflow RPC requires a host-authenticated plugin source");
@@ -2795,7 +2842,12 @@ export default definePlugin({
       );
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
       const args = payload as Partial<Request>;
-      if (args.method === "workflow_run" && pane.plugin_url === "zellij:agent-exit") {
+      if (args.method === "cleanup_prepare")
+        assert(pane.plugin_url === "zellij:agent-exit", "Only an exit pane may prepare cleanup");
+      if (
+        ["workflow_run", "cleanup_prepare"].includes(args.method ?? "") &&
+        pane.plugin_url === "zellij:agent-exit"
+      ) {
         const uid = scope(required(args.work), "view"),
           [existing] = read(uid);
         if (existing)
@@ -2816,6 +2868,17 @@ export default definePlugin({
           });
           present(required(args.work));
         }
+      }
+      if (args.method === "cleanup_prepare") {
+        const work = required(args.work);
+        let pending = preparing.get(work);
+        if (!pending) {
+          pending = prepareCleanup(work).finally(() => {
+            preparing.delete(work);
+          });
+          preparing.set(work, pending);
+        }
+        return pending;
       }
       return invoke(args, args.method === "workflow_show" ? from : undefined, (progress) => {
         call.progress(progress);
@@ -2995,14 +3058,21 @@ async function cancelLifecycle(work: string): Promise<void> {
       }
     }
     // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
-    for (const [run, root] of runs) await cancelRun(run, root);
+    for (const [run, root] of runs) await cancelRun(run, root, view.cleanup === true);
     if (!unresolved) {
       view.cancel_pending = false;
+      delete view.error;
       // Late attachments change this revision, requiring another cancellation pass.
       put(uid, view, row);
       done = true;
     }
   } catch (error) {
+    const uid = scope(work, "view"),
+      [view, row] = read(uid);
+    if (view) {
+      view.error = String(error);
+      put(uid, view, row);
+    }
     z.log("Workflow cancellation pending: " + String(error));
   } finally {
     cancelling.delete(work);
@@ -3015,18 +3085,67 @@ async function cancelLifecycle(work: string): Promise<void> {
         });
   }
 }
-function closeLifecycle(work: string): void {
+// The closed marker blocks new dispatch; in-flight calls must publish ownership first.
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Cancellation and termination checks must all finish before readiness.
+async function prepareCleanup(work: string): Promise<{ ready: boolean }> {
   const uid = scope(work, "view"),
     [view, row] = read(uid);
-  if (!view || view.closed || view.transition || view.incarnation !== identity.incarnation) return;
-  view.closed = true;
-  view.cancel_pending = true;
-  // Durable closure precedes resource disposal and asynchronous cancellation.
-  put(uid, view, row);
-  const placement = placements.get(work);
-  if (placement) placement.detached = true;
+  assert(view, "Missing cleanup lifecycle");
+  if (!view.cleanup) {
+    view.cleanup = true;
+    view.closed = true;
+    view.cancel_pending = true;
+    put(uid, view, row);
+    const placement = placements.get(work);
+    if (placement) placement.detached = true;
+  }
+  if ([...inFlight].some((flight) => flight.work != null && lifecycleWork(flight.work) === work)) {
+    void cancelLifecycle(work).catch((error: unknown) => {
+      z.log(String(error));
+    });
+    return { ready: false };
+  }
+  if (cancelling.has(work)) return { ready: false };
+  await cancelLifecycle(work);
+  const current = result(uid);
+  assert(!current.error || !current.cancel_pending, current.error ?? "Cancellation failed");
+  if (current.cancel_pending) return { ready: false };
+  for (const entry of deliveryRows()) {
+    if (lifecycleWork(entry.work) !== work || !entry.value.request) continue;
+    const request = parsedObject(entry.value.request);
+    const value = entry.value;
+    if (request["operation"] === "model.method.run" && !value.not_dispatched) {
+      assert(
+        value.outcome !== "unknown",
+        "Owned Swamp method termination is uncertain; reconcile before cleanup",
+      );
+      if (value.outcome === "pending") return { ready: false };
+    }
+    if (!["command", "agent_spawn", "agent_prompt"].includes(String(request["method"]))) continue;
+    // These dispatch paths persist the owner before creating or prompting a process.
+    if (!value.owner || value.terminationVerified) continue;
+    assert(
+      value.pane != null && value.supervisor,
+      "Operation termination is uncertain; reconcile the saved operation and retry cleanup",
+    );
+    value.cancelRequested = true;
+    value.outcome = "unknown";
+    put(entry.uid, value, entry.row);
+    stopOperation(entry.uid);
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Verify each owned process before declaring cleanup ready.
+    await stopping.get(entry.uid);
+    const stopped = result(entry.uid);
+    assert(stopped.terminationVerified, stopped.error ?? "Operation termination is uncertain");
+  }
+  // Late run attachments request another cancellation pass.
+  if (result(uid).cancel_pending) return { ready: false };
+  const panes = ownedPanes(work);
+  if (view.source != null) panes.delete(view.source);
+  for (const pane of panes) z.command("CloseTerminalPane", pane);
+  return { ready: true };
+}
+function ownedPanes(work: string): Set<number> {
   const panes = new Set<number>();
-  if (view.source != null) panes.add(view.source);
   for (const entry of deliveryRows()) {
     if (lifecycleWork(entry.work) !== work) continue;
     const value = entry.value;
@@ -3038,6 +3157,24 @@ function closeLifecycle(work: string): void {
       value.pane != null
     )
       panes.add(value.pane);
+  }
+  return panes;
+}
+function closeLifecycle(work: string): void {
+  const uid = scope(work, "view"),
+    [view, row] = read(uid);
+  if (!view || view.closed || view.transition || view.incarnation !== identity.incarnation) return;
+  view.closed = true;
+  view.cancel_pending = true;
+  // Durable closure precedes resource disposal and asynchronous cancellation.
+  put(uid, view, row);
+  const placement = placements.get(work);
+  if (placement) placement.detached = true;
+  const panes = ownedPanes(work);
+  if (view.source != null) panes.add(view.source);
+  for (const entry of deliveryRows()) {
+    if (lifecycleWork(entry.work) !== work) continue;
+    const value = entry.value;
     if (["pending", "unknown"].includes(value.outcome)) {
       value.outcome = "interrupted";
       value.error = "Pane workflow lifecycle is closed";

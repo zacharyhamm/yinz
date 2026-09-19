@@ -1325,14 +1325,22 @@ and the pane it opens is itself an agent pane, so this hook runs again when *tha
 
 ### Project-owned Swamp workflows
 
-The builtin `agent-exit` hook launches the workflow bound in the control checkout; configured workflow behavior is
-unchanged. Without a configured workflow, Enter restarts the agent and Escape closes both the held agent pane and
-the exit view. A local or Firecracker-backed secondary Git worktree also gets a Delete action. The first Delete
-shows a destructive confirmation naming the worktree, branch, and VM when present; a second Delete removes the
-worktree and compare-deletes its branch at the confirmed HEAD with `git update-ref -d`. Escape cancels the
-confirmation. Primary checkouts, SSH panes, non-repositories, and checkouts whose identity cannot be established do
-not offer deletion. A detached secondary checkout removes only the worktree. If project configuration cannot be
-read or parsed, that error is shown and the hook does not inspect Git or offer deletion.
+The builtin `agent-exit` hook launches the workflow bound in the control checkout.
+Escape closes both the held agent pane and the exit view without deleting files, with or without a configured workflow.
+During deletion confirmation, Escape dismisses the confirmation. During deletion, the exit view ignores keys.
+Without a configured workflow, Enter restarts the agent.
+A verified local or Firecracker secondary worktree always offers **Delete worktree & branch and close pane**.
+This option is available while the workflow starts, runs, waits for input, or has completed or failed.
+It is also available without a workflow. Configuration errors remain visible and do not prevent checkout inspection.
+
+Press Delete to show the worktree, branch, associated VM, and cancellation warning.
+Press Delete again to confirm, or Escape to dismiss the confirmation.
+Confirmation cancels the workflow and waits for verified termination of its owned operations before deletion.
+The exit pane stays open during cancellation and shows failures for retry. New operations cannot start during cleanup.
+Deletion force-removes the worktree and compare-deletes its branch at the confirmed HEAD with `git update-ref -d`.
+It then closes both panes.
+Primary checkouts, SSH panes, non-repositories, and unverifiable checkouts do not offer deletion.
+A detached secondary checkout removes only the worktree.
 
 Local deletion revalidates the worktree immediately before removing it. Firecracker deletion validates and removes
 the worktree under the provider's lease lock. Failures remain visible in the exit view and can be retried, including
