@@ -1017,6 +1017,8 @@ pub trait Pane {
     fn update_theme(&mut self, _theme: Styling) {}
     fn set_selection_options(&mut self, _osc133_command_selection: bool, _word_separators: &str) {}
     fn update_arrow_fonts(&mut self, _should_support_arrow_fonts: bool) {}
+    fn update_render_options(&mut self, _styled_underlines: bool, _osc8_hyperlinks: bool) {}
+    fn update_kitty_keyboard_protocol_disabled(&mut self, _disabled: bool) {}
     fn update_kitty_host_support(&mut self, _supported: KittyHostSupport) {}
     fn update_sixel_host_support(&mut self, _supported: bool) {}
     fn update_rounded_corners(&mut self, _rounded_corners: bool) {}
@@ -9591,6 +9593,41 @@ impl Tab {
             .update_pane_arrow_fonts(should_support_arrow_fonts);
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
             pane.update_arrow_fonts(should_support_arrow_fonts);
+        }
+    }
+    /// Whether every client shares one focus. Read at the next focus change and frame.
+    pub fn update_session_is_mirrored(&mut self, session_is_mirrored: bool) {
+        self.stack_list_session_is_mirrored = session_is_mirrored;
+        self.tiled_panes
+            .set_session_is_mirrored(session_is_mirrored);
+        self.floating_panes
+            .set_session_is_mirrored(session_is_mirrored);
+        self.overlay_panes
+            .set_session_is_mirrored(session_is_mirrored);
+    }
+    pub fn update_render_options(&mut self, styled_underlines: bool, osc8_hyperlinks: bool) {
+        self.styled_underlines = styled_underlines;
+        self.osc8_hyperlinks = osc8_hyperlinks;
+        self.floating_panes
+            .update_pane_render_options(styled_underlines, osc8_hyperlinks);
+        self.overlay_panes
+            .update_pane_render_options(styled_underlines, osc8_hyperlinks);
+        self.tiled_panes
+            .update_pane_render_options(styled_underlines, osc8_hyperlinks);
+        for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
+            pane.update_render_options(styled_underlines, osc8_hyperlinks);
+        }
+    }
+    pub fn update_kitty_keyboard_protocol_disabled(&mut self, disabled: bool) {
+        self.explicitly_disable_kitty_keyboard_protocol = disabled;
+        self.floating_panes
+            .update_pane_kitty_keyboard_protocol_disabled(disabled);
+        self.overlay_panes
+            .update_pane_kitty_keyboard_protocol_disabled(disabled);
+        self.tiled_panes
+            .update_pane_kitty_keyboard_protocol_disabled(disabled);
+        for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
+            pane.update_kitty_keyboard_protocol_disabled(disabled);
         }
     }
     pub fn update_kitty_host_support(&mut self, supported: KittyHostSupport) {

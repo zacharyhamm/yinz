@@ -55,12 +55,31 @@ impl Screen {
         if !self.connected_clients_contains(&client_id) {
             return;
         }
+        self.kitty_probe_answers.insert(client_id, supported);
         let supported = supported && self.support_kitty_graphics_protocol;
         self.kitty_host_capabilities
             .borrow_mut()
             .insert(client_id, supported);
         self.push_kitty_host_support_to_tabs();
         self.push_kitty_capability_to_plugins(client_id, supported);
+    }
+
+    /// Re-derive every client's kitty graphics capability from its probe answer, after a reload
+    /// changed `support_kitty_graphics_protocol`.
+    pub(super) fn reapply_kitty_graphics_support(&mut self) {
+        let answers: Vec<(ClientId, bool)> = self
+            .kitty_probe_answers
+            .iter()
+            .map(|(client_id, answered)| (*client_id, *answered))
+            .collect();
+        for (client_id, answered) in answers {
+            let supported = answered && self.support_kitty_graphics_protocol;
+            self.kitty_host_capabilities
+                .borrow_mut()
+                .insert(client_id, supported);
+            self.push_kitty_capability_to_plugins(client_id, supported);
+        }
+        self.push_kitty_host_support_to_tabs();
     }
 
     pub(super) fn kitty_host_support_aggregate(&self) -> Option<KittyHostSupport> {

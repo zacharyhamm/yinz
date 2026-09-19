@@ -1590,6 +1590,13 @@ impl Pane for TerminalPane {
         self.arrow_fonts = should_support_arrow_fonts;
         self.grid.update_arrow_fonts(should_support_arrow_fonts);
     }
+    fn update_render_options(&mut self, styled_underlines: bool, osc8_hyperlinks: bool) {
+        self.grid
+            .update_render_options(styled_underlines, osc8_hyperlinks);
+    }
+    fn update_kitty_keyboard_protocol_disabled(&mut self, disabled: bool) {
+        self.grid.set_kitty_keyboard_protocol_disabled(disabled);
+    }
     fn update_kitty_host_support(&mut self, supported: KittyHostSupport) {
         self.grid.update_kitty_host_support(supported);
     }

@@ -4776,6 +4776,22 @@ impl Grid {
     pub fn update_arrow_fonts(&mut self, should_support_arrow_fonts: bool) {
         self.arrow_fonts = should_support_arrow_fonts;
     }
+    /// The two rendering options a config reload can change. Links are serialized with the new
+    /// setting from the next frame; cells already parsed keep the underline style they were
+    /// parsed with, and the cursor's pending style picks the new one up at its next reset.
+    pub fn update_render_options(&mut self, styled_underlines: bool, osc8_hyperlinks: bool) {
+        self.styled_underlines = styled_underlines;
+        self.osc8_hyperlinks = osc8_hyperlinks;
+    }
+    /// Turn the kitty keyboard protocol off, or back on, after the fact. Turning it off also
+    /// forgets a negotiation the app has already made, so it stops receiving kitty-encoded keys
+    /// at once; turning it back on waits for the app to ask again.
+    pub fn set_kitty_keyboard_protocol_disabled(&mut self, disabled: bool) {
+        self.explicitly_disable_kitty_keyboard_protocol = disabled;
+        if disabled {
+            self.supports_kitty_keyboard_protocol = false;
+        }
+    }
     pub fn update_kitty_host_support(&mut self, supported: KittyHostSupport) {
         self.kitty_host_support = supported;
     }

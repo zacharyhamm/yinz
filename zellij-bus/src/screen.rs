@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use zellij_config::screen_config::ScreenConfig;
 use zellij_ipc::ipc::PixelDimensions;
 use zellij_ipc::nested_session::NestedSessionMessage;
 use zellij_terminal::panes::grid::{Osc99PayloadType, PendingNotification};
@@ -25,13 +26,13 @@ use zellij_types::agent::AgentInfo;
 use zellij_types::diagnostics::ScreenContext;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use zellij_types::input::actions::Action;
-use zellij_types::input::context_menu::ContextMenu;
 use zellij_types::input::keybinds::Keybinds;
+use zellij_types::input::options::PaneFrameStyle;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::MouseEvent;
 use zellij_types::pane_size::Size;
 use zellij_types::position::Position;
-use zellij_types::style::{HostTerminalThemeMode, Styling, ThemeHue};
+use zellij_types::style::HostTerminalThemeMode;
 use {
     zellij_types::data::CommandOrPlugin, zellij_types::data::ContextMenuItem,
     zellij_types::data::EventType, zellij_types::data::GetFocusedPaneInfoResponse,
@@ -51,12 +52,6 @@ use {
     zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::layout::SwapFloatingLayout,
     zellij_types::input::layout::SwapTiledLayout, zellij_types::input::layout::TabLayoutInfo,
     zellij_types::input::layout::TiledPaneLayout,
-};
-use {
-    zellij_types::input::options::Clipboard,
-    zellij_types::input::options::HostNotificationProtocol,
-    zellij_types::input::options::NestedSessionHandling,
-    zellij_types::input::options::PaneFrameStyle,
 };
 
 /// Instructions that can be sent to the [`Screen`].
@@ -687,54 +682,12 @@ pub enum ScreenInstruction {
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Option<TabInfo>>,
     },
+    /// A config reload. Everything the screen takes from the options travels in `config`;
+    /// the keybinds are separate because they go into the per-client mode info, not the screen.
     Reconfigure {
-        agent_double_escape: bool,
         client_id: ClientId,
         keybinds: Keybinds,
-        default_mode: InputMode,
-        theme: Styling,
-        /// Resolved styling for `theme_dark`. When both this and
-        /// `host_theme_light` are `Some`, Screen auto-switches the active
-        /// palette in response to host CSI 2031 / DSR 997 notifications.
-        host_theme_dark: Option<Styling>,
-        /// Resolved styling for `theme_light`. See `host_theme_dark`.
-        host_theme_light: Option<Styling>,
-        /// `explicit_theme_hue` from the config: pins the session to one
-        /// hue regardless of what the host terminal reports. `None` hands
-        /// authority back to the host.
-        explicit_theme_hue: Option<ThemeHue>,
-        simplified_ui: bool,
-        default_shell: Option<PathBuf>,
-        default_cwd: Option<PathBuf>,
-        pane_frame_style: PaneFrameStyle,
-        copy_command: Option<String>,
-        copy_to_clipboard: Option<Clipboard>,
-        copy_on_select: bool,
-        auto_layout: bool,
-        rounded_corners: bool,
-        hide_session_name: bool,
-        stacked_resize: bool,
-        stacked_pane_list: bool,
-        default_editor: Option<PathBuf>,
-        advanced_mouse_actions: bool,
-        mouse_scroll_resize: bool,
-        mouse_hover_effects: bool,
-        visual_bell: bool,
-        pane_animations: bool,
-        focus_follows_mouse: bool,
-        mouse_click_through: bool,
-        context_menu_on_right_click: bool,
-        /// The items a right-click offers. Held by `Screen` rather than re-read per click, so a
-        /// reload has to hand the new list over or the session keeps the one it started with.
-        context_menu: ContextMenu,
-        osc133_command_selection: bool,
-        word_separators: String,
-        nested_session_handling: NestedSessionHandling,
-        dangerously_enable_paste_buffer_read: bool,
-        host_notification_protocol: HostNotificationProtocol,
-        /// The floor a spawned agent pane's equal share of a tab must clear, columns by rows;
-        /// zero in either turns the rule off. See `Screen::agent_pane_target`.
-        agent_pane_min_size: Size,
+        config: ScreenConfig,
     },
     RerunCommandPane(TerminalId, Option<NotificationEnd>), // u32 - terminal pane id
     RunCommandInPane(TerminalId, RunCommand, bool), // u32 - terminal pane id, bool - keep_scrollback;

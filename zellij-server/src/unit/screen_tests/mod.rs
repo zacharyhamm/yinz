@@ -45,10 +45,8 @@ use {
 
 use zellij_types::mouse::MouseEvent;
 use {
-    zellij_types::input::options::HostNotificationProtocol,
     zellij_types::input::options::NestedSessionHandling, zellij_types::input::options::Options,
     zellij_types::input::options::PaneFrameStyle,
-    zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
 
 use crate::background_jobs::BackgroundJob;
@@ -1998,6 +1996,7 @@ mod pane_animations;
 mod pane_state;
 mod plugin_broadcasts;
 mod quit;
+mod reconfigure;
 mod related_panes;
 mod reveal_pane;
 mod scroll_and_warp;

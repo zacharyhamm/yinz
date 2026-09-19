@@ -2588,6 +2588,23 @@ impl OverlayPanes {
             overlay.pane.update_arrow_fonts(should_support_arrow_fonts);
         }
     }
+    pub fn update_pane_render_options(&mut self, styled_underlines: bool, osc8_hyperlinks: bool) {
+        for overlay in self.panes.values_mut() {
+            overlay
+                .pane
+                .update_render_options(styled_underlines, osc8_hyperlinks);
+        }
+    }
+    pub fn update_pane_kitty_keyboard_protocol_disabled(&mut self, disabled: bool) {
+        for overlay in self.panes.values_mut() {
+            overlay
+                .pane
+                .update_kitty_keyboard_protocol_disabled(disabled);
+        }
+    }
+    pub fn set_session_is_mirrored(&mut self, session_is_mirrored: bool) {
+        self.session_is_mirrored = session_is_mirrored;
+    }
     pub fn update_pane_kitty_host_support(&mut self, supported: KittyHostSupport) {
         for overlay in self.panes.values_mut() {
             overlay.pane.update_kitty_host_support(supported);

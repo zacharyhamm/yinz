@@ -990,40 +990,15 @@ fn a_reload_replaces_the_configured_menu() {
         vec![Action::CloseFocus],
     )]);
 
+    let mut config = test_screen_config();
+    config.theme = Styling::default();
+    config.simplified_ui = true;
+    config.copy_on_select = false;
+    config.hide_session_name = true;
+    config.context_menu_on_right_click = true;
+    config.context_menu = reloaded.clone();
     screen
-        .reconfigure(
-            Keybinds::default(),
-            InputMode::Normal,
-            Styling::default(),
-            true,
-            None,
-            None, // default_cwd
-            PaneFrameStyle::None,
-            None,
-            None,
-            false,
-            true,
-            false,
-            true,
-            true,
-            false,
-            None,
-            true,
-            true,
-            true,
-            true,
-            false,
-            false,
-            true, // context_menu_on_right_click
-            reloaded.clone(),
-            true,
-            DEFAULT_WORD_SEPARATORS.to_owned(),
-            NestedSessionHandling::default(),
-            false,
-            HostNotificationProtocol::default(),
-            Size { rows: 0, cols: 0 },
-            crate::ClientId::new(1),
-        )
+        .reconfigure(config, Keybinds::default(), crate::ClientId::new(1))
         .unwrap();
 
     assert_eq!(
