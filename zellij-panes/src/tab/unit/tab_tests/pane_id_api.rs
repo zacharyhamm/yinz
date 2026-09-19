@@ -772,3 +772,53 @@ pub fn moving_a_tiled_pane_by_id_while_floating_panes_are_shown_moves_it_in_the_
         "the first pane moved to the bottom"
     );
 }
+
+/// A tiled pane resized by id marks the tiled layout as changed, as a keyboard resize always
+/// has. Without the mark the next swap-layout request discarded the layout the user had just
+/// adjusted.
+#[test]
+pub fn resizing_a_tiled_pane_by_id_marks_the_tiled_layout_as_changed() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
+        ..Default::default()
+    };
+    let mut tab = create_new_tab_with_layout(size, initial_layout);
+    // the layout helper numbers its panes from zero
+    let right_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
+    assert!(tab.tiled_panes.panes_contain(&right_pane_id));
+    assert!(
+        !tab.swap_layouts.is_tiled_damaged(),
+        "a layout applied as given is not a change to it"
+    );
+
+    tab.resize_pane_with_id(
+        ResizeStrategy::new(Resize::Increase, Some(Direction::Left)),
+        right_pane_id,
+    )
+    .unwrap();
+
+    assert!(tab.swap_layouts.is_tiled_damaged());
+}
+
+/// A floating pane resized by id marks only the floating layout as changed: the tiled grid was
+/// not touched. It used to mark both.
+#[test]
+pub fn resizing_a_floating_pane_by_id_marks_only_the_floating_layout_as_changed() {
+    let mut tab = create_tab_with_two_floating_panes();
+    tab.swap_layouts.reset_floating_damage();
+    assert!(!tab.swap_layouts.is_tiled_damaged());
+
+    tab.resize_pane_with_id(
+        ResizeStrategy::new(Resize::Increase, None),
+        PaneId::Terminal(crate::TerminalId::new(3)),
+    )
+    .unwrap();
+
+    assert!(tab.swap_layouts.is_floating_damaged());
+    assert!(!tab.swap_layouts.is_tiled_damaged());
+}

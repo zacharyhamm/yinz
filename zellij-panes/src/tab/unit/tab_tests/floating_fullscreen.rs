@@ -644,3 +644,80 @@ pub fn closing_fullscreen_floating_scrollback_editor_restores_geometry() {
         "restored pane is back to its original geometry",
     );
 }
+
+#[test]
+pub fn resize_by_id_while_floating_fullscreen_is_noop() {
+    let mut tab = create_tab_with_two_floating_panes();
+    let active_pane_id = tab
+        .floating_panes
+        .active_pane_id(crate::ClientId::new(1))
+        .expect("a floating pane is focused");
+    tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
+    let geom_before = floating_pane_geom(&tab, active_pane_id);
+
+    tab.resize_pane_with_id(ResizeStrategy::new(Resize::Increase, None), active_pane_id)
+        .unwrap();
+
+    assert_eq!(
+        floating_pane_geom(&tab, active_pane_id),
+        geom_before,
+        "Resizing a floating fullscreen pane by id does not change its geometry"
+    );
+}
+
+/// A floating fullscreen stops the floating layer from being resized - the fullscreen pane has
+/// no size of its own to change, and the others are hidden under it - but the tiled grid beneath
+/// is not part of that, so a tiled pane named by id still resizes. The guard used to sit before
+/// the layer dispatch and dropped these silently.
+#[test]
+pub fn resize_by_id_of_a_tiled_pane_while_floating_fullscreen_resizes_it() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = crate::ClientId::new(1);
+    let tiled_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let mut tab = create_new_tab(size, false);
+    tab.horizontal_split(tiled_pane_id, None, client_id, None, None)
+        .unwrap();
+    for id in [3, 4] {
+        tab.new_floating_pane(
+            PaneId::Terminal(crate::TerminalId::new(id)),
+            None,
+            None,
+            false,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    let fullscreen_pane_id = tab
+        .floating_panes
+        .active_pane_id(client_id)
+        .expect("a floating pane is focused");
+    tab.toggle_active_pane_fullscreen(client_id);
+    assert!(
+        tab.is_fullscreen_active(),
+        "the floating pane is fullscreen"
+    );
+    let fullscreen_geom_before = floating_pane_geom(&tab, fullscreen_pane_id);
+    let tiled_rows_before = tab.tiled_panes.get_pane(tiled_pane_id).unwrap().rows();
+
+    tab.resize_pane_with_id(
+        ResizeStrategy::new(Resize::Increase, Some(Direction::Up)),
+        tiled_pane_id,
+    )
+    .unwrap();
+
+    assert!(
+        tab.tiled_panes.get_pane(tiled_pane_id).unwrap().rows() > tiled_rows_before,
+        "the tiled pane grew"
+    );
+    assert_eq!(
+        floating_pane_geom(&tab, fullscreen_pane_id),
+        fullscreen_geom_before,
+        "the fullscreen pane is untouched"
+    );
+    assert!(tab.is_fullscreen_active(), "fullscreen is still active");
+}

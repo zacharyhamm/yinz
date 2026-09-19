@@ -3307,3 +3307,61 @@ fn kitty_visible_panes_exclude_collapsed_stack_members() {
         "kitty visibility follows the expanded stack member"
     );
 }
+
+fn a_stack_beside_a_plain_pane_layout() -> (TiledPaneLayout, Vec<(TerminalId, Option<RunCommand>)>)
+{
+    let base_layout = r#"
+        layout {
+            pane split_direction="vertical" {
+                pane stacked=true {
+                    pane focus=true
+                    pane
+                    pane
+                }
+                pane
+            }
+        }
+    "#;
+    let (base_layout, _base_floating_layout) =
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+            .unwrap()
+            .template
+            .unwrap();
+    let new_terminal_ids = (1..=4).map(|id| (TerminalId::new(id), None)).collect();
+    (base_layout, new_terminal_ids)
+}
+
+/// A tiled pane resized by id in stack-list mode dissolves the lists first, as a keyboard
+/// resize does: the classic solver has to see every pane. The by-id path used to dissolve
+/// only when the resized pane was itself a list member.
+#[test]
+fn resizing_a_tiled_pane_by_id_in_stack_list_mode_dissolves_the_lists_as_the_keyboard_does() {
+    let size = Size {
+        cols: 150,
+        rows: 40,
+    };
+    let mut tab = create_new_tab_with_stacked_pane_list(
+        size,
+        ModeInfo::default(),
+        true,
+        Some(a_stack_beside_a_plain_pane_layout()),
+    );
+    tab.render(&mut Output::default(), None).unwrap();
+    assert!(
+        tab.has_stack_lists(),
+        "the state under test: a stack list is up"
+    );
+    let plain_pane_id = tab
+        .get_all_pane_ids()
+        .into_iter()
+        .find(|id| !tab.pane_is_stack_list_member(id))
+        .expect("the layout has a pane outside the stack");
+
+    tab.resize_pane_with_id(ResizeStrategy::new(Resize::Increase, None), plain_pane_id)
+        .unwrap();
+
+    assert!(
+        !tab.has_stack_lists(),
+        "the lists were dissolved for the classic resize"
+    );
+}
