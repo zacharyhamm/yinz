@@ -880,35 +880,27 @@ impl<'a> TiledPaneGrid<'a> {
         self.sorted_selectable_pane_ids().first() == Some(pane_id)
     }
 
-    pub fn next_selectable_pane_id(&self, current_pane_id: &PaneId) -> PaneId {
+    /// The selectable pane after `current_pane_id` in grid order, wrapping to the first; `None`
+    /// when the pane is not a selectable pane of this grid.
+    pub fn next_selectable_pane_id(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.sorted_selectable_pane_ids();
-        let active_pane_position = panes
-            .iter()
-            .position(|id| id == current_pane_id) // TODO: better
-            .unwrap();
-
-        let next_active_pane_id = panes
-            .get(active_pane_position + 1)
+        let current_position = panes.iter().position(|id| id == current_pane_id)?;
+        panes
+            .get(current_position + 1)
             .or_else(|| panes.first())
             .copied()
-            .unwrap();
-        next_active_pane_id
     }
 
-    pub fn previous_selectable_pane_id(&self, current_pane_id: &PaneId) -> PaneId {
+    /// The selectable pane before `current_pane_id` in grid order, wrapping to the last; `None`
+    /// when the pane is not a selectable pane of this grid.
+    pub fn previous_selectable_pane_id(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.sorted_selectable_pane_ids();
-        let last_pane = *panes.last().unwrap();
-        let active_pane_position = panes
-            .iter()
-            .position(|id| id == current_pane_id) // TODO: better
-            .unwrap();
-
-        let previous_active_pane_id = if active_pane_position == 0 {
-            last_pane
+        let current_position = panes.iter().position(|id| id == current_pane_id)?;
+        if current_position == 0 {
+            panes.last().copied()
         } else {
-            *panes.get(active_pane_position - 1).unwrap()
-        };
-        previous_active_pane_id
+            panes.get(current_position - 1).copied()
+        }
     }
 
     pub fn next_selectable_pane_id_to_the_left(&self, current_pane_id: &PaneId) -> Option<PaneId> {

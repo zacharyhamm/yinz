@@ -282,6 +282,21 @@ struct HostCursorState {
     visible: bool,
 }
 
+/// Which pane a `Tab` entry point is about: the one a client has focused, or one named by id.
+#[derive(Clone, Copy, Debug)]
+enum PaneSubject {
+    Active(ClientId),
+    Pane(PaneId),
+}
+
+/// Where a pane is asked to go: the next (or previous) slot in its layer, or one step in a
+/// direction.
+#[derive(Clone, Copy, Debug)]
+enum PaneMove {
+    Next { backwards: bool },
+    Toward(Direction),
+}
+
 pub struct Tab {
     pub agent_double_escape: bool,
     pub pending_agent_escapes: HashMap<(ClientId, PaneId), Instant>,
@@ -6958,182 +6973,135 @@ impl Tab {
         }
         moved
     }
-    pub fn move_active_pane(&mut self, client_id: ClientId) {
-        if !self.has_selectable_panes() {
-            return;
-        }
-        if self.tiled_panes.fullscreen_is_active() {
-            return;
-        }
-        let search_backwards = false;
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes
-                .move_active_pane(search_backwards, &mut self.os_api, client_id);
+    /// Move a pane within its own layer. One dispatch for the thirteen public entry points
+    /// below, so that they cannot disagree about the rules:
+    ///
+    /// - a floating move always marks the floating layout damaged and forces a render, so the
+    ///   panes under the moved one repaint and nothing of it is left behind;
+    /// - a tiled move is refused while nothing is selectable or a tiled pane is fullscreen, and
+    ///   dissolves the stack lists first, being a classic mutation of the grid.
+    ///
+    /// A pane named by id moves in the layer it is in; a client's active pane moves in the
+    /// floating layer while that layer is shown, and in the tiled one otherwise. A pane in
+    /// neither layer - an overlay, or a pane suppressed behind another - is left alone.
+    fn move_pane_in_layer(&mut self, subject: PaneSubject, movement: PaneMove) {
+        let on_floating_layer = match subject {
+            PaneSubject::Active(_) => self.floating_panes.panes_are_visible(),
+            PaneSubject::Pane(pane_id) => self.floating_panes.panes_contain(&pane_id),
+        };
+        if on_floating_layer {
+            let pane_id = match subject {
+                PaneSubject::Active(client_id) => self.floating_panes.get_active_pane_id(client_id),
+                PaneSubject::Pane(pane_id) => Some(pane_id),
+            };
+            if let Some(pane_id) = pane_id {
+                match movement {
+                    PaneMove::Next { backwards } => {
+                        self.floating_panes.move_pane(backwards, pane_id)
+                    },
+                    PaneMove::Toward(Direction::Down) => {
+                        self.floating_panes.move_pane_down(pane_id)
+                    },
+                    PaneMove::Toward(Direction::Up) => self.floating_panes.move_pane_up(pane_id),
+                    PaneMove::Toward(Direction::Left) => {
+                        self.floating_panes.move_pane_left(pane_id)
+                    },
+                    PaneMove::Toward(Direction::Right) => {
+                        self.floating_panes.move_pane_right(pane_id)
+                    },
+                }
+            }
+            self.swap_layouts.set_is_floating_damaged();
+            self.set_force_render();
         } else {
+            if !self.has_selectable_panes() || self.tiled_panes.fullscreen_is_active() {
+                return;
+            }
             self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes
-                .move_active_pane(search_backwards, client_id);
+            // resolved after the dissolve, which can change which pane stands for a stack list
+            let pane_id = match subject {
+                PaneSubject::Active(client_id) => self.tiled_panes.get_active_pane_id(client_id),
+                PaneSubject::Pane(pane_id) => Some(pane_id),
+            };
+            let Some(pane_id) = pane_id else {
+                return;
+            };
+            if !self.tiled_panes.panes_contain(&pane_id) {
+                // an overlay or a suppressed pane: in neither layer this dispatch moves, so
+                // there is nothing to do
+                return;
+            }
+            match movement {
+                PaneMove::Next { backwards } => self.tiled_panes.move_pane(backwards, pane_id),
+                PaneMove::Toward(Direction::Down) => self.tiled_panes.move_pane_down(pane_id),
+                PaneMove::Toward(Direction::Up) => self.tiled_panes.move_pane_up(pane_id),
+                PaneMove::Toward(Direction::Left) => self.tiled_panes.move_pane_left(pane_id),
+                PaneMove::Toward(Direction::Right) => self.tiled_panes.move_pane_right(pane_id),
+            }
         }
+    }
+    pub fn move_active_pane(&mut self, client_id: ClientId) {
+        self.move_pane_in_layer(
+            PaneSubject::Active(client_id),
+            PaneMove::Next { backwards: false },
+        );
     }
     pub fn move_pane(&mut self, pane_id: PaneId) {
-        if !self.has_selectable_panes() {
-            return;
-        }
-        if self.tiled_panes.fullscreen_is_active() {
-            return;
-        }
-        let search_backwards = false;
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.move_pane(search_backwards, pane_id);
-        } else {
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_pane(search_backwards, pane_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Pane(pane_id),
+            PaneMove::Next { backwards: false },
+        );
     }
     pub fn move_active_pane_backwards(&mut self, client_id: ClientId) {
-        if !self.has_selectable_panes() {
-            return;
-        }
-        if self.tiled_panes.fullscreen_is_active() {
-            return;
-        }
-        let search_backwards = true;
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes
-                .move_active_pane(search_backwards, &mut self.os_api, client_id);
-        } else {
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes
-                .move_active_pane(search_backwards, client_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Active(client_id),
+            PaneMove::Next { backwards: true },
+        );
     }
     pub fn move_active_pane_down(&mut self, client_id: ClientId) {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.move_active_pane_down(client_id);
-            self.swap_layouts.set_is_floating_damaged();
-            self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" behind
-        } else {
-            if !self.has_selectable_panes() {
-                return;
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return;
-            }
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_active_pane_down(client_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Active(client_id),
+            PaneMove::Toward(Direction::Down),
+        );
     }
     pub fn move_pane_down(&mut self, pane_id: PaneId) {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.move_pane_down(pane_id);
-            self.swap_layouts.set_is_floating_damaged();
-            self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" behind
-        } else {
-            if !self.has_selectable_panes() {
-                return;
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return;
-            }
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_pane_down(pane_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Pane(pane_id),
+            PaneMove::Toward(Direction::Down),
+        );
     }
     pub fn move_active_pane_up(&mut self, client_id: ClientId) {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.move_active_pane_up(client_id);
-            self.swap_layouts.set_is_floating_damaged();
-            self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" behind
-        } else {
-            if !self.has_selectable_panes() {
-                return;
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return;
-            }
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_active_pane_up(client_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Active(client_id),
+            PaneMove::Toward(Direction::Up),
+        );
     }
     pub fn move_pane_up(&mut self, pane_id: PaneId) {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.move_pane_up(pane_id);
-            self.swap_layouts.set_is_floating_damaged();
-            self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" behind
-        } else {
-            if !self.has_selectable_panes() {
-                return;
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return;
-            }
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_pane_up(pane_id);
-        }
+        self.move_pane_in_layer(PaneSubject::Pane(pane_id), PaneMove::Toward(Direction::Up));
     }
     pub fn move_active_pane_right(&mut self, client_id: ClientId) {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.move_active_pane_right(client_id);
-            self.swap_layouts.set_is_floating_damaged();
-            self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" behind
-        } else {
-            if !self.has_selectable_panes() {
-                return;
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return;
-            }
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_active_pane_right(client_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Active(client_id),
+            PaneMove::Toward(Direction::Right),
+        );
     }
     pub fn move_pane_right(&mut self, pane_id: PaneId) {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.move_pane_right(pane_id);
-            self.swap_layouts.set_is_floating_damaged();
-            self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" behind
-        } else {
-            if !self.has_selectable_panes() {
-                return;
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return;
-            }
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_pane_right(pane_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Pane(pane_id),
+            PaneMove::Toward(Direction::Right),
+        );
     }
     pub fn move_active_pane_left(&mut self, client_id: ClientId) {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.move_active_pane_left(client_id);
-            self.swap_layouts.set_is_floating_damaged();
-            self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" behind
-        } else {
-            if !self.has_selectable_panes() {
-                return;
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return;
-            }
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_active_pane_left(client_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Active(client_id),
+            PaneMove::Toward(Direction::Left),
+        );
     }
     pub fn move_pane_left(&mut self, pane_id: PaneId) {
-        if self.floating_panes.panes_are_visible() {
-            self.floating_panes.move_pane_left(pane_id);
-            self.swap_layouts.set_is_floating_damaged();
-            self.set_force_render(); // we force render here to make sure the panes under the floating pane render and don't leave "garbage" behind
-        } else {
-            if !self.has_selectable_panes() {
-                return;
-            }
-            if self.tiled_panes.fullscreen_is_active() {
-                return;
-            }
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_pane_left(pane_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Pane(pane_id),
+            PaneMove::Toward(Direction::Left),
+        );
     }
     fn close_down_to_max_terminals(&mut self) -> Result<()> {
         if let Some(max_panes) = self.max_panes {
@@ -10172,76 +10140,14 @@ impl Tab {
         self.resize_pane_with_id(strategy, pane_id).non_fatal();
     }
     pub fn move_pane_by_pane_id(&mut self, pane_id: PaneId, direction: Option<Direction>) {
-        if !self.has_selectable_panes() {
-            return;
-        }
-        if self.tiled_panes.fullscreen_is_active() {
-            return;
-        }
-        if !self.floating_panes.panes_contain(&pane_id) {
-            self.dissolve_stack_lists_for_classic_mutation();
-        }
-        match direction {
-            Some(Direction::Left) => {
-                if self.floating_panes.panes_contain(&pane_id) {
-                    self.floating_panes.move_pane_left(pane_id);
-                    self.swap_layouts.set_is_floating_damaged();
-                    self.set_force_render();
-                } else {
-                    self.tiled_panes.move_pane_left(pane_id);
-                }
-            },
-            Some(Direction::Right) => {
-                if self.floating_panes.panes_contain(&pane_id) {
-                    self.floating_panes.move_pane_right(pane_id);
-                    self.swap_layouts.set_is_floating_damaged();
-                    self.set_force_render();
-                } else {
-                    self.tiled_panes.move_pane_right(pane_id);
-                }
-            },
-            Some(Direction::Up) => {
-                if self.floating_panes.panes_contain(&pane_id) {
-                    self.floating_panes.move_pane_up(pane_id);
-                    self.swap_layouts.set_is_floating_damaged();
-                    self.set_force_render();
-                } else {
-                    self.tiled_panes.move_pane_up(pane_id);
-                }
-            },
-            Some(Direction::Down) => {
-                if self.floating_panes.panes_contain(&pane_id) {
-                    self.floating_panes.move_pane_down(pane_id);
-                    self.swap_layouts.set_is_floating_damaged();
-                    self.set_force_render();
-                } else {
-                    self.tiled_panes.move_pane_down(pane_id);
-                }
-            },
-            None => {
-                let search_backwards = false;
-                if self.floating_panes.panes_contain(&pane_id) {
-                    self.floating_panes.move_pane(search_backwards, pane_id);
-                } else {
-                    self.tiled_panes.move_pane(search_backwards, pane_id);
-                }
-            },
-        }
+        let movement = direction.map_or(PaneMove::Next { backwards: false }, PaneMove::Toward);
+        self.move_pane_in_layer(PaneSubject::Pane(pane_id), movement);
     }
     pub fn move_pane_backwards_by_pane_id(&mut self, pane_id: PaneId) {
-        if !self.has_selectable_panes() {
-            return;
-        }
-        if self.tiled_panes.fullscreen_is_active() {
-            return;
-        }
-        let search_backwards = true;
-        if self.floating_panes.panes_contain(&pane_id) {
-            self.floating_panes.move_pane(search_backwards, pane_id);
-        } else {
-            self.dissolve_stack_lists_for_classic_mutation();
-            self.tiled_panes.move_pane(search_backwards, pane_id);
-        }
+        self.move_pane_in_layer(
+            PaneSubject::Pane(pane_id),
+            PaneMove::Next { backwards: true },
+        );
     }
     pub fn clear_screen_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
         self.clear_screen_for_pane_id(pane_id);

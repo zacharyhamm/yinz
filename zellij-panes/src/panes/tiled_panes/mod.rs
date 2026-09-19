@@ -2145,6 +2145,9 @@ impl TiledPanes {
             );
             pane_grid.next_selectable_pane_id(&active_pane_id)
         };
+        let Some(next_active_pane_id) = next_active_pane_id else {
+            return;
+        };
         if self
             .panes
             .get(&next_active_pane_id)
@@ -2176,6 +2179,9 @@ impl TiledPanes {
                 *self.viewport.borrow(),
             );
             pane_grid.previous_selectable_pane_id(&active_pane_id)
+        };
+        let Some(next_active_pane_id) = next_active_pane_id else {
+            return;
         };
 
         if self
@@ -2553,10 +2559,6 @@ impl TiledPanes {
             self.set_pane_frames(self.pane_frame_style);
         }
     }
-    pub fn move_active_pane(&mut self, search_backwards: bool, client_id: ClientId) {
-        let active_pane_id = self.get_active_pane_id(client_id).unwrap();
-        self.move_pane(search_backwards, active_pane_id)
-    }
     pub fn move_pane(&mut self, search_backwards: bool, pane_id: PaneId) {
         let new_position_id = {
             let pane_grid = TiledPaneGrid::new(
@@ -2570,6 +2572,9 @@ impl TiledPanes {
             } else {
                 pane_grid.next_selectable_pane_id(&pane_id)
             }
+        };
+        let Some(new_position_id) = new_position_id else {
+            return;
         };
         if self
             .panes
@@ -2585,11 +2590,6 @@ impl TiledPanes {
         self.swap_pane_geoms(pane_id, new_position_id).non_fatal();
         self.reapply_pane_focus();
         self.set_pane_frames(self.pane_frame_style);
-    }
-    pub fn move_active_pane_down(&mut self, client_id: ClientId) {
-        if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
-            self.move_pane_down(active_pane_id);
-        }
     }
     pub fn move_pane_down(&mut self, pane_id: PaneId) {
         let mut pane_grid = TiledPaneGrid::new(
@@ -2607,11 +2607,6 @@ impl TiledPanes {
             self.set_pane_frames(self.pane_frame_style);
         }
     }
-    pub fn move_active_pane_left(&mut self, client_id: ClientId) {
-        if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
-            self.move_pane_left(active_pane_id);
-        }
-    }
     pub fn move_pane_left(&mut self, pane_id: PaneId) {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
@@ -2626,11 +2621,6 @@ impl TiledPanes {
             self.set_pane_frames(self.pane_frame_style);
         }
     }
-    pub fn move_active_pane_right(&mut self, client_id: ClientId) {
-        if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
-            self.move_pane_right(active_pane_id);
-        }
-    }
     pub fn move_pane_right(&mut self, pane_id: PaneId) {
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
@@ -2643,11 +2633,6 @@ impl TiledPanes {
             self.swap_pane_geoms(pane_id, p).non_fatal();
             self.reapply_pane_focus();
             self.set_pane_frames(self.pane_frame_style);
-        }
-    }
-    pub fn move_active_pane_up(&mut self, client_id: ClientId) {
-        if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
-            self.move_pane_up(active_pane_id);
         }
     }
     pub fn move_pane_up(&mut self, pane_id: PaneId) {

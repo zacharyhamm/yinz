@@ -1145,11 +1145,6 @@ impl FloatingPanes {
             .map(|(pane_id, _pane)| *pane_id)
     }
 
-    pub fn move_active_pane_down(&mut self, client_id: ClientId) {
-        if let Some(active_pane_id) = self.active_panes.get(&client_id) {
-            self.move_pane_down(*active_pane_id);
-        }
-    }
     pub fn move_pane_down(&mut self, pane_id: PaneId) {
         if self.fullscreen_pane_id.is_some() {
             return;
@@ -1164,11 +1159,6 @@ impl FloatingPanes {
         );
         floating_pane_grid.move_pane_down(&pane_id).non_fatal();
         self.set_force_render();
-    }
-    pub fn move_active_pane_up(&mut self, client_id: ClientId) {
-        if let Some(active_pane_id) = self.active_panes.get(&client_id) {
-            self.move_pane_up(*active_pane_id);
-        }
     }
     pub fn move_pane_up(&mut self, pane_id: PaneId) {
         if self.fullscreen_pane_id.is_some() {
@@ -1185,11 +1175,6 @@ impl FloatingPanes {
         floating_pane_grid.move_pane_up(&pane_id).non_fatal();
         self.set_force_render();
     }
-    pub fn move_active_pane_left(&mut self, client_id: ClientId) {
-        if let Some(active_pane_id) = self.active_panes.get(&client_id) {
-            self.move_pane_left(*active_pane_id);
-        }
-    }
     pub fn move_pane_left(&mut self, pane_id: PaneId) {
         if self.fullscreen_pane_id.is_some() {
             return;
@@ -1205,11 +1190,6 @@ impl FloatingPanes {
         floating_pane_grid.move_pane_left(&pane_id).non_fatal();
         self.set_force_render();
     }
-    pub fn move_active_pane_right(&mut self, client_id: ClientId) {
-        if let Some(active_pane_id) = self.active_panes.get(&client_id) {
-            self.move_pane_right(*active_pane_id);
-        }
-    }
     pub fn move_pane_right(&mut self, pane_id: PaneId) {
         if self.fullscreen_pane_id.is_some() {
             return;
@@ -1224,16 +1204,6 @@ impl FloatingPanes {
         );
         floating_pane_grid.move_pane_right(&pane_id).non_fatal();
         self.set_force_render();
-    }
-    pub fn move_active_pane(
-        &mut self,
-        search_backwards: bool,
-        _os_api: &mut Box<dyn ServerOsApi>,
-        client_id: ClientId,
-    ) {
-        if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
-            self.move_pane(search_backwards, active_pane_id)
-        }
     }
     pub fn move_pane(&mut self, search_backwards: bool, pane_id: PaneId) {
         if self.fullscreen_pane_id.is_some() {

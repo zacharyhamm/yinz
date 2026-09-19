@@ -647,3 +647,128 @@ pub fn scroll_up_nonexistent_pane_id_does_not_panic() {
     assert!(!tab.has_pane_with_pid(&pane_id));
     tab.scroll_up_by_pane_id(pane_id);
 }
+
+/// A pane named by id that is in neither layer - suppressed behind another pane, as `hide_self`
+/// and the scrollback editor leave one - is left alone. The tiled grid used to be asked to move
+/// it, and unwrapped the position it did not have among the selectable panes, taking the screen
+/// thread down.
+#[test]
+pub fn moving_a_suppressed_pane_by_id_does_nothing() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = crate::ClientId::new(1);
+    let suppressed_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let mut tab = create_new_tab(size, false);
+    tab.horizontal_split(suppressed_pane_id, None, client_id, None, None)
+        .unwrap();
+    tab.new_floating_pane(
+        PaneId::Terminal(crate::TerminalId::new(3)),
+        None,
+        None,
+        false,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(tab.floating_panes.panes_are_visible());
+    tab.suppress_pane(suppressed_pane_id, None);
+    assert!(
+        tab.has_pane_with_pid(&suppressed_pane_id),
+        "the tab still holds the pane"
+    );
+    assert!(!tab.tiled_panes.panes_contain(&suppressed_pane_id));
+    assert!(!tab.floating_panes.panes_contain(&suppressed_pane_id));
+    let geoms_before = tiled_pane_geoms(&tab);
+
+    for pane_id in [
+        suppressed_pane_id,
+        PaneId::Terminal(crate::TerminalId::new(999)),
+    ] {
+        tab.move_pane(pane_id);
+        tab.move_pane_backwards_by_pane_id(pane_id);
+        tab.move_pane_by_pane_id(pane_id, None);
+        tab.move_pane_by_pane_id(pane_id, Some(Direction::Down));
+    }
+
+    assert_eq!(
+        tiled_pane_geoms(&tab),
+        geoms_before,
+        "nothing in the grid moved"
+    );
+}
+
+/// The tiled grid itself refuses to move a pane it does not hold, rather than unwrapping the
+/// position it would have had among the selectable panes.
+#[test]
+pub fn moving_an_unknown_pane_in_the_tiled_grid_does_nothing() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut tab = create_new_tab(size, false);
+    tab.horizontal_split(
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    let unknown_pane_id = PaneId::Terminal(crate::TerminalId::new(999));
+    let geoms_before = tiled_pane_geoms(&tab);
+
+    tab.tiled_panes.move_pane(false, unknown_pane_id);
+    tab.tiled_panes.move_pane(true, unknown_pane_id);
+
+    assert_eq!(tiled_pane_geoms(&tab), geoms_before);
+}
+
+/// A tiled pane moved by id moves in the grid, even while floating panes are shown. The by-id
+/// entry points used to choose the layer by whether floating panes were visible rather than by
+/// where the pane is, so the move went to the floating grid, which did not have the pane and
+/// did nothing.
+#[test]
+pub fn moving_a_tiled_pane_by_id_while_floating_panes_are_shown_moves_it_in_the_grid() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = crate::ClientId::new(1);
+    let tiled_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
+    let mut tab = create_new_tab(size, false);
+    tab.horizontal_split(
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        None,
+        client_id,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.new_floating_pane(
+        PaneId::Terminal(crate::TerminalId::new(3)),
+        None,
+        None,
+        false,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(tab.floating_panes.panes_are_visible());
+    assert_eq!(
+        tab.tiled_panes.get_pane(tiled_pane_id).unwrap().y(),
+        0,
+        "the first pane starts at the top"
+    );
+
+    tab.move_pane_down(tiled_pane_id);
+
+    assert_eq!(
+        tab.tiled_panes.get_pane(tiled_pane_id).unwrap().y(),
+        10,
+        "the first pane moved to the bottom"
+    );
+}

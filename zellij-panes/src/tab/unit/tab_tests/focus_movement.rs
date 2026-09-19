@@ -518,3 +518,132 @@ pub fn move_active_pane_right_to_the_most_recently_used_position() {
         "Active pane Paneid"
     );
 }
+
+/// A floating pane moved to its next slot repaints what it was covering. The directional moves
+/// always marked the floating layout and forced a render; the "next slot" entry points moved
+/// the pane and left the tiled panes under it unmarked, so what it had covered stayed on screen.
+#[test]
+pub fn moving_a_floating_pane_to_its_next_slot_repaints_the_panes_under_it() {
+    let client_id = crate::ClientId::new(1);
+    let tiled_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
+    type NextSlotMove = fn(&mut Tab, crate::ClientId, PaneId);
+    let moves: [(&str, NextSlotMove); 5] = [
+        ("move_active_pane", |tab, client_id, _| {
+            tab.move_active_pane(client_id)
+        }),
+        ("move_active_pane_backwards", |tab, client_id, _| {
+            tab.move_active_pane_backwards(client_id)
+        }),
+        ("move_pane", |tab, _, pane_id| tab.move_pane(pane_id)),
+        ("move_pane_by_pane_id", |tab, _, pane_id| {
+            tab.move_pane_by_pane_id(pane_id, None)
+        }),
+        ("move_pane_backwards_by_pane_id", |tab, _, pane_id| {
+            tab.move_pane_backwards_by_pane_id(pane_id)
+        }),
+    ];
+    for (name, move_pane) in moves {
+        let mut tab = create_tab_with_two_floating_panes();
+        let mut output = zellij_terminal::output::Output::default();
+        tab.render(&mut output, Some(client_id)).unwrap();
+        assert!(
+            !tab.tiled_panes
+                .get_pane(tiled_pane_id)
+                .unwrap()
+                .should_render(),
+            "{name}: the tiled pane is painted before the move"
+        );
+        tab.swap_layouts.reset_floating_damage();
+
+        move_pane(&mut tab, client_id, floating_pane_id);
+
+        assert!(
+            tab.swap_layouts.is_floating_damaged(),
+            "{name}: the floating layout is marked as changed"
+        );
+        assert!(
+            tab.tiled_panes
+                .get_pane(tiled_pane_id)
+                .unwrap()
+                .should_render(),
+            "{name}: the tiled pane under the moved one is repainted"
+        );
+    }
+}
+
+/// A floating pane moves while a tiled pane is fullscreen underneath it. The gate against a
+/// tiled fullscreen belongs to the tiled layer; the "next slot" entry points applied it before
+/// choosing a layer and refused the move the directional ones allowed.
+#[test]
+pub fn a_floating_pane_moves_to_its_next_slot_while_a_tiled_pane_is_fullscreen() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = crate::ClientId::new(1);
+    let mut tab = create_new_tab(size, false);
+    tab.horizontal_split(
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        None,
+        client_id,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.toggle_active_pane_fullscreen(client_id);
+    for id in [3, 4] {
+        tab.new_floating_pane(
+            PaneId::Terminal(crate::TerminalId::new(id)),
+            None,
+            None,
+            false,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    assert!(
+        tab.tiled_panes.fullscreen_is_active() && tab.floating_panes.panes_are_visible(),
+        "the state under test: floating panes shown over a tiled fullscreen"
+    );
+    let active_pane_id = tab
+        .floating_panes
+        .active_pane_id(client_id)
+        .expect("a floating pane is focused");
+    let geom_before = floating_pane_geom(&tab, active_pane_id);
+
+    tab.move_active_pane(client_id);
+
+    assert_ne!(
+        floating_pane_geom(&tab, active_pane_id),
+        geom_before,
+        "the floating pane moved"
+    );
+}
+
+/// Moving the active pane of a client the tab has never seen moves nothing. It used to reach
+/// `TiledPanes::move_active_pane`, which unwrapped that client's active pane.
+#[test]
+pub fn moving_the_active_pane_of_an_unknown_client_is_a_no_op() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut tab = create_new_tab(size, false);
+    tab.horizontal_split(
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    let geoms_before = tiled_pane_geoms(&tab);
+
+    tab.move_active_pane(crate::ClientId::new(7));
+    tab.move_active_pane_backwards(crate::ClientId::new(7));
+
+    assert_eq!(tiled_pane_geoms(&tab), geoms_before, "nothing moved");
+}
