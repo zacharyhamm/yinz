@@ -1047,6 +1047,14 @@ impl Pane for PluginPane {
         }
         self.set_should_render(true);
     }
+    fn update_render_options(&mut self, styled_underlines: bool, _osc8_hyperlinks: bool) {
+        // links are always on for a plugin, see `get_or_create_grid`
+        self.styled_underlines = styled_underlines;
+        for grid in self.grids.values_mut() {
+            grid.update_render_options(styled_underlines, true);
+        }
+        self.set_should_render(true);
+    }
     fn update_rounded_corners(&mut self, rounded_corners: bool) {
         self.style.rounded_corners = rounded_corners;
         self.frame.clear();

@@ -81,7 +81,6 @@ use {
     zellij_types::input::layout::SwapTiledLayout, zellij_types::input::layout::TiledPaneLayout,
 };
 use {
-    zellij_types::input::options::Clipboard,
     zellij_types::input::options::HostNotificationProtocol,
     zellij_types::input::options::NestedSessionHandling,
     zellij_types::input::options::NotificationPosition,
@@ -592,6 +591,10 @@ pub(crate) struct Screen {
     sixel_image_store: Rc<RefCell<SixelImageStore>>,
     kitty_image_store: Rc<RefCell<KittyImageStore>>,
     kitty_host_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
+    /// What each client's probe answered, before the `support_kitty_graphics_protocol` option is
+    /// applied to it: `kitty_host_capabilities` holds the masked answer, and a reload that turns
+    /// the option back on has to recover the raw one.
+    kitty_probe_answers: HashMap<ClientId, bool>,
     sixel_host_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
     /// Whether each client's host terminal presents a frame atomically (DECSET 2026 synchronised
     /// output). A client absent from this map has not said, and is treated as not atomic - the
@@ -1292,6 +1295,7 @@ impl Screen {
             sixel_image_store: Rc::new(RefCell::new(SixelImageStore::default())),
             kitty_image_store: Rc::new(RefCell::new(KittyImageStore::default())),
             kitty_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
+            kitty_probe_answers: HashMap::new(),
             sixel_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
             synchronized_output_capabilities: Rc::new(RefCell::new(HashMap::new())),
             client_kitty_host_state: Rc::new(RefCell::new(HashMap::new())),
@@ -2200,6 +2204,7 @@ impl Screen {
         }
         self.connected_clients.borrow_mut().remove(&client_id);
         self.client_kitty_host_state.borrow_mut().remove(&client_id);
+        self.kitty_probe_answers.remove(&client_id);
         let removed_kitty_capability = self
             .kitty_host_capabilities
             .borrow_mut()
@@ -3634,41 +3639,70 @@ impl Screen {
         }
         let _ = self.log_and_report_session_state();
     }
+    /// Apply a reloaded configuration. `config` is destructured without `..`, so a field added
+    /// to `ScreenConfig` does not compile until this says what a reload does with it.
     pub fn reconfigure(
         &mut self,
-        new_keybinds: Keybinds,
-        new_default_mode: InputMode,
-        theme: Styling,
-        simplified_ui: bool,
-        default_shell: Option<PathBuf>,
-        default_cwd: Option<PathBuf>,
-        pane_frame_style: PaneFrameStyle,
-        copy_command: Option<String>,
-        copy_to_clipboard: Option<Clipboard>,
-        copy_on_select: bool,
-        auto_layout: bool,
-        rounded_corners: bool,
-        hide_session_name: bool,
-        stacked_resize: bool,
-        stacked_pane_list: bool,
-        default_editor: Option<PathBuf>,
-        advanced_mouse_actions: bool,
-        mouse_scroll_resize: bool,
-        mouse_hover_effects: bool,
-        visual_bell: bool,
-        focus_follows_mouse: bool,
-        mouse_click_through: bool,
-        context_menu_on_right_click: bool,
-        context_menu: ContextMenu,
-        osc133_command_selection: bool,
-        word_separators: String,
-        nested_session_handling: NestedSessionHandling,
-        dangerously_enable_paste_buffer_read: bool,
-        host_notification_protocol: HostNotificationProtocol,
-        agent_pane_min_size: Size,
+        config: ScreenConfig,
+        keybinds: Keybinds,
         client_id: ClientId,
     ) -> Result<()> {
+        let ScreenConfig {
+            theme,
+            host_theme_dark,
+            host_theme_light,
+            explicit_theme_hue,
+            rounded_corners,
+            hide_session_name,
+            pane_frame_style,
+            simplified_ui,
+            pane_animations,
+            styled_underlines,
+            osc8_hyperlinks,
+            default_mode,
+            default_shell,
+            default_cwd,
+            default_editor,
+            default_layout_name,
+            layout_dir,
+            auto_layout,
+            stacked_resize,
+            stacked_pane_list,
+            agent_pane_min_size,
+            agent_double_escape,
+            advanced_mouse_actions,
+            mouse_scroll_resize,
+            mouse_hover_effects,
+            focus_follows_mouse,
+            mouse_click_through,
+            context_menu_on_right_click,
+            context_menu,
+            osc133_command_selection,
+            word_separators,
+            copy_command,
+            copy_clipboard,
+            copy_on_select,
+            support_kitty_keyboard_protocol,
+            support_kitty_graphics_protocol,
+            host_notification_protocol,
+            nested_session_handling,
+            dangerously_enable_paste_buffer_read,
+            visual_bell,
+            session_is_mirrored,
+            session_serialization,
+            serialize_pane_viewport,
+            scrollback_lines_to_serialize,
+            notification_position,
+            notification_timeout_secs,
+        } = config;
+        let new_default_mode = default_mode.unwrap_or_default();
         let should_support_arrow_fonts = !simplified_ui;
+        let disable_kitty_keyboard_protocol = !support_kitty_keyboard_protocol;
+
+        self.set_pane_animations(pane_animations);
+        self.set_agent_double_escape(agent_double_escape);
+        self.host_theme_dark_styling = host_theme_dark;
+        self.host_theme_light_styling = host_theme_light;
         self.arrow_fonts = should_support_arrow_fonts;
 
         // global configuration
@@ -3679,7 +3713,7 @@ impl Screen {
         // `default_mode_info` is the fallback used by `change_mode` for
         // clients that don't yet have a per-client `mode_info` entry, so its
         // keybinds and base mode must be kept in sync with reconfigures.
-        self.default_mode_info.update_keybinds(new_keybinds.clone());
+        self.default_mode_info.update_keybinds(keybinds.clone());
         self.default_mode_info.update_default_mode(new_default_mode);
         self.default_shell = default_shell.clone().unwrap_or_else(get_default_shell);
         self.default_shell_action = default_shell.clone().map(|shell| {
@@ -3721,9 +3755,30 @@ impl Screen {
             *self.stacked_pane_list.borrow_mut() = stacked_pane_list;
         }
         self.agent_pane_min_size = agent_pane_min_size;
-        if let Some(copy_to_clipboard) = copy_to_clipboard {
-            self.copy_options.clipboard = copy_to_clipboard;
+        if let Some(copy_clipboard) = copy_clipboard {
+            self.copy_options.clipboard = copy_clipboard;
         }
+        // read when they are next needed: a layout dump, a toast, the next focus change
+        self.session_serialization = session_serialization;
+        self.serialize_pane_viewport = serialize_pane_viewport;
+        self.scrollback_lines_to_serialize = scrollback_lines_to_serialize;
+        self.session_is_mirrored = session_is_mirrored;
+        self.notification_position = notification_position;
+        self.notification_timeout_secs = notification_timeout_secs;
+        if self.default_layout_name != default_layout_name || self.layout_dir != layout_dir {
+            // the available layouts are listed lazily from these two
+            self.cached_layouts.clear();
+            self.cached_layout_errors.clear();
+        }
+        self.default_layout_name = default_layout_name;
+        self.layout_dir = layout_dir;
+        // read every frame by the output
+        self.styled_underlines = styled_underlines;
+        self.osc8_hyperlinks = osc8_hyperlinks;
+        self.explicitly_disable_kitty_keyboard_protocol = disable_kitty_keyboard_protocol;
+        let kitty_graphics_support_changed =
+            self.support_kitty_graphics_protocol != support_kitty_graphics_protocol;
+        self.support_kitty_graphics_protocol = support_kitty_graphics_protocol;
         for tab in self.tabs.values_mut() {
             tab.update_theme(theme);
             tab.update_rounded_corners(rounded_corners);
@@ -3740,7 +3795,13 @@ impl Screen {
             tab.update_mouse_click_through(mouse_click_through);
             tab.update_context_menu_on_right_click(context_menu_on_right_click);
             tab.update_selection_options(osc133_command_selection, self.word_separators.clone());
+            tab.update_session_is_mirrored(session_is_mirrored);
+            tab.update_render_options(styled_underlines, osc8_hyperlinks);
+            tab.update_kitty_keyboard_protocol_disabled(disable_kitty_keyboard_protocol);
             tab.sync_stacked_pane_list_mode();
+        }
+        if kitty_graphics_support_changed {
+            self.reapply_kitty_graphics_support();
         }
         // Clear hover state when disabled
         if !mouse_hover_effects {
@@ -3755,7 +3816,7 @@ impl Screen {
                 .mode_info
                 .entry(client_id)
                 .or_insert_with(|| self.default_mode_info.clone());
-            mode_info.update_keybinds(new_keybinds);
+            mode_info.update_keybinds(keybinds);
             mode_info.update_default_mode(new_default_mode);
             mode_info.update_theme(theme);
             mode_info.update_arrow_fonts(should_support_arrow_fonts);
@@ -3772,6 +3833,7 @@ impl Screen {
             tab.update_input_modes()?;
         }
         self.broadcast_nested_shortcuts();
+        self.reapply_theme_after_reconfigure(explicit_theme_hue);
         Ok(())
     }
     /// Apply a host-reported color-palette theme mode (CSI 2031 / DSR 997).

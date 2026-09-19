@@ -22,40 +22,14 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
     );
     capture.drain_plugin_updates();
 
+    let mut config = test_screen_config();
+    config.theme = Styling::default();
+    config.simplified_ui = true;
+    config.default_mode = Some(InputMode::Locked);
+    config.copy_on_select = false;
+    config.hide_session_name = true;
     screen
-        .reconfigure(
-            Keybinds::default(),
-            InputMode::Locked,
-            Styling::default(),
-            true,
-            None,
-            None, // default_cwd
-            PaneFrameStyle::None,
-            None,
-            None,
-            false,
-            true,
-            false,
-            true,
-            true,
-            false,
-            None,
-            true,
-            true,
-            true,
-            true,
-            false,
-            false,
-            false, // context_menu_on_right_click
-            ContextMenu::default(),
-            true,
-            DEFAULT_WORD_SEPARATORS.to_owned(),
-            NestedSessionHandling::default(),
-            false,
-            HostNotificationProtocol::default(),
-            Size { rows: 0, cols: 0 },
-            crate::ClientId::new(1),
-        )
+        .reconfigure(config, Keybinds::default(), crate::ClientId::new(1))
         .unwrap();
 
     let mode_infos: Vec<_> = capture

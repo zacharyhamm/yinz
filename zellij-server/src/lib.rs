@@ -139,15 +139,9 @@ impl Drop for ConnectionSlot {
 }
 use zellij_runtime::envs;
 use zellij_storage::data_access::DataAccess;
-use zellij_types::pane_size::Size;
 
+use zellij_config::screen_config::ScreenConfig;
 use zellij_types::input::cli_assets::CliAssets;
-use {
-    zellij_types::input::options::PaneFrameStyle,
-    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_COLUMNS,
-    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_ROWS,
-    zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
-};
 
 use crate::{
     os_input_output::ServerOsApi,
@@ -490,100 +484,12 @@ impl SessionMetaData {
                     ..Default::default()
                 })
             });
-            let host_theme_dark = new_config
-                .options
-                .theme_dark
-                .as_ref()
-                .and_then(|name| new_config.theme_config(Some(name)));
-            let host_theme_light = new_config
-                .options
-                .theme_light
-                .as_ref()
-                .and_then(|name| new_config.theme_config(Some(name)));
-            if new_config.options.theme_dark.is_some() && host_theme_dark.is_none() {
-                log::warn!(
-                    "theme_dark='{}' not found in themes; auto-theme switch disabled for dark.",
-                    new_config.options.theme_dark.as_deref().unwrap_or("?")
-                );
-            }
-            if new_config.options.theme_light.is_some() && host_theme_light.is_none() {
-                log::warn!(
-                    "theme_light='{}' not found in themes; auto-theme switch disabled for light.",
-                    new_config.options.theme_light.as_deref().unwrap_or("?")
-                );
-            }
-            let pane_frame_style = PaneFrameStyle::from_options(&new_config.options);
+            let screen_config = ScreenConfig::from_config(&new_config);
             self.senders
                 .send_to_screen(ScreenInstruction::Reconfigure {
-                    agent_double_escape: new_config.options.agent_double_escape.unwrap_or(false),
                     client_id,
                     keybinds: new_config.keybinds.clone(),
-                    default_mode: new_config.options.default_mode.unwrap_or_default(),
-                    theme: new_config
-                        .theme_config(new_config.options.theme.as_ref())
-                        .unwrap_or_else(|| default_palette().into()),
-                    host_theme_dark,
-                    host_theme_light,
-                    explicit_theme_hue: new_config.options.explicit_theme_hue,
-                    simplified_ui: new_config.options.simplified_ui.unwrap_or(false),
-                    default_shell: new_config.options.default_shell,
-                    default_cwd: new_config.options.default_cwd.clone(),
-                    pane_frame_style,
-                    copy_command: new_config.options.copy_command,
-                    copy_to_clipboard: new_config.options.copy_clipboard,
-                    copy_on_select: new_config.options.copy_on_select.unwrap_or(true),
-                    auto_layout: new_config.options.auto_layout.unwrap_or(true),
-                    rounded_corners: new_config.ui.pane_frames.rounded_corners,
-                    hide_session_name: new_config.ui.pane_frames.hide_session_name,
-                    stacked_resize: new_config.options.stacked_resize.unwrap_or(true),
-                    agent_pane_min_size: Size {
-                        cols: new_config
-                            .options
-                            .agent_pane_min_columns
-                            .unwrap_or(DEFAULT_AGENT_PANE_MIN_COLUMNS),
-                        rows: new_config
-                            .options
-                            .agent_pane_min_rows
-                            .unwrap_or(DEFAULT_AGENT_PANE_MIN_ROWS),
-                    },
-                    stacked_pane_list: new_config.options.stacked_pane_list.unwrap_or(true),
-                    default_editor: new_config.options.scrollback_editor.clone(),
-                    advanced_mouse_actions: new_config
-                        .options
-                        .advanced_mouse_actions
-                        .unwrap_or(true),
-                    mouse_scroll_resize: new_config.options.mouse_scroll_resize.unwrap_or(true),
-                    mouse_hover_effects: new_config.options.mouse_hover_effects.unwrap_or(true),
-                    visual_bell: new_config.options.visual_bell.unwrap_or(true),
-                    pane_animations: new_config.options.pane_animations.unwrap_or(true),
-                    focus_follows_mouse: new_config.options.focus_follows_mouse.unwrap_or(false),
-                    mouse_click_through: new_config.options.mouse_click_through.unwrap_or(false),
-                    context_menu_on_right_click: new_config
-                        .options
-                        .context_menu_on_right_click
-                        .unwrap_or(false),
-                    context_menu: new_config.context_menu.clone(),
-                    osc133_command_selection: new_config
-                        .options
-                        .osc133_command_selection
-                        .unwrap_or(true),
-                    dangerously_enable_paste_buffer_read: new_config
-                        .options
-                        .dangerously_enable_paste_buffer_read
-                        .unwrap_or(false),
-                    word_separators: new_config
-                        .options
-                        .word_separators
-                        .clone()
-                        .unwrap_or_else(|| DEFAULT_WORD_SEPARATORS.to_owned()),
-                    nested_session_handling: new_config
-                        .options
-                        .nested_session_handling
-                        .unwrap_or_default(),
-                    host_notification_protocol: new_config
-                        .options
-                        .host_notification_protocol
-                        .unwrap_or_default(),
+                    config: screen_config,
                 })
                 .context("reconfiguring the screen")
                 .non_fatal();

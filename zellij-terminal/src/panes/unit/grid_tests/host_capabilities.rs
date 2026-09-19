@@ -136,3 +136,28 @@ fn sixel_dcs_is_not_confused_with_xtgettcap() {
         "a sixel image must not produce an XTGETTCAP reply"
     );
 }
+
+#[test]
+fn disabling_the_kitty_keyboard_protocol_forgets_a_negotiation_and_re_enabling_waits_for_a_new_one()
+{
+    let mut grid = create_grid_with_content("");
+    let mut vte_parser = vte::Parser::new();
+    vte_parser.advance(&mut grid, b"\x1b[>1u");
+    assert!(grid.supports_kitty_keyboard_protocol);
+
+    grid.set_kitty_keyboard_protocol_disabled(true);
+    assert!(!grid.supports_kitty_keyboard_protocol);
+    vte_parser.advance(&mut grid, b"\x1b[>1u");
+    assert!(
+        !grid.supports_kitty_keyboard_protocol,
+        "an app cannot negotiate the protocol back while it is off"
+    );
+
+    grid.set_kitty_keyboard_protocol_disabled(false);
+    assert!(
+        !grid.supports_kitty_keyboard_protocol,
+        "turning it back on waits for the app to ask again"
+    );
+    vte_parser.advance(&mut grid, b"\x1b[>1u");
+    assert!(grid.supports_kitty_keyboard_protocol);
+}
