@@ -23,6 +23,7 @@ pub mod layout;
 pub mod permission;
 pub mod plugins;
 pub mod project_config;
+pub mod screen_config;
 pub mod theme;
 
 #[cfg(test)]

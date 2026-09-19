@@ -1,4 +1,4 @@
-use super::{screen_thread_main, CopyOptions, Screen, ScreenInstruction};
+use super::{screen_thread_main, Screen, ScreenInstruction};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::{PaneFactory, PaneId};
 use crate::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
@@ -20,6 +20,7 @@ use insta::assert_snapshot;
 use std::path::PathBuf;
 use zellij_cli::args::CliAction;
 use zellij_config::config::Config;
+use zellij_config::screen_config::ScreenConfig;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::data::WarpedPane;
 use zellij_types::diagnostics::ErrorContext;
@@ -45,10 +46,8 @@ use {
 use zellij_types::mouse::MouseEvent;
 use {
     zellij_types::input::options::HostNotificationProtocol,
-    zellij_types::input::options::NestedSessionHandling,
-    zellij_types::input::options::NotificationPosition, zellij_types::input::options::Options,
+    zellij_types::input::options::NestedSessionHandling, zellij_types::input::options::Options,
     zellij_types::input::options::PaneFrameStyle,
-    zellij_types::input::options::DEFAULT_NOTIFICATION_TIMEOUT_SECS,
     zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
 
@@ -406,6 +405,17 @@ fn create_new_screen_with_kitty_graphics(
 
 /// Like `create_new_screen_with_kitty_graphics`, but also hands back what the screen writes to
 /// each pane's stdin and what it sends to the server thread.
+/// The screen configuration the direct constructors use: the config defaults, with no pane
+/// frames (the snapshots are drawn without them), no configured shell, the stacked pane list
+/// off, and agent placement off - a test that wants it sets the floor.
+fn test_screen_config() -> ScreenConfig {
+    let mut screen_config = ScreenConfig::from_config(&Config::default());
+    screen_config.pane_frame_style = PaneFrameStyle::None;
+    screen_config.stacked_pane_list = false;
+    screen_config.agent_pane_min_size = Size { rows: 0, cols: 0 };
+    screen_config
+}
+
 fn create_new_screen_with_capture(
     size: Size,
     advanced_mouse_actions: bool,
@@ -428,65 +438,22 @@ fn create_new_screen_with_capture(
         session_name: Some("zellij-test".into()),
         ..Default::default()
     };
-    let draw_pane_frames = PaneFrameStyle::None;
-    let auto_layout = true;
-    let copy_options = CopyOptions::default();
     let default_layout = Box::new(Layout::default());
-    let default_layout_name = None;
-    let default_shell = PathBuf::from("my_default_shell");
-    let session_serialization = true;
-    let serialize_pane_viewport = false;
-    let scrollback_lines_to_serialize = None;
-    let layout_dir = None;
 
     let debug = false;
-    let styled_underlines = true;
-    let osc8_hyperlinks = true;
-    let arrow_fonts = true;
-    let explicitly_disable_kitty_keyboard_protocol = false;
-    let stacked_resize = true;
-    let visual_bell = true;
-    let mouse_scroll_resize = true;
+    let mut screen_config = test_screen_config();
+    screen_config.advanced_mouse_actions = advanced_mouse_actions;
+    screen_config.mouse_hover_effects = mouse_hover_effects;
+    screen_config.support_kitty_graphics_protocol = support_kitty_graphics_protocol;
+    screen_config.session_is_mirrored = session_is_mirrored;
     let screen = Screen::new(
         bus,
         &client_attributes,
         max_panes,
         mode_info,
-        draw_pane_frames,
-        auto_layout,
-        session_is_mirrored,
-        copy_options,
         debug,
         default_layout,
-        default_layout_name,
-        default_shell,
-        None, // default_shell_action
-        session_serialization,
-        serialize_pane_viewport,
-        scrollback_lines_to_serialize,
-        styled_underlines,
-        osc8_hyperlinks,
-        arrow_fonts,
-        layout_dir,
-        explicitly_disable_kitty_keyboard_protocol,
-        support_kitty_graphics_protocol,
-        stacked_resize,
-        false,
-        None,
-        advanced_mouse_actions,
-        true,
-        DEFAULT_WORD_SEPARATORS.to_owned(),
-        mouse_scroll_resize,
-        mouse_hover_effects,
-        visual_bell,
-        false, // focus_follows_mouse
-        false, // mouse_click_through
-        false, // context_menu_on_right_click
-        ContextMenu::default(),
-        NestedSessionHandling::default(),
-        NotificationPosition::default(),
-        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
-        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
+        screen_config,
     );
     (
         seed_first_client_size(screen, size),
@@ -1089,64 +1056,18 @@ fn create_new_screen_with_message_capture(size: Size) -> (Screen, CapturedClient
         session_name: Some("zellij-test".into()),
         ..Default::default()
     };
-    let draw_pane_frames = PaneFrameStyle::None;
-    let auto_layout = true;
-    let session_is_mirrored = true;
-    let copy_options = CopyOptions::default();
     let default_layout = Box::new(Layout::default());
-    let default_layout_name = None;
-    let default_shell = PathBuf::from("my_default_shell");
-    let session_serialization = true;
-    let serialize_pane_viewport = false;
-    let scrollback_lines_to_serialize = None;
-    let layout_dir = None;
     let debug = false;
-    let styled_underlines = true;
-    let osc8_hyperlinks = true;
-    let arrow_fonts = true;
-    let explicitly_disable_kitty_keyboard_protocol = false;
-    let stacked_resize = true;
-    let visual_bell = true;
+    let mut screen_config = test_screen_config();
+    screen_config.session_is_mirrored = true;
     let screen = Screen::new(
         bus,
         &client_attributes,
         max_panes,
         mode_info,
-        draw_pane_frames,
-        auto_layout,
-        session_is_mirrored,
-        copy_options,
         debug,
         default_layout,
-        default_layout_name,
-        default_shell,
-        None, // default_shell_action
-        session_serialization,
-        serialize_pane_viewport,
-        scrollback_lines_to_serialize,
-        styled_underlines,
-        osc8_hyperlinks,
-        arrow_fonts,
-        layout_dir,
-        explicitly_disable_kitty_keyboard_protocol,
-        true, // support_kitty_graphics_protocol
-        stacked_resize,
-        false,
-        None,
-        true,
-        true,
-        DEFAULT_WORD_SEPARATORS.to_owned(),
-        true,
-        true,
-        visual_bell,
-        false, // focus_follows_mouse
-        false, // mouse_click_through
-        false, // context_menu_on_right_click
-        ContextMenu::default(),
-        NestedSessionHandling::default(),
-        NotificationPosition::default(),
-        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
-        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
+        screen_config,
     );
     (seed_first_client_size(screen, size), messages)
 }
@@ -1236,64 +1157,18 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         session_name: Some("zellij-test".into()),
         ..Default::default()
     };
-    let draw_pane_frames = PaneFrameStyle::None;
-    let auto_layout = true;
-    let session_is_mirrored = true;
-    let copy_options = CopyOptions::default();
     let default_layout = Box::new(Layout::default());
-    let default_layout_name = None;
-    let default_shell = PathBuf::from("my_default_shell");
-    let session_serialization = true;
-    let serialize_pane_viewport = false;
-    let scrollback_lines_to_serialize = None;
-    let layout_dir = None;
     let debug = false;
-    let styled_underlines = true;
-    let osc8_hyperlinks = true;
-    let arrow_fonts = true;
-    let explicitly_disable_kitty_keyboard_protocol = false;
-    let stacked_resize = true;
-    let visual_bell = true;
+    let mut screen_config = test_screen_config();
+    screen_config.session_is_mirrored = true;
     let screen = Screen::new(
         bus,
         &client_attributes,
         max_panes,
         mode_info,
-        draw_pane_frames,
-        auto_layout,
-        session_is_mirrored,
-        copy_options,
         debug,
         default_layout,
-        default_layout_name,
-        default_shell,
-        None, // default_shell_action
-        session_serialization,
-        serialize_pane_viewport,
-        scrollback_lines_to_serialize,
-        styled_underlines,
-        osc8_hyperlinks,
-        arrow_fonts,
-        layout_dir,
-        explicitly_disable_kitty_keyboard_protocol,
-        true, // support_kitty_graphics_protocol
-        stacked_resize,
-        false,
-        None,
-        true,
-        true,
-        DEFAULT_WORD_SEPARATORS.to_owned(),
-        true,
-        true,
-        visual_bell,
-        false, // focus_follows_mouse
-        false, // mouse_click_through
-        false, // context_menu_on_right_click
-        ContextMenu::default(),
-        NestedSessionHandling::default(),
-        NotificationPosition::default(),
-        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
-        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
+        screen_config,
     );
     (
         seed_first_client_size(screen, size),
@@ -1402,49 +1277,17 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         session_name: Some("zellij-test".into()),
         ..Default::default()
     };
-    let copy_options = CopyOptions::default();
     let default_layout = Box::new(Layout::default());
-    let default_shell = PathBuf::from("my_default_shell");
+    let mut screen_config = test_screen_config();
+    screen_config.session_is_mirrored = true;
     let screen = Screen::new(
         bus,
         &client_attributes,
         None,
         mode_info,
-        PaneFrameStyle::None,
-        true,
-        true,
-        copy_options,
         false,
         default_layout,
-        None,
-        default_shell,
-        None, // default_shell_action
-        true,
-        false,
-        None,
-        true,
-        true,
-        true,
-        None,
-        false,
-        true,
-        true,
-        false,
-        None,
-        true,
-        true,
-        DEFAULT_WORD_SEPARATORS.to_owned(),
-        true,
-        true,
-        true,
-        false,
-        false,
-        false, // context_menu_on_right_click
-        ContextMenu::default(),
-        NestedSessionHandling::default(),
-        NotificationPosition::default(),
-        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
-        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
+        screen_config,
     );
     (
         seed_first_client_size(screen, size),
@@ -1536,46 +1379,15 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         session_name: Some("zellij-test".into()),
         ..Default::default()
     };
+    let screen_config = test_screen_config();
     let screen = Screen::new(
         bus,
         &client_attributes,
-        None, // max_panes
-        mode_info,
-        PaneFrameStyle::None,
-        true,  // auto_layout
-        false, // session_is_mirrored
-        CopyOptions::default(),
-        false, // debug
-        Box::default(),
-        None, // default_layout_name
-        PathBuf::from("my_default_shell"),
-        None,  // default_shell_action
-        true,  // session_serialization
-        false, // serialize_pane_viewport
-        None,  // scrollback_lines_to_serialize
-        true,  // styled_underlines
-        true,  // osc8_hyperlinks
-        true,  // arrow_fonts
-        None,  // layout_dir
-        false, // explicitly_disable_kitty_keyboard_protocol
-        true,  // support_kitty_graphics_protocol
-        true,  // stacked_resize
-        false,
         None,
-        true, // advanced_mouse_actions
-        true,
-        DEFAULT_WORD_SEPARATORS.to_owned(),
-        true,  // mouse_scroll_resize
-        true,  // mouse_hover_effects
-        true,  // visual_bell
-        false, // focus_follows_mouse
-        false, // mouse_click_through
-        false, // context_menu_on_right_click
-        ContextMenu::default(),
-        NestedSessionHandling::default(),
-        NotificationPosition::default(),
-        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
-        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
+        mode_info,
+        false,
+        Box::default(),
+        screen_config,
     );
     seed_first_client_size(screen, size)
 }

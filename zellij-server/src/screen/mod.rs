@@ -49,6 +49,7 @@ use zellij_types::units::ElapsedSeconds;
 use crate::route::NotificationEnd;
 
 use log::{debug, warn};
+use zellij_config::screen_config::ScreenConfig;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::input::context_menu::ContextMenu;
 use zellij_types::input::hooks::HookPoint;
@@ -1199,42 +1200,81 @@ impl Screen {
         client_attributes: &ClientAttributes,
         max_panes: Option<usize>,
         mode_info: ModeInfo,
-        pane_frame_style: PaneFrameStyle,
-        auto_layout: bool,
-        session_is_mirrored: bool,
-        copy_options: CopyOptions,
         debug: bool,
         default_layout: Box<Layout>,
-        default_layout_name: Option<String>,
-        default_shell: PathBuf,
-        default_shell_action: Option<TerminalAction>,
-        session_serialization: bool,
-        serialize_pane_viewport: bool,
-        scrollback_lines_to_serialize: Option<usize>,
-        styled_underlines: bool,
-        osc8_hyperlinks: bool,
-        arrow_fonts: bool,
-        layout_dir: Option<PathBuf>,
-        explicitly_disable_kitty_keyboard_protocol: bool,
-        support_kitty_graphics_protocol: bool,
-        stacked_resize: bool,
-        stacked_pane_list: bool,
-        default_editor: Option<PathBuf>,
-        advanced_mouse_actions: bool,
-        osc133_command_selection: bool,
-        word_separators: String,
-        mouse_scroll_resize: bool,
-        mouse_hover_effects: bool,
-        visual_bell: bool,
-        focus_follows_mouse: bool,
-        mouse_click_through: bool,
-        context_menu_on_right_click: bool,
-        context_menu: ContextMenu,
-        nested_session_handling: NestedSessionHandling,
-        notification_position: NotificationPosition,
-        notification_timeout_secs: ElapsedSeconds,
-        agent_pane_min_size: Size,
+        config: ScreenConfig,
     ) -> Self {
+        // No `..`: a field added to `ScreenConfig` has to say here what startup does with it.
+        let ScreenConfig {
+            // Painted from `client_attributes.style`, which the first client resolved against its
+            // command line as well as the config; see the field's doc. Same for the two chrome
+            // flags.
+            theme: _,
+            rounded_corners: _,
+            hide_session_name: _,
+            // Applied by the screen thread once the screen exists.
+            explicit_theme_hue: _,
+            // Went into `mode_info`.
+            default_mode: _,
+            host_theme_dark,
+            host_theme_light,
+            pane_frame_style,
+            simplified_ui,
+            pane_animations,
+            styled_underlines,
+            osc8_hyperlinks,
+            default_shell,
+            default_cwd,
+            default_editor,
+            default_layout_name,
+            layout_dir,
+            auto_layout,
+            stacked_resize,
+            stacked_pane_list,
+            agent_pane_min_size,
+            agent_double_escape,
+            advanced_mouse_actions,
+            mouse_scroll_resize,
+            mouse_hover_effects,
+            focus_follows_mouse,
+            mouse_click_through,
+            context_menu_on_right_click,
+            context_menu,
+            osc133_command_selection,
+            word_separators,
+            copy_command,
+            copy_clipboard,
+            copy_on_select,
+            support_kitty_keyboard_protocol,
+            support_kitty_graphics_protocol,
+            host_notification_protocol,
+            nested_session_handling,
+            dangerously_enable_paste_buffer_read,
+            visual_bell,
+            session_is_mirrored,
+            session_serialization,
+            serialize_pane_viewport,
+            scrollback_lines_to_serialize,
+            notification_position,
+            notification_timeout_secs,
+        } = config;
+        let arrow_fonts = !simplified_ui;
+        let explicitly_disable_kitty_keyboard_protocol = !support_kitty_keyboard_protocol;
+        let default_shell_action = default_shell.clone().map(|shell| {
+            TerminalAction::RunCommand(RunCommand {
+                command: shell,
+                cwd: default_cwd,
+                use_terminal_title: true,
+                ..Default::default()
+            })
+        });
+        let default_shell = resolve_default_shell(default_shell);
+        let default_editor = default_editor.or_else(get_default_editor);
+        let copy_options = CopyOptions::new(
+            copy_command,
+            copy_clipboard.unwrap_or_default(),
+            copy_on_select,
+        );
         let session_name = mode_info.session_name.clone().unwrap_or_default();
         let session_info = SessionInfo::new(session_name.clone());
         let mut peer_sessions_cache = BTreeMap::new();
@@ -1306,7 +1346,7 @@ impl Screen {
             default_shell,
             default_shell_action,
             session_serialization,
-            agent_double_escape: false,
+            agent_double_escape,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             pending_warps: HashMap::new(),
@@ -1330,7 +1370,7 @@ impl Screen {
             mouse_scroll_resize,
             mouse_hover_effects,
             visual_bell,
-            pane_animations: true,
+            pane_animations,
             focus_follows_mouse,
             mouse_click_through,
             context_menu_on_right_click,
@@ -1353,7 +1393,7 @@ impl Screen {
             pending_clipboard_forwards: HashMap::new(),
             clipboard_forward_queue: VecDeque::new(),
             clipboard_forward_in_flight_token: None,
-            paste_buffer_read_enabled: false,
+            paste_buffer_read_enabled: dangerously_enable_paste_buffer_read,
             nested_guest_tracker: NestedGuestTracker::default(),
             nested_ancestry: vec![],
             nested_via_client_id: None,
@@ -1370,15 +1410,15 @@ impl Screen {
             last_host_reported_theme_mode: None,
             theme_policy: ThemePolicy::Auto,
             configured_explicit_theme_hue: None,
-            host_theme_dark_styling: None,
-            host_theme_light_styling: None,
+            host_theme_dark_styling: host_theme_dark,
+            host_theme_light_styling: host_theme_light,
             nested_session_handling,
             pane_output_activity: HashMap::new(),
             destroyed_panes: HashSet::new(),
             pane_output_subscriptions: HashMap::new(),
             client_host_focused: HashMap::new(),
             client_notification_protocols: HashMap::new(),
-            host_notification_protocol: HostNotificationProtocol::default(),
+            host_notification_protocol,
             client_host_terminal_env: HashMap::new(),
             #[cfg(test)]
             pinned_now: None,
@@ -4883,6 +4923,16 @@ pub(crate) fn agent_hook_edges(
         edges.push(HookPoint::AgentIdle);
     }
     edges
+}
+/// The shell a pane gets when the config names none. Pinned under test so that snapshots do
+/// not depend on the machine.
+#[cfg(test)]
+fn resolve_default_shell(configured: Option<PathBuf>) -> PathBuf {
+    configured.unwrap_or_else(|| PathBuf::from("/bin/sh"))
+}
+#[cfg(not(test))]
+fn resolve_default_shell(configured: Option<PathBuf>) -> PathBuf {
+    configured.unwrap_or_else(get_default_shell)
 }
 
 #[cfg(not(test))]
