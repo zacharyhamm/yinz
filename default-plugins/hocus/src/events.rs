@@ -2349,6 +2349,10 @@ impl State {
         // (os error 2)", naming nothing. For a Slack tool the model never sees
         // the argv, so that message is undiagnosable from inside the
         // conversation: say which binary, and which setting names it.
+        let swamp_missing = tools::SWAMP_TOOLS.contains(&head.name.as_str())
+            && (exit_code == Some(127)
+                || (exit_code == Some(2)
+                    && String::from_utf8_lossy(stderr).contains("os error 2")));
         let result = match self
             .slack_exec_hint(exit_code, stderr)
             .or_else(|| self.project_exec_hint(exit_code, stderr))
@@ -2366,6 +2370,9 @@ impl State {
             },
             None => {
                 let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));
+                if swamp_missing {
+                    result.push_str("\nSwamp could not be run: swamp is not installed or not on the server PATH.");
+                }
                 for (label, bytes) in [("stdout", stdout), ("stderr", stderr)] {
                     let text = String::from_utf8_lossy(bytes);
                     if !text.trim().is_empty() {
