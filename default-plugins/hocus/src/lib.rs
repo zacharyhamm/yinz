@@ -1318,6 +1318,7 @@ impl ZellijPlugin for State {
                 self.push_strip(false);
                 return false;
             },
+            wire::AGENT_PREDECESSORS => return self.on_agent_predecessors(&pipe_message),
             wire::AGENT_SEARCH => return self.on_agent_search(&pipe_message),
             wire::AGENT_RESUME => {
                 // `r` then `y` in the agent list, on a row in the archive. Nothing to redraw

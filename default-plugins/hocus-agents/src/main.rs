@@ -304,6 +304,8 @@ struct State {
     search_revisions: BTreeMap<String, u64>,
     // Consumed on the first render that can reveal the hit; refreshes retain manual scrolling.
     pending_history_revision: Option<u64>,
+    predecessors: Option<Predecessors>,
+    predecessor_request: u64,
     search_editing: bool,
     search_pending: bool,
     search_query: String,
@@ -511,6 +513,20 @@ impl ZellijPlugin for State {
             return self
                 .take_ring_stop(pipe_message.args.get(wire::PANEL_STOP).map(String::as_str));
         }
+        if pipe_message.name == wire::AGENT_PREDECESSORS_RESULT {
+            let Some(result) = pipe_message
+                .payload
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<wire::PredecessorsResult>(json).ok())
+            else {
+                return false;
+            };
+            let changed = self.apply_predecessors(result);
+            if changed {
+                self.send_selection();
+            }
+            return changed;
+        }
         if pipe_message.name == wire::AGENT_SEARCH_RESULT {
             let Some(result) = pipe_message
                 .payload
@@ -641,6 +657,8 @@ impl ZellijPlugin for State {
         }
         let label = if self.search_editing {
             format!("Search: {}  [Enter apply  Esc cancel]", self.search_query)
+        } else if let Some(previous) = &self.predecessors {
+            format!("Previous agents: {} — c clear · p previous", previous.title)
         } else if self.search_base.is_some() {
             let suffix = self
                 .search_error
@@ -695,6 +713,18 @@ impl ZellijPlugin for State {
             );
             for cell in &self.tab_cells {
                 print_text_with_coordinates(cell.styled(), cell.x, 0, Some(cell.width), None);
+            }
+            if self.surface == Surface::Agents {
+                let x = self.tab_cells.last().map_or(0, |cell| cell.x + cell.width);
+                if x < cols {
+                    print_text_with_coordinates(
+                        Text::new(" p previous"),
+                        x,
+                        0,
+                        Some(cols - x),
+                        None,
+                    );
+                }
             }
         } else {
             print_text_with_coordinates(Text::new(label), 0, 0, Some(cols), None);
@@ -1046,6 +1076,43 @@ const MIN_LIST_ROWS: usize = 3;
 /// placeholder.
 const MIN_HISTORY_ROWS: usize = 2;
 
+struct Predecessors {
+    base: Strip,
+    pane_id: u32,
+    title: String,
+    result: Option<wire::PredecessorsResult>,
+}
+
+impl Predecessors {
+    fn rows(&self) -> Vec<StripRow> {
+        let live_end = self
+            .base
+            .rows
+            .iter()
+            .rposition(|row| matches!(row, StripRow::Agent { .. }))
+            .map_or(0, |index| index + 1);
+        let mut rows = self.base.rows[..live_end].to_vec();
+        let label = match &self.result {
+            None => "Loading predecessors…",
+            Some(result) if !result.diagnostic.is_empty() => &result.diagnostic,
+            Some(result) if result.runs.is_empty() => "No predecessors recorded",
+            Some(_) => "Previous agents",
+        };
+        rows.push(StripRow::Project(label.to_owned()));
+        if let Some(result) = &self.result {
+            rows.extend(result.runs.iter().map(|run| StripRow::Run {
+                run_id: run.id.clone(),
+                kind: run.kind.clone(),
+                title: run.title.clone(),
+                worktree: agents::worktree_cell(run),
+                started_at_ms: Some(run.started_at_ms),
+                continuation: run.previous_run_id.is_some(),
+            }));
+        }
+        rows
+    }
+}
+
 impl State {
     fn switch_surface(&mut self, surface: Surface) {
         if self.surface == surface {
@@ -1237,6 +1304,10 @@ impl State {
         }
         if key.has_no_modifiers() {
             match key.bare_key {
+                BareKey::Char('p') => return self.begin_predecessors(),
+                BareKey::Char('c') if self.predecessors.is_some() => {
+                    return self.clear_predecessors()
+                },
                 BareKey::Char('/') => return self.begin_search(),
                 BareKey::Char('c') if self.search_base.is_some() => return self.clear_search(),
                 // `j`/`k` follow the focus - the vim spelling of whatever the focused half
@@ -1311,6 +1382,80 @@ impl State {
         }
     }
 
+    fn begin_predecessors(&mut self) -> bool {
+        let Some(StripRow::Agent { pane_id, text, .. }) = self.rows.get(self.selected) else {
+            return false;
+        };
+        let (pane_id, title) = (*pane_id, text.clone());
+        self.clear_search();
+        self.clear_predecessors();
+        self.predecessor_request = self.predecessor_request.wrapping_add(1);
+        let previous = Predecessors {
+            base: Strip {
+                rows: self.rows.clone(),
+                focused: self.focused,
+                summaries: self.summaries.clone(),
+            },
+            pane_id,
+            title,
+            result: None,
+        };
+        self.rows = previous.rows();
+        self.predecessors = Some(previous);
+        self.selected = position_of(&self.rows, pane_id).unwrap_or(0);
+        self.generation += 1;
+        let request = wire::PredecessorsRequest {
+            request_id: self.predecessor_request.to_string(),
+            pane_id,
+        };
+        if let Ok(payload) = serde_json::to_string(&request) {
+            pipe_message_to_plugin(
+                MessageToPlugin::new(wire::AGENT_PREDECESSORS).with_payload(payload),
+            );
+        }
+        true
+    }
+
+    fn apply_predecessors(&mut self, result: wire::PredecessorsResult) -> bool {
+        let selection = self.selection_key();
+        let Some(previous) = &mut self.predecessors else {
+            return false;
+        };
+        if result.request_id != self.predecessor_request.to_string()
+            || result.pane_id != previous.pane_id
+            || previous.result.is_some()
+        {
+            return false;
+        }
+        if let Some(anchor) = &result.anchor {
+            previous.title = anchor.title.clone();
+        }
+        previous.result = Some(result);
+        self.rows = previous.rows();
+        self.selected = self
+            .rows
+            .iter()
+            .position(|row| matches!(row, StripRow::Run { .. }))
+            .or_else(|| {
+                selection
+                    .as_deref()
+                    .and_then(|key| position_of_key(&self.rows, key))
+            })
+            .or_else(|| self.rows.iter().position(selectable))
+            .unwrap_or(0);
+        self.generation += 1;
+        self.follow_selection(selection);
+        true
+    }
+
+    fn clear_predecessors(&mut self) -> bool {
+        let Some(previous) = self.predecessors.take() else {
+            return false;
+        };
+        self.set_rows(previous.base);
+        true
+    }
+
     fn apply_search_result(&mut self, result: wire::SearchResult) -> bool {
         if self.search_base.is_none()
             || !self.search_pending
@@ -1363,6 +1508,7 @@ impl State {
     }
 
     fn begin_search(&mut self) -> bool {
+        self.clear_predecessors();
         self.search_request = self.search_request.wrapping_add(1);
         self.search_pending = false;
         if self.search_base.is_none() {
@@ -1746,7 +1892,12 @@ impl State {
     /// anywhere else - a shell, an editor - moves nothing and only dims what is
     /// selected, because the answer to "which agent" has not changed, only
     /// whether you are in it.
-    fn set_rows(&mut self, strip: Strip) -> bool {
+    fn set_rows(&mut self, mut strip: Strip) -> bool {
+        let filtered = self.predecessors.is_some();
+        if let Some(previous) = &mut self.predecessors {
+            previous.base = strip.clone();
+            strip.rows = previous.rows();
+        }
         let Strip {
             rows,
             focused,
@@ -1759,6 +1910,7 @@ impl State {
             return self.live() != was_live;
         }
         let walked_to = focused
+            .filter(|_| !filtered)
             .filter(|_| focused != self.focused)
             .and_then(|pane_id| position_of(&rows, pane_id));
         let was = self.rows.get(self.selected).and_then(row_key);
@@ -2871,6 +3023,136 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    fn predecessor_reply(state: &State, ids: &[&str]) -> wire::PredecessorsResult {
+        let mut anchor = a_run().header();
+        anchor.id = "anchor".into();
+        wire::PredecessorsResult {
+            request_id: state.predecessor_request.to_string(),
+            pane_id: state.predecessors.as_ref().unwrap().pane_id,
+            anchor: Some(anchor),
+            runs: ids
+                .iter()
+                .map(|id| {
+                    let mut header = a_run().header();
+                    header.id = (*id).into();
+                    header
+                })
+                .collect(),
+            diagnostic: String::new(),
+        }
+    }
+
+    #[test]
+    fn predecessors_select_history_keep_live_updates_and_restore_latest_archive() {
+        let mut state = State::default();
+        let mut rows = strip();
+        rows.extend(archive());
+        state.set_rows(unfocused(rows));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('p'))));
+        let reply = predecessor_reply(&state, &["nearest", "oldest"]);
+        assert!(state.apply_predecessors(reply));
+        assert_eq!(state.selected_run_id().as_deref(), Some("nearest"));
+        assert_eq!(state.selected_revision(), None);
+        assert!(!state
+            .rows
+            .iter()
+            .any(|row| matches!(row, StripRow::MoreRuns)));
+        let mut run = a_run();
+        run.id = "nearest".into();
+        assert!(state.pipe(PipeMessage::new(
+            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+            wire::AGENT_RUN_DETAIL,
+            &Some(serde_json::to_string(&run).unwrap()),
+            &None,
+            false
+        )));
+        assert_eq!(state.run.as_ref().unwrap().id, "nearest");
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('r'))));
+        assert_eq!(state.confirming_resume.as_deref(), Some("run:nearest"));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('n'))));
+        assert!(state.step_selection(Motion::Down));
+        assert_eq!(state.selected_run_id().as_deref(), Some("oldest"));
+        let mut incoming = with_summary(strip(), 7, "new summary", false);
+        incoming.rows[2] = agent(3, "new run after /clear");
+        incoming.rows.push(agent(99, "new live agent"));
+        incoming.rows.extend(archive());
+        incoming.focused = Some(99);
+        state.set_rows(incoming.clone());
+        assert_eq!(state.selected_run_id().as_deref(), Some("oldest"));
+        assert!(position_of(&state.rows, 99).is_some());
+        assert_eq!(state.summaries, incoming.summaries);
+        assert_eq!(
+            state
+                .predecessors
+                .as_ref()
+                .unwrap()
+                .result
+                .as_ref()
+                .unwrap()
+                .anchor
+                .as_ref()
+                .unwrap()
+                .id,
+            "anchor"
+        );
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('c'))));
+        assert_eq!(state.rows, incoming.rows);
+        assert_eq!(state.summaries, incoming.summaries);
+    }
+
+    #[test]
+    fn predecessors_replacement_clear_search_and_stale_replies() {
+        for action in ["replace", "clear", "search"] {
+            let mut state = State::default();
+            state.set_rows(unfocused(strip()));
+            state.begin_predecessors();
+            let stale = predecessor_reply(&state, &["stale"]);
+            match action {
+                "replace" => {
+                    state.selected = position_of(&state.rows, 7).unwrap();
+                    assert!(state.begin_predecessors());
+                },
+                "clear" => {
+                    state.clear_predecessors();
+                },
+                _ => {
+                    state.begin_search();
+                },
+            }
+            assert!(!state.apply_predecessors(stale));
+            if action == "replace" {
+                let reply = predecessor_reply(&state, &["replacement"]);
+                assert!(state.apply_predecessors(reply));
+                assert_eq!(state.selected_run_id().as_deref(), Some("replacement"));
+            }
+        }
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        let stale = search_reply(&mut state, &["stale"]);
+        assert!(state.begin_predecessors());
+        assert!(state.search_base.is_none());
+        assert!(!state.apply_search_result(stale));
+        let empty = predecessor_reply(&state, &[]);
+        assert!(state.apply_predecessors(empty.clone()));
+        assert!(!state.apply_predecessors(empty));
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert!(
+            state.predecessors.is_some(),
+            "Escape dismisses without clearing"
+        );
+        assert!(state.rows.iter().any(
+            |row| matches!(row, StripRow::Project(label) if label == "No predecessors recorded")
+        ));
+        state.begin_predecessors();
+        let mut partial = predecessor_reply(&state, &["reachable"]);
+        partial.diagnostic = "Incomplete chain: missing run lost".into();
+        assert!(state.apply_predecessors(partial));
+        assert_eq!(state.selected_run_id().as_deref(), Some("reachable"));
+        assert!(state.rows.iter().any(
+            |row| matches!(row, StripRow::Project(label) if label.contains("Incomplete chain"))
+        ));
     }
 
     #[test]

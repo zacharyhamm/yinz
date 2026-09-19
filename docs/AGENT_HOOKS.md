@@ -611,6 +611,16 @@ at a time; select `load older runs…` and press Enter for the next page. Select
 that run's full history into the bottom half; a summary is the newest row of that timeline
 rather than a block above it, and the rule names the run and says how far it is wound back.
 
+Press `p` on an active agent to replace the archive with its recorded predecessors, nearest
+first, and select the immediate predecessor. Live agents stay visible. The heading reads
+`Previous agents: <agent title> — c clear`. Press `c` to restore the current archive.
+Press `p` on another active agent to replace the filter. The chain stays anchored to the chosen run across `/clear`.
+Only recorded `previous_run_id` links count, including runs outside the loaded archive page.
+An empty chain says `No predecessors recorded`. Missing records, cycles, and store errors show
+an incomplete-chain diagnostic alongside any reachable predecessors. History, summaries, and
+resume confirmation work as usual. Starting text search clears this filter. Starting this
+filter clears text search. Escape keeps its normal panel behavior.
+
 Two rows are pinned under that rule, above the timeline, and do not scroll with it: the exact
 date and time the session started, and its **whole** session id. Both are things the timeline
 cannot say. The rule's `short_run_id` keeps eight characters of a uuid, which tells one of a

@@ -3210,6 +3210,64 @@ impl State {
         false
     }
 
+    pub(crate) fn on_agent_predecessors(&mut self, message: &PipeMessage) -> bool {
+        let PipeSource::Plugin(plugin_id) = message.source else {
+            return false;
+        };
+        if self
+            .plugin_instances
+            .get(&plugin_id)
+            .is_none_or(|plugin| plugin.location != "zellij:hocus-agents")
+        {
+            return false;
+        }
+        let Some(request) = message
+            .payload
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<wire::PredecessorsRequest>(json).ok())
+        else {
+            return false;
+        };
+        let result = self.agent_predecessors(request);
+        if let Ok(payload) = serde_json::to_string(&result) {
+            pipe_message_to_plugin(
+                MessageToPlugin::new(wire::AGENT_PREDECESSORS_RESULT)
+                    .with_destination_plugin_id(plugin_id)
+                    .with_payload(payload),
+            );
+        }
+        false
+    }
+
+    pub(crate) fn agent_predecessors(
+        &self,
+        request: wire::PredecessorsRequest,
+    ) -> wire::PredecessorsResult {
+        let mut result = wire::PredecessorsResult {
+            request_id: request.request_id,
+            pane_id: request.pane_id,
+            anchor: self.active_runs.get(&request.pane_id).cloned(),
+            ..Default::default()
+        };
+        if let Some(anchor) = &result.anchor {
+            (result.runs, result.diagnostic) = run_history::predecessors(anchor, |id| {
+                if let Some(header) = self
+                    .active_runs
+                    .values()
+                    .chain(self.archived_runs.iter())
+                    .find(|run| run.id == id)
+                {
+                    Ok(Some(header.clone()))
+                } else {
+                    run_history::run_header(&self.store(), id)
+                }
+            });
+        } else {
+            result.diagnostic = "No recorded active run for this agent".to_owned();
+        }
+        result
+    }
+
     pub(crate) fn on_agent_search(&mut self, message: &PipeMessage) -> bool {
         let Some(plugin_id) = (match message.source {
             PipeSource::Plugin(id) => Some(id),
