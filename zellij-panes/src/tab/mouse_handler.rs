@@ -712,23 +712,10 @@ impl MouseHandler {
             ResizeDragTarget::Tiled
         };
 
-        let start_geom = match target {
-            ResizeDragTarget::Floating => tab
-                .floating_panes
-                .get_pane(pane_id)
-                .map(|p| p.position_and_size())
-                .with_context(err_context)?,
-            ResizeDragTarget::Overlay => tab
-                .overlay_panes
-                .get_pane(pane_id)
-                .map(|p| p.position_and_size())
-                .with_context(err_context)?,
-            ResizeDragTarget::Tiled => tab
-                .tiled_panes
-                .get_pane(pane_id)
-                .map(|p| p.position_and_size())
-                .with_context(err_context)?,
-        };
+        let start_geom = tab
+            .rendered_pane(pane_id)
+            .map(|pane| pane.position_and_size())
+            .with_context(err_context)?;
 
         tab.pane_being_resized_with_mouse = Some(PaneResizeState {
             pane_id,
