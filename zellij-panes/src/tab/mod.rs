@@ -4486,14 +4486,18 @@ impl Tab {
             .map(|pane| pane.is_scrolled())
             .unwrap_or(false)
     }
+    /// This tab's pane with `pane_id`, wherever it is standing: tiled, floating, an overlay,
+    /// or suppressed under something else.
+    ///
+    /// Suppressed included on purpose - a pane set aside is still a pane, and a mark aimed at
+    /// it must land so that it is right when the pane comes back. A pane id lives in exactly
+    /// one layer, so the order the layers are asked in does not matter. For a pane that has
+    /// to be on screen, see `rendered_pane`.
     pub fn get_pane_with_id(&self, pane_id: PaneId) -> Option<&dyn Pane> {
-        self.floating_panes
-            .get_pane(pane_id)
-            .map(Box::as_ref)
-            .or_else(|| self.overlay_panes.get_pane(pane_id).map(Box::as_ref))
-            .or_else(|| self.tiled_panes.get_pane(pane_id).map(Box::as_ref))
+        self.rendered_pane(pane_id)
             .or_else(|| self.suppressed_panes.get(&pane_id).map(|p| &*p.pane))
     }
+    /// As `get_pane_with_id`, for changing the pane.
     pub fn get_pane_with_id_mut(&mut self, pane_id: PaneId) -> Option<&mut Box<dyn Pane>> {
         self.floating_panes
             .get_pane_mut(pane_id)
@@ -4505,14 +4509,26 @@ impl Tab {
                     .map(|suppressed| &mut suppressed.pane)
             })
     }
+    /// The pane with `pane_id` if it is on screen - tiled, floating or an overlay - and `None`
+    /// for one suppressed under something else. What a frame, a cursor or a mouse gesture asks
+    /// for: a pane nobody can see has none of those.
+    pub fn rendered_pane(&self, pane_id: PaneId) -> Option<&dyn Pane> {
+        self.floating_panes
+            .get_pane(pane_id)
+            .map(Box::as_ref)
+            .or_else(|| self.overlay_panes.get_pane(pane_id).map(Box::as_ref))
+            .or_else(|| self.tiled_panes.get_pane(pane_id).map(Box::as_ref))
+    }
+    /// As `rendered_pane`, for changing the pane.
+    pub fn rendered_pane_mut(&mut self, pane_id: PaneId) -> Option<&mut Box<dyn Pane>> {
+        self.floating_panes
+            .get_pane_mut(pane_id)
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
+            .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
+    }
     pub fn get_active_pane_mut(&mut self, client_id: ClientId) -> Option<&mut Box<dyn Pane>> {
         self.get_active_pane_id(client_id)
-            .and_then(|active_pane_id| {
-                self.floating_panes
-                    .get_pane_mut(active_pane_id)
-                    .or_else(|| self.overlay_panes.get_pane_mut(active_pane_id))
-                    .or_else(|| self.tiled_panes.get_pane_mut(active_pane_id))
-            })
+            .and_then(|active_pane_id| self.rendered_pane_mut(active_pane_id))
     }
     pub fn get_active_pane_or_floating_pane_mut(
         &mut self,
@@ -4675,13 +4691,7 @@ impl Tab {
         fg: Option<String>,
         bg: Option<String>,
     ) -> Result<()> {
-        let pane = self
-            .floating_panes
-            .get_mut(&pane_id)
-            .or_else(|| self.overlay_panes.get_mut(&pane_id))
-            .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
-            .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane));
-        if let Some(pane) = pane {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.set_pane_default_colors(fg, bg);
         }
         Ok(())
@@ -4693,31 +4703,21 @@ impl Tab {
             self.pending_agent_escapes
                 .retain(|(_, pane), _| *pane != pane_id);
         }
-        let pane = self
-            .floating_panes
-            .get_mut(&pane_id)
-            .or_else(|| self.overlay_panes.get_mut(&pane_id))
-            .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
-            .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane));
-        pane.map(|pane| pane.set_agent_info(agent)).unwrap_or(false)
+        self.get_pane_with_id_mut(pane_id)
+            .map(|pane| pane.set_agent_info(agent))
+            .unwrap_or(false)
     }
     /// Whether `pane_id`'s agent is still waiting on a person who has not answered yet -
     /// which is exactly the condition the blinking frame indicator draws.
     pub fn pane_wants_attention(&self, pane_id: PaneId) -> bool {
-        self.tiled_panes
-            .get_pane(pane_id)
-            .or_else(|| self.floating_panes.get_pane(pane_id))
-            .or_else(|| self.overlay_panes.get_pane(pane_id))
+        self.rendered_pane(pane_id)
             .is_some_and(|pane| pane.agent_attention_since().is_some())
     }
     /// When `pane_id`'s unanswered wait started, for a test that needs to tell one blink from
     /// a restarted one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pane_agent_attention_since(&self, pane_id: PaneId) -> Option<Instant> {
-        self.tiled_panes
-            .get_pane(pane_id)
-            .or_else(|| self.floating_panes.get_pane(pane_id))
-            .or_else(|| self.overlay_panes.get_pane(pane_id))
+        self.rendered_pane(pane_id)
             .and_then(|pane| pane.agent_attention_since())
     }
     /// Whether `pane_id` is an agent pane: it has a record, whoever wrote it, or it held one
@@ -4738,21 +4738,13 @@ impl Tab {
             .and_then(|pane| pane.last_agent_kind().map(str::to_owned))
     }
     pub fn pane_agent_info(&self, pane_id: PaneId) -> Option<AgentInfo> {
-        self.floating_panes
-            .get(&pane_id)
-            .or_else(|| self.overlay_panes.get(&pane_id))
-            .or_else(|| self.tiled_panes.get_pane(pane_id))
-            .or_else(|| self.suppressed_panes.get(&pane_id).map(|p| &p.pane))
+        self.get_pane_with_id(pane_id)
             .and_then(|pane| pane.agent_info().cloned())
     }
     /// The command `pane_id` runs, for a command pane; `None` for a shell, an editor or a
     /// plugin pane. What tells a command pane's exit apart from any other close.
     pub fn pane_run_command(&self, pane_id: PaneId) -> Option<RunCommand> {
-        self.floating_panes
-            .get(&pane_id)
-            .or_else(|| self.overlay_panes.get(&pane_id))
-            .or_else(|| self.tiled_panes.get_pane(pane_id))
-            .or_else(|| self.suppressed_panes.get(&pane_id).map(|p| &p.pane))
+        self.get_pane_with_id(pane_id)
             .and_then(|pane| match pane.invoked_with() {
                 Some(Run::Command(run_command)) => Some(run_command.clone()),
                 _ => None,
@@ -4770,28 +4762,12 @@ impl Tab {
             || self.overlay_panes.panes_contain(pid)
     }
     pub fn set_pane_is_nested_guest(&mut self, pane_id: PaneId, is_nested_guest: bool) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.set_is_nested_guest(is_nested_guest);
         }
     }
     pub fn is_pane_nested_guest(&self, pane_id: PaneId) -> bool {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane(pane_id)
-            .or_else(|| self.floating_panes.get_pane(pane_id))
-            .or_else(|| self.overlay_panes.get_pane(pane_id))
-            .or_else(|| self.suppressed_panes.get(&pane_id).map(|s_p| &s_p.pane))
-        {
+        if let Some(pane) = self.get_pane_with_id(pane_id) {
             pane.is_nested_guest()
         } else {
             false
@@ -4804,47 +4780,17 @@ impl Tab {
             .collect()
     }
     pub fn set_guest_modal_on_pane(&mut self, pane_id: PaneId, client_ids: &[ClientId]) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.set_guest_modal(client_ids);
         }
     }
     pub fn clear_guest_modal_on_pane(&mut self, pane_id: PaneId, client_id: ClientId) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_guest_modal(client_id);
         }
     }
     pub fn clear_all_guest_modals_on_pane(&mut self, pane_id: PaneId) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_all_guest_modals();
         }
     }
@@ -4854,43 +4800,17 @@ impl Tab {
         client_id: ClientId,
         indicator: Option<GuestChoiceIndicator>,
     ) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.set_guest_choice_indicator(client_id, indicator);
         }
     }
     pub fn clear_all_guest_choice_indicators_on_pane(&mut self, pane_id: PaneId) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_all_guest_choice_indicators();
         }
     }
     pub fn pane_has_guest_modal_for_client(&self, pane_id: PaneId, client_id: ClientId) -> bool {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane(pane_id)
-            .or_else(|| self.floating_panes.get_pane(pane_id))
-            .or_else(|| self.overlay_panes.get_pane(pane_id))
-            .or_else(|| self.suppressed_panes.get(&pane_id).map(|s_p| &s_p.pane))
-        {
+        if let Some(pane) = self.get_pane_with_id(pane_id) {
             pane.guest_modal_selection(client_id).is_some()
         } else {
             false
@@ -4911,17 +4831,7 @@ impl Tab {
         pane_id: PaneId,
         session_name: Option<SessionName>,
     ) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.set_guest_session_name(session_name);
         }
     }
@@ -4930,17 +4840,7 @@ impl Tab {
         pane_id: PaneId,
         shortcuts: GuestModalShortcuts,
     ) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.set_guest_modal_shortcuts(shortcuts);
         }
     }
@@ -4951,30 +4851,23 @@ impl Tab {
             return Ok(());
         }
         let err_context = || format!("failed to handle pty bytes from fd {pid}");
-        if let Some(terminal_output) = self
-            .tiled_panes
-            .get_pane_mut(PaneId::Terminal(pid))
-            .or_else(|| self.floating_panes.get_pane_mut(PaneId::Terminal(pid)))
-            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Terminal(pid)))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&PaneId::Terminal(pid))
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
-            // If the pane is scrolled buffer the vte events
-            if terminal_output.is_scrolled() {
-                self.pending_vte_events.entry(pid).or_default().push(bytes);
-                if let Some(evs) = self.pending_vte_events.get(&pid) {
-                    // Reset scroll - and process all pending events for this pane
-                    if evs.len() >= MAX_PENDING_VTE_EVENTS {
-                        terminal_output.clear_scroll();
-                        self.process_pending_vte_events(pid)
-                            .with_context(err_context)?;
-                    }
+        let pane_id = PaneId::Terminal(pid);
+        // A scrolled pane buffers its vte events, so what the user is reading stays put
+        let pane_is_scrolled = self
+            .get_pane_with_id(pane_id)
+            .is_some_and(|pane| pane.is_scrolled());
+        if pane_is_scrolled {
+            let pending = self.pending_vte_events.entry(pid).or_default();
+            pending.push(bytes);
+            // Reset scroll - and process all pending events for this pane
+            if pending.len() >= MAX_PENDING_VTE_EVENTS {
+                if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+                    pane.clear_scroll();
                 }
-                return Ok(());
+                self.process_pending_vte_events(pid)
+                    .with_context(err_context)?;
             }
+            return Ok(());
         }
         self.process_pty_bytes(pid, bytes).with_context(err_context)
     }
@@ -4997,17 +4890,7 @@ impl Tab {
         client_id: ClientId,
         bytes: VteBytes,
     ) -> Result<()> {
-        if let Some(plugin_pane) = self
-            .tiled_panes
-            .get_pane_mut(PaneId::Plugin(pid))
-            .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&PaneId::Plugin(pid))
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
             plugin_pane.handle_plugin_bytes(client_id, bytes);
         }
         Ok(())
@@ -5046,22 +4929,14 @@ impl Tab {
         }
         // Clear the pause and pull out any bytes that were buffered
         // while it waited for the host reply.
-        let buffered = if let Some(terminal_output) = self
-            .tiled_panes
-            .get_pane_mut(PaneId::Terminal(pid))
-            .or_else(|| self.floating_panes.get_pane_mut(PaneId::Terminal(pid)))
-            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Terminal(pid)))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&PaneId::Terminal(pid))
-                    .map(|s_p| &mut s_p.pane)
-            }) {
-            terminal_output.clear_forward_pause();
-            terminal_output.drain_pending_pty_input()
-        } else {
-            // Pane closed between forward dispatch and reply arrival.
-            return Ok(());
-        };
+        let buffered =
+            if let Some(terminal_output) = self.get_pane_with_id_mut(PaneId::Terminal(pid)) {
+                terminal_output.clear_forward_pause();
+                terminal_output.drain_pending_pty_input()
+            } else {
+                // Pane closed between forward dispatch and reply arrival.
+                return Ok(());
+            };
         if !buffered.is_empty() {
             self.process_pty_bytes(pid, buffered)
                 .with_context(err_context)?;
@@ -5071,6 +4946,8 @@ impl Tab {
     fn process_pty_bytes(&mut self, pid: TerminalId, bytes: VteBytes) -> Result<()> {
         let err_context = || format!("failed to process pty bytes from pid {pid}");
 
+        // Spelled out rather than `get_pane_with_id_mut`: the pane borrow has to live alongside
+        // `self.senders` and `self.character_cell_size` for `resize_pty!` below
         if let Some(terminal_output) = self
             .tiled_panes
             .get_pane_mut(PaneId::Terminal(pid))
@@ -5265,6 +5142,8 @@ impl Tab {
         let mut should_update_ui = false;
         let is_sync_panes_active = self.is_sync_panes_active();
 
+        // Spelled out rather than `get_pane_with_id_mut`: the pane borrow spans the
+        // `pending_agent_escapes` bookkeeping and the sends below
         let active_pane = self
             .floating_panes
             .get_mut(&pane_id)
@@ -5482,11 +5361,7 @@ impl Tab {
     }
     pub fn active_terminal_is_mid_frame(&self, client_id: ClientId) -> Option<bool> {
         let active_pane_id = self.get_active_pane_id(client_id)?;
-        let active_terminal = &self
-            .floating_panes
-            .get(&active_pane_id)
-            .or_else(|| self.overlay_panes.get(&active_pane_id))
-            .or_else(|| self.tiled_panes.get_pane(active_pane_id))?;
+        let active_terminal = self.rendered_pane(active_pane_id)?;
         Some(active_terminal.is_mid_frame())
     }
     pub fn get_active_terminal_cursor_position(
@@ -5495,11 +5370,7 @@ impl Tab {
     ) -> Option<(usize, usize, bool)> {
         // (x, y, is_cursor_visible)
         let active_pane_id = self.get_active_pane_id(client_id)?;
-        let active_terminal = &self
-            .floating_panes
-            .get(&active_pane_id)
-            .or_else(|| self.overlay_panes.get(&active_pane_id))
-            .or_else(|| self.tiled_panes.get_pane(active_pane_id))?;
+        let active_terminal = self.rendered_pane(active_pane_id)?;
         active_terminal.cursor_coordinates(Some(client_id)).map(
             |(x_in_terminal, y_in_terminal, is_visible)| {
                 let x = active_terminal.x() + x_in_terminal;
@@ -5988,7 +5859,7 @@ impl Tab {
                 .keys()
                 .filter_map(|(client, pane)| (*pane == pane_id).then_some(*client))
                 .collect();
-            if let Some(pane) = self.pane_mut(pane_id) {
+            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
                 pane.set_pending_agent_escape_clients(clients);
             }
         }
@@ -8744,28 +8615,12 @@ impl Tab {
         self.is_pending
     }
 
-    /// This tab's pane with `pane_id`, wherever it is standing: tiled, floating, an overlay,
-    /// or suppressed under something else.
-    ///
-    /// Suppressed included on purpose - a pane set aside is still a pane, and a mark aimed at
-    /// it must land so that it is right when the pane comes back.
-    fn pane_mut(&mut self, pane_id: PaneId) -> Option<&mut Box<dyn Pane>> {
-        self.tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-    }
     pub fn add_red_pane_frame_color_override(
         &mut self,
         pane_id: PaneId,
         error_text: Option<String>,
     ) {
-        if let Some(pane) = self.pane_mut(pane_id) {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.add_red_pane_frame_color_override(error_text);
         }
     }
@@ -8775,7 +8630,7 @@ impl Tab {
         error_text: Option<String>,
         client_id: Option<ClientId>,
     ) {
-        if let Some(pane) = self.pane_mut(pane_id) {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.add_highlight_pane_frame_color_override(error_text, client_id);
         }
     }
@@ -8789,7 +8644,7 @@ impl Tab {
         let mut changed = false;
         for pane_id in self.get_all_pane_ids() {
             let is_related = related.contains(&pane_id);
-            if let Some(pane) = self.pane_mut(pane_id) {
+            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
                 changed |= pane.set_related_highlight(is_related);
             }
         }
@@ -8799,22 +8654,14 @@ impl Tab {
     /// Whether `pane_id`'s frame override has finished fading, so the caller can stop asking for
     /// frames on its behalf. A pane that is not here has nothing fading.
     pub fn frame_color_override_is_faded_out(&self, pane_id: PaneId, now: Instant) -> bool {
-        self.tiled_panes
-            .get_pane(pane_id)
-            .or_else(|| self.floating_panes.get_pane(pane_id))
-            .or_else(|| self.overlay_panes.get_pane(pane_id))
+        self.rendered_pane(pane_id)
             .map(|pane| pane.frame_color_override_strength_is_settled(now))
             .unwrap_or(true)
     }
 
     /// Mark `pane_id`'s frame and boundaries for repaint without touching its contents.
     pub fn set_pane_frame_should_render(&mut self, pane_id: PaneId) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-        {
+        if let Some(pane) = self.rendered_pane_mut(pane_id) {
             pane.set_should_render(true);
             pane.set_should_render_boundaries(true);
         }
@@ -8825,17 +8672,7 @@ impl Tab {
     /// Returns whether the pane was found, so the caller knows whether to keep asking for frames
     /// while the flash fades.
     pub fn flash_pane_frame_color_override(&mut self, pane_id: PaneId, now: Instant) -> bool {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.flash_pane_frame_color_override(now);
             pane.set_should_render(true);
             pane.set_should_render_boundaries(true);
@@ -8849,17 +8686,7 @@ impl Tab {
         pane_id: PaneId,
         client_id: Option<ClientId>,
     ) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_pane_frame_color_override(client_id);
         }
     }
@@ -8898,17 +8725,7 @@ impl Tab {
             // Failed initialization may never send geometry; show the diagnostic anyway.
             self.overlay_panes.finish_placement(PaneId::Plugin(pid));
         }
-        if let Some(plugin_pane) = self
-            .tiled_panes
-            .get_pane_mut(PaneId::Plugin(pid))
-            .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&PaneId::Plugin(pid))
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
             plugin_pane.update_loading_indication(loading_indication);
         }
     }
@@ -8918,17 +8735,7 @@ impl Tab {
         client_id: ClientId,
         cursor_position: Option<(usize, usize)>,
     ) {
-        if let Some(plugin_pane) = self
-            .tiled_panes
-            .get_pane_mut(PaneId::Plugin(pid))
-            .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&PaneId::Plugin(pid))
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
             plugin_pane.show_cursor(client_id, cursor_position);
         }
     }
@@ -8937,32 +8744,12 @@ impl Tab {
         pid: PluginId,
         loading_indication: LoadingIndication,
     ) {
-        if let Some(plugin_pane) = self
-            .tiled_panes
-            .get_pane_mut(PaneId::Plugin(pid))
-            .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&PaneId::Plugin(pid))
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
             plugin_pane.start_loading_indication(loading_indication);
         }
     }
     pub fn progress_plugin_loading_offset(&mut self, pid: PluginId) {
-        if let Some(plugin_pane) = self
-            .tiled_panes
-            .get_pane_mut(PaneId::Plugin(pid))
-            .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&PaneId::Plugin(pid))
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
             plugin_pane.progress_animation_offset();
         }
     }
@@ -9683,35 +9470,19 @@ impl Tab {
                 self.overlay_panes.focus_pane_for_all_clients(pane_id);
             }
         }
-        let mut should_focus_pane = false;
-        if let Some(plugin_pane) = self
-            .tiled_panes
-            .get_pane_mut(PaneId::Plugin(pid))
-            .or_else(|| self.floating_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| self.overlay_panes.get_pane_mut(PaneId::Plugin(pid)))
-            .or_else(|| {
-                let mut suppressed_pane = self
-                    .suppressed_panes
-                    .get_mut(&PaneId::Plugin(pid))
-                    .map(|s_p| &mut s_p.pane);
-                if let Some(suppressed_pane) = suppressed_pane.as_mut() {
-                    if permissions.is_some() {
-                        // here what happens is that we're requesting permissions for a pane that
-                        // is suppressed, meaning the user cannot see the permission request
-                        // so we temporarily focus this pane as a floating pane, marking it so that
-                        // once the permissions are accepted/rejected by the user, it will be
-                        // suppressed again
-                        suppressed_pane.set_should_be_suppressed(true);
-                        should_focus_pane = true;
-                    }
-                }
-                suppressed_pane
-            })
-        {
+        // A suppressed pane asked for permissions cannot show the request, so it is focused
+        // as a floating pane for the moment, marked so that it is suppressed again once the user
+        // has answered
+        let should_focus_pane =
+            permissions.is_some() && self.suppressed_panes.contains_key(&pane_id);
+        if let Some(plugin_pane) = self.get_pane_with_id_mut(pane_id) {
+            if should_focus_pane {
+                plugin_pane.set_should_be_suppressed(true);
+            }
             plugin_pane.request_permissions_from_user(permissions);
         }
         if should_focus_pane {
-            self.focus_suppressed_pane_for_all_clients(PaneId::Plugin(pid));
+            self.focus_suppressed_pane_for_all_clients(pane_id);
         }
     }
     pub fn rerun_terminal_pane_with_id(
@@ -9720,13 +9491,7 @@ impl Tab {
         completion_tx: Option<NotificationEnd>,
     ) {
         let pane_id = PaneId::Terminal(terminal_pane_id);
-        match self
-            .floating_panes
-            .get_mut(&pane_id)
-            .or_else(|| self.overlay_panes.get_mut(&pane_id))
-            .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
-            .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane))
-        {
+        match self.get_pane_with_id_mut(pane_id) {
             Some(pane_to_rerun) => {
                 if let Some(command_to_rerun) = pane_to_rerun.rerun() {
                     self.pids_waiting_resize.insert(terminal_pane_id);
@@ -9758,13 +9523,7 @@ impl Tab {
         keep_scrollback: bool,
     ) {
         let pane_id = PaneId::Terminal(terminal_pane_id);
-        match self
-            .floating_panes
-            .get_mut(&pane_id)
-            .or_else(|| self.overlay_panes.get_mut(&pane_id))
-            .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
-            .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane))
-        {
+        match self.get_pane_with_id_mut(pane_id) {
             Some(pane) => {
                 if let Some(command_to_run) =
                     pane.respawn(Some(run_command.clone()), keep_scrollback)
