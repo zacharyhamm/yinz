@@ -16,6 +16,7 @@
 pub use zellij_tile::agent;
 pub mod agents;
 pub mod completion;
+pub mod decisions;
 pub mod envelope;
 pub mod jobs;
 pub mod launch;
