@@ -179,7 +179,7 @@ now names the three crates, without which its `lua`, `pipe` and `plugin_` filter
 `docs/AGENT_HOOKS.md`, `docs/ERROR_HANDLING.md`, the bench's module doc, two doc comments in
 `zellij-types`, and the kitty-graphics demo scripts (left over from the terminal extraction).
 `docs/ZELLIJ-SERVER-TESTS.md` and `docs/ZELLIJ-SERVER-TEST-AUDIT.md` are pre-breakout audit
-state and carry a banner saying so; `docs/TEST_INVENTORY.md` is the current per-crate listing.
+state and carry a banner saying so; `cargo nextest list --workspace` is the current per-crate listing.
 
 ### Outstanding
 

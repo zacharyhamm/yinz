@@ -143,11 +143,8 @@ directories, and passing it splits the artifact tree. Tests that load a plugin a
 
 ### What tests exist
 
-`docs/TEST_INVENTORY.md` is a generated checklist of every automated test - one item per test,
-grouped by the gate that runs it, `#[ignore]`d ones tagged. Regenerate it with
-`scripts/test-inventory.sh` (one `cargo nextest list --workspace --all-features --run-ignored
-all`, plus a source scan that reports anything the listing missed). `--fast` skips the
-feature-gated e2e and Postgres groups.
+`cargo nextest list --workspace --all-features --run-ignored all` enumerates every test nextest
+can run, `#[ignore]`d ones included; doctests are not listable and need `cargo test --doc`.
 
 ### Choosing what to run
 

@@ -945,7 +945,7 @@ them for one reason — see the group item below.
       which is every run except the re-exec — its body is empty (`:1292-1297`), so it is a green
       checklist box costing a test process that can never go red. It exists because
       `original_termios_reaches_both_local_pane_paths` re-execs the test binary at it (`:1326-1329`),
-      which is a good technique, but a reader scanning `docs/TEST_INVENTORY.md` sees a test.
+      which is a good technique, but a reader scanning the test listing sees a test.
       **[inspection]** Same shape as pass 2's `pty::the_special_case_lists_are_current` item.
       *Fix:* it cannot be deleted, so give it a doc comment saying it is the supervisor entry point
       for the test below and is a no-op otherwise — and consider `assert!` on the env var being
