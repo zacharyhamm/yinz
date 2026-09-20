@@ -81,6 +81,9 @@ impl<'a> UiComponentParser<'a> {
 
         if component_name == "table" {
             let columns = parse_next_param!(params_iter.next(), usize, "table", "columns");
+            if columns == 0 {
+                return Err(anyhow!("table must have at least one column"));
+            }
             let rows = parse_next_param!(params_iter.next(), usize, "table", "rows");
             let stringified_params = parse_text_params(params_iter);
             let encoded_table = table(

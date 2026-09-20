@@ -458,6 +458,27 @@ pub fn cursor_hide_persists_through_alternate_screen() {
 }
 
 #[test]
+fn zero_column_tables_are_discarded_and_output_continues() {
+    for params in ["0;0", "0;1;", "0;1;88"] {
+        let input = format!("\x1bPztable;{params}\x1b\\after\x1bPztable;1;1;79,75\x1b\\end");
+        for chunk_size in [input.len(), 1, 3] {
+            let mut grid = create_grid_with_content("");
+            let mut parser = vte::Parser::new();
+            for chunk in input.as_bytes().chunks(chunk_size) {
+                parser.advance(&mut grid, chunk);
+            }
+            let lines = viewport_texts(&grid);
+            assert_eq!(
+                lines[0].trim_end(),
+                "afterOK",
+                "{params}, chunks {chunk_size}"
+            );
+            assert_eq!(lines[1].trim_end(), "end", "{params}, chunks {chunk_size}");
+        }
+    }
+}
+
+#[test]
 fn table_ui_component() {
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));

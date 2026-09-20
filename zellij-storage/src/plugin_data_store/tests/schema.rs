@@ -105,6 +105,108 @@ fn a_required_attribute_added_with_a_default_backfills_the_existing_rows() {
 }
 
 #[test]
+fn changing_required_or_default_is_refused_without_changing_the_store() {
+    let cases = [
+        (AttrDef::text("value"), AttrDef::text("value").required()),
+        (AttrDef::text("value").required(), AttrDef::text("value")),
+        (
+            AttrDef::text("value"),
+            AttrDef::text("value").required().default("new"),
+        ),
+        (
+            AttrDef::text("value"),
+            AttrDef::text("value").default("new"),
+        ),
+        (
+            AttrDef::text("value").default("old"),
+            AttrDef::text("value").default("new"),
+        ),
+        (
+            AttrDef::text("value").default("old"),
+            AttrDef::text("value"),
+        ),
+    ];
+    for (original, replacement) in cases {
+        for allow_destructive in [false, true] {
+            let (store, _dir) = store();
+            let def = EntityDef::new("agent", 1)
+                .attr(AttrDef::text("other"))
+                .attr(original.clone());
+            store.define_entity(NS, OWNER, &def, false).unwrap();
+            store
+                .apply(NS, &[Mutation::put("agent").set("value", "kept").build()])
+                .unwrap();
+            let catalog = store.catalog(Some(NS)).unwrap();
+            let rows = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+            // This column is added before the unsupported edit is reached. Its DDL must roll back.
+            let changed = EntityDef::new("agent", 2)
+                .attr(AttrDef::text("added").indexed())
+                .attr(AttrDef::text("other"))
+                .attr(replacement.clone());
+            let err = store
+                .define_entity(NS, OWNER, &changed, allow_destructive)
+                .unwrap_err();
+            assert_err!(err, DataError::RefusedMigration(_));
+            assert_eq!(store.catalog(Some(NS)).unwrap(), catalog);
+            assert_eq!(
+                store.fetch(NS, &FetchRequest::entity("agent")).unwrap(),
+                rows
+            );
+
+            let omitted = store.apply(
+                NS,
+                &[Mutation::put("agent")
+                    .uid("omitted")
+                    .set("other", "set")
+                    .build()],
+            );
+            if original.required && original.default.is_none() {
+                let err = omitted.unwrap_err();
+                assert_err!(err, DataError::Storage(_));
+            } else {
+                omitted.unwrap();
+                let rows = store
+                    .fetch(
+                        NS,
+                        &FetchRequest::entity("agent").filter(Pred::eq("uid", "omitted")),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    column(&rows, "value"),
+                    vec![original.default.clone().unwrap_or(DataValue::Null)]
+                );
+            }
+            let null = store.apply(
+                NS,
+                &[Mutation::put("agent")
+                    .uid("null")
+                    .set("value", DataValue::Null)
+                    .build()],
+            );
+            if original.required {
+                let err = null.unwrap_err();
+                assert_err!(err, DataError::Storage(_));
+            } else {
+                null.unwrap();
+                let rows = store
+                    .fetch(
+                        NS,
+                        &FetchRequest::entity("agent").filter(Pred::eq("uid", "null")),
+                    )
+                    .unwrap();
+                assert_eq!(column(&rows, "value"), vec![DataValue::Null]);
+            }
+
+            // Adding the same column now must succeed: neither it nor its index survived refusal.
+            let supported = def.attr(AttrDef::text("added").indexed());
+            let info = store.define_entity(NS, OWNER, &supported, false).unwrap();
+            assert_eq!(info.attrs_added, vec!["added"]);
+            assert_eq!(info.indexes_created, vec!["added"]);
+        }
+    }
+}
+
+#[test]
 fn changing_the_type_of_an_attribute_is_refused() {
     let (store, _dir) = defined();
     let retyped = EntityDef::new("agent", 2)
