@@ -91,6 +91,13 @@ pub(super) fn migrate_entity(
                     attr.name, def.name, stored.kind, attr.kind
                 )));
             },
+            Some(stored) if stored.required != attr.required || stored.default != attr.default => {
+                return Err(DataError::RefusedMigration(format!(
+                    "attribute `{}` of `{}` changes required or default; changing these column \
+                     constraints is not supported, so declare a new attribute instead",
+                    attr.name, def.name
+                )));
+            },
             Some(stored) => {
                 // Indexes are cheap to add and drop, and doing so loses nothing, so they follow
                 // the declaration without needing permission.

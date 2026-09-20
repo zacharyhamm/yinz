@@ -6190,9 +6190,9 @@ struct ResolvedPath {
 /// own temp dir. Both are tolerable when the result is handed to an editor the user is watching,
 /// and neither is tolerable when the result is read or written on the plugin's say-so.
 ///
-/// So this follows [`scan_host_folder`] instead: canonicalize the root, canonicalize the target,
-/// and refuse anything that does not land inside. Canonicalizing is what catches a symlink
-/// pointing out of the root - the check has to happen after the link is followed, not before.
+/// So this follows [`scan_host_folder`] instead: canonicalize the root and the target (or its
+/// parent for operations on the directory entry), and refuse anything that does not land inside.
+/// Canonicalizing catches symlinks pointing out of the root along the path being accessed.
 ///
 /// A path naming no virtual root is left exactly as it was written and marked `escaped_roots`,
 /// so that the caller can ask for `FullHdAccess` rather than quietly rewriting it.
@@ -6215,7 +6215,17 @@ fn fs_roots(env: &PluginEnv) -> Vec<(&'static str, PathBuf)> {
     roots
 }
 
-fn resolve_plugin_fs_path(env: &PluginEnv, path: &Path) -> Result<ResolvedPath> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FsPathResolution {
+    FollowSymlink,
+    PreserveEntry,
+}
+
+fn resolve_plugin_fs_path(
+    env: &PluginEnv,
+    path: &Path,
+    resolution: FsPathResolution,
+) -> Result<ResolvedPath> {
     let roots = fs_roots(env);
 
     let (prefix, root, relative) = match roots.iter().find_map(|(prefix, root)| {
@@ -6246,6 +6256,14 @@ fn resolve_plugin_fs_path(env: &PluginEnv, path: &Path) -> Result<ResolvedPath> 
     // Collected outermost-last, then re-attached in order. Joining onto an empty `PathBuf` as we
     // go would leave a trailing separator, which asks the OS for a directory.
     let mut tail = vec![];
+    if resolution == FsPathResolution::PreserveEntry {
+        // Remove, rename and symlink metadata operate on the entry, not its target. Resolve
+        // its parent as usual. A virtual root (no relative file name) still resolves in full.
+        if let (Some(name), Some(parent)) = (relative.file_name(), joined.parent()) {
+            tail.push(name.to_os_string());
+            existing = parent;
+        }
+    }
     let resolved = loop {
         match existing.canonicalize() {
             Ok(canonical) => {
@@ -6317,8 +6335,9 @@ fn resolve_fs_path_with_permission(
     env: &PluginEnv,
     path: &Path,
     intent: FsIntent,
+    resolution: FsPathResolution,
 ) -> Result<PathBuf> {
-    let resolved = resolve_plugin_fs_path(env, path)?;
+    let resolved = resolve_plugin_fs_path(env, path, resolution)?;
     if resolved.escaped_roots && !has_permission(env, PermissionType::FullHdAccess) {
         return Err(anyhow!(
             "'{}' is outside the plugin's own folders (/host, /data, /cache, /tmp, /plugins), \
@@ -6416,7 +6435,13 @@ fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>) {
     let cap = max_bytes
         .unwrap_or(MAX_FS_READ_BYTES)
         .min(MAX_FS_READ_BYTES);
-    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Read).and_then(|real| {
+    let result = resolve_fs_path_with_permission(
+        env,
+        &path,
+        FsIntent::Read,
+        FsPathResolution::FollowSymlink,
+    )
+    .and_then(|real| {
         let metadata =
             fs::metadata(&real).with_context(|| format!("failed to read '{}'", path.display()))?;
         if metadata.len() as usize > cap {
@@ -6442,7 +6467,13 @@ fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>) {
 }
 
 fn fs_list(env: &mut PluginEnv, path: PathBuf) {
-    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Read).and_then(|real| {
+    let result = resolve_fs_path_with_permission(
+        env,
+        &path,
+        FsIntent::Read,
+        FsPathResolution::FollowSymlink,
+    )
+    .and_then(|real| {
         let entries =
             fs::read_dir(&real).with_context(|| format!("failed to list '{}'", path.display()))?;
         let mut listed = vec![];
@@ -6473,8 +6504,13 @@ fn fs_list(env: &mut PluginEnv, path: PathBuf) {
 }
 
 fn fs_metadata(env: &mut PluginEnv, path: PathBuf) {
-    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Read)
-        .map(|real| fs::symlink_metadata(&real).ok().map(FileMetadata::from));
+    let result = resolve_fs_path_with_permission(
+        env,
+        &path,
+        FsIntent::Read,
+        FsPathResolution::PreserveEntry,
+    )
+    .map(|real| fs::symlink_metadata(&real).ok().map(FileMetadata::from));
 
     let response = ProtobufFsMetadataResponse {
         result: Some(match result {
@@ -6495,7 +6531,13 @@ fn fs_write(
     append: bool,
     create_dirs: bool,
 ) {
-    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Write).and_then(|real| {
+    let result = resolve_fs_path_with_permission(
+        env,
+        &path,
+        FsIntent::Write,
+        FsPathResolution::FollowSymlink,
+    )
+    .and_then(|real| {
         if create_dirs {
             if let Some(parent) = real.parent() {
                 fs::create_dir_all(parent).with_context(|| {
@@ -6517,7 +6559,13 @@ fn fs_write(
 }
 
 fn fs_remove(env: &mut PluginEnv, path: PathBuf, recursive: bool) {
-    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Write).and_then(|real| {
+    let result = resolve_fs_path_with_permission(
+        env,
+        &path,
+        FsIntent::Write,
+        FsPathResolution::PreserveEntry,
+    )
+    .and_then(|real| {
         let metadata = fs::symlink_metadata(&real)
             .with_context(|| format!("failed to remove '{}'", path.display()))?;
         if metadata.is_dir() {
@@ -6535,7 +6583,13 @@ fn fs_remove(env: &mut PluginEnv, path: PathBuf, recursive: bool) {
 }
 
 fn fs_create_dir(env: &mut PluginEnv, path: PathBuf, all: bool) {
-    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Write).and_then(|real| {
+    let result = resolve_fs_path_with_permission(
+        env,
+        &path,
+        FsIntent::Write,
+        FsPathResolution::FollowSymlink,
+    )
+    .and_then(|real| {
         if all {
             fs::create_dir_all(&real)
         } else {
@@ -6549,17 +6603,27 @@ fn fs_create_dir(env: &mut PluginEnv, path: PathBuf, all: bool) {
 fn fs_rename(env: &mut PluginEnv, from: PathBuf, to: PathBuf) {
     // Both endpoints are resolved independently: renaming *out* of the plugin's folders is as
     // much of an escape as reading outside them.
-    let result =
-        resolve_fs_path_with_permission(env, &from, FsIntent::Write).and_then(|real_from| {
-            let real_to = resolve_fs_path_with_permission(env, &to, FsIntent::Write)?;
-            fs::rename(&real_from, &real_to).with_context(|| {
-                format!(
-                    "failed to rename '{}' to '{}'",
-                    from.display(),
-                    to.display()
-                )
-            })
-        });
+    let result = resolve_fs_path_with_permission(
+        env,
+        &from,
+        FsIntent::Write,
+        FsPathResolution::PreserveEntry,
+    )
+    .and_then(|real_from| {
+        let real_to = resolve_fs_path_with_permission(
+            env,
+            &to,
+            FsIntent::Write,
+            FsPathResolution::PreserveEntry,
+        )?;
+        fs::rename(&real_from, &real_to).with_context(|| {
+            format!(
+                "failed to rename '{}' to '{}'",
+                from.display(),
+                to.display()
+            )
+        })
+    });
     write_fs_mutate_response(env, result);
 }
 

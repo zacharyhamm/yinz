@@ -3415,6 +3415,116 @@ fn deno_a_path_cannot_climb_out_of_its_root() {
 
 #[cfg(unix)]
 #[test]
+fn deno_fs_remove_symlinks_preserves_their_targets() {
+    for recursive in [false, true] {
+        let dirs = FsDirs::new();
+        std::fs::create_dir(dirs.host.path().join("target")).unwrap();
+        std::fs::write(dirs.host.path().join("target/keep"), "kept").unwrap();
+        for target in ["target", "target/keep", "missing"] {
+            let link = dirs.host.path().join("link");
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            assert_eq!(
+                deno_render_with_dirs(
+                    &format!("zellij.fs.remove('/host/link', {{recursive: {recursive}}}); return 'removed';"),
+                    &dirs,
+                    file_permissions(),
+                ),
+                "removed"
+            );
+            assert!(std::fs::symlink_metadata(&link).is_err());
+            assert_eq!(
+                std::fs::read_to_string(dirs.host.path().join("target/keep")).unwrap(),
+                "kept"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn deno_fs_rename_symlinks_preserves_their_targets() {
+    let dirs = FsDirs::new();
+    std::fs::create_dir(dirs.host.path().join("target")).unwrap();
+    std::fs::write(dirs.host.path().join("target/keep"), "kept").unwrap();
+    for target in ["target", "target/keep", "missing"] {
+        let link = dirs.host.path().join("link");
+        let moved = dirs.host.path().join("moved");
+        std::os::unix::fs::symlink(target, &link).unwrap();
+        assert_eq!(
+            deno_render_with_dirs(
+                "zellij.fs.rename('/host/link', '/host/moved'); return 'renamed';",
+                &dirs,
+                file_permissions(),
+            ),
+            "renamed"
+        );
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert_eq!(std::fs::read_link(&moved).unwrap(), PathBuf::from(target));
+        assert_eq!(
+            std::fs::read_to_string(dirs.host.path().join("target/keep")).unwrap(),
+            "kept"
+        );
+        std::fs::remove_file(moved).unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn deno_fs_rename_onto_a_symlink_replaces_the_link() {
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("target"), "kept").unwrap();
+    std::fs::write(dirs.host.path().join("source"), "replacement").unwrap();
+    std::os::unix::fs::symlink("target", dirs.host.path().join("link")).unwrap();
+    assert_eq!(
+        deno_render_with_dirs(
+            "zellij.fs.rename('/host/source', '/host/link'); return 'renamed';",
+            &dirs,
+            file_permissions(),
+        ),
+        "renamed"
+    );
+    assert!(!dirs.host.path().join("source").exists());
+    assert!(!dirs.host.path().join("link").is_symlink());
+    assert_eq!(
+        std::fs::read_to_string(dirs.host.path().join("link")).unwrap(),
+        "replacement"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dirs.host.path().join("target")).unwrap(),
+        "kept"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn deno_fs_metadata_identifies_valid_and_dangling_symlinks() {
+    let dirs = FsDirs::new();
+    std::fs::write(dirs.host.path().join("target"), "kept").unwrap();
+    for target in ["target", "missing"] {
+        let link = dirs.host.path().join("link");
+        std::os::unix::fs::symlink(target, &link).unwrap();
+        assert_eq!(
+            deno_render_with_dirs(
+                "const m = zellij.fs.metadata('/host/link'); return JSON.stringify([m.is_symlink, m.is_file, m.is_dir]);",
+                &dirs,
+                file_permissions(),
+            ),
+            "[true,false,false]"
+        );
+        std::fs::remove_file(link).unwrap();
+    }
+    assert_eq!(
+        deno_render_with_dirs(
+            "return String(zellij.fs.metadata('/host').is_dir);",
+            &dirs,
+            file_permissions()
+        ),
+        "true"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn deno_a_symlink_out_of_a_root_is_followed_and_then_refused() {
     let dirs = FsDirs::new();
     let outside = tempfile::tempdir().unwrap();
