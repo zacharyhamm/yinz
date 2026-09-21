@@ -3365,3 +3365,79 @@ fn resizing_a_tiled_pane_by_id_in_stack_list_mode_dissolves_the_lists_as_the_key
         "the lists were dissolved for the classic resize"
     );
 }
+
+#[test]
+fn resizing_a_suppressed_or_unknown_pane_preserves_stack_lists_and_geometry() {
+    for target in [TerminalId::new(5), TerminalId::new(99)] {
+        let mut tab = create_new_tab_with_stacked_pane_list(
+            Size {
+                cols: 150,
+                rows: 40,
+            },
+            ModeInfo::default(),
+            true,
+            Some(a_stack_beside_a_plain_pane_layout()),
+        );
+        let suppressed_pane = PaneId::Terminal(TerminalId::new(5));
+        tab.new_pane(
+            suppressed_pane,
+            None,
+            None,
+            true,
+            false,
+            NewPanePlacement::default(),
+            Some(ClientId::new(1)),
+            None,
+        )
+        .unwrap();
+        tab.render(&mut Output::default(), None).unwrap();
+        assert!(tab.has_stack_lists());
+        assert!(tab.suppressed_panes.contains_key(&suppressed_pane));
+        let membership = tab.stack_list_of_member.clone();
+        let geometry: Vec<_> = (1..=5)
+            .map(|id| {
+                let id = PaneId::Terminal(TerminalId::new(id));
+                (id, tab.get_pane_with_id(id).unwrap().current_geom())
+            })
+            .collect();
+
+        tab.resize_pane_with_id(
+            ResizeStrategy::new(Resize::Increase, None),
+            PaneId::Terminal(target),
+        )
+        .unwrap();
+
+        assert!(tab.has_stack_lists());
+        assert_eq!(tab.stack_list_of_member, membership);
+        assert!(tab.suppressed_panes.contains_key(&suppressed_pane));
+        for (id, geom) in geometry {
+            assert_eq!(tab.get_pane_with_id(id).unwrap().current_geom(), geom);
+        }
+    }
+}
+
+#[test]
+fn resizing_a_hidden_stack_list_member_dissolves_the_lists() {
+    let mut tab = create_new_tab_with_stacked_pane_list(
+        Size {
+            cols: 150,
+            rows: 40,
+        },
+        ModeInfo::default(),
+        true,
+        Some(a_stack_beside_a_plain_pane_layout()),
+    );
+    tab.render(&mut Output::default(), None).unwrap();
+    let hidden_member = tab
+        .get_all_pane_ids()
+        .into_iter()
+        .find(|id| tab.pane_is_hidden_stack_list_member(id))
+        .expect("the layout has a hidden stack-list member");
+
+    tab.resize_pane_with_id(ResizeStrategy::new(Resize::Increase, None), hidden_member)
+        .unwrap();
+
+    assert!(!tab.has_stack_lists());
+    assert!(tab.tiled_panes.panes_contain(&hidden_member));
+    assert!(!tab.suppressed_panes.contains_key(&hidden_member));
+}

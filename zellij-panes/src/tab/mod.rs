@@ -4573,6 +4573,13 @@ impl Tab {
             })
             .or_else(|| self.tiled_panes.get_active_pane_id(client_id))
     }
+    /// Share the reference client's tiled focus without changing floating visibility or overlay
+    /// focus, before enabling session mirroring.
+    pub fn reconcile_tiled_focus(&mut self, reference_client_id: ClientId) {
+        if let Some(pane_id) = self.tiled_panes.get_active_pane_id(reference_client_id) {
+            self.tiled_panes.focus_pane_for_all_clients(pane_id);
+        }
+    }
     fn get_active_terminal_id(&self, client_id: ClientId) -> Option<TerminalId> {
         if let Some(PaneId::Terminal(pid)) = self.get_active_pane_id(client_id) {
             Some(pid)
@@ -6699,7 +6706,11 @@ impl Tab {
             }
             return Ok(());
         }
-        self.dissolve_stack_lists_for_classic_mutation();
+        if self.tiled_panes.panes_contain(&pane_id)
+            || self.pane_is_hidden_stack_list_member(&pane_id)
+        {
+            self.dissolve_stack_lists_for_classic_mutation();
+        }
         if self.tiled_panes.panes_contain(&pane_id) {
             // By subject, not by id: a keyboard resize of an undirected strategy is a stacked
             // resize when `stacked_resize` is on, which `TiledPanes::resize_active_pane` does
