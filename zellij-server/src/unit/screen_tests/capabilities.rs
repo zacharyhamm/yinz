@@ -8,6 +8,123 @@ use super::*;
 use zellij_types::internal_ids::TabId;
 
 #[test]
+fn kitty_probe_routing_preserves_client_lifecycle_order() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use std::sync::RwLock;
+    use std::time::Duration;
+    use zellij_ipc::ipc::IpcSenderWithContext;
+
+    for first_message in [
+        ClientToServerMsg::FirstClientConnected {
+            cli_assets: Default::default(),
+        },
+        ClientToServerMsg::AttachClient {
+            cli_assets: Default::default(),
+            tab_number_to_focus: None,
+            pane_to_focus: None,
+        },
+    ] {
+        let mut mock = MockScreen::new(Size { cols: 80, rows: 20 });
+        let screen_rx = mock.screen_receiver.as_ref().unwrap();
+        screen_rx.try_iter().for_each(drop);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kitty.sock");
+        let listener = ListenerOptions::new()
+            .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+            .create_sync()
+            .unwrap();
+        let client =
+            LocalSocketStream::connect(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+                .unwrap();
+        let server = listener.accept().unwrap();
+        let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
+        for message in [
+            first_message,
+            ClientToServerMsg::KittyGraphicsSupport { supported: false },
+            ClientToServerMsg::KittyGraphicsSupport { supported: true },
+            ClientToServerMsg::ClientExited,
+        ] {
+            sender.send_client_msg(message).unwrap();
+        }
+        let session = Arc::new(RwLock::new(Some(mock.clone_session_metadata())));
+        // Leave both consumers paused: the router must queue registration, answers and removal
+        // together, even when the server has not begun handling the first message.
+        crate::route::route_thread_main(
+            session.clone(),
+            Arc::new(RwLock::new(crate::SessionState::new())),
+            Box::new(mock.os_input.clone()),
+            mock.to_server.clone(),
+            IpcReceiverWithContext::new(server),
+            CLIENT_1,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let instructions: Vec<_> = mock
+            .server_receiver
+            .as_ref()
+            .unwrap()
+            .try_iter()
+            .map(|(instruction, _)| instruction)
+            .collect();
+        assert!(
+            matches!(
+                instructions.as_slice(),
+                [
+                    ServerInstruction::FirstClientConnected(_, CLIENT_1)
+                        | ServerInstruction::AttachClient(_, _, _, CLIENT_1),
+                    ServerInstruction::KittyGraphicsSupport {
+                        client_id: CLIENT_1,
+                        supported: false
+                    },
+                    ServerInstruction::KittyGraphicsSupport {
+                        client_id: CLIENT_1,
+                        supported: true
+                    },
+                    ServerInstruction::RemoveClient(CLIENT_1),
+                ]
+            ),
+            "{instructions:?}"
+        );
+        assert!(
+            screen_rx.is_empty(),
+            "the probe bypassed client registration"
+        );
+        mock.teardown(vec![]);
+    }
+}
+
+#[test]
+fn kitty_probe_before_first_layout_reaches_plugins() {
+    let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
+    // Startup records the client's size before spawning panes. It joins connected_clients
+    // only when the first layout lands, which can take longer than the host's probe reply.
+    assert!(!screen.connected_clients_contains(&CLIENT_1));
+    screen.update_kitty_graphics_support(CLIENT_1, true);
+    assert_eq!(
+        screen.kitty_host_capabilities.borrow().get(&CLIENT_1),
+        Some(&true)
+    );
+
+    new_tab(&mut screen, 1, TabId::new(0));
+    add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(PLUGIN_77), false);
+    capture.drain_plugin_updates();
+    screen
+        .get_active_tab_mut(CLIENT_1)
+        .expect("TEST")
+        .update_input_modes()
+        .expect("TEST");
+
+    assert!(capture
+        .drain_plugin_updates()
+        .into_iter()
+        .any(|(plugin, client, event)| matches!(
+            (plugin, client, event),
+            (Some(PLUGIN_77), Some(CLIENT_1), Event::ModeUpdate(mode_info))
+                if mode_info.capabilities.kitty_graphics
+        )));
+}
+
+#[test]
 fn kitty_query_replies_ok_when_capable_client_connected() {
     let size = Size {
         cols: 121,

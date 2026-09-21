@@ -2113,7 +2113,8 @@ impl Screen {
         log::info!(
             "attach trace: Screen::add_client client_id={client_id} tab={tab_index} Tab::add_client begin empty={tab_was_empty}"
         );
-        tab.add_client(client_id, None)
+        // Startup probes can populate ModeInfo before the first layout finishes loading.
+        tab.add_client(client_id, self.mode_info.get(&client_id).cloned())
             .with_context(|| err_context(tab_index))?;
         log::info!(
             "attach trace: Screen::add_client client_id={client_id} tab={tab_index} Tab::add_client complete after {:?}",

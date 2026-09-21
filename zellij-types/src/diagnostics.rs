@@ -528,6 +528,7 @@ pub enum ServerContext {
     KeyPassthroughChanged,
     EmitNestedSessionFrameToClient,
     SynchronizedOutputSupport,
+    KittyGraphicsSupport,
 }
 
 #[derive(

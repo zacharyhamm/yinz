@@ -1965,6 +1965,21 @@ pub fn start_server_impl(
                     client_id,
                 );
             },
+            ServerInstruction::KittyGraphicsSupport {
+                client_id,
+                supported,
+            } => {
+                with_session(&session_data, |session| {
+                    session
+                        .senders
+                        .send_to_screen(ScreenInstruction::SetKittyGraphicsSupport {
+                            client_id,
+                            supported,
+                        })
+                        .context("recording the client's kitty graphics support")
+                        .non_fatal();
+                });
+            },
             ServerInstruction::SynchronizedOutputSupport {
                 client_id,
                 supported,
