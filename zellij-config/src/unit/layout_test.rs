@@ -2278,6 +2278,82 @@ fn can_load_swap_layouts_from_a_different_file() {
 }
 
 #[test]
+fn swap_layout_children_with_siblings_preserve_pane_count_and_positions() {
+    use zellij_types::pane_size::{PaneGeom, Size};
+
+    for children in [
+        r#"children; pane name="after";"#,
+        r#"pane name="before"; children; pane name="after";"#,
+        r#"pane name="before"; children;"#,
+        "children;",
+    ] {
+        for nested in [false, true] {
+            let panes = format!("pane {{ {children} }};");
+            let panes = if nested {
+                format!("pane {{ {panes} }};")
+            } else {
+                panes
+            };
+            let raw_layout = format!("layout {{ swap_tiled_layout {{ tab {{ {panes} }}; }}; }}");
+            let layout = crate::kdl::layout::from_kdl(&raw_layout, None, None, None).unwrap();
+            let pane_layout = layout.swap_tiled_layouts[0].0.values().next().unwrap();
+            let area = PaneGeom::from(&Size {
+                cols: 120,
+                rows: 40,
+            });
+
+            for pane_count in 3..=5 {
+                let positions = pane_layout
+                    .position_panes_in_space(&area, Some(pane_count), false, true)
+                    .unwrap();
+                assert_eq!(positions.len(), pane_count, "{raw_layout}");
+                if children.contains("before") {
+                    assert_eq!(positions[0].0.name.as_deref(), Some("before"));
+                }
+                if children.contains("after") {
+                    assert_eq!(positions.last().unwrap().0.name.as_deref(), Some("after"));
+                }
+                let mut next_row = 0;
+                for (_, geom) in positions {
+                    assert_eq!(geom.y, next_row, "{raw_layout}");
+                    next_row += geom.rows.as_usize();
+                }
+                assert_eq!(next_row, area.rows.as_usize(), "{raw_layout}");
+            }
+        }
+    }
+}
+
+#[test]
+fn swap_layout_expands_only_the_first_children_node() {
+    use zellij_types::pane_size::{PaneGeom, Size};
+
+    let raw_layout = r#"
+        layout {
+            swap_tiled_layout {
+                tab {
+                    pane { pane name="before"; children; }
+                    pane { children; }
+                }
+            }
+        }
+    "#;
+    let layout = crate::kdl::layout::from_kdl(raw_layout, None, None, None).unwrap();
+    let pane_layout = layout.swap_tiled_layouts[0].0.values().next().unwrap();
+    let area = PaneGeom::from(&Size {
+        cols: 120,
+        rows: 40,
+    });
+    let positions = pane_layout
+        .position_panes_in_space(&area, Some(4), false, true)
+        .unwrap();
+
+    assert_eq!(positions.len(), 4);
+    assert_eq!(positions[0].0.name.as_deref(), Some("before"));
+    assert_eq!(positions[1].0.external_children_index, Some(0));
+}
+
+#[test]
 fn bundled_three_column_layouts_are_balanced() {
     use std::path::Path;
     use zellij_types::pane_size::{PaneGeom, Size};

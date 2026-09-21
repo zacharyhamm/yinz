@@ -1,4 +1,3 @@
-use crate::background_jobs::write_session_state_to_disk;
 use crate::background_jobs::BackgroundJob;
 use crate::global_async_runtime::get_tokio_runtime as async_runtime;
 use crate::os_input_output::{AsyncReader, NullAsyncReader, ServerOsApi};
@@ -1114,10 +1113,10 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     session_layout_metadata.into(),
                 ) {
                     Ok(kdl_and_files) => {
-                        match write_session_state_to_disk(
+                        match pty.bus.senders.session_checkpoint.write(
                             session_name,
                             session_info,
-                            kdl_and_files.clone(),
+                            &kdl_and_files,
                         ) {
                             Ok(()) => {
                                 let timestamp_millis = std::time::SystemTime::now()

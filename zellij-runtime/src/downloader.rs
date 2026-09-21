@@ -7,6 +7,7 @@ use isahc::{config::RedirectPolicy, HttpClient, Request};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt as _, sync::Mutex};
 use tokio_stream::StreamExt as _;
@@ -15,6 +16,7 @@ use tokio_util::io::ReaderStream;
 use url::Url;
 
 const STREAM_BUFFER_SIZE_BYTES: usize = 65535;
+const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Error, Debug)]
 pub enum DownloaderError {
@@ -70,9 +72,11 @@ pub struct Downloader {
     download_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
-fn build_client() -> Result<HttpClient, isahc::Error> {
+fn build_client(stall_timeout: Duration) -> Result<HttpClient, isahc::Error> {
     HttpClient::builder()
-        // TODO: timeout?
+        .connect_timeout(Duration::from_secs(10))
+        // Bound stalled headers and bodies without limiting an active large download.
+        .low_speed_timeout(1, stall_timeout)
         .redirect_policy(RedirectPolicy::Follow)
         .build()
 }
@@ -174,7 +178,7 @@ async fn discard_partial_file(path: &Path) {
 
 impl Downloader {
     pub fn new(location: PathBuf) -> Self {
-        Self::with_client(build_client(), location)
+        Self::with_client(build_client(DOWNLOAD_STALL_TIMEOUT), location)
     }
 
     fn with_client(client: Result<HttpClient, isahc::Error>, location: PathBuf) -> Self {
@@ -372,7 +376,7 @@ impl Downloader {
         let request = Request::get(url)
             .header("Content-Type", "application/octet-stream")
             .body(())?;
-        let client = build_client()?;
+        let client = build_client(DOWNLOAD_STALL_TIMEOUT)?;
 
         let mut res = client.send_async(request).await?;
         ensure_success(url, res.status())?;

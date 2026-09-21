@@ -845,6 +845,15 @@ impl TiledPaneLayout {
             pane_count
         }
     }
+    fn children_node_replaces_pane(&self) -> Option<bool> {
+        if self.external_children_index.is_some() {
+            Some(self.children.is_empty())
+        } else {
+            self.children
+                .iter()
+                .find_map(Self::children_node_replaces_pane)
+        }
+    }
     pub fn position_panes_in_space(
         &self,
         space: &PaneGeom,
@@ -857,11 +866,14 @@ impl TiledPaneLayout {
                 let mut layout_to_split = self.clone();
                 let pane_count_in_layout = layout_to_split.pane_count();
                 if max_panes > pane_count_in_layout {
-                    // the + 1 here is because this was previously an "actual" pane and will now
-                    // become just a container, so we need to account for it too
-                    // TODO: make sure this works when the `children` node has sibling nodes,
-                    // because we really should support that
-                    let children_count = (max_panes - pane_count_in_layout) + 1;
+                    // A childless placeholder was counted as a pane and becomes a container.
+                    // With siblings, its parent was already a container and needs no replacement.
+                    let children_count = (max_panes - pane_count_in_layout)
+                        + usize::from(
+                            layout_to_split
+                                .children_node_replaces_pane()
+                                .unwrap_or(false),
+                        );
                     let mut extra_children = vec![TiledPaneLayout::default(); children_count];
                     if !layout_to_split.has_focused_node() && focus_layout_if_not_focused {
                         if let Some(last_child) = extra_children.last_mut() {

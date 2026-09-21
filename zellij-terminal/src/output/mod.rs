@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use crate::panes::Row;
 use crate::ui::damage::CellRect;
 
@@ -1863,26 +1861,32 @@ impl CharacterChunk {
         width
     }
     pub fn drain_by_width(&mut self, x: usize) -> impl Iterator<Item = TerminalCharacter> {
-        let mut drained_part: VecDeque<TerminalCharacter> = VecDeque::new();
-        let mut drained_part_len = 0;
-        loop {
-            if self.terminal_characters.is_empty() {
-                break;
-            }
-            let next_character = self.terminal_characters.remove(0); // TODO: consider copying self.terminal_characters into a VecDeque to make this process faster?
-            if drained_part_len + next_character.width() <= x {
-                drained_part_len += next_character.width();
-                drained_part.push_back(next_character);
-            } else {
-                if drained_part_len == x {
-                    self.terminal_characters.insert(0, next_character); // put it back
-                } else if next_character.width() > 1 {
-                    for _ in 1..next_character.width() {
-                        self.terminal_characters.insert(0, EMPTY_TERMINAL_CHARACTER);
-                        drained_part.push_back(EMPTY_TERMINAL_CHARACTER);
-                    }
+        let mut remaining_width = x;
+        let end = self
+            .terminal_characters
+            .iter()
+            .take_while(|character| {
+                if character.width() <= remaining_width {
+                    remaining_width -= character.width();
+                    true
+                } else {
+                    false
                 }
-                break;
+            })
+            .count();
+        // Move the suffix once, rather than once per drained character.
+        let mut drained_part: Vec<_> = self.terminal_characters.drain(..end).collect();
+        if remaining_width > 0 {
+            if let Some(character) = self.terminal_characters.first() {
+                let retained_width = character.width() - remaining_width;
+                self.terminal_characters.splice(
+                    ..1,
+                    std::iter::repeat_n(EMPTY_TERMINAL_CHARACTER, retained_width),
+                );
+                drained_part.extend(std::iter::repeat_n(
+                    EMPTY_TERMINAL_CHARACTER,
+                    remaining_width,
+                ));
             }
         }
         drained_part.into_iter()

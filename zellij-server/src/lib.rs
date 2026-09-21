@@ -2302,6 +2302,7 @@ fn init_session(
 
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);
+    let session_checkpoint = Arc::new(background_jobs::SessionCheckpointWriter::default());
 
     // Config only exists once a client has connected, long after the pty backend
     // was built, so this is the first point at which we can know. It is safe to
@@ -2363,6 +2364,7 @@ fn init_session(
             if let Some(handle) = session_recorder_handle {
                 bus.senders.session_recorder = Some(handle);
             }
+            bus.senders.session_checkpoint = session_checkpoint.clone();
             let pty = Pty::new(
                 bus,
                 cli_assets.is_debug,
@@ -2391,6 +2393,7 @@ fn init_session(
             if let Some(handle) = session_recorder_handle.clone() {
                 screen_bus.senders.session_recorder = Some(handle);
             }
+            screen_bus.senders.session_checkpoint = session_checkpoint.clone();
             let max_panes = cli_assets.max_panes;
 
             let client_attributes_clone = client_attributes.clone();
@@ -2541,6 +2544,7 @@ fn init_session(
             if let Some(handle) = session_recorder_handle.clone() {
                 background_jobs_bus.senders.session_recorder = Some(handle);
             }
+            background_jobs_bus.senders.session_checkpoint = session_checkpoint.clone();
             move || {
                 background_jobs_main(
                     background_jobs_bus,
@@ -2569,6 +2573,7 @@ fn init_session(
             to_background_jobs: Some(to_background_jobs),
             to_server: Some(to_server),
             session_recorder: session_recorder_handle.clone(),
+            session_checkpoint,
             should_silently_fail: false,
         },
         default_shell,

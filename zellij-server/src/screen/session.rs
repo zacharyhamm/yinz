@@ -14,13 +14,10 @@ use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use zellij_ipc::ipc::ServerToClientMsg;
+use zellij_runtime::consts::ZELLIJ_SOCK_DIR;
 use zellij_types::data::SessionInfo;
 use zellij_types::pane_size::Size;
 use zellij_types::style::ThemeHue;
-use {
-    zellij_runtime::consts::session_info_folder_for_session,
-    zellij_runtime::consts::ZELLIJ_SOCK_DIR,
-};
 
 impl Screen {
     /// Renames the session, refusing a name another live or resurrectable session holds, and
@@ -70,6 +67,35 @@ impl Screen {
                 }
             }
 
+            if let Err(error) = self
+                .bus
+                .senders
+                .session_checkpoint
+                .rename(&old_session_name, &name)
+            {
+                let error_text = format!("Failed to rename session: {error:#}");
+                if let Some(os_input) = &self.bus.os_input {
+                    os_input
+                        .rename_pty_host_session(&name, &old_session_name)
+                        .context(
+                            "Failed to restore session ownership after checkpoint rename failed",
+                        )
+                        .non_fatal();
+                    os_input
+                        .send_to_client(
+                            client_id,
+                            ServerToClientMsg::LogError {
+                                lines: vec![error_text],
+                            },
+                        )
+                        .non_fatal();
+                }
+                Err::<(), _>(error)
+                    .context("Failed to rename session")
+                    .non_fatal();
+                return Ok(());
+            }
+
             // update state
             self.session_name = name.clone();
             self.default_mode_info.session_name = Some(name.clone());
@@ -85,15 +111,6 @@ impl Screen {
             let new_socket_file_path = ZELLIJ_SOCK_DIR.join(&name);
             if let Err(e) = std::fs::rename(old_socket_file_path, new_socket_file_path) {
                 log::error!("Failed to rename ipc socket: {:?}", e);
-            }
-
-            // rename session_info folder (TODO: make this atomic, right now there is a
-            // chance background_jobs will re-create this folder before it knows the
-            // session was renamed)
-            let old_session_info_folder = session_info_folder_for_session(&old_session_name);
-            let new_session_info_folder = session_info_folder_for_session(&name);
-            if let Err(e) = std::fs::rename(old_session_info_folder, new_session_info_folder) {
-                log::error!("Failed to rename session_info folder: {:?}", e);
             }
 
             // report
