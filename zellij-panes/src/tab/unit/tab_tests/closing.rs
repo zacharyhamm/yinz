@@ -1,5 +1,7 @@
 use super::*;
 use zellij_bus::plugins::PluginInstruction;
+use zellij_bus::pty::PtyInstruction;
+use zellij_bus::screen::ScreenInstruction;
 use zellij_types::data::Event;
 
 #[test]
@@ -377,6 +379,120 @@ fn explicit_close_destroys_the_entire_live_replacement_chain() {
         for id in [source, view, helper] {
             assert_eq!(closed.iter().filter(|closed| **closed == id).count(), 1);
         }
+    }
+}
+
+#[test]
+fn explicit_close_of_any_multipane_replacement_destroys_both_chains() {
+    use zellij_types::multipane::*;
+    let chains = [
+        [
+            PaneId::Terminal(TerminalId::new(2)),
+            PaneId::Plugin(crate::PluginId::new(4)),
+            PaneId::Terminal(TerminalId::new(6)),
+        ],
+        [
+            PaneId::Terminal(TerminalId::new(3)),
+            PaneId::Plugin(crate::PluginId::new(5)),
+            PaneId::Terminal(TerminalId::new(7)),
+        ],
+    ];
+    let mut expected: Vec<_> = chains.into_iter().flatten().collect();
+    expected.sort();
+    for targeted in &expected {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 120,
+                rows: 40,
+            },
+            true,
+        );
+        let client = ClientId::new(1);
+        let (plugin_sender, plugin_receiver) = unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(plugin_sender));
+        let (pty_sender, pty_receiver) = unbounded();
+        tab.senders
+            .replace_to_pty(SenderWithContext::new(pty_sender));
+        let (screen_sender, screen_receiver) = unbounded();
+        tab.senders.to_screen = Some(SenderWithContext::new(screen_sender));
+        let placement = OverlayPlacement::dismissible(None);
+        for chain in chains {
+            tab.new_pane(
+                chain[0],
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::Overlay(placement.clone()),
+                Some(client),
+                None,
+            )
+            .unwrap();
+        }
+        tab.create_multipane(
+            [chains[0][0], chains[1][0]],
+            MultipaneSplit {
+                direction: MultipaneDirection::LeftRight,
+                ratio: 5000,
+            },
+            placement,
+        )
+        .unwrap();
+        for chain in chains {
+            for pair in chain.windows(2) {
+                tab.suppress_pane_and_replace_with_pid(pair[0], pair[1], false, None, None, None)
+                    .unwrap();
+            }
+        }
+        tab.focus_pane_with_id(chains[0][2], false, false, client)
+            .unwrap();
+
+        let mut closed = tab.close_pane_explicitly(*targeted, None);
+        closed.sort();
+        assert_eq!(closed, expected, "closing {targeted:?}");
+        assert_eq!(tab.overlay_panes.len(), 0);
+        assert!(tab.suppressed_panes.is_empty());
+        let survivor = PaneId::Terminal(TerminalId::new(1));
+        assert_eq!(tab.get_all_pane_ids(), vec![survivor]);
+        assert_eq!(tab.get_active_pane_id(client), Some(survivor));
+        for id in &expected {
+            assert!(tab.close_pane_explicitly(*id, None).is_empty());
+        }
+        let mut announced: Vec<_> = plugin_receiver
+            .try_iter()
+            .flat_map(|(instruction, _)| match instruction {
+                PluginInstruction::Update(events) => events
+                    .into_iter()
+                    .filter_map(|(_, _, event)| match event {
+                        Event::PaneClosed(id) => Some(id),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => vec![],
+            })
+            .collect();
+        announced.sort();
+        assert_eq!(announced, expected);
+        let mut notified: Vec<_> = screen_receiver
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id } => Some(pane_id),
+                _ => None,
+            })
+            .collect();
+        notified.sort();
+        assert_eq!(notified, expected);
+        let mut terminated: Vec<_> = pty_receiver
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PtyInstruction::ClosePane(id, _) => Some(id),
+                _ => None,
+            })
+            .collect();
+        terminated.sort();
+        assert_eq!(terminated, expected);
+        tab.assert_invariants();
     }
 }
 

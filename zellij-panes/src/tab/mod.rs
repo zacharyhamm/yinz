@@ -7924,16 +7924,22 @@ impl Tab {
         if !self.has_pane_with_pid(&id) {
             return vec![];
         }
-        let container = self
-            .multipane_info(id)
-            .and_then(|_| self.overlay_panes.take_container(id));
-        let mut closed = container
-            .as_ref()
-            .map(|container| container.pane_ids().collect::<Vec<_>>())
-            .unwrap_or_else(|| vec![id]);
+        let mut container = None;
+        let mut closed = vec![id];
         let mut index = 0;
         while index < closed.len() {
             let current = closed[index];
+            if let Some(owning_container) = self
+                .multipane_info(current)
+                .and_then(|_| self.overlay_panes.take_container(current))
+            {
+                for sibling in owning_container.pane_ids() {
+                    if !closed.contains(&sibling) {
+                        closed.push(sibling);
+                    }
+                }
+                container = Some(owning_container);
+            }
             for (subject, suppressed) in &self.suppressed_panes {
                 if let Some(stand_in) = suppressed.restored_by {
                     let related = if *subject == current {
