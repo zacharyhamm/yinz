@@ -3879,7 +3879,7 @@ fn a_non_selectable_overlay_cannot_be_focused_again() {
         false,
         crate::ClientId::new(1),
     )
-    .expect("TEST");
+    .expect_err("focusing a non-selectable pane must report an error");
     assert_ne!(
         tab.get_active_pane_id(crate::ClientId::new(1)),
         Some(PaneId::Terminal(crate::TerminalId::new(2))),

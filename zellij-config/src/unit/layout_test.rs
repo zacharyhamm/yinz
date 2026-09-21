@@ -12,6 +12,151 @@ fn normalize_layout_debug(s: String) -> String {
 }
 
 #[test]
+fn relative_layout_directory_preserves_metadata() {
+    let dir = tempfile::tempdir_in(".").unwrap();
+    let relative_dir = Path::new(".").join(dir.path().file_name().unwrap());
+    let file_path = relative_dir.join("review.kdl");
+    std::fs::write(
+        &file_path,
+        "layout { tab name=\"review\" { pane; pane; }; }",
+    )
+    .unwrap();
+    let expected_metadata = metadata_from_path(&file_path);
+    assert!(!expected_metadata.tabs.is_empty());
+
+    for layout_dir in [relative_dir, dir.path().canonicalize().unwrap()] {
+        let (layouts, errors) = list_available_layouts(Some(layout_dir), &None);
+        assert!(errors.is_empty());
+        assert!(layouts.contains(&LayoutInfo::File(
+            "review".to_owned(),
+            expected_metadata.clone(),
+        )));
+    }
+}
+
+#[test]
+fn edit_line_numbers_accept_properties_and_children_and_reject_invalid_values() {
+    for line in ["line_number=42", "{ line_number 42; }"] {
+        let raw = format!("layout {{ pane edit=\"notes.md\" {line}; }}");
+        let layout = crate::kdl::layout::from_kdl(&raw, None, None, None).unwrap();
+        assert!(matches!(
+            layout.template.unwrap().0.children[0].run,
+            Some(Run::EditFile(_, Some(42), _))
+        ));
+    }
+    for pane in [
+        "edit=\"notes.md\" line_number=-1",
+        "edit=\"notes.md\" line_number=1.5",
+        "edit=\"notes.md\" line_number=\"42\"",
+        "edit=\"notes.md\" { line_number; }",
+        "line_number=42",
+        "command=\"sh\" line_number=42",
+    ] {
+        let raw = format!("layout {{ pane {pane}; }}");
+        assert!(
+            crate::kdl::layout::from_kdl(&raw, None, None, None).is_err(),
+            "accepted invalid line number: {pane}"
+        );
+    }
+}
+
+#[test]
+fn template_edit_line_numbers_override_or_inherit() {
+    for (template_properties, floating) in [
+        ("", false),
+        ("size=10", false),
+        ("", true),
+        ("width=20", true),
+    ] {
+        for (template_line, inherited) in [
+            ("", None),
+            ("line_number=7", Some(7)),
+            ("{ line_number 7; }", Some(7)),
+        ] {
+            for (instance, override_line) in [
+                ("", None),
+                ("line_number=42", Some(42)),
+                ("{ line_number 42; }", Some(42)),
+                ("line_number=0", Some(0)),
+                ("{ line_number 0; }", Some(0)),
+            ] {
+                let pane = format!("editor {instance};");
+                let panes = if floating {
+                    format!("pane; floating_panes {{ {pane} }};")
+                } else {
+                    pane
+                };
+                let raw = format!("layout {{ pane_template name=\"editor\" edit=\"notes.md\" {template_properties} {template_line}; {panes} }}");
+                let layout = crate::kdl::layout::from_kdl(&raw, None, None, None)
+                    .unwrap_or_else(|error| panic!("{raw}: {error:?}"));
+                let (tiled, floating_panes) = layout.template.unwrap();
+                let run = if floating {
+                    &floating_panes[0].run
+                } else {
+                    &tiled.children[0].run
+                };
+                assert_eq!(
+                    *run,
+                    Some(Run::EditFile(
+                        "notes.md".into(),
+                        override_line.or(inherited),
+                        None
+                    )),
+                    "{raw}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn template_line_numbers_reject_invalid_values_and_resolved_non_edits() {
+    for (template_properties, floating) in [
+        ("", false),
+        ("size=10", false),
+        ("", true),
+        ("width=20", true),
+    ] {
+        for (template_run, instance) in [
+            ("edit=\"notes.md\"", "line_number=-1"),
+            ("edit=\"notes.md\"", "{ line_number -1; }"),
+            ("edit=\"notes.md\"", "line_number=1.5"),
+            ("edit=\"notes.md\"", "{ line_number 1.5; }"),
+            ("edit=\"notes.md\"", "line_number=\"42\""),
+            ("edit=\"notes.md\"", "{ line_number \"42\"; }"),
+            ("edit=\"notes.md\"", "line_number=true"),
+            ("edit=\"notes.md\"", "{ line_number; }"),
+            ("edit=\"notes.md\"", "command=\"sh\" line_number=42"),
+            (
+                "edit=\"notes.md\"",
+                "{ plugin location=\"zellij:status-bar\"; line_number 42; }",
+            ),
+            ("command=\"sh\"", "line_number=42"),
+            ("command=\"sh\"", "{ line_number 42; }"),
+            ("cwd=\"/tmp\"", "line_number=42"),
+            ("", "line_number=42"),
+            (
+                "{ plugin location=\"zellij:status-bar\"; }",
+                "{ line_number 42; }",
+            ),
+        ] {
+            let pane = format!("editor {instance};");
+            let panes = if floating {
+                format!("pane; floating_panes {{ {pane} }};")
+            } else {
+                pane
+            };
+            let raw = format!("layout {{ pane_template name=\"editor\" {template_properties} {template_run}; {panes} }}");
+            let error = crate::kdl::layout::from_kdl(&raw, None, None, None).expect_err(&raw);
+            assert!(
+                format!("{error:?}").contains("line_number"),
+                "{raw}: {error:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn empty_layout() {
     let kdl_layout = "layout";
     let layout =

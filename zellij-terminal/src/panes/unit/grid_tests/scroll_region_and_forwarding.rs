@@ -1,6 +1,72 @@
 use super::*;
 
 #[test]
+fn reverse_index_moves_outside_scroll_margins_without_scrolling() {
+    for (row, expected_y) in [(1, 0), (2, 0), (4, 2), (6, 4), (7, 5)] {
+        let mut grid =
+            create_grid_with_size_and_raw(7, 5, b"AAA\r\nBBB\r\nCCC\r\nDDD\r\nEEE\r\nFFF\r\nGGG");
+        feed_bytes(&mut grid, format!("\x1b[3;5r\x1b[{row};2H").as_bytes());
+        let viewport_before = viewport_texts(&grid);
+
+        feed_bytes(&mut grid, b"\x1bM");
+
+        assert_eq!((grid.cursor.x, grid.cursor.y), (1, expected_y));
+        assert_eq!(viewport_texts(&grid), viewport_before);
+    }
+}
+
+#[test]
+fn reverse_index_scrolls_only_at_top_margin_and_preserves_background() {
+    let mut grid =
+        create_grid_with_size_and_raw(7, 5, b"AAA\r\nBBB\r\nCCC\r\nDDD\r\nEEE\r\nFFF\r\nGGG");
+    feed_bytes(&mut grid, b"\x1b[3;5r\x1b[5;2H\x1b[48;5;2m");
+    let viewport_before = viewport_texts(&grid);
+
+    grid.move_cursor_up_with_scrolling(2);
+
+    assert_eq!(viewport_texts(&grid), viewport_before);
+    feed_bytes(&mut grid, b"\x1bM");
+
+    assert_eq!((grid.cursor.x, grid.cursor.y), (1, 2));
+    assert_eq!(
+        viewport_texts(&grid),
+        ["AAA", "BBB", "", "CCC", "DDD", "FFF", "GGG"]
+    );
+    let (chunks, _, _) = grid.read_changes(0, 0);
+    assert!(chunks
+        .iter()
+        .find(|chunk| chunk.y == 2)
+        .unwrap()
+        .terminal_characters
+        .iter()
+        .all(|character| {
+            character.character == ' '
+                && character.styles.background == Some(AnsiCode::ColorIndex(2))
+        }));
+}
+
+#[test]
+fn partial_erase_redraws_only_changed_lines() {
+    for (sequence, expected_lines, expected_text) in [
+        (b"\x1b[0J", vec![2, 3, 4], ["AAA", "BBB", "C", "", ""]),
+        (b"\x1b[1J", vec![0, 1, 2], ["", "", "  C", "DDD", "EEE"]),
+    ] {
+        let mut grid =
+            create_grid_with_size_and_raw(5, 5, b"AAA\r\nBBB\r\nCCC\r\nDDD\r\nEEE\x1b[3;2H");
+        grid.read_changes(0, 0);
+
+        feed_bytes(&mut grid, sequence);
+
+        let (chunks, _, _) = grid.read_changes(0, 0);
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+            expected_lines
+        );
+        assert_eq!(viewport_texts(&grid), expected_text);
+    }
+}
+
+#[test]
 fn partial_scroll_region_newline_transfers_to_scrollback() {
     let mut content: Vec<u8> = Vec::new();
     content.extend_from_slice(PARTIAL_SR);

@@ -283,7 +283,8 @@ impl SixelGrid {
                 pixel_rect.width,
                 pixel_rect.height,
             );
-            sixel_image_cache.clear(); // TODO: more intelligent cache clearing
+            sixel_image_cache
+                .retain(|cached_rect, _| cached_rect.intersecting_rect(&pixel_rect).is_none());
         }
     }
     pub fn reap_images(&mut self, ids_to_reap: Vec<usize>) {
@@ -464,3 +465,7 @@ impl SixelImageStore {
         self.sixel_images.len()
     }
 }
+
+#[cfg(test)]
+#[path = "./unit/sixel_tests.rs"]
+mod sixel_tests;

@@ -2734,6 +2734,9 @@ impl Screen {
             .get(&client_id)
             .copied()
             .filter(|tab_id| self.tabs.contains_key(tab_id));
+        let can_replace_active_pane = focused_tab_id
+            .and_then(|tab_id| self.tabs.get(&tab_id))
+            .is_some_and(|tab| tab.can_replace_active_pane(client_id));
         let all_tabs = self.get_tabs_mut();
         for (tab_id, tab) in all_tabs.iter_mut() {
             if let Some(plugin_pane_id) = tab.find_plugin(run_plugin) {
@@ -2742,6 +2745,9 @@ impl Screen {
                     if tab.pane_is_overlay(plugin_pane_id) {
                         overlay_to_move = Some(plugin_pane_id);
                         break;
+                    }
+                    if !should_float && should_be_in_place && !can_replace_active_pane {
+                        return Err(anyhow!("no active pane to replace for client {client_id}"));
                     }
                     plugin_pane_to_move_to_active_tab = tab.extract_pane(plugin_pane_id, true);
                 }
@@ -2774,7 +2780,9 @@ impl Screen {
                     true,
                     Some(client_id),
                 )?;
-            // TODO: also should_be_in_place
+            } else if should_be_in_place {
+                new_active_tab.park_pane(plugin_pane_to_move_to_active_tab);
+                new_active_tab.focus_pane_with_id(pane_id, false, true, client_id)?;
             } else {
                 new_active_tab.hide_floating_panes();
                 new_active_tab.add_tiled_pane(

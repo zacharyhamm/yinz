@@ -74,6 +74,7 @@ impl<'a> KdlLayoutParser<'a> {
             || word == "new_tab_template"
             || word == "command"
             || word == "edit"
+            || word == "line_number"
             || word == "plugin"
             || word == "children"
             || word == "tab"
@@ -104,6 +105,7 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "plugin"
             || property_name == "command"
             || property_name == "edit"
+            || property_name == "line_number"
             || property_name == "cwd"
             || property_name == "args"
             || property_name == "close_on_exit"
@@ -128,6 +130,7 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "plugin"
             || property_name == "command"
             || property_name == "edit"
+            || property_name == "line_number"
             || property_name == "cwd"
             || property_name == "args"
             || property_name == "close_on_exit"
@@ -457,6 +460,47 @@ impl<'a> KdlLayoutParser<'a> {
             .map(Some)
             .map_err(|error| kdl_parsing_error!(error, pane_node))
     }
+    fn parse_line_number(&self, pane_node: &KdlNode) -> Result<Option<usize>, ConfigError> {
+        Ok(match kdl_get_property_or_child!(pane_node, "line_number") {
+            Some(entry) => Some(
+                entry
+                    .value()
+                    .as_i64()
+                    .and_then(|line| usize::try_from(line).ok())
+                    .ok_or_else(|| {
+                        kdl_parsing_error!(
+                            "line_number must be a non-negative integer".to_owned(),
+                            entry
+                        )
+                    })?,
+            ),
+            None if kdl_child_with_name!(pane_node, "line_number").is_some() => {
+                return Err(kdl_parsing_error!(
+                    "line_number must have a value".to_owned(),
+                    pane_node
+                ));
+            },
+            None => None,
+        })
+    }
+    fn apply_line_number(
+        &self,
+        pane_node: &KdlNode,
+        run: &mut Option<Run>,
+    ) -> Result<(), ConfigError> {
+        if let Some(line_number) = self.parse_line_number(pane_node)? {
+            match run {
+                Some(Run::EditFile(_, line, _)) => *line = Some(line_number),
+                _ => {
+                    return Err(kdl_parsing_error!(
+                        "line_number requires an edit instruction".to_owned(),
+                        pane_node
+                    ));
+                },
+            }
+        }
+        Ok(())
+    }
     fn parse_pane_command(
         &self,
         pane_node: &KdlNode,
@@ -464,6 +508,14 @@ impl<'a> KdlLayoutParser<'a> {
     ) -> Result<Option<Run>, ConfigError> {
         let command = self.parse_path(pane_node, "command")?;
         let edit = self.parse_path(pane_node, "edit")?;
+        let line_number = self.parse_line_number(pane_node)?;
+        // A template instance can inherit its edit instruction during Run::merge.
+        if !is_template && line_number.is_some() && edit.is_none() {
+            return Err(kdl_parsing_error!(
+                "line_number requires an edit instruction".to_owned(),
+                pane_node
+            ));
+        }
         let cwd = self.parse_path(pane_node, "cwd")?;
         let args = self.parse_args(pane_node)?;
         let firecracker = self.parse_firecracker(pane_node)?;
@@ -509,9 +561,9 @@ impl<'a> KdlLayoutParser<'a> {
                 ..Default::default()
             }))),
             (None, Some(edit), Some(cwd), None) => {
-                Ok(Some(Run::EditFile(cwd.join(edit), None, Some(cwd))))
+                Ok(Some(Run::EditFile(cwd.join(edit), line_number, Some(cwd))))
             },
-            (None, Some(edit), None, None) => Ok(Some(Run::EditFile(edit, None, None))),
+            (None, Some(edit), None, None) => Ok(Some(Run::EditFile(edit, line_number, None))),
             (Some(_command), Some(_edit), _, _) => Err(ConfigError::new_layout_kdl_error(
                 "cannot have both a command and an edit instruction for the same pane".into(),
                 pane_node.span().offset(),
@@ -793,6 +845,7 @@ impl<'a> KdlLayoutParser<'a> {
                     pane_template_kdl_node,
                 )?;
                 pane_template.run = Run::merge(&pane_template.run, &run);
+                self.apply_line_number(kdl_node, &mut pane_template.run)?;
                 if let Some(pane_template_run_command) = pane_template.run.as_mut() {
                     // we need to do this because panes consuming a pane_template
                     // can have bare args without a command
@@ -885,6 +938,7 @@ impl<'a> KdlLayoutParser<'a> {
                     kdl_node,
                 )?;
                 pane_template.run = Run::merge(&pane_template.run, &run);
+                self.apply_line_number(kdl_node, &mut pane_template.run)?;
                 if let Some(pane_template_run_command) = pane_template.run.as_mut() {
                     // we need to do this because panes consuming a pane_template
                     // can have bare args without a command
@@ -939,6 +993,7 @@ impl<'a> KdlLayoutParser<'a> {
                     kdl_node,
                 )?;
                 pane_template.run = Run::merge(&pane_template.run, &run);
+                self.apply_line_number(kdl_node, &mut pane_template.run)?;
                 if let Some(pane_template_run_command) = pane_template.run.as_mut() {
                     // we need to do this because panes consuming a pane_template
                     // can have bare args without a command
