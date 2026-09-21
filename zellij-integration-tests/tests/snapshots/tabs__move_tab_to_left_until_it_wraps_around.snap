@@ -4,4 +4,4 @@ expression: normalized(&grid_snapshot)
 ---
  Zellij (test)  [0] Tab #1  [1] Tab #2  [2] Tab #3  + 
 $ █
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

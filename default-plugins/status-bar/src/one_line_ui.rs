@@ -149,6 +149,16 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                 ),
                 KeyShortcut::new(
                     KeyMode::UnselectedAlternate,
+                    KeyAction::Agent,
+                    to_char(action_key(
+                        normal_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Agent,
+                        }],
+                    )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::UnselectedAlternate,
                     KeyAction::Pane,
                     to_char(action_key(
                         normal_binds,
@@ -204,16 +214,6 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                         normal_binds,
                         &[Action::SwitchToMode {
                             input_mode: InputMode::Session,
-                        }],
-                    )),
-                ),
-                KeyShortcut::new(
-                    KeyMode::UnselectedAlternate,
-                    KeyAction::Agent,
-                    to_char(action_key(
-                        normal_binds,
-                        &[Action::SwitchToMode {
-                            input_mode: InputMode::Agent,
                         }],
                     )),
                 ),
@@ -493,6 +493,16 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                 ),
                 KeyShortcut::new(
                     KeyMode::UnselectedAlternate,
+                    KeyAction::Agent,
+                    to_char(action_key(
+                        normal_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Agent,
+                        }],
+                    )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::UnselectedAlternate,
                     KeyAction::Pane,
                     to_char(action_key(
                         normal_binds,
@@ -548,16 +558,6 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                         normal_binds,
                         &[Action::SwitchToMode {
                             input_mode: InputMode::Session,
-                        }],
-                    )),
-                ),
-                KeyShortcut::new(
-                    KeyMode::UnselectedAlternate,
-                    KeyAction::Agent,
-                    to_char(action_key(
-                        normal_binds,
-                        &[Action::SwitchToMode {
-                            input_mode: InputMode::Agent,
                         }],
                     )),
                 ),
@@ -1888,6 +1888,21 @@ mod tests {
 
     /// An arbitrary but fixed instant, read at UTC so the test does not depend on the host.
     const FIXED_MS: i64 = 1_757_000_000_000;
+
+    #[test]
+    fn base_mode_menus_put_agent_between_lock_and_pane() {
+        let help = ModeInfo::default();
+        for (indicators, lock) in [
+            (base_mode_locked_mode_indicators(&help), KeyAction::Unlock),
+            (base_mode_normal_mode_indicators(&help), KeyAction::Lock),
+        ] {
+            let actions: Vec<_> = indicators[&InputMode::Normal]
+                .iter()
+                .map(|shortcut| shortcut.action)
+                .collect();
+            assert_eq!(actions[..3], [lock, KeyAction::Agent, KeyAction::Pane]);
+        }
+    }
 
     /// The right-hand slot as text, for a mode and a width.
     fn secondary_slot(mode: InputMode, hint_revealed: bool, max_len: usize) -> String {
