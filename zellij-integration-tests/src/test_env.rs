@@ -32,9 +32,10 @@ pub fn init() -> &'static Path {
 /// hook still prints the panic, but under a runner that captures per-test output it lands in
 /// whichever test happened to be capturing - not necessarily the one that then timed out.
 ///
-/// Keep our own copy, named by thread, so every timeout message can say what died. This only
-/// records: a panic is not made to fail the test that notices it, because under `cargo test` -
-/// where one process runs many tests - that test may be a bystander to another test's session.
+/// Keep our own copy, named by thread, so every timeout message can say what died and a clean
+/// server shutdown cannot hide a worker's discarded join error. Nextest runs one test per
+/// process. Under `cargo test`, a panic can also fail a sibling session's shutdown; that suite
+/// must fail either way, and the recorded thread and panic identify the original failure.
 fn record_background_thread_panics() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -46,6 +47,18 @@ fn record_background_thread_panics() {
         }
         default_hook(panic_info);
     }));
+}
+
+pub(crate) fn assert_no_background_panics() {
+    let background_panics = BACKGROUND_PANICS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert!(
+        background_panics.is_empty(),
+        "background thread panicked during integration test:\n{}",
+        background_panics.join("\n")
+    );
 }
 
 /// Every panic recorded so far, formatted for a timeout message. Empty when nothing has panicked,

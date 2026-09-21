@@ -23,7 +23,7 @@ keybinds clear-defaults=true {
 
 #[test]
 fn exit_zellij() {
-    let zellij = TestRunner::new(TERMINAL_SIZE).start();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE).start();
     claim_first_terminal_and_wait_for_prompt(&zellij);
 
     zellij.send_stdin(&keys::ctrl('q'));
@@ -48,6 +48,7 @@ fn exit_zellij() {
     zellij.wait_until("zellij said goodbye", |grid_snapshot| {
         !grid_snapshot.status_bar_appears() && grid_snapshot.contains("Bye from Zellij!")
     });
+    zellij.wait_for_exit();
 }
 
 #[test]

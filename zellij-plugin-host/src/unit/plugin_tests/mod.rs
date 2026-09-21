@@ -522,6 +522,30 @@ type PluginThreadHarnessWith<T> = (
     Box<dyn FnOnce()>,
 );
 
+fn join_plugin_thread(thread: std::thread::JoinHandle<()>) {
+    if let Err(panic) = thread.join() {
+        // Some harnesses tear down from Drop; preserve an existing test failure without
+        // aborting the process with a second panic during unwinding.
+        if !std::thread::panicking() {
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
+#[test]
+fn a_plugin_thread_panic_fails_its_test() {
+    let thread = std::thread::spawn(|| panic!("plugin thread failed after its last render"));
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        join_plugin_thread(thread);
+    }))
+    .expect_err("the harness must propagate a plugin thread panic");
+    assert_eq!(
+        panic.downcast_ref::<&str>(),
+        Some(&"plugin thread failed after its last render"),
+        "preserve the failure's original diagnostic"
+    );
+}
+
 fn create_plugin_thread(
     zellij_cwd: Option<PathBuf>,
     session_env_vars: Option<std::collections::BTreeMap<String, String>>,
@@ -668,7 +692,7 @@ fn create_plugin_thread_with_hooks_and_event_sender(
             let _ = to_screen.send(ScreenInstruction::Exit);
             let _ = to_server.send(ServerInstruction::KillSession);
             let _ = to_plugin.send(PluginInstruction::Exit);
-            let _ = plugin_thread.join();
+            join_plugin_thread(plugin_thread);
         }
     };
     (to_plugin, screen_receiver, Box::new(teardown))
@@ -757,7 +781,7 @@ fn create_plugin_thread_with_server_receiver(
             let _ = to_screen.send(ScreenInstruction::Exit);
             let _ = to_server.send(ServerInstruction::KillSession);
             let _ = to_plugin.send(PluginInstruction::Exit);
-            let _ = plugin_thread.join();
+            join_plugin_thread(plugin_thread);
         }
     };
     (
@@ -869,7 +893,7 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
             let _ = to_screen.send(ScreenInstruction::Exit);
             let _ = to_server.send(ServerInstruction::KillSession);
             let _ = to_plugin.send(PluginInstruction::Exit);
-            let _ = plugin_thread.join();
+            join_plugin_thread(plugin_thread);
         }
     };
     (to_plugin, pty_receiver, screen_receiver, Box::new(teardown))
@@ -960,7 +984,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
             let _ = to_server.send(ServerInstruction::KillSession);
             let _ = to_plugin.send(PluginInstruction::Exit);
             let _ = to_background_jobs.send(BackgroundJob::Exit);
-            let _ = plugin_thread.join();
+            join_plugin_thread(plugin_thread);
         }
     };
     (

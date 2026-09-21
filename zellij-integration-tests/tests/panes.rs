@@ -173,7 +173,7 @@ fn close_pane() {
 
 #[test]
 fn closing_last_pane_exits_when_no_background_panes_remain() {
-    let zellij = TestRunner::new(TERMINAL_SIZE)
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config("load_plugins clear-defaults=true {}")
         .start();
     claim_first_terminal_and_wait_for_prompt(&zellij);
@@ -185,11 +185,12 @@ fn closing_last_pane_exits_when_no_background_panes_remain() {
         "zellij exited after closing the last pane",
         |grid_snapshot| grid_snapshot.contains("Bye from Zellij!"),
     );
+    zellij.wait_for_exit();
 }
 
 #[test]
 fn last_terminal_exit_ends_session_with_background_plugins() {
-    let zellij = start_zellij();
+    let mut zellij = start_zellij();
     let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
 
     terminal.exit(Some(0));
@@ -198,11 +199,12 @@ fn last_terminal_exit_ends_session_with_background_plugins() {
         "zellij exited after the last shell exited",
         |grid_snapshot| grid_snapshot.contains("Bye from Zellij!"),
     );
+    zellij.wait_for_exit();
 }
 
 #[test]
 fn last_terminal_exit_ends_session_without_plugin_renders() {
-    let zellij = TestRunner::new(TERMINAL_SIZE)
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config("load_plugins clear-defaults=true {}")
         .with_layout(LayoutInfo::Stringified("layout { pane; }".to_owned()))
         .start();
@@ -218,6 +220,7 @@ fn last_terminal_exit_ends_session_without_plugin_renders() {
         "zellij exited after the last shell exited",
         |grid_snapshot| grid_snapshot.contains("Bye from Zellij!"),
     );
+    zellij.wait_for_exit();
 }
 
 #[test]

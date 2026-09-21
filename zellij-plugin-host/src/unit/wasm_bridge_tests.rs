@@ -50,7 +50,7 @@ impl TestBridge {
             to_pty_writer: Some(SenderWithContext::new(to_pty_writer)),
             to_background_jobs: Some(SenderWithContext::new(to_background_jobs)),
             session_recorder: None,
-            should_silently_fail: true,
+            should_silently_fail: false,
         };
         let data_dir = tempdir().unwrap();
         let data_access = Arc::new(DataAccess::sqlite(data_dir.path()));
@@ -173,8 +173,17 @@ export default {
         matches!(instruction, ScreenInstruction::PluginBytes(assets) if assets.iter().any(|asset|
             asset.client_id == client && String::from_utf8_lossy(&asset.bytes).contains("keys=1")))
     }), "the replacement must receive events");
+    let scratch = replacement
+        .lock()
+        .unwrap()
+        .env()
+        .plugin_own_data_dir
+        .clone();
+    let events = FileEvents::new(scratch.parent().unwrap());
+    drop(original);
+    drop(replacement);
     test.bridge.unload_plugin(id).unwrap();
-    test.settle(id);
+    events.wait("replacement plugin cleanup", || !scratch.exists());
 }
 
 #[test]
@@ -305,8 +314,21 @@ export default {
             frame.bytes
         );
     }
+    let scratch = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, Some(first))
+        .unwrap()
+        .lock()
+        .unwrap()
+        .env()
+        .plugin_own_data_dir
+        .clone();
+    let events = FileEvents::new(scratch.parent().unwrap());
     test.bridge.unload_plugin(id).unwrap();
-    test.settle(id);
+    events.wait("tagged output plugin cleanup", || !scratch.exists());
 }
 
 #[test]
@@ -482,8 +504,21 @@ export default {
         .clone()
         .unload_plugin(&id)
         .is_empty());
+    let scratch = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, Some(new_owner))
+        .unwrap()
+        .lock()
+        .unwrap()
+        .env()
+        .plugin_own_data_dir
+        .clone();
+    let events = FileEvents::new(scratch.parent().unwrap());
     test.bridge.unload_plugin(id).unwrap();
-    test.settle(id);
+    events.wait("rekeyed plugin cleanup", || !scratch.exists());
 }
 
 fn run_plugin() -> RunPlugin {
@@ -890,6 +925,49 @@ const RECOVERABLE_WASM: &str = r#"(module
     (func (export "update") (result i32) i32.const 0)
     (func (export "render") (param i32 i32))
 )"#;
+
+#[test]
+fn resizing_after_the_screen_exits_keeps_the_executor_and_plugin_usable() {
+    let mut test = TestBridge::new();
+    let plugin_id = PluginId::new(1);
+    let client_id = ClientId::new(1);
+    let context = test.context(1, 1, RECOVERABLE_WASM);
+    let scratch = context.plugin_own_data_dir.clone();
+    let events = FileEvents::new(scratch.parent().unwrap());
+    test.load(context).unwrap();
+    test.settle(plugin_id);
+
+    // Simulate shutdown after the screen receiver exits but before queued plugin
+    // resizes drain. Keep the other channels alive so the failed publication is real.
+    test._receivers.retain(|receiver| {
+        !receiver
+            .is::<channels::Receiver<(ScreenInstruction, zellij_types::diagnostics::ErrorContext)>>(
+            )
+    });
+    let (shutdown, _receiver) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .resize_plugin(plugin_id, 31, 9, shutdown)
+        .unwrap();
+    test.settle(plugin_id);
+
+    let plugin = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin_id, Some(client_id))
+        .unwrap();
+    assert_eq!(
+        {
+            let plugin = plugin.lock().unwrap();
+            (plugin.columns, plugin.rows)
+        },
+        (31, 9)
+    );
+    drop(plugin);
+    test.bridge.unload_plugin(plugin_id).unwrap();
+    events.wait("resized plugin cleanup", || !scratch.exists());
+}
 
 fn assert_reload_recovers(wasm: bool, by_url: bool) {
     let mut test = TestBridge::new();
