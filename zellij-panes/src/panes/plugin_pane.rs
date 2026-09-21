@@ -251,6 +251,21 @@ impl Pane for PluginPane {
         self.resize_grids();
         self.set_should_render(true);
     }
+    fn set_layout(
+        &mut self,
+        mut geom: PaneGeom,
+        geom_override: Option<PaneGeom>,
+        borderless: bool,
+        content_offset: Offset,
+    ) {
+        geom.is_pinned = self.geom.is_pinned;
+        self.geom = geom;
+        self.geom_override = geom_override;
+        self.borderless = borderless;
+        self.content_offset = content_offset;
+        self.resize_grids();
+        self.set_should_render(true);
+    }
     fn character_cell_size_possibly_changed(&mut self) {
         for grid in self.grids.values_mut() {
             grid.character_cell_size_possibly_changed();

@@ -1624,6 +1624,7 @@ fn frame_of_an_overlay_over_a_ui_covering_fullscreen_tiled_pane() {
 mod invariant_props {
     use super::*;
     use hegel::generators;
+    use zellij_types::multipane::{MultipaneDirection, MultipaneSplit};
 
     /// One thing a user (or a plugin) can do to a tab. Deliberately includes the operations that
     /// the overlay special-casing threads through - opening onto a hidden layer, toggling the
@@ -1642,11 +1643,12 @@ mod invariant_props {
         ToggleFullscreen,
         ToggleNoUiFullscreen,
         Resize(u16),
+        ComposeOverlays(MultipaneDirection),
     }
 
     #[hegel::composite]
     fn op(tc: &hegel::TestCase) -> Op {
-        match tc.draw(generators::integers::<u8>().max_value(10)) {
+        match tc.draw(generators::integers::<u8>().max_value(12)) {
             0 => Op::NewTiledPane,
             1 => Op::NewFloatingPane,
             2 => Op::NewOverlay,
@@ -1657,7 +1659,9 @@ mod invariant_props {
             7 => Op::FocusFirstTiledPane,
             8 => Op::ToggleFullscreen,
             9 => Op::ToggleNoUiFullscreen,
-            _ => Op::Resize(tc.draw(generators::integers::<u16>().min_value(40).max_value(160))),
+            10 => Op::Resize(tc.draw(generators::integers::<u16>().min_value(40).max_value(160))),
+            11 => Op::ComposeOverlays(MultipaneDirection::LeftRight),
+            _ => Op::ComposeOverlays(MultipaneDirection::TopBottom),
         }
     }
 
@@ -1665,7 +1669,28 @@ mod invariant_props {
     fn a_tab_holds_its_invariants_under_any_sequence_of_pane_operations(tc: hegel::TestCase) {
         let op_count = tc.draw(generators::integers::<usize>().max_value(12));
         let ops: Vec<Op> = (0..op_count).map(|_| tc.draw(op())).collect();
+        assert_sequence(&ops);
+    }
 
+    #[test]
+    fn multipane_lifecycle_holds_tab_invariants() {
+        for direction in [MultipaneDirection::LeftRight, MultipaneDirection::TopBottom] {
+            assert_sequence(&[
+                Op::NewOverlay,
+                Op::NewOverlay,
+                Op::ComposeOverlays(direction),
+                Op::ToggleFullscreen,
+                Op::Resize(100),
+                Op::ToggleNoUiFullscreen,
+                Op::ToggleNoUiFullscreen,
+                Op::NewOverlay,
+                Op::ClosePane,
+                Op::ClosePane,
+            ]);
+        }
+    }
+
+    fn assert_sequence(ops: &[Op]) {
         let size = Size { cols: 80, rows: 20 };
         let (mut screen, _plugin_rx) = screen_with_plugin_sender(size);
         new_tab(&mut screen, 1, TabId::new(0));
@@ -1764,6 +1789,9 @@ mod invariant_props {
                     opened.push(pane_id);
                 },
                 Op::ClosePane => {
+                    let tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+                    // Closing one multipane member closes its sibling too.
+                    opened.retain(|id| tab.has_pane_with_pid(id));
                     if !opened.is_empty() {
                         let pane_id = opened.remove(0);
                         screen
@@ -1814,6 +1842,31 @@ mod invariant_props {
                             rows: 20,
                         })
                         .expect("TEST");
+                },
+                Op::ComposeOverlays(direction) => {
+                    let tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+                    let children: Vec<_> = opened
+                        .iter()
+                        .copied()
+                        .filter(|id| {
+                            tab.multipane_info(*id).is_none()
+                                && tab.overlay_placement_for(*id).is_some_and(|placement| {
+                                    placement.kind == OverlayKind::Dismissible
+                                })
+                        })
+                        .take(2)
+                        .collect();
+                    if let [first, second] = children.as_slice() {
+                        tab.create_multipane(
+                            [*first, *second],
+                            MultipaneSplit {
+                                direction: *direction,
+                                ratio: 5000,
+                            },
+                            OverlayPlacement::dismissible(Some(overlay_coordinates())),
+                        )
+                        .expect("TEST");
+                    }
                 },
             }
 

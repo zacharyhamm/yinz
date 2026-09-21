@@ -81,6 +81,17 @@ pub struct OverlayPane {
     retains_tab: bool,
 }
 impl OverlayPane {
+    fn borderless(&self) -> bool {
+        self.coordinates
+            .borderless
+            .unwrap_or_else(|| match &self.children {
+                Children::Single((_, pane)) => pane.borderless(),
+                Children::Multipane { .. } => false,
+            })
+    }
+    fn framed(&self) -> bool {
+        !self.borderless() && self.fullscreen != Some(true)
+    }
     pub fn pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
         self.children.as_slice().iter().map(|(id, _)| *id)
     }
@@ -232,15 +243,12 @@ impl OverlayPanes {
     pub fn add_pane(
         &mut self,
         pane_id: PaneId,
-        mut pane: Box<dyn Pane>,
+        pane: Box<dyn Pane>,
         kind: OverlayKind,
         coordinates: FloatingPaneCoordinates,
         mut carry: OverlayCarry,
     ) {
         carry.opening_awaits_placement |= carry.awaiting_placement;
-        if let Some(borderless) = coordinates.borderless {
-            pane.set_borderless(borderless);
-        }
         let geom = Self::resolved(&self.surface(), pane.position_and_size(), &coordinates);
         let overlay = OverlayPane {
             id: OverlayId(NEXT_OVERLAY_ID.fetch_add(1, Ordering::Relaxed)),
@@ -396,7 +404,7 @@ impl OverlayPanes {
     pub fn replace_pane(
         &mut self,
         pane_id: PaneId,
-        mut with_pane: Box<dyn Pane>,
+        with_pane: Box<dyn Pane>,
     ) -> Result<Box<dyn Pane>> {
         let with_id = with_pane.pid();
         if with_id != pane_id && self.panes_contain(&with_id) {
@@ -411,10 +419,6 @@ impl OverlayPanes {
             .iter_mut()
             .find(|(id, _)| *id == pane_id)
             .context("overlay child not found")?;
-        with_pane.set_borderless_with_content_offset(
-            overlay.coordinates.borderless.unwrap_or(false),
-            pane.get_content_offset(),
-        );
         *id = with_id;
         let mut old = std::mem::replace(pane, with_pane);
         old.reset_size_and_position_override();
@@ -881,11 +885,6 @@ impl OverlayPanes {
             .with_context(|| format!("no overlay pane with ID {pane_id:?}"))
             .with_context(err_context)?;
 
-        if let Some(borderless) = new_coordinates.borderless {
-            for (_, pane) in overlay.children.as_mut_slice() {
-                pane.set_borderless_with_content_offset(borderless, pane.get_content_offset());
-            }
-        }
         let mut new_coordinates = new_coordinates;
         new_coordinates.borderless = new_coordinates
             .borderless
@@ -914,9 +913,6 @@ impl OverlayPanes {
         let Some(overlay) = self.overlay_mut(pane_id) else {
             return false;
         };
-        for (_, pane) in overlay.children.as_mut_slice() {
-            pane.set_borderless_with_content_offset(borderless, pane.get_content_offset());
-        }
         overlay.coordinates.borderless = Some(borderless);
         self.set_pane_frames().non_fatal();
         self.set_force_render();
@@ -1185,7 +1181,7 @@ impl OverlayPanes {
         let Some(overlay) = self.overlay(&pane_id) else {
             return false;
         };
-        if overlay.coordinates.borderless == Some(true) || overlay.fullscreen == Some(true) {
+        if !overlay.framed() {
             return false;
         }
         let geom = self.current_geom(overlay);
@@ -1224,10 +1220,7 @@ impl OverlayPanes {
             let Children::Multipane { children, split } = &overlay.children else {
                 return None;
             };
-            let (_, divider) = split.geometry(
-                outer,
-                overlay.coordinates.borderless != Some(true) && overlay.fullscreen != Some(true),
-            );
+            let (_, divider) = split.geometry(outer, overlay.framed());
             return contains(divider, position).then_some((children[0].0, children[1].0));
         }
         None
@@ -1250,8 +1243,7 @@ impl OverlayPanes {
         let Some(overlay) = self.overlay_mut(&first) else {
             return false;
         };
-        let framed =
-            overlay.coordinates.borderless != Some(true) && overlay.fullscreen != Some(true);
+        let framed = overlay.framed();
         let Children::Multipane { split, .. } = &mut overlay.children else {
             return false;
         };
@@ -1393,8 +1385,8 @@ impl OverlayPanes {
         let surface = self.surface();
         let viewport = *self.viewport.borrow();
         for overlay in self.panes.values_mut() {
-            let framed =
-                overlay.coordinates.borderless != Some(true) && overlay.fullscreen != Some(true);
+            let borderless = overlay.borderless();
+            let framed = overlay.framed();
             let outer = overlay
                 .fullscreen
                 .map(|ui| viewport_geom(if ui { surface } else { viewport }))
@@ -1403,29 +1395,23 @@ impl OverlayPanes {
                 Children::Multipane { split, .. } => Some(split),
                 _ => None,
             };
-            let base = split.map(|split| {
-                split
-                    .geometry(overlay.geom, overlay.coordinates.borderless != Some(true))
-                    .0
-            });
+            let base = split.map(|split| split.geometry(overlay.geom, !borderless).0);
             let displayed = split.map(|split| split.geometry(outer, framed).0);
             for (index, (_, pane)) in overlay.children.as_mut_slice().iter_mut().enumerate() {
                 let geom = base.map(|geoms| geoms[index]).unwrap_or(overlay.geom);
-                pane.set_geom(geom);
-                if overlay.fullscreen.is_some() {
-                    pane.set_geom_override(displayed.map(|geoms| geoms[index]).unwrap_or(outer));
-                } else {
-                    pane.reset_size_and_position_override();
-                }
-                if split.is_some() {
-                    pane.set_borderless_with_content_offset(!framed, Offset::default());
-                } else {
-                    pane.set_content_offset(if framed {
+                let geom_override = overlay
+                    .fullscreen
+                    .map(|_| displayed.map(|geoms| geoms[index]).unwrap_or(outer));
+                pane.set_layout(
+                    geom,
+                    geom_override,
+                    if split.is_some() { !framed } else { borderless },
+                    if framed && split.is_none() {
                         Offset::frame(1)
                     } else {
                         Offset::default()
-                    });
-                }
+                    },
+                );
                 pane.set_frame(framed && split.is_none());
                 let current = pane.current_geom();
                 if current.cols.as_usize() > 0 && current.rows.as_usize() > 0 {
@@ -1465,7 +1451,7 @@ impl OverlayPanes {
             if overlay.carry.opening_awaits_placement {
                 continue;
             }
-            let eligible = enabled && overlay.coordinates.borderless != Some(true) && overlay.fullscreen != Some(true)
+            let eligible = enabled && overlay.framed()
                 && overlay.children.as_slice().iter().any(|(_, pane)| pane.invoked_with().as_ref().and_then(|run| run.get_run_plugin()).is_some_and(|plugin| matches!(plugin.location, zellij_types::input::layout::RunPluginLocation::Zellij(tag) if matches!(tag.to_string().as_str(), "hocus" | "hocus-agents"))));
             if !eligible {
                 overlay.carry.opening_started = None;
@@ -1580,8 +1566,7 @@ impl OverlayPanes {
             let kind = overlay.kind;
             let multipane = matches!(overlay.children, Children::Multipane { .. });
             let first_id = overlay.children.as_slice()[0].0;
-            let framed =
-                overlay.coordinates.borderless != Some(true) && overlay.fullscreen != Some(true);
+            let framed = overlay.framed();
             let divider = match overlay.children {
                 Children::Multipane { split, .. } => {
                     Some((split.geometry(outer, framed).1, split.direction))

@@ -446,6 +446,23 @@ pub trait Pane {
     fn reset_size_and_position_override(&mut self);
     fn set_geom(&mut self, position_and_size: PaneGeom);
     fn set_geom_override(&mut self, pane_geom: PaneGeom);
+    /// Apply a complete layout before resizing content. Grid-backed panes override this to avoid
+    /// reflowing through intermediate sizes when a frame becomes part of a shared container.
+    fn set_layout(
+        &mut self,
+        geom: PaneGeom,
+        geom_override: Option<PaneGeom>,
+        borderless: bool,
+        content_offset: Offset,
+    ) {
+        self.set_geom(geom);
+        if let Some(geom_override) = geom_override {
+            self.set_geom_override(geom_override);
+        } else {
+            self.reset_size_and_position_override();
+        }
+        self.set_borderless_with_content_offset(borderless, content_offset);
+    }
     fn character_cell_size_possibly_changed(&mut self) {}
     fn handle_pty_bytes(&mut self, _bytes: VteBytes) {}
     fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {}
@@ -10603,18 +10620,33 @@ impl Tab {
         }
 
         let overlay_stack = self.overlay_panes.rendered_pane_ids();
-        for (index, pane_id) in overlay_stack.iter().enumerate() {
+        let mut remaining = overlay_stack.as_slice();
+        // A container owns one occlusion layer, even when it renders two children.
+        for (index, geom) in self.overlay_panes.layers().iter().enumerate() {
+            let first = *remaining
+                .first()
+                .expect("overlay layer has no rendered pane");
+            let members = self.overlay_panes.members(&first);
+            assert!(!members.is_empty(), "{first:?} has no overlay container");
             assert!(
-                self.overlay_panes.panes_contain(pane_id),
-                "{pane_id:?} is in the overlay occlusion stack but not in the overlay panes"
+                remaining.starts_with(&members),
+                "overlay members are not adjacent in render order"
             );
-            assert_eq!(
-                self.overlay_panes.get_pane_z_index(*pane_id),
-                Some(index),
-                "{pane_id:?} is at position {index} of the overlay occlusion stack but reports a \
-                 different z-index"
-            );
+            for pane_id in &members {
+                assert!(self.overlay_panes.panes_contain(pane_id));
+                assert_eq!(
+                    self.overlay_panes.get_pane_z_index(*pane_id),
+                    Some(index),
+                    "{pane_id:?} does not report its container's z-index"
+                );
+                assert_eq!(self.overlay_panes.outer_geom(*pane_id), Some(*geom));
+            }
+            remaining = &remaining[members.len()..];
         }
+        assert!(
+            remaining.is_empty(),
+            "rendered overlay panes have no occlusion layer"
+        );
 
         // 5. An expansion names a pane that is here, on screen and expandable, and no *other*
         //    overlay is holding a geometry override. The second half is what makes "the way back
