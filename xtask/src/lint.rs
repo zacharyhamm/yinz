@@ -158,7 +158,9 @@ fn file_level_suppressions(source: &str) -> Vec<Suppression> {
                 let body_start = i + 3;
                 let body_end = matching_close(&source[body_start..], ']')
                     .map_or(source.len(), |close| body_start + close);
-                found.extend(suppressions_in(source[body_start..body_end].trim()));
+                found.extend(suppressions_in(
+                    code_only(&source[body_start..body_end]).trim(),
+                ));
                 // Past the closing `]`, which is code again.
                 code.skip_to((body_end + 1).min(source.len()));
             },
@@ -619,6 +621,29 @@ mod tests {
             found("#![cfg_attr(test, // why\n    allow(x))]\n"),
             vec![allow("x")]
         );
+    }
+
+    #[test]
+    fn comments_around_attribute_names_do_not_hide_suppressions() {
+        for (attribute, kind) in [
+            ("allow(dead_code)", "allow"),
+            ("expect(dead_code)", "expect"),
+            ("cfg_attr(test, allow(dead_code))", "allow"),
+        ] {
+            for comment in ["/* why */", "// why\n"] {
+                for body in [
+                    format!("{comment}{attribute}"),
+                    attribute.replacen('(', &format!("{comment}("), 1),
+                ] {
+                    let source = format!("#![{body}]");
+                    assert_eq!(
+                        found(&source),
+                        vec![(kind, "dead_code".to_owned())],
+                        "{source}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
