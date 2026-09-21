@@ -24,6 +24,7 @@ pub struct ThreadSenders {
     pub to_pty_writer: Option<SenderWithContext<PtyWriteInstruction>>,
     pub to_background_jobs: Option<SenderWithContext<BackgroundJob>>,
     pub session_recorder: Option<crate::session_recorder::SessionRecorderHandle>,
+    pub session_checkpoint: std::sync::Arc<crate::background_jobs::SessionCheckpointWriter>,
     // this is a convenience for the unit tests
     // it's not advisable to set it to true in production code
     pub should_silently_fail: bool,
@@ -202,6 +203,7 @@ impl<T> Bus<T> {
                 to_pty_writer: to_pty_writer.cloned(),
                 to_background_jobs: to_background_jobs.cloned(),
                 session_recorder: None,
+                session_checkpoint: Default::default(),
                 should_silently_fail: false,
             },
             os_input: os_input.clone(),
@@ -226,6 +228,7 @@ impl<T> Bus<T> {
                 to_pty_writer: None,
                 to_background_jobs: None,
                 session_recorder: None,
+                session_checkpoint: Default::default(),
                 should_silently_fail: true,
             },
             os_input: None,

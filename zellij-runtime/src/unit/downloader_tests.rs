@@ -1,11 +1,12 @@
 //! The downloader against a raw TCP server, so that every status, header and connection close
 //! is exactly what the test wrote. Each `download` future completes when its exchange does, so
-//! nothing here waits on the clock.
+//! only the stalled-transfer regression waits for the client's timeout.
 
-use super::{parse_content_range, ContentRange, Downloader, DownloaderError};
+use super::{build_client, parse_content_range, ContentRange, Downloader, DownloaderError};
 use isahc::error::ErrorKind;
 use isahc::http::StatusCode;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::mpsc;
@@ -668,4 +669,80 @@ async fn download_without_cache_returns_a_successful_body() {
     let body = Downloader::download_without_cache(&url).await.unwrap();
 
     assert_eq!(body, "layout {}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stalled_headers_and_bodies_time_out_and_release_the_download_lock() {
+    for send_partial_body in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let downloader = Downloader::with_client(
+            build_client(Duration::from_secs(1)),
+            dir.path().to_path_buf(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/{FILE_NAME}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+            }
+            if send_partial_body {
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123")
+                    .await
+                    .unwrap();
+            }
+            // Keep the connection open until the downloader cancels it.
+            let _ = socket.read_to_end(&mut Vec::new()).await;
+        });
+
+        let err = tokio::time::timeout(
+            Duration::from_secs(30),
+            downloader.download(&url, Some(FILE_NAME)),
+        )
+        .await
+        .expect("a stalled download must finish with a timeout")
+        .unwrap_err();
+        match err {
+            DownloaderError::Request(source) if !send_partial_body => {
+                assert!(source.is_timeout(), "{source:?}");
+                assert!(!part(&dir).exists());
+            },
+            DownloaderError::Transfer {
+                source, received, ..
+            } if send_partial_body => {
+                assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
+                assert_eq!(received, 4);
+                assert_eq!(read(&part(&dir)), &BODY[..4]);
+            },
+            other => panic!("unexpected timeout error: {other:?}"),
+        }
+        assert!(!cached(&dir).exists());
+        server.await.unwrap();
+
+        let response = if send_partial_body {
+            Exchange::new(
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\nContent-Length: 6",
+                &BODY[4..],
+            )
+        } else {
+            Exchange::new("HTTP/1.1 200 OK\r\nContent-Length: 10", BODY)
+        };
+        let (retry_url, mut requests) = serve(vec![response]).await;
+        let path = tokio::time::timeout(
+            Duration::from_secs(30),
+            downloader.download(&retry_url, Some(FILE_NAME)),
+        )
+        .await
+        .expect("the timed-out download must release its lock")
+        .unwrap();
+        assert_eq!(read(&path), BODY);
+        assert_eq!(
+            range_header(&requests.recv().await.unwrap()),
+            send_partial_body.then(|| "bytes=4-".to_owned())
+        );
+    }
 }

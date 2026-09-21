@@ -1,5 +1,22 @@
 use super::*;
 
+#[test]
+fn resizing_after_erasing_scrollback_preserves_wrapped_viewport() {
+    let mut grid = create_grid_with_size_and_raw(3, 4, b"aaaabbbbccccdddd\r\nNEXT");
+    assert!(!grid.lines_above.is_empty());
+    assert!(!grid.viewport[0].is_canonical);
+
+    feed_bytes(&mut grid, b"\x1b[3J");
+    assert!(grid.lines_above.is_empty());
+    grid.change_size(3, 8);
+
+    assert_eq!(grid.dump_screen(false).trim_end(), "ccccdddd\nNEXT");
+    assert_eq!((grid.height, grid.width), (3, 8));
+    assert_eq!((grid.cursor.y, grid.cursor.x), (1, 4));
+    feed_bytes(&mut grid, b"!");
+    assert_eq!(grid.dump_screen(false).trim_end(), "ccccdddd\nNEXT!");
+}
+
 /*
  * These tests below are general compatibility tests for non-trivial scenarios running in the terminal.
  * They use fake TTY input replicated from these scenarios.

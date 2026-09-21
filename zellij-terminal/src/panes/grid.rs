@@ -1936,34 +1936,26 @@ impl Grid {
         self.character_cell_size_possibly_changed();
         let cursors = if new_columns != self.width {
             self.horizontal_tabstops = create_horizontal_tabstops(new_columns);
+            // Erasing scrollback can leave the viewport starting in a wrapped line. Its
+            // visible remainder is now a new line, including for cursor bookkeeping.
+            if self.lines_above.is_empty() {
+                if let Some(first_row) = self.viewport.front_mut() {
+                    first_row.is_canonical = true;
+                }
+            }
             let mut cursor_canonical_line_index = self.cursor_canonical_line_index();
             let cursor_index_in_canonical_line = self.cursor_index_in_canonical_line();
             let saved_cursor_index_in_canonical_line = self.saved_cursor_index_in_canonical_line();
             let mut viewport_canonical_lines = vec![];
             for mut row in self.viewport.drain(..) {
-                if !row.is_canonical
-                    && viewport_canonical_lines.is_empty()
-                    && !self.lines_above.is_empty()
-                {
-                    let mut first_line_above = self.lines_above.pop_back().unwrap();
+                if row.is_canonical {
+                    viewport_canonical_lines.push(row);
+                } else if let Some(last_line) = viewport_canonical_lines.last_mut() {
+                    last_line.append(&mut row);
+                } else if let Some(mut first_line_above) = self.lines_above.pop_back() {
                     first_line_above.append(&mut row);
                     viewport_canonical_lines.push(first_line_above);
                     cursor_canonical_line_index += 1;
-                } else if row.is_canonical {
-                    viewport_canonical_lines.push(row);
-                } else {
-                    match viewport_canonical_lines.last_mut() {
-                        Some(last_line) => {
-                            last_line.append(&mut row);
-                        },
-                        None => {
-                            // the state is corrupted somehow
-                            // this is a bug and I'm not yet sure why it happens
-                            // usually it fixes itself and is a result of some race
-                            // TODO: investigate why this happens and solve it
-                            return;
-                        },
-                    }
                 }
             }
 

@@ -1,7 +1,6 @@
 use zellij_types::internal_ids::SessionName;
 use zellij_types::units::ElapsedSeconds;
 use {
-    zellij_runtime::consts::session_info_folder_for_session,
     zellij_runtime::consts::ZELLIJ_SESSION_INFO_CACHE_DIR, zellij_runtime::consts::ZELLIJ_SOCK_DIR,
 };
 
@@ -575,6 +574,7 @@ pub fn background_jobs_main(
     }
 
     if !disable_session_metadata {
+        let session_checkpoint = bus.senders.session_checkpoint.clone();
         let current_session_name = current_session_name.clone();
         let current_session_info = current_session_info.clone();
         let current_session_layout = current_session_layout.clone();
@@ -591,7 +591,7 @@ pub fn background_jobs_main(
                 }
                 let info = current_session_info.lock().unwrap().clone();
                 let layout = current_session_layout.lock().unwrap().clone();
-                write_session_state_to_disk(name, info, layout).non_fatal();
+                session_checkpoint.write(name, info, &layout).non_fatal();
             }
         });
     }
@@ -1627,17 +1627,60 @@ fn job_already_running(
     }
 }
 
-pub fn write_session_state_to_disk(
-    current_session_name: SessionName,
-    current_session_info: SessionInfo,
-    current_session_layout: (String, BTreeMap<String, String>),
-) -> Result<()> {
-    zellij_runtime::session_checkpoint::write_checkpoint(
-        &session_info_folder_for_session(&current_session_name),
-        &zellij_session::metadata::session_info::to_string(&current_session_info)
-            .context("Failed to encode session metadata")?,
-        &current_session_layout,
-    )
+/// Serializes renames with both periodic checkpoints and explicit saves. A snapshot can wait
+/// on either thread after a rename, so its destination and metadata use the current name.
+pub struct SessionCheckpointWriter {
+    cache_dir: PathBuf,
+    name: Mutex<Option<SessionName>>,
+}
+
+impl Default for SessionCheckpointWriter {
+    fn default() -> Self {
+        Self {
+            cache_dir: ZELLIJ_SESSION_INFO_CACHE_DIR.clone(),
+            name: Mutex::new(None),
+        }
+    }
+}
+
+impl SessionCheckpointWriter {
+    pub fn write(
+        &self,
+        session_name: SessionName,
+        mut session_info: SessionInfo,
+        layout: &(String, BTreeMap<String, String>),
+    ) -> Result<()> {
+        let mut name = self
+            .name
+            .lock()
+            .map_err(|_| anyhow!("checkpoint lock poisoned"))?;
+        let name = name.get_or_insert(session_name);
+        session_info.name = name.clone();
+        zellij_runtime::session_checkpoint::write_checkpoint(
+            &self.cache_dir.join(&*name),
+            &zellij_session::metadata::session_info::to_string(&session_info)
+                .context("Failed to encode session metadata")?,
+            layout,
+        )
+    }
+
+    pub fn rename(&self, old: &SessionName, new: &SessionName) -> Result<()> {
+        let mut name = self
+            .name
+            .lock()
+            .map_err(|_| anyhow!("checkpoint lock poisoned"))?;
+        let old_dir = self.cache_dir.join(old);
+        // A session renamed before its first checkpoint has no folder yet.
+        if old_dir
+            .try_exists()
+            .context("Failed to inspect session checkpoint folder")?
+        {
+            fs::rename(&old_dir, self.cache_dir.join(new))
+                .context("Failed to rename session checkpoint folder")?;
+        }
+        *name = Some(new.clone());
+        Ok(())
+    }
 }
 
 pub fn scan_session_list(
@@ -1747,6 +1790,90 @@ mod tests {
     use tempfile::tempdir;
     use zellij_types::data::SessionInfo;
 
+    #[test]
+    fn checkpoint_rename_redirects_queued_saves_and_metadata() {
+        let root = tempdir().unwrap();
+        let writer = Arc::new(SessionCheckpointWriter {
+            cache_dir: root.path().to_owned(),
+            name: Mutex::new(None),
+        });
+        let old = SessionName::new("old");
+        let renamed = SessionName::new("renamed");
+        let snapshot = SessionInfo::new(old.clone());
+        let periodic_writer = writer.clone();
+        let explicit_writer = writer.clone();
+        writer
+            .write(
+                old.clone(),
+                snapshot.clone(),
+                &("original".into(), BTreeMap::new()),
+            )
+            .unwrap();
+        writer.rename(&old, &renamed).unwrap();
+
+        for (queued_writer, contents) in
+            [(periodic_writer, "periodic"), (explicit_writer, "explicit")]
+        {
+            queued_writer
+                .write(
+                    old.clone(),
+                    snapshot.clone(),
+                    &(contents.into(), BTreeMap::new()),
+                )
+                .unwrap();
+            assert!(
+                !root.path().join(&old).exists(),
+                "a stale snapshot recreated the old session"
+            );
+            let checkpoint = zellij_runtime::session_checkpoint::SessionCheckpoint::read(
+                &root.path().join(&renamed),
+            )
+            .unwrap();
+            let metadata = fs::read_to_string(checkpoint.metadata_path()).unwrap();
+            assert_eq!(
+                zellij_session::metadata::session_info::from_string(&metadata, &renamed)
+                    .unwrap()
+                    .name,
+                renamed
+            );
+            assert_eq!(
+                fs::read_to_string(checkpoint.layout_path()).unwrap(),
+                contents
+            );
+        }
+    }
+
+    #[test]
+    fn checkpoint_rename_before_first_save_and_failed_rename_keep_the_right_owner() {
+        let root = tempdir().unwrap();
+        let writer = SessionCheckpointWriter {
+            cache_dir: root.path().to_owned(),
+            name: Mutex::new(None),
+        };
+        let old = SessionName::new("old");
+        let renamed = SessionName::new("renamed");
+        let blocked = SessionName::new("blocked");
+        let layout = ("layout {}".into(), BTreeMap::new());
+        writer.rename(&old, &renamed).unwrap();
+        writer
+            .write(old.clone(), SessionInfo::new(old.clone()), &layout)
+            .unwrap();
+        assert!(!root.path().join(&old).exists());
+
+        fs::write(root.path().join(&blocked), "existing data").unwrap();
+        assert!(writer.rename(&renamed, &blocked).is_err());
+        assert_eq!(*writer.name.lock().unwrap(), Some(renamed.clone()));
+        writer
+            .write(old.clone(), SessionInfo::new(old.clone()), &layout)
+            .unwrap();
+        assert!(!root.path().join(&old).exists());
+        assert!(root.path().join(&renamed).is_dir());
+        assert_eq!(
+            fs::read_to_string(root.path().join(&blocked)).unwrap(),
+            "existing data"
+        );
+    }
+
     fn make_socket(dir: &std::path::Path, name: &str) -> UnixListener {
         UnixListener::bind(dir.join(name)).expect("bind unix socket")
     }
@@ -1770,7 +1897,7 @@ mod tests {
         std::fs::write(folder.join("session-layout.kdl"), "layout { }").unwrap();
     }
 
-    /// Publishes a session the way `write_session_state_to_disk` does: metadata and layout
+    /// Publishes a session the way `SessionCheckpointWriter` does: metadata and layout
     /// under a `.checkpoint-*` directory behind a `current` symlink.
     fn publish(info_dir: &std::path::Path, session: &str) {
         zellij_runtime::session_checkpoint::write_checkpoint(
