@@ -146,6 +146,43 @@ Optional tuple fields remain `null`, so later fields keep their positions.
 `PaneRenderReport` uses string keys such as `terminal_7` and `plugin_7`, as the CLI event stream does; `zellij.paneKey(paneId)` spells them.
 See [sdk.d.ts](../zellij-plugin-host/src/deno/sdk.d.ts) for the SDK declarations.
 
+### Multipane overlays
+
+A multipane owns two panes inside one overlay frame. Each child keeps its pane ID, input, output, and scrollback.
+Move, resize, hide, reveal, fullscreen, and explicit close commands addressed to either child affect the container.
+Drag the divider to change the split. The host keeps that ratio across terminal resizing and fullscreen transitions.
+
+Use `zellij.host.createMultipane(request)`, `updateMultipane(request)`, and `replaceMultipaneChild(request)`.
+The Wasm equivalents are `create_multipane`, `update_multipane`, and `replace_multipane_child` in `zellij_tile::prelude`.
+These commands require `ChangeApplicationState`. Launching a terminal also requires `RunCommands`, and launching a plugin requires `OpenTerminalsOrPlugins`.
+
+```ts
+const panel = zellij.host.createMultipane({
+  children: [
+    { Existing: { Plugin: zellij.host.getPluginIds().plugin_id } },
+    { Terminal: { path: "sh" } },
+  ],
+  placement: { kind: "Dismissible", coordinates: null },
+  split: { direction: "LeftRight", ratio: 5000 },
+  focus: 0,
+});
+```
+
+Children are ordered. Each child can be an `Existing` pane ID, a `Terminal` command, or a `Plugin` with `url` and `configuration`.
+The direction is `LeftRight` or `TopBottom`. The ratio sets the first child's share in basis points, from 1 through 9999.
+Set `focus` to slot 0 or 1, or omit it to preserve focus.
+
+Creation returns container metadata after both slots exist. Plugin loading continues inside its reserved slot.
+Use `PaneUpdate` and `PaneInfo.multipane` for the current child IDs after replacement or loading.
+Permission prompts, loading errors, and exited terminals remain in their slots.
+
+`updateMultipane` accepts `id`, optional `coordinates` and `split`, and `override_user_placement`.
+Omit `split` to preserve divider changes. `replaceMultipaneChild` accepts `id`, `slot`, and `child`.
+Invalid requests return an error before adoption. A coordinate batch with conflicting placements for one container is rejected.
+
+Containers move intact between tabs. Stacking, embedding, nesting, and independent child warps are rejected.
+Generic multipane persistence, CLI composition, and KDL composition are not available.
+
 ### Permissions
 
 Privileged commands need permission, which the user is prompted for once:

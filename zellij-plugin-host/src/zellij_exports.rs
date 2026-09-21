@@ -1,3 +1,6 @@
+#[path = "multipanes.rs"]
+mod multipanes;
+
 use super::PluginInstruction;
 use crate::plugin_map::{PluginEnv, ResponseSink};
 use crate::wasm_bridge::handle_plugin_crash;
@@ -393,6 +396,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 }
                 swamp_request(env, directory, id, operation, payload);
             },
+            command @ (PluginCommand::CreateMultipane(_)
+            | PluginCommand::UpdateMultipane(_)
+            | PluginCommand::ReplaceMultipaneChild(_)) => multipanes::dispatch(env, command)?,
             PluginCommand::SubscribePaneOutput(context) => {
                 if context.as_ref().is_some_and(|c| c.is_empty()) {
                     return Err(anyhow!(
@@ -1107,6 +1113,19 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             ),
         },
         (PermissionStatus::Denied, permission) => {
+            if matches!(
+                command,
+                PluginCommand::CreateMultipane(_)
+                    | PluginCommand::UpdateMultipane(_)
+                    | PluginCommand::ReplaceMultipaneChild(_)
+            ) {
+                let result: zellij_types::multipane::MultipaneResponse =
+                    Err(format!("Permission denied: {permission:?}"));
+                let response = zellij_plugin_api::plugin_command::ProtobufMultipaneResponse {
+                    json: serde_json::to_string(&result)?,
+                };
+                return wasi_write_object(env, &response.encode_to_vec());
+            }
             let kind = CommandType::from(&command);
             log::error!(
                 "Plugin '{}' permission '{}' denied - Command '{:?}' denied",
@@ -3930,12 +3949,7 @@ fn show_pane_with_id(
 
 fn close_self(env: &PluginEnv) {
     env.senders
-        .send_to_screen(ScreenInstruction::ClosePane(
-            PaneId::Plugin(env.plugin_id),
-            None,
-            None,
-            None,
-        ))
+        .send_to_screen(ScreenInstruction::CloseSelf(env.plugin_id, env.client_id))
         .with_context(|| "failed to close self".to_string())
         .non_fatal();
     env.senders
@@ -8054,6 +8068,29 @@ pub(crate) fn check_command_permission(
         // there's no use to deny them anything
         return (PermissionStatus::Granted, None);
     }
+    let children: &[zellij_types::multipane::MultipaneChild] = match command {
+        PluginCommand::CreateMultipane(request) => &request.children,
+        PluginCommand::ReplaceMultipaneChild(request) => std::slice::from_ref(&request.child),
+        _ => &[],
+    };
+    for child in children {
+        let permission = match child {
+            zellij_types::multipane::MultipaneChild::Existing(_) => continue,
+            zellij_types::multipane::MultipaneChild::Terminal(_) => PermissionType::RunCommands,
+            zellij_types::multipane::MultipaneChild::Plugin { .. } => {
+                PermissionType::OpenTerminalsOrPlugins
+            },
+        };
+        if !plugin_env
+            .permissions
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|permissions| permissions.contains(&permission))
+        {
+            return (PermissionStatus::Denied, Some(permission));
+        }
+    }
     // A syntax check of an inline source reads no file - the handler follows imports only in
     // `Semantic` mode - so it needs no permission.
     if let PluginCommand::CheckPlugin {
@@ -8235,6 +8272,9 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::SetFloatingPanePinned
         | CommandType::StackPanes
         | CommandType::ChangeFloatingPanesCoordinates
+        | CommandType::CreateMultipane
+        | CommandType::UpdateMultipane
+        | CommandType::ReplaceMultipaneChild
         | CommandType::ChangeOverlayCoordinates
         | CommandType::TogglePaneBorderless
         | CommandType::SetPaneBorderless
@@ -8517,6 +8557,63 @@ mod permission_tests {
             Some(PermissionType::MessageAndLaunchOtherPlugins)
         );
         assert_eq!(command_permission(CommandType::PostMessageToPlugin), None);
+    }
+
+    #[test]
+    fn multipane_adoption_and_launch_require_the_existing_permission_categories() {
+        use zellij_types::multipane::*;
+        let env = crate::test_env::test_env();
+        let terminal = PaneId::Terminal(TerminalId::new(2));
+        let command = |child| {
+            PluginCommand::CreateMultipane(CreateMultipane {
+                children: [MultipaneChild::Existing(terminal), child],
+                placement: OverlayPlacement::default(),
+                split: MultipaneSplit {
+                    direction: MultipaneDirection::LeftRight,
+                    ratio: 5000,
+                },
+                focus: None,
+            })
+        };
+        let existing = command(MultipaneChild::Existing(PaneId::Plugin(PluginId::new(3))));
+        let launch = command(MultipaneChild::Terminal(CommandToRun {
+            path: "sh".into(),
+            ..Default::default()
+        }));
+        let plugin = command(MultipaneChild::Plugin {
+            url: "file:/test.wasm".into(),
+            configuration: BTreeMap::new(),
+        });
+        *env.permissions.lock().unwrap() =
+            Some(HashSet::from([PermissionType::ChangeApplicationState]));
+        assert_eq!(
+            check_command_permission(&env, &existing),
+            (PermissionStatus::Granted, None)
+        );
+        assert_eq!(
+            check_command_permission(&env, &launch),
+            (PermissionStatus::Denied, Some(PermissionType::RunCommands))
+        );
+        assert_eq!(
+            check_command_permission(&env, &plugin),
+            (
+                PermissionStatus::Denied,
+                Some(PermissionType::OpenTerminalsOrPlugins)
+            )
+        );
+        *env.permissions.lock().unwrap() = Some(HashSet::from([
+            PermissionType::RunCommands,
+            PermissionType::OpenTerminalsOrPlugins,
+        ]));
+        for command in [existing, launch, plugin] {
+            assert_eq!(
+                check_command_permission(&env, &command),
+                (
+                    PermissionStatus::Denied,
+                    Some(PermissionType::ChangeApplicationState)
+                )
+            );
+        }
     }
 
     #[test]

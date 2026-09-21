@@ -32,12 +32,12 @@ fn send_command_through_the_cli() {
     claim_first_terminal_and_wait_for_prompt(&zellij);
 
     zellij.run_suspended_command(&["suspended-command"]);
-    let command_terminal = zellij.expect_pty_spawn();
     zellij.wait_until("suspended command pane waiting to run", |grid_snapshot| {
         grid_snapshot.contains("<Ctrl-c>")
     });
 
     zellij.send_stdin(&keys::ENTER);
+    let command_terminal = zellij.expect_pty_spawn();
     zellij.wait_until("command running", |grid_snapshot| {
         !grid_snapshot.contains("<Ctrl-c>")
     });

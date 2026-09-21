@@ -1358,24 +1358,6 @@ fn shrink(direction: Direction) -> ResizeStrategy {
     }
 }
 
-/// The strategy ctrl+MouseScroll sends: all four borders out, `geom_resized_within` halving
-/// the step for each.
-fn grow_all() -> ResizeStrategy {
-    ResizeStrategy {
-        resize: Resize::Increase,
-        direction: None,
-        invert_on_boundaries: false,
-    }
-}
-
-fn shrink_all() -> ResizeStrategy {
-    ResizeStrategy {
-        resize: Resize::Decrease,
-        direction: None,
-        invert_on_boundaries: false,
-    }
-}
-
 fn size(panes: &OverlayPanes, id: u32) -> (usize, usize) {
     let geom = panes
         .get(&PaneId::Terminal(crate::TerminalId::new(id)))
@@ -2455,31 +2437,6 @@ fn awaiting_placement_survives_a_move_between_collections() {
     );
 }
 
-// ---- linked panels and the seam between them ---------------------------------------------------
-//
-// hocus draws its agent list and its conversation as two overlays that butt together, and the two
-// touching frame columns are the divider. What these pin: only a pair placed *together* is a
-// panel, the seam drag moves the divider and nothing else and claims nothing, and a frame drag
-// carries both halves.
-
-/// A 30-column half at `x`, both halves along row 2 of an 80x20 surface.
-fn half(x: usize) -> FloatingPaneCoordinates {
-    placed_coordinates(&x.to_string(), "2", "30", "10")
-}
-
-/// Two overlays placed edge to edge in one batch, as hocus places its panel: 1 on the left, 2 on
-/// the right, linked.
-fn linked_panel() -> OverlayPanes {
-    let mut panes = overlay_panes(80, 20);
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
-    panes.link_touching(&[
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-    ]);
-    panes
-}
-
 fn geom(panes: &OverlayPanes, id: u32) -> (usize, usize, usize, usize) {
     let geom = panes
         .get(&PaneId::Terminal(crate::TerminalId::new(id)))
@@ -2488,195 +2445,28 @@ fn geom(panes: &OverlayPanes, id: u32) -> (usize, usize, usize, usize) {
     (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize())
 }
 
-/// A cell on the left half's right-hand frame column, which is the seam.
-fn seam_cell(panes: &OverlayPanes) -> Position {
-    let (x, y, cols, _) = geom(panes, 1);
-    Position::new(y as i32 + 3, (x + cols - 1) as u16)
+fn overlay_panes_with_chrome(cols: usize, rows: usize) -> OverlayPanes {
+    overlay_panes_with(
+        cols,
+        rows,
+        Viewport {
+            x: 0,
+            y: 1,
+            cols,
+            rows: rows - 2,
+        },
+    )
+    .0
 }
 
-#[test]
-fn a_batch_that_lands_two_overlays_edge_to_edge_links_them() {
-    let panes = linked_panel();
-
-    assert_eq!(
-        panes.seam_at(&seam_cell(&panes)),
-        Some((
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            PaneId::Terminal(crate::TerminalId::new(2))
-        )),
-        "the left half's right frame column is the seam"
-    );
-    let (right_x, y, ..) = geom(&panes, 2);
-    assert_eq!(
-        panes.seam_at(&Position::new(y as i32 + 3, right_x as u16)),
-        Some((
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            PaneId::Terminal(crate::TerminalId::new(2))
-        )),
-        "and so is the right half's left frame column"
-    );
-    assert_eq!(
-        panes.seam_at(&frame_corner(&panes, 1)),
-        None,
-        "the left half's own left frame is not"
-    );
-    assert_eq!(
-        panes.seam_at(&Position::new(y as i32 + 3, (right_x + 5) as u16)),
-        None,
-        "nor is a cell inside either half"
-    );
-    assert_eq!(
-        panes.linked_partner(&PaneId::Terminal(crate::TerminalId::new(1))),
-        Some(PaneId::Terminal(crate::TerminalId::new(2)))
-    );
+fn drawn(panes: &OverlayPanes, id: u32) -> (usize, usize, usize, usize) {
+    let geom = panes
+        .get(&PaneId::Terminal(crate::TerminalId::new(id)))
+        .unwrap()
+        .current_geom();
+    (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize())
 }
 
-/// Adjacency is not linkage: two unrelated overlays the user dragged next to each other must keep
-/// moving on a frame drag rather than start resizing each other.
-#[test]
-fn two_overlays_that_merely_touch_are_not_linked() {
-    let mut panes = overlay_panes(80, 20);
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
-
-    assert_eq!(panes.seam_at(&seam_cell(&panes)), None);
-    assert_eq!(
-        panes.linked_partner(&PaneId::Terminal(crate::TerminalId::new(1))),
-        None
-    );
-
-    // a batch naming one pane leaves links alone, however the panes sit
-    panes.link_touching(&[PaneId::Terminal(crate::TerminalId::new(1))]);
-    assert_eq!(panes.seam_at(&seam_cell(&panes)), None);
-
-    let before = geom(&panes, 2);
-    drag_by(&mut panes, 1, 4, 2);
-    assert_eq!(geom(&panes, 1), (6, 4, 30, 10), "the dragged one moved");
-    assert_eq!(geom(&panes, 2), before, "and its neighbour did not");
-}
-
-#[test]
-fn dragging_the_seam_moves_the_divider_and_nothing_else() {
-    let mut panes = linked_panel();
-    let press = seam_cell(&panes);
-    panes.start_seam_drag(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        press,
-    );
-    assert!(panes.seam_is_being_dragged());
-
-    let moved = panes.drag_seam_to(&Position::new(
-        press.line() as i32,
-        press.column() as u16 + 4,
-    ));
-    assert!(moved);
-
-    assert_eq!(
-        geom(&panes, 1),
-        (2, 2, 34, 10),
-        "the left half grew by four"
-    );
-    assert_eq!(
-        geom(&panes, 2),
-        (36, 2, 26, 10),
-        "the right half started four columns later and gave up the same four"
-    );
-    assert_eq!(
-        panes.seam_at(&Position::new(5, 35)),
-        Some((
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            PaneId::Terminal(crate::TerminalId::new(2))
-        )),
-        "the seam is where the divider is now"
-    );
-
-    let carry = panes.carry_of(&PaneId::Terminal(crate::TerminalId::new(1)));
-    assert!(
-        !carry.size_is_user_stated && !carry.position_is_user_stated,
-        "a seam drag is not a claim: the split is the owning plugin's to re-derive"
-    );
-    let carry = panes.carry_of(&PaneId::Terminal(crate::TerminalId::new(2)));
-    assert!(!carry.size_is_user_stated && !carry.position_is_user_stated);
-
-    // the split is written back as fixed coordinates, so a re-resolution keeps it
-    let placement = panes
-        .placement_of(&PaneId::Terminal(crate::TerminalId::new(2)))
-        .unwrap();
-    let coordinates = placement.coordinates.unwrap();
-    assert_eq!(coordinates.x, Some(PercentOrFixed::Fixed(36)));
-    assert_eq!(coordinates.width, Some(PercentOrFixed::Fixed(26)));
-    panes.reapply_coordinates();
-    assert_eq!(geom(&panes, 1), (2, 2, 34, 10));
-    assert_eq!(geom(&panes, 2), (36, 2, 26, 10));
-
-    panes.stop_seam_drag(Position::new(
-        press.line() as i32,
-        press.column() as u16 + 4,
-    ));
-    assert!(!panes.seam_is_being_dragged());
-}
-
-/// A seam drag is one event per pointer cell, so it tells exactly the two halves their new size
-/// and does not put every other overlay on the tab through `set_pane_frames` - and it does tell
-/// them: an overlay that resizes on screen and never tells the program inside it is the bug
-/// this pins.
-#[test]
-fn a_seam_drag_tells_exactly_the_two_halves_their_new_size() {
-    let (mut panes, pty) = overlay_panes_with_pty_capture(80, 20);
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
-    add(
-        &mut panes,
-        3,
-        OverlayKind::Dismissible,
-        placed_coordinates("2", "14", "20", "4"),
-    );
-    panes.link_touching(&[
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-    ]);
-    let press = seam_cell(&panes);
-    panes.start_seam_drag(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        press,
-    );
-    let _ = resized_ptys(&pty);
-
-    assert!(panes.drag_seam_to(&Position::new(
-        press.line() as i32,
-        press.column() as u16 + 4,
-    )));
-
-    assert_eq!(geom(&panes, 1), (2, 2, 34, 10));
-    assert_eq!(geom(&panes, 2), (36, 2, 26, 10));
-    let mut resized = resized_ptys(&pty);
-    resized.sort();
-    assert_eq!(
-        resized,
-        vec![(TerminalId::new(1), 32, 8), (TerminalId::new(2), 24, 8)],
-        "the two halves, at their content size inside the frame, and nobody else"
-    );
-
-    panes.toggle_pane_fullscreen(PaneId::Terminal(TerminalId::new(1)));
-    let _ = resized_ptys(&pty);
-    panes.start_seam_drag(
-        PaneId::Terminal(TerminalId::new(1)),
-        PaneId::Terminal(TerminalId::new(2)),
-        Position::new(5, 44),
-    );
-    assert!(panes.drag_seam_to(&Position::new(5, 55)));
-    let mut resized = resized_ptys(&pty);
-    resized.sort();
-    assert_eq!(
-        resized,
-        vec![(TerminalId::new(1), 54, 18), (TerminalId::new(2), 22, 18)],
-        "fullscreen resizes both contents to the refreshed overrides"
-    );
-}
-
-/// Expanding an overlay goes through `set_pane_frames`, which tells the pty its new size.
 #[test]
 fn expanding_an_overlay_tells_its_pty_the_viewport_size() {
     let (mut panes, pty) = overlay_panes_with_pty_capture(80, 20);
@@ -2704,8 +2494,6 @@ fn expanding_an_overlay_tells_its_pty_the_viewport_size() {
     );
 }
 
-/// Hiding or showing an overlay changes what is drawn *under* it, so every other overlay must
-/// be marked for repaint - or the pane underneath keeps the hidden overlay's content.
 #[test]
 fn hiding_and_showing_an_overlay_repaints_the_others() {
     let mut panes = overlay_panes(80, 20);
@@ -2738,8 +2526,6 @@ fn hiding_and_showing_an_overlay_repaints_the_others() {
     );
 }
 
-/// A frame drag uncovers cells as it goes; the overlays it did not move are repainted so the
-/// uncovered cells are redrawn under them.
 #[test]
 fn a_frame_drag_repaints_the_overlays_it_did_not_move() {
     let mut panes = overlay_panes(80, 20);
@@ -2765,747 +2551,6 @@ fn a_frame_drag_repaints_the_overlays_it_did_not_move() {
         panes.get(&bystander).unwrap().should_render(),
         "the overlay that did not move is repainted"
     );
-}
-
-/// A drag that goes nowhere - the same column again, or a drag with no seam held - reports so,
-/// so the caller can skip the render.
-#[test]
-fn a_seam_drag_that_changes_nothing_reports_so() {
-    let mut panes = linked_panel();
-    let press = seam_cell(&panes);
-    assert!(!panes.drag_seam_to(&press), "nothing is being dragged");
-    panes.start_seam_drag(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        press,
-    );
-    assert!(!panes.drag_seam_to(&press), "the pointer has not moved");
-    assert!(
-        !panes.drag_seam_to(&Position::new(
-            press.line() as i32 + 3,
-            press.column() as u16
-        )),
-        "and a vertical move is not a seam move"
-    );
-}
-
-/// Each half keeps the floor a resize keeps, and the panel's outer edges never move.
-#[test]
-fn a_seam_drag_clamps_at_the_floor() {
-    let mut panes = linked_panel();
-    let press = seam_cell(&panes);
-    panes.start_seam_drag(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        press,
-    );
-
-    panes.drag_seam_to(&Position::new(press.line() as i32, 0));
-    assert_eq!(
-        geom(&panes, 1),
-        (2, 2, MIN_TERMINAL_WIDTH, 10),
-        "the left half stops at the floor"
-    );
-    assert_eq!(
-        geom(&panes, 2),
-        (2 + MIN_TERMINAL_WIDTH, 2, 60 - MIN_TERMINAL_WIDTH, 10),
-        "and the right half has the rest, ending where the panel always ended"
-    );
-
-    panes.drag_seam_to(&Position::new(press.line() as i32, 400));
-    assert_eq!(
-        geom(&panes, 2),
-        (62 - MIN_TERMINAL_WIDTH, 2, MIN_TERMINAL_WIDTH, 10)
-    );
-    assert_eq!(geom(&panes, 1), (2, 2, 60 - MIN_TERMINAL_WIDTH, 10));
-}
-
-/// A hidden half has no seam to drag: the drag holding it is released with it. The link stays -
-/// the hidden half is still half of its panel, and the placement that reveals it needs the pair
-/// to map the panel's layout onto - so the seam is back the moment the half is shown.
-#[test]
-fn hiding_a_half_ends_the_seam_drag_and_keeps_the_link() {
-    let mut panes = linked_panel();
-    let press = seam_cell(&panes);
-    panes.start_seam_drag(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        press,
-    );
-
-    assert!(panes.hide_pane(PaneId::Terminal(crate::TerminalId::new(1))));
-    assert!(!panes.seam_is_being_dragged());
-    assert_eq!(
-        panes.linked_partner(&PaneId::Terminal(crate::TerminalId::new(2))),
-        Some(PaneId::Terminal(crate::TerminalId::new(1))),
-        "still a panel"
-    );
-    assert_eq!(
-        panes.seam_at(&seam_cell(&panes)),
-        None,
-        "but with nothing to divide while one half is away"
-    );
-
-    panes.show_pane(PaneId::Terminal(crate::TerminalId::new(1)));
-    assert!(
-        panes.seam_at(&seam_cell(&panes)).is_some(),
-        "shown again, the seam is where it was, with no placement needed"
-    );
-}
-
-#[test]
-fn closing_a_half_ends_the_seam_drag_and_the_link() {
-    let mut panes = linked_panel();
-    panes.start_seam_drag(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        seam_cell(&panes),
-    );
-    panes.remove_pane(PaneId::Terminal(crate::TerminalId::new(2)));
-    assert!(!panes.seam_is_being_dragged());
-    assert_eq!(
-        panes.linked_partner(&PaneId::Terminal(crate::TerminalId::new(1))),
-        None
-    );
-}
-
-/// A batch that places the halves apart - the two put in different corners - is the end of the
-/// panel. (Hiding one half and giving the other the whole panel is *not* apart: a hidden half
-/// lying inside the shown one still links, which is
-/// `a_hidden_share_inside_the_shown_half_links_as_a_panel`'s case.)
-#[test]
-fn a_batch_that_places_the_halves_apart_unlinks_them() {
-    let mut panes = linked_panel();
-    panes
-        .change_pane_coordinates(PaneId::Terminal(crate::TerminalId::new(2)), half(40), false)
-        .unwrap();
-    panes.link_touching(&[
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-    ]);
-    assert_eq!(
-        panes.linked_partner(&PaneId::Terminal(crate::TerminalId::new(1))),
-        None
-    );
-
-    // and back together again
-    panes
-        .change_pane_coordinates(PaneId::Terminal(crate::TerminalId::new(2)), half(32), false)
-        .unwrap();
-    panes.link_touching(&[
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-    ]);
-    assert_eq!(
-        panes.linked_partner(&PaneId::Terminal(crate::TerminalId::new(1))),
-        Some(PaneId::Terminal(crate::TerminalId::new(2)))
-    );
-}
-
-/// The panel moves as one: a frame drag on either half carries the other by the same delta,
-/// clamped so that neither half leaves the surface.
-#[test]
-fn a_frame_drag_moves_both_halves_of_a_linked_panel() {
-    let mut panes = linked_panel();
-
-    drag_by(&mut panes, 2, 4, 3);
-    assert_eq!(geom(&panes, 1), (6, 5, 30, 10), "the other half came along");
-    assert_eq!(geom(&panes, 2), (36, 5, 30, 10));
-    assert!(
-        panes
-            .carry_of(&PaneId::Terminal(crate::TerminalId::new(1)))
-            .position_is_user_stated
-            && panes
-                .carry_of(&PaneId::Terminal(crate::TerminalId::new(2)))
-                .position_is_user_stated,
-        "both positions are the user's, as a single dragged overlay's is"
-    );
-    assert!(
-        panes.seam_at(&seam_cell(&panes)).is_some(),
-        "and the seam moved with them"
-    );
-
-    // far past the right-hand edge: the *panel* stops at the edge, so the left half stops short
-    // of it by the right half's width rather than being carried under it
-    drag_by(&mut panes, 1, 400, 0);
-    assert_eq!(
-        geom(&panes, 2),
-        (50, 5, 30, 10),
-        "the right half is flush with the edge"
-    );
-    assert_eq!(
-        geom(&panes, 1),
-        (20, 5, 30, 10),
-        "and the left half is still beside it"
-    );
-}
-
-/// A placement batch naming both halves: `(id, x, width)` along row 2, 10 rows tall.
-fn batch(halves: &[(u32, usize, usize)]) -> Vec<(PaneId, FloatingPaneCoordinates)> {
-    halves
-        .iter()
-        .map(|(id, x, width)| {
-            (
-                PaneId::Terminal(crate::TerminalId::new(*id)),
-                placed_coordinates(&x.to_string(), "2", &width.to_string(), "10"),
-            )
-        })
-        .collect()
-}
-
-/// A batch is applied as a batch and then linked, as `Screen::change_overlay_coordinates` does.
-fn place(
-    panes: &mut OverlayPanes,
-    batch: Vec<(PaneId, FloatingPaneCoordinates)>,
-    overriding: bool,
-) {
-    let ids: Vec<PaneId> = batch.iter().map(|(id, _)| *id).collect();
-    panes
-        .change_pane_coordinates_batch(batch, overriding)
-        .unwrap();
-    panes.link_touching(&ids);
-}
-
-/// The plugin computes both halves from one panel rectangle and never learns where the user
-/// dragged it to, so a batch after a drag names the home corner: the batch's layout - here a
-/// different split - is mapped onto the panel where the user left it, and the halves still abut.
-/// Only the position was claimed, so the batch's *size* is taken.
-#[test]
-fn a_dragged_panel_is_re_placed_where_the_user_left_it() {
-    let mut panes = linked_panel();
-    drag_by(&mut panes, 2, 4, 3);
-    assert_eq!(geom(&panes, 1), (6, 5, 30, 10));
-
-    place(&mut panes, batch(&[(2, 22, 40), (1, 2, 20)]), false);
-    assert_eq!(
-        geom(&panes, 1),
-        (6, 5, 20, 10),
-        "the new split, at the dragged origin"
-    );
-    assert_eq!(
-        geom(&panes, 2),
-        (26, 5, 40, 10),
-        "and the right half still abuts"
-    );
-    assert!(panes.seam_at(&seam_cell(&panes)).is_some());
-    assert!(
-        panes
-            .carry_of(&PaneId::Terminal(crate::TerminalId::new(2)))
-            .position_is_user_stated
-    );
-    assert!(
-        !panes
-            .carry_of(&PaneId::Terminal(crate::TerminalId::new(2)))
-            .size_is_user_stated
-    );
-
-    // a panel that was only dragged still takes a plugin's size, as a single overlay does
-    let taller = vec![
-        (
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            placed_coordinates("2", "2", "25", "12"),
-        ),
-        (
-            PaneId::Terminal(crate::TerminalId::new(2)),
-            placed_coordinates("27", "2", "25", "12"),
-        ),
-    ];
-    place(&mut panes, taller, false);
-    assert_eq!(geom(&panes, 1), (6, 5, 25, 12));
-    assert_eq!(geom(&panes, 2), (31, 5, 25, 12));
-}
-
-/// Hiding a half after a drag: the plugin asks for the shown half to have the whole panel and
-/// keeps the hidden one at its share, and both land inside the dragged panel. The reveal then
-/// cuts that same panel at whatever split the plugin asks for.
-#[test]
-fn a_hidden_half_of_a_dragged_panel_gives_its_width_up_and_the_reveal_cuts_it_again() {
-    let mut panes = linked_panel();
-    drag_by(&mut panes, 2, 4, 3);
-
-    panes.hide_pane(PaneId::Terminal(crate::TerminalId::new(1)));
-    place(&mut panes, batch(&[(2, 2, 60), (1, 2, 30)]), false);
-    assert_eq!(
-        geom(&panes, 2),
-        (6, 5, 60, 10),
-        "the shown half has the dragged panel"
-    );
-    assert_eq!(
-        geom(&panes, 1),
-        (6, 5, 30, 10),
-        "the hidden one keeps its share inside it"
-    );
-    assert_eq!(
-        panes.linked_partner(&PaneId::Terminal(crate::TerminalId::new(2))),
-        Some(PaneId::Terminal(crate::TerminalId::new(1))),
-        "a hidden share inside the shown half is still the panel"
-    );
-
-    panes.show_pane(PaneId::Terminal(crate::TerminalId::new(1)));
-    place(&mut panes, batch(&[(2, 22, 40), (1, 2, 20)]), false);
-    assert_eq!(geom(&panes, 1), (6, 5, 20, 10));
-    assert_eq!(geom(&panes, 2), (26, 5, 40, 10));
-    assert!(panes.seam_at(&seam_cell(&panes)).is_some());
-}
-
-/// A pair carried to another tab with one half hidden arrives without its link and is relinked
-/// by shape alone: the hidden share inside the shown half, the one starting further left first.
-#[test]
-fn a_hidden_share_inside_the_shown_half_links_as_a_panel() {
-    let mut panes = overlay_panes(80, 20);
-    add(
-        &mut panes,
-        2,
-        OverlayKind::Dismissible,
-        placed_coordinates("2", "2", "60", "10"),
-    );
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    panes.hide_pane(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    panes.link_touching(&[
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        PaneId::Terminal(crate::TerminalId::new(1)),
-    ]);
-    assert_eq!(
-        panes.link_of(&PaneId::Terminal(crate::TerminalId::new(2))),
-        Some((
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            PaneId::Terminal(crate::TerminalId::new(2))
-        ))
-    );
-
-    // a hidden overlay that merely overlaps is not a share of anything
-    let mut panes = overlay_panes(80, 20);
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    add(&mut panes, 2, OverlayKind::Dismissible, half(20));
-    panes.hide_pane(PaneId::Terminal(crate::TerminalId::new(1)));
-    panes.link_touching(&[
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-    ]);
-    assert_eq!(
-        panes.link_of(&PaneId::Terminal(crate::TerminalId::new(2))),
-        None
-    );
-}
-
-/// A surface that shrank pulls each half's fixed coordinates back onto it one at a time, which
-/// can leave the two overlapping; the next batch re-cuts the panel inside the surface, whole.
-#[test]
-fn a_dragged_panel_re_resolved_onto_a_smaller_surface_is_re_cut_whole() {
-    let (mut panes, display_area) = overlay_panes_with(
-        80,
-        20,
-        Viewport {
-            x: 0,
-            y: 0,
-            cols: 80,
-            rows: 20,
-        },
-    );
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
-    panes.link_touching(&[
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-    ]);
-    drag_by(&mut panes, 2, 10, 3);
-    assert_eq!(geom(&panes, 2), (42, 5, 30, 10));
-
-    *display_area.borrow_mut() = Size { cols: 60, rows: 20 };
-    panes.reapply_coordinates();
-    assert_eq!(
-        geom(&panes, 2),
-        (42, 5, 18, 10),
-        "cut down to the surface on its own, with the seam still where it was"
-    );
-
-    place(&mut panes, batch(&[(2, 32, 30), (1, 2, 30)]), false);
-    let (left_x, _, left_cols, _) = geom(&panes, 1);
-    let (right_x, _, right_cols, _) = geom(&panes, 2);
-    assert_eq!(left_x + left_cols, right_x, "abutting");
-    assert!(right_x + right_cols <= 60, "and on the surface");
-    assert!(panes.seam_at(&seam_cell(&panes)).is_some());
-}
-
-/// A ctrl-resize of one half is a resize of the panel: the other half's rows follow, and the
-/// size becomes the user's on both, so the next placement keeps it.
-#[test]
-fn a_resize_of_one_half_sizes_the_panel() {
-    let mut panes = linked_panel();
-    assert!(panes
-        .resize_pane_with_strategies(
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            &[grow(Direction::Up)],
-            (5, 2)
-        )
-        .unwrap());
-    assert_eq!(geom(&panes, 1), (2, 0, 30, 12));
-    assert_eq!(
-        geom(&panes, 2),
-        (32, 0, 30, 12),
-        "the other half's rows came along"
-    );
-    for id in [1, 2] {
-        let carry = panes.carry_of(&PaneId::Terminal(crate::TerminalId::new(id)));
-        assert!(carry.size_is_user_stated && carry.position_is_user_stated);
-    }
-
-    place(&mut panes, batch(&[(2, 32, 30), (1, 2, 30)]), false);
-    assert_eq!(
-        geom(&panes, 1),
-        (2, 0, 30, 12),
-        "the user's size outranks the plugin's"
-    );
-    assert_eq!(geom(&panes, 2), (32, 0, 30, 12));
-
-    // an overriding placement - the user's own key - takes the position and keeps the size
-    place(&mut panes, batch(&[(2, 40, 30), (1, 10, 30)]), true);
-    assert_eq!(geom(&panes, 1), (10, 2, 30, 12));
-    assert_eq!(geom(&panes, 2), (40, 2, 30, 12));
-    let carry = panes.carry_of(&PaneId::Terminal(crate::TerminalId::new(1)));
-    assert!(!carry.position_is_user_stated && carry.size_is_user_stated);
-}
-
-/// The seam is placed from where the pointer is, not moved by where it went: past the floor the
-/// seam waits at the floor, and on the way back it is only picked up again where it was left.
-#[test]
-fn a_seam_dragged_past_the_floor_comes_back_under_the_pointer() {
-    let mut panes = linked_panel();
-    let press = seam_cell(&panes);
-    panes.start_seam_drag(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        press,
-    );
-
-    panes.drag_seam_to(&Position::new(press.line() as i32, 0));
-    assert_eq!(geom(&panes, 1).2, MIN_TERMINAL_WIDTH);
-
-    panes.drag_seam_to(&Position::new(press.line() as i32, 20));
-    assert_eq!(
-        geom(&panes, 1),
-        (2, 2, 19, 10),
-        "the seam is on column 20, where the pointer is"
-    );
-    assert_eq!(geom(&panes, 2), (21, 2, 41, 10));
-}
-
-/// A placement batch arriving mid-drag - a terminal resize, a half's visibility changing - that
-/// keeps the pair together leaves the drag in flight; one that parts them ends it.
-#[test]
-fn a_placement_that_keeps_the_pair_leaves_a_seam_drag_in_flight() {
-    let mut panes = linked_panel();
-    panes.start_seam_drag(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        seam_cell(&panes),
-    );
-
-    place(&mut panes, batch(&[(1, 2, 30), (2, 32, 30)]), false);
-    assert!(panes.seam_is_being_dragged());
-
-    place(&mut panes, batch(&[(1, 2, 30), (2, 40, 30)]), false);
-    assert!(!panes.seam_is_being_dragged());
-}
-
-/// Whether the halves of `linked_panel` carry a size claim and a position claim.
-fn claims(panes: &OverlayPanes, id: u32) -> (bool, bool) {
-    let carry = panes.carry_of(&PaneId::Terminal(crate::TerminalId::new(id)));
-    (carry.size_is_user_stated, carry.position_is_user_stated)
-}
-
-#[test]
-fn a_seam_side_resize_of_the_left_half_moves_the_seam() {
-    let mut panes = linked_panel();
-    assert!(panes
-        .resize_pane_with_strategies(
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            &[grow(Direction::Right)],
-            (5, 2)
-        )
-        .unwrap());
-    assert_eq!(geom(&panes, 1), (2, 2, 35, 10));
-    assert_eq!(
-        geom(&panes, 2),
-        (37, 2, 25, 10),
-        "the right half gave up what the left half took, and kept its outer edge"
-    );
-    assert_eq!(
-        claims(&panes, 1),
-        (false, false),
-        "a seam move is not a claim"
-    );
-    assert_eq!(claims(&panes, 2), (false, false));
-}
-
-#[test]
-fn a_seam_side_resize_of_the_right_half_moves_the_seam() {
-    let mut panes = linked_panel();
-    assert!(panes
-        .resize_pane_with_strategies(
-            PaneId::Terminal(crate::TerminalId::new(2)),
-            &[grow(Direction::Left)],
-            (5, 2)
-        )
-        .unwrap());
-    assert_eq!(geom(&panes, 2), (27, 2, 35, 10));
-    assert_eq!(geom(&panes, 1), (2, 2, 25, 10));
-    assert_eq!(
-        claims(&panes, 2),
-        (false, false),
-        "the right half's x moved, but the panel did not"
-    );
-    assert_eq!(claims(&panes, 1), (false, false));
-}
-
-#[test]
-fn a_seam_side_shrink_moves_the_seam_the_other_way() {
-    let mut panes = linked_panel();
-    assert!(panes
-        .resize_pane_with_strategies(
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            &[shrink(Direction::Right)],
-            (5, 2)
-        )
-        .unwrap());
-    assert_eq!(geom(&panes, 1), (2, 2, 25, 10));
-    assert_eq!(geom(&panes, 2), (27, 2, 35, 10));
-    assert_eq!(claims(&panes, 1), (false, false));
-}
-
-#[test]
-fn a_seam_side_resize_stops_at_the_partner_s_floor() {
-    let mut panes = linked_panel();
-    for _ in 0..20 {
-        if !panes
-            .resize_pane_with_strategies(
-                PaneId::Terminal(crate::TerminalId::new(1)),
-                &[grow(Direction::Right)],
-                (5, 2),
-            )
-            .unwrap()
-        {
-            break;
-        }
-    }
-    assert_eq!(geom(&panes, 1), (2, 2, 60 - MIN_TERMINAL_WIDTH, 10));
-    assert_eq!(
-        geom(&panes, 2),
-        (62 - MIN_TERMINAL_WIDTH, 2, MIN_TERMINAL_WIDTH, 10),
-        "the partner keeps the floor and its outer edge"
-    );
-    assert!(
-        !panes
-            .resize_pane_with_strategies(
-                PaneId::Terminal(crate::TerminalId::new(1)),
-                &[grow(Direction::Right)],
-                (5, 2)
-            )
-            .unwrap(),
-        "at the floor there is nothing left to take"
-    );
-    assert_eq!(geom(&panes, 1), (2, 2, 60 - MIN_TERMINAL_WIDTH, 10));
-    assert_eq!(claims(&panes, 1), (false, false));
-}
-
-#[test]
-fn an_outer_edge_resize_sizes_the_panel() {
-    let mut panes = linked_panel();
-    assert!(panes
-        .resize_pane_with_strategies(
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            &[grow(Direction::Left)],
-            (5, 2)
-        )
-        .unwrap());
-    assert_eq!(geom(&panes, 1), (0, 2, 32, 10), "clamped to the surface");
-    assert_eq!(geom(&panes, 2), (32, 2, 30, 10), "the seam did not move");
-    for id in [1, 2] {
-        assert_eq!(
-            claims(&panes, id),
-            (true, true),
-            "the panel grew and its origin moved, and both halves say so"
-        );
-    }
-}
-
-/// Ctrl+MouseScroll over either half: the panel's four outer borders each move by half the
-/// step, as a lone overlay's would, and the seam keeps its share of the width. Which half the
-/// pointer was on does not matter.
-#[test]
-fn an_undirected_resize_grows_the_panel_and_keeps_the_split() {
-    for under_the_pointer in [1, 2] {
-        let mut panes = linked_panel();
-        assert!(panes
-            .resize_pane_with_strategies(
-                PaneId::Terminal(crate::TerminalId::new(under_the_pointer)),
-                &[grow_all()],
-                (5, 2)
-            )
-            .unwrap());
-        assert_eq!(
-            geom(&panes, 1),
-            (0, 1, 32, 12),
-            "half {under_the_pointer}: the panel grew 2 columns and 1 row on every side"
-        );
-        assert_eq!(
-            geom(&panes, 2),
-            (32, 1, 32, 12),
-            "half {under_the_pointer}: the seam stayed at half the width"
-        );
-        assert!(panes.seam_at(&seam_cell(&panes)).is_some());
-        for id in [1, 2] {
-            assert_eq!(claims(&panes, id), (true, true));
-        }
-    }
-}
-
-#[test]
-fn an_undirected_shrink_shrinks_the_panel_and_keeps_the_split() {
-    let mut panes = linked_panel();
-    assert!(panes
-        .resize_pane_with_strategies(
-            PaneId::Terminal(crate::TerminalId::new(2)),
-            &[shrink_all()],
-            (5, 2)
-        )
-        .unwrap());
-    assert_eq!(geom(&panes, 1), (4, 3, 28, 8));
-    assert_eq!(geom(&panes, 2), (32, 3, 28, 8));
-    for id in [1, 2] {
-        assert_eq!(claims(&panes, id), (true, true));
-    }
-}
-
-/// A split the user dragged off-centre is carried onto the new width in proportion, not reset
-/// and not moved by the step.
-#[test]
-fn an_undirected_resize_keeps_an_uneven_split_in_proportion() {
-    let mut panes = linked_panel();
-    let press = seam_cell(&panes);
-    panes.start_seam_drag(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        press,
-    );
-    panes.drag_seam_to(&Position::new(press.line() as i32, 21));
-    panes.stop_seam_drag(Position::new(press.line() as i32, 21));
-    assert_eq!(geom(&panes, 1), (2, 2, 20, 10), "the left half is 20 of 60");
-    assert_eq!(geom(&panes, 2), (22, 2, 40, 10));
-
-    assert!(panes
-        .resize_pane_with_strategies(
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            &[grow_all()],
-            (5, 2)
-        )
-        .unwrap());
-    // the seam at 20/60 of the old box lands at 21/64 of the new one
-    assert_eq!(geom(&panes, 1), (0, 1, 21, 12));
-    assert_eq!(geom(&panes, 2), (21, 1, 43, 12));
-    assert!(panes.seam_at(&seam_cell(&panes)).is_some());
-}
-
-/// Shrinking stops where a seam drag stops: each half keeps `MIN_TERMINAL_WIDTH`, and once the
-/// panel is two of those wide a further shrink takes rows only, then nothing.
-#[test]
-fn an_undirected_shrink_stops_at_the_halves_floor() {
-    let mut panes = linked_panel();
-    for _ in 0..40 {
-        if !panes
-            .resize_pane_with_strategies(
-                PaneId::Terminal(crate::TerminalId::new(1)),
-                &[shrink_all()],
-                (5, 2),
-            )
-            .unwrap()
-        {
-            break;
-        }
-        let (left_x, _, left_cols, _) = geom(&panes, 1);
-        let (right_x, _, right_cols, _) = geom(&panes, 2);
-        assert_eq!(left_x + left_cols, right_x, "still abutting");
-        assert!(left_cols >= MIN_TERMINAL_WIDTH && right_cols >= MIN_TERMINAL_WIDTH);
-    }
-    let (_, _, left_cols, rows) = geom(&panes, 1);
-    let (_, _, right_cols, _) = geom(&panes, 2);
-    assert_eq!(left_cols + right_cols, 2 * MIN_TERMINAL_WIDTH);
-    assert_eq!(rows, MIN_TERMINAL_HEIGHT);
-    let before = (geom(&panes, 1), geom(&panes, 2));
-    assert!(
-        !panes
-            .resize_pane_with_strategies(
-                PaneId::Terminal(crate::TerminalId::new(2)),
-                &[shrink_all()],
-                (5, 2)
-            )
-            .unwrap(),
-        "at the floor there is nothing left to take"
-    );
-    assert_eq!((geom(&panes, 1), geom(&panes, 2)), before);
-}
-
-#[test]
-fn a_pane_abutting_two_others_is_in_one_panel() {
-    let mut panes = overlay_panes(80, 20);
-    for (id, x) in [(1, 2), (2, 22), (3, 42)] {
-        add(
-            &mut panes,
-            id,
-            OverlayKind::Dismissible,
-            placed_coordinates(&x.to_string(), "2", "20", "10"),
-        );
-    }
-    let (a, b, c) = (
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        PaneId::Terminal(crate::TerminalId::new(3)),
-    );
-
-    panes.link_touching(&[a, b, c]);
-    assert_eq!(
-        panes.link_of(&b),
-        Some((a, b)),
-        "the first pair in the batch's order"
-    );
-    assert_eq!(panes.linked_partner(&a), Some(b));
-    assert_eq!(
-        panes.link_of(&c),
-        None,
-        "the pair that would name the middle pane again is not made"
-    );
-
-    panes.link_touching(&[c, b, a]);
-    assert_eq!(panes.link_of(&b), Some((b, c)));
-    assert_eq!(panes.link_of(&a), None);
-}
-
-// ---- expanded over the screen ---------------------------------------------------------------
-
-/// A tab whose chrome takes a row off the top and one off the bottom, which is what makes the
-/// difference between the two fullscreen keystrokes visible.
-fn overlay_panes_with_chrome(cols: usize, rows: usize) -> OverlayPanes {
-    overlay_panes_with(
-        cols,
-        rows,
-        Viewport {
-            x: 0,
-            y: 1,
-            cols,
-            rows: rows - 2,
-        },
-    )
-    .0
-}
-
-/// The rectangle a pane is *drawn* with, override included - what `geom` is to the base.
-fn drawn(panes: &OverlayPanes, id: u32) -> (usize, usize, usize, usize) {
-    let geom = panes
-        .get(&PaneId::Terminal(crate::TerminalId::new(id)))
-        .unwrap()
-        .current_geom();
-    (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize())
 }
 
 #[test]
@@ -3545,8 +2590,6 @@ fn the_other_keystroke_covers_the_chrome_too() {
     assert!(panes.fullscreen_covers_ui());
 }
 
-/// Pressing the *other* keystroke while expanded switches between the two rather than collapsing,
-/// as the floating layer's pair does.
 #[test]
 fn the_two_keystrokes_switch_between_each_other() {
     let mut panes = overlay_panes_with_chrome(80, 20);
@@ -3566,9 +2609,6 @@ fn the_two_keystrokes_switch_between_each_other() {
     assert!(!panes.fullscreen_is_active());
 }
 
-/// The claim the whole design rests on: an expansion is an override over a geometry that is still
-/// a function of the overlay's coordinates and the surface, so the way back is exact - even when
-/// the surface changed size while it was expanded.
 #[test]
 fn the_way_back_is_the_rectangle_the_coordinates_always_said() {
     let mut panes = overlay_panes(80, 20);
@@ -3611,8 +2651,6 @@ fn the_way_back_is_the_rectangle_the_coordinates_always_said() {
     assert_eq!(drawn(&panes, 1), geom(&panes, 1), "with no override left");
 }
 
-/// An expansion is not a placement, so it claims nothing: the plugin that owns the overlay keeps
-/// placing it, and what it places is the rectangle the expansion comes back to.
 #[test]
 fn an_expansion_claims_nothing_and_a_plugin_keeps_placing_underneath_it() {
     let mut panes = overlay_panes(80, 20);
@@ -3647,9 +2685,6 @@ fn an_expansion_claims_nothing_and_a_plugin_keeps_placing_underneath_it() {
     );
 }
 
-/// hocus takes its panel's *size* from the manifest - that is how a user resize reaches it - so an
-/// expansion reported as a rectangle would be answered by re-placing the panel at the size of the
-/// screen, overwriting the very rectangle the expansion exists to come back to.
 #[test]
 fn an_expanded_overlay_reports_the_rectangle_underneath_it() {
     let mut panes = overlay_panes(80, 20);
@@ -3702,21 +2737,6 @@ fn a_hidden_overlay_may_not_be_expanded() {
     assert!(!panes.fullscreen_is_active());
 }
 
-/// Setting the pane the user is looking at aside is asking for it to go away, not for a screenful
-/// of overlay with no way back.
-#[test]
-fn setting_an_expanded_overlay_aside_puts_it_back_first() {
-    let mut panes = overlay_panes(80, 20);
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    panes.hide_pane(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    assert!(!panes.fullscreen_is_active());
-    assert_eq!(geom(&panes, 1), (2, 2, 30, 10));
-    assert_eq!(drawn(&panes, 1), geom(&panes, 1));
-}
-
 #[test]
 fn closing_an_expanded_overlay_ends_the_expansion() {
     let mut panes = overlay_panes(80, 20);
@@ -3734,8 +2754,6 @@ fn closing_an_expanded_overlay_ends_the_expansion() {
     );
 }
 
-/// A pane swapped into an expanded slot is expanded, and the slot still knows where to come back
-/// to - the base geometry travels, not the override.
 #[test]
 fn a_pane_swapped_into_an_expanded_slot_is_expanded() {
     let mut panes = overlay_panes(80, 20);
@@ -3758,8 +2776,13 @@ fn a_pane_swapped_into_an_expanded_slot_is_expanded() {
 
 #[test]
 fn an_expanded_overlay_cannot_move_or_resize_its_outer_rectangle() {
-    let mut panes = linked_panel();
-    let seam = seam_cell(&panes);
+    let (mut panes, children, _) = composed(MultipaneDirection::LeftRight);
+    let (_, divider) = panes
+        .multipane_info(&children[0])
+        .unwrap()
+        .split
+        .geometry(panes.outer_geom(children[0]).unwrap(), true);
+    let seam = Position::new(divider.y as i32, divider.x as u16);
     panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
     let before = (geom(&panes, 1), geom(&panes, 2));
 
@@ -3783,112 +2806,6 @@ fn an_expanded_overlay_cannot_move_or_resize_its_outer_rectangle() {
     );
 }
 
-/// A linked pair is one panel to every gesture, and this is a gesture.
-#[test]
-fn a_linked_panel_is_expanded_as_a_panel() {
-    let mut panes = linked_panel();
-
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(2)));
-
-    assert_eq!(
-        (drawn(&panes, 1), drawn(&panes, 2)),
-        ((0, 0, 40, 20), (40, 0, 40, 20)),
-        "both halves grow, and the divider keeps its share of the panel"
-    );
-    assert!(panes.pane_is_fullscreen(&PaneId::Terminal(crate::TerminalId::new(1))));
-
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(2)));
-    assert_eq!(
-        (geom(&panes, 1), geom(&panes, 2)),
-        ((2, 2, 30, 10), (32, 2, 30, 10)),
-        "and the panel comes back whole"
-    );
-}
-
-/// An uneven split stays uneven: the divider is carried in proportion, exactly as an undirected
-/// resize of the panel carries it.
-#[test]
-fn an_expanded_panel_keeps_an_uneven_split_in_proportion() {
-    let mut panes = linked_panel();
-    place(&mut panes, batch(&[(1, 2, 45), (2, 47, 15)]), false);
-
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    assert_eq!(
-        (drawn(&panes, 1).2, drawn(&panes, 2).2),
-        (60, 20),
-        "three quarters and one quarter of the panel become three quarters and one of the screen"
-    );
-}
-
-/// The owning plugin keeps re-cutting the panel while it is expanded, and the expansion follows -
-/// this is the same `set_pane_frames` step that keeps it filling a screen that changed size.
-#[test]
-fn a_batch_that_re_cuts_an_expanded_panel_moves_its_divider() {
-    let mut panes = linked_panel();
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    place(&mut panes, batch(&[(1, 2, 45), (2, 47, 15)]), false);
-
-    assert_eq!(
-        (drawn(&panes, 1).2, drawn(&panes, 2).2),
-        (60, 20),
-        "the divider is re-cut where the batch asked, at the size of the screen"
-    );
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
-    assert_eq!(
-        (geom(&panes, 1), geom(&panes, 2)),
-        ((2, 2, 45, 10), (47, 2, 15, 10)),
-        "and the way back is the batch's, not the rectangle from before it"
-    );
-}
-
-/// A pair with a hidden half is the shown half taking the whole panel, which is how every other
-/// placement already reads that shape.
-#[test]
-fn a_panel_with_a_hidden_half_is_expanded_as_the_shown_half() {
-    let mut panes = linked_panel();
-    panes.hide_pane(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(2)));
-
-    assert_eq!(drawn(&panes, 2), (0, 0, 80, 20));
-    assert_eq!(
-        drawn(&panes, 1),
-        geom(&panes, 1),
-        "the hidden half keeps the rectangle it will come back to"
-    );
-    assert!(!panes.pane_is_fullscreen(&PaneId::Terminal(crate::TerminalId::new(1))));
-}
-
-/// The same shape reached from the other side: the panel is expanded first and a half is set
-/// aside underneath it. The survivor is the whole panel from that moment on, so it takes the
-/// whole screen - `hide_pane` has to re-derive the expansion, not only set the flag.
-#[test]
-fn hiding_a_half_of_an_expanded_panel_leaves_the_survivor_filling_the_screen() {
-    let mut panes = linked_panel();
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    panes.hide_pane(PaneId::Terminal(crate::TerminalId::new(2)));
-
-    assert!(
-        panes.pane_is_fullscreen(&PaneId::Terminal(crate::TerminalId::new(1))),
-        "hiding the other half does not collapse the expansion"
-    );
-    assert_eq!(
-        drawn(&panes, 1),
-        (0, 0, 80, 20),
-        "and the half left on screen grows into the whole of it"
-    );
-    assert_eq!(
-        drawn(&panes, 2),
-        geom(&panes, 2),
-        "while the hidden half keeps the rectangle it will come back to"
-    );
-}
-
-/// A modal is drawn because something needs an answer now, and a keystroke that fills the screen
-/// with something else does not suspend that.
 #[test]
 fn an_expanded_overlay_does_not_cover_a_live_modal() {
     let mut panes = overlay_panes(80, 20);
@@ -3907,8 +2824,6 @@ fn an_expanded_overlay_does_not_cover_a_live_modal() {
     );
 }
 
-/// The frame is nothing but the resize hint, and an expanded overlay is not resizable, so it must
-/// not offer one.
 #[test]
 fn an_expanded_overlay_stops_offering_a_resize() {
     let mut panes = overlay_panes(80, 20);
@@ -3920,9 +2835,6 @@ fn an_expanded_overlay_stops_offering_a_resize() {
     assert!(!panes.is_resizable(&PaneId::Terminal(crate::TerminalId::new(1))));
 }
 
-/// A fullscreen press names a pane, and it is that pane that is expanded. The expansion used to
-/// be dropped and the requested pane never expanded at all, so a second overlay could not be
-/// looked at closely without first putting the first one back by hand.
 #[test]
 fn a_fullscreen_press_on_another_overlay_expands_that_one() {
     let mut panes = overlay_panes(80, 20);
@@ -3948,8 +2860,6 @@ fn a_fullscreen_press_on_another_overlay_expands_that_one() {
     );
 }
 
-/// A drag in flight has nothing left to carry once the pane fills the screen, and leaving it in
-/// flight would swallow every mouse event until the release.
 #[test]
 fn expanding_an_overlay_releases_a_drag_in_flight() {
     let mut panes = overlay_panes(80, 20);
@@ -3962,8 +2872,6 @@ fn expanding_an_overlay_releases_a_drag_in_flight() {
     assert!(!panes.pane_is_being_moved_with_mouse());
 }
 
-/// And the mover refuses a step of its own, for a drag whose state the caller is holding: the
-/// rectangle it would write is the one the expansion comes back to.
 #[test]
 fn an_expanded_overlay_is_not_carried_by_a_drag_that_outlived_the_press() {
     let mut panes = overlay_panes(80, 20);
@@ -3980,306 +2888,285 @@ fn an_expanded_overlay_is_not_carried_by_a_drag_that_outlived_the_press() {
     assert_eq!(geom(&panes, 1), before);
 }
 
-/// Changing fullscreen geometry releases a drag whose grab offset belongs to the old rectangle.
-#[test]
-fn changing_fullscreen_releases_a_seam_drag_in_flight() {
-    let mut panes = linked_panel();
-    let seam = seam_cell(&panes);
-    let (left, right) = panes.seam_at(&seam).unwrap();
-    panes.start_seam_drag(left, right, seam);
-    assert!(panes.seam_is_being_dragged());
-
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
-    assert!(!panes.seam_is_being_dragged());
-
-    let before = (geom(&panes, 1), geom(&panes, 2));
-    assert!(!panes.drag_seam_to(&Position::new(5, 10)));
-    assert_eq!(
-        (geom(&panes, 1), geom(&panes, 2)),
-        before,
-        "the split underneath is untouched"
+fn composed(direction: MultipaneDirection) -> (OverlayPanes, [PaneId; 2], MultipaneId) {
+    let mut panes = overlay_panes(120, 40);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50", "20"),
     );
-    panes.start_seam_drag(left, right, Position::new(5, 39));
-    assert!(panes.seam_is_being_dragged());
-    panes.unset_fullscreen();
-    assert!(!panes.seam_is_being_dragged());
-    assert!(!panes.drag_seam_to(&Position::new(5, 10)));
+    add(
+        &mut panes,
+        2,
+        OverlayKind::Dismissible,
+        coordinates("50", "20"),
+    );
+    let children = [
+        PaneId::Terminal(TerminalId::new(1)),
+        PaneId::Terminal(TerminalId::new(2)),
+    ];
+    let id = panes
+        .create_multipane(
+            children,
+            MultipaneSplit {
+                direction,
+                ratio: 3700,
+            },
+            OverlayPlacement {
+                kind: OverlayKind::Dismissible,
+                coordinates: Some(placed_coordinates("10", "5", "80", "24")),
+            },
+        )
+        .unwrap();
+    (panes, children, id)
 }
 
 #[test]
-fn an_expanded_divider_drags_from_either_column_and_restores_the_new_split() {
-    for grab_column in [39, 40] {
-        let mut panes = linked_panel();
-        let left = PaneId::Terminal(TerminalId::new(1));
-        let right = PaneId::Terminal(TerminalId::new(2));
-        panes.toggle_pane_fullscreen(left);
-        let press = Position::new(5, grab_column);
-        assert_eq!(panes.seam_at(&press), Some((left, right)));
-        panes.start_seam_drag(left, right, press);
-        assert!(!panes.drag_seam_to(&press));
-
-        for (column, left_cols) in [(grab_column + 16, 42), (grab_column - 16, 18)] {
-            let position = Position::new(5, column);
-            assert!(panes.drag_seam_to(&position));
-            assert_eq!(geom(&panes, 1), (2, 2, left_cols, 10));
-            assert_eq!(geom(&panes, 2), (2 + left_cols, 2, 60 - left_cols, 10));
-            assert_eq!(drawn(&panes, 1), (0, 0, left_cols * 80 / 60, 20));
-            assert_eq!(panes.seam_at(&position), Some((left, right)));
-            assert!(!panes.drag_seam_to(&position));
-            assert_eq!(claims(&panes, 1), (false, false));
-            assert_eq!(claims(&panes, 2), (false, false));
-        }
-        panes.stop_seam_drag(Position::new(5, grab_column - 16));
-
-        // Hocus reads the base widths from the manifest and places the pair at that ratio.
-        let left_info = panes.pane_info_of(&left, &HashMap::new()).unwrap();
-        let right_info = panes.pane_info_of(&right, &HashMap::new()).unwrap();
-        assert!(left_info.is_fullscreen && right_info.is_fullscreen);
-        assert_eq!(left_info.pane_columns.get(), 18);
-        assert_eq!(right_info.pane_columns.get(), 42);
-        place(
-            &mut panes,
-            batch(&[
-                (1, left_info.pane_x.get(), left_info.pane_columns.get()),
-                (2, right_info.pane_x.get(), right_info.pane_columns.get()),
-            ]),
-            false,
+fn multipane_owns_both_slots_and_structural_commands_resolve_either_member() {
+    for direction in [MultipaneDirection::LeftRight, MultipaneDirection::TopBottom] {
+        let (mut panes, children, id) = composed(direction);
+        assert_eq!(panes.panes.len(), 1);
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes.layers().len(), 1);
+        assert_eq!(
+            panes.get_pane_z_index(children[0]),
+            panes.get_pane_z_index(children[1])
         );
-        assert_eq!((drawn(&panes, 1).2, drawn(&panes, 2).2), (24, 56));
+        assert!(panes.remove_pane(children[1]).is_none());
+        assert_eq!(panes.len(), 2);
+        for child in children {
+            panes.hide_pane(child);
+            assert!(children.iter().all(|id| panes.is_hidden(id)));
+            assert!(panes.layers().is_empty());
+            panes.show_pane(child);
+            assert!(children.iter().all(|id| !panes.is_hidden(id)));
+            panes
+                .resize_pane_with_id(child, grow(Direction::Right))
+                .unwrap();
+            assert_eq!(panes.multipane_info(&child).unwrap().split.ratio, 3700);
+        }
+        let before = panes.multipane_info(&children[0]).unwrap();
+        assert!(panes
+            .change_pane_coordinates_batch(
+                vec![
+                    (children[0], coordinates("30", "10")),
+                    (children[1], coordinates("40", "10")),
+                ],
+                false
+            )
+            .is_err());
+        assert_eq!(panes.multipane_info(&children[1]).unwrap(), before);
+        assert!(panes
+            .create_multipane(children, before.split, OverlayPlacement::default())
+            .is_err());
+        assert_eq!(panes.multipane_info(&children[0]).unwrap().id, id);
+    }
+}
 
+#[test]
+fn multipane_divider_and_fullscreen_preserve_requested_ratio_through_tiny_surfaces() {
+    for direction in [MultipaneDirection::LeftRight, MultipaneDirection::TopBottom] {
+        let (mut panes, children, _) = composed(direction);
+        let info = panes.multipane_info(&children[0]).unwrap();
+        let outer = panes.outer_geom(children[0]).unwrap();
+        let (_, divider) = info.split.geometry(outer, true);
+        let position = Position::new(divider.y as i32, divider.x as u16);
+        assert_eq!(panes.seam_at(&position), Some((children[0], children[1])));
+        panes.start_seam_drag(children[0], children[1], position);
+        panes.drag_seam_to(&Position::new(
+            position.line() as i32 + 2,
+            position.column() as u16 + 5,
+        ));
+        let split = panes.multipane_info(&children[0]).unwrap().split;
+        assert_ne!(split.ratio, info.split.ratio);
+        assert_eq!(panes.outer_geom(children[0]), Some(outer));
+        panes.toggle_pane_fullscreen(children[1]);
+        for rows in 0..5 {
+            for cols in 0..5 {
+                *panes.display_area.borrow_mut() = Size { rows, cols };
+                *panes.viewport.borrow_mut() = Viewport {
+                    x: 0,
+                    y: 0,
+                    rows,
+                    cols,
+                };
+                panes.reapply_coordinates();
+                assert_eq!(panes.multipane_info(&children[0]).unwrap().split, split);
+                for child in children {
+                    let geom = panes.get(&child).unwrap().current_geom();
+                    assert!(geom.x + geom.cols.as_usize() <= cols);
+                    assert!(geom.y + geom.rows.as_usize() <= rows);
+                }
+            }
+        }
         *panes.display_area.borrow_mut() = Size {
+            rows: 40,
             cols: 120,
-            rows: 30,
         };
         *panes.viewport.borrow_mut() = Viewport {
             x: 0,
-            y: 1,
+            y: 0,
+            rows: 40,
             cols: 120,
-            rows: 28,
         };
         panes.reapply_coordinates();
-        assert_eq!(drawn(&panes, 1), (0, 1, 36, 28));
-        assert_eq!(drawn(&panes, 2), (36, 1, 84, 28));
         panes.unset_fullscreen();
-        assert_eq!(drawn(&panes, 1), (2, 2, 18, 10));
-        assert_eq!(drawn(&panes, 2), (20, 2, 42, 10));
+        assert_eq!(panes.outer_geom(children[0]), Some(outer));
+        assert_eq!(panes.multipane_info(&children[0]).unwrap().split, split);
     }
 }
 
 #[test]
-fn an_expanded_divider_keeps_minimum_widths_and_returns_under_the_pointer() {
-    let mut panes = linked_panel();
-    let left = PaneId::Terminal(TerminalId::new(1));
-    let right = PaneId::Terminal(TerminalId::new(2));
-    panes.toggle_pane_fullscreen(left);
-    panes.start_seam_drag(left, right, Position::new(5, 39));
-    for (column, left_cols) in [
-        (0, MIN_TERMINAL_WIDTH),
-        (400, 60 - MIN_TERMINAL_WIDTH),
-        (39, 30),
-    ] {
-        assert!(panes.drag_seam_to(&Position::new(5, column)));
-        assert_eq!(geom(&panes, 1), (2, 2, left_cols, 10));
-        assert_eq!(geom(&panes, 2), (2 + left_cols, 2, 60 - left_cols, 10));
-        assert!(drawn(&panes, 1).2 >= MIN_TERMINAL_WIDTH);
-        assert!(drawn(&panes, 2).2 >= MIN_TERMINAL_WIDTH);
+fn multipane_transfer_and_replacement_keep_ownership_focus_and_placement() {
+    let (mut panes, children, id) = composed(MultipaneDirection::LeftRight);
+    let clients = [ClientId::new(1), ClientId::new(2)];
+    panes.focus_pane(children[0], clients[0]);
+    panes.focus_pane(children[1], clients[1]);
+    panes
+        .resize_pane_with_id(children[0], grow(Direction::Down))
+        .unwrap();
+    panes.toggle_pane_fullscreen(children[1]);
+    let before = panes.multipane_info(&children[0]).unwrap();
+    let transfer = panes.take_container(children[1]).unwrap();
+    assert!(panes.is_empty());
+    let mut destination = overlay_panes(120, 40);
+    destination.insert_container(transfer);
+    for (client, child) in clients.into_iter().zip(children) {
+        assert_eq!(destination.active_pane_id(client), Some(child));
     }
-}
-
-#[test]
-fn fullscreen_divider_after_terminal_shrink_partitions_the_base_union() {
-    let mut panes = linked_panel();
-    let left = PaneId::Terminal(TerminalId::new(1));
-    let right = PaneId::Terminal(TerminalId::new(2));
-    panes.toggle_pane_fullscreen(left);
-    panes.display_area.borrow_mut().cols = 25;
-    panes.viewport.borrow_mut().cols = 25;
-    panes.reapply_coordinates();
-    assert_eq!(geom(&panes, 1), (2, 2, 23, 10));
-    assert_eq!(geom(&panes, 2), (0, 2, 25, 10));
-
-    let press = Position::new(5, (drawn(&panes, 1).2 - 1) as u16);
-    assert_eq!(panes.seam_at(&press), Some((left, right)));
-    panes.start_seam_drag(left, right, press);
-    assert!(panes.drag_seam_to(&Position::new(5, 9)));
-    panes.stop_seam_drag(Position::new(5, 9));
-    panes.unset_fullscreen();
-
-    assert_eq!(drawn(&panes, 1), (0, 2, 10, 10));
-    assert_eq!(drawn(&panes, 2), (10, 2, 15, 10));
-    panes.reapply_coordinates();
-    assert_eq!(drawn(&panes, 1), (0, 2, 10, 10));
-    assert_eq!(drawn(&panes, 2), (10, 2, 15, 10));
-}
-
-#[test]
-fn dragging_a_rounded_fullscreen_divider_back_restores_the_split() {
-    let mut panes = linked_panel();
-    place(&mut panes, batch(&[(1, 2, 31), (2, 33, 29)]), false);
-    let left = PaneId::Terminal(TerminalId::new(1));
-    let right = PaneId::Terminal(TerminalId::new(2));
-    panes.toggle_pane_fullscreen(left);
-    assert_eq!(drawn(&panes, 1).2, 41);
-    panes.start_seam_drag(left, right, Position::new(5, 40));
-    for column in [48, 40] {
-        let position = Position::new(5, column);
-        assert!(panes.drag_seam_to(&position));
-        assert_eq!(drawn(&panes, 1).2, usize::from(column) + 1);
-        assert_eq!(panes.seam_at(&position), Some((left, right)));
-    }
-    panes.stop_seam_drag(Position::new(5, 40));
-    panes.unset_fullscreen();
-    assert_eq!(drawn(&panes, 1), (2, 2, 31, 10));
-    assert_eq!(drawn(&panes, 2), (33, 2, 29, 10));
-}
-
-#[test]
-fn pressing_a_rounded_fullscreen_divider_does_not_change_the_split() {
-    let mut panes = linked_panel();
-    place(&mut panes, batch(&[(1, 2, 31), (2, 33, 29)]), false);
-    let left = PaneId::Terminal(TerminalId::new(1));
-    let right = PaneId::Terminal(TerminalId::new(2));
-    panes.toggle_pane_fullscreen(left);
-    assert_eq!(drawn(&panes, 1).2, 41);
-    let press = Position::new(5, 40);
-    panes.start_seam_drag(left, right, press);
-    assert!(!panes.drag_seam_to(&press));
-    panes.stop_seam_drag(press);
-    panes.unset_fullscreen();
-    assert_eq!(drawn(&panes, 1), (2, 2, 31, 10));
-}
-
-#[test]
-fn fullscreen_preserves_borderless_panes_and_no_ui_has_no_divider_frame() {
-    let mut panes = linked_panel();
-    let left = PaneId::Terminal(TerminalId::new(1));
-    panes.set_borderless(&left, true);
-    panes.toggle_pane_fullscreen(left);
-    assert_eq!(panes.get(&left).unwrap().get_content_columns(), 40);
-    assert_eq!(panes.seam_at(&Position::new(5, 39)), None);
-    panes.toggle_pane_no_ui_fullscreen(left);
-    for column in [39, 40] {
-        assert_eq!(panes.seam_at(&Position::new(5, column)), None);
-    }
-    panes.unset_fullscreen();
-    assert_eq!(panes.get(&left).unwrap().get_content_columns(), 30);
-}
-
-/// Either half. The guard used to run after `unlink`, and `fullscreen_pane_ids` is derived from
-/// the link - so once the pair was forgotten it named the anchor alone and the other half slipped
-/// past, leaving a panel expanded with one half of it gone.
-#[test]
-fn closing_the_other_half_of_an_expanded_panel_ends_the_expansion() {
-    let mut panes = linked_panel();
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    panes.remove_pane(PaneId::Terminal(crate::TerminalId::new(2)));
-
-    assert!(!panes.fullscreen_is_active());
+    assert_eq!(destination.multipane_info(&children[0]).unwrap(), before);
+    assert!(destination.pane_is_fullscreen(&children[1]));
+    let replacement = PaneId::Terminal(TerminalId::new(3));
+    destination
+        .replace_pane(children[1], mock_pane(replacement))
+        .unwrap();
+    assert_eq!(destination.active_pane_id(clients[1]), Some(replacement));
+    assert_eq!(destination.multipane_info(&replacement).unwrap().id, id);
     assert_eq!(
-        drawn(&panes, 1),
-        geom(&panes, 1),
-        "and the half that is left is drawn as itself again"
+        destination.multipane_info(&replacement).unwrap().children,
+        [children[0], replacement]
+    );
+    destination.hide_pane(replacement);
+    let transfer = destination.take_container(children[0]).unwrap();
+    panes.insert_container(transfer);
+    assert!(panes.is_hidden(&replacement));
+    assert_eq!(
+        panes.multipane_info(&replacement).unwrap().split,
+        before.split
     );
 }
 
-/// The pane handed back to the caller is out of the collection, so `refresh_fullscreen`'s reset
-/// loop - which owns every override here - can no longer reach it. It must not leave wearing one.
-#[test]
-fn a_pane_taken_out_of_an_expanded_slot_comes_back_without_the_expansion() {
-    let mut panes = overlay_panes(80, 20);
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
+fn half(x: usize) -> FloatingPaneCoordinates {
+    placed_coordinates(&x.to_string(), "2", "30", "10")
+}
 
-    let removed = panes
-        .replace_pane(
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            mock_pane(PaneId::Terminal(crate::TerminalId::new(9))),
+fn claims(panes: &OverlayPanes, id: u32) -> (bool, bool) {
+    let carry = panes.carry_of(&PaneId::Terminal(TerminalId::new(id)));
+    (carry.size_is_user_stated, carry.position_is_user_stated)
+}
+
+#[test]
+fn multipane_renders_each_clients_focused_title_and_keeps_chrome_on_tiny_surfaces() {
+    let clients = [ClientId::new(1), ClientId::new(2)];
+    for direction in [MultipaneDirection::LeftRight, MultipaneDirection::TopBottom] {
+        let (mut panes, children, _) = composed(direction);
+        panes.connected_clients.borrow_mut().extend(clients);
+        panes.connected_clients_in_app.borrow_mut().extend(clients);
+        for ((client, child), title) in clients
+            .into_iter()
+            .zip(children)
+            .zip(["LEFT CHILD", "RIGHT CHILD"])
+        {
+            panes.get_mut(&child).unwrap().update_name(title);
+            panes.focus_pane(child, client);
+        }
+        let render = |panes: &mut OverlayPanes| {
+            let mut output = Output::default();
+            output.add_clients(
+                &clients.into_iter().collect(),
+                Rc::new(RefCell::new(LinkHandler::new())),
+                None,
+            );
+            panes
+                .render(
+                    &mut output,
+                    &HashMap::new(),
+                    HashMap::new(),
+                    None,
+                    &HashMap::new(),
+                    false,
+                    0,
+                )
+                .unwrap();
+            output.serialize().unwrap()
+        };
+        let rendered = render(&mut panes);
+        assert!(rendered[&clients[0]].contains("LEFT CHILD"));
+        assert!(!rendered[&clients[0]].contains("RIGHT CHILD"));
+        assert!(rendered[&clients[1]].contains("RIGHT CHILD"));
+        assert!(!rendered[&clients[1]].contains("LEFT CHILD"));
+        panes.toggle_pane_fullscreen(children[0]);
+        for rows in 0..5 {
+            for cols in 0..5 {
+                *panes.display_area.borrow_mut() = Size { rows, cols };
+                *panes.viewport.borrow_mut() = Viewport {
+                    x: 0,
+                    y: 0,
+                    rows,
+                    cols,
+                };
+                panes.reapply_coordinates();
+                let rendered = render(&mut panes);
+                if rows > 0 && cols > 0 {
+                    assert!(!rendered[&clients[0]].is_empty());
+                }
+                assert_eq!(panes.len(), 2);
+            }
+        }
+    }
+}
+
+#[test]
+fn multipane_modal_focus_is_trapped_at_the_container_boundary() {
+    let mut panes = overlay_panes(120, 40);
+    for id in [1, 2] {
+        add(&mut panes, id, OverlayKind::Modal, coordinates("40", "20"));
+    }
+    add(
+        &mut panes,
+        3,
+        OverlayKind::Dismissible,
+        coordinates("20", "10"),
+    );
+    let children = [
+        PaneId::Terminal(TerminalId::new(1)),
+        PaneId::Terminal(TerminalId::new(2)),
+    ];
+    panes
+        .create_multipane(
+            children,
+            MultipaneSplit {
+                direction: MultipaneDirection::LeftRight,
+                ratio: 5000,
+            },
+            OverlayPlacement {
+                kind: OverlayKind::Modal,
+                coordinates: None,
+            },
         )
         .unwrap();
-
-    assert!(removed.geom_override().is_none());
-    assert_eq!(
-        removed.position_and_size(),
-        removed.current_geom(),
-        "so it is drawn at the rectangle it always had"
-    );
-}
-
-/// A surface a single column wide has no room for two halves, and the panel is still a panel: the
-/// seam is clamped to the one column there is, and the right half takes the floor `resize_panel`
-/// gives it rather than being drawn at no width at all.
-#[test]
-fn an_expanded_panel_on_a_surface_one_column_wide_keeps_both_halves() {
-    let (mut panes, display_area) = overlay_panes_with(
-        80,
-        20,
-        Viewport {
-            x: 0,
-            y: 0,
-            cols: 80,
-            rows: 20,
-        },
-    );
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
-    panes.link_touching(&[
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-    ]);
-    panes.toggle_pane_no_ui_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    *display_area.borrow_mut() = Size { cols: 1, rows: 20 };
-    panes.set_pane_frames().unwrap();
-
-    assert_eq!(
-        (drawn(&panes, 1).2, drawn(&panes, 2).2),
-        (1, 1),
-        "neither half is drawn at no width"
-    );
-    assert!(panes.pane_is_fullscreen(&PaneId::Terminal(crate::TerminalId::new(1))));
-}
-
-/// A surface with no columns has no room for a divider either: `seam_mapped_onto` clamps its
-/// answer to a column that is already past the right edge, and there is no rectangle to answer
-/// with at all - so the expansion is over, rather than remembered with nothing to show for it.
-#[test]
-fn an_expanded_panel_on_a_surface_with_no_columns_is_drawn_at_nothing() {
-    let (mut panes, display_area) = overlay_panes_with(
-        80,
-        20,
-        Viewport {
-            x: 0,
-            y: 0,
-            cols: 80,
-            rows: 20,
-        },
-    );
-    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
-    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
-    panes.link_touching(&[
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        PaneId::Terminal(crate::TerminalId::new(2)),
-    ]);
-    panes.toggle_pane_no_ui_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
-
-    *display_area.borrow_mut() = Size { cols: 0, rows: 0 };
-    panes.set_pane_frames().unwrap();
-
-    assert!(
-        panes
-            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
-            .unwrap()
-            .geom_override()
-            .is_none(),
-        "nothing is expanded into a surface this size"
-    );
-    assert!(
-        !panes.fullscreen_is_active(),
-        "and the expansion is dropped rather than left claiming panes it cannot draw"
-    );
-    assert!(
-        !panes.pane_is_fullscreen(&PaneId::Terminal(crate::TerminalId::new(1))),
-        "which is what every resize, drag and move of the panel goes on to ask"
-    );
+    let clients = [ClientId::new(1), ClientId::new(2)];
+    panes.connected_clients.borrow_mut().extend(clients);
+    for (client, child) in clients.into_iter().zip(children) {
+        panes.focus_pane(child, client);
+        panes.focus_pane(PaneId::Terminal(TerminalId::new(3)), client);
+        assert_eq!(panes.active_pane_id(client), Some(child));
+    }
+    panes.hide_pane(children[0]);
+    assert!(children.iter().all(|child| panes.is_hidden(child)));
+    panes.show_pane(children[1]);
+    for client in clients {
+        assert_eq!(panes.active_pane_id(client), Some(children[1]));
+    }
 }

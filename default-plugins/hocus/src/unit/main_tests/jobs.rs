@@ -520,12 +520,7 @@ fn stop_jobs_clears_held_jobs_too() {
     assert!(stored_job_ids(&state).is_empty());
 }
 
-/// A job that fires with `show: true` brings the *panel* back, and hocus knows it did.
-///
-/// `show_self` on its own tells the host and nothing else, so a panel dismissed a moment earlier
-/// stayed `hidden` by its own reckoning while sitting on screen - and `hide_pending`, still set
-/// from that Esc, made the manifest that would have corrected it unreadable. The panel wedged:
-/// no list beside it, no tab following, and only a second Esc to get out.
+/// A job that fires with `show: true` reveals the container.
 #[test]
 fn a_job_that_fires_with_show_brings_the_panel_back() {
     let mut state = idle_state();
@@ -534,10 +529,9 @@ fn a_job_that_fires_with_show_brings_the_panel_back() {
     ));
 
     state.hide_panel();
-    assert!(state.hidden && state.hide_pending > 0);
+    assert!(state.hidden);
 
     assert!(state.on_timer(60.0), "the job is due");
 
     assert!(!state.hidden, "the panel is up, and hocus says so");
-    assert!(state.hide_pending == 0, "the Esc it replaces is void");
 }

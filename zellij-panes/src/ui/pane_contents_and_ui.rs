@@ -441,6 +441,19 @@ impl<'a> PaneContentsAndUi<'a> {
             .render_frame(client_id, frame_params, client_mode)
             .with_context(err_context)?
         {
+            if let Some(outer) = self.frame_geom_override {
+                frame_terminal_characters.retain_mut(|chunk| {
+                    if chunk.y < outer.y
+                        || chunk.y >= outer.y + outer.rows.as_usize()
+                        || chunk.x < outer.x
+                        || chunk.x >= outer.x + outer.cols.as_usize()
+                    {
+                        return false;
+                    }
+                    chunk.retain_by_width(outer.x + outer.cols.as_usize() - chunk.x);
+                    true
+                });
+            }
             if self.frame_is_dimmed_for_client(client_id) {
                 dim_character_chunks(&mut frame_terminal_characters);
             }

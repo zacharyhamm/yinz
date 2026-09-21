@@ -175,7 +175,8 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
-        .link_touching_overlays(&[left, right]);
+        .create_multipane([left, right], panel_split(), panel_placement())
+        .unwrap();
     let later = start + Duration::from_millis(120);
     screen.pinned_now = Some(later);
     screen.render_to_clients().unwrap();
@@ -184,7 +185,7 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
             screen.tabs[&TabId::new(0)]
                 .overlay_carry_for(id)
                 .opening_started,
-            Some(start)
+            Some(later)
         );
     }
     assert_eq!(
@@ -213,15 +214,13 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
     for id in [left, right] {
         assert_eq!(
             tab.overlay_carry_for(id).opening_started,
-            Some(start),
+            Some(later),
             "moving, focusing and resizing do not replay"
         );
-        assert!(tab.hide_overlay_pane(id));
     }
+    assert!(tab.hide_overlay_pane(left));
     assert!(!tab.overlay_ripple_is_live());
-    for id in [left, right] {
-        assert!(tab.show_overlay_pane(id));
-    }
+    assert!(tab.show_overlay_pane(right));
     tab.sample_overlay_ripples(later, true);
     for id in [left, right] {
         assert_eq!(tab.overlay_carry_for(id).opening_started, Some(later));
@@ -307,7 +306,8 @@ fn opening_ripple_fullscreen_bounds_and_restore() {
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
-                .link_touching_overlays(&panes);
+                .create_multipane([panes[0], panes[1]], panel_split(), panel_placement())
+                .unwrap();
         }
         let original_geoms: Vec<_> = panes
             .iter()
@@ -383,7 +383,8 @@ fn opening_ripple_alone_and_reopened_beside_a_settled_half() {
     let (_, conversation) = panel_half(&mut screen, 8, "hocus", 38, false);
     let later = start + Duration::from_secs(1);
     let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
-    tab.link_touching_overlays(&[agents, conversation]);
+    tab.create_multipane([agents, conversation], panel_split(), panel_placement())
+        .unwrap();
     tab.sample_overlay_ripples(later, true);
     assert_eq!(
         tab.overlay_carry_for(conversation).opening_started,
@@ -407,4 +408,20 @@ fn opening_ripple_alone_and_reopened_beside_a_settled_half() {
         !tab.overlay_ripple_is_live(),
         "restoring borders does not replay"
     );
+}
+
+fn panel_split() -> zellij_types::multipane::MultipaneSplit {
+    zellij_types::multipane::MultipaneSplit {
+        direction: zellij_types::multipane::MultipaneDirection::LeftRight,
+        ratio: 5000,
+    }
+}
+fn panel_placement() -> zellij_types::data::OverlayPlacement {
+    zellij_types::data::OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(3)),
+        y: Some(PercentOrFixed::Fixed(2)),
+        width: Some(PercentOrFixed::Fixed(70)),
+        height: Some(PercentOrFixed::Fixed(10)),
+        ..Default::default()
+    }))
 }

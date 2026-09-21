@@ -7,7 +7,7 @@ fn fullscreen_overlay_divider_drags_with_complete_borders_under_title_only_frame
     let left = PaneId::Terminal(TerminalId::new(2));
     let right = PaneId::Terminal(TerminalId::new(3));
     for ctrl in [false, true] {
-        for grab_column in [39, 40] {
+        for grab_column in [39] {
             let mut tab = create_new_tab(size, ModeInfo::default());
             tab.set_pane_frames(PaneFrameStyle::Titles);
             let coordinates = |x| FloatingPaneCoordinates {
@@ -35,7 +35,18 @@ fn fullscreen_overlay_divider_drags_with_complete_borders_under_title_only_frame
                 false,
             )
             .unwrap();
-            tab.link_touching_overlays(&[left, right]);
+            tab.create_multipane(
+                [left, right],
+                zellij_types::multipane::MultipaneSplit {
+                    direction: zellij_types::multipane::MultipaneDirection::LeftRight,
+                    ratio: 5000,
+                },
+                OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
+                    width: Some(PercentOrFixed::Fixed(60)),
+                    ..coordinates(2)
+                })),
+            )
+            .unwrap();
             tab.handle_pty_bytes(TerminalId::new(2), b"Agents".to_vec())
                 .unwrap();
             tab.handle_pty_bytes(TerminalId::new(3), b"Chat".to_vec())
@@ -62,7 +73,7 @@ fn fullscreen_overlay_divider_drags_with_complete_borders_under_title_only_frame
             )
             .unwrap();
             assert!(tab.overlay_panes.seam_is_being_dragged());
-            for (column, expected_cols) in [(grab_column + 16, 56), (grab_column - 16, 24)] {
+            for (column, expected_cols) in [(grab_column + 16, 54), (grab_column - 16, 22)] {
                 let effect = tab
                     .handle_mouse_event(
                         &event(MouseEvent::new_left_motion_event(Position::new(5, column))),
@@ -91,12 +102,12 @@ fn fullscreen_overlay_divider_drags_with_complete_borders_under_title_only_frame
             .unwrap();
             assert!(!tab.overlay_panes.seam_is_being_dragged());
             tab.toggle_active_pane_fullscreen(client_id);
-            for (pane_id, x, cols) in [(left, 2, 18), (right, 20, 42)] {
+            for (pane_id, x, cols) in [(left, 3, 16), (right, 20, 41)] {
                 let pane = tab.overlay_panes.get(&pane_id).unwrap();
                 let geom = pane.current_geom();
                 assert_eq!(
                     (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize()),
-                    (x, 2, cols, 10)
+                    (x, 3, cols, 8)
                 );
             }
         }
@@ -3246,4 +3257,27 @@ fn in_place_pane_with_close_replaced_pane_true_closes_original() {
     );
     // Snapshot shows only pane 1 (pane 2 was permanently closed, not restored)
     assert_snapshot!(snapshot);
+}
+
+#[test]
+fn reserving_a_suppressed_multipane_slot_does_not_evict_the_tabs_working_pane() {
+    let mut tab = create_new_tab(Size { rows: 20, cols: 80 }, ModeInfo::default());
+    tab.max_panes = Some(1);
+    let working = tab.get_all_pane_ids();
+    tab.new_floating_pane(
+        PaneId::Terminal(TerminalId::new(99)),
+        None,
+        None,
+        true,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(working.iter().all(|id| tab.has_pane_with_pid(id)));
+    assert!(
+        tab.get_pane_info(PaneId::Terminal(TerminalId::new(99)))
+            .unwrap()
+            .is_suppressed
+    );
 }

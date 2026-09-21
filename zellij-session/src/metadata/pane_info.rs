@@ -108,6 +108,7 @@ pub fn decode_from_kdl(
     let plugin_url = optional_string_node!("plugin_url");
     let is_selectable = bool_node!("is_selectable");
     let pane_info = PaneInfo {
+        multipane: None,
         host: None,
         target: Default::default(),
         agent: None,

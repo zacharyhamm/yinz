@@ -28,6 +28,8 @@
 //! - `active_tab_ids: BTreeMap<ClientId, TabId>`: Maps clients to active tab ID
 //! - `tab_history: BTreeMap<ClientId, Vec<TabId>>`: History of tab IDs per client
 
+mod multipanes;
+
 use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::{ENTER_DURATION, ENTER_EASING};
 use std::cell::RefCell;
@@ -101,7 +103,7 @@ use crate::{
     output::HostKittyState,
     panes::kitty_graphics::KittyImageStore,
     panes::sixel::SixelImageStore,
-    panes::{OverlayCarry, PaneId},
+    panes::PaneId,
     plugins::{HookFiring, PluginId, PluginInstruction, PluginRenderAsset},
     pty::{get_default_shell, ClientTabIndexOrPaneId, PtyInstruction},
     pty_writer::PtyWriteInstruction,
@@ -2716,11 +2718,7 @@ impl Screen {
         let err_context = || "failed to focus_plugin_pane".to_string();
         let mut tab_id_and_plugin_pane_id = None;
         let mut plugin_pane_to_move_to_active_tab = None;
-        let mut linked_panel_to_move = None;
-        // the tab a pane leaves forgets that it was an overlay - carry the placement over, or the
-        // pane lands in the new tab sized against its viewport
-        let mut overlay_placement = None;
-        let mut overlay_carry = OverlayCarry::default();
+        let mut overlay_to_move = None;
         // A tab *id*, as `self.tabs` and `active_tab_ids` are both keyed - never a position. The
         // two part company as soon as a tab is closed or moved, and reading one as the other is
         // what used to walk the client off its own tab on the way to a reveal.
@@ -2741,29 +2739,25 @@ impl Screen {
             if let Some(plugin_pane_id) = tab.find_plugin(run_plugin) {
                 tab_id_and_plugin_pane_id = Some((*tab_id, plugin_pane_id));
                 if move_to_focused_tab && focused_tab_id.is_some_and(|focused| focused != *tab_id) {
-                    // Extraction forgets the link, so carry the panel as one batch instead.
-                    if let Some(partner) = tab.linked_overlay_partner(plugin_pane_id) {
-                        linked_panel_to_move = Some((plugin_pane_id, partner));
+                    if tab.pane_is_overlay(plugin_pane_id) {
+                        overlay_to_move = Some(plugin_pane_id);
                         break;
                     }
-                    overlay_placement = tab.overlay_placement_for(plugin_pane_id);
-                    overlay_carry = tab.overlay_carry_for(plugin_pane_id);
                     plugin_pane_to_move_to_active_tab = tab.extract_pane(plugin_pane_id, true);
                 }
 
                 break;
             }
         }
-        if let Some((plugin_pane_id, partner)) = linked_panel_to_move {
+        if let Some(plugin_pane_id) = overlay_to_move {
             let destination = focused_tab_id.with_context(err_context)?;
             self.break_multiple_panes_to_tab_with_id(
-                vec![plugin_pane_id, partner],
+                vec![plugin_pane_id],
                 destination,
                 false,
                 client_id,
             )?;
             let tab = self.tabs.get_mut(&destination).with_context(err_context)?;
-            tab.show_overlay_pane(partner);
             tab.show_overlay_pane(plugin_pane_id);
             tab_id_and_plugin_pane_id = Some((destination, plugin_pane_id));
         }
@@ -2771,27 +2765,7 @@ impl Screen {
             let pane_id = plugin_pane_to_move_to_active_tab.pid();
             let new_active_tab = self.get_active_tab_mut(client_id)?;
 
-            if let Some(placement) = overlay_placement {
-                // an overlay is not on the floating layer, so moving one here must not raise it
-                new_active_tab.add_overlay_pane(
-                    plugin_pane_to_move_to_active_tab,
-                    pane_id,
-                    placement.kind,
-                    placement.coordinates.unwrap_or_default(),
-                    // this is the reveal path - `LaunchOrFocusPlugin` naming a plugin is the user
-                    // asking for it back, so an overlay that was hidden arrives shown, exactly as
-                    // the same-tab branch below reveals it through `focus_pane_if_exists`. Only
-                    // the hidden bit is overridden: a reveal is not a request to undo the drag,
-                    // and the plugin re-placing itself on arrival would do exactly that without
-                    // the user-stated position carried across.
-                    OverlayCarry {
-                        hidden: false,
-                        ..overlay_carry
-                    },
-                    true,
-                    Some(client_id),
-                )?;
-            } else if should_float {
+            if should_float {
                 new_active_tab.show_floating_panes();
                 new_active_tab.add_floating_pane(
                     plugin_pane_to_move_to_active_tab,
@@ -3009,6 +2983,15 @@ impl Screen {
             self.close_pane_explicitly(id, completion_tx);
         }
         Ok(closing)
+    }
+
+    fn close_self_instruction(&self, plugin: PluginId, client: ClientId) -> ScreenInstruction {
+        let id = PaneId::Plugin(plugin);
+        let composed = self
+            .tab_containing_pane(id)
+            .and_then(|tab| tab.multipane_info(id))
+            .is_some();
+        ScreenInstruction::ClosePane(id, composed.then_some(client), None, None)
     }
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
@@ -3600,14 +3583,18 @@ impl Screen {
             );
             return;
         };
-        let Some((extracted_pane_from_other_tab, carried_respawn)) = self
+        let Some((extracted_pane_from_other_tab, carried_respawn, retains_tab)) = self
             .tabs
             .iter_mut()
             .find(|(_, t)| t.position == tab_index_of_existing_pane)
             .and_then(|(_, t)| {
+                let retains_tab = t
+                    .get_tiled_panes()
+                    .chain(t.get_floating_panes())
+                    .any(|(id, _)| *id == pane_id_of_existing_pane);
                 let carried_respawn = t.take_pending_respawn(pane_id_of_existing_pane);
                 t.extract_pane(pane_id_of_existing_pane, true)
-                    .map(|pane| (pane, carried_respawn))
+                    .map(|pane| (pane, carried_respawn, retains_tab))
             })
         else {
             log::error!("Failed to find pane");
@@ -3630,6 +3617,9 @@ impl Screen {
                     extracted_pane_from_other_tab,
                     None,
                 );
+            }
+            if retains_tab {
+                tab.1.retain_tab_for_multipane(pane_id_of_existing_pane);
             }
             if let Some(entry) = carried_respawn {
                 tab.1
@@ -4110,6 +4100,9 @@ impl Screen {
         }
     }
     pub fn stack_panes(&mut self, mut pane_ids_to_stack: Vec<PaneId>) -> Option<PaneId> {
+        if self.selection_has_multipane(&pane_ids_to_stack) {
+            return None;
+        }
         // if successful, returns the pane id of the last pane in the stack
         if pane_ids_to_stack.is_empty() {
             log::error!("Got an empty list of pane_ids to stack");
@@ -4189,15 +4182,11 @@ impl Screen {
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
         override_user_placement: bool,
     ) -> Vec<(PaneId, FloatingPaneCoordinates)> {
+        if let Err(error) = self.validate_multipane_coordinates(&pane_ids_and_coordinates) {
+            Err::<(), _>(error).non_fatal();
+            return vec![];
+        }
         let mut pending = vec![];
-        let pane_ids: Vec<PaneId> = pane_ids_and_coordinates
-            .iter()
-            .map(|(pane_id, _)| *pane_id)
-            .collect();
-        // Each tab gets the part of the batch that is on it, as one placement: two overlays
-        // linked as a panel are placed as that panel (`Tab::change_overlay_coordinates_batch`),
-        // which they cannot be one pane at a time. Return missing panes so the screen thread
-        // can buffer their geometry until pane creation.
         let mut per_tab: BTreeMap<TabId, Vec<(PaneId, FloatingPaneCoordinates)>> = BTreeMap::new();
         for (pane_id, coordinates) in pane_ids_and_coordinates {
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
@@ -4213,21 +4202,48 @@ impl Screen {
             if let Some(tab) = self.get_tab_by_id_mut(tab_id) {
                 tab.change_overlay_coordinates_batch(batch, override_user_placement)
                     .non_fatal();
-                // Once the whole batch is applied: a batch that places two overlays together is
-                // what makes them one panel with a draggable seam. Asked of every tab holding
-                // one of them, so a pair parted across two tabs is unlinked on both.
-                if pane_ids.len() >= 2 {
-                    tab.link_touching_overlays(&pane_ids);
-                }
             }
         }
         pending
+    }
+    fn validate_multipane_coordinates(
+        &self,
+        coordinates: &[(PaneId, FloatingPaneCoordinates)],
+    ) -> Result<()> {
+        let mut placements = std::collections::HashMap::new();
+        for (pane, coordinates) in coordinates {
+            if let Some(info) = self
+                .tab_containing_pane(*pane)
+                .and_then(|tab| tab.multipane_info(*pane))
+            {
+                if placements
+                    .insert(info.id, coordinates)
+                    .is_some_and(|previous| previous != coordinates)
+                {
+                    return Err(anyhow!("conflicting placements for the same multipane"));
+                }
+            }
+        }
+        Ok(())
     }
     pub fn change_floating_panes_coordinates(
         &mut self,
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
     ) {
+        if let Err(error) = self.validate_multipane_coordinates(&pane_ids_and_coordinates) {
+            Err::<(), _>(error).non_fatal();
+            return;
+        }
+        let mut applied = std::collections::HashSet::new();
         for (pane_id, coordinates) in pane_ids_and_coordinates {
+            if let Some(info) = self
+                .tab_containing_pane(pane_id)
+                .and_then(|tab| tab.multipane_info(pane_id))
+            {
+                if !applied.insert(info.id) {
+                    continue;
+                }
+            }
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
                 tab.change_floating_pane_coordinates(&pane_id, coordinates)
                     .non_fatal();
@@ -5096,6 +5112,18 @@ fn replay_pending_plugin_events(
     pending_events: Vec<ScreenInstruction>,
 ) -> Result<()> {
     for event in pending_events {
+        let event = match event {
+            ScreenInstruction::CloseSelf(plugin, client) => {
+                screen.close_self_instruction(plugin, client)
+            },
+            ScreenInstruction::ClosePane(id, None, None, status) => {
+                match screen.replacement_exit_command(id) {
+                    Some(command) => ScreenInstruction::HoldPane(id, status, command),
+                    None => ScreenInstruction::ClosePane(id, None, None, status),
+                }
+            },
+            event => event,
+        };
         match event {
             event @ ScreenInstruction::AgentReport(..) => {
                 thread_main::replay_pending_pane_event(screen, event)?;
@@ -5130,6 +5158,16 @@ fn replay_pending_plugin_events(
                     );
                 }
                 screen.render(None)?;
+            },
+            ScreenInstruction::Multipane {
+                operation,
+                client_id,
+                response,
+            } => {
+                let result = screen
+                    .multipane_command(operation, client_id)
+                    .map_err(|error| error.to_string());
+                let _ = response.send(result);
             },
             ScreenInstruction::ChangeOverlayCoordinates(
                 coordinates,

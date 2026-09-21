@@ -202,6 +202,7 @@ impl SharedPtys {
             ),
             _ => None,
         };
+        let spawned = terminal_action.is_some();
         self.mutate(|fake_pty_registry| {
             fake_pty_registry.fake_pty_states.insert(
                 terminal_id,
@@ -221,7 +222,9 @@ impl SharedPtys {
                     foreground_command: None,
                 },
             );
-            fake_pty_registry.spawn_queue.push_back(terminal_id);
+            if spawned {
+                fake_pty_registry.spawn_queue.push_back(terminal_id);
+            }
         });
         Box::new(FakeAsyncReader {
             output_rx,
@@ -446,6 +449,7 @@ impl SharedPtys {
                 .fake_pty_states
                 .get_mut(&terminal_id)
                 .expect("re-run for unknown terminal id");
+            let was_reserved = fake_pty_state.terminal_action.is_none();
             fake_pty_state.process_command = Some(
                 std::iter::once(run_command.command.to_string_lossy().into_owned())
                     .chain(run_command.args.iter().cloned())
@@ -456,6 +460,10 @@ impl SharedPtys {
             fake_pty_state.output_tx = Some(output_tx);
             fake_pty_state.quit_cb = Some(quit_cb);
             fake_pty_state.exited = false;
+            // Reserving an ID is not a spawn. Report its first actual command here.
+            if was_reserved {
+                fake_pty_registry.spawn_queue.push_back(terminal_id);
+            }
         });
         Box::new(FakeAsyncReader {
             output_rx,
@@ -679,6 +687,16 @@ pub struct FakePtyHandle {
 }
 
 impl FakePtyHandle {
+    pub fn wait_for_command(&self, command: &str) {
+        self.shared_ptys.wait_for(command, |registry| {
+            registry
+                .fake_pty_states
+                .get(&self.terminal_id)
+                .filter(|state| state.run_command().command.to_string_lossy() == command)
+                .map(|_| ())
+        });
+    }
+
     /// The command received by the fake process, including its latest rerun.
     pub fn run_command(&self) -> RunCommand {
         self.shared_ptys.run_command_of(self.terminal_id).unwrap()

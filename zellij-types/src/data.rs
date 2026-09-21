@@ -1259,6 +1259,8 @@ pub struct PaneManifest {
 /// border.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct PaneInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multipane: Option<crate::multipane::MultipaneInfo>,
     /// The pane identity, including whether it is a terminal or a plugin.
     #[serde(flatten, with = "crate::pane_id::legacy_fields")]
     pub id: PaneId,
@@ -2692,6 +2694,9 @@ pub struct NotifyClick {
 #[strum_discriminants(name(CommandType))]
 #[allow(clippy::large_enum_variant)]
 pub enum PluginCommand {
+    CreateMultipane(crate::multipane::CreateMultipane),
+    UpdateMultipane(crate::multipane::UpdateMultipane),
+    ReplaceMultipaneChild(crate::multipane::ReplaceMultipaneChild),
     Subscribe(HashSet<EventType>),
     Unsubscribe(HashSet<EventType>),
     SetSelectable(bool),

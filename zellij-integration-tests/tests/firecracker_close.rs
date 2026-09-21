@@ -62,8 +62,7 @@ fn closing_the_final_pane_finishes_while_shutdown_waits_for_the_provider_lock() 
             r#"layout { pane command="sh" firecracker_vm="api"; }"#.into(),
         ))
         .start();
-    // Remote panes first reserve a terminal, then complete their deferred spawn.
-    owner.expect_pty_spawn();
+    // Wait for the deferred spawn, after the remote terminal has been reserved.
     owner.expect_pty_spawn().output(PROMPT);
     owner.wait_until("shell rendered", |screen| screen.contains("$"));
     let dir = tempfile::tempdir().unwrap();

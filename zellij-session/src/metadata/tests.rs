@@ -49,6 +49,7 @@ fn serialize_and_deserialize_session_info() {
 fn serialize_and_deserialize_session_info_with_data() {
     let panes_list = vec![
         PaneInfo {
+            multipane: None,
             host: None,
             target: Default::default(),
             agent: None,
@@ -81,6 +82,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             cwd: Some("/work/hocus".to_owned()),
         },
         PaneInfo {
+            multipane: None,
             host: None,
             target: Default::default(),
             agent: None,

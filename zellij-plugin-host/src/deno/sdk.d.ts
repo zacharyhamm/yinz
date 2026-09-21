@@ -300,6 +300,9 @@ export interface CommandArgs {
   RebindKeys: {keys_to_rebind: [InputMode, KeyWithModifier, Action[]][]; keys_to_unbind: [InputMode, KeyWithModifier][]; write_config_to_disk: boolean};
   RegisterDefaultKeybindings: string; ListClients: undefined; ChangeHostFolder: string;
   SetFloatingPanePinned: [PaneId, boolean]; StackPanes: PaneId[]; ChangeFloatingPanesCoordinates: [PaneId, FloatingPaneCoordinates][];
+  CreateMultipane: CreateMultipane;
+  UpdateMultipane: UpdateMultipane;
+  ReplaceMultipaneChild: ReplaceMultipaneChild;
   ChangeOverlayCoordinates: {placements: [PaneId, FloatingPaneCoordinates][]; override_user_placement: boolean};
   TogglePaneBorderless: PaneId; SetPaneBorderless: [PaneId, boolean];
   OpenCommandPaneNearPlugin: [CommandToRun, StringMap]; OpenCommandPaneInGitCheckoutNearPlugin: [CommandToRun, string, GitCheckout, boolean?];
@@ -373,6 +376,7 @@ export interface CommandReplies {
   OpenTerminalNearPlugin: PaneId | null; OpenTerminalFloatingNearPlugin: PaneId | null; OpenTerminalInPlaceOfPlugin: PaneId | null;
   OpenTerminalPaneInPlaceOfPaneId: PaneId | null; OpenEditPaneInPlaceOfPaneId: PaneId | null;
   OpenCommandPane: PaneId | null; OpenCommandPaneFloating: PaneId | null; OpenCommandPaneInPlace: PaneId | null; OpenCommandPaneBackground: PaneId | null;
+  CreateMultipane: MultipaneInfo; UpdateMultipane: MultipaneInfo; ReplaceMultipaneChild: MultipaneInfo;
   OpenCommandPaneNearPlugin: PaneId | null; OpenCommandPaneOverlay: PaneId | null; OpenCommandPaneFloatingNearPlugin: PaneId | null;
   OpenCommandPaneInPlaceOfPlugin: PaneId | null; OpenCommandPaneInPlaceOfPaneId: PaneId | null; OpenPluginPaneFloating: PaneId | null;
   OpenCommandPaneInGitCheckoutNearPlugin: PaneId | null; SpawnAgent: SpawnedAgent;
@@ -455,7 +459,16 @@ export interface FsEntry {path: string; metadata: FileMetadata | null;}
 export interface Position {line: Integer; column: Integer;}
 export interface CellCoordinates {x: Integer; y: Integer;}
 export interface PaneContents {lines_above_viewport: string[]; lines_below_viewport: string[]; viewport: string[]; selected_text: {start: Position; end: Position} | null; cursor: CellCoordinates | null; last_output_ms_ago: Integer | null; is_scrolled: boolean;}
+export type MultipaneId = number;
+export interface MultipaneSplit { direction: "LeftRight" | "TopBottom"; ratio: number; }
+export type MultipaneChild = { Existing: PaneId } | { Terminal: CommandToRun } | { Plugin: { url: string; configuration: StringMap } };
+export interface MultipaneInfo { id: MultipaneId; children: [PaneId, PaneId]; x: number; y: number; rows: number; columns: number; split: MultipaneSplit; }
+export interface CreateMultipane { children: [MultipaneChild, MultipaneChild]; placement: OverlayPlacement; split: MultipaneSplit; focus?: 0 | 1 | null; }
+export interface UpdateMultipane { id: MultipaneId; coordinates?: FloatingPaneCoordinates | null; split?: MultipaneSplit | null; override_user_placement: boolean; }
+export interface ReplaceMultipaneChild { id: MultipaneId; slot: 0 | 1; child: MultipaneChild; }
+
 export interface PaneInfo {
+  multipane?: MultipaneInfo | null;
   id: number; is_plugin: boolean; is_focused: boolean; is_fullscreen: boolean; is_floating: boolean; is_suppressed: boolean; is_stack_list_member: boolean;
   title: string; exited: boolean; exit_status: number | null; is_held: boolean; restart_error: string | null;
   pane_x: Integer; pane_content_x: Integer; pane_y: Integer; pane_content_y: Integer;

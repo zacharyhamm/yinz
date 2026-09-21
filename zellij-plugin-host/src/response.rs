@@ -145,6 +145,15 @@ pub enum DecodedResponse {
 /// caller hands the bytes back untouched.
 pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<DecodedResponse>> {
     Some(match command {
+        CommandType::CreateMultipane
+        | CommandType::UpdateMultipane
+        | CommandType::ReplaceMultipaneChild => decode(bytes).and_then(
+            |response: zellij_plugin_api::plugin_command::ProtobufMultipaneResponse| {
+                let result: zellij_types::multipane::MultipaneResponse =
+                    serde_json::from_str(&response.json)?;
+                value(result.map_err(|error| anyhow!(error))?)
+            },
+        ),
         CommandType::GetPluginIds => decode(bytes).and_then(|response: ProtobufPluginIds| {
             let ids = PluginIds::try_from(response).map_err(|e| anyhow!("{}", e))?;
             value(ids)

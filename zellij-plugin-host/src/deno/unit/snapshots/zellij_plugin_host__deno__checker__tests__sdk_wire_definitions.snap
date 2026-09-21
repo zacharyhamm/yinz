@@ -272,6 +272,9 @@ SetPaneSubtitle = 288;
 CheckPlugin = 289;
 TestPlugin = 290;
 CancelPluginTest = 291;
+CreateMultipane = 292;
+UpdateMultipane = 293;
+ReplaceMultipaneChild = 294;
 }
 message PluginCommand {
 reserved 213;
@@ -279,6 +282,9 @@ reserved "check_lua_plugin_payload";
 reserved 108, 109, 110, 164, 165, 167, 173, 187;
 CommandName name = 1;
 oneof payload {
+string create_multipane_payload = 233;
+string update_multipane_payload = 234;
+string replace_multipane_child_payload = 235;
 SubscribePayload subscribe_payload = 2;
 UnsubscribePayload unsubscribe_payload = 3;
 bool set_selectable_payload = 4;
@@ -1728,6 +1734,7 @@ string name = 1;
 string options_json = 2;
 string request_id = 3;
 }
+message MultipaneResponse { string json = 1; }
 events
 syntax = "proto3";
 import "input_mode.proto";
@@ -2237,6 +2244,7 @@ optional string firecracker_worktree = 32;
 optional command.PaneTarget target = 33;
 bool is_stack_list_member = 34;
 optional string restart_error = 35;
+optional MultipaneInfo multipane = 36;
 }
 message AgentInfo {
 string kind = 1;
@@ -2411,6 +2419,16 @@ ContextMenuContext context = 3;
 }
 message InitialKeybindsPayload {
 repeated InputModeKeybinds keybinds = 1;
+}
+message MultipaneInfo {
+uint64 id = 1;
+repeated PaneId children = 2;
+uint64 x = 3;
+uint64 y = 4;
+uint64 rows = 5;
+uint64 columns = 6;
+bool top_bottom = 7;
+uint32 ratio = 8;
 }
 data
 syntax = "proto3";

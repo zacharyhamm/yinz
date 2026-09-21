@@ -2006,6 +2006,29 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::ChangeFloatingPanesCoordinates => {
             PluginCommand::ChangeFloatingPanesCoordinates(pane_ids_with_coordinates(tc))
         },
+        CommandType::CreateMultipane => {
+            PluginCommand::CreateMultipane(zellij_types::multipane::CreateMultipane {
+                children: [multipane_child(tc), multipane_child(tc)],
+                placement: overlay_placements(tc),
+                split: multipane_split(tc),
+                focus: booleans(tc).then(|| usize::from(booleans(tc))),
+            })
+        },
+        CommandType::UpdateMultipane => {
+            PluginCommand::UpdateMultipane(zellij_types::multipane::UpdateMultipane {
+                id: zellij_types::multipane::MultipaneId(tc.draw(generators::integers::<u64>())),
+                coordinates: booleans(tc).then(|| floating_pane_coordinates(tc)),
+                split: booleans(tc).then(|| multipane_split(tc)),
+                override_user_placement: booleans(tc),
+            })
+        },
+        CommandType::ReplaceMultipaneChild => {
+            PluginCommand::ReplaceMultipaneChild(zellij_types::multipane::ReplaceMultipaneChild {
+                id: zellij_types::multipane::MultipaneId(tc.draw(generators::integers::<u64>())),
+                slot: usize::from(booleans(tc)),
+                child: multipane_child(tc),
+            })
+        },
         CommandType::ChangeOverlayCoordinates => PluginCommand::ChangeOverlayCoordinates {
             placements: pane_ids_with_coordinates(tc),
             override_user_placement: booleans(tc),
@@ -2280,5 +2303,30 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             success: booleans(tc),
             payload: optional_strings(tc),
         },
+    }
+}
+
+fn multipane_split(tc: &hegel::TestCase) -> zellij_types::multipane::MultipaneSplit {
+    use zellij_types::multipane::*;
+    MultipaneSplit {
+        direction: if booleans(tc) {
+            MultipaneDirection::LeftRight
+        } else {
+            MultipaneDirection::TopBottom
+        },
+        ratio: tc.draw(generators::integers::<u16>()) % 9999 + 1,
+    }
+}
+fn multipane_child(tc: &hegel::TestCase) -> zellij_types::multipane::MultipaneChild {
+    use zellij_types::multipane::MultipaneChild;
+    if booleans(tc) {
+        MultipaneChild::Existing(pane_id(tc))
+    } else if booleans(tc) {
+        MultipaneChild::Terminal(commands_to_run(tc))
+    } else {
+        MultipaneChild::Plugin {
+            url: strings(tc),
+            configuration: context(tc),
+        }
     }
 }

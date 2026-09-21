@@ -1,123 +1,4 @@
-//! Where hocus draws itself: a panel in the bottom-left corner of the screen.
-//!
-//! hocus is an **overlay**: drawn over the session surface rather than inside a tab's layout, so
-//! a tab keeps its full width and hocus floats above whatever is underneath. The panel is **two
-//! panes drawn as one**: `hocus-agents`, the agent list, on the left, and the conversation to
-//! its right, butted together so that their two touching frame columns read as a divider.
-//!
-//! **One panel, two plugins.** There is no host mechanism for two plugins in one pane, so the
-//! merge is coupled geometry: hocus computes both rectangles as the two halves of a single
-//! rectangle (`overlay_rects`, `split_panel`) and places them in one call
-//! (`apply_overlay_geometry`), which is also what tells the server they belong together - a
-//! placement batch that lands two overlays edge to edge links them, and the link is what makes
-//! the divider draggable (`OverlayPanes::link_touching`, `seam_at`). Everything a placement
-//! decides - the corner, the size, the padding - is decided once for the panel and both halves
-//! inherit it: a press of Ctrl-o moves the panel, a frame drag carries both halves, a terminal
-//! resize re-resolves the panel and cuts it again.
-//!
-//! **The divider is the user's, and it reaches hocus through the manifest.** A drag on the seam
-//! is handled in the server (a frame press never reaches a plugin) and moves the two halves'
-//! shared edge; it deliberately sets no user-placement claim, so hocus stays free to re-place
-//! both halves. What hocus does instead is *read the split back*: `read_split` takes the agents
-//! half's share off every `PaneUpdate` on which the two halves are adjacent, and every later
-//! placement cuts the panel at that ratio (`State::split`). The ratio rather than a column
-//! count, so a terminal resize keeps the proportion the user chose. The configured `split` is
-//! only the starting point.
-//!
-//! **The panel has one visibility, not two.** Esc in either half puts the whole panel away and
-//! `Ctrl e a` / `Ctrl e c` bring the whole of it back, focused on the half they name - so a half
-//! is never on screen alone. hocus is the one that can act on that, being the only half that
-//! knows both plugin ids: `hide_panel` suppresses both, `reveal_panel` unsuppresses the list
-//! beside it (or `open_agents_pane` launches one if the panel has no other half), and
-//! `reveal_self_beside_agents` is the mirror for a list revealed by its own keybinding. Esc in
-//! the list reaches this through `wire::AGENT_STRIP_HIDE`; a reveal of the list reaches it
-//! through `on_panes` noticing the list's suppression changed. Because the two halves are
-//! always on screen together, hiding changes no rectangle: `split_panel` cuts a hidden panel
-//! exactly as it cuts the one that comes back.
-//!
-//! **The panel has one focus ring, and no index anywhere.** The two halves are four stops -
-//! the list, its history half, the conversation's tab bar, the box you type in - and `Tab` and
-//! `Shift+Tab` walk them in screen order, wrapping. Nothing stores where in the ring the user
-//! is, because nothing has to: the stop is *which pane the server has focused* times *that
-//! pane's own sub-focus* (`Focus::List`/`History` in the list, `chat_tab_focus` and
-//! `chat_input_released` here), and only the focused pane is sent a key at all. A shared index
-//! would be a second copy of what the server already knows, stale after every mouse click.
-//!
-//! What does have to cross the seam is the two steps that leave a half, and they are
-//! asymmetric for the same reason the visibility is: hocus knows both plugin ids and the list
-//! knows only its own. So hocus moves the keyboard itself (`hand_keyboard_to_agents`, which
-//! focuses the list and sends `AGENT_STRIP_TAKE` naming the half to land in), and the list
-//! *asks* (`AGENT_STRIP_YIELD`, answered by `take_ring_focus`) exactly as it does for Esc and
-//! Ctrl-o. Neither message carries a `plugin_url`: a Tab never launches a half, and never
-//! reveals a panel that is down. The box's own claim on `Tab` is completion, so a draft
-//! standing in it holds the key - `Esc` releases the box, keeping the draft, and the ring
-//! moves again.
-//!
-//! **The plugin computes the geometry, not the server.** `FloatingPaneCoordinates` measures `x`
-//! and `y` from the top-left corner only - there is no bottom or right anchoring - so "the bottom
-//! left corner, inset by a padding" cannot be stated as a coordinate. What can be stated is the
-//! arithmetic, once the display area is known: `y = rows - height - pad`. That is what this module
-//! does, on load and again whenever the display area changes, exactly as compact-bar positions its
-//! tooltip. The alternative was teaching the server to anchor, which is a protobuf change to
-//! `FloatingPaneCoordinates` and a second denominator to keep in step.
-//!
-//! **A pane is not painted until it has been placed.** An overlay that named no coordinates is
-//! born half the surface, *centered* (`OverlayPanes::base_geom`) - which, for two halves that
-//! belong in the same corner, is squarely on top of each other. Only the arithmetic below moves
-//! them out of there, and it cannot run until the pane is on a tab for the placement to find, so
-//! the launch used to be visible as a flash in the middle of the screen. Both halves are launched
-//! `awaits_placement true` (`hocus_proto::launch::overlay_configuration`, and the `a`/`c`
-//! keybindings), which tells the server to hold the paint until the first
-//! `change_overlay_coordinates` names the pane. `apply_overlay_geometry` is that call, and
-//! `State::placed` / `State::agents_placed` are what keep making it until it lands.
-//!
-//! **The overlays live on a tab, and hocus moves them.** An overlay belongs to a `Tab`, so
-//! `on_tabs` moves whichever halves are on screen to the tab that became active - which is what
-//! keeps hocus present wherever the user goes. This is
-//! also why the server routes events to overlays in *every* tab and not only the active one -
-//! without that, an overlay left behind on another tab would never hear the `TabUpdate` it moves
-//! on.
-//!
-//! **The corner is the default, and Ctrl-o cycles the four.** Ctrl-o (`State::reposition`)
-//! advances the panel one corner clockwise - `next_clockwise`, in the order of `CORNERS` - keeping
-//! its size and reading nothing of the tab layout. The press is sent as the user's own placement,
-//! so it lands over any position they dragged.
-//!
-//! **Both halves take the key, and a press moves the panel.** The conversation handles Ctrl-o
-//! itself; the list has no geometry of its own to work with, so it asks over
-//! `wire::AGENT_STRIP_REPOSITION` and hocus does the arithmetic, as it does for every other
-//! placement. Either way it is the one panel that moves, with its split intact.
-//!
-//! **Nothing the layout does moves the panel.** A placement is two steps - *choose* a corner, then
-//! *resolve* it against the surface - and the choice is only ever the next corner clockwise or the
-//! one already remembered (`Panel::placed_corner`). Every later placement is a function of that
-//! corner, the screen and the config: a pane opening, a pane closing, a re-tile and a swap layout
-//! are not inputs to it. What places is a press, a reveal, a config change, and a terminal resize,
-//! which resolves the same corner against the screen's new size.
-//!
-//! The config is where the *size* comes from, which is the one thing a placement does not carry
-//! over: a press threads the size the manifest reports (`own_rect`, then `reposition`), so it
-//! keeps a panel the user resized, but every other placement passes `None` and gets `panel_size`'s
-//! configured size back.
-//!
-//! **A press always moves the panel.** Four corners in a cycle means each press takes the next one
-//! clockwise and the fifth is back where the first was, and a press steps past the rectangle the
-//! manifest reports, so a panel the user dragged cannot make it a no-op. The only press that moves
-//! nothing is one on a panel the size of the screen, where all four corners are the same rectangle
-//! and there is genuinely nowhere to go.
-//!
-//! **A half is never narrower than `MIN_PANE_COLS`, the panel never shorter than `MIN_PANE_ROWS`,
-//! and nothing is ever off the screen.** That is a guarantee of this module rather than a hope:
-//! `panel_size` applies the floor - one half's worth, or two - after the room the padding leaves
-//! and before the hard edge of the surface, `pad_of` gives the padding up before the panel does,
-//! `corner_rect` is the one place a rectangle is put on the screen, and `agents_cols` floors both
-//! halves of the configured cut. The one exception is a divider the user dragged: the server lets
-//! it go a good deal narrower than that, and the split is honoured where they left it rather
-//! than pulled back on the next placement. On a surface too small even for the floor - or a half
-//! dragged to a sliver - the pane gets the whole of what there is and `ui::render` drops chrome
-//! to fit - see `ui::chrome_for`. Nothing here ever asks
-//! for a rectangle the server would have to clip back (`PaneGeom::adjust_coordinates` does that
-//! silently), so the rectangle hocus remembers is the rectangle it got.
+//! Hocus owns one overlay placement; the host owns its two child slots and divider.
 
 use std::collections::BTreeMap;
 use zellij_tile::prelude::TabPosition;
@@ -129,53 +10,14 @@ use hocus_proto::launch;
 use crate::ui;
 use crate::State;
 
-/// Cells of clear screen left around the panel on every side.
 const DEFAULT_PAD: usize = 3;
-/// How many `PaneUpdate`s a dismissal may discount before the manifest is believed - see
-/// [`crate::State::hide_pending`].
-///
-/// One Esc sends two hides, on two panes, and the snapshots taken in between report the panel
-/// half up. Two frames covers that; the extra pair is slack for a busy screen thread. It is
-/// deliberately small: every frame of budget is a frame in which a `c` pressed on the heels of
-/// the Esc is read as the stale hide instead, and the panel does not come back until the next
-/// manifest. Two wrong frames is a flicker; a flag that never lapsed was a wedge.
-const HIDE_PENDING_FRAMES: u8 = 4;
-/// How many `PaneUpdate`s a focus this half asked for itself may discount before the manifest
-/// is believed - see [`crate::State::ring_focus_pending`].
-///
-/// The same problem `HIDE_PENDING_FRAMES` solves, from the other side: the host builds one
-/// update per attached client, so a snapshot taken before `show_self` still reports this half
-/// unfocused and can arrive after it. Believing one of those would reset the ring stop the
-/// yield had just set. The budget is small and lapses for the same reason: a focus request
-/// that never lands must not suppress a genuine reset for ever.
 const RING_FOCUS_PENDING_FRAMES: u8 = 4;
-/// How many `PaneUpdate`s a placement of ours stays in flight for - see
-/// [`crate::State::placement_pending`].
-const PLACEMENT_PENDING_FRAMES: u8 = 4;
-/// The panel's width, as a percentage of the display area. Wide enough for a chat message not
-/// to be wrapped every other word beside the agent list, and still well short of the whole
-/// screen, so the panel reads as something sitting on the work rather than a split of it.
 const DEFAULT_WIDTH_PERCENT: usize = 60;
-/// The panel's height, as a percentage of the display area. Two thirds: taller than it is wide,
-/// and short enough that the top of the screen stays the user's own.
 const DEFAULT_HEIGHT_PERCENT: usize = 66;
-/// The agent list's share of the panel's width, as a percentage, until a seam drag says
-/// otherwise.
 const DEFAULT_SPLIT_PERCENT: usize = 50;
-/// The fewest columns a half may be given.
-///
-/// An overlay is framed, so the plugin is rendered two cells narrower and two shorter than the
-/// pane it is in: the pane's minimum is what `ui::render` needs plus that frame. With
-/// `pane_frames false` the two cells are slack rather than a deficit, which costs a slightly
-/// roomier panel and nothing else.
 const MIN_PANE_COLS: usize = ui::MIN_COLS + 2;
-/// The fewest rows the panel may be given - `ui::MIN_ROWS` and the frame around it. This is a
-/// real minimum: the title, a transcript row, the input box and the rules around it.
 const MIN_PANE_ROWS: usize = ui::MIN_ROWS + 2;
 
-/// A configured size, resolved against `whole`. Accepts `"40%"` and `"12"`, and falls back to
-/// `default_percent` of `whole` for anything missing or unparseable - a typo in the KDL costs a
-/// default-sized panel rather than a crash.
 fn resolve(value: Option<&String>, whole: usize, default_percent: usize) -> usize {
     let fallback = whole * default_percent / 100;
     let Some(value) = value.map(|value| value.trim()).filter(|v| !v.is_empty()) else {
@@ -190,15 +32,6 @@ fn resolve(value: Option<&String>, whole: usize, default_percent: usize) -> usiz
     }
 }
 
-/// Which halves the panel has to hold.
-///
-/// What a placement is told, and all it is told: the halves share the panel's width when there
-/// are two of them and one takes the whole of it when it is alone.
-///
-/// **Not a visibility question.** Both halves hide and come back together, so the cut is the
-/// same whether the panel is up or down - a hidden panel is placed as it will return. What
-/// makes a half absent is that it does not *exist*: a conversation revealed before the list it
-/// asked for has loaded, or one the user closed the list's pane out from under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Shown {
     pub chat: bool,
@@ -206,13 +39,11 @@ pub(crate) struct Shown {
 }
 
 impl Shown {
-    #[cfg(test)]
     pub(crate) const BOTH: Shown = Shown {
         chat: true,
         agents: true,
     };
 
-    /// How many halves the panel's width has to hold.
     fn halves(self) -> usize {
         match self.chat != self.agents {
             true => 1,
@@ -221,115 +52,10 @@ impl Shown {
     }
 }
 
-/// Where the divider is: the agent list's columns out of the panel's, as the manifest last
-/// reported the two halves sitting together. `None` is the configured `split`.
-///
-/// A ratio rather than a column count, so that a panel re-resolved against a resized screen is
-/// cut in the proportion the user dragged it to rather than at a column that may no longer be
-/// inside it. Re-derived from the manifest rather than remembered from a drag, because the drag
-/// happens in the server and this is the only word hocus gets of it.
-pub(crate) type Split = Option<(usize, usize)>;
-
-/// The two rectangles, in the order `(chat, agents)`, as they sit with the panel in its home
-/// corner: the agent list at the panel's left edge and the conversation from the divider to its
-/// right edge, sharing a `y` and a height, with no gap between them.
-///
-/// This is *home*, not the whole of a placement: a panel Ctrl-o has moved is placed from its
-/// remembered corner instead (`State::panel_rect`). Rectangles all the way in, coordinates only
-/// at the edge - see [`fixed_rect`].
-///
-/// `None` before any `TabUpdate` has said how big the screen is - there is nothing to compute
-/// against yet, and a guess would put the panes somewhere the user would see them move away from.
-///
-/// The production path goes through [`State::panel_rect`] and [`split_panel`] directly, since
-/// the corner is the panel's to remember; this is the same two calls with the home corner named,
-/// and is what the geometry is tested as.
-#[cfg(test)]
-pub(crate) fn overlay_rects(
-    config: &BTreeMap<String, String>,
-    surface_rows: usize,
-    surface_cols: usize,
-    shown: Shown,
-    split: Split,
-) -> Option<(Rect, Rect)> {
-    let panel = rect_in_corner(config, surface_rows, surface_cols, shown, CORNERS[0], None)?;
-    Some(split_panel(config, panel, shown, split))
-}
-
-/// Cut `panel` into `(chat, agents)`.
-///
-/// The list takes the left `agents_cols` columns and the conversation the rest; a half with no
-/// sibling to share with takes the whole panel. Both are always placed - a hidden overlay is
-/// re-resolved by the server like any other - so a reveal finds its half already where it
-/// belongs rather than a placement behind.
-pub(crate) fn split_panel(
-    config: &BTreeMap<String, String>,
-    panel: Rect,
-    shown: Shown,
-    split: Split,
-) -> (Rect, Rect) {
-    let agents_cols = agents_cols(config, panel.cols, split);
-    let agents_share = Rect {
-        cols: agents_cols,
-        ..panel
-    };
-    // A panel of one column cannot hold two halves; the conversation then overlaps the list
-    // rather than being placed with no width, which `FloatingPaneCoordinates::new` refuses and
-    // the host answers with half the screen, centered.
-    let chat_share = Rect {
-        x: (panel.x + agents_cols).min(panel.x + panel.cols.saturating_sub(1)),
-        cols: panel.cols.saturating_sub(agents_cols).max(1),
-        ..panel
-    };
-    match (shown.chat, shown.agents) {
-        (true, false) => (panel, agents_share),
-        (false, true) => (chat_share, panel),
-        _ => (chat_share, agents_share),
-    }
-}
-
-/// The agent list's width within a panel `panel_cols` wide: the ratio the last seam drag left,
-/// else the configured `split` floored so that each half keeps [`min_half_cols`].
-///
-/// **A dragged split is honoured as it is.** The server's floor for the drag is a few columns,
-/// well under what a half can draw a conversation in - but the user put the divider there, and
-/// pulling it back to the floor on the next hide, reveal or resize would move a divider they
-/// had just placed. The floor is for the configured split, which nobody has looked at yet; a
-/// half dragged to a sliver draws what it can (`ui::chrome_for`) until it is dragged back.
-fn agents_cols(config: &BTreeMap<String, String>, panel_cols: usize, split: Split) -> usize {
-    match split {
-        Some((agents, panel)) if panel > 0 => {
-            (panel_cols * agents / panel).clamp(1, panel_cols.saturating_sub(1).max(1))
-        },
-        _ => {
-            let wanted = resolve(config.get("split"), panel_cols, DEFAULT_SPLIT_PERCENT);
-            let min = min_half_cols(panel_cols);
-            wanted.clamp(min, panel_cols.saturating_sub(min).max(min))
-        },
-    }
-}
-
-/// The fewest columns a half of the cut may have: [`MIN_PANE_COLS`], or half the panel when the
-/// panel is too narrow for two of that. Splitting what there is evenly is better than pushing one
-/// half off the panel, and `ui::render` covers the difference by dropping chrome rather than
-/// refusing to draw.
-fn min_half_cols(panel_cols: usize) -> usize {
-    MIN_PANE_COLS.min(panel_cols / 2).max(1)
-}
-
-/// The fewest columns the panel may be given: one half's minimum per half it has to hold, or the
-/// whole screen when that is less.
 fn min_panel_cols(cols: usize, halves: usize) -> usize {
     (halves * MIN_PANE_COLS).min(cols.max(1))
 }
 
-/// The panel's `(width, height)`, resolved against the surface and clamped to it.
-///
-/// The size half of *every* placement: moving the panel one corner along must never resize it,
-/// so there is one answer to the size rather than a copy per path.
-///
-/// **The minimum is a floor, not a preference.** See [`fit`] for the order that makes it one, and
-/// [`min_panel_cols`] for what happens on a screen too narrow to honour it.
 fn panel_size(
     config: &BTreeMap<String, String>,
     rows: usize,
@@ -339,7 +65,6 @@ fn panel_size(
     let halves = shown.halves();
     let pad = pad_of(config, rows, cols, halves);
     let (configured_width, configured_height) = configured_size(config, rows, cols);
-    // What is between the paddings, which is the most the panel may take.
     let across = cols.saturating_sub(pad * 2);
     let width = fit(
         configured_width,
@@ -347,8 +72,6 @@ fn panel_size(
         across,
         cols.max(1),
     );
-    // What is left of the screen once the padding is taken off the top and the bottom, and the
-    // share of it the panel actually takes.
     let available = rows.saturating_sub(pad * 2);
     let whole = rows.max(1);
     let height = fit(
@@ -360,30 +83,10 @@ fn panel_size(
     (width, height)
 }
 
-/// A configured size resolved against one axis: what was asked for, capped at the room the padding
-/// leaves, raised to the floor, and capped again at the hard edge of the screen.
-///
-/// **The order is the guarantee.** Taking the room first and the floor after it is what makes the
-/// minimum a minimum: the old arithmetic clamped to the room *last*, so on a narrow screen the
-/// room won and the pane came back below a size anything could be drawn in. The screen is the only
-/// thing that beats the floor, and only because there is nothing else to give.
 fn fit(configured: usize, min: usize, room: usize, whole: usize) -> usize {
     configured.min(room).max(min).min(whole)
 }
 
-/// The padding, resolved against a surface of `rows` by `cols`.
-///
-/// Capped at a quarter of the surface on *both* axes, so a fat `pad` on a small terminal cannot
-/// eat the panel it is supposed to be insetting. Capping against the rows alone was not enough:
-/// `pad` is the rectangle's `x` as well as its inset off the top and bottom, so on a tall, narrow
-/// display a rows-only cap let it exceed the column count outright and put the panel off the
-/// right-hand edge of the screen.
-///
-/// **The padding gives way before the panel does.** A quarter of the screen is still too much
-/// when what is left cannot hold a panel anybody could read, so the cap also asks what the
-/// surface has to fit: the minimum on each axis, and across the columns one half's minimum per
-/// half on screen. A thinner inset is a smaller loss than an unusable panel, and this is what
-/// keeps the two halves side by side and on screen down to surfaces of a few dozen columns.
 fn pad_of(config: &BTreeMap<String, String>, rows: usize, cols: usize, halves: usize) -> usize {
     config
         .get("pad")
@@ -393,13 +96,10 @@ fn pad_of(config: &BTreeMap<String, String>, rows: usize, cols: usize, halves: u
         .unwrap_or(DEFAULT_PAD)
         .min(rows / 4)
         .min(cols / 4)
-        // the panel's minimum, with a padding above and below it
         .min(rows.saturating_sub(MIN_PANE_ROWS) / 2)
-        // and beside it
         .min(cols.saturating_sub(min_panel_cols(cols, halves)) / 2)
 }
 
-/// `(width, height)` as configured, resolved against the surface and not yet clamped to anything.
 fn configured_size(config: &BTreeMap<String, String>, rows: usize, cols: usize) -> (usize, usize) {
     (
         resolve(config.get("width"), cols, DEFAULT_WIDTH_PERCENT),
@@ -407,16 +107,6 @@ fn configured_size(config: &BTreeMap<String, String>, rows: usize, cols: usize) 
     )
 }
 
-/// Coordinates stated as fixed cells, never percentages.
-///
-/// These are already resolved against the surface we were told about, and a percentage would be
-/// resolved a second time by the server. The two denominators would agree now that `surface_of`
-/// reads the session surface, but stating the arithmetic once is still the point - the panel is
-/// anchored to the *bottom*, which no percentage can say.
-///
-/// The edge of the module: everything above works in [`Rect`], and converts once, here. That is
-/// what lets a placement remember the rectangle it asked for without parsing a `PercentOrFixed`
-/// back out of the coordinates it sent.
 fn fixed_rect(rect: Rect) -> FloatingPaneCoordinates {
     FloatingPaneCoordinates::new(
         Some(rect.x.to_string()),
@@ -429,11 +119,6 @@ fn fixed_rect(rect: Rect) -> FloatingPaneCoordinates {
     .unwrap_or_default()
 }
 
-/// An absolute rectangle on the screen, as a `PaneInfo` reports one.
-///
-/// Tiled panes and overlays are reported in the same coordinates - every rect comes off the
-/// pane's own geometry, and an overlay's surface is the display area at the screen origin - so
-/// the panel's own manifest entries can be compared against the tiled panes beside them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Rect {
     pub x: usize,
@@ -442,41 +127,6 @@ pub(crate) struct Rect {
     pub rows: usize,
 }
 
-impl Rect {
-    pub(crate) fn of(pane: &PaneInfo) -> Rect {
-        Rect {
-            x: (pane.pane_x).get(),
-            y: (pane.pane_y).get(),
-            cols: (pane.pane_columns).get(),
-            rows: (pane.pane_rows).get(),
-        }
-    }
-
-    /// The smallest rectangle holding both - the panel, given its two halves.
-    fn union(&self, other: &Rect) -> Rect {
-        let x = self.x.min(other.x);
-        let y = self.y.min(other.y);
-        Rect {
-            x,
-            y,
-            cols: (self.x + self.cols).max(other.x + other.cols) - x,
-            rows: (self.y + self.rows).max(other.y + other.rows) - y,
-        }
-    }
-
-    /// Whether `other` starts on the column this rectangle ends on, along the same row - the two
-    /// halves of a panel, as the manifest reports them.
-    fn is_beside(&self, other: &Rect) -> bool {
-        self.x + self.cols == other.x && self.y == other.y
-    }
-}
-
-/// A corner of the surface the panel may sit in.
-///
-/// Every placement is one of these four, and Ctrl-o walks them in the order of [`CORNERS`] - so
-/// naming them is what lets a press ask for "the next place" rather than restate the arithmetic.
-/// It is also what lets a placement be *remembered* rather than re-derived: see
-/// [`Panel::placed_corner`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Corner {
     BottomLeft,
@@ -485,11 +135,6 @@ pub(crate) enum Corner {
     BottomRight,
 }
 
-/// Every corner, in the order Ctrl-o walks them: **clockwise as seen on screen**, starting at the
-/// home corner - bottom-left, up the left edge, across the top, down the right edge and back.
-///
-/// `CORNERS[0]` is the home corner, so `panel_rect`, `apply_overlay_geometry` and `overlay_rects`
-/// all name the same starting place they always have.
 const CORNERS: [Corner; 4] = [
     Corner::BottomLeft,
     Corner::TopLeft,
@@ -497,9 +142,6 @@ const CORNERS: [Corner; 4] = [
     Corner::BottomRight,
 ];
 
-/// The corner one step clockwise from `corner`.
-///
-/// The order is [`CORNERS`], so this is its next element, wrapping from the last back to home.
 fn next_clockwise(corner: Corner) -> Corner {
     let index = CORNERS
         .iter()
@@ -508,12 +150,6 @@ fn next_clockwise(corner: Corner) -> Corner {
     CORNERS[(index + 1) % CORNERS.len()]
 }
 
-/// The rectangle `corner` names, given the surface, the padding and the panel's `(width, height)`.
-///
-/// **The one place `x` and `y` are computed, and the one place they are clamped onto the screen.**
-/// The clamp is what makes the minimum in [`panel_size`] a guarantee: a rectangle that ran off an
-/// edge would be pulled back by the server (`PaneGeom::adjust_coordinates`) without telling
-/// anybody, and what hocus remembered placing would not be what it got.
 fn corner_rect(
     corner: Corner,
     surface_rows: usize,
@@ -523,8 +159,6 @@ fn corner_rect(
 ) -> Rect {
     let (width, height) = size;
     let (left, top) = (pad, pad);
-    // `max` is the degenerate guard: a far edge that underflowed would sit on top of the near one
-    // rather than opposite it.
     let right = surface_cols.saturating_sub(pad + width).max(left);
     let bottom = surface_rows.saturating_sub(pad + height).max(top);
     let x = match corner {
@@ -543,12 +177,6 @@ fn corner_rect(
     }
 }
 
-/// The placing half: the rectangle `corner` names on the surface as it is now, at the size
-/// [`panel_size`] gives unless the caller states one.
-///
-/// Reads the config and the screen and nothing else, which is the whole of the stability the
-/// module header claims: with the corner remembered, no pane event is an input to where the
-/// panel sits.
 fn rect_in_corner(
     config: &BTreeMap<String, String>,
     surface_rows: usize,
@@ -561,8 +189,6 @@ fn rect_in_corner(
     Some(corner_rect(corner, surface_rows, surface_cols, pad, size))
 }
 
-/// The padding and the panel size both halves of a placement resolve against, so the two cannot
-/// disagree about either. `None` on a surface with no extent to put anything on.
 fn placement_terms(
     config: &BTreeMap<String, String>,
     surface_rows: usize,
@@ -581,11 +207,6 @@ fn placement_terms(
     ))
 }
 
-/// The surface the panel is placed against, off the active tab's `TabInfo`.
-///
-/// An overlay's coordinates are resolved against the whole session surface
-/// (`OverlayPanes::surface`), which is the tab's display area - chrome included - at the screen
-/// origin. That is the pair the arithmetic in `overlay_rects` has to use.
 pub(crate) fn surface_of(tab: &TabInfo) -> (usize, usize) {
     (
         (tab.display_area_rows).get(),
@@ -593,73 +214,6 @@ pub(crate) fn surface_of(tab: &TabInfo) -> (usize, usize) {
     )
 }
 
-/// What to do about an agent list that is not on the conversation's tab.
-///
-/// See [`rejoin`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Rejoin {
-    /// The list is where the user asked for it. Carry the conversation over to join it.
-    Follow(TabPosition),
-    /// The list was left behind. Bring it back beside the conversation.
-    Drag(TabPosition),
-}
-
-/// Which way a parted pair should be put back together.
-///
-/// The two panes open and hide on their own, but they are still drawn as one panel and so are
-/// still carried between tabs together. `follow_tab` moves the pair in one call and so cannot part
-/// them; the `a` and `c` keybindings can, because `move_to_focused_tab` moves only the pane the
-/// binding *names*. Which half moved is the whole question, and it is answered by which half the
-/// server focused, because both bindings focus what they summon:
-///
-/// - `a` summons the **list** onto the summoning client's tab and focuses it. Dragging it back is
-///   undoing what the user just asked for - the pane disappears in front of them. Follow it, and
-///   the conversation arrives beside it if it is on screen at all.
-/// - `c` summons the **conversation** and leaves the list behind, unfocused. Bring the list over.
-///
-/// `agents_tab_is_someones` is a corroborating guard rather than a second opinion: focus is
-/// per-pane and outlives the client that set it, so a list that was focused and then abandoned on
-/// a tab nobody is looking at must not be allowed to pull the conversation onto it. Read it from
-/// `State::client_tabs`, which is per-client and therefore says where people actually are;
-/// `State::tabs` is one client's `TabUpdate` and would answer for whoever was processed first.
-///
-/// Converges either way: both arms end with the pair on one tab, and the manifest that follows
-/// reads them as together and asks for nothing.
-pub(crate) fn rejoin(
-    own_tab: TabPosition,
-    agents_tab: TabPosition,
-    agents_is_focused: bool,
-    agents_tab_is_someones: bool,
-) -> Option<Rejoin> {
-    if own_tab == agents_tab {
-        return None;
-    }
-    Some(if agents_is_focused && agents_tab_is_someones {
-        Rejoin::Follow(agents_tab)
-    } else {
-        Rejoin::Drag(own_tab)
-    })
-}
-
-/// The tab the panes should move to on this client's `TabUpdate`, if any.
-///
-/// **They move with the client they are sitting with, and with nobody else.** hocus is a single
-/// shared instance, but the host builds one `TabUpdate` per client - `active` is *that* client's
-/// active tab - and routes every one of them to every overlay. Obeying all of them is an unbounded
-/// loop: with two clients on different tabs, one update drags the panes across, the move makes the
-/// server report session state again, the other client's update drags them back, and so on for as
-/// long as both stay attached.
-///
-/// So a client only gets to move us if they were on our tab to begin with. Three properties fall
-/// out of that, and they are what make this the whole of the fix:
-///
-/// - A client on some other tab never matches, so they can never pull the panes off the client
-///   who has them.
-/// - The move is self-cancelling: `follow_tab` sets `own_tab_index` to where we landed, so the
-///   report the move provokes re-evaluates to `None` rather than to another move.
-/// - Authority transfers on its own. `move_to_focused_tab` on the `a` and `c` keybindings puts the
-///   summoned pane on the summoning client's tab, at which point their entry matches and the
-///   previous client's no longer does - no owner has to be recorded anywhere.
 pub(crate) fn tab_to_follow(
     own_tab: Option<TabPosition>,
     client_was_on: Option<TabPosition>,
@@ -669,98 +223,21 @@ pub(crate) fn tab_to_follow(
     (client_was_on == Some(own) && client_is_on != own).then_some(client_is_on)
 }
 
-/// The panel's placement: the corner it is in, and the rectangle it asked for.
-///
-/// One of these on `State`, for the one panel: both halves take Ctrl-o, and either press advances
-/// the panel one corner clockwise.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Panel {
-    /// The corner the panel was last placed in, and `None` for one that has never been placed -
-    /// which is its home, the bottom-left corner.
-    ///
-    /// **What makes a placement independent of the layout.** Choosing a corner is a step
-    /// clockwise from this one; resolving it reads only the screen. Remembering the choice means
-    /// every placement after a press - a hide, a reveal, a config change, a terminal resize - is
-    /// the resolve alone, so a pane opening or closing cannot move the panel and a resize
-    /// re-resolves the corner the user left it in rather than dragging it home.
     pub(crate) placed_corner: Option<Corner>,
-    /// The panel rectangle the last placement asked for.
-    ///
-    /// The reference for "did this press actually move me?", and better than the manifest for the
-    /// size the press carries because it is never stale - two presses can arrive between two
-    /// `PaneUpdate`s. A position the user dragged is not here; [`State::reposition`] reads that off
-    /// the manifest once no placement of ours is in flight.
     pub(crate) placed_rect: Option<Rect>,
 }
 
 impl State {
-    /// Whether this hocus is the panel this module is about.
-    ///
-    /// Everything below - the corner, the two halves, the divider, the one visibility - belongs to
-    /// a hocus drawn *over* the session. A hocus the user put in their layout
-    /// (`pane { plugin location="hocus" }`) is a plain tiled pane: it fills what the layout gave
-    /// it, grows no agent list, moves nowhere and is never hidden. The layout is the user's
-    /// arrangement, and a plugin has no business rearranging it.
-    ///
-    /// Said by the manifest and by nothing else - see [`State::own_is_floating`] - so this is
-    /// `false` until the first `PaneUpdate` names our pane. That costs a real panel nothing: the
-    /// only placement before that manifest is the one on load, which already does nothing (no
-    /// `TabUpdate` has said how big the screen is, so `panel_rect` is `None`), and `on_panes`
-    /// retries every placement that could not land.
-    ///
-    /// Without this a tiled hocus took the whole panel path: its first manifest launched an agent
-    /// list beside it, the list's greeting launched a *second*, overlay hocus over the user's
-    /// transcript, and every frame asked the server to move a pane that is not an overlay - which
-    /// fails the whole placement batch, so the list stayed at the centred default it was born at.
     pub(crate) fn is_panel(&self) -> bool {
         self.own_is_floating == Some(true)
     }
 
-    /// Which halves there are to cut the panel into.
-    ///
-    /// Not a visibility question any more - the two halves hide and come back together, so
-    /// hiding never changes the cut. What it answers is whether there is a *list*: one has to
-    /// exist before it can be given a share, and between a reveal and the launch landing there
-    /// is a conversation with nothing beside it.
-    ///
-    /// `chat` is unconditionally true, since this plugin *is* that half: it is a field rather
-    /// than an assumption because [`split_panel`] has to be told which of the two a lone half is,
-    /// and a test naming only a list is the case that says why.
-    ///
-    /// A hidden panel answers the same as a shown one. That is the point of hiding both halves
-    /// together: there is one cut, and it is the cut the panel comes back at.
     pub(crate) fn shown(&self) -> Shown {
-        Shown {
-            chat: true,
-            agents: self.agents_plugin.is_some(),
-        }
+        Shown::BOTH
     }
 
-    /// Re-place both halves against the display area as it is now.
-    ///
-    /// Safe to call whenever there is a panel to place: the ids are looked up rather than assumed,
-    /// and once the user has dragged the panel the server keeps their position and takes only the
-    /// size from here.
-    ///
-    /// **Only for a panel**, which is what the guard is for.
-    /// `Tab::change_overlay_coordinates_batch` refuses a batch naming a pane that is not an
-    /// overlay - and refuses the *whole* batch, on the first such id, so one wrong id leaves every
-    /// other half unplaced too. [`State::is_panel`] is what keeps hocus from ever sending one; the
-    /// server stays strict, because with that guard in place no correct caller can.
-    ///
-    /// **Doing nothing is exactly what happens when the pane is not on a tab yet**, and it is
-    /// silent - `Screen::change_overlay_coordinates` looks the id up and moves on. That is why
-    /// `placed` is set from `own_tab_index` rather than from having made the call: the manifest
-    /// saying where our pane is, is the only evidence the call could have landed. A placement that
-    /// could not land leaves `placed` false, and `on_panes` tries again the moment it can.
-    ///
-    /// Both halves in **one call**, always: the batch is what links them in the server, and the
-    /// link is what makes the divider between them draggable. Which halves are on screen decides
-    /// how the panel is cut (`split_panel`), so hiding and revealing either half come back
-    /// through here.
-    ///
-    /// Both halves are tracked, and separately: see [`State::agents_placed`] for why one flag was
-    /// not enough.
     pub(crate) fn apply_overlay_geometry(&mut self) {
         if !self.is_panel() {
             return;
@@ -768,57 +245,119 @@ impl State {
         let Some(panel) = self.panel_rect() else {
             return;
         };
-        self.panel.placed_corner = Some(self.panel.placed_corner.unwrap_or(CORNERS[0]));
-        // What the next press ranks against, and what tells it whether it has moved. Set on every
-        // placement and not only Ctrl-o's, because a resize re-places and so moves us too.
-        self.panel.placed_rect = Some(panel);
-        self.placement_pending = PLACEMENT_PENDING_FRAMES;
-        let placements = self.placements_of(panel);
-        #[cfg(test)]
-        {
-            self.last_placement = Some((placements.clone(), false));
+        self.place_multipane(panel, false);
+    }
+    fn placement_command(
+        &self,
+        panel: Rect,
+        override_user_placement: bool,
+    ) -> Option<PluginCommand> {
+        if !self.is_panel() || self.own_tab_index.is_none() {
+            return None;
         }
-        change_overlay_coordinates(placements);
-        self.placed = self.own_tab_index.is_some();
-        // The same test, pane for pane: the manifest naming a tab is the only evidence the call
-        // could have landed. A list nobody has opened is nothing to place and so counts as placed,
-        // which is what keeps `on_panes` and `on_tabs` from retrying on every event forever.
-        self.agents_placed = self.agents_plugin.is_none() || self.agents_tab_index.is_some();
+        let coordinates = fixed_rect(panel);
+        Some(if let Some(info) = &self.multipane {
+            PluginCommand::UpdateMultipane(UpdateMultipane {
+                id: info.id,
+                coordinates: Some(coordinates),
+                split: None,
+                override_user_placement,
+            })
+        } else {
+            let agents = if let Some(agents) = self.agents_plugin {
+                if self.agents_tab_index != self.own_tab_index {
+                    return None;
+                }
+                MultipaneChild::Existing(PaneId::Plugin(agents))
+            } else {
+                MultipaneChild::Plugin {
+                    url: launch::HOCUS_AGENTS_ALIAS.into(),
+                    configuration: launch::overlay_configuration(),
+                }
+            };
+            let available = panel.cols.saturating_sub(3).max(1);
+            let ratio = self
+                .kdl
+                .get("split")
+                .map(|value| value.trim())
+                .and_then(|value| {
+                    if let Some(percent) = value.strip_suffix('%') {
+                        percent
+                            .trim()
+                            .parse::<usize>()
+                            .ok()
+                            .map(|percent| percent.saturating_mul(100))
+                    } else {
+                        value
+                            .parse::<usize>()
+                            .ok()
+                            .map(|columns| columns.saturating_mul(10_000) / available)
+                    }
+                })
+                .unwrap_or(DEFAULT_SPLIT_PERCENT * 100)
+                .clamp(1, 9999) as u16;
+            PluginCommand::CreateMultipane(CreateMultipane {
+                children: [
+                    agents,
+                    MultipaneChild::Existing(PaneId::Plugin(self.own_plugin_id)),
+                ],
+                placement: OverlayPlacement {
+                    kind: OverlayKind::Dismissible,
+                    coordinates: Some(coordinates),
+                },
+                split: MultipaneSplit {
+                    direction: MultipaneDirection::LeftRight,
+                    ratio,
+                },
+                focus: None,
+            })
+        })
+    }
+    fn place_multipane(&mut self, panel: Rect, override_user_placement: bool) {
+        let Some(command) = self.placement_command(panel, override_user_placement) else {
+            return;
+        };
         #[cfg(test)]
         {
+            self.last_placement = Some((
+                vec![(PaneId::Plugin(self.own_plugin_id), fixed_rect(panel))],
+                override_user_placement,
+            ));
             self.placed_against = (self.surface_rows, self.surface_cols);
+            if matches!(&command, PluginCommand::CreateMultipane(request) if matches!(request.children[0], MultipaneChild::Plugin { .. }))
+            {
+                self.agents_launches += 1;
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        let result = match command {
+            PluginCommand::CreateMultipane(request) => create_multipane(request),
+            PluginCommand::UpdateMultipane(request) => update_multipane(request),
+            _ => unreachable!(),
+        };
+        #[cfg(not(target_family = "wasm"))]
+        let result: Result<Option<MultipaneInfo>, String> = {
+            let _ = command;
+            Err("multipanes require the zellij host".into())
+        };
+        if let Ok(Some(info)) = result {
+            self.agents_plugin = info.children.iter().find_map(|pane| match pane {
+                PaneId::Plugin(id) if *id != self.own_plugin_id => Some(*id),
+                _ => None,
+            });
+            self.agents_tab_index = self.own_tab_index;
+            self.multipane = Some(info);
+            self.panel.placed_rect = self.reported_panel();
+            self.panel.placed_corner.get_or_insert(CORNERS[0]);
+            self.placed = true;
         }
     }
 
-    /// The panel, cut into the halves there are to place: the conversation always, the list when
-    /// one has announced itself.
-    fn placements_of(&self, panel: Rect) -> Vec<(PaneId, FloatingPaneCoordinates)> {
-        let (chat, agents) = split_panel(&self.kdl, panel, self.shown(), self.split);
-        let mut placements = vec![(PaneId::Plugin(self.own_plugin_id), fixed_rect(chat))];
-        if let Some(agents_id) = self.agents_plugin {
-            placements.push((PaneId::Plugin(agents_id), fixed_rect(agents)));
-        }
-        placements
-    }
-
-    /// Where the panel sits now: in the corner it was last placed in, or - never placed - at
-    /// home.
-    ///
-    /// `None` before any `TabUpdate` has said how big the screen is.
     fn panel_rect(&self) -> Option<Rect> {
         self.rect_in(self.panel.placed_corner.unwrap_or(CORNERS[0]), None)
     }
 
-    /// A press's placement: the panel, at the corner it just chose, over anything the user
-    /// dragged.
-    ///
-    /// The override is the one thing a press adds: the server keeps a position the user dragged
-    /// over anything a plugin asks for, and a key the user pressed to move it is theirs to
-    /// override. A user-stated size remains independent - it is threaded in as `size`.
     fn place_panel(&mut self, size: Option<(usize, usize)>, corner: Corner) {
-        // The other `change_overlay_coordinates` caller, and gated for the same reason as
-        // `apply_overlay_geometry`: a tiled hocus has no panel to move, and asking the server to
-        // move one is an error rather than a no-op.
         if !self.is_panel() {
             return;
         }
@@ -826,21 +365,9 @@ impl State {
             return;
         };
         self.panel.placed_corner = Some(corner);
-        self.panel.placed_rect = Some(panel);
-        self.placement_pending = PLACEMENT_PENDING_FRAMES;
-        let placements = self.placements_of(panel);
-        #[cfg(test)]
-        {
-            self.last_placement = Some((placements.clone(), true));
-        }
-        change_overlay_coordinates_overriding_user_placement(placements);
-        // The manifest naming a tab is the only evidence the call could have landed - the same
-        // test `apply_overlay_geometry` makes.
-        self.placed = self.own_tab_index.is_some();
-        self.agents_placed = self.agents_plugin.is_none() || self.agents_tab_index.is_some();
+        self.place_multipane(panel, true);
     }
 
-    /// The panel's rectangle in `corner`, optionally retaining its current size.
     fn rect_in(&self, corner: Corner, size: Option<(usize, usize)>) -> Option<Rect> {
         rect_in_corner(
             &self.kdl,
@@ -852,15 +379,6 @@ impl State {
         )
     }
 
-    /// Where the panel is now: the rectangle the last placement asked for, else the manifest's
-    /// word for it, else the home it has not been moved from.
-    ///
-    /// The last placement comes first because it is never stale. Two presses can arrive between
-    /// two manifests, and comparing the second against the *first* press's rectangle is what lets
-    /// a press that cannot move say so rather than restate the same corner. A position the user
-    /// **dragged** is not reflected here - the last placement wins - but [`State::reposition`]
-    /// reads the manifest separately once no placement is in flight, so a drag cannot turn a press
-    /// into a no-op. The manifest's size is used here so a move cannot undo a resize.
     fn own_rect(&self) -> Rect {
         let reported = self.reported_panel();
         let mut own = self
@@ -875,95 +393,25 @@ impl State {
                 rows: 0,
             });
         if let Some(reported) = reported {
-            // The last placement wins for position so two quick presses cannot read the same
-            // stale manifest, but the manifest owns size: it is how a user resize reaches us.
             own.cols = reported.cols;
             own.rows = reported.rows;
         }
         own
     }
 
-    /// The panel as the manifest reports it: the rectangle round whichever halves are drawn, or
-    /// `None` with neither on screen. Both halves together are the panel; one alone has the whole
-    /// of it.
     pub(crate) fn reported_panel(&self) -> Option<Rect> {
-        let drawn = |plugin_id: Option<zellij_tile::prelude::PluginId>| {
-            let plugin_id = plugin_id?;
-            self.tab_panes
-                .iter()
-                .find(|pane| pane.id == PaneId::Plugin(plugin_id) && !pane.is_suppressed)
-                .map(Rect::of)
-        };
-        match (drawn(Some(self.own_plugin_id)), drawn(self.agents_plugin)) {
-            (Some(chat), Some(agents)) => Some(chat.union(&agents)),
-            (Some(half), None) | (None, Some(half)) => Some(half),
-            (None, None) => None,
-        }
+        self.multipane.as_ref().map(|info| Rect {
+            x: info.x,
+            y: info.y,
+            cols: info.columns,
+            rows: info.rows,
+        })
     }
 
-    /// Read the divider back off a fresh manifest of our tab.
-    ///
-    /// A seam drag happens in the server and claims nothing, so the manifest is the only word
-    /// hocus gets of it: whenever both halves are drawn and the list ends on the column the
-    /// conversation starts on, the list's share of their joint width is the split, and every
-    /// later placement cuts the panel there. A manifest on which the two are not beside each
-    /// other - one hidden and filling the panel, or the frame between them not yet re-drawn -
-    /// says nothing about the split and leaves it as it was.
-    ///
-    /// **Only a divider somebody moved is read.** Most manifests with the halves side by side
-    /// are the server echoing hocus's own placement, and that cut is the split *floored* to a
-    /// column: reading it back would replace the ratio with its floor, and the next resize would
-    /// floor that again, so the divider crept left a column at a time for as long as the
-    /// terminal kept resizing. A manifest showing the cut the split already makes of that
-    /// width is therefore left alone, and the configured split stays configured until a drag.
-    pub(crate) fn read_split(&mut self, panes: &[PaneInfo]) {
-        let Some(agents_id) = self.agents_plugin else {
-            return;
-        };
-        let drawn = |plugin_id: zellij_tile::prelude::PluginId| {
-            panes
-                .iter()
-                .find(|pane| pane.id == PaneId::Plugin(plugin_id) && !pane.is_suppressed)
-                .map(Rect::of)
-        };
-        let (Some(chat), Some(agents)) = (drawn(self.own_plugin_id), drawn(agents_id)) else {
-            return;
-        };
-        if !agents.is_beside(&chat) {
-            return;
-        }
-        let panel_cols = agents.cols + chat.cols;
-        if agents.cols == agents_cols(&self.kdl, panel_cols, self.split) {
-            // Our own cut, echoed. See above.
-            return;
-        }
-        self.split = Some((agents.cols, panel_cols));
-    }
-
-    /// Ctrl-o: move the panel one corner clockwise.
-    ///
-    /// **Both halves take the key**, and either press moves the panel: the conversation handles
-    /// it itself, the agent list asks for it over `wire::AGENT_STRIP_REPOSITION`, and there is one
-    /// corner between them.
-    ///
-    /// **A press moves.** The panel steps from the corner it is in to [`next_clockwise`], at the
-    /// size it already has, reading nothing of the tab layout. It keeps stepping - at most once
-    /// round - until it finds a corner whose rectangle differs from the last placement *and* from
-    /// where the manifest reports the panel actually is, so neither a stale placement nor a
-    /// position the user dragged can turn a press into a no-op. A panel the screen has pinned to
-    /// one rectangle (all four corners identical) is the only press that moves nothing.
-    ///
-    /// Sent as the user's own placement, so it lands even on a panel they dragged.
     pub(crate) fn reposition(&mut self) {
         let own = self.own_rect();
         let size = Some((own.cols, own.rows));
-        // Where the manifest says the panel actually is, once nothing we placed is still in
-        // flight. A position we did not ask for is one the user dragged to, and stepping onto it
-        // would be a press that moves nothing. While a placement is pending the manifest is
-        // ignored, because a snapshot taken before it landed reports the old rectangle.
-        let drawn = (self.placement_pending == 0)
-            .then(|| self.reported_panel())
-            .flatten();
+        let drawn = self.reported_panel();
         let mut corner = self.panel.placed_corner.unwrap_or(CORNERS[0]);
         let mut target = None;
         for _ in 0..CORNERS.len() {
@@ -979,12 +427,6 @@ impl State {
         }
     }
 
-    /// Ctrl-o pressed in the agent list, relayed over `wire::AGENT_STRIP_REPOSITION`.
-    ///
-    /// The same move as [`State::reposition`], with one refusal in front of it: a list that is
-    /// not on the conversation's tab is not moved. Placing a parted list against *our* surface
-    /// would mark it placed while it is still elsewhere; `on_panes` drags the pair back together,
-    /// and the press after that lands.
     pub(crate) fn reposition_from_list(&mut self) {
         let list_is_here = self.agents_plugin.is_some()
             && self.own_tab_index.is_some()
@@ -995,69 +437,22 @@ impl State {
         self.reposition();
     }
 
-    /// Put the **panel** away without unloading either half.
-    ///
-    /// One Esc, both halves: the panel is one thing to the user, so it has one visibility, and
-    /// hocus is the half that can act on that because it is the one that knows both plugin ids.
-    /// Esc in the list arrives here over `wire::AGENT_STRIP_HIDE` (that pane hides itself on the
-    /// same press, so this call finds nothing left to hide and says so harmlessly), and so does
-    /// the Enter that walks into an agent - by which time that agent's pane holds the keyboard,
-    /// so hiding this half takes nothing from it.
-    ///
-    /// Nothing is torn down: a stream keeps arriving into a suppressed pane, and a tool call
-    /// waiting on y/n is still waiting when the panel comes back.
-    ///
-    /// **No re-placement.** The cut no longer depends on what is hidden - both halves are on
-    /// screen together or neither is - so a hide changes no rectangle. Placing here would only
-    /// restate the geometry the panes already have.
-    ///
-    /// **A list still loading cannot be hidden here** - it has no id yet, so there is nothing to
-    /// name. `agents_open_requested` is dropped below so a *later* manifest does not read the
-    /// dismissed panel as owing itself a half, but the launch already in flight still arrives.
-    /// It is caught where its id first exists: `on_selection` hides a list that announces itself
-    /// to a panel that is down, so it joins at the panel's visibility rather than at its own.
     pub(crate) fn hide_panel(&mut self) {
-        // Nothing to put away: a hocus in the user's layout is a pane they arranged, and Esc is not
-        // a licence to suppress it. There would also be no way back - the reveal bindings summon
-        // the overlay panel, not a tab pane.
         if !self.is_panel() {
             return;
         }
         hide_self();
         self.note_visibility(PaneId::Plugin(self.own_plugin_id), false);
-        if let Some(agents_id) = self.agents_plugin {
-            hide_pane_with_id(PaneId::Plugin(agents_id));
-            self.note_visibility(PaneId::Plugin(agents_id), false);
-        }
+        self.send_vm_panel_visibility(false);
         self.hidden = true;
-        self.hide_pending = HIDE_PENDING_FRAMES;
-        // A list asked for while the panel was up is not wanted by a panel that is down: it would
-        // arrive, unsuppressed and alone, on top of a panel the user had just dismissed.
-        self.agents_open_requested = false;
-        // And a list the user closed before this is not held against the panel they ask back:
-        // the reveal below grows both halves, whatever became of the last one.
-        self.agents_closed = false;
-        // The bar's highlight swallows every key it does not use, with nothing
-        // on screen to say so once the pane is hidden. Shift+Tab is easy to hit
-        // on the way to Esc; the next reveal should type again. The released box goes with it,
-        // for the same reason: both are ring stops, and a hidden panel is on none of them.
         self.reset_ring_stop();
     }
 
-    /// Put the ring back on the input box, typing.
-    ///
-    /// The two fields that say where in the ring this half stands - the bar's highlight and the
-    /// released box - only mean anything while the keyboard is here. Whenever it is not, or is
-    /// about not to be, the stop resets: arriving at the conversation from anywhere, by any
-    /// route, should be the box, ready to type. Called by `hide_panel`, by `on_panes` when the
-    /// focus has gone elsewhere, and by the ring steps that leave this half.
     pub(crate) fn reset_ring_stop(&mut self) {
         self.chat_tab_focus = None;
         self.chat_input_released = false;
     }
 
-    /// Record a ring step across the seam for the tests - see [`State::ring_focus_calls`].
-    /// Compiled away outside them.
     fn note_ring_focus(&mut self, pane: PaneId, stop: &'static str) {
         #[cfg(test)]
         self.ring_focus_calls.push((pane, stop));
@@ -1065,22 +460,11 @@ impl State {
         let _ = (pane, stop);
     }
 
-    /// Hand the keyboard to the agent list, landing on `stop`.
-    ///
-    /// The two halves of the panel are four stops of one ring, and this is the crossing hocus
-    /// can make on its own: it holds the list's plugin id (`agents_plugin`, off
-    /// `AGENT_STRIP_YIELD`'s mirror `AGENT_SELECTION`), so it moves the keyboard itself and
-    /// only *tells* the list which of its two halves the arriving keys belong to.
-    ///
-    /// **A ring step never grows the panel a half it is missing.** With no list there is nothing
-    /// to step to, and the answer is `false` so the caller can wrap within this half instead.
-    /// Opening one is what a reveal does; walking the ring is not a request for a bigger panel.
     fn hand_keyboard_to_agents(&mut self, stop: &'static str) -> bool {
         let Some(agents_id) = self.agents_plugin.filter(|_| self.is_panel()) else {
             return false;
         };
         let pane = PaneId::Plugin(agents_id);
-        // Leaving, so this half's stop is spent: coming back should be the box.
         self.reset_ring_stop();
         focus_pane_with_id(pane, false, false);
         pipe_message_to_plugin(
@@ -1092,21 +476,15 @@ impl State {
         true
     }
 
-    /// Tab off the input box: forward to the agent list, or round to the tab bar with no list.
-    ///
-    /// Only reached with nothing to complete - a blank box, or one the user released with Esc -
-    /// so the box's own claim on Tab is already settled by the time this is called.
     pub(crate) fn ring_forward_from_input(&mut self) -> bool {
         if self.hand_keyboard_to_agents(hocus_proto::vms::STOP_TABS) {
             return true;
         }
-        // A panel with one half is a ring with two stops, and Tab wraps round it.
         self.chat_input_released = false;
         self.chat_tab_focus = Some(self.chat_tab);
         true
     }
 
-    /// Shift+Tab off the tab bar: back to the agent list's history half, or round to the box.
     pub(crate) fn ring_back_from_tab_bar(&mut self) -> bool {
         if self.hand_keyboard_to_agents(hocus_proto::wire::STOP_HISTORY) {
             return true;
@@ -1115,21 +493,10 @@ impl State {
         true
     }
 
-    /// `AGENT_STRIP_YIELD`: the ring stepped off the agent list, so take the keyboard.
-    ///
-    /// The mirror of [`State::hand_keyboard_to_agents`], and asymmetric with it because the
-    /// panel is: the list knows only its own plugin id, so it cannot focus us - it asks, and
-    /// this is the answer. `show_self` is the focus, being this half's own pane.
     pub(crate) fn take_ring_focus(&mut self, stop: Option<&str>) -> bool {
-        // The request is a broadcast - the list has no id to address it with - so it reaches
-        // every hocus there is, including one the user put in their own layout. That instance
-        // is on no ring and must not be yanked the keyboard by a Tab pressed in the panel.
         if !self.is_panel() {
             return false;
         }
-        // Nor may a Tab reveal a panel that is down, any more than an Esc may launch one to
-        // hide it. `show_self` below would do exactly that, and the only way to get here with
-        // the panel hidden is a list racing its own Esc.
         if self.hidden {
             return false;
         }
@@ -1138,129 +505,32 @@ impl State {
             Some(hocus_proto::wire::STOP_TABS) => Some(self.chat_tab),
             _ => None,
         };
-        // The stop above outlives the manifests still in flight: `on_panes` reads a half going
-        // unfocused as the user leaving and drops the stop, and the updates generated before
-        // the focus below still say exactly that. See `RING_FOCUS_PENDING_FRAMES`.
         self.ring_focus_pending = RING_FOCUS_PENDING_FRAMES;
         show_self(true);
         true
     }
 
-    /// Put the panel back, this half having been revealed from outside - the `c` keybinding, or
-    /// `show_self` from a tool.
-    ///
-    /// **Both halves come back**, because the panel has one visibility: the list is unsuppressed
-    /// beside us, or launched if there is none. Without focus either way - the user named the
-    /// conversation, and the keyboard belongs where they put it.
-    ///
-    /// **No tab is followed here, and that is the whole of the correctness.** Both routes in have
-    /// already put the pane and the client who asked for it on the same tab before hocus hears a
-    /// word: `LaunchOrFocusPlugin { move_to_focused_tab }` extracts the overlay and re-adds it,
-    /// unhidden, on the focused tab, and `show_self` goes through `FocusPluginPaneWithId`, which
-    /// takes the *client* to the pane's tab. `on_panes` sets `own_tab_index` from the manifest
-    /// immediately before calling this, so where we are is known rather than guessed.
-    ///
-    /// Guessing was a bug rather than a redundancy. The host builds one `PaneUpdate` per attached
-    /// client and sends every one of them here, so `self.client` on the copy that happens to be
-    /// processed first is an arbitrary client - not the one who pressed the key. Following *their*
-    /// tab drags the freshly revealed pane off the summoner's screen.
     pub(crate) fn reveal_panel(&mut self) {
-        // A tiled hocus is never hidden - `hide_panel` refuses - so there is nothing to reveal, and
-        // growing it a second half would be the panel opening itself inside someone's layout.
         if !self.is_panel() {
             return;
         }
         self.hidden = false;
-        self.hide_pending = 0;
-        // A launch that never announced itself would otherwise hold the claim for the rest of the
-        // session and every reveal after it would find the panel owing a half it can never ask
-        // for. Nothing in the plugin can see a load that failed, so the user's own gesture is the
-        // recovery: this is the one that re-asks. Before the `None` arm, which reads the flag.
-        self.agents_open_requested = false;
-        match self.agents_plugin {
-            Some(agents_id) => {
-                show_pane_with_id(PaneId::Plugin(agents_id), false, false);
-                self.note_visibility(PaneId::Plugin(agents_id), true);
-            },
-            // Nothing to unsuppress: the panel has to grow its other half first. The placement
-            // below still runs - the list announces itself with an id, and `on_panes` places it
-            // then.
-            None if !self.agents_closed => self.open_agents_pane(),
-            // Except a list the user closed, which is not a half owed back - the same split
-            // `on_panes` makes for the same reason. A reveal that reached here without passing
-            // through `hide_panel` is a toast click or a job firing, and neither is the user
-            // asking for the list again; `hide_panel` clears the flag, so Esc and then `c` still
-            // grows it back. See `State::agents_closed`.
-            None => {},
-        }
-        self.apply_overlay_geometry();
-    }
-
-    /// Put *this* half back beside a list that was revealed without us - the `a` keybinding.
-    ///
-    /// `show_self` is not what this wants: it lowers to `Action::FocusPluginPaneWithId`, which
-    /// would take the keyboard off the list the user just asked for. `show_pane_with_id` with
-    /// `should_focus_pane` false is the unsuppress on its own.
-    ///
-    /// Deliberately not the whole of `reveal_panel`: the list is already on screen, so there is
-    /// no other half to summon, and asking for one would be asking for a second list.
-    pub(crate) fn reveal_self_beside_agents(&mut self) {
-        // Its one caller is already inside `on_panes`'s panel gate; stated here too because every
-        // other entry point into the panel says it, and a half-guarded set is the one that grows a
-        // hole later.
-        if !self.is_panel() {
-            return;
-        }
-        self.hidden = false;
-        self.hide_pending = 0;
-        // The list on screen is the one that was asked for, whatever hocus last claimed - and a
-        // stale claim held here is a panel that can never grow its half again. See `reveal_panel`.
-        self.agents_open_requested = false;
         show_pane_with_id(PaneId::Plugin(self.own_plugin_id), false, false);
         self.note_visibility(PaneId::Plugin(self.own_plugin_id), true);
         self.apply_overlay_geometry();
     }
 
-    /// Put the panel back because *hocus* asked - a job that fired with `show: true`.
-    ///
-    /// `show_self` on its own is not enough, and that was a bug: it reveals this half through the
-    /// host and tells hocus nothing, so `hidden` stayed true and `hide_pending` - if an Esc had
-    /// just been pressed - stayed set. The manifest that followed then showed our pane on screen
-    /// while hocus still intended it hidden, which is exactly the shape the stale-hide guard in
-    /// `on_panes` swallows, so the reveal was eaten and the panel wedged: no list, no tab
-    /// following, and only another Esc to get out of it.
-    ///
-    /// So the intent is flipped here, at the source, and the rest is `reveal_panel`: both halves
-    /// come back, because a job showing the conversation is showing the panel.
     pub(crate) fn show_panel(&mut self) {
         show_self(true);
         self.note_visibility(PaneId::Plugin(self.own_plugin_id), true);
         self.reveal_panel();
     }
 
-    /// A toast hocus raised was clicked: put the panel back and open the conversation it was
-    /// about.
-    ///
-    /// The host has already focused our pane by the time this runs - that is what
-    /// `notify_with_click`'s `PaneId` bought - but a host-side focus reveals the pane without
-    /// telling hocus, which is exactly the wedge `show_panel` exists to avoid: `hidden` would
-    /// stay true, `hide_pending` would stay set, and the stale-hide guard in `on_panes` would eat
-    /// the reveal. So the intent is flipped here too, at the source.
-    ///
-    /// The chat is the half the focus cannot express. A toast raised by a parked chat says
-    /// nothing about *which* tab to open, and landing the user on whatever happened to be in
-    /// front leaves the question that interrupted them still shut - which was the whole reason
-    /// the toast went up.
     pub(crate) fn on_toast_click(&mut self, chat_id: Option<u64>) -> bool {
         self.show_panel();
         let Some(chat_id) = chat_id.filter(|chat_id| self.chat_id != Some(*chat_id)) else {
-            // The chat that asked is already the one on screen, or the toast named none. Either
-            // way the reveal above is the whole of it.
             return true;
         };
-        // A chat that is no longer parked was closed, or has been brought forward by something
-        // else since the toast went up. Neither is an error - the panel is up, which is most of
-        // what the click asked for.
         if let Some(index) = self
             .parked
             .iter()
@@ -1271,8 +541,6 @@ impl State {
         true
     }
 
-    /// Record a `show`/`hide` for the tests - see [`State::visibility_calls`]. Compiled away
-    /// outside them.
     pub(crate) fn note_visibility(&mut self, pane: PaneId, shown: bool) {
         if let PaneId::Plugin(id) = pane {
             if self.agents_plugin == Some(id) {
@@ -1285,123 +553,20 @@ impl State {
         let _ = (pane, shown);
     }
 
-    /// Carry whichever panes are ours to `tab_index`.
-    ///
-    /// Both in one call so they cannot end up on different tabs - and so they arrive as the
-    /// panel they were, seam included: the server links a batch it carries over as one exactly
-    /// as it links a batch it places as one. Without focus - a tab switch is not a request to
-    /// type into hocus.
-    ///
-    /// Called when *either* half is on screen, not only when this one is: a hidden conversation
-    /// with a visible list still has to bring the list along, or a tab switch strands it.
     pub(crate) fn follow_tab(&mut self, tab_index: TabPosition) {
-        // A pane in the layout belongs to its tab. Following the user around would take it off the
-        // tab they built it into - the opposite of what an overlay following them achieves.
-        if !self.is_panel() {
+        if !self.is_panel() || self.own_tab_index.is_none() || self.own_tab_index == Some(tab_index)
+        {
             return;
         }
-        // Nothing to do until `PaneUpdate` has said where we actually are. Before that the panes
-        // are wherever they were opened - which is the active tab, since every path that opens one
-        // is the user asking for it from the tab they are on - and a move to "the active tab" would
-        // be a move to where we already are. `on_panes` is the authority on this, not `on_tabs`:
-        // one reports where our pane *is*, the other only which tab is in front.
-        let Some(own_tab_index) = self.own_tab_index else {
-            return;
-        };
-        if own_tab_index == tab_index {
-            return;
-        }
-        let mut pane_ids = vec![PaneId::Plugin(self.own_plugin_id)];
-        if let Some(agents_id) = self.agents_plugin {
-            pane_ids.push(PaneId::Plugin(agents_id));
-        }
-        break_panes_to_tab_with_index(&pane_ids, tab_index, false);
+        break_panes_to_tab_with_index(&[PaneId::Plugin(self.own_plugin_id)], tab_index, false);
         self.own_tab_index = Some(tab_index);
-        if self.agents_plugin.is_some() {
-            // Both ids went in one call, so the list is wherever we are. Recorded here rather than
-            // waited for, so the next `PaneUpdate` - taken before the move, possibly - does not
-            // read the two as parted and issue a second move.
+        if self.multipane.is_some() {
             self.agents_tab_index = Some(tab_index);
         }
-        // The move carries each overlay's exact coordinates and user-placement claims. Replacing
-        // them here would undo the position and size the user had on the previous tab.
     }
 
-    /// Ask an agent list that already exists to announce itself - and open nothing if there is
-    /// none.
-    ///
-    /// The message carries no `plugin_url`, so it is delivered to whoever is listening and
-    /// launches nobody. That matters on load, which is when this is sent: nothing has yet said
-    /// whether the panel is up, and a list appearing beside a conversation the user has not
-    /// revealed would be the panel opening itself. [`State::open_agents_pane`] is the call that
-    /// does open one, made once the manifest has shown the panel on screen.
-    ///
-    /// It is still worth sending. A hocus that loaded after the list - a reload, a restore, the
-    /// `a` keybinding having got here first - has no idea the list exists, and the list's plugin
-    /// id is the one thing hocus needs to place it. `hocus-agents` answers `AGENT_STRIP_OPEN` with
-    /// its selection, which carries that id.
     pub(crate) fn greet_agents_pane(&self) {
         pipe_message_to_plugin(MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_OPEN));
-    }
-
-    /// Grow the panel's missing half: launch an agent list, or reveal one that is only hidden.
-    ///
-    /// The same message as [`State::greet_agents_pane`] with the url attached, which is what
-    /// makes the host launch-or-reuse rather than merely deliver - the mirror of
-    /// `hocus-agents::say_hello_to_hocus`. The config has to match the `a` keybinding's
-    /// character for character, since `overlay` and `awaits_placement` are part of plugin
-    /// identity: `launch::overlay_configuration` is the one copy of it.
-    ///
-    /// Unfocused, because every caller is a reveal the user asked for by naming the *other*
-    /// half. `awaits_placement` keeps the new pane unpainted until `apply_overlay_geometry`
-    /// names it, so it never flashes at the centered default it is born with.
-    ///
-    /// Asked for at most once per launch: `agents_open_requested` is what stops a manifest
-    /// arriving while the list is still loading from asking for a second one.
-    pub(crate) fn open_agents_pane(&mut self) {
-        // The half a panel owes itself is not a half a tab pane owes anyone: an overlay list
-        // launched beside a hocus the user put in their layout lands on top of their session,
-        // uninvited. This is the launch the tiled integration tests were tripping.
-        if !self.is_panel() {
-            return;
-        }
-        if self.agents_open_requested {
-            return;
-        }
-        self.agents_open_requested = true;
-        // Whatever became of the last list, this is a new one: the closure `on_panes` remembered
-        // has been answered by the very act of asking again.
-        self.agents_closed = false;
-        #[cfg(test)]
-        {
-            self.agents_launches += 1;
-        }
-        pipe_message_to_plugin(
-            MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_OPEN)
-                .with_plugin_url(launch::HOCUS_AGENTS_ALIAS)
-                .with_plugin_config(launch::overlay_configuration())
-                .new_plugin_instance_should_not_be_focused(),
-        );
-    }
-
-    /// Take an `AGENT_STRIP_HELLO` and note that this instance is the one it launched.
-    ///
-    /// The greeting carries hocus's url, so it opens a hocus when there is none to ask - and the
-    /// panel is both halves, so that conversation belongs on screen. What it does *not* get is
-    /// the focus: the user pressed `a`, and the keyboard belongs on the list. The greeting says
-    /// so itself (`new_plugin_instance_should_not_be_focused`), so there is nothing to undo
-    /// here - what is recorded is that the list beside us is already open and already ours, so
-    /// the first manifest does not go asking for another one.
-    ///
-    /// Nothing but that launch can reach us before our own first `PaneUpdate`, so `own_tab_index`
-    /// being unset is the whole test; `from_agents` is the marker the greeting carries
-    /// (`wire::OPENED_BY`), which keeps a greeting from some other sender out of it.
-    pub(crate) fn note_greeting_from_agents(&mut self, from_agents: bool) {
-        if from_agents && self.own_tab_index.is_none() {
-            // Not a launch we made, but the same claim: a list exists and is on its way to
-            // announcing its id, so `on_panes` must not ask for a second one in the meantime.
-            self.agents_open_requested = true;
-        }
     }
 }
 

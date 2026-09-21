@@ -166,6 +166,22 @@ pub struct SuppressedPane {
     pub restored_by: Option<StandIn>,
 }
 
+/// Everything a container needs when it crosses tabs, including panes hidden by replacements.
+pub struct OverlayTransfer {
+    container: crate::panes::OverlayPane,
+    suppressed: SuppressedPanes,
+    respawns: HashMap<PaneId, (RunCommand, bool)>,
+    pending_output: HashMap<TerminalId, Vec<VteBytes>>,
+    waiting_resize: HashSet<TerminalId>,
+}
+impl OverlayTransfer {
+    pub fn pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
+        self.container
+            .pane_ids()
+            .chain(self.suppressed.keys().copied())
+    }
+}
+
 impl SuppressedPane {
     fn parked(pane: Box<dyn Pane>) -> Self {
         SuppressedPane {
@@ -1569,7 +1585,7 @@ impl Tab {
     /// suppressed - a stack-list member with a scrollback editor open on it, which
     /// the user then clicked away from - holds nobody's place while it is off
     /// screen. Swapping into a slot it does not have would drop the pane.
-    fn stands_in_for_a_pane(&self, stand_in: PaneId) -> Option<PaneId> {
+    pub fn stands_in_for_a_pane(&self, stand_in: PaneId) -> Option<PaneId> {
         if !self.tiled_panes.panes_contain(&stand_in)
             && !self.floating_panes.panes_contain(&stand_in)
             && !self.overlay_panes.panes_contain(&stand_in)
@@ -3168,6 +3184,12 @@ impl Tab {
         self.floating_panes.panes_contain(pane_id)
     }
     pub fn toggle_pane_embed_or_floating(&mut self, client_id: ClientId) -> Result<()> {
+        if self
+            .get_active_pane_id(client_id)
+            .is_some_and(|id| self.multipane_info(id).is_some())
+        {
+            return Err(anyhow!("cannot embed a multipane child"));
+        }
         let err_context =
             || format!("failed to toggle embedded/floating pane for client {client_id}");
         if self.tiled_panes.fullscreen_is_active() {
@@ -3216,6 +3238,9 @@ impl Tab {
         pane_id: PaneId,
         client_id: Option<ClientId>,
     ) -> Result<()> {
+        if self.multipane_info(pane_id).is_some() {
+            return Err(anyhow!("cannot embed a multipane child"));
+        }
         let err_context = || {
             format!(
                 "failed to toggle embedded/floating pane for pane_id {:?}",
@@ -3717,7 +3742,11 @@ impl Tab {
         if should_focus_pane {
             self.show_floating_panes();
         }
-        self.close_down_to_max_terminals()?;
+        // A suppressed slot has no place in the layout yet. Reserving it must not evict
+        // an existing pane before the operation that adopts it has succeeded.
+        if !start_suppressed {
+            self.close_down_to_max_terminals()?;
+        }
         let new_pane =
             self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
 
@@ -3834,6 +3863,19 @@ impl Tab {
         borderless: Option<bool>,
     ) -> Result<()> {
         let err_context = || format!("failed to create new pane with id {pid:?}");
+        let root = pane_id_to_stack_under
+            .or_else(|| client_id.and_then(|client| self.get_active_pane_id(client)));
+        if !start_suppressed && root.is_some_and(|id| self.multipane_info(id).is_some()) {
+            let message = "cannot stack a pane into a multipane child";
+            if let Some(mut notification) = blocking_notification {
+                notification.set_error_message(message.into());
+            }
+            self.senders
+                .send_to_pty(PtyInstruction::ClosePane(pid, None))
+                .non_fatal();
+            Err::<(), _>(anyhow!(message)).non_fatal();
+            return Ok(());
+        }
         if should_focus_pane {
             self.hide_floating_panes();
         }
@@ -5693,8 +5735,161 @@ impl Tab {
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.overlay_panes.panes_contain(&pane_id)
     }
-    pub fn linked_overlay_partner(&self, pane_id: PaneId) -> Option<PaneId> {
-        self.overlay_panes.linked_partner(&pane_id)
+    pub fn multipane_info(
+        &self,
+        pane_id: PaneId,
+    ) -> Option<zellij_types::multipane::MultipaneInfo> {
+        self.overlay_panes.multipane_info(&pane_id)
+    }
+    pub fn retain_tab_for_multipane(&mut self, child: PaneId) {
+        if self.multipane_info(child).is_some() {
+            self.overlay_panes.retain_tab_for(child);
+        }
+    }
+    pub fn take_overlay_container(&mut self, pane_id: PaneId) -> Option<OverlayTransfer> {
+        let container = self.overlay_panes.take_container(pane_id)?;
+        let mut members: HashSet<_> = container.pane_ids().collect();
+        loop {
+            let previous = members.len();
+            for (id, pane) in &self.suppressed_panes {
+                if pane
+                    .restored_by
+                    .is_some_and(|stand_in| members.contains(&stand_in.pane_id))
+                {
+                    members.insert(*id);
+                }
+            }
+            if previous == members.len() {
+                break;
+            }
+        }
+        let suppressed = self
+            .suppressed_panes
+            .extract_if(|id, _| members.contains(id))
+            .collect();
+        let respawns = self
+            .pending_command_respawns
+            .extract_if(|id, _| members.contains(id))
+            .collect();
+        let pending_output = self
+            .pending_vte_events
+            .extract_if(|id, _| members.contains(&PaneId::Terminal(*id)))
+            .collect();
+        let waiting_resize = self
+            .pids_waiting_resize
+            .extract_if(|id| members.contains(&PaneId::Terminal(*id)))
+            .collect();
+        self.set_should_clear_display_before_rendering();
+        self.set_force_render();
+        Some(OverlayTransfer {
+            container,
+            suppressed,
+            respawns,
+            pending_output,
+            waiting_resize,
+        })
+    }
+    pub fn accept_overlay_container(&mut self, transfer: OverlayTransfer) {
+        let member = transfer.container.pane_ids().next();
+        self.suppressed_panes.extend(transfer.suppressed);
+        self.pending_command_respawns.extend(transfer.respawns);
+        self.pending_vte_events.extend(transfer.pending_output);
+        self.pids_waiting_resize.extend(transfer.waiting_resize);
+        self.overlay_panes.insert_container(transfer.container);
+        if let Some(member) = member {
+            self.notify_overlay_plugins_of_visibility(member);
+        }
+        self.set_force_render();
+    }
+    pub fn validate_multipane_child(&self, pane_id: PaneId) -> Result<()> {
+        if !self.has_pane_with_pid(&pane_id) {
+            return Err(anyhow!("multipane child not found"));
+        }
+        if self.multipane_info(pane_id).is_some() {
+            return Err(anyhow!("nested multipanes are not supported"));
+        }
+        if self.pane_is_stack_list_member(&pane_id)
+            || self
+                .suppressed_panes
+                .get(&pane_id)
+                .is_some_and(|pane| pane.restored_by.is_some())
+            || self.stands_in_for_a_pane(pane_id).is_some()
+        {
+            return Err(anyhow!("cannot adopt a stacked or replaced pane"));
+        }
+        Ok(())
+    }
+    pub fn create_multipane(
+        &mut self,
+        children: [PaneId; 2],
+        split: zellij_types::multipane::MultipaneSplit,
+        placement: OverlayPlacement,
+    ) -> Result<zellij_types::multipane::MultipaneId> {
+        split.validate().map_err(|error| anyhow!(error))?;
+        if children[0] == children[1] {
+            return Err(anyhow!("multipane children must be distinct"));
+        }
+        for child in children {
+            self.validate_multipane_child(child)?;
+        }
+        // Validation precedes all extraction, including validation of existing overlay kinds.
+        for child in children {
+            if let Some(kind) = self.overlay_panes.kind_of(&child) {
+                if kind != placement.kind {
+                    return Err(anyhow!(
+                        "multipane children must have the requested overlay kind"
+                    ));
+                }
+            }
+        }
+        // Adopting the tab's working panes must not make settlement destroy them. A panel
+        // made only from existing overlays (hocus) keeps its previous session-lifetime policy.
+        let retains_tab = children
+            .iter()
+            .any(|id| !self.pane_is_overlay(*id) && !self.suppressed_panes.contains_key(id));
+        let focused: Vec<_> = self
+            .connected_clients
+            .borrow()
+            .iter()
+            .filter_map(|client| {
+                self.get_active_pane_id(*client)
+                    .filter(|pane| children.contains(pane))
+                    .map(|pane| (*client, pane))
+            })
+            .collect();
+        for child in children {
+            if !self.pane_is_overlay(child) {
+                let pane = self
+                    .extract_pane(child, true)
+                    .context("validated multipane child disappeared")?;
+                self.overlay_panes.add_pane(
+                    child,
+                    pane,
+                    placement.kind,
+                    FloatingPaneCoordinates::default(),
+                    OverlayCarry::default(),
+                );
+            }
+        }
+        let id = self
+            .overlay_panes
+            .create_multipane(children, split, placement)?;
+        if retains_tab {
+            self.overlay_panes.retain_tab_for(children[0]);
+        }
+        for (client, pane) in focused {
+            self.overlay_panes.focus_pane(pane, client);
+        }
+        self.notify_overlay_plugins_of_visibility(children[0]);
+        self.set_force_render();
+        Ok(id)
+    }
+    pub fn update_multipane_split(
+        &mut self,
+        id: zellij_types::multipane::MultipaneId,
+        split: zellij_types::multipane::MultipaneSplit,
+    ) -> Result<()> {
+        self.overlay_panes.update_split(id, split)
     }
     /// Set an overlay aside without unloading it - the overlay half of `suppress_pane`, which
     /// cannot be used here because it extracts the pane from its collection and an overlay put
@@ -5703,6 +5898,7 @@ impl Tab {
         if !self.overlay_panes.hide_pane(pane_id) {
             return false;
         }
+        self.notify_overlay_plugins_of_visibility(pane_id);
         // An overlay is drawn after the tab, so the cells it vacates have no other
         // writer: without dirtying everything underneath, the overlay stays on
         // screen as an unrepainted ghost of itself.
@@ -5715,8 +5911,28 @@ impl Tab {
         if !self.overlay_panes.show_pane(pane_id) {
             return false;
         }
+        self.notify_overlay_plugins_of_visibility(pane_id);
         self.set_force_render();
         true
+    }
+    fn notify_overlay_plugins_of_visibility(&self, pane_id: PaneId) {
+        let carry = self.overlay_panes.carry_of(&pane_id);
+        let visible = self.tab_visible && !carry.hidden && !carry.awaiting_placement;
+        let updates: Vec<_> = self
+            .overlay_panes
+            .members(&pane_id)
+            .into_iter()
+            .filter_map(|id| match id {
+                PaneId::Plugin(id) => Some((Some(id), None, Event::Visible(visible))),
+                _ => None,
+            })
+            .collect();
+        if !updates.is_empty() {
+            self.senders
+                .send_to_plugin(PluginInstruction::Update(updates))
+                .context("failed to report overlay container visibility")
+                .non_fatal();
+        }
     }
     /// Whether an overlay is being painted at `position`, whatever it is covering.
     ///
@@ -6471,7 +6687,9 @@ impl Tab {
             .floating_panes
             .get_panes()
             .filter(|(_, p)| p.selectable());
-        selectable_tiled_panes.count() > 0 || selectable_floating_panes.count() > 0
+        selectable_tiled_panes.count() > 0
+            || selectable_floating_panes.count() > 0
+            || self.overlay_panes.has_selectable_tab_content()
     }
     /// Retain hidden live work as well as selectable panes. Screen settlement handles the
     /// separate case where no tab provides a usable destination.
@@ -7029,9 +7247,21 @@ impl Tab {
     ///   dissolves the stack lists first, being a classic mutation of the grid.
     ///
     /// A pane named by id moves in the layer it is in; a client's active pane moves in the
-    /// floating layer while that layer is shown, and in the tiled one otherwise. A pane in
-    /// neither layer - an overlay, or a pane suppressed behind another - is left alone.
+    /// floating layer while that layer is shown, and in the tiled one otherwise. An overlay
+    /// (named, or holding the client's focus) moves one step in a direction and has no next
+    /// slot. A pane suppressed behind another is left alone.
     fn move_pane_in_layer(&mut self, subject: PaneSubject, movement: PaneMove) {
+        let overlay = match subject {
+            PaneSubject::Active(client_id) => self.overlay_panes.active_pane_id(client_id),
+            PaneSubject::Pane(pane_id) => Some(pane_id).filter(|id| self.pane_is_overlay(*id)),
+        };
+        if let Some(pane_id) = overlay {
+            if let PaneMove::Toward(direction) = movement {
+                self.overlay_panes.move_pane(pane_id, direction);
+                self.set_force_render();
+            }
+            return;
+        }
         let on_floating_layer = match subject {
             PaneSubject::Active(_) => self.floating_panes.panes_are_visible(),
             PaneSubject::Pane(pane_id) => self.floating_panes.panes_contain(&pane_id),
@@ -7319,8 +7549,14 @@ impl Tab {
         ignore_suppressed_panes: bool,
         exit_status: Option<i32>,
     ) {
-        self.pending_command_respawns.remove(&id);
         let id_stands_in_for_a_pane = self.stands_in_for_a_pane(id).is_some();
+        if self.multipane_info(id).is_some() && !id_stands_in_for_a_pane {
+            if let Some(command) = self.pane_run_command(id) {
+                self.hold_pane(id, exit_status, false, command);
+            }
+            return;
+        }
+        self.pending_command_respawns.remove(&id);
         if !ignore_suppressed_panes
             && !id_stands_in_for_a_pane
             && self.pane_is_stack_list_member(&id)
@@ -7438,6 +7674,10 @@ impl Tab {
         id: PaneId,
         dont_swap_if_suppressed: bool,
     ) -> Option<Box<dyn Pane>> {
+        // Structural moves must take the owning container, never an individual child.
+        if self.overlay_panes.multipane_info(&id).is_some() {
+            return None;
+        }
         let id_stands_in_for_a_pane = self.stands_in_for_a_pane(id).is_some();
         if self.pane_is_stack_list_member(&id)
             && (dont_swap_if_suppressed || !id_stands_in_for_a_pane)
@@ -7679,7 +7919,13 @@ impl Tab {
         if !self.has_pane_with_pid(&id) {
             return vec![];
         }
-        let mut closed = vec![id];
+        let container = self
+            .multipane_info(id)
+            .and_then(|_| self.overlay_panes.take_container(id));
+        let mut closed = container
+            .as_ref()
+            .map(|container| container.pane_ids().collect::<Vec<_>>())
+            .unwrap_or_else(|| vec![id]);
         let mut index = 0;
         while index < closed.len() {
             let current = closed[index];
@@ -7708,12 +7954,21 @@ impl Tab {
             }
         }
         for closing in closed.iter().rev() {
-            self.close_pane(*closing, false, None);
+            if container
+                .as_ref()
+                .is_some_and(|container| container.pane_ids().any(|pane| pane == *closing))
+            {
+                self.pending_command_respawns.remove(closing);
+                self.announce_pane_closed(*closing);
+            } else {
+                self.close_pane(*closing, false, None);
+            }
             self.senders
                 .send_to_pty(PtyInstruction::ClosePane(*closing, None))
                 .with_context(|| format!("failed to close pane {closing:?}"))
                 .non_fatal();
         }
+        self.repair_focus_after_pane_removal();
         drop(completion_tx);
         closed
     }
@@ -9738,20 +9993,15 @@ impl Tab {
     ///
     /// The placement is read *before* the extraction, which is what destroys the wrapper holding
     /// an overlay's kind and coordinates - see [`Tab::placement_for_extraction`].
-    pub fn extract_overlay_panes(&mut self) -> Vec<(ExtractedPanePlacement, Box<dyn Pane>)> {
-        let pane_ids: Vec<PaneId> = self
+    pub fn extract_overlay_panes(&mut self) -> Vec<OverlayTransfer> {
+        let ids: Vec<_> = self
             .overlay_panes
             .pane_ids()
-            .filter(|pane_id| !self.overlay_panes.is_modal(pane_id))
+            .filter(|id| !self.overlay_panes.is_modal(id))
             .copied()
             .collect();
-        pane_ids
-            .into_iter()
-            .filter_map(|pane_id| {
-                let placement = self.placement_for_extraction(pane_id);
-                self.extract_pane(pane_id, true)
-                    .map(|pane| (placement, pane))
-            })
+        ids.into_iter()
+            .filter_map(|id| self.take_overlay_container(id))
             .collect()
     }
     pub fn toggle_pane_pinned(&mut self, client_id: ClientId) {
@@ -9767,7 +10017,6 @@ impl Tab {
         }
     }
     pub fn has_room_for_stack(&mut self, root_pane_id: PaneId, stack_size: usize) -> bool {
-        self.dissolve_stack_lists_for_classic_mutation();
         if self.floating_panes.panes_contain(&root_pane_id)
             || self.overlay_panes.panes_contain(&root_pane_id)
             || self.suppressed_panes.contains_key(&root_pane_id)
@@ -9775,6 +10024,7 @@ impl Tab {
             log::error!("Root pane of stack cannot be floating, an overlay or suppressed");
             return false;
         }
+        self.dissolve_stack_lists_for_classic_mutation();
         // the overlay arm above is load-bearing rather than tidiness: the size check below
         // measures through `get_pane_with_id`, which resolves overlays, so a tall enough overlay
         // would answer `true` for a pane that is not in the tiled grid at all. `Screen::stack_panes`
@@ -9853,8 +10103,7 @@ impl Tab {
     /// A pane that is not an overlay is refused rather than promoted - overlay-ness is decided at
     /// birth, and `change_floating_pane_coordinates` is what moves a floating pane.
     ///
-    /// The batch is the unit: two overlays linked as one panel (`OverlayPanes::link_touching`)
-    /// and both named here are placed as that panel rather than one after the other.
+    /// Conflicting placements naming members of the same container are rejected.
     pub fn change_overlay_coordinates_batch(
         &mut self,
         batch: Vec<(PaneId, FloatingPaneCoordinates)>,
@@ -9872,17 +10121,6 @@ impl Tab {
             .change_pane_coordinates_batch(batch, override_user_placement)?;
         self.set_force_render();
         Ok(())
-    }
-    /// Link the overlays among `pane_ids` that a single placement batch has just put edge to
-    /// edge, so the seam between them is draggable - see `OverlayPanes::link_touching`. Ids that
-    /// are not overlays on this tab are ignored.
-    pub fn link_touching_overlays(&mut self, pane_ids: &[PaneId]) {
-        let here: Vec<PaneId> = pane_ids
-            .iter()
-            .filter(|pane_id| self.overlay_panes.panes_contain(pane_id))
-            .copied()
-            .collect();
-        self.overlay_panes.link_touching(&here);
     }
     /// Move or resize a pane on the tab's floating layer.
     ///
