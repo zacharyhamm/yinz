@@ -3099,7 +3099,8 @@ impl Tab {
                         .filter(|(_, pane)| pane.selectable())
                         .map(|(id, _)| *id)
                         .min()
-                });
+                })
+                .or_else(|| self.overlay_panes.selectable_tab_content_pane_id());
             if let Some(id) = candidate {
                 if self.floating_panes.get_pane(id).is_some()
                     && self.tiled_panes.fullscreen_covers_ui()
@@ -7939,6 +7940,8 @@ impl Tab {
                     }
                 }
                 container = Some(owning_container);
+                self.set_should_clear_display_before_rendering();
+                self.set_force_render();
             }
             for (subject, suppressed) in &self.suppressed_panes {
                 if let Some(stand_in) = suppressed.restored_by {
@@ -9168,7 +9171,10 @@ impl Tab {
         self.tiled_panes
             .focus_pane_if_exists(pane_id, client_id)
             .map(|_| self.hide_floating_panes())
-            .or_else(|_| self.overlay_panes.focus_pane_if_exists(pane_id, client_id))
+            .or_else(|_| {
+                self.show_overlay_pane(pane_id);
+                self.overlay_panes.focus_pane_if_exists(pane_id, client_id)
+            })
             .or_else(|_| {
                 let focused_floating_pane =
                     self.floating_panes.focus_pane_if_exists(pane_id, client_id);
