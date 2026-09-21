@@ -161,3 +161,32 @@ fn disabling_the_kitty_keyboard_protocol_forgets_a_negotiation_and_re_enabling_w
     vte_parser.advance(&mut grid, b"\x1b[>1u");
     assert!(grid.supports_kitty_keyboard_protocol);
 }
+
+#[test]
+fn disabling_the_kitty_keyboard_protocol_forgets_the_saved_primary_screen_negotiation() {
+    for re_enable_in_alternate_screen in [false, true] {
+        let mut grid = create_grid_with_content("");
+        let mut vte_parser = vte::Parser::new();
+        vte_parser.advance(&mut grid, b"\x1b[>1u\x1b[?1049h\x1b[>1u");
+        assert!(grid.supports_kitty_keyboard_protocol);
+
+        grid.set_kitty_keyboard_protocol_disabled(true);
+        assert!(!grid.supports_kitty_keyboard_protocol);
+        if re_enable_in_alternate_screen {
+            grid.set_kitty_keyboard_protocol_disabled(false);
+        }
+        vte_parser.advance(&mut grid, b"\x1b[?1049l");
+        assert!(
+            !grid.supports_kitty_keyboard_protocol,
+            "leaving the alternate screen must not restore the forgotten negotiation"
+        );
+        if !re_enable_in_alternate_screen {
+            vte_parser.advance(&mut grid, b"\x1b[>1u");
+            assert!(!grid.supports_kitty_keyboard_protocol);
+            grid.set_kitty_keyboard_protocol_disabled(false);
+        }
+        assert!(!grid.supports_kitty_keyboard_protocol);
+        vte_parser.advance(&mut grid, b"\x1b[>1u");
+        assert!(grid.supports_kitty_keyboard_protocol);
+    }
+}
