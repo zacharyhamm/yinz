@@ -177,13 +177,7 @@ fn suppressions_in(body: &str) -> Vec<Suppression> {
         "allow" | "expect" => lints(name, args).collect(),
         "cfg_attr" => split_top_level(args)
             .skip(1)
-            .flat_map(|attr| {
-                let attr = code_only(attr);
-                match call(attr.trim()) {
-                    Some((name @ ("allow" | "expect"), args)) => lints(name, args).collect(),
-                    _ => Vec::new(),
-                }
-            })
+            .flat_map(|attr| suppressions_in(code_only(attr).trim()))
             .collect(),
         _ => Vec::new(),
     }
@@ -510,6 +504,53 @@ mod tests {
                 ("allow", "clippy::x".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn nested_cfg_attr_suppressions_are_found() {
+        assert_eq!(
+            found("#![cfg_attr(all(), cfg_attr(all(), allow(dead_code)))]"),
+            vec![allow("dead_code")]
+        );
+
+        let source = r#"#![cfg_attr(
+            any(),
+            allow(unused_imports),
+            cfg_attr(
+                all(),
+                // A nested attribute can contain siblings and further nesting.
+                expect(unused_variables, reason = "see foo(), bar)]"),
+                cfg_attr(
+                    not(target_arch = "wasm32"),
+                    /* why */ allow(dead_code, unused_mut, reason = "nested",),
+                ),
+                deny(missing_docs),
+            ),
+            expect(clippy::needless_borrow),
+        )]"#;
+        assert_eq!(
+            found(source),
+            vec![
+                allow("unused_imports"),
+                ("expect", "unused_variables".to_owned()),
+                allow("dead_code"),
+                allow("unused_mut"),
+                ("expect", "clippy::needless_borrow".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_cfg_attr_without_file_level_suppressions_is_ignored() {
+        let source = r#"
+            #![cfg_attr(all(), cfg_attr(all(), deny(missing_docs), doc = "allow(x)"))]
+            #[cfg_attr(all(), cfg_attr(all(), allow(dead_code)))]
+            fn f() {}
+            mod m {
+                #![cfg_attr(all(), cfg_attr(all(), expect(unused)))]
+            }
+        "#;
+        assert_eq!(found(source), vec![]);
     }
 
     #[test]
