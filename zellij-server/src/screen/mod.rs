@@ -3647,6 +3647,37 @@ impl Screen {
         keybinds: Keybinds,
         client_id: ClientId,
     ) -> Result<()> {
+        if config.session_is_mirrored && !self.session_is_mirrored {
+            // Move clients independently before mirrored tab switches assume they all share
+            // one tab. Prefer the caller's focus, then the lowest connected client ID.
+            let mut clients: Vec<ClientId> =
+                self.connected_clients.borrow().iter().copied().collect();
+            clients.sort_unstable_by_key(|id| (*id != client_id, *id));
+            let shared_focus = clients.iter().find_map(|id| {
+                self.get_active_tab(*id)
+                    .ok()
+                    .map(|tab| (tab.position, tab.get_active_pane_id(*id)))
+            });
+            if let Some((tab_position, pane_id)) = shared_focus {
+                for client_id in clients {
+                    self.switch_active_tab(tab_position, None, true, client_id)
+                        .context("failed to reconcile client tabs before enabling mirroring")?;
+                    let old_pane_id = self.get_active_pane_id(&client_id);
+                    if let Some(pane_id) = pane_id.filter(|id| Some(*id) != old_pane_id) {
+                        self.get_active_tab_mut(client_id)?
+                            .focus_pane_with_id(pane_id, false, false, client_id)
+                            .context("failed to reconcile pane focus before enabling mirroring")?;
+                        if let Some(old_pane_id) = old_pane_id {
+                            self.report_key_passthrough_state(client_id, old_pane_id, pane_id);
+                        }
+                        self.clear_bell_for_focused_pane(client_id);
+                        self.sync_scroll_mode_on_focus(client_id).non_fatal();
+                    }
+                }
+                self.log_and_report_session_state()
+                    .context("failed to report reconciled client focus")?;
+            }
+        }
         let ScreenConfig {
             theme,
             host_theme_dark,
