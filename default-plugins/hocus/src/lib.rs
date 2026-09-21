@@ -8,6 +8,7 @@
 
 mod api;
 mod archive;
+mod decisions;
 mod events;
 mod extensions;
 mod help;

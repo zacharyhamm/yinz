@@ -1168,6 +1168,11 @@ pub fn specs() -> Value {
                 "required": ["query"],
             }),
         ),
+        tool(
+            "openrouter_decisions",
+            "Evaluate named questions against state through OpenRouter Decisions: choice, score, or noul (boolean likelihood, 0–1). Returns typed answers, model and usage/cost. Does not act on the answers.",
+            crate::decisions::parameters(),
+        ),
         tool("swamp_issue_search", "Search swamp-club Lab issues through the host's Swamp login. All statuses by default; up to 100 results. No active project required.", json!({"type":"object","properties":{
             "query":{"type":"string"},
             "type":{"type":"string","enum":["bug","feature","security"]},
@@ -2113,6 +2118,7 @@ pub const READ_ONLY: &[&str] = &[
     "github_read",
     // The world outside.
     "web_search",
+    "openrouter_decisions",
     "slack_status",
     "slack_search",
     "slack_read",
@@ -2278,6 +2284,12 @@ pub const FAMILIES: &[Family] = &[
         summary: "web search",
         deferred: false,
         tools: &["web_search"],
+    },
+    Family {
+        name: "decisions",
+        summary: "OpenRouter evaluations: choices, scores and boolean likelihoods",
+        deferred: true,
+        tools: &["openrouter_decisions"],
     },
     Family {
         name: "agent",

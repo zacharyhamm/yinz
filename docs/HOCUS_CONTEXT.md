@@ -37,6 +37,8 @@ Request logs include original and transmitted payload bytes, omitted-result coun
 
 Cumulative usage can still exceed one million tokens. The limits bound individual requests and reduce the cost of replaying old tool output.
 
+The [Decisions tool](HOCUS_DECISIONS.md) reports its usage separately in each tool result.
+
 ## Measured replay savings
 
 The deterministic test runs 24 authoring cycles, with 168 requests per transport. Each cycle includes documentation lookup, a separate file, write/edit/check/reload calls, and extension output.

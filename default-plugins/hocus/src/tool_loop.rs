@@ -211,6 +211,9 @@ impl State {
         if call.name == "web_search" {
             return self.start_search(call);
         }
+        if call.name == "openrouter_decisions" {
+            return self.start_decisions(call);
+        }
         if tools::SWAMP_TOOLS.contains(&call.name.as_str()) {
             return self.start_swamp_issue(call);
         }

@@ -248,6 +248,8 @@ pub enum Status {
     AwaitingCommand,
     /// The head of `pending` is a `web_search` waiting on `WebRequestResult`.
     AwaitingSearch,
+    /// The head is `openrouter_decisions`, waiting on its buffered `WebRequestResult`.
+    AwaitingDecisions,
     /// The head is owned by a registered TypeScript extension and is waiting on its private pipe reply.
     AwaitingExtension,
     /// The head of `pending` is a `plugin_reload` whose plugin has been asked to load, waiting

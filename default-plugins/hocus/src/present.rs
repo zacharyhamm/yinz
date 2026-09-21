@@ -171,6 +171,7 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ("git", &["git"]),
     ("github", &["github"]),
     ("slack", &["slack"]),
+    ("decisions", &["decisions"]),
     ("vms", &["vm"]),
     ("chat", &["schedule", "unschedule", "web_search"]),
 ];

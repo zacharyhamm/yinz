@@ -805,6 +805,7 @@ mod chats;
 mod commands;
 mod confirmation;
 mod data_store;
+mod decisions;
 mod extensions;
 mod file_tools;
 mod jobs;

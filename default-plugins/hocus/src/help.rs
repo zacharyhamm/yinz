@@ -211,6 +211,10 @@ const TOOL_HELP: &[(&str, &str)] = &[
         "Search the web. The answer holds short extracts, not the full pages, and it gives eight results at the most. The search needs a SearxNG instance that answers in JSON: hocus uses search_url from its config block, or the SEARXNG_URL variable, or http://localhost:8888.",
     ),
     (
+        "openrouter_decisions",
+        "Evaluate named questions against the supplied state through OpenRouter Decisions. Use choice for options, score for ordered criteria, and noul for a boolean likelihood from 0 to 1. Set OPENROUTER_API_KEY before you start the Zellij session. The default model is typesafe/jev-1.13. The model argument overrides the Decisions model for one call. Configure the endpoint and credentials through decisions_url and decisions_api_key_env, not tool arguments. Answers include usage and cost, separate from chat usage. Ctrl+c stops the wait and discards a late response. Requests are not retried automatically.",
+    ),
+    (
         "schedule",
         "Send a prompt again and again, after each interval, until you cancel the job. The shortest interval is five seconds. Use unschedule or /stop_jobs to cancel it. The job refuses a tool that needs approval, unless you set auto_confirm.",
     ),

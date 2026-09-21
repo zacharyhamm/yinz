@@ -1539,7 +1539,7 @@ impl State {
     }
 
     /// The single `WebRequestResult` that leads every stream — and, when the
-    /// context says so, the whole answer to a `web_search` or a model list.
+    /// context says so, the whole answer to a web tool or a model list.
     pub(crate) fn on_response(
         &mut self,
         status: u16,
@@ -1547,6 +1547,9 @@ impl State {
         context: &BTreeMap<String, String>,
     ) -> bool {
         if self.finish_search(status, body, context) {
+            return true;
+        }
+        if self.finish_decisions(status, body, context) {
             return true;
         }
         if self.finish_models(status, body, context) {
