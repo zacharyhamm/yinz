@@ -35,12 +35,20 @@ impl ThreadSenders {
                 .unwrap_or_else(|| Ok(()));
             Ok(())
         } else {
-            self.to_screen
+            let sender = self
+                .to_screen
                 .as_ref()
-                .context("failed to get screen sender")?
-                .send(instruction)
-                .to_anyhow()
-                .context("failed to send message to screen")
+                .context("failed to get screen sender")?;
+            match instruction {
+                // A failed layout handoff must let Pty close panes and cancel deferred spawns.
+                ScreenInstruction::ApplyLayout(..)
+                | ScreenInstruction::OverrideLayoutComplete(..) => {
+                    sender.send_required(instruction)
+                },
+                _ => sender.send(instruction),
+            }
+            .to_anyhow()
+            .context("failed to send message to screen")
         }
     }
 

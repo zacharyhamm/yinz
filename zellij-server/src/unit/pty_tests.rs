@@ -1765,6 +1765,99 @@ fn an_ssh_spawn_does_not_block_the_pty_thread() {
     );
 }
 
+#[test]
+fn layout_handoffs_after_screen_shutdown_close_panes_without_starting_remote_commands() {
+    for override_layout in [false, true] {
+        let os_api = MockOsApi::new();
+        *os_api.local_spawns_to_allow.lock().unwrap() = 1;
+        let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+        let shutdown = Shutdown::default();
+        let (screen_tx, screen_rx) = channels::unbounded();
+        let (pty_tx, _pty_rx) = channels::unbounded();
+        pty.bus.senders.to_screen = Some(shutdown.sender(screen_tx));
+        pty.bus.senders.to_pty = Some(shutdown.sender(pty_tx));
+        pty.bus.senders.should_silently_fail = false;
+        shutdown.begin();
+        drop(screen_rx);
+
+        // Ordinary updates still tolerate an exited screen.
+        pty.bus
+            .senders
+            .send_to_screen(ScreenInstruction::Render)
+            .unwrap();
+        let local = RunCommand {
+            command: PathBuf::from("sh"),
+            ..Default::default()
+        };
+        let layout = TiledPaneLayout {
+            run: Some(Run::Command(local.clone())),
+            ..Default::default()
+        };
+        let floating_layouts = vec![FloatingPaneLayout {
+            run: Some(Run::Command(RunCommand {
+                command: PathBuf::from("sh"),
+                target: PaneTarget::Ssh {
+                    host: "remote-host".to_owned(),
+                },
+                ..Default::default()
+            })),
+            ..Default::default()
+        }];
+        let default_shell = Some(TerminalAction::RunCommand(local));
+        let result = if override_layout {
+            pty.finish_layout_override(PendingLayoutOverride {
+                cwd: None,
+                default_shell,
+                tabs: vec![(
+                    TabId::new(0),
+                    TabLayoutInfo {
+                        tab_index: TabPosition::new(0),
+                        tab_name: None,
+                        tiled_layout: layout,
+                        floating_layouts,
+                        swap_tiled_layouts: None,
+                        swap_floating_layouts: None,
+                    },
+                    HashMap::new(),
+                )],
+                retain_existing_terminal_panes: false,
+                retain_existing_plugin_panes: false,
+                client_id: CLIENT_1,
+                completion_tx: None,
+            })
+        } else {
+            pty.spawn_terminals_for_layout(
+                None,
+                layout,
+                floating_layouts,
+                default_shell,
+                HashMap::new(),
+                None,
+                TabId::new(0),
+                false,
+                true,
+                CLIENT_1,
+                None,
+            )
+        };
+
+        let error = result.expect_err("the layout handoff must fail after the screen exits");
+        assert!(format!("{error:#}").contains("failed to send message to screen"));
+        let mut cleared = os_api.cleared_terminal_ids.lock().unwrap().clone();
+        cleared.sort_unstable();
+        assert_eq!(cleared, vec![TerminalId::new(0), TerminalId::new(1)]);
+        assert_eq!(
+            os_api.local_signals(),
+            vec![(ProcessId::new(1000), "SIGHUP")]
+        );
+        assert!(pty.id_to_child_pid.is_empty());
+        assert!(pty.task_handles.is_empty());
+        assert!(pty.pending_remote_spawns.is_empty());
+        assert!(pty.spawn_workers.is_empty());
+        assert!(os_api.resolved_spawns.lock().unwrap().is_empty());
+    }
+}
+
 /// A layout that fails before it reaches Screen must release remote ids it reserved.
 #[test]
 fn a_failing_layout_pane_clears_its_reserved_remote_panes() {
