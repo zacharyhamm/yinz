@@ -182,9 +182,9 @@ fn is_user_input(event: &InputEvent) -> bool {
 enum StartupKittyProbe {
     NotSent,
     AwaitingReply,
-    /// The deadline fired and `false` has been reported, but a late `i=31;OK` is still welcome:
-    /// a slow host is not an incapable one, and the capability is allowed to turn on afterwards.
-    TimedOutAwaitingReply,
+    /// The barrier or deadline reported `false`, but the graphics reply is still pending:
+    /// a late `i=31;OK` can turn support on, and an explicit refusal settles the probe.
+    UnsupportedAwaitingReply,
     Resolved,
 }
 
@@ -244,13 +244,13 @@ impl StdinAnsiParser {
     /// proxy may swallow both - does not leave every client stuck on "unknown" forever.
     ///
     /// Stays open to a late `i=31;OK` afterwards, which is why this does not go straight to
-    /// `Resolved`. Returns `None` once the probe has been settled by a reply, by the barrier, or
-    /// by an earlier call, so the caller needs no cancellation of its own.
+    /// `Resolved`. Returns `None` once a reply settles the probe or a barrier or earlier call
+    /// reports the provisional negative, so the caller needs no cancellation of its own.
     pub fn resolve_kitty_probe_by_timeout(&mut self) -> Option<HostReply> {
         if self.startup_kitty_probe != StartupKittyProbe::AwaitingReply {
             return None;
         }
-        self.startup_kitty_probe = StartupKittyProbe::TimedOutAwaitingReply;
+        self.startup_kitty_probe = StartupKittyProbe::UnsupportedAwaitingReply;
         Some(HostReply::KittyGraphicsSupport(false))
     }
 
@@ -442,18 +442,12 @@ impl StdinAnsiParser {
                 } => {
                     match final_byte {
                         b'c' => {
-                            match self.startup_kitty_probe {
-                                StartupKittyProbe::AwaitingReply => {
-                                    self.startup_kitty_probe = StartupKittyProbe::Resolved;
-                                    out.replies.push(HostReply::KittyGraphicsSupport(false));
-                                },
-                                // The deadline already sent this answer. Settle the probe, but do
-                                // not say it twice: a repeat costs the server a whole
-                                // `ModeUpdate` fan-out to every plugin for no change.
-                                StartupKittyProbe::TimedOutAwaitingReply => {
-                                    self.startup_kitty_probe = StartupKittyProbe::Resolved;
-                                },
-                                StartupKittyProbe::NotSent | StartupKittyProbe::Resolved => {},
+                            // The graphics reply can arrive after this barrier. Report the
+                            // provisional negative once, and keep waiting for that reply.
+                            if self.startup_kitty_probe == StartupKittyProbe::AwaitingReply {
+                                self.startup_kitty_probe =
+                                    StartupKittyProbe::UnsupportedAwaitingReply;
+                                out.replies.push(HostReply::KittyGraphicsSupport(false));
                             }
                             if let Some(reply) = HostReply::sixel_support_from_primary_da(&raw) {
                                 out.replies.push(reply);
@@ -606,14 +600,14 @@ impl StdinAnsiParser {
                         if matches!(
                             self.startup_kitty_probe,
                             StartupKittyProbe::AwaitingReply
-                                | StartupKittyProbe::TimedOutAwaitingReply
+                                | StartupKittyProbe::UnsupportedAwaitingReply
                         ) && payload.first() == Some(&b'G')
                             && contains_subslice(payload, b"i=31")
                         {
                             let supported = contains_subslice(payload, b"i=31;OK");
                             // A late `OK` still turns the capability on - a slow host is not an
-                            // incapable one - but a late refusal only repeats what the deadline
-                            // already said, and a repeat costs the server a whole `ModeUpdate`
+                            // incapable one - but a late refusal only repeats what the barrier
+                            // or deadline said, and a repeat costs the server a whole `ModeUpdate`
                             // fan-out to every plugin for no change.
                             if supported
                                 || self.startup_kitty_probe == StartupKittyProbe::AwaitingReply
