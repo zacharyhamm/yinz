@@ -4534,177 +4534,37 @@ impl Grid {
         }
     }
     pub fn mouse_left_click_signal(&self, position: &Position, is_held: bool) -> Option<String> {
-        let utf8_event = || -> Option<String> {
-            let button_code = if is_held { b'@' } else { b' ' };
-            let mut msg: Vec<u8> = vec![27, b'[', b'M', button_code];
-            msg.append(&mut utf8_mouse_coordinates(
-                position.column() + 1,
-                position.line() + 1,
-            ));
-            Some(String::from_utf8_lossy(&msg).into())
+        let event = if is_held {
+            MouseEvent::new_left_motion_event(*position)
+        } else {
+            MouseEvent::new_left_press_event(*position)
         };
-        let sgr_event = || -> Option<String> {
-            let button_code = if is_held { 32 } else { 0 };
-            Some(format!(
-                "\u{1b}[<{:?};{:?};{:?}M",
-                button_code,
-                position.column() + 1,
-                position.line() + 1
-            ))
-        };
-        match (&self.mouse_mode, &self.mouse_tracking) {
-            (_, MouseTracking::Off) => None,
-            (MouseMode::NoEncoding | MouseMode::Utf8, MouseTracking::Normal) if !is_held => {
-                utf8_event()
-            },
-            (
-                MouseMode::NoEncoding | MouseMode::Utf8,
-                MouseTracking::ButtonEventTracking | MouseTracking::AnyEventTracking,
-            ) => utf8_event(),
-            (
-                MouseMode::Sgr,
-                MouseTracking::ButtonEventTracking | MouseTracking::AnyEventTracking,
-            ) => sgr_event(),
-            (MouseMode::Sgr, MouseTracking::Normal) if !is_held => sgr_event(),
-            _ => None,
-        }
+        self.mouse_event_signal(&event)
     }
     pub fn mouse_left_click_release_signal(&self, position: &Position) -> Option<String> {
-        match (&self.mouse_mode, &self.mouse_tracking) {
-            (_, MouseTracking::Off) => None,
-            (MouseMode::NoEncoding | MouseMode::Utf8, _) => {
-                let mut msg: Vec<u8> = vec![27, b'[', b'M', b'#'];
-                msg.append(&mut utf8_mouse_coordinates(
-                    position.column() + 1,
-                    position.line() + 1,
-                ));
-                Some(String::from_utf8_lossy(&msg).into())
-            },
-            (MouseMode::Sgr, _) => {
-                let mouse_event = format!(
-                    "\u{1b}[<0;{:?};{:?}m",
-                    position.column() + 1,
-                    position.line() + 1
-                );
-                Some(mouse_event)
-            },
-        }
+        self.mouse_event_signal(&MouseEvent::new_left_release_event(*position))
     }
     pub fn mouse_right_click_signal(&self, position: &Position, is_held: bool) -> Option<String> {
-        let utf8_event = || -> Option<String> {
-            let button_code = if is_held { b'B' } else { b'"' };
-            let mut msg: Vec<u8> = vec![27, b'[', b'M', button_code];
-            msg.append(&mut utf8_mouse_coordinates(
-                position.column() + 1,
-                position.line() + 1,
-            ));
-            Some(String::from_utf8_lossy(&msg).into())
+        let event = if is_held {
+            MouseEvent::new_right_motion_event(*position)
+        } else {
+            MouseEvent::new_right_press_event(*position)
         };
-        let sgr_event = || -> Option<String> {
-            let button_code = if is_held { 34 } else { 2 };
-            Some(format!(
-                "\u{1b}[<{:?};{:?};{:?}M",
-                button_code,
-                position.column() + 1,
-                position.line() + 1
-            ))
-        };
-        match (&self.mouse_mode, &self.mouse_tracking) {
-            (_, MouseTracking::Off) => None,
-            (MouseMode::NoEncoding | MouseMode::Utf8, MouseTracking::Normal) if !is_held => {
-                utf8_event()
-            },
-            (
-                MouseMode::NoEncoding | MouseMode::Utf8,
-                MouseTracking::ButtonEventTracking | MouseTracking::AnyEventTracking,
-            ) => utf8_event(),
-            (
-                MouseMode::Sgr,
-                MouseTracking::ButtonEventTracking | MouseTracking::AnyEventTracking,
-            ) => sgr_event(),
-            (MouseMode::Sgr, MouseTracking::Normal) if !is_held => sgr_event(),
-            _ => None,
-        }
+        self.mouse_event_signal(&event)
     }
     pub fn mouse_right_click_release_signal(&self, position: &Position) -> Option<String> {
-        match (&self.mouse_mode, &self.mouse_tracking) {
-            (_, MouseTracking::Off) => None,
-            (MouseMode::NoEncoding | MouseMode::Utf8, _) => {
-                let mut msg: Vec<u8> = vec![27, b'[', b'M', b'#'];
-                msg.append(&mut utf8_mouse_coordinates(
-                    position.column() + 1,
-                    position.line() + 1,
-                ));
-                Some(String::from_utf8_lossy(&msg).into())
-            },
-            (MouseMode::Sgr, _) => {
-                let mouse_event = format!(
-                    "\u{1b}[<2;{:?};{:?}m",
-                    position.column() + 1,
-                    position.line() + 1
-                );
-                Some(mouse_event)
-            },
-        }
+        self.mouse_event_signal(&MouseEvent::new_right_release_event(*position))
     }
     pub fn mouse_middle_click_signal(&self, position: &Position, is_held: bool) -> Option<String> {
-        let utf8_event = || -> Option<String> {
-            let button_code = if is_held { b'A' } else { b'!' };
-            let mut msg: Vec<u8> = vec![27, b'[', b'M', button_code];
-            msg.append(&mut utf8_mouse_coordinates(
-                position.column() + 1,
-                position.line() + 1,
-            ));
-            Some(String::from_utf8_lossy(&msg).into())
+        let event = if is_held {
+            MouseEvent::new_middle_motion_event(*position)
+        } else {
+            MouseEvent::new_middle_press_event(*position)
         };
-        let sgr_event = || -> Option<String> {
-            let button_code = if is_held { 33 } else { 1 };
-            Some(format!(
-                "\u{1b}[<{:?};{:?};{:?}M",
-                button_code,
-                position.column() + 1,
-                position.line() + 1
-            ))
-        };
-        match (&self.mouse_mode, &self.mouse_tracking) {
-            (_, MouseTracking::Off) => None,
-            (MouseMode::NoEncoding | MouseMode::Utf8, MouseTracking::Normal) if !is_held => {
-                utf8_event()
-            },
-            (
-                MouseMode::NoEncoding | MouseMode::Utf8,
-                MouseTracking::ButtonEventTracking | MouseTracking::AnyEventTracking,
-            ) => utf8_event(),
-            (
-                MouseMode::Sgr,
-                MouseTracking::ButtonEventTracking | MouseTracking::AnyEventTracking,
-            ) => sgr_event(),
-            (MouseMode::Sgr, MouseTracking::Normal) if !is_held => sgr_event(),
-            _ => None,
-        }
+        self.mouse_event_signal(&event)
     }
     pub fn mouse_middle_click_release_signal(&self, position: &Position) -> Option<String> {
-        match (&self.mouse_mode, &self.mouse_tracking) {
-            (_, MouseTracking::Off) => None,
-            (MouseMode::NoEncoding | MouseMode::Utf8, _) => {
-                let mut msg: Vec<u8> = vec![27, b'[', b'M', b'#'];
-                msg.append(&mut utf8_mouse_coordinates(
-                    position.column() + 1,
-                    position.line() + 1,
-                ));
-                Some(String::from_utf8_lossy(&msg).into())
-            },
-            (MouseMode::Sgr, _) => {
-                // TODO: these don't add a +1 because it's done outside, we should change it to
-                // happen here for consistency
-                let mouse_event = format!(
-                    "\u{1b}[<1;{:?};{:?}m",
-                    position.column() + 1,
-                    position.line() + 1
-                );
-                Some(mouse_event)
-            },
-        }
+        self.mouse_event_signal(&MouseEvent::new_middle_release_event(*position))
     }
     pub fn mouse_scroll_up_signal(&self, position: &Position) -> Option<String> {
         self.mouse_event_signal(&MouseEvent::new_scroll_up_event(*position))

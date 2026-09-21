@@ -3530,8 +3530,7 @@ pub fn replace_multipane_child(
     multipane_response(PluginCommand::ReplaceMultipaneChild(request))
 }
 fn multipane_response(command: PluginCommand) -> zellij_types::multipane::MultipaneResponse {
-    let response: zellij_plugin_api::plugin_command::ProtobufMultipaneResponse =
-        call(command)?;
+    let response: zellij_plugin_api::plugin_command::ProtobufMultipaneResponse = call(command)?;
     serde_json::from_str(&response.json).map_err(|error| error.to_string())?
 }
 

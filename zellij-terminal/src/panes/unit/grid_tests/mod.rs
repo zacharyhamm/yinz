@@ -1107,6 +1107,108 @@ fn search_match_ending_on_a_full_tail_row_below_a_wide_char_wrap_stays_on_that_r
 }
 
 #[test]
+fn mouse_button_reports_preserve_wire_bytes_and_tracking_modes() {
+    for (position, encoded_coordinates) in [
+        (Position::new(0, 0), "!!"),
+        (Position::new(4, 6), "'%"),
+        (Position::new(300, 500), "\u{215}\u{14d}"),
+    ] {
+        for encoding in ["", "\u{1b}[?1005h", "\u{1b}[?1006h"] {
+            for tracking in [0, 1000, 1002, 1003] {
+                let tracking_sequence = if tracking == 0 {
+                    String::new()
+                } else {
+                    format!("\u{1b}[?{tracking}h")
+                };
+                let grid = create_grid_with_content(&format!("{tracking_sequence}{encoding}"));
+                for (button, x10_button, suffix, is_motion, actual) in [
+                    (
+                        0,
+                        ' ',
+                        'M',
+                        false,
+                        grid.mouse_left_click_signal(&position, false),
+                    ),
+                    (
+                        32,
+                        '@',
+                        'M',
+                        true,
+                        grid.mouse_left_click_signal(&position, true),
+                    ),
+                    (
+                        0,
+                        '#',
+                        'm',
+                        false,
+                        grid.mouse_left_click_release_signal(&position),
+                    ),
+                    (
+                        2,
+                        '"',
+                        'M',
+                        false,
+                        grid.mouse_right_click_signal(&position, false),
+                    ),
+                    (
+                        34,
+                        'B',
+                        'M',
+                        true,
+                        grid.mouse_right_click_signal(&position, true),
+                    ),
+                    (
+                        2,
+                        '#',
+                        'm',
+                        false,
+                        grid.mouse_right_click_release_signal(&position),
+                    ),
+                    (
+                        1,
+                        '!',
+                        'M',
+                        false,
+                        grid.mouse_middle_click_signal(&position, false),
+                    ),
+                    (
+                        33,
+                        'A',
+                        'M',
+                        true,
+                        grid.mouse_middle_click_signal(&position, true),
+                    ),
+                    (
+                        1,
+                        '#',
+                        'm',
+                        false,
+                        grid.mouse_middle_click_release_signal(&position),
+                    ),
+                ] {
+                    let expected = if tracking == 0 || (tracking == 1000 && is_motion) {
+                        None
+                    } else if encoding == "\u{1b}[?1006h" {
+                        Some(format!(
+                            "\u{1b}[<{button};{};{}{suffix}",
+                            position.column() + 1,
+                            position.line() + 1,
+                        ))
+                    } else {
+                        Some(format!("\u{1b}[M{x10_button}{encoded_coordinates}"))
+                    };
+                    assert_eq!(
+                        actual, expected,
+                        "position={position:?}, encoding={encoding:?}, tracking={tracking}, \
+                         button={button}, suffix={suffix}, motion={is_motion}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn wheel_reports_share_encoding_and_preserve_modifiers() {
     use zellij_types::mouse::MouseEvent;
 
