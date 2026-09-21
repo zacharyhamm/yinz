@@ -10,6 +10,10 @@ use zellij_runtime::channels::SenderWithContext;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::diagnostics::ErrorContext;
 
+#[cfg(test)]
+#[path = "unit/thread_bus_tests.rs"]
+mod tests;
+
 /// A container for senders to the different threads in zellij on the server side
 #[derive(Default, Clone)]
 pub struct ThreadSenders {
@@ -40,11 +44,11 @@ impl ThreadSenders {
                 .as_ref()
                 .context("failed to get screen sender")?;
             match instruction {
-                // A failed layout handoff must let Pty close panes and cancel deferred spawns.
+                // Layout handoffs need failure cleanup; save requests must not acknowledge
+                // success when the screen never received them.
                 ScreenInstruction::ApplyLayout(..)
-                | ScreenInstruction::OverrideLayoutComplete(..) => {
-                    sender.send_required(instruction)
-                },
+                | ScreenInstruction::OverrideLayoutComplete(..)
+                | ScreenInstruction::SaveSession(..) => sender.send_required(instruction),
                 _ => sender.send(instruction),
             }
             .to_anyhow()
