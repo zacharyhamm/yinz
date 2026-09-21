@@ -1345,7 +1345,7 @@ export default {
     let current = subscription(1);
     assert!(old.2.is_some() && current.2.is_some());
     assert_ne!(old.2, current.2);
-    assert!(harness.log.lock().iter().any(|instruction| matches!(instruction, ScreenInstruction::UnsubscribePaneOutput(plugin) if *plugin==old.0)));
+    assert!(harness.log.lock().iter().any(|instruction| matches!(instruction, ScreenInstruction::UnsubscribePaneOutput(plugin, generation) if *plugin==old.0 && *generation == old.2)));
     let chunk = |(plugin, client, generation)| {
         PluginInstruction::for_plugin_event(
             plugin,
@@ -1382,6 +1382,101 @@ export default {
     harness.event(release_event());
     harness.rendered("new chunks=1 fences=2");
     harness.finish();
+}
+
+#[test]
+fn deno_failed_worker_removes_only_its_pane_output_registrations() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+export default {
+  workers: {
+    failed() {
+      zellij.subscribe(['CustomMessage']);
+      zellij.on('CustomMessage', () => { throw Error('expected worker runtime failure'); });
+      zellij.command('SubscribePaneOutput', {work:'failed'});
+    },
+    survivor() { zellij.command('SubscribePaneOutput', {work:'survivor'}); },
+  },
+  async load() {
+    await zellij.waitForPermissions(['ReadPaneContents']);
+    zellij.command('SubscribePaneOutput', {work:'parent'});
+    zellij.postMessageTo('failed', 'go');
+    zellij.postMessageTo('survivor', 'go');
+  },
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    let generations = harness.log.wait_until(
+        "parent and worker registrations",
+        default_timeout(),
+        |log| {
+            let generations: BTreeMap<_, _> = log
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    ScreenInstruction::SubscribePaneOutput(
+                        plugin,
+                        client,
+                        Some(context),
+                        Some(generation),
+                    ) => {
+                        assert_eq!((*plugin, *client), (PLUGIN, CLIENT));
+                        Some((context["work"].clone(), *generation))
+                    },
+                    _ => None,
+                })
+                .collect();
+            (generations.len() == 3).then_some(generations)
+        },
+    );
+    harness
+        .sender
+        .send(PluginInstruction::DenoEvent(
+            PLUGIN,
+            CLIENT,
+            generations["failed"],
+            release_event(),
+        ))
+        .unwrap();
+    harness
+        .log
+        .wait_until("failed worker disposal", default_timeout(), |log| {
+            log.iter()
+                .any(|instruction| {
+                    matches!(instruction,
+                        ScreenInstruction::UnsubscribePaneOutput(plugin, Some(generation))
+                            if *plugin == PLUGIN && *generation == generations["failed"]
+                    )
+                })
+                .then_some(())
+        });
+    assert_eq!(
+        generations
+            .values()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
+    for instruction in harness.log.lock().iter() {
+        if let ScreenInstruction::UnsubscribePaneOutput(plugin, generation) = instruction {
+            assert_eq!(
+                (*plugin, *generation),
+                (PLUGIN, Some(generations["failed"]))
+            );
+        }
+    }
+    let log = harness.finish();
+    for generation in generations.values() {
+        assert!(log.iter().any(|instruction| matches!(instruction,
+            ScreenInstruction::UnsubscribePaneOutput(plugin, Some(removed))
+                if *plugin == PLUGIN && removed == generation
+        )));
+    }
+    assert!(log.iter().any(|instruction| matches!(instruction,
+        ScreenInstruction::UnsubscribePaneOutput(plugin, None) if *plugin == PLUGIN
+    )));
 }
 
 /// FNV-1a over `bytes`, as the fixtures below compute it in JavaScript with `Math.imul`.
@@ -1536,7 +1631,7 @@ fn retained_client_reattaches() {
     // absence of subscription cleanup is now observable without a sleep.
     assert!(!harness.log.lock().iter().any(|instruction| matches!(instruction,
         ScreenInstruction::SubscribePaneOutput(plugin, client, None, _) if *plugin == PLUGIN && *client == CLIENT
-    ) || matches!(instruction, ScreenInstruction::UnsubscribePaneOutput(plugin) if *plugin == PLUGIN)));
+    ) || matches!(instruction, ScreenInstruction::UnsubscribePaneOutput(plugin, _) if *plugin == PLUGIN)));
     harness.finish();
 }
 
@@ -1788,7 +1883,7 @@ export default {
             default_timeout(),
             |log| {
                 log.iter()
-                    .any(|i| matches!(i, ScreenInstruction::UnsubscribePaneOutput(id) if *id == PLUGIN))
+                    .any(|i| matches!(i, ScreenInstruction::UnsubscribePaneOutput(id, None) if *id == PLUGIN))
                     .then_some(())
             },
         );
@@ -3260,25 +3355,773 @@ export default {
 }
 
 #[test]
-fn deno_post_message_to_never_reaches_the_host() {
+fn deno_worker_permission_grant_retains_the_parents_run_commands_grant() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("permissions.ts");
+    std::fs::write(
+        &path,
+        r#"
+let state = 'starting';
+export default {
+  workers: {async change() {
+    await zellij.waitForPermissions(['ChangeApplicationState']);
+    zellij.command('RenameTabWithId', [1, 'worker changed tab']);
+    zellij.postMessageToPlugin('changed');
+  }},
+  async load() {
+    await zellij.waitForPermissions(['RunCommands']);
+    const changed = zellij.waitForEvent('CustomMessage', ([name]) => name === 'changed');
+    zellij.postMessageTo('change', 'go');
+    await changed;
+    zellij.command('RunCommand', [['/usr/bin/true'], {}, '.', {}, null, null]);
+    state = 'parent and worker commands dispatched';
+  },
+  render() {return state;}
+};
+"#,
+    )
+    .unwrap();
+    let (sender, jobs_receiver, receiver, teardown) =
+        create_plugin_thread_with_background_jobs_receiver(Some(directory.path().to_owned()), None);
+    let log = Watched::new(vec![]);
+    let logger = permissions_and_log_until_disconnect(
+        &log,
+        receiver,
+        directory.path().join("permissions.kdl"),
+        sender.clone(),
+        CLIENT,
+        PermissionStatus::Granted,
+    );
+    let jobs = Watched::new(vec![]);
+    let job_logger = log_until_disconnect(&jobs, jobs_receiver);
+    sender.send(PluginInstruction::AddClient(CLIENT)).unwrap();
+    let harness = Harness {
+        sender,
+        log,
+        directory,
+        path,
+        teardown: Some(teardown),
+        logger: Some(logger),
+    };
+    harness.load();
+    harness.rendered("parent and worker commands dispatched");
+    jobs.wait_until(
+        "the parent retained RunCommands",
+        default_timeout(),
+        |jobs| {
+            jobs.iter()
+                .any(|job| matches!(job, BackgroundJob::RunCommand(..)))
+                .then_some(())
+        },
+    );
+    let log = harness.finish();
+    assert!(log.iter().any(|instruction| matches!(instruction,
+        ScreenInstruction::RenameTabWithId(_, name, _) if name == b"worker changed tab")));
+    let requests: Vec<_> = log
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::RequestPluginPermissions(_, request) => {
+                Some(request.permissions.clone())
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        requests,
+        vec![
+            vec![PermissionType::RunCommands],
+            vec![
+                PermissionType::RunCommands,
+                PermissionType::ChangeApplicationState
+            ],
+        ]
+    );
+    job_logger.join().unwrap();
+}
+
+impl Harness {
+    fn permission_requests(&self, count: usize) -> Vec<Vec<PermissionType>> {
+        self.log
+            .wait_until("the next permission prompt", default_timeout(), |log| {
+                let requests: Vec<_> = log
+                    .iter()
+                    .filter_map(|instruction| match instruction {
+                        ScreenInstruction::RequestPluginPermissions(_, request) => {
+                            Some(request.permissions.clone())
+                        },
+                        _ => None,
+                    })
+                    .collect();
+                (requests.len() >= count).then_some(requests)
+            })
+    }
+
+    fn answer_permissions(&self, permissions: Vec<PermissionType>, status: PermissionStatus) {
+        self.sender
+            .send(PluginInstruction::PermissionRequestResult(
+                PLUGIN,
+                Some(CLIENT),
+                permissions,
+                status,
+                Some(self.directory.path().join("permissions.kdl")),
+            ))
+            .unwrap();
+    }
+}
+
+#[test]
+fn deno_parent_and_two_workers_share_one_permission_fifo_and_keep_callback_clients() {
+    for second_status in [PermissionStatus::Granted, PermissionStatus::Denied] {
+        let (to_proxy, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
+        let to_proxy = SenderWithContext::new(to_proxy);
+        let harness = Harness::with_event_sender(
+            "ts",
+            r#"
+let state = 'ready';
+async function request(name, permission) {
+  const result = zellij.waitForPermissions([permission]);
+  if (name === 'parent') zellij.postMessageTo('first', 'go');
+  if (name === 'first') zellij.postMessageTo('second', 'go');
+  zellij.postMessageToPlugin('queued', name);
+  let status = 'granted';
+  try {await result;} catch (_) {status = 'denied';}
+  zellij.postMessageToPlugin('settled', `${name}:${status}:${zellij.getPluginIds().client_id}`);
+}
+export default {
+  workers: {
+    first() {return request('first', 'ChangeApplicationState');},
+    second() {return request('second', 'ReadFiles');},
+  },
+  load() {zellij.subscribe(['Key', 'CustomMessage']);},
+  update(event) {if (event.Key) return request('parent', 'RunCommands');},
+  render() {return state;}
+};
+"#,
+            None,
+            Some(to_proxy.clone()),
+        );
+        let messages = Watched::new(Vec::<(String, String, ClientId)>::new());
+        let proxy = std::thread::spawn({
+            let messages = messages.clone();
+            let sender = harness.sender.clone();
+            move || loop {
+                let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
+                if matches!(instruction, PluginInstruction::Exit) {
+                    break;
+                }
+                if let PluginInstruction::DenoEvent(
+                    _,
+                    client,
+                    _,
+                    Event::CustomMessage(name, payload),
+                ) = &instruction
+                {
+                    messages
+                        .lock()
+                        .push((name.clone(), payload.clone(), *client));
+                }
+                let _ = sender.send(instruction);
+            }
+        });
+        harness.load_shared();
+        harness.rendered("ready");
+        let other = ClientId::new(2);
+        harness
+            .sender
+            .send(PluginInstruction::AddClient(other))
+            .unwrap();
+        harness
+            .sender
+            .send(PluginInstruction::Update(vec![(
+                Some(PLUGIN),
+                Some(other),
+                Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
+            )]))
+            .unwrap();
+        messages.wait_until(
+            "all three requests are queued",
+            default_timeout(),
+            |messages| {
+                (messages
+                    .iter()
+                    .filter(|(name, _, _)| name == "queued")
+                    .count()
+                    == 3)
+                    .then_some(())
+            },
+        );
+        let settled = |count| {
+            messages.wait_until(
+                "only the answered requester completes",
+                default_timeout(),
+                |messages| {
+                    let settled: Vec<_> = messages
+                        .iter()
+                        .filter(|(name, _, _)| name == "settled")
+                        .map(|(_, payload, client)| (payload.clone(), *client))
+                        .collect();
+                    (settled.len() >= count).then_some(settled)
+                },
+            )
+        };
+        assert_eq!(settled(0), vec![]);
+        assert_eq!(
+            harness.permission_requests(1),
+            vec![vec![PermissionType::RunCommands]]
+        );
+        harness.answer_permissions(vec![PermissionType::RunCommands], PermissionStatus::Granted);
+        assert_eq!(settled(1), vec![("parent:granted:2".into(), other)]);
+        let requests = harness.permission_requests(2);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1],
+            vec![
+                PermissionType::RunCommands,
+                PermissionType::ChangeApplicationState
+            ]
+        );
+        harness.answer_permissions(requests[1].clone(), second_status);
+        let status = if second_status == PermissionStatus::Granted {
+            "granted"
+        } else {
+            "denied"
+        };
+        assert_eq!(
+            settled(2),
+            vec![
+                ("parent:granted:2".into(), other),
+                (format!("first:{status}:2"), other)
+            ]
+        );
+        let requests = harness.permission_requests(3);
+        assert_eq!(requests.len(), 3);
+        let mut expected = vec![PermissionType::RunCommands];
+        if second_status == PermissionStatus::Granted {
+            expected.push(PermissionType::ChangeApplicationState);
+        }
+        expected.push(PermissionType::ReadFiles);
+        assert_eq!(requests[2], expected);
+        harness.answer_permissions(requests[2].clone(), PermissionStatus::Granted);
+        assert_eq!(
+            settled(3),
+            vec![
+                ("parent:granted:2".into(), other),
+                (format!("first:{status}:2"), other),
+                ("second:granted:2".into(), other)
+            ]
+        );
+        harness.finish();
+        to_proxy.send(PluginInstruction::Exit).unwrap();
+        proxy.join().unwrap();
+    }
+}
+
+#[test]
+fn deno_reload_drops_a_pending_workers_permission_completion() {
+    let (to_proxy, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    let to_proxy = SenderWithContext::new(to_proxy);
+    let source = r#"
+const label = 'original';
+export default {
+  workers: {async ask() {
+    const answer = zellij.waitForPermissions(['RunCommands']);
+    zellij.postMessageToPlugin('queued', label);
+    try {
+      await answer;
+      zellij.postMessageToPlugin('settled', `${label}:granted`);
+    } catch (_) {zellij.postMessageToPlugin('settled', `${label}:denied`);}
+  }},
+  load() {zellij.postMessageTo('ask', 'go');},
+  update(event) {
+    if (event.PermissionRequestResult) zellij.postMessageToPlugin('observed', label);
+  },
+  render() {return label;}
+};
+"#;
+    let harness = Harness::with_event_sender("js", source, None, Some(to_proxy.clone()));
+    let messages = Watched::new(vec![]);
+    let proxy = std::thread::spawn({
+        let messages = messages.clone();
+        let sender = harness.sender.clone();
+        move || loop {
+            let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
+            if matches!(instruction, PluginInstruction::Exit) {
+                break;
+            }
+            if matches!(
+                instruction,
+                PluginInstruction::DenoEvent(_, _, _, Event::CustomMessage(..))
+            ) {
+                messages.lock().push(instruction.clone());
+            }
+            let _ = sender.send(instruction);
+        }
+    });
+    let message = |name: &str, payload: &str| {
+        messages.wait_until("the worker's message", default_timeout(), |messages| {
+        messages.iter().find(|instruction| matches!(instruction,
+            PluginInstruction::DenoEvent(_, _, _, Event::CustomMessage(n, p)) if n == name && p == payload)).cloned()
+    })
+    };
+    harness.load();
+    harness.permission_requests(1);
+    let PluginInstruction::DenoEvent(plugin, client, old_generation, _) =
+        message("queued", "original")
+    else {
+        unreachable!()
+    };
+    std::fs::write(&harness.path, source.replace("'original'", "'replacement'")).unwrap();
+    harness.reload();
+    let requests = harness.permission_requests(2);
+    assert_eq!(requests.len(), 2);
+    let PluginInstruction::DenoEvent(_, _, new_generation, _) = message("queued", "replacement")
+    else {
+        unreachable!()
+    };
+    assert_ne!(old_generation, new_generation);
+    // A late reply addressed to the old parent and an ordinary broadcast cannot complete
+    // the replacement's identically numbered request for the same permission.
+    harness
+        .sender
+        .send(PluginInstruction::DenoEvent(
+            plugin,
+            client,
+            old_generation,
+            Event::PermissionRequestResult(PermissionStatus::Granted),
+        ))
+        .unwrap();
+    harness.event(Event::PermissionRequestResult(PermissionStatus::Granted));
+    harness.answer_permissions(requests[1].clone(), PermissionStatus::Denied);
+    message("settled", "replacement:denied");
+    assert_eq!(
+        messages
+            .lock()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                PluginInstruction::DenoEvent(_, _, _, Event::CustomMessage(name, payload))
+                    if name == "settled" =>
+                    Some(payload.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec!["replacement:denied"]
+    );
+    harness.finish();
+    to_proxy.send(PluginInstruction::Exit).unwrap();
+    proxy.join().unwrap();
+}
+
+#[test]
+fn deno_workers_keep_isolated_state_order_async_timers_and_shared_permissions() {
     let harness = Harness::new(
         "ts",
         r#"
-let state = 'loading';
+let calls = 0;
+let state = 'starting';
+async function work(name, payload) {
+  if (name === 'denied') {
+    try { zellij.command('RenameTabWithId', [1, 'not allowed']); }
+    catch (_) { zellij.postMessageToPlugin('denied'); return; }
+    throw Error('worker bypassed permissions');
+  }
+  if (name === 'error') throw Error('expected worker error');
+  await zellij.sleep(1);
+  zellij.command('RenameTabWithId', [1, 'worker granted']);
+  zellij.postMessageToPlugin('done', `${name}:${++calls}:${payload}`);
+}
 export default {
-  load() {
-    try { zellij.command('PostMessageTo', {name: 'w', payload: 'p', worker_name: 'w'}); state = 'accepted'; }
-    catch (error) { state = String(error); }
-    return true;
+  workers: {first:work, second:work},
+  async load() {
+    calls = 99;
+    zellij.subscribe(['CustomMessage']);
+    let refused = false;
+    try {zellij.postMessageTo('missing', 'x');} catch (error) {refused = String(error).includes('not registered');}
+    if (!refused) throw Error('missing worker was accepted');
+    const denied = zellij.waitForEvent('CustomMessage', ([name]) => name === 'denied');
+    zellij.postMessageTo('first', 'denied');
+    await denied;
+    await zellij.waitForPermissions(['ChangeApplicationState']);
+    const results = [];
+    zellij.on('CustomMessage', ([name, payload]) => {
+      if (name === 'done') results.push(payload);
+      if (results.length === 4) {
+        const first = results.filter(s => s.startsWith('first'));
+        if (first.join() !== 'first:1:hé🙂,first:2:two,first:3:three' || !results.includes('second:1:other') || calls !== 99) throw Error('worker state or order: ' + results);
+        state = 'workers verified'; return true;
+      }
+    });
+    zellij.postMessageTo('first', 'first', 'hé🙂');
+    zellij.host.postMessageTo({worker_name:'second', name:'second', payload:'other'});
+    zellij.command('PostMessageTo', {worker_name:'first', name:'first', payload:'two'});
+    zellij.postMessageTo('first', 'error');
+    zellij.command({PostMessageTo:{worker_name:'first', name:'first', payload:'three'}});
   },
-  render() { return state; },
+  render() {return state;}
 };
 "#,
         PermissionStatus::Granted,
     );
     harness.load();
-    let frame = harness.rendered("workers");
-    assert!(frame.contains("Deno plugins have no workers"), "{frame}");
+    harness.rendered("workers verified");
+}
+
+#[test]
+fn deno_busy_workers_leave_the_ui_responsive_and_stop_with_the_owner() {
+    for cleanup in ["reload", "unload", "disconnect", "shutdown"] {
+        let harness = Harness::new(
+            "js",
+            r#"
+let state = 'starting';
+export default {
+  workers: {spin() {zellij.postMessageToPlugin('started'); while (true) {}}},
+  load() {zellij.subscribe(['CustomMessage']); zellij.postMessageTo('spin', 'go');},
+  update(event) {
+    if (event.CustomMessage?.[0] === 'started') state = 'worker is busy';
+    if (event.CustomMessage?.[0] === 'acceptance-release') state = 'UI remains responsive';
+    return true;
+  },
+  render() {return state;}
+};
+"#,
+            PermissionStatus::Granted,
+        );
+        harness.load();
+        harness.rendered("worker is busy");
+        harness.event(release_event());
+        harness.rendered("UI remains responsive");
+        if cleanup == "reload" {
+            std::fs::write(
+                &harness.path,
+                "export default {render() {return 'worker replacement loaded';}};",
+            )
+            .unwrap();
+            harness.reload();
+            harness.rendered("worker replacement loaded");
+        } else if cleanup == "unload" {
+            harness
+                .sender
+                .send(PluginInstruction::Unload(PLUGIN))
+                .unwrap();
+        } else if cleanup == "disconnect" {
+            harness
+                .sender
+                .send(PluginInstruction::RemoveClient(CLIENT))
+                .unwrap();
+        }
+        harness.finish();
+    }
+}
+
+#[test]
+fn deno_worker_list_clients_replies_are_generation_scoped_and_release_its_fifo() {
+    let source = r#"
+const label = 'original';
+let state = 'starting', parentReplies = 0;
+export default {
+  workers: {async clients(name) {
+    if (name === 'query') {
+      const reply = zellij.waitForEvent('ListClients');
+      zellij.host.listClients();
+      const clients = await reply;
+      if (clients.length !== 1 || clients[0].client_id !== 1 || !clients[0].is_current_client) throw Error('wrong clients reply');
+      zellij.postMessageToPlugin('done');
+    } else {
+      zellij.postMessageToPlugin('after');
+    }
+  }},
+  async load() {
+    await zellij.waitForPermissions(['ReadApplicationState']);
+    zellij.on('ListClients', () => {parentReplies++;});
+    zellij.subscribe(['ListClients', 'CustomMessage']);
+    zellij.on('CustomMessage', ([name]) => {state += ':' + name; return true;});
+    zellij.postMessageTo('clients', 'query');
+    zellij.postMessageTo('clients', 'after');
+  },
+  render() {return `${label} ${state} parent=${parentReplies}`;}
+};
+"#;
+    let harness = Harness::new("ts", source, PermissionStatus::Granted);
+    let request = |index| {
+        harness
+            .log
+            .wait_until("worker ListClients request", default_timeout(), |log| {
+                log.iter()
+                    .filter_map(|instruction| match instruction {
+                        ScreenInstruction::ListClientsToPlugin(plugin, client, generation) => {
+                            Some((*plugin, *client, *generation))
+                        },
+                        _ => None,
+                    })
+                    .nth(index)
+            })
+    };
+    harness.load();
+    let old = request(0);
+    std::fs::write(&harness.path, source.replace("'original'", "'replacement'")).unwrap();
+    harness.reload();
+    let current = request(1);
+    assert!(old.2.is_some());
+    assert!(current.2.is_some());
+    assert_ne!(old.2, current.2);
+    // An empty stale reply would fail the worker's assertion if it reached the replacement.
+    for (origin, metadata) in [
+        (old, Default::default()),
+        (current, list_clients_metadata()),
+    ] {
+        harness
+            .sender
+            .send(PluginInstruction::ListClientsToPlugin(
+                metadata, origin.0, origin.1, origin.2,
+            ))
+            .unwrap();
+    }
+    harness.rendered("replacement starting:done:after parent=0");
+}
+
+fn list_clients_metadata() -> zellij_bus::session_layout_metadata::SessionLayoutMetadata {
+    use zellij_bus::session_layout_metadata::{PaneLayoutMetadata, SessionLayoutMetadata};
+    let mut metadata = SessionLayoutMetadata::default();
+    metadata.add_tab(
+        "clients".into(),
+        true,
+        true,
+        false,
+        vec![PaneLayoutMetadata::new(
+            PaneId::Terminal(crate::TerminalId::new(7)),
+            Default::default(),
+            false,
+            None,
+            None,
+            true,
+            None,
+            vec![CLIENT],
+            None,
+            None,
+        )],
+        vec![],
+    );
+    metadata
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn wasm_list_clients_reply_keeps_the_untagged_event_path() {
+    let harness = Harness::new("ts", "export default {};", PermissionStatus::Granted);
+    load(&harness.sender, run_plugin(&plugin_fixture_path()));
+    wait_for_permissions(&harness.log);
+    harness.event(Event::Key(
+        KeyWithModifier::new(BareKey::Char('z')).with_alt_modifier(),
+    ));
+    let (plugin, client, generation) =
+        harness
+            .log
+            .wait_until("Wasm ListClients request", default_timeout(), |log| {
+                log.iter().find_map(|instruction| match instruction {
+                    ScreenInstruction::ListClientsToPlugin(plugin, client, generation) => {
+                        Some((*plugin, *client, *generation))
+                    },
+                    _ => None,
+                })
+            });
+    assert_eq!(generation, None);
+    harness
+        .sender
+        .send(PluginInstruction::ListClientsToPlugin(
+            list_clients_metadata(),
+            plugin,
+            client,
+            generation,
+        ))
+        .unwrap();
+    let frame = harness.rendered("ListClients");
+    assert!(frame.contains("is_current_client: true"), "{frame}");
+}
+
+#[test]
+fn deno_worker_pane_replies_cannot_reach_a_reloaded_parent_or_worker() {
+    let source = r#"
+const label = 'original';
+let state = 'starting', replies = 0;
+const events = ['CommandPaneOpened', 'CommandPaneReRun', 'CommandPaneExited', 'EditPaneOpened', 'EditPaneExited'];
+export default {
+  workers: {async runner() {
+    for (const event of events) zellij.on(event, () => { replies++; });
+    zellij.subscribe(events);
+    const waiting = zellij.runInPane(7, {path:'test'});
+    zellij.postMessageToPlugin('pending');
+    const result = await waiting;
+    zellij.postMessageToPlugin('done', `${result.exitCode}:${replies}`);
+  }},
+  async load() {
+    await zellij.waitForPermissions(['RunCommands', 'ReadApplicationState']);
+    for (const event of events) zellij.on(event, () => { replies++; });
+    zellij.subscribe([...events, 'CustomMessage']);
+    zellij.on('CustomMessage', ([name, payload]) => {state = `${name}:${payload}`; return true;});
+    zellij.postMessageTo('runner', 'go');
+  },
+  render() {return `${label} ${state} parent=${replies}`;}
+};
+"#;
+    let harness = Harness::new("ts", source, PermissionStatus::Granted);
+    let origin = |index| {
+        harness
+            .log
+            .wait_until("worker dispatched runInPane", default_timeout(), |log| {
+                log.iter()
+                    .filter_map(|instruction| match instruction {
+                        ScreenInstruction::RunCommandInPane(_, command, _) => {
+                            command.originating_plugin.clone()
+                        },
+                        _ => None,
+                    })
+                    .nth(index)
+            })
+    };
+    harness.load();
+    let old = origin(0);
+    harness.rendered("original pending: parent=0");
+    std::fs::write(&harness.path, source.replace("'original'", "'replacement'")).unwrap();
+    harness.reload();
+    let current = origin(1);
+    assert!(old.deno_generation.is_some());
+    assert!(current.deno_generation.is_some());
+    assert_ne!(old.deno_generation, current.deno_generation);
+    harness.rendered("replacement pending: parent=0");
+    let terminal = crate::TerminalId::new(7);
+    for event in [
+        Event::CommandPaneOpened(terminal, old.context.clone()),
+        Event::CommandPaneReRun(terminal, old.context.clone()),
+        Event::CommandPaneExited(terminal, Some(99), old.context.clone()),
+        Event::EditPaneOpened(terminal, old.context.clone()),
+        Event::EditPaneExited(terminal, Some(99), old.context.clone()),
+    ] {
+        harness
+            .sender
+            .send(PluginInstruction::for_plugin_event(
+                old.plugin_id,
+                old.client_id,
+                old.deno_generation,
+                event,
+            ))
+            .unwrap();
+    }
+    for event in [
+        Event::CommandPaneReRun(terminal, current.context.clone()),
+        Event::CommandPaneExited(terminal, Some(0), current.context.clone()),
+    ] {
+        harness
+            .sender
+            .send(PluginInstruction::for_plugin_event(
+                current.plugin_id,
+                current.client_id,
+                current.deno_generation,
+                event,
+            ))
+            .unwrap();
+    }
+    harness.rendered("replacement done:0:2 parent=0");
+    harness.finish();
+}
+
+#[test]
+fn deno_workers_preserve_shared_clients_and_discard_replies_after_reload() {
+    let (to_proxy, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    let to_proxy = SenderWithContext::new(to_proxy);
+    let harness = Harness::with_event_sender(
+        "ts",
+        r#"
+let state = 'worker ready';
+export default {
+  workers: {async echo() {
+    const before = zellij.getPluginIds().client_id;
+    await zellij.sleep(1);
+    zellij.postMessageToPlugin('echo', `${before}:${zellij.getPluginIds().client_id}`);
+  }},
+  load() {zellij.subscribe(['Key', 'CustomMessage']);},
+  update(event) {
+    if (event.Key) zellij.postMessageTo('echo', 'go');
+    if (event.CustomMessage) state = `worker client ${event.CustomMessage[1]}:${zellij.getPluginIds().client_id}`;
+    return true;
+  },
+  render() {return state;}
+};
+"#,
+        None,
+        Some(to_proxy.clone()),
+    );
+    let captured = Watched::new(vec![]);
+    let proxy = std::thread::spawn({
+        let captured = captured.clone();
+        let sender = harness.sender.clone();
+        move || loop {
+            let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
+            if matches!(instruction, PluginInstruction::Exit) {
+                break;
+            }
+            if matches!(instruction, PluginInstruction::DenoEvent(..)) {
+                captured.lock().push(instruction.clone());
+            }
+            let _ = sender.send(instruction);
+        }
+    });
+    harness.load_shared();
+    harness.rendered("worker ready");
+    let other = ClientId::new(2);
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(other))
+        .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::RemoveClient(CLIENT))
+        .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::Update(vec![(
+            Some(PLUGIN),
+            Some(other),
+            Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
+        )]))
+        .unwrap();
+    harness.rendered("worker client 2:2:2");
+    let stale = captured.lock().clone();
+    assert!(stale.iter().any(|message| matches!(
+        message,
+        PluginInstruction::DenoEvent(_, _, _, Event::Timer(_))
+    )));
+    assert!(stale.iter().any(|message| matches!(
+        message,
+        PluginInstruction::DenoEvent(_, _, _, Event::CustomMessage(..))
+    )));
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(CLIENT))
+        .unwrap();
+    std::fs::write(
+        &harness.path,
+        r#"
+let replies = 0, keys = 0;
+export default {
+  load() {zellij.subscribe(['CustomMessage','Key']);},
+  update(event) {if (event.CustomMessage) replies++; if (event.Key) keys++; return true;},
+  render() {return `replacement replies=${replies} keys=${keys}`;}
+};
+"#,
+    )
+    .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::ReloadPluginWithId(PLUGIN))
+        .unwrap();
+    harness.rendered("replacement replies=0 keys=0");
+    for message in stale {
+        harness.sender.send(message).unwrap();
+    }
+    harness.event(Event::Key(KeyWithModifier::new(BareKey::Char('a'))));
+    harness.rendered("replacement replies=0 keys=1");
+    harness.finish();
+    to_proxy.send(PluginInstruction::Exit).unwrap();
+    proxy.join().unwrap();
 }
 
 // Filesystem roots ---------------------------------------------------------------------------
@@ -3687,6 +4530,134 @@ export default {
     assert!(!rendered_assets(&log)
         .iter()
         .any(|(_, frame)| frame.contains("failed:")));
+}
+
+#[test]
+fn deno_worker_host_folder_replies_release_fifo_and_stay_local_across_reload() {
+    let source = r#"
+const label = 'original';
+let state = '', parentReplies = 0;
+const read = () => zellij.decodeUtf8(zellij.fs.read('/host/marker'));
+export default {
+  workers: {
+    async move(name, path) {
+      if (name === 'success' || name === 'failure') {
+        const type = name === 'success' ? 'HostFolderChanged' : 'FailedToChangeHostFolder';
+        const reply = zellij.waitForEvent(type);
+        zellij.host.changeHostFolder(path);
+        const result = await reply;
+        if (name === 'success' ? result !== path : !result.includes('does not exist')) throw Error('wrong folder reply');
+      }
+      zellij.postMessageToPlugin(name, read());
+    },
+    sibling(name) {zellij.postMessageToPlugin(name, read());}
+  },
+  async load() {
+    await zellij.waitForPermissions(['ReadFiles', 'FullHdAccess']);
+    zellij.subscribe(['CustomMessage', 'HostFolderChanged', 'FailedToChangeHostFolder']);
+    zellij.on('HostFolderChanged', () => {parentReplies++;});
+    zellij.on('FailedToChangeHostFolder', () => {parentReplies++;});
+    zellij.on('CustomMessage', ([name, payload]) => {
+      if (name === 'start') {
+        zellij.postMessageTo('move', 'success', payload);
+        zellij.postMessageTo('move', 'failure', payload + '/missing');
+        zellij.postMessageTo('move', 'after');
+      } else if (name === 'probe') {
+        zellij.postMessageTo('move', 'checked');
+      } else {
+        if ((name === 'sibling' ? 'parent' : 'moved') !== payload) throw Error('wrong host root: ' + name + ':' + payload);
+        state += name + ':' + payload + ' ';
+        if (name === 'after' || name === 'checked') zellij.postMessageTo('sibling', 'sibling');
+      }
+      return true;
+    });
+    state = 'ready ';
+  },
+  render() {return state ? `${label} ${state}parent=${read()} replies=${parentReplies}` : 'starting';}
+};
+"#;
+    let (to_proxy, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    let to_proxy = SenderWithContext::new(to_proxy);
+    let harness = Harness::with_event_sender(
+        "ts",
+        source,
+        Some(PermissionStatus::Granted),
+        Some(to_proxy.clone()),
+    );
+    std::fs::write(harness.directory.path().join("marker"), "parent").unwrap();
+    let moved = tempdir().unwrap();
+    std::fs::write(moved.path().join("marker"), "moved").unwrap();
+    let stale = tempdir().unwrap();
+    std::fs::write(stale.path().join("marker"), "stale").unwrap();
+    let captured = Watched::new(vec![]);
+    let proxy = std::thread::spawn({
+        let captured = captured.clone();
+        let sender = harness.sender.clone();
+        move || loop {
+            let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
+            if matches!(instruction, PluginInstruction::Exit) {
+                break;
+            }
+            if matches!(
+                instruction,
+                PluginInstruction::ChangePluginHostDir(..)
+                    | PluginInstruction::DenoEvent(
+                        _,
+                        _,
+                        _,
+                        Event::HostFolderChanged(_) | Event::FailedToChangeHostFolder(_)
+                    )
+            ) {
+                captured.lock().push(instruction.clone());
+            }
+            let _ = sender.send(instruction);
+        }
+    });
+    let exercise = |label| {
+        harness.rendered(&format!("{label} ready parent=parent replies=0"));
+        harness.event(Event::CustomMessage(
+            "start".into(),
+            moved.path().display().to_string(),
+        ));
+        harness.rendered(&format!(
+            "{label} ready success:moved failure:moved after:moved sibling:parent parent=parent replies=0"
+        ));
+    };
+    harness.load();
+    exercise("original");
+    let old = captured.lock().clone();
+    assert_eq!(
+        old.len(),
+        4,
+        "two requests and their scoped replies: {old:?}"
+    );
+    let PluginInstruction::ChangePluginHostDir(_, _, _, Some(old_generation)) = old[0] else {
+        panic!("worker request must carry a generation: {old:?}");
+    };
+    std::fs::write(&harness.path, source.replace("'original'", "'replacement'")).unwrap();
+    harness.reload();
+    exercise("replacement");
+    assert!(
+        matches!(captured.lock()[4], PluginInstruction::ChangePluginHostDir(_, _, _, Some(generation)) if generation != old_generation)
+    );
+    // Replay real old requests and replies, with a root that would expose accidental delivery.
+    for mut instruction in old {
+        match &mut instruction {
+            PluginInstruction::ChangePluginHostDir(path, _, _, _) if path == moved.path() => {
+                *path = stale.path().to_path_buf();
+            },
+            PluginInstruction::DenoEvent(_, _, _, Event::HostFolderChanged(path)) => {
+                *path = stale.path().to_path_buf();
+            },
+            _ => {},
+        }
+        harness.sender.send(instruction).unwrap();
+    }
+    harness.event(Event::CustomMessage("probe".into(), String::new()));
+    harness.rendered("checked:moved sibling:parent parent=parent replies=0");
+    harness.finish();
+    to_proxy.send(PluginInstruction::Exit).unwrap();
+    proxy.join().unwrap();
 }
 
 // Filesystem watching and scanning ------------------------------------------------------------

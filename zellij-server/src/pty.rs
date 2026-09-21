@@ -118,11 +118,12 @@ fn report_pane_start_failure(
             if let Some(originating_plugin) = run_command.originating_plugin.clone() {
                 pty.bus
                     .senders
-                    .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(originating_plugin.plugin_id),
-                        Some(originating_plugin.client_id),
+                    .send_to_plugin(PluginInstruction::for_plugin_event(
+                        originating_plugin.plugin_id,
+                        originating_plugin.client_id,
+                        originating_plugin.deno_generation,
                         Event::CommandPaneExited(terminal_id, Some(2), originating_plugin.context),
-                    )]))
+                    ))
                     .with_context(err_context)?;
             }
             send_pane_error_to_screen(pty.bus.senders.clone(), terminal_id, message, run_command)
@@ -512,11 +513,12 @@ fn terminal_quit_callback(
     Box::new(move |pane_id, exit_status, command| {
         if let PaneId::Terminal(terminal_id) = pane_id {
             if let Some(plugin) = edit_plugin.as_ref() {
-                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(plugin.plugin_id),
-                    Some(plugin.client_id),
+                let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+                    plugin.plugin_id,
+                    plugin.client_id,
+                    plugin.deno_generation,
                     Event::EditPaneExited(terminal_id, exit_status, plugin.context.clone()),
-                )]));
+                ));
             }
         }
         let _ = senders.send_to_screen(terminal_exit_instruction(
@@ -527,11 +529,12 @@ fn terminal_quit_callback(
         ));
         if let PaneId::Terminal(terminal_id) = pane_id {
             if let Some(plugin) = command_plugin.as_ref() {
-                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(plugin.plugin_id),
-                    Some(plugin.client_id),
+                let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+                    plugin.plugin_id,
+                    plugin.client_id,
+                    plugin.deno_generation,
                     Event::CommandPaneExited(terminal_id, exit_status, plugin.context.clone()),
-                )]));
+                ));
             }
         }
     })
@@ -1065,6 +1068,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 mut session_layout_metadata,
                 plugin_id,
                 client_id,
+                generation,
             ) => {
                 let err_context = || "Failed to dump layout".to_string();
                 pty.populate_session_layout_metadata(&mut session_layout_metadata);
@@ -1074,6 +1078,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                         session_layout_metadata,
                         plugin_id,
                         client_id,
+                        generation,
                     ))
                     .with_context(err_context)
                     .non_fatal();
@@ -1527,9 +1532,6 @@ impl Pty {
             state.queued.push_back((run_command, completion_tx));
             return Ok(None);
         }
-        if !run_command.defers_spawn() {
-            return Ok(Some((run_command, completion_tx)));
-        }
         // The bookkeeping `rerun_command_in_pane` does before spawning, done
         // here for the same reason: what the pane knew is captured before
         // anything about it changes.
@@ -1541,6 +1543,10 @@ impl Pty {
                 run_command.originating_plugin =
                     self.originating_plugins.get(&terminal_id).cloned();
             },
+        }
+        // Return local commands with their origin too, so a failed rerun keeps its reply target.
+        if !run_command.defers_spawn() {
+            return Ok(Some((run_command, completion_tx)));
         }
         self.track_workflow_owner(terminal_id, &run_command);
         let _ = self.task_handles.remove(&terminal_id);
@@ -1607,15 +1613,16 @@ impl Pty {
                 if let Some(originating_plugin) = command.originating_plugin.as_ref() {
                     self.bus
                         .senders
-                        .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(originating_plugin.plugin_id),
-                            Some(originating_plugin.client_id),
+                        .send_to_plugin(PluginInstruction::for_plugin_event(
+                            originating_plugin.plugin_id,
+                            originating_plugin.client_id,
+                            originating_plugin.deno_generation,
                             Event::CommandPaneExited(
                                 terminal_id,
                                 Some(2),
                                 originating_plugin.context.clone(),
                             ),
-                        )]))?;
+                        ))?;
                 }
                 let message = pane_start_failure(&error)
                     .map(|(_, message)| message)
@@ -2352,11 +2359,12 @@ impl Pty {
         let update_event = Event::CommandPaneOpened(terminal_id, originating_plugin.context);
         self.bus
             .senders
-            .send_to_plugin(PluginInstruction::Update(vec![(
-                Some(originating_plugin.plugin_id),
-                Some(originating_plugin.client_id),
+            .send_to_plugin(PluginInstruction::for_plugin_event(
+                originating_plugin.plugin_id,
+                originating_plugin.client_id,
+                originating_plugin.deno_generation,
                 update_event,
-            )]))
+            ))
     }
 
     /// Tell the plugin that asked for this pane that it is open: a command pane
@@ -2378,11 +2386,12 @@ impl Pty {
         {
             self.bus
                 .senders
-                .send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(originating_plugin.plugin_id),
-                    Some(originating_plugin.client_id),
+                .send_to_plugin(PluginInstruction::for_plugin_event(
+                    originating_plugin.plugin_id,
+                    originating_plugin.client_id,
+                    originating_plugin.deno_generation,
                     Event::EditPaneOpened(terminal_id, originating_plugin.context),
-                )]))?;
+                ))?;
         }
         Ok(())
     }
@@ -3122,11 +3131,12 @@ impl Pty {
         if let Some(plugin) = self.originating_plugins.get(&id) {
             self.bus
                 .senders
-                .send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(plugin.plugin_id),
-                    Some(plugin.client_id),
+                .send_to_plugin(PluginInstruction::for_plugin_event(
+                    plugin.plugin_id,
+                    plugin.client_id,
+                    plugin.deno_generation,
                     Event::CommandPaneReRun(id, plugin.context.clone()),
-                )]))?;
+                ))?;
         }
         Ok(())
     }

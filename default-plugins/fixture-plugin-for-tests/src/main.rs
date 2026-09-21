@@ -670,6 +670,7 @@ impl ZellijPlugin for State {
                     rebind_keys(keys_to_unbind, keys_to_rebind, write_to_disk);
                 },
                 BareKey::Char('z') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
+                    subscribe(&[EventType::ListClients]);
                     list_clients();
                 },
                 BareKey::Char('a') if key.has_only_modifiers(&[KeyModifier::Super]) => {

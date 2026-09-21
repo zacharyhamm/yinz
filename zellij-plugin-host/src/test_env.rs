@@ -51,6 +51,7 @@ pub(crate) fn test_env() -> PluginEnv {
         intercepting_key_presses: false,
         cancel_tripped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         deno_generation: None,
+        deno_workers: None,
         stdin_pipe: Arc::new(Mutex::new(VecDeque::new())),
         stdout_pipe: Arc::new(Mutex::new(VecDeque::new())),
         store_limits: PluginResourceLimits::new(crate::PluginId::new(1)),

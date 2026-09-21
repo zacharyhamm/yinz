@@ -246,7 +246,7 @@ fn deno_agent_harness_spawns_with_defaults_and_a_configured_branch() {
         run(&mut runtime, "globalThis.mock=zellij;");
         consumer(&mut runtime, "agent-harness");
         run(&mut runtime, &format!("bind(M); bridge('load',{config},2);"));
-        run(&mut runtime, "bridge('update',{PermissionRequestResult:'Granted'},2);");
+        run(&mut runtime, "answerPermissions('Granted'); bridge('update',{PermissionRequestResult:'Granted'},2);");
         let state = runtime.op_state();
         let state = state.borrow();
         let spawns: Vec<_> = state.borrow::<TestHost>().commands.iter()

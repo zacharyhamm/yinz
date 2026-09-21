@@ -549,9 +549,8 @@ type PendingGroupPlacement = (
     Option<crossbeam::channel::Sender<Result<()>>>,
 );
 
-/// A plugin's subscription to pane output: the context a pane's originating plugin must match
-/// for its output to be forwarded, and the plugin generation the events are stamped with.
-type PaneOutputSubscription = (BTreeMap<String, String>, Option<u64>);
+/// Each Deno isolate has its own registration; Wasm subscribers have no generation.
+type PaneOutputSubscriber = (PluginId, ClientId, Option<u64>);
 
 /// The panes of a tab as a layout lists them, each with the metadata it is serialized from.
 type LayoutPanes = Vec<(PaneId, PaneLayoutMetadata)>;
@@ -827,7 +826,7 @@ pub(crate) struct Screen {
     /// Session-lifetime tombstones, relying on terminal and plugin IDs not being reused.
     /// Absent panes with these IDs are already closed; unknown IDs may be awaiting creation.
     destroyed_panes: HashSet<PaneId>,
-    pane_output_subscriptions: HashMap<(PluginId, ClientId), PaneOutputSubscription>,
+    pane_output_subscriptions: HashMap<PaneOutputSubscriber, BTreeMap<String, String>>,
 
     /// Whether each client's host terminal currently has keyboard focus, as reported through
     /// DECSET 1004. A client that never reported counts as focused.

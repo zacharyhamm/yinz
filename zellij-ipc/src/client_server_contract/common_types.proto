@@ -1389,6 +1389,7 @@ message PluginTag {
 }
 
 message OriginatingPlugin {
+  optional uint64 deno_generation = 4;
   uint32 plugin_id = 1;
   uint32 client_id = 2;  // ClientId is u16, but using uint32 for protobuf compatibility
   map<string, string> context = 3;  // Context is BTreeMap<String, String>

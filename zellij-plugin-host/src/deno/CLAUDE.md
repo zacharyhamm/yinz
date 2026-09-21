@@ -23,6 +23,11 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
 - **An isolate belongs to one executor thread.** `DenoPlugin::with_runtime` bails off its thread;
   host ops run synchronously on the executor, and nothing here may enter Tokio (the Postgres
   store is the standing caveat in that comment). `RUNTIMES` is thread-local, keyed by generation.
+- **Guest workers own dedicated threads** (`background_worker.rs`). Each declared `workers`
+  callback gets a persistent isolate with the same module graph and limits. Its FIFO awaits
+  each job before starting the next. `PluginEnv.deno_workers` routes messages through the shared
+  command dispatcher and scopes replies to the parent generation. Worker host replies and ticks
+  use the worker generation. Parent disposal cancels and joins every worker before replacement.
 - **A generation is an instance's identity.** `NEXT_GENERATION` names each isolate; `TickWake`,
   command replies, data watches and pane-output subscriptions carry it, so a reply, tick or chunk
   addressed to an instance that has since been reloaded is dropped rather than delivered to its
@@ -60,9 +65,11 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   consumes (RPC, completions, Hocus extensions, default keybindings) never reach `pipe`.
 - **Permissions are pre-flighted in `dispatch`** so a refused command throws in the guest with
   the fix named - and a plugin whose request is unanswered is told to wait for
-  `PermissionRequestResult` while one that never asked is told to ask. The SDK serializes
-  requests through one FIFO queue; only its head listens for the answer, and later requests carry
-  earlier grants because the host replaces the set. Hocus pre-grants the literal requests
+  `PermissionRequestResult` while one that never asked is told to ask. The parent and its worker isolates share
+  one permission coordinator beside the worker registry. Only the FIFO head reaches the host,
+  and later requests carry earlier grants because the host replaces the set. The parent processes
+  each host answer once. A private bridge callback completes the requesting isolate's promise;
+  ordinary `PermissionRequestResult` observers never settle requests. Hocus pre-grants the literal requests
   `analysis.rs` finds, so an authored plugin never prompts in a pane the loop cannot see.
 - **`console` goes to the log.** Core's console would write to the server's stdout, so the SDK
   installs a frozen one whose methods reach `[deno:<file>]`, available from module top level.

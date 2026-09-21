@@ -7,6 +7,128 @@ use std::io::{Read, Write};
 use zellij_cli::args::CliAction;
 use zellij_integration_tests::{LayoutInfo, TestRunner, TERMINAL_SIZE};
 
+#[test]
+fn deno_background_workers_await_real_commands_and_preserve_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("workers.ts");
+    fs::write(&plugin, r#"
+import {definePlugin, zellij} from 'zellij:plugin';
+let count = 0;
+let state = 'starting';
+const results: string[] = [];
+export default definePlugin({
+  defaults: {},
+  workers: {
+    async command(name, payload) {
+      const result = await zellij.runCommand({command:['/bin/sh', '-c', 'printf "%s" "$VALUE"'], envVariables:{VALUE:payload}});
+      if (result.exitCode !== 0) throw Error('command failed');
+      zellij.postMessageToPlugin(name, `${++count}:${zellij.decodeUtf8(result.stdout)}`);
+    }
+  },
+  async load() {
+    await zellij.waitForPermissions(['RunCommands']);
+    zellij.on('CustomMessage', ([name, payload]) => {
+      if (name !== 'result') return;
+      results.push(payload);
+      if (results.length === 2) {
+        if (count !== 0 || results.join() !== '1:hé🙂,2:second') throw Error('worker state: ' + results);
+        state = 'background commands verified'; return true;
+      }
+    });
+    zellij.subscribe(['CustomMessage']);
+    zellij.postMessageTo('command', 'result', 'hé🙂');
+    zellij.postMessageTo('command', 'result', 'second');
+  },
+  render() {return state;}
+});
+"#).unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{\n tab {{\n pane {{ plugin location=\"file:{}\"; }}\n }}\n}}",
+            plugin.display()
+        )))
+        .start();
+    zellij.wait_until("worker command permission prompt", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("workers complete their real commands", |grid| {
+        grid.contains("background commands verified")
+    });
+    zellij.quit();
+}
+
+#[test]
+fn deno_worker_pane_sequences_and_reruns_complete_before_the_next_job() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("worker-panes.ts");
+    fs::write(&plugin, r#"
+let state = 'starting', replies = 0;
+const events = ['CommandPaneOpened', 'CommandPaneReRun', 'CommandPaneExited'];
+export default {
+  workers: {
+    async runner(name) {
+      if (name === 'next') { zellij.postMessageTo('sibling', 'check'); return; }
+      const sequence = zellij.paneSequence({steps:[{path:'first',stdin:'first-ready'}, {path:'second',stdin:'second-ready'}]});
+      const result = await sequence.done;
+      if (result.status !== 'success' || result.exitCodes.join() !== '0,0') throw Error('sequence result');
+      const rerun = await zellij.runInPane(result.paneId, {path:'third',stdin:'third-ready'});
+      if (rerun.exitCode !== 0) throw Error('rerun result');
+      zellij.postMessageToPlugin('done');
+    },
+    sibling(name) {
+      if (name === 'check') { zellij.postMessageToPlugin('sibling', String(replies)); return; }
+      for (const event of events) zellij.on(event, () => { replies++; });
+      zellij.subscribe(events);
+      zellij.postMessageToPlugin('ready');
+    }
+  },
+  async load() {
+    await zellij.waitForPermissions(['RunCommands','ReadApplicationState','WriteToStdin']);
+    for (const event of events) zellij.on(event, () => { replies++; });
+    zellij.subscribe([...events, 'CustomMessage']);
+    zellij.on('CustomMessage', ([name, payload]) => {
+      if (name === 'ready') {
+        zellij.postMessageTo('runner', 'run');
+        zellij.postMessageTo('runner', 'next');
+      }
+      if (name === 'done') state = 'worker done';
+      if (name === 'sibling') {
+        if (state !== 'worker done' || replies !== 0 || payload !== '0') throw Error('misrouted pane completion');
+        state = 'worker panes verified';
+      }
+      return true;
+    });
+    zellij.postMessageTo('sibling', 'observe');
+  },
+  render() {return state;}
+};
+"#).unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{\n tab {{\n pane {{plugin location=\"file:{}\";}}\n }}\n}}",
+            plugin.display()
+        )))
+        .start();
+    zellij.wait_until("worker pane permissions", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    let pane = zellij.expect_pty_spawn();
+    for ready in ["first-ready", "second-ready", "third-ready"] {
+        pane.wait_for_stdin(ready, |bytes| bytes.ends_with(ready.as_bytes()));
+        pane.exit(Some(0));
+    }
+    zellij.wait_until(
+        "pane completions reach only their worker and release its next job",
+        |grid| grid.contains("worker panes verified"),
+    );
+    zellij.quit();
+}
+
 fn receive_http(listener: &std::net::TcpListener) -> std::net::TcpStream {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut socket = loop {

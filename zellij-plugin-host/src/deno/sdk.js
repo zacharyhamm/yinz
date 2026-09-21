@@ -5,6 +5,7 @@
   const hostDispatch = core.ops.op_zellij_command;
   const validate = core.ops.op_zellij_validate;
   const log = core.ops.op_zellij_log;
+  const workerStarted = core.ops.op_zellij_worker_started;
   const workflowRemotePanes = core.ops.op_zellij_workflow_remote_panes;
   let metadata;
   const contexts = new WeakMap();
@@ -41,6 +42,9 @@
   });
 
   let plugin = {};
+  let workers = new Map();
+  let worker = null;
+  let workerQueue = Promise.resolve();
   let version = 0;
   let dirty = false;
   let failure = null;
@@ -51,8 +55,7 @@
   const requiredEvents = new Map();
   let nextAsync = 0n;
   let defaults = {};
-  const permissionQueue = [];
-  const grantedPermissions = new Set();
+  const permissionCompletions = new Map();
   const pending = new Set();
   const timers = new Set();
   let timerDeadline = null;
@@ -75,14 +78,14 @@
     try { validate(value); }
     catch (error) { transcript("command invalid", origin); throw error; }
   }
-  function dispatch(value, origin) {
+  function dispatch(value, origin, completion) {
     if (tracing) {
       validateCommand(value, origin);
       const name = typeof value === "string" ? value :
         value !== null && typeof value === "object" ? Object.keys(value)[0] : undefined;
       transcript(name === undefined ? "command invalid" : `command ${traceName(name)}`, origin);
     }
-    return hostDispatch(value, origin);
+    return hostDispatch(value, origin, completion);
   }
   function traceTask(label) {
     const id = ++nextTrace, origin = client;
@@ -108,11 +111,6 @@
       ? (args.length ? { [name]: args[0] } : name)
       : name;
     validateCommand(value);
-    const key = typeof value === "string" ? value : value !== null && typeof value === "object" ? Object.keys(value)[0] : undefined;
-    if (key === "PostMessageTo") {
-      transcript(`command ${traceName(key)} refused`);
-      throw new Error("PostMessageTo is not available from Deno: Deno plugins have no workers; use zellij.after/every, the async helpers, or a work queue");
-    }
     if (Array.isArray(value?.RunCommand) && value.RunCommand.length === 5) {
       value = { ...value, RunCommand: [...value.RunCommand, null] };
     }
@@ -504,40 +502,27 @@
   }
   function enqueuePermissions(permissions, resolve, reject) {
     if (client === null) throw new Error("host commands are unavailable during module initialization");
+    validateCommand(permissions);
     if (!Array.isArray(permissions)) throw new TypeError("permissions must be an array");
-    const request = { permissions: [...permissions], client, resolve, reject };
-    permissionQueue.push(request);
-    if (permissionQueue.length === 1) dispatchPermissions(request);
-  }
-  function dispatchPermissions(immediate) {
-    // Permission results have no request ID. Only the queue head may listen for one.
-    while (permissionQueue.length) {
-      const request = permissionQueue[0];
-      const permissions = [...new Set([...grantedPermissions, ...request.permissions])];
-      let release = () => {};
-      const off = on("PermissionRequestResult", (status) => {
-        off();
-        release();
-        if (status === "Granted") {
-          for (const permission of permissions) grantedPermissions.add(permission);
-          request.resolve?.();
-        } else request.reject?.(new Error("plugin permissions denied"));
-        permissionQueue.shift();
-        dispatchPermissions();
-      });
-      try {
-        release = retainEvent("PermissionRequestResult", request.client);
-        dispatch({ RequestPluginPermissions: permissions }, request.client);
-        return;
-      } catch (error) {
-        off();
-        release();
-        permissionQueue.shift();
-        if (request.reject) request.reject(error);
-        else if (request === immediate) throw error;
-        else fail(error);
-      }
+    const id = String(++nextAsync);
+    const release = retainEvent("PermissionRequestResult");
+    permissionCompletions.set(id, {resolve, reject, release});
+    try { dispatch({ RequestPluginPermissions: permissions }, client, id); }
+    catch (error) {
+      permissionCompletions.delete(id);
+      release();
+      throw error;
     }
+  }
+  function permissionResult([id, result]) {
+    const completion = permissionCompletions.get(id);
+    if (!completion) return;
+    permissionCompletions.delete(id);
+    completion.release();
+    if (Object.hasOwn(result, "Err")) {
+      (completion.reject ?? fail)(new Error(result.Err));
+    } else if (result.Ok === "Granted") completion.resolve?.();
+    else completion.reject?.(new Error("plugin permissions denied"));
   }
   function armTimer() {
     let next;
@@ -1362,6 +1347,8 @@
     command,
     trace,
     definePlugin: (value) => value,
+    postMessageTo: (workerName, name, payload = "") => command("PostMessageTo", {worker_name: workerName, name, payload}),
+    postMessageToPlugin: (name, payload = "") => command("PostMessageToPlugin", {name, payload}),
     subscribe: (events) => command("Subscribe", events),
     unsubscribe: (events) => command("Unsubscribe", events),
     requestPermission: (permissions) => command("RequestPluginPermissions", permissions),
@@ -1568,7 +1555,25 @@
           }
         }
         defaults = stringMap(plugin.defaults, "defaults");
-      } else if (action === "render") return render(...arg);
+        workers = new Map(Object.entries(plugin.workers === undefined ? {} : record(plugin.workers, "workers")));
+        for (const [name, callback] of workers) {
+          if (typeof callback !== "function") throw new TypeError(`worker ${name} must be a function`);
+        }
+      } else if (action === "workers") return [...workers.keys()];
+      else if (action === "workerBind") {
+        worker = workers.get(arg);
+        if (typeof worker !== "function") throw new TypeError(`worker ${arg} is not registered`);
+        // Workers evaluate the same modules, but never invoke the pane's lifecycle callbacks.
+        plugin = {};
+      } else if (action === "workerMessage") {
+        // Keep stateful jobs in FIFO order even when a callback awaits host I/O.
+        workerQueue = workerQueue.then(() => {
+          workerStarted();
+          return worker(...arg);
+        }).catch(error => logLine(`worker failed: ${error?.stack ?? error}`));
+        track(workerQueue, () => {});
+      } else if (action === "permissionResult") permissionResult(arg);
+      else if (action === "render") return render(...arg);
       else if (action === "peek") return dirty;
       else if (action === "status") { const requested = dirty; dirty = false; return requested; }
       else lifecycle(action, arg);

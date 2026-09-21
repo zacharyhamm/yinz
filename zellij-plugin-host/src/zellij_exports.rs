@@ -101,15 +101,15 @@ use {
     zellij_types::data::OpenTerminalInPlaceResponse,
     zellij_types::data::OpenTerminalNearPluginResponse,
     zellij_types::data::OpenTerminalPaneInPlaceOfPaneIdResponse,
-    zellij_types::data::OpenTerminalResponse, zellij_types::data::OriginatingPlugin,
-    zellij_types::data::OrphanedPane, zellij_types::data::OverlayPlacement,
-    zellij_types::data::PaneFrameStyle, zellij_types::data::PaneScrollbackResponse,
-    zellij_types::data::PermissionStatus, zellij_types::data::PermissionType,
-    zellij_types::data::PluginPermission, zellij_types::data::RegexHighlight,
-    zellij_types::data::RenameLayoutResponse, zellij_types::data::SaveLayoutResponse,
-    zellij_types::data::SessionConnection, zellij_types::data::SpawnAgentResponse,
-    zellij_types::data::TabMetadata, zellij_types::data::WarpPaneResponse,
-    zellij_types::data::WarpPlacement, zellij_types::data::HOCUS_AGENT_PANE_CONTEXT,
+    zellij_types::data::OpenTerminalResponse, zellij_types::data::OrphanedPane,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PaneFrameStyle,
+    zellij_types::data::PaneScrollbackResponse, zellij_types::data::PermissionStatus,
+    zellij_types::data::PermissionType, zellij_types::data::PluginPermission,
+    zellij_types::data::RegexHighlight, zellij_types::data::RenameLayoutResponse,
+    zellij_types::data::SaveLayoutResponse, zellij_types::data::SessionConnection,
+    zellij_types::data::SpawnAgentResponse, zellij_types::data::TabMetadata,
+    zellij_types::data::WarpPaneResponse, zellij_types::data::WarpPlacement,
+    zellij_types::data::HOCUS_AGENT_PANE_CONTEXT,
 };
 
 use crate::PaneId;
@@ -304,11 +304,7 @@ fn run_command_action(
         direction: None,
         hold_on_close: true,
         hold_on_start: false,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
+        originating_plugin: Some(env.originating_plugin(context)),
         use_terminal_title: false,
         target: command_to_run.target,
         remote_default_shell: command_to_run.remote_default_shell,
@@ -1967,9 +1963,8 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
         .map(|cwd| translate_plugin_path(env, cwd))
         .or_else(|| Some(env.plugin_cwd.clone()));
     let action = Action::EditFile {
-        payload: OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
-        ),
+        payload: OpenFilePayload::new(path, file_to_open.line_number, cwd)
+            .with_originating_plugin(env.originating_plugin(context)),
         direction: None,
         floating,
         in_place,
@@ -1994,11 +1989,7 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
 
 fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, String>) {
     // Clone the necessary data to move into the thread
-    action.populate_originating_plugin(OriginatingPlugin::new(
-        env.plugin_id,
-        env.client_id,
-        context.clone(),
-    ));
+    action.populate_originating_plugin(env.originating_plugin(context.clone()));
     let action_clone = action.clone();
     let deno_generation = env.deno_generation;
     let client_id = env.client_id;
@@ -2066,9 +2057,8 @@ fn open_file_floating(
         .map(|cwd| translate_plugin_path(env, cwd))
         .or_else(|| Some(env.plugin_cwd.clone()));
     let action = Action::EditFile {
-        payload: OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
-        ),
+        payload: OpenFilePayload::new(path, file_to_open.line_number, cwd)
+            .with_originating_plugin(env.originating_plugin(context)),
         direction: None,
         floating,
         in_place,
@@ -2107,9 +2097,8 @@ fn open_file_in_place(
         .or_else(|| Some(env.plugin_cwd.clone()));
 
     let action = Action::EditFile {
-        payload: OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
-        ),
+        payload: OpenFilePayload::new(path, file_to_open.line_number, cwd)
+            .with_originating_plugin(env.originating_plugin(context)),
         direction: None,
         floating,
         in_place,
@@ -2142,10 +2131,8 @@ fn open_file_near_plugin(
         .map(|cwd| translate_plugin_path(env, cwd))
         .or_else(|| Some(env.plugin_cwd.clone()));
     let path = translate_plugin_path(env, file_to_open.path);
-    let open_file_payload =
-        OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
-        );
+    let open_file_payload = OpenFilePayload::new(path, file_to_open.line_number, cwd)
+        .with_originating_plugin(env.originating_plugin(context));
     let title = format!("Editing: {}", open_file_payload.path.display());
     let start_suppressed = false;
     let open_file = TerminalAction::OpenFile(open_file_payload);
@@ -2185,10 +2172,8 @@ fn open_file_floating_near_plugin(
         .map(|cwd| translate_plugin_path(env, cwd))
         .or_else(|| Some(env.plugin_cwd.clone()));
     let path = translate_plugin_path(env, file_to_open.path);
-    let open_file_payload =
-        OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
-        );
+    let open_file_payload = OpenFilePayload::new(path, file_to_open.line_number, cwd)
+        .with_originating_plugin(env.originating_plugin(context));
     let title = format!("Editing: {}", open_file_payload.path.display());
     let start_suppressed = false;
     let open_file = TerminalAction::OpenFile(open_file_payload);
@@ -2228,10 +2213,8 @@ fn open_file_in_place_of_plugin(
         .map(|cwd| translate_plugin_path(env, cwd))
         .or_else(|| Some(env.plugin_cwd.clone()));
     let path = translate_plugin_path(env, file_to_open.path);
-    let open_file_payload =
-        OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
-        );
+    let open_file_payload = OpenFilePayload::new(path, file_to_open.line_number, cwd)
+        .with_originating_plugin(env.originating_plugin(context));
     let title = format!("Editing: {}", open_file_payload.path.display());
     let open_file = TerminalAction::OpenFile(open_file_payload);
 
@@ -2614,10 +2597,8 @@ fn open_edit_pane_in_place_of_pane_id(
         .map(|cwd| translate_plugin_path(env, cwd))
         .or_else(|| Some(env.plugin_cwd.clone()));
     let path = translate_plugin_path(env, file_to_open.path);
-    let open_file_payload =
-        OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
-        );
+    let open_file_payload = OpenFilePayload::new(path, file_to_open.line_number, cwd)
+        .with_originating_plugin(env.originating_plugin(context));
     let title = format!("Editing: {}", open_file_payload.path.display());
     let open_file = TerminalAction::OpenFile(open_file_payload);
 
@@ -3870,6 +3851,14 @@ fn post_message_to(env: &PluginEnv, plugin_message: PluginMessage) -> Result<()>
     let worker_name = plugin_message
         .worker_name
         .ok_or(anyhow!("Worker name not specified in message to worker"))?;
+    if let Some(workers) = &env.deno_workers {
+        return workers.post(
+            &worker_name,
+            env.client_id,
+            plugin_message.name,
+            plugin_message.payload,
+        );
+    }
     env.senders
         .send_to_plugin(PluginInstruction::PostMessagesToPluginWorker(
             env.plugin_id,
@@ -3886,6 +3875,16 @@ fn post_message_to_plugin(env: &PluginEnv, plugin_message: PluginMessage) -> Res
             "Worker name (\"{}\") should not be specified in message to plugin",
             worker_name
         ));
+    }
+    if let Some(workers) = &env.deno_workers {
+        return env
+            .senders
+            .send_to_plugin(PluginInstruction::for_plugin_event(
+                env.plugin_id,
+                env.client_id,
+                Some(workers.parent_generation),
+                Event::CustomMessage(plugin_message.name, plugin_message.payload),
+            ));
     }
     env.senders
         .send_to_plugin(PluginInstruction::PostMessageToPlugin(
@@ -6087,6 +6086,7 @@ fn list_clients(env: &PluginEnv) {
         sender.send(ScreenInstruction::ListClientsToPlugin(
             env.plugin_id,
             env.client_id,
+            env.deno_generation,
         ))
     });
 }
@@ -6097,6 +6097,7 @@ fn change_host_folder(env: &PluginEnv, new_host_folder: PathBuf) {
             new_host_folder,
             env.plugin_id,
             env.client_id,
+            env.deno_generation,
         ))
     });
 }
@@ -7405,11 +7406,7 @@ fn try_edit_layout(
             file_to_open.line_number,
             file_to_open.cwd,
         )
-        .with_originating_plugin(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
+        .with_originating_plugin(env.originating_plugin(context)),
         direction: None,
         floating: false,
         in_place: true,

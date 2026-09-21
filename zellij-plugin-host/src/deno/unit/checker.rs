@@ -113,12 +113,15 @@ fn sdk_host_sugar_types_derive_from_command_args() {
       zellij.host.renameTab({tabIndex: 0});
       // @ts-expect-error byte arrays are one payload, not spread
       zellij.host.write(1, 2);
-      // @ts-expect-error Deno plugins have no workers
-      zellij.host.postMessageTo({name: 'x', payload: 'y'});
-      // @ts-expect-error Deno plugins have no workers in raw form either
-      zellij.command('PostMessageTo', {name: 'x', payload: 'y'});
-      // @ts-expect-error nor in object form
-      zellij.command({PostMessageTo: {name: 'x', payload: 'y'}});
+      zellij.host.postMessageTo({worker_name:'w', name: 'x', payload: 'y'});
+      zellij.command('PostMessageTo', {worker_name:'w', name: 'x', payload: 'y'});
+      zellij.command({PostMessageTo: {worker_name:'w', name: 'x', payload: 'y'}});
+      // @ts-expect-error a worker name is required
+      zellij.host.postMessageTo({name:'x'});
+      zellij.postMessageTo('w', 'job');
+      zellij.postMessageToPlugin('done', 'result');
+      // @ts-expect-error worker payloads are strings
+      zellij.postMessageTo('w', 'job', {});
       // @ts-expect-error the namespace is frozen
       zellij.host.renameTab = () => null;
     "#).unwrap();

@@ -499,6 +499,18 @@ fn workflow_query_reports_transport_disconnect_and_timeout() {
         .contains("request remote workflow pane identities"));
 }
 
+fn grant_requested_permissions(plugin: &mut DenoPlugin) {
+    let workers = plugin.env().deno_workers.clone().unwrap();
+    let requested = workers.permissions.lock().unwrap().requested();
+    if let Some(requested) = requested {
+        workers.permission_answer(plugin.env(), &requested, PermissionStatus::Granted);
+        plugin.tick().unwrap();
+    }
+    plugin
+        .update(&Event::PermissionRequestResult(PermissionStatus::Granted))
+        .unwrap();
+}
+
 #[test]
 fn every_embedded_typescript_builtin_loads_and_renders() {
     for (name, source) in zellij_config::consts::BUILTIN_DENO_PLUGINS {
@@ -513,9 +525,7 @@ fn every_embedded_typescript_builtin_loads_and_renders() {
         let mut plugin =
             load_builtin(name, source, env).unwrap_or_else(|error| panic!("{name}: {error:#}"));
         plugin.load(&BTreeMap::new()).unwrap();
-        plugin
-            .update(&Event::PermissionRequestResult(PermissionStatus::Granted))
-            .unwrap();
+        grant_requested_permissions(&mut plugin);
         plugin
             .render(24, 80)
             .unwrap_or_else(|error| panic!("{name}: {error:#}"));
@@ -1241,9 +1251,7 @@ fn the_typescript_workflow_example_runs_on_r() {
 fn the_typescript_dashboard_example_renders_tab_and_pane_updates_and_takes_input() {
     use zellij_types::data::{PaneInfo, PaneManifest, TabInfo};
     let mut plugin = load_example("dashboard.ts", PermissionType::iter().collect());
-    plugin
-        .update(&Event::PermissionRequestResult(PermissionStatus::Granted))
-        .unwrap();
+    grant_requested_permissions(&mut plugin);
     plugin
         .update(&Event::TabUpdate(vec![TabInfo {
             position: TabPosition::new(0),
@@ -1405,9 +1413,7 @@ fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_nam
     let mut plugin =
         DenoPlugin::new(&example("hocus-todos.ts"), &path, env, Arc::default()).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
-    plugin
-        .update(&Event::PermissionRequestResult(PermissionStatus::Granted))
-        .unwrap();
+    grant_requested_permissions(&mut plugin);
     let rendered = frame(&mut plugin, 10, 60);
     let codes = |text: &str| {
         text.bytes()

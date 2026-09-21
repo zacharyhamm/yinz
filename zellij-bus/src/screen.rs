@@ -67,7 +67,8 @@ pub enum ScreenInstruction {
         Option<BTreeMap<String, String>>,
         Option<u64>,
     ),
-    UnsubscribePaneOutput(PluginId),
+    // None removes every generation and client on complete plugin unload/reload.
+    UnsubscribePaneOutput(PluginId, Option<u64>),
     PtyBytes(TerminalId, VteBytes),
     RemotePaneReady(TerminalId),
     PluginBytes(Vec<PluginRenderAsset>),
@@ -738,7 +739,7 @@ pub enum ScreenInstruction {
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
     },
-    ListClientsToPlugin(PluginId, ClientId),
+    ListClientsToPlugin(PluginId, ClientId, Option<u64>),
     TogglePanePinned(ClientId, Option<NotificationEnd>),
     SetFloatingPanePinned(PaneId, bool),
     StackPanes(Vec<PaneId>, ClientId, Option<NotificationEnd>),

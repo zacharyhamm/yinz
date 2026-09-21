@@ -864,6 +864,7 @@ pub fn plugin_thread_main(
                 mut session_layout_metadata,
                 plugin_id,
                 client_id,
+                generation,
             ) => {
                 populate_session_layout_metadata(
                     &mut session_layout_metadata,
@@ -883,12 +884,20 @@ pub fn plugin_thread_main(
                         is_current_client,
                     ));
                 }
-                let updates = vec![(
-                    Some(plugin_id),
-                    Some(client_id),
-                    Event::ListClients(client_list_for_plugin),
-                )];
-                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+                let event = Event::ListClients(client_list_for_plugin);
+                if let Some(generation) = generation {
+                    wasm_bridge.deno_event(
+                        plugin_id,
+                        generation,
+                        vec![(client_id, event)],
+                        shutdown_send.clone(),
+                    )?;
+                } else {
+                    wasm_bridge.update_plugins(
+                        vec![(Some(plugin_id), Some(client_id), event)],
+                        shutdown_send.clone(),
+                    )?;
+                }
             },
             PluginInstruction::LogLayoutToHd(mut session_layout_metadata) => {
                 populate_session_layout_metadata(
@@ -1277,18 +1286,15 @@ pub fn plugin_thread_main(
             PluginInstruction::WatchFilesystem => {
                 wasm_bridge.start_fs_watcher_if_not_started();
             },
-            PluginInstruction::ChangePluginHostDir(new_host_folder, plugin_id, client_id) => {
-                if wasm_bridge
-                    .change_plugin_host_dir(new_host_folder.clone(), plugin_id, client_id)
-                    .is_ok()
-                {
-                    drop(
-                        bus.senders.send_to_pty(PtyInstruction::ReportPluginCwd(
-                            plugin_id,
-                            new_host_folder,
-                        )),
-                    );
-                }
+            PluginInstruction::ChangePluginHostDir(
+                new_host_folder,
+                plugin_id,
+                client_id,
+                generation,
+            ) => {
+                wasm_bridge
+                    .change_plugin_host_dir(new_host_folder, plugin_id, client_id, generation)
+                    .non_fatal();
             },
             PluginInstruction::PaneRenderReport(pane_render_report) => {
                 wasm_bridge

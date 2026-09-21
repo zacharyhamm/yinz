@@ -1,10 +1,12 @@
 //! A Send plugin handle with its V8 isolate confined to the pinned executor thread.
 pub(crate) mod analysis;
 mod authoring;
+pub(crate) mod background_worker;
 mod checker;
 mod event;
 mod limits;
 mod loader;
+mod permissions;
 mod transport;
 mod ui;
 mod worker;
@@ -18,7 +20,7 @@ pub use checker::check_syntax;
 pub(crate) use limits::read_source as read_authoring_source;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -79,12 +81,13 @@ fn op_zellij_command<'s>(
     state: &mut OpState,
     value: v8::Local<'s, v8::Value>,
     #[smi] client: u32,
+    #[string] completion: Option<String>,
 ) -> std::result::Result<v8::Local<'s, v8::Value>, JsErrorBox> {
     let limits = state.borrow::<Arc<limits::Limits>>().clone();
     limits
         .check()
         .and_then(|_| transport::from_v8(scope, value))
-        .and_then(|value| dispatch(state, value, client))
+        .and_then(|value| dispatch(state, value, client, completion))
         .and_then(|reply| reply.into_v8(scope, &limits))
         .map_err(|error| JsErrorBox::generic(format!("{error:#}")))
 }
@@ -181,7 +184,12 @@ fn op_zellij_validate<'s>(
         .map_err(|error| JsErrorBox::generic(format!("{error:#}")))
 }
 
-fn dispatch(state: &mut OpState, value: Value, client: u32) -> Result<Reply> {
+fn dispatch(
+    state: &mut OpState,
+    value: Value,
+    client: u32,
+    completion: Option<String>,
+) -> Result<Reply> {
     let env = state
         .borrow_mut::<HostState>()
         .env
@@ -215,6 +223,22 @@ fn dispatch(state: &mut OpState, value: Value, client: u32) -> Result<Reply> {
         );
     }
     let client = ClientId::try_from(client).context("invalid callback client")?;
+    if let PluginCommand::RequestPluginPermissions(permissions) = command {
+        let workers = env
+            .deno_workers
+            .clone()
+            .context("missing Deno coordinator")?;
+        workers.request_permissions(
+            env,
+            permissions::Request::new(
+                env.deno_generation.context("missing Deno generation")?,
+                client,
+                permissions,
+                completion.context("missing permission completion ID")?,
+            ),
+        )?;
+        return Ok(Reply::Json(Value::Null));
+    }
     let previous_client = std::mem::replace(&mut env.client_id, client);
     let previous_sink = std::mem::replace(&mut env.response_sink, ResponseSink::Capture(None));
     let result = run_plugin_command(env, command);
@@ -240,6 +264,14 @@ fn op_zellij_log(state: &OpState, #[string] line: &str) {
     log::info!("[deno:{}] {}", state.borrow::<HostState>().log_tag, line);
 }
 
+#[op2(fast)]
+fn op_zellij_worker_started(state: &mut OpState) {
+    // Charge jobs waiting in the JavaScript FIFO until their callbacks actually start.
+    state
+        .borrow_mut::<VecDeque<background_worker::PostReservation>>()
+        .pop_front();
+}
+
 fn log_tag(env: &PluginEnv) -> String {
     env.resolved_source_path
         .as_ref()
@@ -258,10 +290,12 @@ deno_core::extension!(
         op_zellij_validate,
         op_zellij_encode,
         op_zellij_log,
+        op_zellij_worker_started,
         op_zellij_ui_create,
         op_zellij_ui_call,
         op_zellij_ui_pure
-    ]
+    ],
+    state = |state| state.put(VecDeque::<background_worker::PostReservation>::new())
 );
 
 struct TickWake {
@@ -418,9 +452,19 @@ impl DenoPlugin {
         env: PluginEnv,
         client_cancel: Arc<AtomicBool>,
     ) -> Result<Self> {
-        let generation = NEXT_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-            .map_err(|_| anyhow!("Deno plugin generation exhausted"))?;
+        Self::with_generation(source, path, env, client_cancel, next_generation()?)
+    }
+
+    fn with_generation(
+        source: &str,
+        path: &Path,
+        mut env: PluginEnv,
+        client_cancel: Arc<AtomicBool>,
+        generation: u64,
+    ) -> Result<Self> {
+        env.deno_generation = Some(generation);
+        env.deno_workers
+            .get_or_insert_with(|| Arc::new(background_worker::Workers::new(generation)));
         let wake = Arc::new(TickWake {
             // Event-loop wakers may outlive the isolate. They only route back to
             // the plugin thread, so must not retain the screen or other services.
@@ -493,8 +537,23 @@ impl DenoPlugin {
         if self.is_disposed() {
             return Ok(false);
         }
+        let completions = if let Event::PermissionRequestResult(_) = event {
+            if let Some(workers) = &self.env().deno_workers {
+                if workers.parent_generation == self.generation {
+                    workers.permissions(self.env().client_id, event);
+                }
+            }
+            // Process the recorded answer in this event's render/resize replay. Ordinary
+            // observers cannot supply an answer, and still run before awaiters resume.
+            self.permission_completions()?
+        } else {
+            vec![]
+        };
         self.with_runtime(|runtime, client| {
             runtime.call_event(event, Some(client))?;
+            for completion in completions {
+                runtime.permission_result(completion)?;
+            }
             runtime.poll()?;
             runtime.needs_render()
         })
@@ -541,7 +600,11 @@ impl DenoPlugin {
         }
         // Clear only when consuming a tick. Clearing from render/update would admit duplicates.
         self.wake.queued.store(false, Ordering::Release);
+        let completions = self.permission_completions()?;
         self.with_runtime(|runtime, _| {
+            for completion in completions {
+                runtime.permission_result(completion)?;
+            }
             runtime.poll()?;
             runtime.needs_render()
         })
@@ -592,9 +655,30 @@ impl DenoPlugin {
         }
         testing::cancel_instance(self.env());
         self.disposed = true;
+        if let Some(workers) = &self.env().deno_workers {
+            if workers.parent_generation == self.generation {
+                workers.stop();
+            } else {
+                workers
+                    .permissions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .forget(self.generation);
+            }
+        }
         self.wake.stopped.store(true, Ordering::Release);
         self.terminate.terminate_execution();
         self.env().clear_deno_watches(self.generation);
+        self.env()
+            .senders
+            .send_to_screen(
+                zellij_bus::screen::ScreenInstruction::UnsubscribePaneOutput(
+                    self.env().plugin_id,
+                    Some(self.generation),
+                ),
+            )
+            .context("removing disposed Deno pane-output subscriptions")
+            .non_fatal();
         if self.thread == thread::current().id() {
             dispose_generation(self.generation);
         } else {
@@ -608,6 +692,12 @@ impl DenoPlugin {
                 .non_fatal();
         }
     }
+}
+
+fn next_generation() -> Result<u64> {
+    NEXT_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+        .map_err(|_| anyhow!("Deno plugin generation exhausted"))
 }
 
 impl Drop for DenoPlugin {
@@ -861,6 +951,8 @@ mod sdk_tests {
 
     #[derive(Default)]
     struct TestHost {
+        permissions: permissions::Permissions,
+        completions: Vec<permissions::Completion>,
         commands: Vec<(Value, u32)>,
         logs: Vec<String>,
         fail_permission_client: Option<u32>,
@@ -876,20 +968,31 @@ mod sdk_tests {
         state: &mut OpState,
         command: v8::Local<'s, v8::Value>,
         #[smi] client: u32,
+        #[string] completion: Option<String>,
     ) -> std::result::Result<serde_json::Value, JsErrorBox> {
         let command = transport::from_v8(scope, command)
             .map_err(|error| JsErrorBox::generic(format!("{error:#}")))?;
         let host = state.borrow_mut::<TestHost>();
+        if let Some(values) = command.get("RequestPluginPermissions") {
+            let permissions = serde_json::from_value(values.clone())
+                .map_err(|error| JsErrorBox::generic(error.to_string()))?;
+            let id = completion.expect("SDK permission completion ID");
+            host.permissions
+                .enqueue(permissions::Request::new(
+                    1,
+                    ClientId::try_from(client).unwrap(),
+                    permissions,
+                    id.clone(),
+                ))
+                .map_err(|error| JsErrorBox::generic(error.to_string()))?;
+            host.dispatch_permissions(Some(&id))?;
+            return Ok(json!({"json": null}));
+        }
         host.commands.push((command.clone(), client));
         if let Some(name) = host.fail_command {
             if command.get(name).is_some() || command == json!(name) {
                 return Err(JsErrorBox::generic(format!("{name} dispatch failed")));
             }
-        }
-        if command.get("RequestPluginPermissions").is_some()
-            && host.fail_permission_client == Some(client)
-        {
-            return Err(JsErrorBox::generic("permission dispatch failed"));
         }
         if command == json!("GetPluginIds") {
             Ok(json!({ "json": { "client_id": client } }))
@@ -911,6 +1014,58 @@ mod sdk_tests {
         }
     }
 
+    impl TestHost {
+        fn dispatch_permissions(
+            &mut self,
+            immediate: Option<&str>,
+        ) -> std::result::Result<(), JsErrorBox> {
+            while let Some(request) = self.permissions.next() {
+                self.commands.push((
+                    json!({"RequestPluginPermissions": request.permissions}),
+                    u32::from(request.client.get()),
+                ));
+                if self.fail_permission_client != Some(u32::from(request.client.get())) {
+                    break;
+                }
+                let completion = self
+                    .permissions
+                    .finish(Err("permission dispatch failed".into()))
+                    .unwrap();
+                if immediate == Some(request.id.as_str()) {
+                    return Err(JsErrorBox::generic("permission dispatch failed"));
+                }
+                self.completions.push(completion);
+            }
+            Ok(())
+        }
+    }
+
+    #[op2]
+    #[serde]
+    fn op_zellij_test_permission_answer(
+        state: &mut OpState,
+        #[serde] status: PermissionStatus,
+    ) -> serde_json::Value {
+        let host = state.borrow_mut::<TestHost>();
+        let requested = host.permissions.requested().unwrap();
+        if host.permissions.answered(&requested, status) {
+            let completion = host.permissions.take_answer().unwrap();
+            host.completions.push(completion);
+            host.dispatch_permissions(None).unwrap();
+        }
+        json!(host
+            .completions
+            .drain(..)
+            .map(|completion| {
+                json!([
+                    completion.request.id,
+                    completion.result,
+                    completion.request.client
+                ])
+            })
+            .collect::<Vec<_>>())
+    }
+
     #[op2(fast)]
     fn op_zellij_log(state: &mut OpState, #[string] line: &str) {
         state.borrow_mut::<TestHost>().logs.push(line.to_owned());
@@ -920,13 +1075,16 @@ mod sdk_tests {
         sdk_test_host,
         ops = [
             op_zellij_command,
+            op_zellij_test_permission_answer,
             op_zellij_validate,
             op_zellij_encode,
             op_zellij_log,
+            op_zellij_worker_started,
             op_zellij_ui_create,
             op_zellij_ui_call,
             op_zellij_ui_pure
-        ]
+        ],
+        state = |state| state.put(VecDeque::<background_worker::PostReservation>::new())
     );
 
     fn sdk() -> JsRuntime {
@@ -937,7 +1095,7 @@ mod sdk_tests {
             })
             .unwrap();
         runtime.op_state().borrow_mut().put(TestHost::default());
-        run(&mut runtime, &format!("globalThis.bridge = {SDK}; globalThis.bind = (plugin) => bridge('bind', {{default: plugin}}); globalThis.check = (ok) => {{ if (!ok) throw new Error('SDK assertion failed'); }};"));
+        run(&mut runtime, &format!("globalThis.answerPermissions = ((answer) => status => {{ for (const [id, result, client] of answer(status)) bridge('permissionResult', [id, result], client); }})(Deno.core.ops.op_zellij_test_permission_answer); globalThis.bridge = {SDK}; globalThis.bind = (plugin) => bridge('bind', {{default: plugin}}); globalThis.check = (ok) => {{ if (!ok) throw new Error('SDK assertion failed'); }};"));
         run(
             &mut runtime,
             &format!(
@@ -1477,7 +1635,7 @@ mod sdk_tests {
                 zellij.command({Unsubscribe: ['PermissionRequestResult']});
                 permission.then(() => { done = true; });
             }}); bridge('load', {}, 1);
-            bridge('update', {PermissionRequestResult: 'Granted'}, 9);
+            answerPermissions('Granted');
         "#,
         );
         capture_commands(&mut runtime);
@@ -1569,6 +1727,42 @@ mod sdk_tests {
     }
 
     #[test]
+    fn permission_overflow_uses_the_sdk_error_path_and_recovers_after_delivery() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            globalThis.rejected = false;
+            bind({load() {
+                for (let i = 0; i < 1024; i++) zellij.requestPermission(['RunCommands']);
+                zellij.waitForPermissions(['ReadFiles']).catch(error => {
+                    rejected = error.message.includes('1024 outstanding');
+                });
+            }});
+            bridge('load', {}, 1);
+        "#,
+        );
+        run(
+            &mut runtime,
+            r#"
+            check(rejected);
+            answerPermissions('Granted');
+            bind({load() { zellij.requestPermission(['ReadFiles']); }});
+            bridge('load', {}, 1);
+        "#,
+        );
+        assert_eq!(
+            runtime
+                .op_state()
+                .borrow()
+                .borrow::<TestHost>()
+                .permissions
+                .requested(),
+            Some(vec![zellij_types::data::PermissionType::RunCommands])
+        );
+    }
+
+    #[test]
     fn permission_waits_serialize_and_resolve_only_their_own_answer() {
         let mut runtime = sdk();
         run(
@@ -1581,16 +1775,16 @@ mod sdk_tests {
             } });
             bridge('load', {permission: 'ReadApplicationState'}, 1);
             bridge('load', {permission: 'ChangeApplicationState'}, 2);
+            bridge('update', {PermissionRequestResult: 'Granted'}, 9);
+            bridge('update', {PermissionRequestResult: 'Denied'}, 9);
         "#,
         );
         assert_eq!(
             permission_requests(&mut runtime),
             json!([[["ReadApplicationState"], 1]])
         );
-        run(
-            &mut runtime,
-            "bridge('update', {PermissionRequestResult: 'Granted'}, 9)",
-        );
+        run(&mut runtime, "check(answers.length === 0)");
+        run(&mut runtime, "answerPermissions('Granted')");
         run(&mut runtime, "check(answers.join() === '1')");
         assert_eq!(
             permission_requests(&mut runtime),
@@ -1599,10 +1793,7 @@ mod sdk_tests {
                 [["ReadApplicationState", "ChangeApplicationState"], 2]
             ])
         );
-        run(
-            &mut runtime,
-            "bridge('update', {PermissionRequestResult: 'Granted'}, 9)",
-        );
+        run(&mut runtime, "answerPermissions('Granted')");
         run(&mut runtime, "check(answers.join() === '1,2')");
     }
 
@@ -1627,7 +1818,7 @@ mod sdk_tests {
             bridge('load', {permission: 'ReadApplicationState'}, 1);
             bridge('load', {permission: 'ChangeApplicationState'}, 2);
             bridge('load', {permission: 'OpenFiles'}, 3);
-            bridge('update', {PermissionRequestResult: 'Denied'}, 9);
+            answerPermissions('Denied');
         "#,
         );
         run(
@@ -1642,10 +1833,7 @@ mod sdk_tests {
                 [["OpenFiles"], 3]
             ])
         );
-        run(
-            &mut runtime,
-            "bridge('update', {PermissionRequestResult: 'Granted'}, 9)",
-        );
+        run(&mut runtime, "answerPermissions('Granted')");
         run(&mut runtime, "check(answers.join() === 'plugin permissions denied:1,permission dispatch failed:2,granted:3'); check(bridge('status') === true)");
     }
 
@@ -1676,13 +1864,13 @@ mod sdk_tests {
             bridge('load', {kind: 'object', permission: 'RunCommands'}, 3);
             bridge('load', {kind: 'object', permission: 'OpenFiles'}, 4);
             bridge('load', {kind: 'wait', permission: 'WebAccess'}, 5);
-            bridge('update', {PermissionRequestResult: 'Granted'}, 9);
+            answerPermissions('Granted');
             check(!done);
-            bridge('update', {PermissionRequestResult: 'Granted'}, 9);
+            answerPermissions('Granted');
             let reported = false;
             try { bridge('status'); } catch (error) { reported = error.message.includes('permission dispatch failed'); }
             check(reported && !done);
-            bridge('update', {PermissionRequestResult: 'Granted'}, 9);
+            answerPermissions('Granted');
             check(!done);
         "#,
         );
@@ -1718,10 +1906,7 @@ mod sdk_tests {
                 ]
             ])
         );
-        run(
-            &mut runtime,
-            "bridge('update', {PermissionRequestResult: 'Granted'}, 9)",
-        );
+        run(&mut runtime, "answerPermissions('Granted')");
         run(
             &mut runtime,
             "check(done); check(bridge('status') === true)",

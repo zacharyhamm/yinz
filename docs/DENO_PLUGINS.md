@@ -53,8 +53,54 @@ Listeners added during `update` or another listener start with the next event.
 A `waitForEvent("Key")` started by a key handler waits for the next matching key, not the key that started the handler.
 Render requests coalesce while a render is pending. A state change or resize invalidates an outdated async render result.
 
-Run host commands from lifecycle callbacks. Module initialization cannot use host commands or wait for host events.
+Run host commands from lifecycle callbacks or worker callbacks. Module initialization cannot use host commands or wait for host events.
 An initialization Promise that cannot settle fails with a diagnostic.
+
+### Background workers
+
+Declare named callbacks in `workers` to run jobs outside the pane's UI thread.
+Each worker has a separate thread and V8 isolate, with its own persistent module state.
+The host evaluates the same entrypoint and imports in each isolate. Workers do not call the pane's lifecycle methods.
+
+```ts
+import { definePlugin, zellij } from "zellij:plugin";
+
+let text = "Starting";
+let completed = 0;
+export default definePlugin({
+  defaults: {},
+  workers: {
+    async commands(name, payload) {
+      const result = await zellij.runCommand({ command: [payload] });
+      zellij.postMessageToPlugin(name, `Job ${++completed}: exit ${result.exitCode}`);
+    },
+  },
+  async load() {
+    await zellij.waitForPermissions(["RunCommands"]);
+    zellij.subscribe(["CustomMessage"]);
+    zellij.on("CustomMessage", ([name, payload]) => {
+      if (name === "done") { text = payload; return true; }
+    });
+    zellij.postMessageTo("commands", "done", "/usr/bin/true");
+  },
+  render() { return text; },
+});
+```
+
+`postMessageTo(workerName, name, payload = "")` queues a job. Each worker finishes one callback, including its Promise, before starting the next.
+Different workers can run concurrently. `postMessageToPlugin(name, payload = "")` returns a `CustomMessage` to the owning plugin instance.
+These helpers use the same `PostMessageTo` and `PostMessageToPlugin` commands as Wasm workers.
+Unknown worker names throw. Message names and payloads are strings. Use JSON to send structured values.
+
+Workers share the plugin's permissions. Request permissions in `load` before sending jobs that need them.
+Workers can await timers, commands, and HTTP requests through the SDK. Replies return to the originating worker and retain the job's client.
+Workers receive their own host replies and permission results. They do not receive the pane's input, pipe messages, or general session events.
+A rejected callback is logged, and the next queued job can run.
+
+When an instance is removed, reloaded, or fails, the host stops its workers.
+Shared workers remain when ownership moves to another client.
+Late replies cannot reach a replacement instance. Each worker has the same import restrictions and allocation limits as a plugin.
+A plugin instance supports up to 16 workers, with names of 1–128 UTF-8 bytes.
 
 ## Events
 
@@ -133,9 +179,11 @@ const key = await zellij.waitForEvent("Key");
 zellij.log(key.bare_key);
 ```
 
-Permission requests use one FIFO queue across `waitForPermissions`, `requestPermission`, and both forms of `command("RequestPluginPermissions", ...)`.
-Each request subscribes and registers its result listener before dispatch. Only one request waits for a host answer at a time.
-The SDK copies each permission array and retains the originating client when it queues the request.
+The parent and all worker isolates share one FIFO queue for permission requests.
+It covers `waitForPermissions`, `requestPermission`, and both forms of `command("RequestPluginPermissions", ...)`.
+Each request subscribes before dispatch. Only one request waits for a host answer at a time.
+The coordinator copies each permission array and retains the requesting isolate and client.
+A private callback completes only that request. Ordinary `PermissionRequestResult` observers do not settle requests.
 Later requests include previously confirmed grants because the host replaces its permission set.
 `waitForPermissions` rejects if the host denies permission or dispatch fails. Either outcome lets the next queued request proceed.
 The other entry points remain fire-and-forget. Deferred dispatch errors use the SDK's lifecycle error reporting.
@@ -287,7 +335,7 @@ an omitted field becomes `null`, which an optional slot reads as absent, and an 
 | `openCommandPaneInGitCheckoutNearPlugin` | `command`, `sourceDirectory`, `checkout` |
 
 `zellij.host.runCommand` is the raw command; `zellij.runCommand` remains the promise-returning helper.
-`PostMessageTo` throws before dispatch: Deno plugins have no workers. Use timers, the async helpers, or a work queue.
+`PostMessageTo` queues a job for a [background worker](#background-workers) declared by this plugin.
 
 The root object also provides these helpers:
 
@@ -1605,7 +1653,7 @@ Absent or other values preserve the current setting. Runtime calls can change it
 
 Read the existing `[deno:<plugin>]` log output with `zellij plugins log hello.ts` or Hocus `plugin_log`.
 Trace lines contain the instance ID, originating client ID, command names, event types, and pipe names, including SDK-consumed pipes.
-`zellij.host` helpers trace under the underlying command name; a refused `PostMessageTo` gets its own `refused` marker.
+`zellij.host` helpers trace under the underlying command name.
 Existing SDK promise observers emit numbered `task` markers. Cancellable helpers emit numbered `operation` markers.
 Both use `started` and `finished`, `failed`, or `cancelled` outcomes.
 Tracing does not observe arbitrary guest promises.
@@ -1646,9 +1694,9 @@ commands, where the permission system can see them. Gone, and staying gone:
 - **Remote, npm, JSR and `node:` imports**: only explicit relative imports of `.js`, `.mjs`, `.ts` and `.mts` files
   inside the plugin's own folder, plus `zellij:plugin` (a builtin may also import `zellij:workflow-view`). Nor is
   `https://…/plugin.ts` a plugin URL: download the file and load it with `file:`.
-- **Workers**: `PostMessageTo` is refused before dispatch. Timers, the async helpers and work queues are the answer.
+- **Web Workers**: the browser `Worker` API is unavailable. Use [named background workers](#background-workers) through the SDK.
 - **Top-level `await`**: module initialization must complete without a pending promise, and host commands and event
-  waits are unavailable until `load`.
+  waits are unavailable until a lifecycle or worker callback runs.
 - **Resizable `ArrayBuffer`s and guest WebAssembly**: their allocations bypass the isolate's counted allocator. Fixed
   `ArrayBuffer` and `SharedArrayBuffer` remain.
 
@@ -1681,7 +1729,7 @@ Use `--overwrite` to replace a file. The previous version is preserved as `hello
 The existing directory and symlink protections also apply to these filenames.
 An extensionless authoring name selects `.ts`.
 
-The SDK does not include npm, JSR, general Deno I/O, or workers.
+The SDK does not include npm, JSR, general Deno I/O, or the browser `Worker` API.
 Hocus supports the same names through `plugin_write`, `plugin_edit`, `plugin_list`, `plugin_read`,
 `plugin_search`, `plugin_outline`, `plugin_check`, `plugin_format`, `plugin_test`, `plugin_reload`, and `plugin_log`.
 `plugin_docs` serves this guide a `##` section at a time (`section=lifecycle`, `commands`, `helpers`, `async`, `files`, `data`, and the rest the index lists), the SDK declarations in parts (`section=sdk_core` onward), and the worked examples. Writes and edits format and check the result before approval.
