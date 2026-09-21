@@ -1116,11 +1116,28 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     .unwrap_or("UNKNOWN".to_owned()),
                 kind
             );
-            // A command the plugin is waiting on an answer to gets an empty one, which every
-            // decoder reads as "nothing": a guest that `unwrap`s the reply (one built against an
-            // older SDK) would otherwise trap on the denial instead of seeing `None`.
+            // Session mutation replies use a missing error to mean success, so denial must
+            // carry an error. Other reply-bearing commands retain their empty protobuf reply
+            // for compatibility with guests that unwrap decoding it.
             if crate::response::decode_response(kind, &[]).is_some() {
-                wasi_write_object(env, &Vec::<u8>::new()).with_context(err_context)?;
+                let response = match kind {
+                    CommandType::KillSessionsAndReply => ProtobufKillSessionsResponse {
+                        error: Some("Permission denied: ChangeApplicationState".to_owned()),
+                    }
+                    .encode_to_vec(),
+                    CommandType::DeleteDeadSessionAndReply => ProtobufDeleteDeadSessionResponse {
+                        error: Some("Permission denied: ChangeApplicationState".to_owned()),
+                    }
+                    .encode_to_vec(),
+                    CommandType::DeleteAllDeadSessionsAndReply => {
+                        ProtobufDeleteAllDeadSessionsResponse {
+                            error: Some("Permission denied: ChangeApplicationState".to_owned()),
+                        }
+                        .encode_to_vec()
+                    },
+                    _ => Vec::new(),
+                };
+                wasi_write_object(env, &response).with_context(err_context)?;
             }
         },
     };
@@ -8349,6 +8366,60 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
 mod permission_tests {
     use super::*;
     use zellij_types::input::layout::RunPluginOrAlias;
+
+    #[test]
+    fn denied_session_commands_reply_with_permission_errors() {
+        let mut env = crate::test_env::test_env();
+        env.response_sink = ResponseSink::Capture(None);
+        for command in [
+            PluginCommand::KillSessionsAndReply(vec!["test-session".into()]),
+            PluginCommand::DeleteDeadSessionAndReply("test-session".into()),
+            PluginCommand::DeleteAllDeadSessionsAndReply,
+        ] {
+            let kind = CommandType::from(&command);
+            assert_eq!(
+                check_command_permission(&env, &command),
+                (
+                    PermissionStatus::Denied,
+                    Some(PermissionType::ChangeApplicationState)
+                )
+            );
+            run_plugin_command(&mut env, command).unwrap();
+            let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+            let error = match kind {
+                CommandType::KillSessionsAndReply => {
+                    ProtobufKillSessionsResponse::decode(bytes.as_slice())
+                        .unwrap()
+                        .error
+                },
+                CommandType::DeleteDeadSessionAndReply => {
+                    ProtobufDeleteDeadSessionResponse::decode(bytes.as_slice())
+                        .unwrap()
+                        .error
+                },
+                CommandType::DeleteAllDeadSessionsAndReply => {
+                    ProtobufDeleteAllDeadSessionsResponse::decode(bytes.as_slice())
+                        .unwrap()
+                        .error
+                },
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                error.as_deref(),
+                Some("Permission denied: ChangeApplicationState"),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_denied_commands_keep_their_empty_reply() {
+        let mut env = crate::test_env::test_env();
+        env.response_sink = ResponseSink::Capture(None);
+        run_plugin_command(&mut env, PluginCommand::GetSessionList).unwrap();
+        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        assert!(bytes.is_empty());
+    }
 
     /// `prepare_git_checkout_in` asking for reuse, which is what every test written before
     /// reuse became a request meant by it: an existing branch or worktree is the work being
