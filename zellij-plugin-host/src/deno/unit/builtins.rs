@@ -1062,7 +1062,10 @@ async function scenario() {
     {model: 'tests', name: 'report', version: 1, createdAt: '1', attributes: {summaryLength: report.length, passed: true}},
   ]}};
   await view.refresh(); await settle(); render();
-  check(view.scroll > before && view.scroll >= 30, 'a new test report keeps the view at the bottom');
+  check(view.scroll > before, 'a new test report advances the followed output');
+  const reportBottom = view.scroll;
+  key('End');
+  eq(view.scroll, reportBottom, 'a new test report keeps the view at the bottom');
 
   key('Home');
   eq(view.scroll, 0);

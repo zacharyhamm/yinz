@@ -166,8 +166,14 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     original.exit(Some(0));
     zellij.wait_until("hook permissions", |s| s.contains("Allow? (y/n)"));
     zellij.send_stdin(b"y");
-    zellij.wait_until("workflow log tail in exit pane", |s| {
-        s.contains("LOG 100") && s.contains("Cancel run") && s.contains(panel_title)
+    let overview = zellij.wait_until("workflow summary in exit pane", |s| {
+        s.contains("Running: prepare") && s.contains("Cancel run") && s.contains(panel_title)
+    });
+    assert!(!overview.contains("LOG 100"));
+    click(&zellij, "Details");
+    zellij.send_stdin(b"\x1b[F");
+    zellij.wait_until("workflow details expose the log tail", |s| {
+        s.contains("LOG 100") && s.contains("Hide details")
     });
     advance(&zellij, "agent");
     let worker = zellij.expect_pty_spawn();
@@ -224,7 +230,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     });
     assert!(
         question.contains("LOG 100"),
-        "workflow logs follow by default"
+        "opened workflow details retain the log position"
     );
     let prompt_row = question
         .lines()
@@ -242,9 +248,8 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
             && !question.contains("Next question")
             && !question.contains("Detach")
     );
-    zellij.send_stdin(&keys::ESC);
-    zellij.send_stdin(b"\x1b[5~");
-    let beginning = zellij.wait_until("page up scrolls logs with pinned question", |s| {
+    zellij.send_stdin(b"\x1b[H");
+    let beginning = zellij.wait_until("Home scrolls logs with pinned question", |s| {
         s.contains("LOG 001") && s.lines()[prompt_row].contains("Agent exited. Choose")
     });
     assert_eq!(question.lines()[button_row], beginning.lines()[button_row]);
@@ -257,8 +262,8 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     zellij.wait_until("wheel scrolls log backward", |s| {
         !s.contains("LOG 100") && s.contains("↓") && s.contains("Agent exited. Choose")
     });
-    zellij.send_stdin(b"\x1b[5~");
-    let logs = zellij.wait_until("page up restores log beginning", |s| s.contains("LOG 001"));
+    zellij.send_stdin(b"\x1b[H");
+    let logs = zellij.wait_until("Home restores log beginning", |s| s.contains("LOG 001"));
     let log_row = logs
         .lines()
         .iter()
@@ -461,7 +466,9 @@ export default hook;
             fixture_state(&zellij)["waiting"] == true
         });
     } else {
-        zellij.wait_until("workflow launched", |s| s.contains("Run run: running"));
+        zellij.wait_until("workflow launched", |s| {
+            s.contains("Running: fixture") && s.contains("Cancel run")
+        });
         advance(&zellij, stage);
         if stage == "agent" {
             let worker = zellij.expect_pty_spawn();
@@ -526,14 +533,18 @@ fn fixture_reply(zellij: &TestSession, payload: &str) -> String {
     reply
 }
 
-/// Clicks the first on-screen occurrence of `label`.
+/// Clicks the native form button, whose label can also appear in the focus hint.
 fn click(zellij: &TestSession, label: &str) {
-    let screen = zellij.snapshot();
+    let screen = zellij.wait_until("workflow action button", |s| {
+        s.lines()
+            .iter()
+            .any(|line| line.contains('') && line.contains(label))
+    });
     let (row, line) = screen
         .lines()
         .iter()
         .enumerate()
-        .find(|(_, line)| line.contains(label))
+        .find(|(_, line)| line.contains('') && line.contains(label))
         .map(|(row, line)| (row, line.clone()))
         .unwrap_or_else(|| panic!("{label} is not on screen"));
     let col = line[..line.find(label).unwrap()].chars().count();
@@ -656,8 +667,8 @@ fn running_exit_view_with_args(
     original.exit(Some(0));
     zellij.wait_until("hook permissions", |s| s.contains("Allow? (y/n)"));
     zellij.send_stdin(b"y");
-    zellij.wait_until("exit view follows the log tail", |s| {
-        s.contains("LOG 100") && s.contains("Cancel run")
+    zellij.wait_until("exit view shows the active step", |s| {
+        s.contains("Running: prepare") && s.contains("Cancel run")
     });
     (zellij, original, before)
 }
@@ -838,6 +849,11 @@ fn workflow_restart_delivers_no_prompt_on_repeated_restarts() {
                     && !p.pane_info.exited
                     && !p.pane_info.is_suppressed
             })
+        });
+        let restarted_output = format!("RESTARTED AGENT {cycle}");
+        original.output(format!("{restarted_output}\r\n").as_bytes());
+        zellij.wait_until("restarted agent has rendered", |s| {
+            s.contains(&restarted_output)
         });
     }
     zellij.quit();

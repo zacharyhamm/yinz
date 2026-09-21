@@ -23,6 +23,7 @@ type Question = {
     kind: string;
     prompt: string;
     answers?: string[];
+    answer?: string | null;
   };
 };
 type History = {
@@ -48,12 +49,19 @@ type Output = {
   test?: Output;
   problem?: string;
   reason?: string;
+  recommendation?: string;
+  tests?: string;
+  codeReview?: string;
+  ready?: boolean;
+  integrated?: boolean;
+  removed?: boolean;
   stdout?: string;
   stderr?: string;
-  evidence?: { source: { commit: string }; target: { commit: string } };
-  source?: { commit: string };
-  target?: { commit: string };
+  evidence?: { source: Revision; target: Revision };
+  source?: Revision;
+  target?: Revision;
 };
+type Revision = { commit: string; branch?: string; checkout?: string };
 type ReportEntry = {
   model: string;
   name: string;
@@ -74,6 +82,7 @@ type Snapshot = {
   logs?: string;
   subtitle?: string;
   endpoint?: string;
+  problem?: string;
 };
 type Attachment = { directory: string; run?: string | undefined; launch?: string | undefined };
 type Block = {
@@ -92,6 +101,7 @@ export const view = {
   active: false,
   cancellable: false,
   submitting: false,
+  reconciling: false,
   refreshing: false,
   selecting: false,
   dirty: false,
@@ -100,6 +110,8 @@ export const view = {
   snapshot: undefined as Snapshot | undefined,
   notice: undefined as string | undefined,
   noticeError: false,
+  details: false,
+  readingQuestion: false,
   refreshError: undefined as string | undefined,
   action: undefined as string | undefined,
   load,
@@ -126,7 +138,42 @@ const answered = new Map<string, number>();
 let generation = 0,
   refreshQueued = false;
 let submission: { cancel(): void } | undefined;
+let uncertainQuestion: string | undefined;
 let questionReadyAt: number | undefined, renderedQuestion: string | undefined;
+let controlLabels = new Map<string, string>();
+function histories(): History[] {
+  return view.snapshot
+    ? [
+        { ...view.snapshot.history, id: view.snapshot.history.id ?? view.snapshot.run ?? "" },
+        ...(view.snapshot.children ?? []),
+      ]
+    : [];
+}
+function running(): History[] {
+  return histories().filter(
+    (history) =>
+      history.status === "running" && typeof history.id === "string" && history.id.length > 0,
+  );
+}
+function newestOutputs(): ReportEntry[] {
+  return [...(view.snapshot?.outputs?.results ?? [])].sort(
+    (a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "") || b.version - a.version,
+  );
+}
+function checks(): Output | undefined {
+  return newestOutputs().find(
+    (entry) =>
+      typeof entry.attributes.codeReview === "string" && typeof entry.attributes.tests === "string",
+  )?.attributes;
+}
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- Reads the shared history wire type without modifying it.
+function activity(history: History): string {
+  for (const job of history.jobs ?? [])
+    for (const step of job.steps ?? [])
+      if (["running", "waiting_approval"].includes(step.status))
+        return step.name.replaceAll("-", " ");
+  return history.workflowName ?? "Workflow";
+}
 // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
 function timing(phase: string, started: number, entry?: Question): void {
   z.log(
@@ -156,13 +203,14 @@ const reports = new Map<string, Report>();
 const reportKey = (entry: ReportEntry): string =>
   JSON.stringify([entry.model, entry.name, entry.version]);
 function reportEntries(): ReportEntry[] {
-  return (view.snapshot?.outputs?.results ?? [])
+  const entries = (view.snapshot?.outputs?.results ?? [])
     .filter((entry) => (entry.attributes.summaryLength ?? 0) > 0)
     .sort(
       (a, b) =>
         (b.createdAt ?? "").localeCompare(a.createdAt ?? "") ||
         reportKey(b).localeCompare(reportKey(a)),
     );
+  return view.details ? entries : entries.slice(0, 1);
 }
 // A view opened on a run starts at its reports; one that was already showing the run stays at the
 // bottom, which is where a workflow step that produced the report hands it back.
@@ -252,6 +300,7 @@ let detached = false,
   followLive = true,
   pinBottom = false,
   scrollLimit = 0;
+let outputPosition = { scroll: 0, follow: true };
 function setSubtitle(subtitle?: string): void {
   z.command("SetPaneSubtitle", {
     pane_id: { Plugin: z.getPluginIds().plugin_id },
@@ -325,26 +374,44 @@ function controls(): void {
   const entry = view.pending[view.selected];
   const q = entry?.attributes;
   const key = identity(entry);
+  const activeRuns = running();
+  const mergeBlocked = checks()?.ready === false;
+  const answerBlocked =
+    view.reconciling ||
+    (uncertainQuestion != null && uncertainQuestion === key && q?.state === "pending");
   const signature = JSON.stringify([
     key ?? "",
     q?.kind ?? "",
     q?.answers ?? [],
+    q?.state,
     view.pending.length > 1,
     view.active,
     view.cancellable,
     view.snapshot?.activeOperation,
+    activeRuns.map((history) => [history.id, activity(history)]),
+    mergeBlocked,
+    view.details,
+    view.readingQuestion,
+    answerBlocked,
   ]);
   if (signature === formKey) return;
   const focus = key === questionKey ? form?.focusedId() : undefined;
-  const hasInput = !!q && !q.answers?.length;
+  const hasInput = !!q && q.state !== "recorded" && !q.answers?.length;
   const value =
     key === questionKey && formHasInput && hasInput ? String(form?.value("answer") ?? "") : "";
   const fields: FieldDescriptor[] = [];
   if (q) {
-    if (hasInput) {
+    if (q.state === "recorded") {
+      fields.push({
+        kind: "button",
+        id: "recover",
+        label: "Recover saved answer",
+        disabled: answerBlocked,
+      });
+    } else if (hasInput) {
       fields.push(
         { kind: "textInput", id: "answer", label: "Answer", value },
-        { kind: "button", id: "submit", label: "Submit" },
+        { kind: "button", id: "submit", label: "Submit", disabled: answerBlocked },
       );
     } else {
       for (const [index, answer] of required(q.answers).entries()) {
@@ -354,6 +421,7 @@ function controls(): void {
           label:
             answerLabels[answer] ??
             text(answer.replaceAll("-", " ").replace(/^[a-z]/u, (c) => c.toUpperCase())),
+          disabled: answerBlocked || (answer === "merge" && mergeBlocked),
         });
       }
     }
@@ -361,13 +429,36 @@ function controls(): void {
   if (view.pending.length > 1) fields.push({ kind: "button", id: "next", label: "Next question" });
   if (view.snapshot?.activeOperation)
     fields.push({ kind: "button", id: "cancel_step", label: "Cancel step" });
-  if (view.cancellable) fields.push({ kind: "button", id: "cancel_run", label: "Cancel run" });
+  for (const history of activeRuns)
+    fields.push({
+      kind: "button",
+      id: `cancel_run_${history.id}`,
+      label:
+        activeRuns.length === 1
+          ? "Cancel run"
+          : `Cancel ${activity(history)} (${(history.id ?? "").slice(0, 8)})`,
+    });
   if (onRestart && !q?.answers?.includes("restart"))
     fields.push({ kind: "button", id: "restart", label: "Restart agent" });
   if (onFork && !q?.answers?.includes("fork"))
     fields.push({ kind: "button", id: "fork", label: "Fork agent" });
+  if (q)
+    fields.push({
+      kind: "button",
+      id: "question",
+      label: view.readingQuestion ? "Back to output" : "Read question",
+    });
+  if (view.snapshot)
+    fields.push({
+      kind: "button",
+      id: "details",
+      label: view.details ? "Hide details" : "Details",
+    });
+  controlLabels = new Map(fields.map((field) => [field.id, field.label ?? field.id]));
   form = z.ui.form(fields);
   if (focus && fields.some((field) => field.id === focus)) form.focus(focus);
+  else if (focus?.startsWith("cancel_run_") && fields.some((field) => field.id === "details"))
+    form.focus("details");
   formKey = signature;
   questionKey = key;
   formHasInput = hasInput;
@@ -423,13 +514,25 @@ async function refresh(changed = true): Promise<void> {
     view.pending = [...latest.entries()]
       .filter(
         ([key, entry]) =>
-          entry.attributes.state === "pending" && entry.version > (answered.get(key) ?? -Infinity),
+          ["pending", "recorded"].includes(entry.attributes.state) &&
+          entry.version > (answered.get(key) ?? -Infinity),
       )
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([, entry]) => entry);
+    view.reconciling = false;
+    if (uncertainQuestion) {
+      const saved = latest.get(uncertainQuestion);
+      if (saved && saved.attributes.state !== "pending") uncertainQuestion = undefined;
+      else {
+        view.noticeError = true;
+        view.notice =
+          "Answer delivery is uncertain. Waiting for saved state; do not submit another answer.";
+      }
+    }
     view.selected = Math.min(view.selected, Math.max(0, view.pending.length - 1));
     const index = view.pending.findIndex((entry) => identity(entry) === selected);
     if (index >= 0) view.selected = index;
+    if (identity(view.pending[view.selected]) !== selected) view.readingQuestion = false;
     questionReadyAt = z.swampTiming ? z.monotonicMs() : undefined;
     controls();
     loadReports(revision, initial);
@@ -488,6 +591,8 @@ function attach(attachment: Attachment): void {
   generation += 1;
   reports.clear();
   view.submitting = false;
+  view.reconciling = false;
+  uncertainQuestion = undefined;
   view.selecting = false;
   view.dirty = false;
   formKey = undefined;
@@ -498,6 +603,8 @@ function attach(attachment: Attachment): void {
   view.pending = [];
   view.selected = 0;
   view.scroll = 0;
+  view.details = false;
+  view.readingQuestion = false;
   pinBottom = false;
   view.action = undefined;
   view.notice = undefined;
@@ -647,6 +754,25 @@ function update(event: Event): boolean {
     controls();
     return true;
   }
+  if (action.kind === "buttonPressed" && action.id === "details") {
+    view.details = !view.details;
+    view.readingQuestion = false;
+    view.scroll = 0;
+    followLive = false;
+    pinBottom = false;
+    controls();
+    loadReports(generation, false);
+    return true;
+  }
+  if (action.kind === "buttonPressed" && action.id === "question") {
+    if (!view.readingQuestion) outputPosition = { scroll: view.scroll, follow: followLive };
+    view.readingQuestion = !view.readingQuestion;
+    view.scroll = view.readingQuestion ? 0 : outputPosition.scroll;
+    followLive = view.readingQuestion ? false : outputPosition.follow;
+    pinBottom = false;
+    controls();
+    return true;
+  }
   if (action.kind !== "buttonPressed" || view.submitting) return action.kind !== "ignored";
   if (action.id === "restart" && onRestart) {
     onRestart();
@@ -660,11 +786,14 @@ function update(event: Event): boolean {
   const choice = /^choice_(\d+)$/u.exec(action.id ?? "");
   let request: Record<string, Json>, success: string;
   if (entry && (action.id === "submit" || choice)) {
+    if (view.reconciling || (uncertainQuestion != null && uncertainQuestion === identity(entry)))
+      return false;
     if (entry.version <= (answered.get(required(identity(entry))) ?? -Infinity)) return false;
     const q = entry.attributes;
     const answer = choice
       ? required(required(q.answers)[Number(choice[1]) - 1])
       : String(required(form).value("answer"));
+    if (!answer.trim() || (answer === "merge" && checks()?.ready === false)) return false;
     request = {
       method: "workflow_answer",
       directory: required(view.snapshot).root,
@@ -677,15 +806,27 @@ function update(event: Event): boolean {
       },
     };
     success = "Answer recorded";
+  } else if (entry?.attributes.state === "recorded" && action.id === "recover") {
+    if (view.reconciling) return false;
+    request = {
+      method: "workflow_recover",
+      directory: required(view.snapshot).root,
+      model: entry.model,
+      inputs: { run: entry.attributes.run, question: entry.attributes.question },
+    };
+    success = "Recorded answer delivered";
   } else if (action.id === "cancel_step" && view.snapshot?.activeOperation) {
     const active = view.snapshot.activeOperation;
     request = { method: "cancel_step", work: active.work, operation: active.key };
     success = "Step cancellation requested; waiting for verified termination";
-  } else if (action.id === "cancel_run" && view.snapshot && view.attachment?.run) {
+  } else if (action.id?.startsWith("cancel_run_") && view.snapshot) {
+    const activeRuns = running();
+    const target = activeRuns.find((history) => action.id === `cancel_run_${history.id}`);
+    if (!target?.id) return false;
     request = {
       method: "workflow_cancel",
       directory: view.snapshot.root,
-      run: view.attachment.run,
+      run: target.id,
     };
     success = "Cancellation requested; resources preserved";
   } else return true;
@@ -694,15 +835,19 @@ function update(event: Event): boolean {
   view.noticeError = false;
   view.action = choice
     ? required(required(entry).attributes.answers)[Number(choice[1]) - 1]
-    : action.id;
+    : (controlLabels.get(action.id ?? "") ?? action.id);
   view.notice =
-    success === "Answer recorded" ? "Submitting answer..." : "Requesting cancellation...";
+    success === "Answer recorded"
+      ? "Submitting answer..."
+      : action.id === "recover"
+        ? "Recovering recorded answer..."
+        : "Requesting cancellation...";
   void submit(request, success, required(view.attachment), entry).catch((error: unknown) => {
     z.log(String(error));
   });
   return true;
 }
-// oxlint-disable-next-line eslint/max-lines-per-function -- This lifecycle handler keeps its ordered protocol transitions together.
+// oxlint-disable-next-line eslint/max-lines-per-function, eslint/complexity -- Keep answer admission, completion and error recovery in one lifecycle.
 async function submit(
   // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
   request: Record<string, Json>,
@@ -712,7 +857,8 @@ async function submit(
   // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
   entry?: Question,
 ): Promise<void> {
-  const answering = request["method"] === "workflow_answer";
+  const answering =
+    request["method"] === "workflow_answer" || request["method"] === "workflow_recover";
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
   const operation = `${text(answering ? identity(entry) : request["run"])}: ${text(answering ? (request["inputs"] as Record<string, Json>)["answer"] : "cancel_run")}`;
   let timedOut = false,
@@ -731,6 +877,7 @@ async function submit(
     timeoutMs: answering ? undefined : 90000,
     onProgress: answering
       ? (payload): void => {
+          if (view.attachment !== attachment) return;
           const status =
             payload != null && typeof payload === "object" && !Array.isArray(payload)
               ? payload["status"]
@@ -738,7 +885,15 @@ async function submit(
           if (status === "waiting" || status === "reloading") {
             timer?.cancel();
             timer = undefined;
-          } else if (status === "ready") startDeadline();
+            view.notice =
+              status === "waiting"
+                ? "Waiting for active workflows before loading updated extensions..."
+                : "Loading updated extensions...";
+          } else if (status === "ready") {
+            startDeadline();
+            view.notice = "Delivering answer...";
+          }
+          repaint();
         }
       : undefined,
   });
@@ -751,10 +906,16 @@ async function submit(
   submission = activeSubmission;
   try {
     if (answering) startDeadline();
-    await pending;
+    const result = await pending;
     if (view.attachment !== attachment) return;
     view.noticeError = false;
-    view.notice = success;
+    view.notice =
+      result != null &&
+      typeof result === "object" &&
+      !Array.isArray(result) &&
+      result["alreadyFinished"] === true
+        ? "Run is no longer running; refreshed status"
+        : success;
     if (answering && entry) {
       answered.set(required(identity(entry)), entry.version);
       // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
@@ -764,8 +925,17 @@ async function submit(
     }
   } catch (error) {
     if (view.attachment === attachment) {
+      view.reconciling = answering;
+      if (
+        answering &&
+        entry &&
+        (timedOut || (error instanceof Error && error.name === "TimeoutError"))
+      )
+        uncertainQuestion = required(identity(entry));
       view.noticeError = true;
-      view.notice = timedOut ? "TimeoutError: RPC timed out: swamp" : String(error);
+      view.notice = timedOut
+        ? "Request timed out. Checking saved state before another action; a recorded answer can be recovered."
+        : String(error);
     }
   } finally {
     timer?.cancel();
@@ -783,7 +953,7 @@ async function submit(
 }
 let markdownCache: { source: string; dim: boolean; widget: MarkdownComponent }[] = [];
 const failed = (status?: string): boolean => status === "failed" || status === "error";
-// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together.
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep the ordered rendering of summary, reports and execution details together.
 function render(rows: number, cols: number): string {
   const started = z.swampTiming ? z.monotonicMs() : undefined;
   controls();
@@ -814,11 +984,77 @@ function render(rows: number, cols: number): string {
   }
   const entry = view.pending[view.selected],
     question = entry ? markdown(entry.attributes.prompt, false) : undefined;
-  add(view.status, failed(view.snapshot?.history.status));
-  if (view.notice) add(view.notice, view.noticeError);
-  if (view.refreshError) add(view.refreshError, true);
-  if (!entry && view.active) add("Waiting for the workflow. No question pending.");
+  const currentChecks = checks();
+  const currentOutputs = newestOutputs();
+  const cleanup = currentOutputs.find(
+    (saved) => typeof saved.attributes.removed === "boolean",
+  )?.attributes;
+  const integrated = currentOutputs.find(
+    (saved) => typeof saved.attributes.integrated === "boolean",
+  )?.attributes;
+  const afterIntegration =
+    !!cleanup || integrated?.integrated === true || entry?.attributes.kind === "cleanup";
+  const currentEvidence =
+    currentChecks?.evidence ??
+    currentOutputs
+      .map(
+        (saved) =>
+          saved.attributes.evidence ?? (saved.attributes.source ? saved.attributes : undefined),
+      )
+      .find((value) => value?.source);
+  const activeRuns = running();
   const snapshot = view.snapshot;
+  const header = snapshot
+    ? currentEvidence?.source && currentEvidence.target
+      ? // oxlint-disable-next-line typescript/prefer-nullish-coalescing -- Detached checkouts have an empty branch and must display the revision instead.
+        `${currentEvidence.source.branch || currentEvidence.source.commit.slice(0, 8)} → ${currentEvidence.target.branch || currentEvidence.target.commit.slice(0, 8)}`
+      : (snapshot.history.workflowName ?? "Workflow")
+    : view.status;
+  const summary = [header];
+  if (snapshot) {
+    summary.push(
+      snapshot.problem
+        ? `Error: ${snapshot.problem}`
+        : failed(snapshot.history.status)
+          ? `Attached run: ${snapshot.history.status}`
+          : activeRuns.length > 0
+            ? `Running: ${activeRuns.map((history) => activity(history)).join(", ")}`
+            : entry?.attributes.state === "recorded"
+              ? "Answer recorded; delivery needs recovery"
+              : entry
+                ? entry.attributes.kind === "cleanup"
+                  ? "Integrated locally; choose whether to keep the worktree"
+                  : "Waiting for your answer"
+                : cleanup
+                  ? cleanup.removed
+                    ? "Worktree removed; branch and VM retained"
+                    : "Worktree retained; cleanup did not complete"
+                  : integrated?.integrated
+                    ? "Integrated locally; worktree retained"
+                    : `Attached run: ${snapshot.history.status}`,
+    );
+    if (!entry && activeRuns.length === 0 && !afterIntegration && snapshot.children?.length)
+      summary.push(
+        `Related runs: ${[...new Set(snapshot.children.map((history) => history.status))].join(", ")}`,
+      );
+    if (currentChecks && !afterIntegration) {
+      summary.push(`Review: ${currentChecks.codeReview} · Tests: ${currentChecks.tests}`);
+      if (
+        entry &&
+        !["merge", "cleanup"].includes(entry.attributes.kind) &&
+        (currentChecks.recommendation || currentChecks.reason)
+      )
+        summary.push(currentChecks.recommendation ?? required(currentChecks.reason));
+    }
+  }
+  if (view.refreshError) add(view.refreshError, true);
+  if (snapshot?.problem) add(snapshot.problem, true);
+  if (entry?.attributes.state === "recorded")
+    add(
+      `Saved answer: ${entry.attributes.answer ?? ""}. Recover this answer to finish its delivery without submitting again.`,
+    );
+  if (!afterIntegration && currentChecks?.ready === false && currentChecks.reason)
+    add(`Merge unavailable: ${currentChecks.reason}`);
   if (snapshot) {
     // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
     for (const entry of reportEntries()) {
@@ -839,8 +1075,8 @@ function render(rows: number, cols: number): string {
       if (report.error) add("Report unavailable: " + report.error, true);
       else if (report.offset < report.total) add("Loading complete test report...");
     }
-    add("Execution details:");
-    for (const history of [snapshot.history, ...(snapshot.children ?? [])]) {
+    if (view.details) add("Execution details:");
+    for (const history of view.details ? histories() : []) {
       add(
         `${text(history.workflowName)} / ${text(history.id)}: ${text(history.status)}`,
         failed(history.status),
@@ -849,18 +1085,40 @@ function render(rows: number, cols: number): string {
         for (const step of job.steps ?? [])
           add(`${job.name}/${step.name}: ${step.status}`, failed(step.status));
     }
+    const recent = currentOutputs.find((saved) => {
+      const a = saved.attributes;
+      return (
+        typeof a.removed === "boolean" ||
+        typeof a.integrated === "boolean" ||
+        [a.output, a.test, a.review, a.findings, a.problem, a.reason, a.stderr, a.stdout].some(
+          Boolean,
+        )
+      );
+    });
     // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
-    for (const entry of snapshot.outputs?.results ?? []) {
-      add(`${entry.model}/${entry.name} v${entry.version}`);
+    for (const entry of view.details ? (snapshot.outputs?.results ?? []) : recent ? [recent] : []) {
+      if (view.details) add(`${entry.model}/${entry.name} v${entry.version}`);
       const attrs = entry.attributes ?? {},
         review = attrs.review ?? attrs;
+      if (typeof attrs.removed === "boolean")
+        add(
+          attrs.removed
+            ? "Worktree removed. Branch and VM retained."
+            : "Worktree retained. Inspect cleanup diagnostics before retrying.",
+        );
+      if (typeof attrs.integrated === "boolean")
+        add(
+          attrs.integrated
+            ? "Changes integrated into the local target."
+            : "Changes were not integrated.",
+        );
       if (attrs.problem) add(attrs.problem, true);
       if (attrs.reason) add(attrs.reason, true);
       if (attrs.stderr) add(attrs.stderr, true);
       if (attrs.stdout) add(attrs.stdout);
       for (const finding of review.findings ?? [])
         add(`${finding.severity} ${finding.file}: ${finding.message}`, true);
-      if (attrs.pane != null)
+      if (view.details && attrs.pane != null)
         add(
           `Pane ${attrs.pane} / ${text(attrs.log)} / ${text(attrs.outcome)}`,
           failed(attrs.outcome),
@@ -889,11 +1147,13 @@ function render(rows: number, cols: number): string {
         showOutput(attrs.test, "attributes.test.output");
       }
       const evidence = attrs.evidence ?? (attrs.source ? attrs : undefined);
-      if (evidence)
+      if (view.details && evidence)
         add(`Source ${text(evidence.source?.commit)} / target ${text(evidence.target?.commit)}`);
     }
-    add("Workflow log (last 100 lines):");
-    add(snapshot.logs ?? "", false, true);
+    if (view.details) {
+      add("Workflow log (last 100 lines):");
+      add(snapshot.logs ?? "", false, true);
+    }
   }
   for (const stream of streams) {
     add(stream.value);
@@ -902,30 +1162,37 @@ function render(rows: number, cols: number): string {
     );
     required(blocks.at(-1)).live = stream === latestStream;
   }
+  if (view.readingQuestion && question) {
+    blocks.splice(0, blocks.length, question);
+  }
   markdownCache = cache;
   const noticeHeight = view.notice && rows >= 3 ? 1 : 0;
   const height = Math.min(formHeight, Math.max(0, rows - noticeHeight - (rows >= 2 ? 1 : 0)));
-  const footerHeight = question
-    ? Math.min(question.count, Math.floor((rows - height - noticeHeight) / 2))
-    : 0;
-  if (question && question.count > footerHeight)
-    blocks.unshift({ ...question, count: question.count - footerHeight, scroll: footerHeight });
-  const separator = footerHeight > 0 && rows - height - noticeHeight - footerHeight >= 2 ? 1 : 0;
-  let page = Math.max(0, rows - height - noticeHeight - footerHeight - separator);
+  const summaryHeight = Math.min(
+    summary.length,
+    rows >= 10 ? 4 : 2,
+    Math.max(0, rows - height - noticeHeight - 1),
+  );
+  const hintHeight = rows >= 8 ? (cols < 60 ? 2 : 1) : 0;
+  const available = Math.max(0, rows - height - noticeHeight - summaryHeight - hintHeight);
+  const footerHeight =
+    question && !view.readingQuestion ? Math.min(question.count, Math.floor(available / 2)) : 0;
+  const separator = footerHeight > 0 && available - footerHeight >= 2 ? 1 : 0;
+  let page = Math.max(0, available - footerHeight - separator);
   view.formY = rows - height;
   const total = blocks.reduce((sum, block) => sum + block.count, 0);
   const indicatorHeight = total > page && page >= 2 && cols > 0 ? 1 : 0;
   page -= indicatorHeight;
   contentHeight = page;
   scrollLimit = Math.max(0, total - page);
-  if (followLive) {
+  if (followLive && !view.readingQuestion) {
     let end = 0;
     for (const block of blocks) {
       end += block.count;
       if (block.live) break;
     }
     view.scroll = Math.max(0, end - page);
-  } else if (pinBottom) view.scroll = scrollLimit;
+  } else if (pinBottom && !view.readingQuestion) view.scroll = scrollLimit;
   view.scroll = Math.max(0, Math.min(view.scroll, scrollLimit));
   const frame: string[] = [];
   // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
@@ -948,12 +1215,18 @@ function render(rows: number, cols: number): string {
         );
       }
   }
+  for (let i = 0; i < summaryHeight; i++)
+    frame.push(
+      z.ui
+        .text(z.text.truncate(text(required(summary[i])), cols))
+        .render({ x: 0, y: i, width: cols, height: 1 }),
+    );
   let skip = view.scroll,
     y = 0;
   for (const block of blocks) {
     const count = Math.min(Math.max(0, block.count - skip), page - y);
     if (count > 0) {
-      draw(block, y, skip, count);
+      draw(block, y + summaryHeight, skip, count);
       y += count;
     }
     skip = Math.max(0, skip - block.count);
@@ -966,11 +1239,35 @@ function render(rows: number, cols: number): string {
       z.ui
         .text(z.text.truncate(label, cols))
         .dim()
-        .render({ x: 0, y: page, width: cols, height: 1 }),
+        .render({ x: 0, y: page + summaryHeight, width: cols, height: 1 }),
     );
   }
   if (question && footerHeight > 0)
-    draw(question, page + indicatorHeight + separator, 0, footerHeight);
+    draw(question, page + summaryHeight + indicatorHeight + separator, 0, footerHeight);
+  const focus = required(form).focusedId();
+  const labels = [...controlLabels.keys()];
+  const position = focus ? labels.indexOf(focus) + 1 : 0;
+  const selectedLabel = focus ? (controlLabels.get(focus) ?? "") : "";
+  const questionHint =
+    entry && view.pending.length > 1
+      ? `Question ${view.selected + 1}/${view.pending.length} · `
+      : "";
+  const hint = `${questionHint}${position}/${labels.length} ${selectedLabel}`;
+  const keys = view.readingQuestion
+    ? "PgUp/PgDn: question · Tab/↔: actions · Enter: choose"
+    : question && question.count > footerHeight
+      ? "Tab/↔: actions · Enter: choose · Read question: full prompt"
+      : "Tab/↔: actions · Enter: choose · PgUp/PgDn: output";
+  for (let i = 0; i < hintHeight; i++) {
+    const label =
+      hintHeight === 1 ? `${hint} · ${keys}` : i === 0 ? hint : "Tab/↔ actions · Enter choose";
+    frame.push(
+      z.ui
+        .text(z.text.truncate(text(label), cols))
+        .dim()
+        .render({ x: 0, y: view.formY - noticeHeight - hintHeight + i, width: cols, height: 1 }),
+    );
+  }
   if (noticeHeight) {
     const notice = z.ui.text(
       z.text.truncate(text(`${view.action ? view.action + ": " : ""}${view.notice}`), cols),

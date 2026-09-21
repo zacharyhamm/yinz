@@ -17,12 +17,16 @@ type Vm = Readonly<{
 }>;
 let acting = false,
   busy = false,
+  cleanupStarted = false,
+  confirmationVisible = false,
   confirming = false,
+  deletionFailed = false,
   removedWorktree = false,
   status = "Agent exited.",
   workflow = false;
 let checkout: Checkout | undefined,
   directory: string | undefined,
+  failureStatus: string | undefined,
   launchToken: string | undefined,
   pane: number | undefined;
 let firecracker:
@@ -99,7 +103,34 @@ async function inspectCheckout(): Promise<void> {
   z.requestRender();
 }
 function workflowHidden(): boolean {
-  return confirming || busy || status.startsWith("Deletion failed:");
+  return confirming || busy || deletionFailed;
+}
+async function confirmCheckout(): Promise<void> {
+  busy = true;
+  confirmationVisible = false;
+  status = "Checking current checkout before deletion...";
+  z.requestRender();
+  try {
+    if (!removedWorktree) {
+      const original = required(checkout);
+      const listed = worktrees(
+        await command(["git", "-C", original.primary, "worktree", "list", "--porcelain", "-z"]),
+      );
+      const found = listed.find((entry) => entry.path === original.path);
+      if (!found || found.path === listed[0]?.path)
+        throw new Error("The secondary worktree is unavailable; deletion was refused.");
+      checkout = { ...found, primary: original.primary };
+    }
+    confirming = true;
+    deletionFailed = false;
+  } catch (error) {
+    status = `Deletion failed: ${String(error)}`;
+    failureStatus = status;
+    deletionFailed = true;
+  } finally {
+    busy = false;
+    z.requestRender();
+  }
 }
 function close(): void {
   if (pane != null) z.command("CloseTerminalPane", pane);
@@ -226,6 +257,7 @@ async function remove(): Promise<void> {
   z.requestRender();
   try {
     if (launchToken) {
+      cleanupStarted = true;
       const deadline = Date.now() + 60000;
       for (;;) {
         if (Date.now() >= deadline)
@@ -253,6 +285,8 @@ async function remove(): Promise<void> {
     await deleteCheckout();
   } catch (error) {
     status = `Deletion failed: ${String(error)}`;
+    failureStatus = status;
+    deletionFailed = true;
     confirming = false;
     busy = false;
     z.requestRender();
@@ -280,7 +314,7 @@ async function launch(config: Record<string, string>): Promise<void> {
   } else {
     await placed;
   }
-  if (busy) return;
+  if (cleanupStarted) return;
   const token = config["agent_exit_token"];
   if (!token) throw new Error("Missing host exit correlation token");
   view.watch(token);
@@ -364,6 +398,10 @@ export default definePlugin({
       const paneAction = (action: string, key: string): void => {
         if (acting || view.submitting) return;
         acting = true;
+        view.action = action;
+        view.noticeError = false;
+        view.notice = action === "restart" ? "Restarting agent..." : "Opening agent picker...";
+        z.requestRender();
         void z.rpc
           .call({
             pluginUrl: "zellij:swamp-bridge",
@@ -402,26 +440,47 @@ export default definePlugin({
       });
     }
   },
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- Workflow and fallback key handling share mutable lifecycle state.
+  // oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- Keep cleanup, editing and pane shortcuts together in their input precedence order.
   update(event: Event) {
+    if (
+      acting &&
+      typeof event === "object" &&
+      ("Key" in event || "Mouse" in event || "PastedText" in event)
+    )
+      return true;
     if (typeof event === "object" && "Key" in event) {
       if (busy) return true;
-      if (event.Key.bare_key === "Delete" && checkout) {
-        if (confirming)
+      if (workflow && !workflowHidden() && view.focusedControl() === "answer")
+        return view.update(event);
+      const key = event.Key.key_modifiers.length === 0 ? event.Key.bare_key : undefined;
+      if (key === "Delete" && checkout) {
+        if (confirming && confirmationVisible)
           void remove().catch((error: unknown) => {
             z.log(String(error));
           });
-        else confirming = true;
+        else if (!confirming)
+          void confirmCheckout().catch((error: unknown) => {
+            z.log(String(error));
+          });
         z.requestRender();
         return true;
       }
       if (confirming) {
-        if (event.Key.bare_key === "Esc") confirming = false;
+        if (key === "Esc") {
+          confirming = false;
+          deletionFailed = cleanupStarted || removedWorktree;
+          status = deletionFailed ? (failureStatus ?? "Cleanup is incomplete.") : "Agent exited.";
+        }
         z.requestRender();
         return true;
       }
-      if (event.Key.bare_key === "Esc") {
+      if (key === "Esc") {
         close();
+        return true;
+      }
+      if (deletionFailed && key === "Enter" && !cleanupStarted && workflow) {
+        deletionFailed = false;
+        z.requestRender();
         return true;
       }
     }
@@ -435,7 +494,11 @@ export default definePlugin({
       return view.update(event);
     }
     if (typeof event !== "object" || !("Key" in event)) return false;
-    if (event.Key.bare_key === "Enter") {
+    if (
+      event.Key.bare_key === "Enter" &&
+      event.Key.key_modifiers.length === 0 &&
+      !removedWorktree
+    ) {
       if (pane != null) z.command("RerunCommandPane", pane);
       z.command("CloseSelf");
     }
@@ -444,6 +507,7 @@ export default definePlugin({
   pipe: (message) => {
     view.pipe(message);
   },
+  // oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep confirmation visibility and its deletion guard together with the rendered controls.
   render(rows, cols) {
     const destructive = checkout ? "Delete: Delete worktree & branch and close pane" : "";
     if (workflow && !workflowHidden())
@@ -452,27 +516,61 @@ export default definePlugin({
         z.ui
           .text(
             z.text.truncate(
-              "Esc: close pane  " +
-                (destructive || "Enter: activate button. Restart/Fork: cancel run and continue."),
+              view.focusedControl() === "answer"
+                ? "Esc: finish editing  Tab: actions"
+                : "Esc: close pane  " +
+                    (destructive ||
+                      "Enter: activate button. Restart/Fork: cancel run and continue."),
               cols,
             ),
           )
           .dim()
           .render({ x: 0, y: Math.max(0, rows - 1), width: cols, height: 1 })
       );
-    return [
-      ...status.split("\n").filter(Boolean),
-      `Directory: ${directory ?? "unknown"}`,
-      ...(confirming && checkout
-        ? [
-            `Worktree: ${checkout.path}`,
-            `Branch: ${checkout.branch ?? "detached HEAD (checkout only)"}`,
-            ...(firecracker ? [`VM: ${firecracker.name}`] : []),
-            "This cancels the workflow and removes uncommitted work.",
-            "Delete again: confirm deletion. Esc: cancel.",
-          ]
-        : ["Enter: restart agent  Esc: close pane", destructive]),
-    ]
+    const wrap = (lines: readonly string[]): string[] =>
+      lines.flatMap((line) => z.text.wrap(z.text.sanitize(line), Math.max(1, cols)));
+    let lines: string[];
+    if (confirming && checkout) {
+      lines = wrap([
+        removedWorktree
+          ? "Worktree removed. Delete remaining branch?"
+          : "Delete worktree and branch?",
+        `Worktree: ${checkout.path}`,
+        `Branch: ${checkout.branch ?? "detached HEAD (checkout only)"}`,
+        `Revision: ${checkout.head}`,
+        ...(firecracker ? [`VM: ${firecracker.name}`] : []),
+        "This cancels the workflow and removes uncommitted work and unmerged commits.",
+        "Delete again: confirm deletion. Esc: cancel.",
+      ]);
+      confirmationVisible = cols > 0 && lines.length <= rows;
+      if (!confirmationVisible) {
+        const footer = wrap(["Deletion disabled: enlarge pane to review.", "Esc: cancel."]);
+        lines = [...lines.slice(0, Math.max(0, rows - footer.length)), ...footer];
+      }
+    } else {
+      confirmationVisible = false;
+      const footer = busy
+        ? ["Waiting for this operation to finish..."]
+        : deletionFailed
+          ? [
+              removedWorktree
+                ? "Worktree removed; branch cleanup remains."
+                : "Worktree cleanup is incomplete.",
+              ...(workflow && !cleanupStarted ? ["Enter: back to workflow"] : []),
+              ...(!workflow && !removedWorktree ? ["Enter: restart agent"] : []),
+              "Delete: retry cleanup  Esc: close pane",
+            ]
+          : ["Enter: restart agent  Esc: close pane", destructive];
+      const controls = wrap(footer.filter(Boolean));
+      lines = [
+        ...wrap([
+          ...status.split("\n").filter(Boolean),
+          `Directory: ${directory ?? "unknown"}`,
+        ]).slice(0, Math.max(0, rows - controls.length)),
+        ...controls,
+      ];
+    }
+    return lines
       .slice(0, rows)
       .map((line, y) =>
         z.ui

@@ -109,6 +109,12 @@ test(
     await session.waitForText("Delete: Delete worktree & branch and close pane");
     session.key("Delete");
     await session.waitForText("Delete again");
+    session.resize(8, 24);
+    await session.waitForText("Deletion disabled");
+    session.key("Delete");
+    session.resize(30, 100);
+    await session.waitForText("Delete again");
+    await session.waitForText("unmerged commits");
     session.key("Delete");
     await session.waitFor(
       "confirmed deletion closes the exit view",
@@ -174,7 +180,7 @@ test(
     await session.waitForText("Delete again");
     session.key("Delete");
     await session.waitForText("Worktree is still leased by");
-    assert(session.screen.includes("Delete: Delete worktree & branch and close pane"));
+    assert(session.screen.includes("Delete: retry cleanup"));
   },
 );
 
@@ -194,6 +200,24 @@ test(
         (value) => value.outcome === "failed" && String(value.error).includes("Swamp"),
       ),
     );
+    await session.waitForText("Details");
+    const lines = session.screen.split("\n");
+    const row = lines.findIndex((line) => line.includes("") && line.includes("Details"));
+    const column = lines[row]!.indexOf("Details");
+    for (const event_type of ["Press", "Release"] as const) {
+      session.mouse({
+        event_type,
+        left: true,
+        right: false,
+        middle: false,
+        wheel_up: false,
+        wheel_down: false,
+        shift: false,
+        alt: false,
+        ctrl: false,
+        position: { line: row, column },
+      });
+    }
     await session.waitForText("fixture-launch");
     session.resize(30, 100);
     session.key("Home");

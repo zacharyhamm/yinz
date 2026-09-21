@@ -80,16 +80,36 @@ const Checks = z.object({
     evidence: Evidence,
     review: Review.nullable(),
     test: Test.nullable(),
-    tests: z.enum(["missing", "current", "stale", "failed", "cancelled"]),
-    codeReview: z.enum(["missing", "current", "stale", "failed", "cancelled"]),
+    tests: z.enum([
+        "missing",
+        "current",
+        "stale",
+        "failed",
+        "cancelled",
+        "incomplete",
+    ]),
+    codeReview: z.enum([
+        "missing",
+        "current",
+        "stale",
+        "failed",
+        "cancelled",
+        "incomplete",
+    ]),
     ready: z.boolean(),
     reason: z.string().nullable(),
+    recommendation: z.string(),
+    repairReview: z.boolean(),
+    repairTests: z.boolean(),
 });
 const CheckArgs = Checks.omit({
     tests: true,
     codeReview: true,
     ready: true,
     reason: true,
+    recommendation: true,
+    repairReview: true,
+    repairTests: true,
 });
 const Assessment = z.object({
     review: Review,
@@ -407,6 +427,17 @@ export const methods = {
                 if (["cancelled", "interrupted"].includes(check.outcome)) {
                     return "cancelled";
                 }
+                if (
+                    "findings" in check
+                        ? !check.valid ||
+                            !["completed", "process-exit"].includes(
+                                check.outcome,
+                            )
+                        : check.outputComplete === false ||
+                            !!check.captureError ||
+                            check.exitCode === null ||
+                            !["completed", "failed"].includes(check.outcome)
+                ) return "incomplete";
                 return ("findings" in check
                         ? check.valid && check.resolved &&
                             check.findings.every((f) =>
@@ -421,12 +452,46 @@ export const methods = {
                     : "failed";
             };
             const reason = mergeCheckProblem(a.evidence, a.review, a.test);
+            const codeReview = status(a.review);
+            const tests = status(a.test);
+            const source = a.evidence.source;
+            const target = a.evidence.target;
+            const repairReview = codeReview === "failed" && !!a.review?.valid &&
+                a.review.findings.some((f) => f.severity !== "info");
+            const repairTests = tests === "failed" &&
+                a.test?.exitCode != null &&
+                a.test.exitCode !== 0;
+            const recommendation = target.rebasing || !target.clean ||
+                    target.conflicts.length
+                ? "Finish changes in the target checkout, then return to this menu."
+                : source.rebasing
+                ? (source.conflicts.length
+                    ? "Resolve and stage conflicts, then choose Continue rebase."
+                    : "Choose Continue rebase to finish the paused rebase.")
+                : repairReview
+                ? "Fix review findings, then commit and rerun checks."
+                : repairTests
+                ? "Fix test failures, then commit and rerun checks."
+                : !source.clean
+                ? "Commit & rebase before final checks. Review is also available now."
+                : codeReview === "incomplete"
+                ? "Reviewer did not complete a valid review. Inspect its output and retry Review."
+                : codeReview !== "current"
+                ? "Run Review for the current source and target."
+                : tests === "incomplete"
+                ? "Test execution or output is incomplete. Inspect its output and retry tests."
+                : tests !== "current"
+                ? "Run tests for the current source and target."
+                : "Merge after confirming the exact source and target revisions.";
             return save(c, "checks", {
                 ...a,
-                tests: status(a.test),
-                codeReview: status(a.review),
+                tests,
+                codeReview,
                 ready: reason === null,
                 reason,
+                recommendation,
+                repairReview,
+                repairTests,
             });
         },
     },

@@ -548,6 +548,11 @@ def validation_loop_smoke():
                   'run-tests': 'tests', 'retry-tests': 'tests', 'remove-clean-worktree': 'cleanup'}.get(value)
         if value == 'merge' and question == 'merge': suffix = 'integrate'
         if suffix and dismiss: dismiss_command(token, suffix)
+        if value in ('leave', 'leave-paused', 'keep'):
+            def finished():
+                runs = histories(token)
+                return runs and all(item['status'] == 'succeeded' for item in runs)
+            until(token + ': finished', finished)
         return q
 
     def menu(token):
@@ -555,7 +560,7 @@ def validation_loop_smoke():
 
     def check_state(token):
         q = menu(token)
-        records = swamp('data', 'query', 'modelName == ' + json.dumps(q['attributes']['run'] + '-checks'), '--select', 'attributes')['results']
+        records = swamp('data', 'query', 'specName == "checks" && modelName == ' + json.dumps(q['attributes']['run'] + '-checks'), '--select', 'attributes')['results']
         assert len(records) == 1
         return records[0]
 
@@ -593,7 +598,7 @@ def validation_loop_smoke():
         choose(token, 'fix-review-with-agent')
         assert check_state(token)['review']['outcome'] == 'stale'
         assert 'Unresolved fixture finding' in (topic / 'review-fix-evidence').read_text()
-        choose(token, 'review-again')
+        choose(token, 'review')
         assert check_state(token)['review']['resolved']
         hook_dir = root / 'failing-hooks'
         hook_dir.mkdir()
@@ -618,7 +623,7 @@ def validation_loop_smoke():
         assert 'failure-evidence BEGIN' in evidence and 'failure-evidence END' in evidence
         choose(token, 'commit-and-rebase')
         menu(token)
-        choose(token, 'retry-tests')
+        choose(token, 'run-tests')
         assert check_state(token)['test']['passed']
         # A test pass alone is insufficient; no confirmation is offered.
         choose(token, 'merge')
@@ -711,7 +716,7 @@ def validation_loop_smoke():
             choose(token, 'return-to-menu', 'test-output')
             assert check_state(token)['test']['outcome'] == 'cancelled'
             retry.touch()
-            choose(token, 'retry-tests')
+            choose(token, 'run-tests')
             assert check_state(token)['test']['passed']
             choose(token, 'leave')
         print('PASS: real command and child cancellation, ignored INT escalation, Ctrl-C, retained output, and explicit successful retry', flush=True)

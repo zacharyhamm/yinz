@@ -10,6 +10,10 @@ swamp extension pull @swamp/git
 swamp workflow validate @hammz/zellij-agent-exit
 ```
 
+If validation cannot resolve a model, run `swamp doctor extensions --json` in the control checkout.
+If the diagnostic names a missing `@swamp/git` import, run `swamp extension pull @swamp/git` there, then validate again.
+Errors in the view include the control-checkout path and a diagnostic command.
+
 The extensions stay under `@hammz` in this repository. Do not publish them. The manifest
 is `extensions/manifest.yaml`. The Git extension adds methods with `export const
 extension` and reuses the official commit and non-force worktree removal methods.
@@ -202,7 +206,12 @@ local extensions unpublished.
 ## Exit and review choices
 
 One menu offers **Show diff**, **Review**, **Commit & rebase**, **Run tests**, **Merge**, and **Leave**.
-Each check shows `missing`, `current`, `stale`, `failed`, or `cancelled`.
+Each check shows `missing`, `current`, `stale`, `failed`, `cancelled`, or `incomplete`.
+The view keeps the branch, target, current activity, and check results visible above the output.
+**Details** shows run identities, step histories, and saved output versions.
+The menu recommends the next action. **Merge** remains disabled until its checks are ready.
+Use Tab or the left and right arrow keys to select an action, then Enter to activate it.
+Long questions have a separate reader so their text stays together.
 An exit-hook launch also offers **Restart** and **Fork** for its original terminal.
 Each completed action returns to this menu. Repairs, retries, and later checks require a new choice.
 
@@ -211,7 +220,8 @@ Each completed action returns to this menu. Repairs, retries, and later checks r
   The viewer uses `less`, including for short or empty diffs. Press `q` or `Esc` to return.
   Untracked nested repositories appear as quoted directory entries. The viewer does not traverse them.
 - **Review** requires valid structured findings from a helper that exits successfully.
-  Missing or malformed output records a failed review. Saved findings add **Fix review with agent** and **Review again**.
+  Missing or malformed output records an incomplete review. Valid blocking findings add **Fix review with agent**.
+  Choose **Review** again to retry or check repaired code.
   A repair receives the complete saved findings. Large reports use an exact saved-version reference.
 - **Commit & rebase** generates a message for pending changes, verifies its evidence, commits, and rebases onto the local target.
   A clean source skips message generation. A failed commit stops before rebase and retains its diagnostics.
@@ -220,7 +230,8 @@ Each completed action returns to this menu. Repairs, retries, and later checks r
   The resolver stages its changes and exits. **Continue rebase** requires a separate choice and no unresolved conflicts.
   Additional conflicts repeat these choices. Leaving preserves the paused rebase.
 - **Run tests** runs the configured command against the source checkout.
-  Failed or cancelled tests add **Fix tests with agent** and **Retry tests**.
+  A completed failing test command adds **Fix tests with agent**.
+  Cancelled commands and incomplete output require inspection or another **Run tests** choice.
   The fix agent receives the complete failure report, including output that exceeds the view or startup prompt limit.
 - **Merge** requires a current valid review with no error or warning findings, passing tests, and clean source and target checkouts.
   Informational findings are permitted. Commits, rebases, repairs, and source or target changes require fresh checks.
@@ -276,9 +287,16 @@ cancelled too, preserving panes, checkouts and VMs. A cancelled fork picker canc
 pressing Fork again while a picker opened by that button is open returns to it instead of opening
 a second one; a picker the workflow's own menu opened is never reused. Restart closes a fork
 picker that is still open.
-Delete performs the same cleanup as Leave: it closes the original terminal and its exit
-view. Delete is disabled while work is active.
-The workflow view has no Detach button, and Esc does not close it.
+Escape closes the original terminal and its exit view without deleting files.
+While an answer field has focus, Escape and Delete belong to the answer editor.
+For a verified secondary checkout, Delete opens a separate worktree-and-branch deletion confirmation, including while work is active.
+The confirmation refreshes and displays the checkout revision. It warns that uncommitted work and unmerged commits can be lost.
+Confirm only after the full warning and controls are visible. Enlarge a pane that cannot show them.
+Confirmation stops owned operations before force-removing the worktree and deleting its branch at the confirmed revision.
+Checkout identity changes after confirmation cause a refusal. Partial failure shows what remains and permits retry.
+This differs from **Remove clean worktree**, which requires integration and retains the branch.
+During confirmation, Escape returns without deleting. During deletion, wait for completion or a diagnostic.
+The workflow view has no Detach button.
 Ordinary CLI launches keep their separate view.
 
 The view shows authoritative run and child-run state, findings, revision identities,
@@ -291,9 +309,10 @@ Cancellation remains a separate action:
 zellij workflow cancel RUN_ID
 ```
 
-Cancellation stops active runs in the attached workflow family and preserves panes,
-checkouts and VMs. Suspended runs remain persisted and resumable; cancellation does
-not apply to them. It does not approve cleanup.
+The CLI command targets only the supplied active run. It preserves panes, checkouts and VMs.
+The view identifies the active run to cancel, including a continuation whose original run has completed.
+If several runs are active, select the specific run. If a run has stopped, the view refreshes its status.
+Suspended runs remain persisted and resumable. Cancellation does not apply to them or approve cleanup.
 
 Diffs and test logs in the view use previews of up to 16,384 UTF-16 units.
 Each shortened preview includes a command to retrieve the complete saved version.
@@ -317,8 +336,11 @@ consumes only resume inputs that match the recorded answer and submission token.
 Unattended runs never invent answers. Automatic answers must be declared by a custom
 workflow, with an explicit policy appropriate to that workflow.
 
-If delivery is interrupted after recording, inspect the question resource and recover
-its existing submission:
+The view shows extension-loading progress while an answer waits for the managed server.
+If delivery times out, the view waits for saved state before allowing another answer to that question.
+If delivery stops after recording, the saved answer remains visible with **Recover saved answer**.
+This action completes the existing submission without recording another answer.
+For recovery from the CLI, inspect the question resource and recover its existing submission:
 
 ```sh
 swamp model get MODEL_NAME --json

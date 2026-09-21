@@ -156,7 +156,69 @@ export const report = {
                 /[<>&]/g,
                 (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!),
             ).replace(/[`*_\[\]]/g, "\\$&");
-        const markdown = "# Workflow evidence\n\nRun: " +
+        const latest = new Map(
+            [...resources]
+                .sort((a, b) => a.version - b.version)
+                .map((r) => [r.name, r.attributes]),
+        );
+        const checks = latest.get("checks-current");
+        const integration = latest.get("integrationDecision-current");
+        const cleanup = latest.get("cleanupDecision-current");
+        const integrated = integration?.integrated ||
+            context.inputs?.phase === "cleanup";
+        const decisionPhase = !context.inputs?.phase ||
+            ["prepare", "confirm"].includes(String(context.inputs.phase));
+        const state = context.inputs?.state;
+        const resultEvidence = integration?.evidence ??
+            latest.get("rebaseResult-current")?.evidence;
+        const evidence = resultEvidence ?? checks?.evidence ??
+            latest.get("evidence-current") ?? await resolveEvidence(
+                context.dataRepository,
+                state && typeof state === "object" && "evidence" in state
+                    ? state.evidence
+                    : null,
+            );
+        const summary = [
+            ...(evidence
+                ? [
+                    "Branch: " + quote(evidence.source.branch) + " → " +
+                    quote(evidence.target.branch),
+                    (decisionPhase || resultEvidence || integrated
+                        ? "Source revision: "
+                        : "Source revision before action: ") +
+                    quote(evidence.source.commit),
+                    "Target revision: " + quote(evidence.target.commit),
+                ]
+                : []),
+            ...(context.inputs?.checkout
+                ? ["Worktree: " + quote(context.inputs.checkout)]
+                : []),
+            ...(checks && decisionPhase
+                ? [
+                    "Review: " + checks.codeReview + ". Tests: " +
+                    checks.tests + ".",
+                ]
+                : []),
+            ...(integrated
+                ? ["Integration completed locally. No commits were pushed."]
+                : []),
+            ...(cleanup
+                ? [
+                    cleanup.removed
+                        ? "Clean worktree removed. Branch and VM resources were not deleted."
+                        : "Worktree removal was refused: " +
+                            quote(cleanup.reason),
+                ]
+                : context.inputs?.phase === "cleanup" &&
+                        context.inputs?.answer === "keep"
+                ? ["Worktree, branch and VM resources kept."]
+                : []),
+            ...(!integrated && decisionPhase && checks?.recommendation
+                ? ["Next: " + quote(checks.recommendation)]
+                : []),
+        ];
+        const markdown = "# Workflow result\n\n" + summary.join("\n\n") +
+            "\n\nRun: " +
             context.workflowRunId + "\n\nStatus: " + context.workflowStatus +
             "\n\n" + testReports.map((summary) => {
                 let length = 3;
@@ -175,6 +237,6 @@ export const report = {
             ).join("\n") + "\n\nSaved run resources:\n" +
             resources.map((r: unknown) => "- " + quote(r)).join("\n") +
             "\n\nOutstanding steps: " + quote(json.outstanding);
-        return { markdown, json };
+        return { markdown, json: { ...json, summary } };
     },
 };
