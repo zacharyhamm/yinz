@@ -44,7 +44,7 @@ pub const SEARCH_RESULTS: usize = 8;
 pub const CONTEXT_MAX_BYTES: usize = 262_144;
 pub const TOOL_RESULT_BYTES: usize = 8 * 1024;
 pub const TOOL_RESULTS_BYTES: usize = 64 * 1024;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Swamp workflows: load the `workflow` family. Use workflow_search/get/schema, diagnose with workflow_run_get/logs/reports/data, then workflow_edit, workflow_validate and workflow_resume. Prepare replacement definitions from workflow_get source.content to preserve all fields. Pass the complete prior workflow_get result as expected for edit/delete. After failures inspect reports before changing or retrying. Existing-run controls require exact run UUIDs. Never repeat a mutation after an uncertain response. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Swamp Lab issues: load the `swamp` family, then `swamp_issue_search`/`swamp_issue_get`; uses the host login, no active project needed. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree named after the branch; an agent outside a linked worktree needs `allow_outside_worktree`. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. Author TypeScript plugins yourself with `.ts` filenames; do not spawn an agent. Start with `plugin_docs section=quickstart`; extensionless names select TypeScript. Use `plugin_docs` as authority; `query=` before sections. `plugin_write` creates files and confirms grants. For edits: `plugin_outline`/`plugin_search`, `plugin_read` the range, then `plugin_edit` (`edits` batches). Never re-send a whole file you did not just write. `plugin_check name=…` checks saved files; `source` checks drafts. Writes/edits format and require strict types/lint. Fix diagnostics before reload. Create dependencies first. `plugin_format`: draft `source` or confirmed saved-file formatting with backup. Run `plugin_test` before reload. Recover omitted payloads with `tool_result_read` by call ID. `plugin_reload` for the first render or the load error (`headless` for a plugin with no pane, answered from its log), `plugin_log` for what it logged; a plugin that runs agents uses TypeScript async functions and `zellij.agent` - section `agents`, example `example_agent_harness`; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. Use or state only IDs a tool result gave; if one was cut off, recover it with `tool_result_read` or look it up, never infer it from nearby IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Swamp workflows: load the `workflow` family. Use workflow_search/get/schema, diagnose with workflow_run_get/logs/reports/data, then workflow_edit, workflow_validate and workflow_resume. Prepare replacement definitions from workflow_get source.content to preserve all fields. Pass the complete prior workflow_get result as expected for edit/delete. After failures inspect reports before changing or retrying. Existing-run controls require exact run UUIDs. Never repeat a mutation after an uncertain response. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Swamp Lab issues: load the `swamp` family, then `swamp_issue_search`/`swamp_issue_get`; uses the host login, no active project needed. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree named after the branch; an agent outside a linked worktree needs `allow_outside_worktree`. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. Author TypeScript plugins yourself with `.ts` filenames; do not spawn an agent. Start with `plugin_docs section=quickstart`; extensionless names select TypeScript. Use `plugin_docs` as authority; `query=` before sections. `plugin_write` creates files and confirms grants. For edits: `plugin_outline`/`plugin_search`, `plugin_read` the range, then `plugin_edit` (`edits` batches). Never re-send a whole file you did not just write. `plugin_check name=…` checks saved files; `source` checks drafts. Writes/edits format and require strict types/lint. Fix diagnostics before reload. Create dependencies first. `plugin_format`: draft `source` or confirmed saved-file formatting with backup. Run `plugin_test` before reload. Recover omitted payloads with `tool_result_read` by call ID. `plugin_reload` for the first render or the load error (`headless` for a plugin with no pane, answered from its log), `plugin_log` for what it logged; a plugin that runs agents uses TypeScript async functions and `zellij.agent` - section `agents`, example `example_agent_harness`; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
 the tools array: the rest are loaded on demand, and calling one by name loads its family and \
 runs it, so call the tool you want rather than asking for it. `tools_load` is there for when \
 you do not know the name. Make independent calls together.";
@@ -1162,6 +1162,9 @@ fn bounded_result(content: &str, note: &str, limit: usize) -> String {
     if note.len() >= content.len() {
         return content.to_owned();
     }
+    if let Some(shrunk) = shrunk_json(content, note, limit) {
+        return shrunk;
+    }
     let mut end = limit.saturating_sub(note.len() + 1).min(content.len());
     while !content.is_char_boundary(end) {
         end -= 1;
@@ -1170,6 +1173,91 @@ fn bounded_result(content: &str, note: &str, limit: usize) -> String {
         note.to_owned()
     } else {
         format!("{}\n{note}", &content[..end])
+    }
+}
+
+/// A JSON result brought under `limit` by shortening its longest strings, so every key
+/// survives.
+///
+/// Cutting at the head is wrong for JSON: keys go out in alphabetical order, so a long
+/// `body` takes every key after it - `id`, `rev`, `title` - and a model shown the rest has
+/// been seen to fill the missing id in from a neighbouring one. Each cut string ends with
+/// the retrieval `note`, so the whole of it can still be read back. `None` when `content`
+/// is not an object or array, or when no amount of shortening strings makes it fit; the
+/// caller falls back to the head cut.
+fn shrunk_json(content: &str, note: &str, limit: usize) -> Option<String> {
+    let mut value: Value = serde_json::from_str(content).ok()?;
+    if !(value.is_object() || value.is_array()) {
+        return None;
+    }
+    let marker = format!("… {note}");
+    let mut paths = Vec::new();
+    string_paths(&value, String::new(), &mut paths);
+    // The serialized size is kept as a running total rather than re-serialized after each
+    // cut: a result of thousands of medium strings would otherwise cost the whole value
+    // once per string, on every request it stays in the transcript.
+    let mut total = value.to_string().len();
+    let marker_cost = encoded_len(&marker);
+    // Longest first, measured once: a string already cut is not cut again. Worth cutting
+    // only if the cut saves more than the marker costs.
+    let mut lengths: Vec<(usize, String)> = paths
+        .into_iter()
+        .filter_map(|path| Some((value.pointer(&path)?.as_str()?.len(), path)))
+        .filter(|(length, _)| *length > marker.len() * 2)
+        .collect();
+    // If replacing every one of them with the bare marker still does not fit, no cut will.
+    let savings: usize = lengths
+        .iter()
+        .filter_map(|(_, path)| value.pointer(path)?.as_str())
+        .map(|text| encoded_len(text).saturating_sub(marker_cost))
+        .sum();
+    if total.saturating_sub(savings) > limit {
+        return None;
+    }
+    lengths.sort_by_key(|(length, _)| std::cmp::Reverse(*length));
+    for (length, path) in lengths {
+        if total <= limit {
+            break;
+        }
+        let excess = total - limit;
+        let Some(Value::String(text)) = value.pointer_mut(&path) else {
+            continue;
+        };
+        let before = encoded_len(text);
+        // One raw byte is at least one serialized byte, so cutting `excess` raw bytes
+        // plus the marker's serialized length removes at least `excess` from the whole.
+        let mut keep = length.saturating_sub(excess + marker_cost);
+        while !text.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        text.truncate(keep);
+        text.push_str(&marker);
+        total = total - before + encoded_len(text);
+    }
+    (total <= limit).then(|| value.to_string())
+}
+
+/// The length of `text` serialized as a JSON string, quotes included.
+fn encoded_len(text: &str) -> usize {
+    serde_json::to_string(text).map_or(text.len() + 2, |s| s.len())
+}
+
+/// The JSON pointer of every string in `value`.
+fn string_paths(value: &Value, at: String, out: &mut Vec<String>) {
+    match value {
+        Value::String(_) => out.push(at),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                string_paths(item, format!("{at}/{index}"), out);
+            }
+        },
+        Value::Object(fields) => {
+            for (key, item) in fields {
+                let key = key.replace('~', "~0").replace('/', "~1");
+                string_paths(item, format!("{at}/{key}"), out);
+            }
+        },
+        _ => {},
     }
 }
 

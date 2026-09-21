@@ -25,7 +25,9 @@ fn a_note_lands_under_the_active_project_root_with_its_tags_and_links() {
     assert_eq!(added["project"], "hocus");
     assert_eq!(added["root"], "/work/hocus");
     assert_eq!(added["title"], "Why the parser");
-    assert_eq!(added["body"], "# because\n\n- reasons");
+    // The body is the model's own text; the reply says how much was stored, not what.
+    assert!(added.get("body").is_none());
+    assert_eq!(added["body_bytes"], "# because\n\n- reasons".len());
     assert_eq!(added["tags"], serde_json::json!(["design"]));
     assert_eq!(added["todo_ids"], serde_json::json!([item]));
     assert!(added["created_at"].as_i64().is_some_and(|ms| ms > 0));
@@ -34,6 +36,7 @@ fn a_note_lands_under_the_active_project_root_with_its_tags_and_links() {
     let stored = stored_note(&state, added["id"].as_u64().unwrap()).expect("stored");
     assert_eq!(stored.root.as_deref(), Some("/work/hocus"));
     assert_eq!(stored.todo_ids, vec![item]);
+    assert_eq!(stored.body, "# because\n\n- reasons");
 }
 
 #[test]
@@ -155,7 +158,8 @@ fn note_edit_changes_what_was_given_and_keeps_the_rest() {
         &format!(r#"{{"id":{id},"body":"new"}}"#),
     );
     assert_eq!(edited["title"], "t");
-    assert_eq!(edited["body"], "new");
+    assert_eq!(edited["body_bytes"], 3);
+    assert_eq!(stored_note(&state, id).expect("stored").body, "new");
     assert_eq!(edited["tags"], serde_json::json!(["a"]));
     let retagged = note(
         &mut state,
@@ -360,7 +364,9 @@ fn a_note_write_answers_without_parking_the_queue() {
         .expect("answered")
         .content
         .clone();
-    assert!(answer.contains("because"), "got {answer}");
+    // The model's own body is not echoed back; the id it needs is.
+    assert!(!answer.contains("because"), "got {answer}");
+    assert!(answer.contains(r#""id":1"#), "got {answer}");
     assert_eq!(stored_note(&state, 1).unwrap().title, "why");
 }
 
@@ -490,4 +496,42 @@ fn link_and_completion_conflicts_ask_for_a_reload() {
             .unwrap()
             .is_empty());
     }
+}
+
+/// A note longer than one tool result may be on the wire used to answer its own
+/// `note_add` with a reply the wire cut before `id` (keys sort after `body`), and the
+/// model named a neighbouring note's id instead. The write replies carry no body now,
+/// so they are small whatever the note holds.
+#[test]
+fn a_long_note_is_answered_with_its_id_inside_one_tool_result() {
+    let mut state = state_with_project();
+    let body = "x".repeat(12 * 1024);
+    assert!(body.len() > crate::api::TOOL_RESULT_BYTES);
+    let arguments = serde_json::json!({ "title": "long", "body": body }).to_string();
+    let raw = note_result(&mut state, "note_add", &arguments).expect("answered");
+    assert!(
+        raw.len() < crate::api::TOOL_RESULT_BYTES,
+        "{} bytes",
+        raw.len()
+    );
+    let added: serde_json::Value = serde_json::from_str(&raw).expect("json");
+    let id = added["id"].as_u64().expect("id");
+    assert_eq!(added["body_bytes"], 12 * 1024);
+    assert!(added.get("body").is_none());
+    assert_eq!(
+        note(&mut state, "note_get", &format!(r#"{{"id":{id}}}"#))["title"],
+        "long"
+    );
+
+    let arguments = serde_json::json!({ "id": id, "body": "y".repeat(12 * 1024) }).to_string();
+    let raw = note_result(&mut state, "note_edit", &arguments).expect("answered");
+    assert!(
+        raw.len() < crate::api::TOOL_RESULT_BYTES,
+        "{} bytes",
+        raw.len()
+    );
+    let edited: serde_json::Value = serde_json::from_str(&raw).expect("json");
+    assert_eq!(edited["id"], id);
+    assert!(edited["rev"].as_i64() > added["rev"].as_i64());
+    assert!(edited.get("body").is_none());
 }

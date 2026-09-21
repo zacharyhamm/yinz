@@ -1015,3 +1015,71 @@ fn docs_search_elision_distinguishes_case_modes_and_defaults_to_sensitive() {
     assert!(repeated[2].contains("c3"));
     assert!(repeated[3].contains("c4"));
 }
+
+/// A JSON result over the per-result cap keeps every key: its longest string is cut
+/// instead of its tail. Cut at the head, `{"body":…,"id":10}` lost the `id` sorted after
+/// the body, and the model answered with a neighbouring note's id.
+#[test]
+fn an_oversized_json_result_is_cut_inside_its_longest_string_and_keeps_its_ids() {
+    let cfg = test_config();
+    let content = serde_json::json!({
+        "body": "é and some \"quoted\" text\n".repeat(600),
+        "id": 10,
+        "rev": 1,
+        "title": "the note",
+    })
+    .to_string();
+    assert!(content.len() > TOOL_RESULT_BYTES);
+    let transcript = vec![
+        plugin_call("n1", "note_get", serde_json::json!({ "id": 10 })),
+        result("n1", &content),
+    ];
+    let sent = &wire_tool_results(&body_value(&cfg, &transcript))[0];
+    assert!(sent.len() <= TOOL_RESULT_BYTES, "{} bytes", sent.len());
+    let parsed: serde_json::Value = serde_json::from_str(sent).expect("still JSON");
+    assert_eq!(parsed["id"], 10);
+    assert_eq!(parsed["rev"], 1);
+    assert_eq!(parsed["title"], "the note");
+    let body = parsed["body"].as_str().expect("body");
+    assert!(body.starts_with("é and some"));
+    assert!(
+        body.ends_with("tool_call_id=\"n1\" part=result offset=0]"),
+        "{body}"
+    );
+}
+
+/// Text that is not JSON is still cut at the head, as before.
+#[test]
+fn an_oversized_plain_result_is_still_cut_at_the_head() {
+    let cfg = test_config();
+    let content = "plain line\n".repeat(1200);
+    let transcript = vec![
+        plugin_call("p1", "note_get", serde_json::json!({ "id": 1 })),
+        result("p1", &content),
+    ];
+    let sent = &wire_tool_results(&body_value(&cfg, &transcript))[0];
+    assert!(sent.len() <= TOOL_RESULT_BYTES);
+    assert!(sent.starts_with("plain line\n"));
+    assert!(sent.ends_with("part=result offset=0]"));
+}
+
+/// A JSON result of thousands of medium strings that no amount of cutting brings under the
+/// cap falls back to the head cut without cutting them one at a time. Re-serializing the whole
+/// value after each cut made this quadratic, and it ran on every request.
+#[test]
+fn a_json_result_that_cannot_be_shrunk_to_fit_falls_back_to_the_head_cut() {
+    let cfg = test_config();
+    let entries: Vec<String> = (0..5000)
+        .map(|i| format!("{i:05} {}", "x".repeat(200)))
+        .collect();
+    let content = serde_json::json!(entries).to_string();
+    assert!(content.len() > 1_000_000);
+    let transcript = vec![
+        plugin_call("s1", "note_get", serde_json::json!({ "id": 1 })),
+        result("s1", &content),
+    ];
+    let sent = &wire_tool_results(&body_value(&cfg, &transcript))[0];
+    assert!(sent.len() <= TOOL_RESULT_BYTES, "{} bytes", sent.len());
+    assert!(sent.starts_with("[\"00000 xxx"), "{}", &sent[..40]);
+    assert!(sent.ends_with("part=result offset=0]"));
+}

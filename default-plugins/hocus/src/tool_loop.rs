@@ -2060,6 +2060,20 @@ impl State {
         value
     }
 
+    /// A note as a write answers it: everything but the body, which the model has just
+    /// written and so already holds. Echoing it made the reply as long as the note, and a
+    /// reply over the per-result cap on the wire is cut at the head - which, keys going out
+    /// in alphabetical order in the wasm build, took the `id` after `body` with it.
+    /// `body_bytes` says what was stored.
+    pub(crate) fn note_written_reply(&self, note: &notes::Note) -> serde_json::Value {
+        let mut value = self.note_reply(note);
+        if let Some(object) = value.as_object_mut() {
+            object.remove("body");
+            object.insert("body_bytes".to_owned(), serde_json::json!(note.body.len()));
+        }
+        value
+    }
+
     /// Change the notes, and answer with what changed.
     ///
     /// Synchronous like [`Self::todo_write`]. The one two-step is `note_add`:
@@ -2100,7 +2114,7 @@ impl State {
                         Ok(())
                     })
                     .err();
-                let mut value = self.note_reply(&existing_note(&backend, id)?);
+                let mut value = self.note_written_reply(&existing_note(&backend, id)?);
                 if let Some(error) = warning {
                     value["warning"] = serde_json::json!(format!(
                         "the note was written but its tags and links were not: {error}"
@@ -2151,7 +2165,9 @@ impl State {
                         Err(_) => format!("note {id} was removed by somebody else"),
                     });
                 }
-                Ok(self.note_reply(&existing_note(&backend, id)?).to_string())
+                Ok(self
+                    .note_written_reply(&existing_note(&backend, id)?)
+                    .to_string())
             },
             "note_archive" => {
                 let id = args.id.ok_or("id is required")?;
