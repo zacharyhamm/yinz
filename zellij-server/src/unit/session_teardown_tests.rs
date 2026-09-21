@@ -32,6 +32,7 @@ fn session_with(
         session_recorder_thread: None,
         config_file_path: None,
         config_dir: None,
+        shutdown: Default::default(),
     }
 }
 

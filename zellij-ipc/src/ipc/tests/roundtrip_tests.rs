@@ -4637,10 +4637,8 @@ fn set_pane_color_wire_roundtrip() {
 /// rename case) survives a full wire-level round-trip
 /// (Rust → proto struct → bytes → proto struct → Rust).
 ///
-/// The struct-level round-trip in `test_client_roundtrip!` doesn't catch
-/// issues with prost's `tags` attribute on oneof fields, because prost
-/// only uses the tags list during byte decoding, not struct-to-struct
-/// conversion.
+/// Missing prost oneof tags only fail during byte decoding. Keep this focused
+/// regression alongside the wire round-trips in `test_client_roundtrip!`.
 #[test]
 fn rename_active_pane_wire_roundtrip() {
     use prost::Message;

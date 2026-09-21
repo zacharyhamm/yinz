@@ -95,7 +95,7 @@ fn multiple_users_in_same_pane_and_tab() {
 #[test]
 fn multiple_users_in_different_panes_and_same_tab() {
     let mut zellij = start_zellij();
-    claim_first_terminal_and_wait_for_prompt(&zellij);
+    let left_terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
 
     let second_client = zellij.attach_client(TERMINAL_SIZE);
     second_client.wait_until("second client loaded on the first tab", |grid_snapshot| {
@@ -128,6 +128,16 @@ fn multiple_users_in_different_panes_and_same_tab() {
     );
     assert_snapshot!(normalized(&main_grid));
     assert_snapshot!(normalized(&second_grid));
+    zellij.send_stdin(b"left-client;");
+    left_terminal.wait_for_stdin("main client's input reached the left pane", |bytes| {
+        bytes.ends_with(b";")
+    });
+    second_client.send_stdin(b"right-client;");
+    right_terminal.wait_for_stdin("second client's input reached the right pane", |bytes| {
+        bytes.ends_with(b";")
+    });
+    assert_eq!(left_terminal.stdin_bytes(), b"left-client;");
+    assert_eq!(right_terminal.stdin_bytes(), b"right-client;");
     second_client.quit();
     zellij.quit();
 }
@@ -135,7 +145,7 @@ fn multiple_users_in_different_panes_and_same_tab() {
 #[test]
 fn multiple_users_in_different_tabs() {
     let mut zellij = start_zellij();
-    claim_first_terminal_and_wait_for_prompt(&zellij);
+    let first_tab_terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
 
     let second_client = zellij.attach_client(TERMINAL_SIZE);
     second_client.wait_until("second client loaded on the first tab", |grid_snapshot| {
@@ -169,6 +179,16 @@ fn multiple_users_in_different_tabs() {
     );
     assert_snapshot!(normalized(&main_grid));
     assert_snapshot!(normalized(&second_grid));
+    zellij.send_stdin(b"first-tab-client;");
+    first_tab_terminal.wait_for_stdin("main client's input reached the first tab", |bytes| {
+        bytes.ends_with(b";")
+    });
+    second_client.send_stdin(b"second-tab-client;");
+    second_tab_terminal.wait_for_stdin("second client's input reached the second tab", |bytes| {
+        bytes.ends_with(b";")
+    });
+    assert_eq!(first_tab_terminal.stdin_bytes(), b"first-tab-client;");
+    assert_eq!(second_tab_terminal.stdin_bytes(), b"second-tab-client;");
     second_client.quit();
     zellij.quit();
 }

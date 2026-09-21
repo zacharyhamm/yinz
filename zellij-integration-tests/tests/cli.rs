@@ -116,25 +116,62 @@ fn a_plain_blocking_command_outlives_an_unrelated_pane_closing() {
 
 /// `zellij events` streams the session's state as it changes: a subscriber starts from the
 /// state as it stands, a new pane is a pane report and a tab report, and a filter keeps the
-/// rest out. (The stream's end with the session is not covered: the harness cannot end a
-/// session, since the quit-confirmation modal takes Ctrl+q.)
+/// rest out.
 #[test]
 fn events_stream_the_session_state() {
+    fn terminal_ids_by_tab(json: &str) -> Vec<(usize, u64)> {
+        let event: serde_json::Value = serde_json::from_str(json).unwrap();
+        let mut ids = vec![];
+        for (tab, panes) in event["PaneUpdate"]["panes"].as_object().unwrap() {
+            for pane in panes.as_array().unwrap() {
+                if !pane["is_plugin"].as_bool().unwrap() {
+                    ids.push((tab.parse().unwrap(), pane["id"].as_u64().unwrap()));
+                }
+            }
+        }
+        ids.sort_unstable();
+        ids
+    }
+
     let mut zellij = start_zellij();
-    claim_first_terminal_and_wait_for_prompt(&zellij);
+    let first = claim_first_terminal_and_wait_for_prompt(&zellij);
 
     let everything = zellij.stream_events(&[]);
     let only_panes = zellij.stream_events(&["pane_update"]);
     // A new subscriber is sent the state as it stands.
-    everything.wait_for_event("PaneUpdate");
-    everything.wait_for_event("TabUpdate");
-    only_panes.wait_for_event("PaneUpdate");
+    for subscriber in [&everything, &only_panes] {
+        subscriber.wait_for_event_matching("PaneUpdate", |json| {
+            terminal_ids_by_tab(json) == vec![(0, u64::from(first.terminal_id().get()))]
+        });
+    }
+    let initial_tabs: serde_json::Value =
+        serde_json::from_str(&everything.wait_for_event_matching("TabUpdate", |_| true)).unwrap();
+    let initial_tabs = initial_tabs["TabUpdate"].as_array().unwrap();
+    assert_eq!(initial_tabs.len(), 1);
+    assert_eq!(initial_tabs[0]["position"], 0);
+    assert_eq!(initial_tabs[0]["selectable_tiled_panes_count"], 1);
 
-    let before = only_panes.streamed_event_types().len();
-    split_right_and_wait_for_prompt(&zellij);
-    zellij.wait_until("the split reached the subscribers", |_| {
-        only_panes.streamed_event_types().len() > before
-    });
+    let right = split_right_and_wait_for_prompt(&zellij);
+    let expected_panes = vec![
+        (0, u64::from(first.terminal_id().get())),
+        (0, u64::from(right.terminal_id().get())),
+    ];
+    for subscriber in [&everything, &only_panes] {
+        subscriber.wait_for_event_matching("PaneUpdate", |json| {
+            terminal_ids_by_tab(json) == expected_panes
+        });
+    }
+    // The initial TabUpdate is insufficient: the report must describe the split.
+    let split_tabs: serde_json::Value =
+        serde_json::from_str(&everything.wait_for_event_matching("TabUpdate", |json| {
+            let event: serde_json::Value = serde_json::from_str(json).unwrap();
+            event["TabUpdate"][0]["selectable_tiled_panes_count"] == 2
+        }))
+        .unwrap();
+    let split_tabs = split_tabs["TabUpdate"].as_array().unwrap();
+    assert_eq!(split_tabs.len(), 1);
+    assert_eq!(split_tabs[0]["position"], 0);
+    assert_eq!(split_tabs[0]["tab_id"], initial_tabs[0]["tab_id"]);
     assert!(
         only_panes
             .streamed_event_types()
@@ -143,15 +180,6 @@ fn events_stream_the_session_state() {
         "a filtered stream carries only what was asked for: {:?}",
         only_panes.streamed_event_types()
     );
-    assert!(
-        everything
-            .streamed_event_types()
-            .iter()
-            .any(|t| t == "TabUpdate"),
-        "{:?}",
-        everything.streamed_event_types()
-    );
-
     zellij.quit();
 }
 
