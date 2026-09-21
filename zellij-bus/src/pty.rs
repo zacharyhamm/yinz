@@ -409,7 +409,7 @@ pub enum PtyInstruction {
         default_editor: Option<PathBuf>,
         post_command_discovery_hook: Option<String>,
     },
-    ListClientsToPlugin(SessionLayoutMetadata, PluginId, ClientId),
+    ListClientsToPlugin(SessionLayoutMetadata, PluginId, ClientId, Option<u64>),
     ReportPluginCwd(PluginId, PathBuf),
     SendSigintToPaneId(PaneId),
     SendSigkillToPaneId(PaneId),

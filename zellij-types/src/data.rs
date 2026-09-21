@@ -2396,6 +2396,8 @@ use crate::geometry::FloatingPaneCoordinates;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OriginatingPlugin {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deno_generation: Option<u64>,
     pub plugin_id: crate::internal_ids::PluginId,
     pub client_id: ClientId,
     pub context: Context,
@@ -2411,6 +2413,7 @@ impl OriginatingPlugin {
         context: Context,
     ) -> Self {
         OriginatingPlugin {
+            deno_generation: None,
             plugin_id,
             client_id,
             context,

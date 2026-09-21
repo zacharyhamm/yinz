@@ -4865,6 +4865,7 @@ impl From<zellij_types::data::OriginatingPlugin>
         let context: HashMap<String, String> = orig.context.into_iter().collect();
 
         Self {
+            deno_generation: orig.deno_generation,
             plugin_id: orig.plugin_id.get(),
             client_id: u32::from(orig.client_id.get()),
             context,
@@ -4885,6 +4886,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::OriginatingP
         let context: BTreeMap<String, String> = orig.context.into_iter().collect();
 
         Ok(Self {
+            deno_generation: orig.deno_generation,
             plugin_id: zellij_types::internal_ids::PluginId::new(orig.plugin_id),
             client_id: ClientId::try_from(orig.client_id)?,
             context,

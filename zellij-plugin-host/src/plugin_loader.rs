@@ -273,7 +273,16 @@ impl<'a> PluginLoader<'a> {
                     },
                     Err(error) => return Err(error).with_context(err_context),
                 };
-            deno.env_mut().deno_generation = Some(deno.generation());
+            for name in deno.worker_names()? {
+                let mut env = self.create_plugin_env(None, Arc::default(), Arc::default());
+                env.permissions = deno.env().permissions.clone();
+                env.permissions_requested = deno.env().permissions_requested.clone();
+                env.resolved_source_path = deno.env().resolved_source_path.clone();
+                env.deno_workers = deno.env().deno_workers.clone();
+                if let Some(workers) = &deno.env().deno_workers {
+                    workers.spawn(name, &source, &path, env)?;
+                }
+            }
             RunningPlugin::new_deno(deno, self.size.rows, self.size.cols)
         };
         let plugin = Arc::new(Mutex::new(running));
@@ -422,6 +431,7 @@ impl<'a> PluginLoader<'a> {
             cancel: self.cancel.clone(),
             cancel_tripped: Arc::new(AtomicBool::new(false)),
             deno_generation: None,
+            deno_workers: None,
             client_id: self.client_id,
             owner_client_id: self.client_id,
             plugin: self.plugin_config.clone(), // TODO: change field name in PluginEnv to plugin_config
@@ -599,6 +609,7 @@ impl<'a> PluginLoader<'a> {
             cancel: self.cancel.clone(),
             cancel_tripped: Arc::new(AtomicBool::new(false)),
             deno_generation: None,
+            deno_workers: None,
             client_id: self.client_id,
             owner_client_id: self.client_id,
             plugin: plugin_config,

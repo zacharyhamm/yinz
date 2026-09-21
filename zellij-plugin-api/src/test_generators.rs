@@ -447,6 +447,7 @@ pub(crate) fn new_pane_placements(tc: &hegel::TestCase) -> NewPanePlacement {
 
 pub(crate) fn originating_plugins(tc: &hegel::TestCase) -> OriginatingPlugin {
     OriginatingPlugin {
+        deno_generation: booleans(tc).then(|| tc.draw(generators::integers::<u64>())),
         plugin_id: zellij_types::internal_ids::PluginId::new(
             tc.draw(generators::integers::<u32>()),
         ),

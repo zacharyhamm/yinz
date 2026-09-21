@@ -332,6 +332,7 @@ fn op_zellij_command(
     state: &mut OpState,
     #[serde] command: serde_json::Value,
     #[smi] _client: u32,
+    #[string] _completion: Option<String>,
 ) -> std::result::Result<serde_json::Value, JsErrorBox> {
     let host = state.borrow_mut::<Host>();
     let name = command
@@ -464,11 +465,15 @@ deno_core::extension!(
         op_zellij_test,
         super::op_zellij_validate,
         super::op_zellij_monotonic_ms,
+        super::op_zellij_worker_started,
         super::limits::op_zellij_encode,
         super::ui::op_zellij_ui_create,
         super::ui::op_zellij_ui_call,
         super::ui::op_zellij_ui_pure
-    ]
+    ],
+    state = |state| state.put(std::collections::VecDeque::<
+        super::background_worker::PostReservation,
+    >::new())
 );
 
 fn execute(request: Request) -> Result<Value> {

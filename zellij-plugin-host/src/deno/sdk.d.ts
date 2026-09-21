@@ -82,6 +82,8 @@ export interface PipeMessage {
 export interface Plugin {
   /** String defaults are shallow-merged beneath the supplied load configuration. */
   defaults?: Record<string, string>;
+  /** Each named callback runs serially in its own persistent isolate and background thread. */
+  workers?: Record<string, (name: string, payload: string) => void | Promise<void>>;
   load?(configuration: Record<string, string>): void | Promise<void>;
   update?(event: Event): boolean | void | Promise<boolean | void>;
   pipe?(message: PipeMessage): boolean | void | Promise<boolean | void>;
@@ -130,6 +132,10 @@ export interface Zellij {
   readonly swampTiming: boolean;
   monotonicMs(): number;
   readonly instanceId: string;
+  /** Queue a job for a named worker of this plugin. Messages and payloads are strings. */
+  postMessageTo(workerName: string, name: string, payload?: string): void;
+  /** Deliver CustomMessage to the owning plugin instance; subscribe to receive it. */
+  postMessageToPlugin(name: string, payload?: string): void;
   /** Internal: available only to the trusted zellij:swamp-bridge builtin. */
   readonly workflowSignal?: (request: {terminal_id: number; owner: string; process?: number; supervisor: string; kill: boolean}) => void;
   readonly workflowRemotePanes?: () => {terminal_id: number; host_id: string; remote_host: string; pane_token: string; owner: string | null; child_group_terminated?: boolean}[];
@@ -222,11 +228,6 @@ export interface Zellij {
 export const zellij: Zellij;
 export const definePlugin: Zellij["definePlugin"];
 export default zellij;
-/** The plugin's log, under the familiar names: every method joins its arguments with tabs, from module top level onward. */
-export interface PluginConsole {
-  log(...values: unknown[]): void; info(...values: unknown[]): void; warn(...values: unknown[]): void;
-  error(...values: unknown[]): void; debug(...values: unknown[]): void; trace(...values: unknown[]): void;
-}
 declare global { const zellij: Zellij; const console: PluginConsole; }
 
 // ---- section: sdk_commands
@@ -248,8 +249,7 @@ export interface CommandArgs {
   OpenCommandPane: [CommandToRun, StringMap]; OpenCommandPaneFloating: [CommandToRun, FloatingPaneCoordinates | null, StringMap];
   OpenCommandPaneOverlay: [CommandToRun, OverlayPlacement, StringMap];
   SwitchTabTo: number; SetTimeout: number; ExecCmd: string[];
-  /** Refused by the SDK: Deno plugins have no workers. Use zellij.after/every, the async helpers, or a work queue. */
-  PostMessageTo: PluginMessage & {__deno_has_no_workers: never}; PostMessageToPlugin: PluginMessage;
+  PostMessageTo: PluginMessage & {worker_name: string}; PostMessageToPlugin: PluginMessage;
   HideSelf: undefined; ShowSelf: boolean; SwitchToMode: InputMode; NewTabsWithLayout: string;
   NewTab: {name: string | null; cwd: string | null}; NewTabUnfocused: CommandArgs['NewTab'];
   NewTiledPaneInTab: {tab_id: number}; ToggleFloatingPanes: {tab_id: number | null};
@@ -424,6 +424,11 @@ export type MouseSummary = {kind: 'LeftClick' | 'RightClick' | 'Hold' | 'Release
   | {kind: 'ScrollUp' | 'ScrollDown' | 'ScrollLeft' | 'ScrollRight'; lines: Integer};
 
 // ---- section: sdk_types
+/** The plugin's log, under the familiar names: every method joins its arguments with tabs, from module top level onward. */
+export interface PluginConsole {
+  log(...values: unknown[]): void; info(...values: unknown[]): void; warn(...values: unknown[]): void;
+  error(...values: unknown[]): void; debug(...values: unknown[]): void; trace(...values: unknown[]): void;
+}
 export type Direction = 'Left' | 'Right' | 'Up' | 'Down';
 export type Resize = 'Increase' | 'Decrease';
 export type PaneFrameStyle = 'Full' | 'Titles' | 'None';

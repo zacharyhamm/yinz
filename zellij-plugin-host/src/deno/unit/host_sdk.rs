@@ -101,28 +101,80 @@ fn host_sugar_builds_unit_positional_array_and_named_payloads() {
 }
 
 #[test]
-fn post_message_to_is_refused_before_dispatch_in_every_form() {
+fn post_message_to_dispatches_in_every_form_and_workers_serialize_async_jobs() {
+    use background_worker::{post_job, Message, PostReservation, POST_BUDGET, POST_OVERHEAD};
+    use std::sync::{atomic::AtomicUsize, mpsc};
+
     let mut runtime = sdk();
     run(&mut runtime, r#"
-      globalThis.errors = [];
-      bind({defaults: {trace: 'true'}, load() {
-        for (const fn of [
-          () => zellij.command('PostMessageTo', {name: 'x', payload: 'y'}),
-          () => zellij.command({PostMessageTo: {name: 'x', payload: 'y', worker_name: 'w'}}),
-          () => zellij.host.postMessageTo({name: 'x', payload: 'y'}),
-        ]) { try { fn(); errors.push('accepted'); } catch (error) { errors.push(String(error)); } }
-        zellij.command({PostMessageToPlugin: {name: 'a', payload: 'b'}});
+      bind({load() {
+        zellij.command('PostMessageTo', {name:'x', payload:'y', worker_name:'w'});
+        zellij.command({PostMessageTo:{name:'x', payload:'y', worker_name:'w'}});
+        zellij.host.postMessageTo({name:'x', payload:'y', worker_name:'w'});
+        zellij.postMessageTo('w', 'x', 'y');
+        zellij.postMessageToPlugin('a', 'b');
       }});
       bridge('load', {}, 1);
     "#);
     capture_commands(&mut runtime);
-    capture_trace(&mut runtime);
     run(&mut runtime, r#"
-      check(errors.length === 3 && errors.every((e) => e.includes('no workers')));
-      check(sent.length === 1 && sent[0][0].PostMessageToPlugin.name === 'a');
-      check(markers.filter((m) => m.includes('PostMessageTo" refused')).length === 3);
-      check(!markers.some((m) => m === '1 command "PostMessageTo"'));
+      check(sent.length === 5 && sent.slice(0,4).every(([c]) => c.PostMessageTo.worker_name === 'w'));
+      check(sent[4][0].PostMessageToPlugin.payload === 'b');
+      check(typeof Deno === 'undefined' && !('workerStarted' in zellij) && !('op_zellij_worker_started' in globalThis));
+      globalThis.started = [];
+      globalThis.completed = [];
+      bind({workers:{async w(name, payload) {
+        started.push([name, payload, zellij.getPluginIds().client_id]);
+        if (name === 'error') throw Error('worker callback failure');
+        await zellij.waitForEvent('Timer');
+        completed.push([name, payload, zellij.getPluginIds().client_id]);
+      }}, load() {throw Error('worker ran load');}});
+      check(bridge('workers').join() === 'w');
+      bridge('workerBind', 'w');
     "#);
+    let (sender, receiver) = mpsc::channel();
+    let used = Arc::new(AtomicUsize::new(0));
+    let post = |name: &str, payload: &str, client| {
+        // Reserve half the budget without copying a large string into V8.
+        let mut retained = String::with_capacity(POST_BUDGET / 2 - POST_OVERHEAD - name.len());
+        retained.push_str(payload);
+        post_job(&sender, &used, ClientId::new(client), name.into(), retained)
+    };
+    let receive = |runtime: &mut JsRuntime| {
+        let Message::Job(client, name, payload, reservation) = receiver.recv().unwrap() else {
+            panic!("expected worker job");
+        };
+        runtime.op_state().borrow_mut()
+            .borrow_mut::<VecDeque<PostReservation>>().push_back(reservation);
+        run(runtime, &format!("bridge('workerMessage', {}, {client});", json!([name, payload])));
+    };
+    post("one", "first", 2).unwrap();
+    receive(&mut runtime);
+    assert_eq!(used.load(Ordering::Relaxed), 0); // Executing callbacks do not count.
+    post("error", "", 3).unwrap();
+    receive(&mut runtime);
+    assert_eq!(used.load(Ordering::Relaxed), POST_BUDGET / 2);
+    post("two", "second", 4).unwrap();
+    receive(&mut runtime);
+    assert_eq!(used.load(Ordering::Relaxed), POST_BUDGET);
+    assert!(post("refused", "", 5).unwrap_err().to_string().contains("64 MiB queue budget"));
+    run(&mut runtime, "check(completed.length === 0); bridge('update', {Timer:0}, 9);");
+    assert_eq!(used.load(Ordering::Relaxed), 0);
+    run(&mut runtime, r#"
+      check(JSON.stringify(started) === '[["one","first",2],["error","",3],["two","second",4]]');
+      check(JSON.stringify(completed) === '[["one","first",2]]');
+      bridge('update', {Timer:0}, 9);
+    "#);
+    run(&mut runtime, r#"check(JSON.stringify(completed) === '[["one","first",2],["two","second",4]]');"#);
+    post("blocker", "", 5).unwrap();
+    receive(&mut runtime);
+    post("pending", "", 6).unwrap();
+    receive(&mut runtime);
+    post("also-pending", "", 7).unwrap();
+    receive(&mut runtime);
+    assert_eq!(used.load(Ordering::Relaxed), POST_BUDGET);
+    drop(runtime);
+    assert_eq!(used.load(Ordering::Relaxed), 0);
 }
 
 #[test]

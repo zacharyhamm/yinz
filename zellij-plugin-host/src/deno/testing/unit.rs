@@ -61,6 +61,137 @@ fn installed_unit_assertions_imports_timers_and_unstubbed_operations() {
 }
 
 #[test]
+fn installed_permissions_complete_fifo_without_letting_event_observers_steal_answers() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("plugin.ts"), r#"
+      import zellij from 'zellij:plugin';
+      const settled: string[] = [];
+      let observed = false;
+      export default {
+        async load() {
+          const first = zellij.waitForPermissions(['ReadApplicationState']);
+          const second = zellij.waitForPermissions(['ChangeApplicationState']);
+          await first; settled.push('granted');
+          try { await second; } catch (_) { settled.push('denied'); }
+        },
+        update(event: unknown) {
+          if (!observed && typeof event === 'object' && event !== null && 'PermissionRequestResult' in event) {
+            observed = true;
+            zellij.waitForPermissions(['OpenFiles']).then(() => { settled.push('observer'); zellij.requestRender(); });
+          }
+        },
+        render() { return settled.join(','); },
+      };
+    "#).unwrap();
+    let path = root.path().join("permissions.test.ts");
+    std::fs::write(&path, r#"
+      import {test, assertEquals, loadPlugin} from 'zellij:testing';
+      test('permission events settle their original FIFO requests', async () => {
+        const p = await loadPlugin('./plugin.ts', {replies:{RequestPluginPermissions:null}});
+        const requests = () => p.commands.filter((command: any) => 'RequestPluginPermissions' in command);
+        assertEquals(requests(), [{RequestPluginPermissions:['ReadApplicationState']}]);
+        const dispatched: unknown[] = [];
+        p.stub('RequestPluginPermissions', (permissions: unknown) => { dispatched.push(permissions); return null; });
+        assertEquals(dispatched, []);
+        await p.event({PermissionRequestResult:'Granted'});
+        assertEquals(await p.render(), 'granted');
+        assertEquals(dispatched, [['ReadApplicationState', 'ChangeApplicationState']]);
+        assertEquals(requests().length, 2);
+        await p.event({PermissionRequestResult:'Denied'});
+        assertEquals(await p.render(), 'granted,denied');
+        assertEquals(dispatched, [
+          ['ReadApplicationState', 'ChangeApplicationState'],
+          ['ReadApplicationState', 'OpenFiles'],
+        ]);
+        assertEquals(requests().length, 3);
+        await p.event({PermissionRequestResult:'Granted'});
+        assertEquals(await p.render(), 'granted,denied,observer');
+        assertEquals(requests().length, 3);
+      });
+    "#).unwrap();
+    let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    assert!(report.passed(), "{report:#?}");
+}
+
+#[test]
+fn installed_permission_dispatch_errors_advance_without_granting_or_stealing_answers() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("plugin.ts"),
+        r#"
+      import z from 'zellij:plugin';
+      const settled: string[] = [];
+      let observed = false;
+      function request(name: string, permission: any) {
+        z.waitForPermissions([permission]).then(
+          () => { settled.push(name + ':granted'); z.requestRender(); },
+          error => { settled.push(name + ':' + error.message); z.requestRender(); },
+        );
+      }
+      export default {
+        load() {
+          request('immediate', 'WriteFiles');
+          request('first', 'ReadApplicationState');
+          request('queued', 'RunCommands');
+          request('last', 'ChangeApplicationState');
+        },
+        update(event: any) {
+          if (event.PermissionRequestResult && !observed) {
+            observed = true;
+            request('observer', 'OpenFiles');
+          }
+        },
+        render() { return settled.join(','); },
+      };
+    "#,
+    )
+    .unwrap();
+    let path = root.path().join("permissions.test.ts");
+    std::fs::write(&path, r#"
+      import {test, assertEquals, loadPlugin} from 'zellij:testing';
+      test('dispatch errors reject their own request and leave the FIFO running', async () => {
+        const initial: unknown[] = [];
+        const p = await loadPlugin('./plugin.ts', {replies:{RequestPluginPermissions:(permissions: string[]) => {
+          initial.push(permissions);
+          if (permissions.includes('WriteFiles')) throw Error('immediate failure');
+          return null;
+        }}});
+        assertEquals(initial, [['WriteFiles'], ['ReadApplicationState']]);
+        assertEquals(await p.render(), 'immediate:immediate failure');
+        const later: unknown[] = [];
+        p.stub('RequestPluginPermissions', (permissions: string[]) => {
+          later.push(permissions);
+          if (permissions.includes('RunCommands')) throw Error('queued failure');
+          return null;
+        });
+        await p.event({PermissionRequestResult:'Granted'});
+        assertEquals(await p.render(), 'immediate:immediate failure,first:granted,queued:Error: queued failure');
+        assertEquals(later, [
+          ['ReadApplicationState', 'RunCommands'],
+          ['ReadApplicationState', 'ChangeApplicationState'],
+        ]);
+        await p.event({PermissionRequestResult:'Granted'});
+        assertEquals(later[2], ['ReadApplicationState', 'ChangeApplicationState', 'OpenFiles']);
+        await p.event({PermissionRequestResult:'Granted'});
+        assertEquals(await p.render(), 'immediate:immediate failure,first:granted,queued:Error: queued failure,last:granted,observer:granted');
+        assertEquals(p.commands.filter((command: any) => 'RequestPluginPermissions' in command).length, 5);
+      });
+      test('an unsolicited answer cannot grant an observer-created request', async () => {
+        const p = await loadPlugin('./plugin.ts', {replies:{RequestPluginPermissions:() => {throw Error('offline');}}});
+        p.stub('RequestPluginPermissions', null);
+        await p.event({PermissionRequestResult:'Granted'});
+        const before = 'immediate:offline,first:offline,queued:offline,last:offline';
+        assertEquals(await p.render(), before);
+        assertEquals(p.commands.filter((command: any) => 'RequestPluginPermissions' in command).at(-1), {RequestPluginPermissions:['OpenFiles']});
+        await p.event({PermissionRequestResult:'Granted'});
+        assertEquals(await p.render(), before + ',observer:granted');
+      });
+    "#).unwrap();
+    let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    assert!(report.passed(), "{report:#?}");
+}
+
+#[test]
 fn installed_runner_reports_type_errors_empty_filters_source_lines_and_hangs() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("errors.test.ts");

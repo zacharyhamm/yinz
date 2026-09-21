@@ -347,17 +347,18 @@ pub(crate) fn screen_thread_main(
                     unreachable!("close_self is resolved before dispatch")
                 },
                 ScreenInstruction::SubscribePaneOutput(plugin, client, context, generation) => {
-                    screen.pane_output_subscriptions.remove(&(plugin, client));
+                    let subscriber = (plugin, client, generation);
+                    screen.pane_output_subscriptions.remove(&subscriber);
                     if let Some(context) = context {
-                        screen
-                            .pane_output_subscriptions
-                            .insert((plugin, client), (context, generation));
+                        screen.pane_output_subscriptions.insert(subscriber, context);
                     }
                 },
-                ScreenInstruction::UnsubscribePaneOutput(plugin) => {
+                ScreenInstruction::UnsubscribePaneOutput(plugin, generation) => {
                     screen
                         .pane_output_subscriptions
-                        .retain(|(id, _), _| *id != plugin);
+                        .retain(|(id, _, registered), _| {
+                            *id != plugin || (generation.is_some() && *registered != generation)
+                        });
                 },
                 ScreenInstruction::PtyBytes(pid, vte_bytes) => {
                     screen.handle_pty_bytes(pid, vte_bytes, &mut pending)?;
@@ -919,7 +920,7 @@ pub(crate) fn screen_thread_main(
                     let tab_info = screen.get_tab_info(tab_id);
                     let _ = response_channel.send(tab_info);
                 },
-                ScreenInstruction::ListClientsToPlugin(plugin_id, client_id) => {
+                ScreenInstruction::ListClientsToPlugin(plugin_id, client_id, generation) => {
                     let err_context = || "Failed to dump layout".to_string();
                     let session_layout_metadata =
                         screen.get_layout_metadata(Some(screen.default_shell.clone()), None);
@@ -930,6 +931,7 @@ pub(crate) fn screen_thread_main(
                             session_layout_metadata,
                             plugin_id,
                             client_id,
+                            generation,
                         ))
                         .with_context(err_context)
                         .non_fatal();

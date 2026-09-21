@@ -14,6 +14,18 @@ This is a capability record, not a claim of full Wasm/Lua/Deno parity.
 and compiler inventory coverage do not establish every command's host behavior.
 Native macOS verification requires a macOS host and remains outstanding.
 
+## Background workers (2026-09-21)
+
+Named `workers` callbacks now run in persistent Deno isolates on dedicated threads.
+`postMessageTo` queues jobs in order and `postMessageToPlugin` returns `CustomMessage` to the owner.
+Async callbacks can await host replies. Workers share permissions and retain the initiating client.
+Parent disposal cancels and joins its workers. Late replies carry the old generation and are discarded.
+
+Linux regressions cover independent state, FIFO order across timers, permission changes, callback errors,
+UI responsiveness during a busy loop, reload, unload, disconnect, shutdown, and shared-client ownership transfer.
+`deno_background_workers_await_real_commands_and_preserve_state` verifies real commands in a complete session.
+The historical worker exclusions below describe the state before this change.
+
 ## Parity closure (2026-09-11)
 
 An audit of what Lua and Wasm plugins still got that Deno plugins did not, made against the
@@ -219,7 +231,7 @@ Test names are in the linked files. The full repository gate is recorded below.
 | Hocus completion client | **Verified on Linux.** exact daemon discovery, typed transcript/tool-call round trips, reply provenance, request byte limits, errors, deadlines, cancellation, and cleanup. SDK tests and Rust-backed TypeScript fixtures cover the protocol. Real dispatch tests use a deterministic local peer and check permissions and reload isolation. |
 | Pane command sequencing | **Verified on Linux.** `pane_sequence_reuses_pane_matches_fast_and_stale_events_and_appends`, `pane_sequence_validation_failure_policies_and_observation_cancellation`, `pane_sequence_cwd_preserves_targets_and_resolves_only_at_dispatch`, `pane_sequence_timeout_cancel_grace_refusal_and_cleanup`, `pane_sequence_types_check_steps_options_results_and_primitives`, `pane_sequence_close_policies_and_exits_cancel_remaining_signals`, and the SDK-backed example regression passed. Whole-session tests verify pane reuse, child cancellation, and reload isolation (see current verification). |
 | Live output | **Implemented.** `runCommand({onOutput})` delivers binary stdout/stderr chunks with synchronous callbacks. Typed raw pane observation and generation-safe routing cover reload and client cleanup. Async iterators remain outside this contract. |
-| Guest workers | **Not implemented.** No guest worker API or guest CPU parallelism. Host compilation subprocesses do not provide guest workers. `PostMessageTo` is refused by the SDK before dispatch (`post_message_to_is_refused_before_dispatch_in_every_form`, `deno_post_message_to_never_reaches_the_host`), so the host never caches a message for a worker a Deno plugin cannot have. |
+| Guest workers | **Implemented.** Named callbacks run in separate persistent isolates and threads. `PostMessageTo` queues jobs in order, including async completion. `PostMessageToPlugin` returns a generation-scoped `CustomMessage`. Workers share permissions, retain the originating client, and stop with their owner. See [Background workers](DENO_PLUGINS.md#background-workers). |
 | Tracing | **Implemented and SDK-tested.** Opt-in `zellij.trace()` and merged `trace` configuration record command/event/pipe names and existing async lifecycle markers through the Deno log. Payloads and exception text are excluded. |
 | Remote module loading | **Not supported.** Remote URLs and package imports are rejected by the Deno loader. This restriction does not prohibit commands in remote panes. Remote pane sequence execution has not been verified against SSH or Firecracker here. |
 

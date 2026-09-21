@@ -339,7 +339,7 @@ pin_context_to_instruction! {
         ),
         (
             "UnsubscribePaneOutput",
-            ScreenInstruction::UnsubscribePaneOutput(PluginId::new(1)),
+            ScreenInstruction::UnsubscribePaneOutput(PluginId::new(1), None),
             "HandlePtyBytes"
         ),
         (

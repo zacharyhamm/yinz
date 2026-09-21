@@ -3454,6 +3454,96 @@ fn in_place_spawn(
 }
 
 #[test]
+fn originating_pane_replies_preserve_generation_on_open_rerun_exit_and_failure() {
+    for generation in [None, Some(42)] {
+        let (mut pty, plugin_rx, _screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
+        let mut origin = step_origin("worker");
+        origin.deno_generation = generation;
+        let command = RunCommand {
+            hold_on_close: true,
+            originating_plugin: Some(origin.clone()),
+            ..Default::default()
+        };
+        let terminal = TerminalId::new(41);
+        let pane = PaneId::Terminal(terminal);
+        pty.announce_pane_opened(terminal, Some(&command), None)
+            .unwrap();
+        // A user rerun with no new origin inherits the complete stored identity.
+        let (rerun, _) = pty
+            .request_rerun(pane, RunCommand::default(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rerun.originating_plugin, Some(origin.clone()));
+        pty.rerun_command_in_pane(pane, rerun).unwrap();
+        let callback = terminal_quit_callback(
+            pty.bus.senders.clone(),
+            &TerminalAction::RunCommand(command.clone()),
+        );
+        callback(pane, Some(0), command.clone());
+        finish_pane_spawn(
+            &mut pty,
+            in_place_spawn(Some(command.clone()), None),
+            Err(ZellijError::CommandNotFound {
+                terminal_id: terminal,
+                command: "missing".into(),
+            }
+            .into()),
+        )
+        .unwrap();
+        finish_command_rerun(
+            &mut pty,
+            pane,
+            command,
+            Err(ZellijError::CommandNotFound {
+                terminal_id: terminal,
+                command: "missing".into(),
+            }
+            .into()),
+        )
+        .unwrap();
+        let payload = OpenFilePayload::new(PathBuf::from("notes.md"), None, None)
+            .with_originating_plugin(origin.clone());
+        pty.announce_pane_opened(terminal, None, Some(&payload))
+            .unwrap();
+        terminal_quit_callback(pty.bus.senders.clone(), &TerminalAction::OpenFile(payload))(
+            pane,
+            Some(1),
+            RunCommand::default(),
+        );
+        let expected = [
+            Event::CommandPaneOpened(terminal, origin.context.clone()),
+            Event::CommandPaneReRun(terminal, origin.context.clone()),
+            Event::CommandPaneExited(terminal, Some(0), origin.context.clone()),
+            Event::CommandPaneExited(terminal, Some(2), origin.context.clone()),
+            Event::CommandPaneExited(terminal, Some(2), origin.context.clone()),
+            Event::EditPaneOpened(terminal, origin.context.clone()),
+            Event::EditPaneExited(terminal, Some(1), origin.context.clone()),
+        ];
+        for expected in expected {
+            let (instruction, _) = plugin_rx.try_recv().unwrap();
+            match (generation, instruction) {
+                (
+                    Some(generation),
+                    PluginInstruction::DenoEvent(plugin, client, actual_generation, event),
+                ) => {
+                    assert_eq!(
+                        (plugin, client, actual_generation),
+                        (origin.plugin_id, origin.client_id, generation)
+                    );
+                    assert_eq!(event, expected);
+                },
+                (None, PluginInstruction::Update(updates)) => assert_eq!(
+                    updates,
+                    vec![(Some(origin.plugin_id), Some(origin.client_id), expected)]
+                ),
+                (_, other) => panic!("unexpected pane reply: {other:?}"),
+            }
+        }
+        assert!(plugin_rx.try_recv().is_err());
+    }
+}
+
+#[test]
 fn an_in_place_command_pane_tells_its_plugin_it_opened() {
     let (mut pty, plugin_rx, screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
     let command = RunCommand {

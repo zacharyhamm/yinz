@@ -1,11 +1,39 @@
 // Installed only in the disposable test worker, before the SDK hides raw ops.
 ((ops) => {
   const dynamic = new Map();
+  const permissions = [];
+  let activePermission = null;
+  let grantedPermissions = [];
   const dispatch = ops.op_zellij_command;
-  ops.op_zellij_command = (command, client) => {
+  function dispatchCommand(command, client, completion) {
     const name = typeof command === "string" ? command : Object.keys(command)[0];
-    const result = dispatch(command, client);
+    const result = dispatch(command, client, completion);
     return dynamic.has(name) ? {json: dynamic.get(name)(typeof command === "string" ? undefined : command[name], command)} : result;
+  }
+  function dispatchPermissions(immediate) {
+    let failed = false, failure;
+    while (!activePermission && permissions.length) {
+      const request = permissions.shift();
+      request.permissions = [...new Set([...grantedPermissions, ...request.permissions])];
+      activePermission = request;
+      try {
+        dispatchCommand({RequestPluginPermissions: [...request.permissions]}, request.client, request.completion);
+      } catch (error) {
+        activePermission = null;
+        if (request === immediate) { failed = true; failure = error; }
+        else bridge("permissionResult", [request.completion, {Err: String(error)}], request.client);
+      }
+    }
+    if (failed) throw failure;
+  }
+  ops.op_zellij_command = (command, client, completion) => {
+    if (typeof command === "object" && Object.hasOwn(command, "RequestPluginPermissions") && completion !== null && completion !== undefined) {
+      const request = {permissions: [...command.RequestPluginPermissions], client, completion};
+      permissions.push(request);
+      dispatchPermissions(request);
+      return {json: null};
+    }
+    return dispatchCommand(command, client, completion);
   };
   function mock(replies) {
     const values = {};
@@ -73,7 +101,21 @@
     await settle();
     return {
       stub(name, reply) { mock({[name]: reply}); },
-      async event(event) { bridge("update", event, 1); await settle(); },
+      async event(event) {
+        // Bind the answer before observers can enqueue more requests.
+        const pending = Object.hasOwn(event, "PermissionRequestResult") ? activePermission : null;
+        const answer = event.PermissionRequestResult;
+        try { bridge("update", event, 1); }
+        finally {
+          if (pending) {
+            if (answer === "Granted") grantedPermissions = pending.permissions;
+            activePermission = null;
+            bridge("permissionResult", [pending.completion, {Ok: answer}], pending.client);
+            dispatchPermissions();
+          }
+        }
+        await settle();
+      },
       async pipe(message) { bridge("pipe", {source: {Plugin: 2}, args: {}, payload: null, is_private: true, ...message}, 1); await settle(); },
       async advance(ms) {
         if (!Number.isFinite(ms) || ms < 0) throw new TypeError("advance needs nonnegative milliseconds");

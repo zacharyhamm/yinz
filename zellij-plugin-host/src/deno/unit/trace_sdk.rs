@@ -56,7 +56,7 @@ fn trace_dispatch_async_and_consumed_inputs_preserve_behavior_and_privacy() {
         zellij.after(0,async()=>{await Promise.resolve(); zellij.command('GetPluginIds');});
         return Promise.resolve(true);
       }}); bridge('load',{},7);
-      bridge('update',{PermissionRequestResult:'Granted'},9);
+      answerPermissions('Granted'); bridge('update',{PermissionRequestResult:'Granted'},9);
       bridge('pipe',{name:'done',payload:'SECRET'},9);
       bridge('pipe',{name:'bad',payload:new Uint8Array([1,2])},9);
       bridge('pipe',{name:'zellij_rpc_reply',payload:'SECRET'},9);

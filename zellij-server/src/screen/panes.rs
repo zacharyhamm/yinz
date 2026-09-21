@@ -477,7 +477,7 @@ impl Screen {
                             .and_then(|p| p.invoked_with().as_ref())
                         {
                             if let Some(origin) = &command.originating_plugin {
-                                for ((plugin, client), (filter, generation)) in
+                                for ((plugin, client, generation), filter) in
                                     &self.pane_output_subscriptions
                                 {
                                     if filter.iter().all(|(k, v)| origin.context.get(k) == Some(v))

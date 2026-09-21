@@ -1685,6 +1685,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: empty_context.clone(),
@@ -1711,6 +1712,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -1737,6 +1739,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -1770,6 +1773,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -1803,6 +1807,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -1836,6 +1841,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -1869,6 +1875,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -1949,6 +1956,7 @@ fn test_client_messages() {
                 hold_on_close: true,
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(1),
                     client_id: ClientId::new(2),
                     context: demo_context.clone(),
@@ -1998,6 +2006,7 @@ fn test_client_messages() {
                 hold_on_close: true,
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(1),
                     client_id: ClientId::new(2),
                     context: demo_context.clone(),
@@ -2027,6 +2036,7 @@ fn test_client_messages() {
                 hold_on_close: true,
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(1),
                     client_id: ClientId::new(2),
                     context: demo_context.clone(),
@@ -2070,6 +2080,7 @@ fn test_client_messages() {
                 hold_on_close: true,
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
+                    deno_generation: Some(123),
                     plugin_id: zellij_types::internal_ids::PluginId::new(1),
                     client_id: ClientId::new(2),
                     context: demo_context.clone(),
@@ -2611,6 +2622,7 @@ fn test_client_messages() {
                     hold_on_close: true,
                     hold_on_start: true,
                     originating_plugin: Some(OriginatingPlugin {
+                        deno_generation: Some(123),
                         plugin_id: zellij_types::internal_ids::PluginId::new(11),
                         client_id: ClientId::new(22),
                         context: empty_context.clone(),
@@ -5002,4 +5014,40 @@ fn warp_companion_relationships_roundtrip_and_reject_malformed_groups() {
             "accepted {case}"
         );
     }
+}
+
+#[test]
+fn originating_plugin_generation_roundtrips_and_defaults_for_legacy_records() {
+    use crate::client_server_contract::client_server_contract::OriginatingPlugin as WireOrigin;
+    use prost::Message;
+    let legacy = OriginatingPlugin::new(
+        zellij_types::internal_ids::PluginId::new(11),
+        ClientId::new(22),
+        Default::default(),
+    );
+    let bytes = [8, 11, 16, 22];
+    assert_eq!(
+        OriginatingPlugin::try_from(WireOrigin::decode(bytes.as_slice()).unwrap()).unwrap(),
+        legacy
+    );
+    assert_eq!(WireOrigin::from(legacy.clone()).encode_to_vec(), bytes);
+    assert_eq!(
+        serde_json::from_str::<OriginatingPlugin>(
+            r#"{"plugin_id":11,"client_id":22,"context":{}}"#
+        )
+        .unwrap(),
+        legacy
+    );
+    let mut generated = legacy;
+    generated.deno_generation = Some(u64::MAX);
+    let bytes = WireOrigin::from(generated.clone()).encode_to_vec();
+    assert_eq!(
+        OriginatingPlugin::try_from(WireOrigin::decode(bytes.as_slice()).unwrap()).unwrap(),
+        generated
+    );
+    assert_eq!(
+        serde_json::from_str::<OriginatingPlugin>(&serde_json::to_string(&generated).unwrap())
+            .unwrap(),
+        generated
+    );
 }

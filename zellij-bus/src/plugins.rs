@@ -252,8 +252,8 @@ pub enum PluginInstruction {
         reason: Option<String>,
     },
     WatchFilesystem,
-    ListClientsToPlugin(SessionLayoutMetadata, PluginId, ClientId),
-    ChangePluginHostDir(PathBuf, PluginId, ClientId),
+    ListClientsToPlugin(SessionLayoutMetadata, PluginId, ClientId, Option<u64>),
+    ChangePluginHostDir(PathBuf, PluginId, ClientId, Option<u64>),
     PaneRenderReport(PaneRenderReport),
     UserInput {
         client_id: ClientId,

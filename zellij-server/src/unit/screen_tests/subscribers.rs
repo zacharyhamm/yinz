@@ -8,6 +8,54 @@ use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 
 #[test]
+fn list_clients_preserves_the_requesting_plugin_generation() {
+    let mut screen = MockScreen::new(Size { cols: 80, rows: 20 });
+    let receiver = screen.pty_receiver.take().unwrap();
+    let received = Watched::new(vec![]);
+    let logger = log_actions_in_thread!(received, PtyInstruction::Exit, receiver);
+    let screen_thread = screen.run(None, vec![]);
+    let plugin = crate::PluginId::new(7);
+    let client = screen.main_client_id;
+    for generation in [None, Some(42)] {
+        screen
+            .to_screen
+            .send(ScreenInstruction::ListClientsToPlugin(
+                plugin, client, generation,
+            ))
+            .unwrap();
+    }
+    let requests = received.wait_until(
+        "both ListClients requests",
+        zellij_test_support::default_timeout(),
+        |log| {
+            let requests: Vec<_> = log
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    PtyInstruction::ListClientsToPlugin(metadata, plugin, client, generation) => {
+                        Some((
+                            metadata.all_clients_metadata().contains_key(client),
+                            *plugin,
+                            *client,
+                            *generation,
+                        ))
+                    },
+                    _ => None,
+                })
+                .collect();
+            (requests.len() == 2).then_some(requests)
+        },
+    );
+    screen.teardown(vec![logger, screen_thread]);
+    assert_eq!(
+        requests,
+        [
+            (true, plugin, client, None),
+            (true, plugin, client, Some(42))
+        ]
+    );
+}
+
+#[test]
 fn subscriber_receives_initial_delivery() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
@@ -949,23 +997,48 @@ fn pane_output_uses_subscriber_generations_and_cleans_up_each_client() {
     };
     let output = |n| ScreenInstruction::PtyBytes(TerminalId::new(0), vec![n]);
     for instruction in [
+        // A parent and two workers can all subscribe for the same acting client.
         subscribe(plugin, client, Some(10)),
+        subscribe(plugin, client, Some(11)),
+        subscribe(plugin, client, Some(12)),
+        subscribe(plugin, other_client, Some(10)),
         subscribe(plugin, other_client, Some(11)),
+        subscribe(plugin, other_client, Some(12)),
+        subscribe(plugin, client, None),
+        subscribe(other_plugin, client, Some(11)),
         subscribe(other_plugin, other_client, None),
         output(1),
-        ScreenInstruction::RemoveClient(client),
+        // Replacing a filter affects only this generation and client.
+        ScreenInstruction::SubscribePaneOutput(
+            plugin,
+            client,
+            Some(BTreeMap::from([("work".into(), "different".into())])),
+            Some(11),
+        ),
         output(2),
-        // Only plugin retirement removes a registration; disconnect preserves it.
-        ScreenInstruction::SubscribePaneOutput(plugin, client, None, Some(12)),
+        subscribe(plugin, client, Some(11)),
+        ScreenInstruction::RemoveClient(client),
         output(3),
-        subscribe(plugin, client, Some(12)),
+        // Explicit unsubscribe leaves this worker's other client registered.
+        ScreenInstruction::SubscribePaneOutput(plugin, client, None, Some(11)),
         output(4),
-        ScreenInstruction::UnsubscribePaneOutput(plugin),
+        // Disposal removes only this generation, across all acting clients.
+        ScreenInstruction::UnsubscribePaneOutput(plugin, Some(12)),
         output(5),
-        subscribe(plugin, client, Some(13)),
+        ScreenInstruction::UnsubscribePaneOutput(plugin, Some(10)),
         output(6),
-        ScreenInstruction::SubscribePaneOutput(plugin, client, None, Some(13)),
+        subscribe(plugin, client, Some(13)),
+        subscribe(plugin, other_client, Some(13)),
         output(7),
+        // A late disposal cannot unsubscribe the replacement.
+        ScreenInstruction::UnsubscribePaneOutput(plugin, Some(10)),
+        output(8),
+        ScreenInstruction::UnsubscribePaneOutput(plugin, None),
+        output(9),
+        subscribe(plugin, client, Some(14)),
+        output(10),
+        ScreenInstruction::SubscribePaneOutput(plugin, client, None, Some(14)),
+        output(11),
     ] {
         mock.to_screen.send(instruction).unwrap();
     }
@@ -993,15 +1066,27 @@ fn pane_output_uses_subscriber_generations_and_cleans_up_each_client() {
         .collect::<Vec<_>>();
     deliveries.sort();
     let mut expected = vec![
-        (1, plugin, client, Some(10)),
-        (2, plugin, client, Some(10)),
-        (4, plugin, client, Some(12)),
-        (6, plugin, client, Some(13)),
+        (1, plugin, client, Some(11)),
+        (3, plugin, client, Some(11)),
+        (10, plugin, client, Some(14)),
     ];
-    for n in 1..=4 {
-        expected.push((n, plugin, other_client, Some(11)));
+    for client in [client, other_client] {
+        for n in 1..=5 {
+            expected.push((n, plugin, client, Some(10)));
+        }
+        for n in 1..=4 {
+            expected.push((n, plugin, client, Some(12)));
+        }
+        for n in 7..=8 {
+            expected.push((n, plugin, client, Some(13)));
+        }
     }
-    for n in 1..=7 {
+    for n in 1..=8 {
+        expected.push((n, plugin, other_client, Some(11)));
+        expected.push((n, plugin, client, None));
+    }
+    for n in 1..=11 {
+        expected.push((n, other_plugin, client, Some(11)));
         expected.push((n, other_plugin, other_client, None));
     }
     expected.sort();

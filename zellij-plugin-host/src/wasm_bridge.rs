@@ -731,7 +731,7 @@ impl WasmBridge {
         // The screen may exit before plugins during shutdown; cleanup must still complete.
         let _ = self
             .senders
-            .send_to_screen(ScreenInstruction::UnsubscribePaneOutput(pid));
+            .send_to_screen(ScreenInstruction::UnsubscribePaneOutput(pid, None));
         // The plugin's cancel token. Not set here: a plugin that is unloaded because it asked
         // to close itself is usually still inside the `update()` that asked, with more to do
         // (quit-confirmation closes itself and *then* sends `Quit`), and a token set now would
@@ -1288,7 +1288,8 @@ impl WasmBridge {
                     }
                 }
                 // A replacement must opt in again, including when BeforeClose resubscribed.
-                let _ = senders.send_to_screen(ScreenInstruction::UnsubscribePaneOutput(plugin_id));
+                let _ = senders
+                    .send_to_screen(ScreenInstruction::UnsubscribePaneOutput(plugin_id, None));
                 match PluginLoader::new(
                     skip_cache,
                     loading_context,
@@ -1729,6 +1730,13 @@ impl WasmBridge {
         events: Vec<(ClientId, Event)>,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
+        // Pane lifecycle events still describe the session after their plugin reloads.
+        for (_, event) in &events {
+            let event_type = EventType::from(event);
+            if !self.cli_event_subscribers.is_empty() && event_type.is_cli_streamable() {
+                self.forward_event_to_cli_subscribers(event_type, event);
+            }
+        }
         // Loading can hold the map while guest code runs. The plugin thread must
         // remain free to process the cancellation that interrupts that code.
         let (batch_label, batch_has_input) = summarize_batch_for_stats(&events);
@@ -1747,6 +1755,20 @@ impl WasmBridge {
                     let _shutdown = shutdown_sender;
                     let instances = {
                         let mut map = plugin_map.lock().unwrap();
+                        if let Some(workers) = map.deno_worker_routes(plugin_id, generation) {
+                            for message in &messages {
+                                if let EventOrPipeMessage::DenoEvent(client, _, event) = message {
+                                    workers.send(
+                                        generation,
+                                        crate::deno::background_worker::Message::Event(
+                                            *client,
+                                            event.clone(),
+                                        ),
+                                    );
+                                }
+                            }
+                            return;
+                        }
                         if !map.contains_deno_generation(plugin_id, generation) {
                             return;
                         }
@@ -1978,108 +2000,98 @@ impl WasmBridge {
     pub fn change_plugin_host_dir(
         &mut self,
         new_host_dir: PathBuf,
-        plugin_id_to_update: PluginId,
-        client_id_to_update: ClientId,
+        plugin_id: PluginId,
+        client_id: ClientId,
+        generation: Option<u64>,
     ) -> Result<()> {
-        let plugins_to_change: Vec<RunningPluginEntry> = self
-            .plugin_map
-            .lock()
-            .unwrap()
-            .running_plugins_and_subscriptions()
-            .to_vec();
-
-        // Execute directly on pinned thread (no async I/O needed for directory check/change)
         self.plugin_executor.execute_for_plugin_tagged(
-            plugin_id_to_update,
+            plugin_id,
             "change_host_dir",
             false,
-            {
-                move |senders, _plugin_map, _connected_clients, _plugin_cache, _engine| {
-                    match new_host_dir.try_exists() {
-                        Ok(false) => {
-                            log::error!(
-                                "Failed to change folder to {},: folder does not exist",
-                                new_host_dir.display()
-                            );
-                            let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                Some(plugin_id_to_update),
-                                Some(client_id_to_update),
-                                Event::FailedToChangeHostFolder(Some(format!(
-                                    "Folder {} does not exist",
-                                    new_host_dir.display()
-                                ))),
-                            )]));
-                            return;
-                        },
-                        Err(e) => {
-                            log::error!(
-                                "Failed to change folder to {},: {}",
-                                new_host_dir.display(),
-                                e
-                            );
-                            let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                Some(plugin_id_to_update),
-                                Some(client_id_to_update),
-                                Event::FailedToChangeHostFolder(Some(e.to_string())),
-                            )]));
-                            return;
-                        },
-                        _ => {},
-                    }
-                    for (plugin_id, client_id, running_plugin, _subscriptions) in &plugins_to_change
+            move |senders, plugin_map, _, _, _| {
+                // Resolve on the executor: a queued reload may have replaced the requester.
+                let (worker, instances) = {
+                    let mut map = plugin_map.lock().unwrap();
+                    let worker = generation.is_some_and(|generation| {
+                        map.deno_worker_routes(plugin_id, generation).is_some()
+                    });
+                    if !worker
+                        && generation.is_some_and(|generation| {
+                            !map.contains_deno_generation(plugin_id, generation)
+                        })
                     {
-                        if plugin_id == &plugin_id_to_update && client_id == &client_id_to_update {
-                            let mut running_plugin = running_plugin.lock().unwrap();
-                            let plugin_env = running_plugin.env_mut();
-                            if plugin_env.wasi_ctx.is_none() {
-                                // A script plugin has no WASI layer to rebuild: its `/host` is
-                                // `plugin_cwd`, which the `Fs*` handlers read. Building a
-                                // context it would never use could only fail it for nothing.
-                                plugin_env.plugin_cwd = new_host_dir.clone();
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(*plugin_id),
-                                    Some(*client_id),
-                                    Event::HostFolderChanged(new_host_dir.clone()),
-                                )]));
-                                continue;
-                            }
-                            let stdin_pipe = plugin_env.stdin_pipe.clone();
-                            let stdout_pipe = plugin_env.stdout_pipe.clone();
-                            let wasi_ctx = PluginLoader::create_wasi_ctx(
-                                &new_host_dir,
-                                &plugin_env.plugin_own_data_dir,
-                                &plugin_env.plugin_own_cache_dir,
-                                &ZELLIJ_TMP_DIR,
-                                plugin_env.user_plugin_dir.as_ref(),
-                                &plugin_env.plugin.location.to_string(),
-                                plugin_env.plugin_id,
-                                stdin_pipe.clone(),
-                                stdout_pipe.clone(),
-                            );
-                            match wasi_ctx {
-                                Ok(wasi_ctx) => {
-                                    drop(plugin_env.wasi_ctx.replace(wasi_ctx));
-                                    plugin_env.plugin_cwd = new_host_dir.clone();
-
-                                    let _ =
-                                        senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                            Some(*plugin_id),
-                                            Some(*client_id),
-                                            Event::HostFolderChanged(new_host_dir.clone()),
-                                        )]));
-                                },
-                                Err(e) => {
-                                    let _ =
-                                        senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                            Some(*plugin_id),
-                                            Some(*client_id),
-                                            Event::FailedToChangeHostFolder(Some(e.to_string())),
-                                        )]));
-                                    log::error!("Failed to create wasi ctx: {}", e);
-                                },
-                            }
+                        return;
+                    }
+                    (worker, map.running_plugins())
+                };
+                let reply = |event| {
+                    if let Event::FailedToChangeHostFolder(Some(reason)) = &event {
+                        Err::<(), _>(anyhow!("{reason}"))
+                            .context("failed to change plugin host folder")
+                            .non_fatal();
+                    }
+                    let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+                        plugin_id, client_id, generation, event,
+                    ));
+                };
+                match new_host_dir.try_exists() {
+                    Ok(false) => {
+                        reply(Event::FailedToChangeHostFolder(Some(format!(
+                            "Folder {} does not exist",
+                            new_host_dir.display()
+                        ))));
+                        return;
+                    },
+                    Err(error) => {
+                        reply(Event::FailedToChangeHostFolder(Some(error.to_string())));
+                        return;
+                    },
+                    Ok(true) => {},
+                }
+                if worker {
+                    // The worker updates its own environment before delivering this event.
+                    reply(Event::HostFolderChanged(new_host_dir));
+                    return;
+                }
+                for (id, owner, instance) in instances {
+                    if id != plugin_id {
+                        continue;
+                    }
+                    let mut plugin = instance.lock().unwrap();
+                    if generation.map_or(owner != client_id, |generation| {
+                        plugin.deno_generation() != Some(generation)
+                    }) {
+                        continue;
+                    }
+                    let env = plugin.env_mut();
+                    if env.wasi_ctx.is_some() {
+                        let wasi_ctx = PluginLoader::create_wasi_ctx(
+                            &new_host_dir,
+                            &env.plugin_own_data_dir,
+                            &env.plugin_own_cache_dir,
+                            &ZELLIJ_TMP_DIR,
+                            env.user_plugin_dir.as_ref(),
+                            &env.plugin.location.to_string(),
+                            env.plugin_id,
+                            env.stdin_pipe.clone(),
+                            env.stdout_pipe.clone(),
+                        );
+                        match wasi_ctx {
+                            Ok(wasi_ctx) => drop(env.wasi_ctx.replace(wasi_ctx)),
+                            Err(error) => {
+                                reply(Event::FailedToChangeHostFolder(Some(error.to_string())));
+                                return;
+                            },
                         }
                     }
+                    env.plugin_cwd = new_host_dir.clone();
+                    drop(plugin);
+                    let _ = senders.send_to_pty(zellij_bus::pty::PtyInstruction::ReportPluginCwd(
+                        plugin_id,
+                        new_host_dir.clone(),
+                    ));
+                    reply(Event::HostFolderChanged(new_host_dir));
+                    return;
                 }
             },
         );
@@ -2302,6 +2314,14 @@ impl WasmBridge {
             false,
             move |senders, plugin_map, connected_clients, _, _| {
                 let _shutdown = shutdown;
+                if let Some(workers) = plugin_map
+                    .lock()
+                    .unwrap()
+                    .deno_worker_routes(plugin_id, generation)
+                {
+                    workers.send(generation, crate::deno::background_worker::Message::Tick);
+                    return;
+                }
                 let connected_clients = connected_clients.lock().unwrap().clone();
                 let instances = plugin_map.lock().unwrap().running_plugins();
                 for (id, client_id, instance) in instances {
@@ -2758,6 +2778,17 @@ impl WasmBridge {
                                   _engine| {
                                 let _s = _s; // guard to allow the task to complete before cleanup/shutdown
                                 for event_or_pipe_message in events_or_pipe_messages {
+                                    if let EventOrPipeMessage::DenoEvent(client, generation, event) = &event_or_pipe_message {
+                                        let plugin = running_plugin.lock().unwrap();
+                                        if !plugin.is_disposed() {
+                                            if let Some(workers) = &plugin.env().deno_workers {
+                                                if workers.contains(*generation) {
+                                                    workers.send(*generation, crate::deno::background_worker::Message::Event(*client, event.clone()));
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                    }
                                     // Replay runs on the pinned executor. A cache can span
                                     // an attachment/reload, so validate against this actual
                                     // instance and retain a shared callback's original client.
@@ -2775,7 +2806,10 @@ impl WasmBridge {
                                     match event_or_pipe_message {
                                         EventOrPipeMessage::Event(event)
                                         | EventOrPipeMessage::DenoEvent(_, _, event) => {
-                                            if !subs.contains(&EventType::from(&event)) {
+                                            if !subs.contains(&EventType::from(&event))
+                                                && !(matches!(event, Event::PermissionRequestResult(_))
+                                                    && running_plugin.lock().unwrap().deno_generation().is_some())
+                                            {
                                                 continue;
                                             }
                                             let mut running_plugin = running_plugin.lock().unwrap();
@@ -3199,8 +3233,9 @@ impl WasmBridge {
             return Err(anyhow!("Failed to get running plugin"));
         }
 
+        let requested = permissions;
         let permissions = if status == PermissionStatus::Granted {
-            permissions
+            requested.clone()
         } else {
             vec![]
         };
@@ -3211,6 +3246,9 @@ impl WasmBridge {
             running_plugin
                 .env_mut()
                 .set_permissions(HashSet::from_iter(permissions.clone()));
+            if let Some(workers) = &running_plugin.env().deno_workers {
+                workers.permission_answer(running_plugin.env(), &requested, status);
+            }
             plugin_location.get_or_insert_with(|| running_plugin.env().plugin.location.to_string());
         }
 
@@ -3548,7 +3586,7 @@ fn handle_plugin_loading_failure(
 }
 
 // TODO: move to permissions?
-fn check_event_permission(
+pub(crate) fn check_event_permission(
     plugin_env: &PluginEnv,
     event: &Event,
 ) -> (PermissionStatus, Option<PermissionType>) {

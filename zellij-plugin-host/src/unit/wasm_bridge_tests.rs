@@ -90,6 +90,181 @@ impl TestBridge {
 }
 
 #[test]
+fn deno_host_folder_changes_report_only_the_active_parent_cwd() {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(1);
+    let client = ClientId::new(1);
+    let source = r#"
+let replies = 0, fences = 0;
+export default {
+  workers: {probe() {zellij.host.setTimeout(0);}},
+  load() {
+    zellij.subscribe(['HostFolderChanged', 'FailedToChangeHostFolder', 'CustomMessage']);
+    zellij.postMessageTo('probe', 'start');
+  },
+  update(event) {
+    if (event.HostFolderChanged || event.FailedToChangeHostFolder) replies++;
+    if (event.CustomMessage) fences++;
+    return true;
+  },
+  render() {return `replies=${replies} fences=${fences}`;}
+};
+"#;
+    let context = test.context(1, 1, source);
+    test.load(context).unwrap();
+    let instructions = test.receiver::<PluginInstruction>();
+    let pty = test.receiver::<zellij_bus::pty::PtyInstruction>();
+    let worker_generation = loop {
+        let (instruction, _) = instructions
+            .recv_timeout(zellij_test_support::default_timeout())
+            .unwrap();
+        if let PluginInstruction::DenoEvent(_, _, generation, Event::Timer(_)) = instruction {
+            break generation;
+        }
+    };
+    let parent_generation = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, Some(client))
+        .unwrap()
+        .lock()
+        .unwrap()
+        .deno_generation()
+        .unwrap();
+    let original_cwd = test.bridge.get_plugin_cwd(id, client).unwrap();
+    let moved = tempdir().unwrap();
+    instructions.try_iter().for_each(drop);
+    pty.try_iter().for_each(drop);
+    let mut replies = vec![];
+    for generation in [worker_generation, parent_generation] {
+        test.bridge
+            .change_plugin_host_dir(moved.path().to_path_buf(), id, client, Some(generation))
+            .unwrap();
+        test.settle(id);
+        let reply = instructions
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::DenoEvent(
+                    _,
+                    _,
+                    reply_generation,
+                    event @ Event::HostFolderChanged(_),
+                ) => {
+                    assert_eq!(reply_generation, generation);
+                    Some(event)
+                },
+                _ => None,
+            })
+            .expect("host folder change must produce a scoped reply");
+        replies.push((generation, reply));
+        let reports: Vec<_> = pty
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                zellij_bus::pty::PtyInstruction::ReportPluginCwd(plugin, path) => {
+                    Some((plugin, path))
+                },
+                _ => None,
+            })
+            .collect();
+        if generation == worker_generation {
+            assert!(
+                reports.is_empty(),
+                "worker must not report the parent pane's cwd"
+            );
+            assert_eq!(
+                test.bridge.get_plugin_cwd(id, client),
+                Some(original_cwd.clone())
+            );
+        } else {
+            assert_eq!(reports, vec![(id, moved.path().to_path_buf())]);
+            assert_eq!(
+                test.bridge.get_plugin_cwd(id, client),
+                Some(moved.path().to_path_buf())
+            );
+        }
+    }
+    // Hold the executor so invalidation happens after submission, before validation or mutation.
+    let (release, blocked) = std::sync::mpsc::channel();
+    test.bridge
+        .plugin_executor
+        .execute_for_plugin(id, move |_, _, _, _, _| {
+            blocked
+                .recv_timeout(zellij_test_support::default_timeout())
+                .unwrap();
+        });
+    for generation in [worker_generation, parent_generation] {
+        test.bridge
+            .change_plugin_host_dir(original_cwd.clone(), id, client, Some(generation))
+            .unwrap();
+    }
+    test.bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .invalidate_deno_generations(id);
+    release.send(()).unwrap();
+    test.settle(id);
+    assert_eq!(
+        test.bridge.get_plugin_cwd(id, client),
+        Some(moved.path().to_path_buf())
+    );
+    assert!(instructions.try_iter().next().is_none());
+    assert!(pty.try_iter().next().is_none());
+
+    let context = test.context(1, 1, source);
+    test.load(context).unwrap();
+    let replacement_cwd = test.bridge.get_plugin_cwd(id, client).unwrap();
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    for (generation, reply) in replies {
+        test.bridge
+            .change_plugin_host_dir(moved.path().to_path_buf(), id, client, Some(generation))
+            .unwrap();
+        test.bridge
+            .deno_event(id, generation, vec![(client, reply)], shutdown.clone())
+            .unwrap();
+    }
+    test.bridge
+        .update_plugins(
+            vec![(
+                Some(id),
+                Some(client),
+                Event::CustomMessage("fence".into(), String::new()),
+            )],
+            shutdown,
+        )
+        .unwrap();
+    test.settle(id);
+    assert_eq!(
+        test.bridge.get_plugin_cwd(id, client),
+        Some(replacement_cwd)
+    );
+    assert!(pty.try_iter().next().is_none());
+    assert!(!instructions.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::DenoEvent(
+            _,
+            _,
+            _,
+            Event::HostFolderChanged(_) | Event::FailedToChangeHostFolder(_)
+        )
+    )));
+    let frames: Vec<_> = test
+        .receiver::<ScreenInstruction>()
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            ScreenInstruction::PluginBytes(assets) => assets,
+            _ => vec![],
+        })
+        .collect();
+    assert!(frames
+        .iter()
+        .any(|asset| String::from_utf8_lossy(&asset.bytes).contains("replies=0 fences=1")));
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
 fn deno_startup_instance_is_cancelled_and_recreated_on_reattach() {
     let mut test = TestBridge::new();
     let client = ClientId::new(1);
@@ -185,6 +360,131 @@ export default {
     drop(replacement);
     test.bridge.unload_plugin(id).unwrap();
     events.wait("replacement plugin cleanup", || !scratch.exists());
+}
+
+#[test]
+fn deno_pane_events_reach_cli_subscribers_once_even_after_reload() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    let all_events = ClientId::new(7);
+    let exits_only = ClientId::new(8);
+    let unrelated = ClientId::new(9);
+    test.bridge.add_client(client).unwrap();
+    let path = test._dirs[0].path().join("cli-events.ts");
+    std::fs::write(&path, "export default {};").unwrap();
+    let run = RunPlugin {
+        location: RunPluginLocation::File(path),
+        ..Default::default()
+    };
+    let (plugin, _) = test
+        .bridge
+        .load_plugin(
+            &Some(run),
+            None,
+            Size { rows: 5, cols: 20 },
+            None,
+            false,
+            Some(client),
+        )
+        .unwrap();
+    test.wait_for_executor(plugin);
+    let generation = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, Some(client))
+        .unwrap()
+        .lock()
+        .unwrap()
+        .deno_generation()
+        .unwrap();
+    test.bridge
+        .subscribe_cli_client_to_events(all_events, vec![]);
+    test.bridge.subscribe_cli_client_to_events(
+        exits_only,
+        vec!["CommandPaneExited".into(), "EditPaneExited".into()],
+    );
+    test.bridge
+        .subscribe_cli_client_to_events(unrelated, vec!["CwdChanged".into()]);
+    let terminal = zellij_types::internal_ids::TerminalId::new(3);
+    let context = BTreeMap::from([("request".into(), "pane".into())]);
+    let events = [
+        Event::CommandPaneOpened(terminal, context.clone()),
+        Event::CommandPaneReRun(terminal, context.clone()),
+        Event::CommandPaneExited(terminal, Some(0), context.clone()),
+        Event::EditPaneOpened(terminal, context.clone()),
+        Event::EditPaneExited(terminal, Some(1), context),
+        Event::ListClients(vec![]),
+        Event::CustomMessage("private".into(), "reply".into()),
+        Event::InputReceived,
+    ];
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    // Forward while the load is pending, then replay the cache without duplicating CLI events.
+    assert!(test
+        .bridge
+        .cached_events_for_pending_plugins
+        .contains_key(&plugin));
+    test.bridge
+        .deno_event(
+            plugin,
+            generation,
+            events.iter().cloned().map(|e| (client, e)).collect(),
+            shutdown.clone(),
+        )
+        .unwrap();
+    test.finish_reload(plugin);
+    test.bridge.reload_plugin_with_id(plugin).unwrap();
+    test.finish_reload(plugin);
+    assert!(!test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .contains_deno_generation(plugin, generation));
+    // These lifecycle events still belong on the CLI stream even though their owner is gone.
+    test.bridge
+        .deno_event(
+            plugin,
+            generation,
+            events.iter().cloned().map(|e| (client, e)).collect(),
+            shutdown,
+        )
+        .unwrap();
+    test.wait_for_executor(plugin);
+    let forwarded: Vec<_> = test
+        .receiver::<ServerInstruction>()
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ServerInstruction::EventUpdateToClient(client, kind, json) => {
+                Some((client, kind, json))
+            },
+            _ => None,
+        })
+        .collect();
+    for (subscriber, expected) in [
+        (all_events, events[..5].iter().collect::<Vec<_>>()),
+        (exits_only, vec![&events[2], &events[4]]),
+        (unrelated, vec![]),
+    ] {
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|event| {
+                (
+                    EventType::from(*event).to_string(),
+                    serde_json::to_string(event).unwrap(),
+                )
+            })
+            .collect();
+        let received: Vec<_> = forwarded
+            .iter()
+            .filter(|(client, _, _)| *client == subscriber)
+            .map(|(_, kind, json)| (kind.clone(), json.clone()))
+            .collect();
+        assert_eq!(received, [expected.clone(), expected].concat());
+    }
+    test.bridge.unload_plugin(plugin).unwrap();
+    test.wait_for_executor(plugin);
 }
 
 #[test]

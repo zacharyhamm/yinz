@@ -2255,6 +2255,8 @@ pub struct PluginTag {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OriginatingPlugin {
+    #[prost(uint64, optional, tag="4")]
+    pub deno_generation: ::core::option::Option<u64>,
     #[prost(uint32, tag="1")]
     pub plugin_id: u32,
     /// ClientId is u16, but using uint32 for protobuf compatibility

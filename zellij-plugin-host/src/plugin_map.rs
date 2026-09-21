@@ -51,6 +51,7 @@ pub struct PluginMap {
     plugin_metadata: BTreeMap<PluginId, PluginMetadata>,
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
     deno_client_cancellations: HashMap<(PluginId, ClientId), (Option<u64>, Arc<AtomicBool>)>,
+    deno_workers: HashMap<(PluginId, ClientId), Arc<crate::deno::background_worker::Workers>>,
 }
 
 #[derive(Clone)]
@@ -138,6 +139,7 @@ impl PluginMap {
     }
     pub fn remove_plugins(&mut self, pid: PluginId) -> HashMap<(PluginId, ClientId), PluginAssets> {
         self.plugin_metadata.remove(&pid);
+        self.deno_workers.retain(|(id, _), _| *id != pid);
         self.deno_client_cancellations
             .retain(|(id, _), _| *id != pid);
         let mut removed = HashMap::new();
@@ -157,6 +159,7 @@ impl PluginMap {
         plugin_id: PluginId,
         client_id: ClientId,
     ) -> Option<PluginAssets> {
+        self.deno_workers.remove(&(plugin_id, client_id));
         self.deno_client_cancellations
             .remove(&(plugin_id, client_id));
         let assets = self.plugin_assets.remove(&(plugin_id, client_id))?;
@@ -349,6 +352,21 @@ impl PluginMap {
                 *id == plugin_id && *current == Some(generation) && !cancel.load(Ordering::Acquire)
             })
     }
+    pub(crate) fn deno_worker_routes(
+        &self,
+        plugin_id: PluginId,
+        generation: u64,
+    ) -> Option<Arc<crate::deno::background_worker::Workers>> {
+        self.deno_workers
+            .iter()
+            .find_map(|((id, client), workers)| {
+                (*id == plugin_id
+                    && self.contains(plugin_id, *client)
+                    && self.contains_deno_generation(plugin_id, workers.parent_generation)
+                    && workers.contains(generation))
+                .then(|| workers.clone())
+            })
+    }
     /// A queued reload supersedes old failure reports before its replacement is instantiated.
     pub fn invalidate_deno_generations(&mut self, plugin_id: PluginId) {
         for ((id, _), (generation, _)) in &mut self.deno_client_cancellations {
@@ -368,11 +386,16 @@ impl PluginMap {
         let metadata = PluginMetadata::from_running(&running_plugin.lock().unwrap());
         self.plugin_metadata.insert(plugin_id, metadata);
         if let PluginBackend::Deno(deno) = &running_plugin.lock().unwrap().backend {
+            if let Some(workers) = &deno.env().deno_workers {
+                self.deno_workers
+                    .insert((plugin_id, client_id), workers.clone());
+            }
             self.deno_client_cancellations.insert(
                 (plugin_id, client_id),
                 (Some(deno.generation()), deno.client_cancel()),
             );
         } else {
+            self.deno_workers.remove(&(plugin_id, client_id));
             self.deno_client_cancellations
                 .remove(&(plugin_id, client_id));
         }
@@ -393,6 +416,9 @@ impl PluginMap {
         }
         match self.plugin_assets.remove(&(plugin_id, from)) {
             Some(plugin_asset) => {
+                if let Some(workers) = self.deno_workers.remove(&(plugin_id, from)) {
+                    self.deno_workers.insert((plugin_id, to), workers);
+                }
                 if let Some(metadata) = self.plugin_metadata.get_mut(&plugin_id) {
                     metadata.owner_client_id = to;
                 }
@@ -492,6 +518,8 @@ pub struct PluginEnv {
     pub cancel_tripped: Arc<AtomicBool>,
     /// Identifies the Deno instance that emitted a failure, including host ReportPanic.
     pub deno_generation: Option<u64>,
+    /// Named Deno workers share the owning instance's permissions and lifetime.
+    pub(crate) deno_workers: Option<Arc<crate::deno::background_worker::Workers>>,
     pub plugin: PluginConfig,
     pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
     /// Whether this plugin has asked for permissions at all, set by `request_permission`.
@@ -592,6 +620,18 @@ impl<T: Write + Send + 'static> std::io::Write for WriteOutputStream<T> {
 }
 
 impl PluginEnv {
+    pub fn originating_plugin(
+        &self,
+        context: BTreeMap<String, String>,
+    ) -> zellij_types::data::OriginatingPlugin {
+        zellij_types::data::OriginatingPlugin {
+            plugin_id: self.plugin_id,
+            client_id: self.client_id,
+            deno_generation: self.deno_generation,
+            context,
+        }
+    }
+
     /// Remove only this runtime's watches, including watches created for other clients.
     pub fn clear_deno_watches(&self, generation: u64) {
         use zellij_types::plugin_data::DataError;
