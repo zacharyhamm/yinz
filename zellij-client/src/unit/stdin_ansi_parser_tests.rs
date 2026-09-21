@@ -1466,6 +1466,10 @@ fn kitty_probe_ok_reply_classifies_true() {
         HostReply::KittyGraphicsSupport(supported) => assert!(*supported),
         other => panic!("unexpected reply: {:?}", other),
     }
+    let duplicate = parser.feed(b"\x1b_Gi=31;OK\x1b\\");
+    assert!(duplicate.replies.is_empty());
+    assert!(duplicate.residue.is_empty());
+    assert!(parser.resolve_kitty_probe_by_timeout().is_none());
 }
 
 #[test]
@@ -1479,6 +1483,10 @@ fn kitty_probe_error_reply_classifies_false() {
         HostReply::KittyGraphicsSupport(supported) => assert!(!*supported),
         other => panic!("unexpected reply: {:?}", other),
     }
+    let late_ok = parser.feed(b"\x1b_Gi=31;OK\x1b\\");
+    assert!(late_ok.replies.is_empty());
+    assert!(late_ok.residue.is_empty());
+    assert!(parser.resolve_kitty_probe_by_timeout().is_none());
 }
 
 /// The deadline exists for a transport that answers neither the probe nor the barrier that
@@ -1530,7 +1538,7 @@ fn a_late_ok_after_the_deadline_still_reports_support() {
 /// Saying `false` twice would cost the server a whole `ModeUpdate` fan-out to every plugin for a
 /// value that did not change.
 #[test]
-fn a_barrier_after_the_deadline_does_not_repeat_the_answer() {
+fn a_barrier_after_the_deadline_keeps_waiting_without_repeating_the_answer() {
     let mut parser = StdinAnsiParser::new();
     parser.expect_kitty_probe_reply();
     assert!(parser.resolve_kitty_probe_by_timeout().is_some());
@@ -1546,27 +1554,38 @@ fn a_barrier_after_the_deadline_does_not_repeat_the_answer() {
     assert!(replies
         .iter()
         .any(|r| matches!(r, HostReply::SixelSupport(true))));
+    assert!(parser.resolve_kitty_probe_by_timeout().is_none());
+    let late_ok = parser.feed(b"\x1b_Gi=31;OK\x1b\\");
+    assert!(late_ok.residue.is_empty());
+    assert!(matches!(
+        late_ok.replies.as_slice(),
+        [HostReply::KittyGraphicsSupport(true)]
+    ));
 }
 
-/// Same reasoning as the barrier case above: the deadline already said `false`, and a late
-/// refusal only repeats it.
+/// A provisional negative already said `false`; a refusal settles the probe without repeating it.
 #[test]
-fn a_late_refusal_after_the_deadline_does_not_repeat_the_answer() {
-    let mut parser = StdinAnsiParser::new();
-    parser.expect_kitty_probe_reply();
-    assert!(parser.resolve_kitty_probe_by_timeout().is_some());
-    let (replies, residue) = feed_once(&mut parser, b"\x1b_Gi=31;ENOENT:no such file\x1b\\");
-    assert!(residue.is_empty(), "probe reply must be fully consumed");
-    assert!(
-        !replies
-            .iter()
-            .any(|r| matches!(r, HostReply::KittyGraphicsSupport(_))),
-        "{replies:?}"
-    );
+fn a_late_refusal_settles_the_probe_without_repeating_the_answer() {
+    for timeout_first in [false, true] {
+        let mut parser = StdinAnsiParser::new();
+        parser.expect_kitty_probe_reply();
+        if timeout_first {
+            assert!(parser.resolve_kitty_probe_by_timeout().is_some());
+        } else {
+            let _ = parser.feed(b"\x1b[?62;4;52c");
+        }
+        let refusal = parser.feed(b"\x1b_Gi=31;ENOENT:no such file\x1b\\");
+        assert!(refusal.residue.is_empty());
+        assert!(refusal.replies.is_empty());
+        let late_ok = parser.feed(b"\x1b_Gi=31;OK\x1b\\");
+        assert!(late_ok.residue.is_empty());
+        assert!(late_ok.replies.is_empty());
+        assert!(parser.resolve_kitty_probe_by_timeout().is_none());
+    }
 }
 
 #[test]
-fn kitty_probe_absence_resolves_false_on_barrier() {
+fn kitty_probe_absence_reports_false_only_on_the_first_barrier() {
     let mut parser = StdinAnsiParser::new();
     parser.expect_kitty_probe_reply();
     let (replies, residue) = feed_once(&mut parser, b"\x1b[?62;4;52c");
@@ -1579,6 +1598,51 @@ fn kitty_probe_absence_resolves_false_on_barrier() {
         })
         .collect();
     assert_eq!(kitty_replies, vec![false]);
+    for _ in 0..2 {
+        let out = parser.feed(b"\x1b[?62;4;52c");
+        assert!(out.residue.is_empty());
+        assert!(!out
+            .replies
+            .iter()
+            .any(|r| matches!(r, HostReply::KittyGraphicsSupport(_))));
+        assert!(parser.resolve_kitty_probe_by_timeout().is_none());
+    }
+    let late_ok = parser.feed(b"\x1b_Gi=31;OK\x1b\\");
+    assert!(late_ok.residue.is_empty());
+    assert!(matches!(
+        late_ok.replies.as_slice(),
+        [HostReply::KittyGraphicsSupport(true)]
+    ));
+}
+
+#[test]
+fn kitty_probe_barrier_then_success_is_independent_of_read_boundaries() {
+    let full = b"\x1b[?62;4;52c\x1b_Gi=31;OK\x1b\\";
+    // Includes both replies in one read, every split, and one byte per read.
+    let chunkings = (0..=full.len())
+        .map(|split| vec![&full[..split], &full[split..]])
+        .chain(std::iter::once(full.chunks(1).collect()));
+    for chunks in chunkings {
+        let mut parser = StdinAnsiParser::new();
+        parser.expect_kitty_probe_reply();
+        let mut support = Vec::new();
+        for chunk in &chunks {
+            let out = parser.feed(chunk);
+            assert!(out.residue.is_empty(), "chunks: {chunks:?}, out: {out:?}");
+            support.extend(out.replies.into_iter().filter_map(|reply| match reply {
+                HostReply::KittyGraphicsSupport(supported) => Some(supported),
+                _ => None,
+            }));
+        }
+        // Extracting APCs first can skip the provisional negative in a shared read.
+        assert!(
+            support == [true] || support == [false, true],
+            "chunks: {chunks:?}, support: {support:?}"
+        );
+        assert_eq!(parser.pending_partial(), PendingPartial::None);
+        assert!(parser.finalize_force().is_empty());
+        assert!(parser.resolve_kitty_probe_by_timeout().is_none());
+    }
 }
 
 #[test]
@@ -1684,6 +1748,7 @@ fn apc_outside_probe_window_is_not_classified() {
     let mut parser = StdinAnsiParser::new();
     let out = parser.feed(b"\x1b_Gi=31;OK\x1b\\");
     assert!(out.replies.is_empty());
+    assert!(out.residue.is_empty());
 }
 
 #[test]

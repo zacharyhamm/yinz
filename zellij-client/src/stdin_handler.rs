@@ -516,8 +516,8 @@ fn build_startup_query_string(support_kitty_graphics_protocol: bool) -> String {
     // <ESC>[?2026$p => get synchronised output mode
     // <ESC>_Ga=q,...<ESC>\ => probe kitty graphics support (omitted when the
     // protocol is disabled), answered by capable terminals only; the trailing
-    // Primary DA is the barrier that resolves the probe negatively when it
-    // goes unanswered
+    // Primary DA provisionally reports no support when the probe is still
+    // unanswered; a delayed graphics reply can still confirm support
     let kitty_graphics_probe = if support_kitty_graphics_protocol {
         "\u{1b}_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\u{1b}\u{5c}"
     } else {
