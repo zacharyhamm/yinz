@@ -3006,6 +3006,146 @@ fn composed(direction: MultipaneDirection) -> (OverlayPanes, [PaneId; 2], Multip
 }
 
 #[test]
+fn multipane_composition_preserves_existing_terminal_contents() {
+    assert_composition_preserves_contents(false);
+}
+
+#[test]
+fn multipane_composition_preserves_existing_alternate_screen() {
+    assert_composition_preserves_contents(true);
+}
+
+fn assert_composition_preserves_contents(alternate_screen: bool) {
+    for direction in [MultipaneDirection::LeftRight, MultipaneDirection::TopBottom] {
+        let mut panes = overlay_panes(120, 60);
+        let children = [1, 2].map(|id| PaneId::Terminal(TerminalId::new(id)));
+        for id in [1, 2] {
+            add(
+                &mut panes,
+                id,
+                OverlayKind::Dismissible,
+                coordinates("40", "24"),
+            );
+        }
+        let before = children.map(|child| {
+            let pane = panes.get_mut(&child).unwrap();
+            if alternate_screen {
+                pane.handle_pty_bytes(b"\x1b[?1049h".to_vec());
+            }
+            // Fill the viewport and, on the normal screen, leave history above it. Composition
+            // keeps each child's 38 x 22 content area, so neither reflow nor cursor motion is due.
+            let content = (0..30)
+                .map(|row| char::from(b'A' + row % 26).to_string().repeat(38))
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            pane.handle_pty_bytes(format!("{content}\x1b[H").into_bytes());
+            assert_eq!(pane.cursor_coordinates(None), Some((1, 1, true)));
+            (pane.dump_screen(false, None), pane.dump_screen(true, None))
+        });
+        let coordinates = match direction {
+            MultipaneDirection::LeftRight => coordinates("79", "24"),
+            MultipaneDirection::TopBottom => coordinates("40", "47"),
+        };
+        panes
+            .create_multipane(
+                children,
+                MultipaneSplit {
+                    direction,
+                    ratio: 5000,
+                },
+                OverlayPlacement::dismissible(Some(coordinates)),
+            )
+            .unwrap();
+        for (child, (viewport, history)) in children.into_iter().zip(before) {
+            let pane = panes.get_mut(&child).unwrap();
+            assert_eq!(pane.get_content_rows(), 22, "{direction:?}");
+            assert_eq!(pane.get_content_columns(), 38, "{direction:?}");
+            assert_eq!(pane.dump_screen(false, None), viewport, "{direction:?}");
+            assert_eq!(pane.dump_screen(true, None), history, "{direction:?}");
+            // The cursor's content-relative position is unchanged; only the old frame inset goes.
+            assert_eq!(
+                pane.cursor_coordinates(None),
+                Some((0, 0, true)),
+                "{direction:?}"
+            );
+            pane.handle_pty_bytes(b"!".to_vec());
+            assert_eq!(
+                pane.dump_screen(false, None),
+                format!("!{}", &viewport[1..])
+            );
+            assert_eq!(pane.cursor_coordinates(None), Some((1, 0, true)));
+        }
+    }
+}
+
+#[test]
+fn single_overlay_inherits_borderlessness_unless_coordinates_override_it() {
+    for inherited in [false, true] {
+        for requested in [None, Some(false), Some(true)] {
+            let mut panes = overlay_panes(120, 40);
+            let id = PaneId::Terminal(TerminalId::new(1));
+            let mut pane = mock_pane(id);
+            pane.set_borderless(inherited);
+            let mut coordinates = coordinates("40", "24");
+            coordinates.borderless = requested;
+            panes.add_pane(
+                id,
+                pane,
+                OverlayKind::Dismissible,
+                coordinates,
+                OverlayCarry::default(),
+            );
+            assert_single_overlay_border(&mut panes, id, requested.unwrap_or(inherited));
+        }
+    }
+}
+
+#[test]
+fn single_overlay_replacement_inherits_borderlessness_unless_coordinates_override_it() {
+    for inherited in [false, true] {
+        for requested in [None, Some(false), Some(true)] {
+            let mut panes = overlay_panes(120, 40);
+            let mut coordinates = coordinates("40", "24");
+            coordinates.borderless = requested;
+            add(&mut panes, 1, OverlayKind::Dismissible, coordinates);
+            let replacement_id = PaneId::Terminal(TerminalId::new(2));
+            let mut replacement = mock_pane(replacement_id);
+            replacement.set_borderless(inherited);
+            panes
+                .replace_pane(PaneId::Terminal(TerminalId::new(1)), replacement)
+                .unwrap();
+            assert_single_overlay_border(
+                &mut panes,
+                replacement_id,
+                requested.unwrap_or(inherited),
+            );
+        }
+    }
+}
+
+fn assert_single_overlay_border(panes: &mut OverlayPanes, id: PaneId, borderless: bool) {
+    // Both fullscreen modes must restore the inherited/requested setting on exit.
+    for covers_ui in [false, true] {
+        let pane = panes.get(&id).unwrap();
+        assert_eq!(pane.borderless(), borderless);
+        assert_eq!(pane.get_content_columns(), if borderless { 40 } else { 38 });
+        assert_eq!(pane.get_content_rows(), if borderless { 24 } else { 22 });
+        let outer = panes.outer_geom(id).unwrap();
+        assert_eq!(
+            panes.position_is_on_frame(id, &Position::new(outer.y as i32, outer.x as u16)),
+            !borderless,
+        );
+        assert!(panes.toggle_fullscreen_of(id, covers_ui));
+        assert_eq!(panes.get(&id).unwrap().borderless(), borderless);
+        assert!(panes.toggle_fullscreen_of(id, covers_ui));
+    }
+    let pane = panes.get(&id).unwrap();
+    assert_eq!(pane.borderless(), borderless);
+    assert_eq!(pane.get_content_columns(), if borderless { 40 } else { 38 });
+    assert_eq!(pane.get_content_rows(), if borderless { 24 } else { 22 });
+}
+
+#[test]
 fn multipane_frame_refresh_and_replacement_preserve_terminal_contents() {
     for direction in [MultipaneDirection::LeftRight, MultipaneDirection::TopBottom] {
         for operation in 0..4 {

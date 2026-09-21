@@ -245,6 +245,21 @@ impl Pane for TerminalPane {
         self.geom_override = Some(pane_geom);
         self.reflow_lines();
     }
+    fn set_layout(
+        &mut self,
+        mut geom: PaneGeom,
+        geom_override: Option<PaneGeom>,
+        borderless: bool,
+        content_offset: Offset,
+    ) {
+        geom.is_pinned = self.geom.is_pinned;
+        self.geom = geom;
+        self.geom_override = geom_override;
+        self.borderless = borderless;
+        self.content_offset = content_offset;
+        self.reflow_lines();
+        self.render_full_viewport();
+    }
     fn character_cell_size_possibly_changed(&mut self) {
         self.grid.character_cell_size_possibly_changed();
         self.render_full_viewport();
