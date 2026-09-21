@@ -164,8 +164,7 @@ use zellij_types::diagnostics::ContextType;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::style::Style;
 use {
-    zellij_config::config::watch_config_file_changes,
-    zellij_config::config::watch_layout_dir_changes, zellij_config::config::Config,
+    zellij_config::config::watch_config_file_changes, zellij_config::config::Config,
     zellij_config::config::ConfigWriteError, zellij_ipc::ipc::ClientAttributes,
     zellij_ipc::ipc::ExitReason, zellij_ipc::ipc::ServerToClientMsg,
     zellij_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE, zellij_runtime::consts::SCROLL_BUFFER_SIZE,
@@ -2547,28 +2546,11 @@ fn init_session(
         })
         .unwrap();
     if let Some(config_file_path) = cli_assets.config_file_path.clone() {
-        let layout_dir = config_options
-            .layout_dir
-            .clone()
-            .or_else(default_layout_dir);
-        let default_layout_name = config_options
-            .default_layout
-            .map(|l| format!("{}", l.display()));
         report_changes_in_config_file(
             config_file_path,
             cli_assets.config_dir.as_deref(),
             to_server.clone(),
         );
-
-        // Watch layout directory for changes
-        if let Some(layout_dir_path) = layout_dir {
-            report_changes_in_layout_dir(
-                layout_dir_path,
-                default_layout_name,
-                to_plugin.clone(),
-                to_screen.clone(),
-            );
-        }
     }
 
     SessionMetaData {
@@ -2688,38 +2670,6 @@ fn report_changes_in_config_file(
             }
         })
         .await;
-    });
-}
-
-fn report_changes_in_layout_dir(
-    layout_dir: PathBuf,
-    default_layout_name: Option<String>,
-    to_plugin: SenderWithContext<PluginInstruction>,
-    to_screen: SenderWithContext<ScreenInstruction>,
-) {
-    std::thread::spawn(move || {
-        let rt = crate::global_async_runtime::get_tokio_runtime();
-        rt.block_on(async move {
-            watch_layout_dir_changes(
-                layout_dir,
-                default_layout_name,
-                move |new_layouts, layout_errors| {
-                    let to_plugin = to_plugin.clone();
-                    let to_screen = to_screen.clone();
-                    async move {
-                        let _ = to_plugin.send(PluginInstruction::LayoutListUpdate(
-                            new_layouts.clone(),
-                            layout_errors.clone(),
-                        ));
-                        let _ = to_screen.send(ScreenInstruction::UpdateAvailableLayouts(
-                            new_layouts,
-                            layout_errors,
-                        ));
-                    }
-                },
-            )
-            .await;
-        });
     });
 }
 

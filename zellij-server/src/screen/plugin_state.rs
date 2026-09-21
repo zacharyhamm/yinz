@@ -6,7 +6,7 @@ use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::pane_id::PaneId;
 
-use super::Screen;
+use super::{Screen, ScreenInstruction};
 use crate::background_jobs::BackgroundJob;
 use crate::plugins::{PluginInstruction, CLI_EVENTS_ONLY_TARGET};
 use crate::tab::Tab;
@@ -22,6 +22,14 @@ use {
     zellij_types::data::PaneListEntry, zellij_types::data::PaneManifest,
     zellij_types::data::SessionInfo, zellij_types::data::TabInfo,
 };
+
+pub(super) struct LayoutWatcher(pub(super) tokio::task::JoinHandle<()>);
+
+impl Drop for LayoutWatcher {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 impl Screen {
     pub fn generate_and_report_tab_state(&mut self) -> Result<Vec<TabInfo>> {
@@ -560,11 +568,70 @@ impl Screen {
         Ok(())
     }
 
+    pub(super) fn restart_layout_watcher(&mut self) {
+        // Aborting cannot retract results already queued on the screen bus.
+        self.layout_watcher_generation += 1;
+        self.layout_watcher = None;
+        let (layouts, errors) = zellij_config::layout::list_available_layouts(
+            self.layout_dir.clone(),
+            &self.default_layout_name,
+        );
+        self.update_available_layouts(self.layout_watcher_generation, layouts, errors);
+        if self.config_file_path.is_none() {
+            return;
+        }
+        let Some(layout_dir) = self
+            .layout_dir
+            .clone()
+            .or_else(zellij_runtime::home::default_layout_dir)
+        else {
+            return;
+        };
+        let Some(to_screen) = self.bus.senders.to_screen.clone() else {
+            return;
+        };
+        let generation = self.layout_watcher_generation;
+        let default_layout_name = self.default_layout_name.clone();
+        self.layout_watcher = Some(LayoutWatcher(
+            crate::global_async_runtime::get_tokio_runtime().spawn(
+                zellij_config::config::watch_layout_dir_changes(
+                    layout_dir,
+                    default_layout_name,
+                    move |layouts, errors| {
+                        let to_screen = to_screen.clone();
+                        async move {
+                            to_screen
+                                .send(ScreenInstruction::UpdateAvailableLayouts {
+                                    generation,
+                                    layouts,
+                                    errors,
+                                })
+                                .context("reporting changed layouts to the screen")
+                                .non_fatal();
+                        }
+                    },
+                ),
+            ),
+        ));
+    }
+
     pub fn update_available_layouts(
         &mut self,
+        generation: u64,
         layouts: Vec<LayoutInfo>,
         errors: Vec<LayoutWithError>,
     ) {
+        if generation != self.layout_watcher_generation {
+            return;
+        }
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::LayoutListUpdate(
+                layouts.clone(),
+                errors.clone(),
+            ))
+            .context("reporting changed layouts to plugins")
+            .non_fatal();
         self.cached_layouts = layouts;
         self.cached_layout_errors = errors;
     }

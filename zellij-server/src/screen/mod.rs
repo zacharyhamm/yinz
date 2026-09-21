@@ -751,6 +751,8 @@ pub(crate) struct Screen {
     layout_dir: Option<PathBuf>,
     #[cfg_attr(test, allow(dead_code))]
     default_layout_name: Option<String>,
+    layout_watcher: Option<plugin_state::LayoutWatcher>,
+    layout_watcher_generation: u64,
     explicitly_disable_kitty_keyboard_protocol: bool,
     support_kitty_graphics_protocol: bool,
     default_editor: Option<PathBuf>,
@@ -1363,6 +1365,8 @@ impl Screen {
             arrow_fonts,
             resurrectable_sessions_cache,
             layout_dir,
+            layout_watcher: None,
+            layout_watcher_generation: 0,
             explicitly_disable_kitty_keyboard_protocol,
             support_kitty_graphics_protocol,
             default_editor,
@@ -3799,12 +3803,10 @@ impl Screen {
         self.notification_position = notification_position;
         self.notification_timeout_secs = notification_timeout_secs;
         if self.default_layout_name != default_layout_name || self.layout_dir != layout_dir {
-            // the available layouts are listed lazily from these two
-            self.cached_layouts.clear();
-            self.cached_layout_errors.clear();
+            self.default_layout_name = default_layout_name;
+            self.layout_dir = layout_dir;
+            self.restart_layout_watcher();
         }
-        self.default_layout_name = default_layout_name;
-        self.layout_dir = layout_dir;
         // read every frame by the output
         self.styled_underlines = styled_underlines;
         self.osc8_hyperlinks = osc8_hyperlinks;

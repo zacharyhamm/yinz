@@ -240,6 +240,9 @@ pub(crate) fn screen_thread_main(
     );
     screen.config_file_path = config_file_path;
     screen.config_dir = config_dir;
+    if screen.config_file_path.is_some() {
+        screen.restart_layout_watcher();
+    }
     // Resolve the session's hue before the first render: an explicit pin
     // wins; otherwise a dark/light pair defaults to dark until the host
     // terminal reports.
@@ -2822,8 +2825,12 @@ pub(crate) fn screen_thread_main(
                 ) => {
                     screen.update_session_infos(new_session_infos, resurrectable_sessions)?;
                 },
-                ScreenInstruction::UpdateAvailableLayouts(layouts, errors) => {
-                    screen.update_available_layouts(layouts, errors);
+                ScreenInstruction::UpdateAvailableLayouts {
+                    generation,
+                    layouts,
+                    errors,
+                } => {
+                    screen.update_available_layouts(generation, layouts, errors);
                 },
                 ScreenInstruction::ReplacePane(
                     new_pane_id,
