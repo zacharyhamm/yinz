@@ -154,7 +154,7 @@ use crate::{
 use route::{route_thread_main, NotificationEnd};
 use zellij_runtime::channels;
 use zellij_runtime::channels::ChannelWithContext;
-use zellij_runtime::channels::SenderWithContext;
+use zellij_runtime::channels::{SenderWithContext, Shutdown};
 use zellij_runtime::errors::prelude::*;
 use zellij_runtime::errors::FatalError;
 use zellij_runtime::home::default_layout_dir;
@@ -372,6 +372,7 @@ impl SessionConfiguration {
 }
 
 pub(crate) struct SessionMetaData {
+    shutdown: Shutdown,
     pub senders: ThreadSenders,
     pub default_shell: Option<TerminalAction>,
     pub current_input_modes: HashMap<ClientId, InputMode>,
@@ -563,14 +564,16 @@ impl SessionMetaData {
 
 impl Drop for SessionMetaData {
     fn drop(&mut self) {
-        let _ = self.senders.send_to_pty(PtyInstruction::Exit);
+        self.shutdown.begin();
+        // The screen can still need every worker while finishing its queued instructions.
         let _ = self.senders.send_to_screen(ScreenInstruction::Exit);
-        let _ = self.senders.send_to_plugin(PluginInstruction::Exit);
-        let _ = self.senders.send_to_pty_writer(PtyWriteInstruction::Exit);
-        let _ = self.senders.send_to_background_jobs(BackgroundJob::Exit);
         if let Some(screen_thread) = self.screen_thread.take() {
             let _ = screen_thread.join();
         }
+        let _ = self.senders.send_to_pty(PtyInstruction::Exit);
+        let _ = self.senders.send_to_plugin(PluginInstruction::Exit);
+        let _ = self.senders.send_to_pty_writer(PtyWriteInstruction::Exit);
+        let _ = self.senders.send_to_background_jobs(BackgroundJob::Exit);
         if let Some(pty_thread) = self.pty_thread.take() {
             let _ = pty_thread.join();
         }
@@ -850,8 +853,9 @@ pub fn start_server_impl(
 ) {
     envs::set_zellij("0".to_string());
 
+    let shutdown = Shutdown::default();
     let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::bounded(50);
-    let to_server = SenderWithContext::new(to_server);
+    let to_server = shutdown.sender(to_server);
     let session_data: Arc<RwLock<Option<SessionMetaData>>> = Arc::new(RwLock::new(None));
     let session_state = Arc::new(RwLock::new(SessionState::new()));
     let mut attach_traces_waiting_for_first_render: HashMap<ClientId, std::time::Instant> =
@@ -1112,6 +1116,7 @@ pub fn start_server_impl(
                 let mut session = init_session(
                     os_input.clone(),
                     to_server.clone(),
+                    shutdown.clone(),
                     client_attributes.clone(),
                     Box::new(runtime_config_options.clone()), // TODO: no box
                     Box::new(layout.clone()),                 // TODO: no box
@@ -1504,28 +1509,10 @@ pub fn start_server_impl(
                     drop(completion_tx); // prevent deadlock with route thread
                     with_session(&session_data, |session| session.detach_client(client_id));
                     if !session_state.read().unwrap().active_clients_are_connected() {
-                        // Take it out under the lock, drop it outside. Dropping
-                        // `SessionMetaData` joins the screen, pty and plugin
-                        // threads, and assigning `None` through the guard would
-                        // run those joins while still holding the write lock —
-                        // parking this loop and, with it, every route thread
-                        // waiting on `session_data.read()`. A session whose
-                        // screen thread is slow to exit would take the whole
-                        // server's client-connection path down with it, which is
-                        // what makes an unrelated `zellij attach` hang.
-                        // The guard is a temporary, so it is released at the
-                        // semicolon — before the `drop` below.
-                        //
-                        // The socket goes first, for the same reason as at the
-                        // end of this function: those joins are where a
-                        // shutdown that waits on a stuck plugin thread spends
-                        // its time, and a client connecting meanwhile — a
-                        // hook's `zellij action agent-report`, a probe — must
-                        // be refused, not parked behind them.
+                        // Refuse new connections now; join workers after leaving the server
+                        // loop, once its bounded receiver has been disconnected.
                         drop(std::fs::remove_file(&socket_path));
                         socket_removed = true;
-                        let session_metadata = session_data.write().unwrap().take();
-                        drop(session_metadata);
                         let client_ids_to_cleanup: Vec<ClientId> = session_state
                             .read()
                             .unwrap()
@@ -2137,6 +2124,10 @@ pub fn start_server_impl(
     }
 
     log::info!("Server exiting: {exit_reason}");
+    shutdown.begin();
+    // No one drains this bounded channel now. Disconnect it before joining workers that
+    // may still send to the server, so a full queue cannot hold up their shutdown.
+    drop(server_receiver);
 
     // Before the joins below, so that a client connecting from now on — a hook's
     // `zellij action agent-report`, a session probe — is refused at the socket rather than
@@ -2152,8 +2143,7 @@ pub fn start_server_impl(
     // drops `Pty` and closes every pane — which is what terminates each pane's
     // supervisor, via `clear_terminal_id`.
     //
-    // Taken out under the lock and dropped outside it, for the same reason as
-    // the teardown in the loop above: those joins must not run with the write
+    // Taken out under the lock and dropped outside it: those joins must not run with the write
     // lock held, or route threads still blocked on `session_data.read()` stay
     // blocked for the whole shutdown instead of seeing the socket close.
     let tracking = if kill_completion_client.is_some() {
@@ -2207,6 +2197,7 @@ pub fn start_server_impl(
 fn init_session(
     os_input: Box<dyn ServerOsApi>,
     to_server: SenderWithContext<ServerInstruction>,
+    shutdown: Shutdown,
     client_attributes: ClientAttributes,
     config_options: Box<Options>,
     layout: Box<Layout>,
@@ -2224,24 +2215,24 @@ fn init_session(
     );
 
     let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
-    let to_screen = SenderWithContext::new(to_screen);
+    let to_screen = shutdown.sender(to_screen);
 
     let (to_screen_bounded, bounded_screen_receiver): ChannelWithContext<ScreenInstruction> =
         channels::bounded(50);
-    let to_screen_bounded = SenderWithContext::new(to_screen_bounded);
+    let to_screen_bounded = shutdown.sender(to_screen_bounded);
 
     let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
-    let to_plugin = SenderWithContext::new(to_plugin);
+    let to_plugin = shutdown.sender(to_plugin);
     let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
-    let to_pty = SenderWithContext::new(to_pty);
+    let to_pty = shutdown.sender(to_pty);
 
     let (to_pty_writer, pty_writer_receiver): ChannelWithContext<PtyWriteInstruction> =
         channels::unbounded();
-    let to_pty_writer = SenderWithContext::new(to_pty_writer);
+    let to_pty_writer = shutdown.sender(to_pty_writer);
 
     let (to_background_jobs, background_jobs_receiver): ChannelWithContext<BackgroundJob> =
         channels::unbounded();
-    let to_background_jobs = SenderWithContext::new(to_background_jobs);
+    let to_background_jobs = shutdown.sender(to_background_jobs);
 
     // Determine and initialize the data directory
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
@@ -2554,6 +2545,7 @@ fn init_session(
     }
 
     SessionMetaData {
+        shutdown,
         senders: ThreadSenders {
             to_screen: Some(to_screen),
             to_pty: Some(to_pty),
@@ -2818,6 +2810,10 @@ fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<Layo
 #[cfg(test)]
 #[path = "unit/session_teardown_tests.rs"]
 mod session_teardown_tests;
+
+#[cfg(test)]
+#[path = "unit/session_shutdown_tests.rs"]
+mod session_shutdown_tests;
 
 #[cfg(test)]
 mod session_state_tests {

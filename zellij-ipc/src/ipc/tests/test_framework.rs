@@ -41,7 +41,7 @@ pub(crate) fn uncovered_variants(
         .collect()
 }
 
-/// Macro for testing round-trip conversion for ClientToServerMsg variants
+/// Exercise the encoded wire too: struct conversions cannot catch missing oneof tags.
 macro_rules! test_client_roundtrip {
     ($msg:expr) => {{
         let original: crate::ipc::ClientToServerMsg = $msg;
@@ -54,6 +54,9 @@ macro_rules! test_client_roundtrip {
                 .clone()
                 .try_into()
                 .expect("Failed to convert to protobuf");
+        let bytes = ::prost::Message::encode_to_vec(&proto);
+        let proto: crate::client_server_contract::client_server_contract::ClientToServerMsg =
+            ::prost::Message::decode(bytes.as_slice()).expect("Failed to decode protobuf bytes");
         let roundtrip: crate::ipc::ClientToServerMsg = proto
             .try_into()
             .expect("Failed to convert back from protobuf");
@@ -61,7 +64,7 @@ macro_rules! test_client_roundtrip {
     }};
 }
 
-/// Macro for testing round-trip conversion for ServerToClientMsg variants
+/// Exercise the encoded wire for every ServerToClientMsg fixture as well.
 macro_rules! test_server_roundtrip {
     ($msg:expr) => {{
         let original: crate::ipc::ServerToClientMsg = $msg;
@@ -71,6 +74,9 @@ macro_rules! test_server_roundtrip {
         );
         let proto: crate::client_server_contract::client_server_contract::ServerToClientMsg =
             original.clone().into();
+        let bytes = ::prost::Message::encode_to_vec(&proto);
+        let proto: crate::client_server_contract::client_server_contract::ServerToClientMsg =
+            ::prost::Message::decode(bytes.as_slice()).expect("Failed to decode protobuf bytes");
         let roundtrip: crate::ipc::ServerToClientMsg = proto
             .try_into()
             .expect("Failed to convert back from protobuf");

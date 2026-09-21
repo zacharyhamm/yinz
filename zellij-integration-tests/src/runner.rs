@@ -404,15 +404,27 @@ impl EventsClientHandle {
 
     /// Block until an event of `event_type` has been streamed.
     pub fn wait_for_event(&self, event_type: &str) {
+        self.wait_for_event_matching(event_type, |_| true);
+    }
+
+    /// Wait for a report describing the expected state, rather than merely its event type.
+    pub fn wait_for_event_matching(
+        &self,
+        event_type: &str,
+        predicate: impl Fn(&str) -> bool,
+    ) -> String {
         let deadline = std::time::Instant::now() + crate::default_timeout();
         loop {
-            if self.streamed_event_types().iter().any(|t| t == event_type) {
-                return;
+            let events = self.streamed_events();
+            if let Some((_, event_json)) = events
+                .iter()
+                .find(|(kind, json)| kind == event_type && predicate(json))
+            {
+                return event_json.clone();
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "timed out waiting for a {event_type} event; streamed: {:?}",
-                self.streamed_event_types()
+                "timed out waiting for a matching {event_type} event; streamed: {events:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }

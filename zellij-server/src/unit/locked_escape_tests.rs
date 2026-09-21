@@ -21,6 +21,7 @@ fn key(value: &str) -> KeyWithModifier {
 
 fn session() -> SessionMetaData {
     SessionMetaData {
+        shutdown: Default::default(),
         senders: ThreadSenders {
             should_silently_fail: true,
             ..Default::default()

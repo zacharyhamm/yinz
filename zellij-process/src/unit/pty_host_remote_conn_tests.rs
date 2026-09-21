@@ -71,40 +71,62 @@ fn input_reaches_the_peer_as_an_input_frame() {
 fn a_full_queue_short_counts_rather_than_dropping_input() {
     let (conn, mut peer) = conn_pair();
     // Never read from `peer`, so the socket buffer fills and the queue backs up.
-    let payload = vec![b'x'; 64 * 1024];
+    // Every four-byte position differs: duplicated or reordered frames must
+    // fail even if the byte count is right. Include NUL and non-UTF-8 bytes.
+    let payload: Vec<u8> = (0..512 * 1024u32).flat_map(u32::to_le_bytes).collect();
     let mut accepted_total = 0usize;
-    let mut sent_zero = false;
     for _ in 0..200 {
-        let accepted = conn.write_input(&payload).expect("write failed");
-        accepted_total += accepted;
-        if accepted == 0 {
-            sent_zero = true;
-            break;
-        }
+        let remaining = &payload[accepted_total..];
+        let accepted = conn.write_input(remaining).expect("write failed");
         assert!(
-            accepted <= payload.len(),
+            accepted <= remaining.len(),
             "accepted more than it was given: {accepted}"
         );
+        if accepted == 0 {
+            break;
+        }
+        accepted_total += accepted;
     }
     assert!(
-        sent_zero,
-        "a never-draining peer should eventually produce a zero-length accept"
+        (1..payload.len()).contains(&accepted_total),
+        "the peer must stop accepting before all input is sent for this to exercise backpressure"
     );
+    assert_eq!(conn.write_input(&payload[accepted_total..]).unwrap(), 0);
 
-    // Whatever was accepted must actually be on the wire — nothing may be lost
-    // between the accept and the socket.
-    let frames = drain_all(&mut peer);
-    let delivered: usize = frames
-        .iter()
-        .map(|f| match f {
-            Frame::Input(b) => b.len(),
-            other => panic!("expected input frames, got {other:?}"),
-        })
-        .sum();
-    assert!(
-        delivered <= accepted_total,
-        "delivered {delivered} bytes but only {accepted_total} were ever accepted"
+    // Resume draining and retry exactly the unaccepted suffix, as pty_writer
+    // does. Once it is accepted, empty writes flush the remaining queued data.
+    // Both sockets are driven here, so a bounded loop needs no sleeps or threads.
+    let mut delivered = Vec::new();
+    let mut leftover = Vec::new();
+    for _ in 0..2000 {
+        for frame in drain_frames(&mut peer, &mut leftover) {
+            match frame {
+                Frame::Input(bytes) => delivered.extend(bytes),
+                other => panic!("expected input frames, got {other:?}"),
+            }
+        }
+        assert!(delivered.len() <= accepted_total);
+        if delivered.len() == payload.len() {
+            break;
+        }
+        let remaining = &payload[accepted_total..];
+        let accepted = conn.write_input(remaining).expect("retry failed");
+        assert!(accepted <= remaining.len());
+        accepted_total += accepted;
+    }
+    assert_eq!(accepted_total, payload.len(), "input never resumed");
+    assert_eq!(delivered.len(), payload.len(), "accepted input was lost");
+    assert_eq!(
+        delivered
+            .iter()
+            .zip(&payload)
+            .position(|(got, want)| got != want),
+        None,
+        "input was corrupted, duplicated, or reordered at this byte offset"
     );
+    assert_eq!(conn.write_input(&[]).unwrap(), 0);
+    assert!(drain_frames(&mut peer, &mut leftover).is_empty());
+    assert!(leftover.is_empty(), "a partial frame was left on the wire");
 }
 
 /// A delayed resize is not a slowdown, it is a lasting wrong state: the remote

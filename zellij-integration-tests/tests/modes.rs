@@ -203,9 +203,10 @@ fn lock_mode() {
     zellij.send_stdin(&keys::key('n'));
     zellij.send_stdin(b"abc");
 
-    terminal.wait_for_stdin("forwarded keys reached the pane", |stdin_bytes| {
-        stdin_bytes.windows(3).any(|window| window == b"abc")
+    let stdin = terminal.wait_for_stdin("forwarded keys reached the pane", |stdin_bytes| {
+        stdin_bytes.ends_with(b"abc")
     });
+    assert_eq!(stdin, b"\x14nabc", "locked control keys must reach the app");
     let grid_snapshot =
         zellij.wait_until("forwarded keys rendered in locked pane", |grid_snapshot| {
             grid_snapshot.contains("abc")
@@ -218,6 +219,11 @@ fn lock_mode() {
     zellij.wait_until("interface unlocked", |grid_snapshot| {
         grid_snapshot.contains("PANE")
     });
+    zellij.send_stdin(b"unlocked");
+    let stdin = terminal.wait_for_stdin("input after unlocking reached the pane", |bytes| {
+        bytes.ends_with(b"unlocked")
+    });
+    assert_eq!(stdin, b"\x14nabcunlocked", "lock toggles must be consumed");
     zellij.quit();
 }
 
@@ -242,7 +248,12 @@ fn tmux_mode() {
 fn bracketed_paste() {
     let mut zellij = start_zellij();
     let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
-    terminal.output(b"\x1b[?2004h");
+    // Observe output after the mode change before sending input on the other thread.
+    terminal.output(b"\x1b[?2004hpaste-ready");
+    zellij.wait_until("app enabled bracketed paste", |grid| {
+        grid.contains("paste-ready")
+    });
+    terminal.output(b"\r\x1b[2K$ ");
 
     zellij.send_stdin(&keys::BRACKETED_PASTE_START);
     zellij.send_stdin(&keys::ctrl('t'));
@@ -261,11 +272,13 @@ fn bracketed_paste() {
     assert_snapshot!(normalized(&grid_snapshot));
 
     zellij.send_stdin(&keys::ENTER);
-    terminal.wait_for_stdin("enter followed the pasted text", |stdin_bytes| {
-        stdin_bytes
-            .windows(7)
-            .any(|window| window == b"\x1b[201~\r")
+    let stdin = terminal.wait_for_stdin("enter followed the pasted text", |stdin_bytes| {
+        stdin_bytes.ends_with(b"\r")
     });
+    assert_eq!(
+        stdin, b"\x1b[200~\x14nabc\x1b[201~\r",
+        "paste delimiters and control keys must reach the app exactly once"
+    );
     zellij.quit();
 }
 

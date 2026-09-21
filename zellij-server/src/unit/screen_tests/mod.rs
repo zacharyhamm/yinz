@@ -81,7 +81,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use zellij_ipc::ipc::ExitReason;
-use {zellij_types::data::PaneContents, zellij_types::data::PaneRenderReport};
+use zellij_types::data::PaneContents;
 
 fn take_snapshot_and_cursor_coordinates(
     ansi_instructions: &str,
@@ -821,6 +821,7 @@ impl MockScreen {
     pub fn clone_session_metadata(&self) -> SessionMetaData {
         // hack that only clones the clonable parts of SessionMetaData
         SessionMetaData {
+            shutdown: self.session_metadata.shutdown.clone(),
             senders: self.session_metadata.senders.clone(),
             default_shell: self.session_metadata.default_shell.clone(),
             screen_thread: None,
@@ -869,6 +870,7 @@ impl MockScreen {
         };
 
         let session_metadata = SessionMetaData {
+            shutdown: Default::default(),
             senders: ThreadSenders {
                 to_screen: Some(to_screen.clone()),
                 to_pty: Some(to_pty.clone()),
