@@ -1343,7 +1343,7 @@ pub fn specs() -> Value {
         // the schema says what a field is, and the system prompt says the rest.
         tool(
             "note_add",
-            "Add a persistent Markdown note, optionally tagged and linked to todo items.",
+            "Add a persistent Markdown note, optionally tagged and linked to todo items. Answers with its id.",
             json!({
                 "type": "object",
                 "properties": {
