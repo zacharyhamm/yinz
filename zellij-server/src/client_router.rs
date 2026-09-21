@@ -54,14 +54,14 @@ fn enqueue_agent_report(
     accepted_at: std::time::Instant,
 ) -> Result<()> {
     zellij_runtime::agent::report::validate_report(&report)?;
-    // Use the actual unbounded sender: even test senders must not turn a closed queue into
-    // a successful acceptance via `should_silently_fail`.
+    // Acknowledgement requires a successful enqueue, even during shutdown or when
+    // test senders enable `should_silently_fail`.
     senders
         .context("no session for report")?
         .to_screen
         .as_ref()
         .context("no screen queue for report")?
-        .send(ScreenInstruction::AgentReport(report, accepted_at))
+        .send_required(ScreenInstruction::AgentReport(report, accepted_at))
         .map_err(|_| anyhow!("screen report queue closed"))
 }
 
@@ -972,13 +972,16 @@ mod tests {
     #[test]
     fn reports_are_accepted_while_consumers_are_paused_and_rejected_for_closed_queues() {
         use {
-            zellij_types::agent::report::AgentReport, zellij_types::agent::report::AgentReportState,
+            zellij_runtime::channels::Shutdown, zellij_types::agent::report::AgentReport,
+            zellij_types::agent::report::AgentReportState,
         };
+        let shutdown = Shutdown::default();
         let (tx, rx) = zellij_runtime::channels::unbounded();
         let senders = ThreadSenders {
-            to_screen: Some(SenderWithContext::new(tx)),
+            to_screen: Some(shutdown.sender(tx)),
             ..Default::default()
         };
+        let cloned_senders = senders.clone();
         let report = AgentReport {
             report_id: "00000000-0000-4000-8000-000000000001".into(),
             pane_id: zellij_types::data::PaneId::Terminal(
@@ -1013,12 +1016,17 @@ mod tests {
         assert!(
             matches!(consumer.join().unwrap(), ScreenInstruction::AgentReport(received, _) if received == report)
         );
-        for sender in [None, Some(&senders)] {
-            accept_agent_report(sender, report.clone(), |reply| {
-                assert!(matches!(reply, ServerToClientMsg::LogError { .. }));
-                Ok(())
-            })
-            .unwrap();
+        for shutting_down in [false, true] {
+            if shutting_down {
+                shutdown.begin();
+            }
+            for sender in [None, Some(&senders), Some(&cloned_senders)] {
+                accept_agent_report(sender, report.clone(), |reply| {
+                    assert!(matches!(reply, ServerToClientMsg::LogError { .. }));
+                    Ok(())
+                })
+                .unwrap();
+            }
         }
     }
 
