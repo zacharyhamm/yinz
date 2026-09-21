@@ -54,11 +54,15 @@ pub(crate) fn assert_no_background_panics() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    assert!(
-        background_panics.is_empty(),
-        "background thread panicked during integration test:\n{}",
-        background_panics.join("\n")
-    );
+    if !background_panics.is_empty() {
+        let summary = format!(
+            "background thread panicked during integration test:\n{}",
+            background_panics.join("\n")
+        );
+        // Print explicitly and bypass the hook so this summary is not recorded again.
+        eprintln!("{summary}");
+        std::panic::resume_unwind(Box::new(summary));
+    }
 }
 
 /// Every panic recorded so far, formatted for a timeout message. Empty when nothing has panicked,
@@ -366,4 +370,56 @@ pub fn log_tail(max_lines: usize) -> String {
     let lines: Vec<&str> = contents.lines().collect();
     let start = lines.len().saturating_sub(max_lines);
     lines[start..].join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_panic_summaries_do_not_grow_recorded_history() {
+        const PROBE_ENV: &str = "ZELLIJ_TEST_PANIC_HISTORY_PROBE";
+        if std::env::var_os(PROBE_ENV).is_some() {
+            record_background_thread_panics();
+            assert_no_background_panics();
+            let worker = std::thread::Builder::new()
+                .name("history_probe_worker".into())
+                .spawn(|| panic!("original worker failure"))
+                .unwrap();
+            assert!(worker.join().is_err());
+
+            let original = BACKGROUND_PANICS.lock().unwrap().clone();
+            assert_eq!(original.len(), 1);
+            assert!(original[0].contains("history_probe_worker"));
+            assert!(original[0].contains("original worker failure"));
+            let summary = format!(
+                "background thread panicked during integration test:\n{}",
+                original.join("\n")
+            );
+            for _ in 0..35 {
+                let panic = std::panic::catch_unwind(assert_no_background_panics).unwrap_err();
+                assert_eq!(*panic.downcast::<String>().unwrap(), summary);
+                let recorded = BACKGROUND_PANICS.lock().unwrap().clone();
+                assert_eq!(recorded, original);
+            }
+            return;
+        }
+
+        // A separate process keeps the deliberate worker panic out of sibling tests' history.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "test_env::tests::shutdown_panic_summaries_do_not_grow_recorded_history",
+                "--nocapture",
+            ])
+            .env(PROBE_ENV, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "panic history probe failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
