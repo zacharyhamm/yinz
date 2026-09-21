@@ -6417,6 +6417,114 @@ fn multipane_structural_commands_and_transfers_keep_mixed_children_contained() {
 }
 
 #[test]
+fn multipane_creation_focus_switches_to_the_children_tab_only_when_requested() {
+    use zellij_types::multipane::*;
+    for focus in [Some(0), Some(1), None] {
+        let mut screen = create_non_mirrored_screen(Size {
+            cols: 120,
+            rows: 40,
+        });
+        new_tab(&mut screen, 1, TabId::new(0));
+        let children = [7, 8].map(|id| {
+            open_overlay_plugin(
+                &mut screen,
+                PluginId::new(id),
+                TabId::new(0),
+                popup_coordinates(),
+            )
+            .1
+        });
+        new_tab(&mut screen, 2, TabId::new(1));
+        let previous_pane = screen.active_pane_id(CLIENT_1);
+        assert_eq!(screen.active_tab_ids[&CLIENT_1], TabId::new(1));
+        screen
+            .multipane_command(
+                MultipaneOperation::Create {
+                    children,
+                    split: MultipaneSplit {
+                        direction: MultipaneDirection::LeftRight,
+                        ratio: 5000,
+                    },
+                    placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+                    focus,
+                },
+                CLIENT_1,
+            )
+            .unwrap();
+        assert_eq!(
+            screen.active_tab_ids[&CLIENT_1],
+            TabId::new(if focus.is_some() { 0 } else { 1 })
+        );
+        assert_eq!(
+            screen.active_pane_id(CLIENT_1),
+            focus.map(|slot| children[slot]).or(previous_pane)
+        );
+    }
+}
+
+#[test]
+fn multipane_close_self_restores_a_replaced_child_and_only_closes_the_temporary_plugin() {
+    use zellij_types::multipane::*;
+    let (mut screen, _events) = screen_with_plugin_sender(Size {
+        cols: 120,
+        rows: 40,
+    });
+    let (pty_sender, pty_receiver) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    new_tab(&mut screen, 1, TabId::new(0));
+    let children = [7, 8].map(|id| {
+        open_overlay_plugin(
+            &mut screen,
+            PluginId::new(id),
+            TabId::new(0),
+            popup_coordinates(),
+        )
+        .1
+    });
+    let info = screen
+        .multipane_command(
+            MultipaneOperation::Create {
+                children,
+                split: MultipaneSplit {
+                    direction: MultipaneDirection::LeftRight,
+                    ratio: 4300,
+                },
+                placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+                focus: Some(0),
+            },
+            CLIENT_1,
+        )
+        .unwrap()
+        .unwrap();
+    let temporary = PaneId::Plugin(PluginId::new(9));
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .suppress_pane_and_replace_with_pid(children[0], temporary, false, None, None, None)
+        .unwrap();
+    assert_eq!(
+        screen.tabs[&TabId::new(0)].stands_in_for_a_pane(temporary),
+        Some(children[0])
+    );
+    assert!(panes_torn_down_by_pty(&pty_receiver).is_empty());
+
+    crate::screen::replay_pending_plugin_events(
+        &mut screen,
+        vec![ScreenInstruction::CloseSelf(PluginId::new(9), CLIENT_1)],
+    )
+    .unwrap();
+
+    let tab = &screen.tabs[&TabId::new(0)];
+    assert!(!tab.has_pane_with_pid(&temporary));
+    for child in children {
+        assert_eq!(tab.multipane_info(child), Some(info.clone()));
+    }
+    assert_eq!(screen.active_pane_id(CLIENT_1), Some(children[0]));
+    assert_eq!(panes_torn_down_by_pty(&pty_receiver), vec![temporary]);
+}
+
+#[test]
 fn multipane_scrollback_editor_exit_restores_the_child_while_ordinary_exits_hold() {
     use zellij_types::multipane::*;
     let mut screen = create_non_mirrored_screen(Size {

@@ -1136,12 +1136,18 @@ impl Pane for TerminalPane {
         self.borderless
     }
     fn set_borderless(&mut self, should_be_borderless: bool) {
-        self.borderless = should_be_borderless;
-        if should_be_borderless {
-            self.set_content_offset(Offset::default());
-        } else {
-            self.set_content_offset(Offset::frame(1));
-        }
+        self.set_borderless_with_content_offset(
+            should_be_borderless,
+            if should_be_borderless {
+                Offset::default()
+            } else {
+                Offset::frame(1)
+            },
+        );
+    }
+    fn set_borderless_with_content_offset(&mut self, borderless: bool, offset: Offset) {
+        self.borderless = borderless;
+        self.set_content_offset(offset);
     }
 
     fn set_exclude_from_sync(&mut self, exclude_from_sync: bool) {

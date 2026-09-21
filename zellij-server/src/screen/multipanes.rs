@@ -67,7 +67,7 @@ impl Screen {
                     .context("multipane tab disappeared")?;
                 tab.create_multipane(children, split, placement)?;
                 if let Some(slot) = focus {
-                    tab.focus_pane_with_id(children[slot], false, false, client)?;
+                    self.focus_pane_with_id(children[slot], false, false, client)?;
                 }
                 children[0]
             },

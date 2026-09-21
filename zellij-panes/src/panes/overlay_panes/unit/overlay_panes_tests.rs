@@ -2923,6 +2923,71 @@ fn composed(direction: MultipaneDirection) -> (OverlayPanes, [PaneId; 2], Multip
 }
 
 #[test]
+fn multipane_frame_refresh_and_replacement_preserve_terminal_contents() {
+    for direction in [MultipaneDirection::LeftRight, MultipaneDirection::TopBottom] {
+        for operation in 0..4 {
+            let (mut panes, children, _) = composed(direction);
+            let before = children.map(|child| {
+                let pane = panes.get_mut(&child).unwrap();
+                let rows = pane.get_content_rows();
+                let cols = pane.get_content_columns();
+                let contents = (0..rows)
+                    .map(|row| char::from(b'A' + row as u8).to_string().repeat(cols))
+                    .collect::<Vec<_>>()
+                    .join("\r\n");
+                pane.handle_pty_bytes(format!("{contents}\x1b[H").into_bytes());
+                assert_eq!(pane.cursor_coordinates(None), Some((0, 0, true)));
+                (
+                    pane.dump_screen(false, None),
+                    pane.dump_screen(true, None),
+                    pane.cursor_coordinates(None),
+                    rows,
+                    cols,
+                    pane.current_geom(),
+                )
+            });
+            for _ in 0..3 {
+                match operation {
+                    0 => panes.set_pane_frames().unwrap(),
+                    1 => assert!(panes.set_borderless(&children[0], false)),
+                    2 => {
+                        let mut coordinates =
+                            panes.overlay(&children[0]).unwrap().coordinates.clone();
+                        coordinates.borderless = Some(false);
+                        panes
+                            .change_pane_coordinates(children[0], coordinates, false)
+                            .unwrap();
+                    },
+                    _ => {
+                        for child in children {
+                            let replacement = PaneId::Terminal(TerminalId::new(3));
+                            let original =
+                                panes.replace_pane(child, mock_pane(replacement)).unwrap();
+                            panes.replace_pane(replacement, original).unwrap();
+                        }
+                    },
+                }
+                for (child, expected) in children.iter().zip(&before) {
+                    let pane = panes.get(child).unwrap();
+                    assert_eq!(
+                        (
+                            pane.dump_screen(false, None),
+                            pane.dump_screen(true, None),
+                            pane.cursor_coordinates(None),
+                            pane.get_content_rows(),
+                            pane.get_content_columns(),
+                            pane.current_geom(),
+                        ),
+                        *expected,
+                        "{direction:?}, operation {operation}, child {child:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn multipane_owns_both_slots_and_structural_commands_resolve_either_member() {
     for direction in [MultipaneDirection::LeftRight, MultipaneDirection::TopBottom] {
         let (mut panes, children, id) = composed(direction);
