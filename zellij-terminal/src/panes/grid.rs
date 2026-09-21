@@ -4790,6 +4790,9 @@ impl Grid {
         self.explicitly_disable_kitty_keyboard_protocol = disabled;
         if disabled {
             self.supports_kitty_keyboard_protocol = false;
+            if let Some(alternate_screen_state) = self.alternate_screen_state.as_mut() {
+                alternate_screen_state.supports_kitty_keyboard_protocol = false;
+            }
         }
     }
     pub fn update_kitty_host_support(&mut self, supported: KittyHostSupport) {
