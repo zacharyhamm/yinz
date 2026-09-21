@@ -272,8 +272,15 @@ fn install_builtins(
         .into_iter()
         .filter(|name| !build::TEST_ONLY_PLUGINS.contains(name))
         .collect();
+    let legacy_dir = prune
+        .then(|| dir.parent().and_then(|builtins| builtins.parent()))
+        .flatten()
+        .map(|data_dir| data_dir.join("plugins"));
     for name in &names {
         install_one_builtin(&dir, profile, name)?;
+        if let Some(legacy_dir) = &legacy_dir {
+            refresh_legacy_builtin(&dir, legacy_dir, name)?;
+        }
     }
 
     if prune {
@@ -301,6 +308,26 @@ fn install_one_builtin(dir: &Path, profile: &str, name: &str) -> anyhow::Result<
     std::fs::write(&tmp, &bytes)
         .and_then(|_| std::fs::rename(&tmp, &to))
         .with_context(|| format!("failed to install plugin '{name}' to {}", to.display()))
+}
+
+fn refresh_legacy_builtin(
+    installed_dir: &Path,
+    legacy_dir: &Path,
+    name: &str,
+) -> anyhow::Result<()> {
+    let to = legacy_dir.join(name).with_extension("wasm");
+    if !to.is_file() {
+        return Ok(());
+    }
+    let from = installed_dir.join(name).with_extension("wasm");
+    let bytes = std::fs::read(&from)
+        .with_context(|| format!("failed to read installed plugin '{}'", from.display()))?;
+    let tmp = legacy_dir.join(format!(".{name}.wasm.tmp"));
+    std::fs::write(&tmp, bytes)
+        .and_then(|_| std::fs::rename(&tmp, &to))
+        .with_context(|| format!("failed to refresh legacy plugin '{}'", to.display()))?;
+    eprintln!(">> Refreshed legacy builtin {}", to.display());
+    Ok(())
 }
 
 /// Remove wasm in the versioned dir that no plugin crate produces any more - a plugin deleted
@@ -415,7 +442,7 @@ pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::prune_builtins;
+    use super::{prune_builtins, refresh_legacy_builtin};
     use std::fs;
 
     /// Only wasm nothing produces any more goes; sibling version folders are somebody else's.
@@ -437,6 +464,26 @@ mod tests {
         assert!(!current.join("share.wasm").exists());
         assert!(current.join("notes.txt").is_file());
         assert!(other.join("share.wasm").is_file());
+    }
+
+    #[test]
+    fn refreshing_legacy_builtin_only_replaces_an_existing_match() {
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join("builtins/0.45.0");
+        let legacy = root.path().join("plugins");
+        fs::create_dir_all(&installed).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(installed.join("tab-bar.wasm"), "current").unwrap();
+        fs::write(installed.join("status-bar.wasm"), "current").unwrap();
+        fs::write(legacy.join("tab-bar.wasm"), "stale").unwrap();
+        fs::write(legacy.join("custom.wasm"), "custom").unwrap();
+
+        refresh_legacy_builtin(&installed, &legacy, "tab-bar").unwrap();
+        refresh_legacy_builtin(&installed, &legacy, "status-bar").unwrap();
+
+        assert_eq!(fs::read(legacy.join("tab-bar.wasm")).unwrap(), b"current");
+        assert!(!legacy.join("status-bar.wasm").exists());
+        assert_eq!(fs::read(legacy.join("custom.wasm")).unwrap(), b"custom");
     }
 
     #[cfg(target_os = "linux")]
