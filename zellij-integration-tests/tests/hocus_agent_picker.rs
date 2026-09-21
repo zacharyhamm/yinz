@@ -142,7 +142,7 @@ fn open_sidebar(zellij: &TestSession) {
 
     zellij.send_stdin(&keys::ctrl('a'));
     wait_with_resizes(zellij, "both overlay panes are placed", |grid_snapshot| {
-        grid_snapshot.contains("hocus — ") && grid_snapshot.contains("agents")
+        grid_snapshot.contains("Ask something.") && grid_snapshot.contains(" Agents │")
     });
 }
 
@@ -201,7 +201,7 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     zellij.wait_until("the agent is under its project", |grid_snapshot| {
         grid_snapshot.contains("hocus-project")
             && grid_snapshot.contains("trunk")
-            && grid_snapshot.contains("hocus — ")
+            && grid_snapshot.contains("Ask something.")
     });
 
     let screen = zellij.snapshot();
@@ -219,11 +219,9 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
         project + 2,
         "the selected agent row"
     );
-    assert_eq!(
-        row("hocus — "),
-        row("agents ─"),
-        "the panes are side by side"
-    );
+    let members = panel_members(&zellij);
+    assert_eq!(members[0]["pane_y"], members[1]["pane_y"]);
+    assert_eq!(members[0]["multipane"], members[1]["multipane"]);
     assert!(
         !screen.text.contains("no project"),
         "nothing fell back to the header that names nothing:\n{}",
@@ -277,7 +275,7 @@ fn an_agent_in_a_nested_worktree_shows_its_own_branch() {
             && grid_snapshot.contains("  trunk")
             && grid_snapshot.contains("0  claude")
             && grid_snapshot.contains("1  claude")
-            && grid_snapshot.contains("hocus — ")
+            && grid_snapshot.contains("Ask something.")
             && !grid_snapshot.contains("no branch")
             && !grid_snapshot.contains("no project")
     });
@@ -473,8 +471,9 @@ fn the_agent_list_and_conversation_are_one_panel() {
     // has polled the pane's screen, then `busy` or `idle`, and this test is about
     // which panes are on screen rather than what the agent is doing.
     assert_eq!(row(">     0  claude"), no_project + 2);
-    let title = row("hocus — ");
-    assert_eq!(title, row("agents ─"), "the panes are side by side");
+    let members = panel_members(&zellij);
+    assert_eq!(members[0]["pane_y"], members[1]["pane_y"]);
+    assert_eq!(members[0]["multipane"], members[1]["multipane"]);
     assert!(screen.text.contains("assigned tab 0 to project"));
 
     // Esc in either half puts the whole panel away: the two hide together, so neither the
@@ -532,7 +531,7 @@ fn tab_walks_the_keyboard_across_the_panel() {
     zellij.send_stdin(&keys::TAB);
     zellij.wait_until("the agent list has the keys", |grid_snapshot| {
         grid_snapshot.cursor.is_none()
-            && grid_snapshot.contains("hocus — ")
+            && grid_snapshot.contains("Ask something.")
             && grid_snapshot.contains("0  claude")
     });
 
@@ -546,7 +545,7 @@ fn tab_walks_the_keyboard_across_the_panel() {
     // The panel is still whole through all of it: a ring step is a focus, never a hide.
     let screen = zellij.snapshot();
     assert!(
-        screen.text.contains("hocus — ") && screen.text.contains("agents ─"),
+        screen.text.contains("hocus — ") && screen.text.contains(" Agents │"),
         "both halves are still up:\n{}",
         screen.text
     );
@@ -596,16 +595,8 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
     }
 
     let initial = zellij.wait_until("the agent list is on screen", |snapshot| {
-        // The list can render before the asynchronous two-pane placement lands.
-        // Wait for the default three-column left padding plus the frame, with the list to the
-        // left of the conversation, before remembering home: both titles can share a row while
-        // the initial panes still overlap or the list is still centered.
         list_corner(snapshot).is_some_and(|(_, column)| column == 4)
-            && snapshot.text.lines().any(|line| {
-                line.find("agents ─")
-                    .zip(line.find("hocus —"))
-                    .is_some_and(|(agents, hocus)| agents < hocus)
-            })
+            && snapshot.contains("Ask something.")
     });
     let home = list_corner(&initial).expect("the agent list is on screen");
     assert!(
@@ -803,4 +794,191 @@ esac"#,
         grid.contains("Issue detail proof")
     });
     zellij.quit();
+}
+
+fn panel_members(zellij: &TestSession) -> Vec<serde_json::Value> {
+    let (code, output) = zellij.run_cli_action_reporting(zellij_cli::args::CliAction::ListPanes {
+        tab: true,
+        command: false,
+        state: true,
+        geometry: true,
+        all: true,
+        json: true,
+    });
+    assert_eq!(code, 0, "{output}");
+    serde_json::from_str::<Vec<serde_json::Value>>(&output)
+        .unwrap()
+        .into_iter()
+        .filter(|pane| pane.get("multipane").is_some())
+        .collect()
+}
+
+fn multipane_startup_and_lifecycle(first: char) {
+    use zellij_types::data::PermissionType;
+    use zellij_types::multipane::MultipaneInfo;
+    // Pregrant only the builtin's existing permission list, so startup focus is observable.
+    zellij_integration_tests::test_env::init();
+    let cache_path = zellij_runtime::consts::ZELLIJ_PLUGIN_PERMISSIONS_CACHE.clone();
+    std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+    let mut cache =
+        zellij_config::permission::PermissionCache::from_path_or_default(Some(cache_path));
+    cache.cache(
+        zellij_runtime::plugin_location::parse_plugin_location("zellij:hocus", None)
+            .unwrap()
+            .to_string(),
+        vec![
+            PermissionType::WebAccess,
+            PermissionType::ReadSessionEnvironmentVariables,
+            PermissionType::ReadApplicationState,
+            PermissionType::ChangeApplicationState,
+            PermissionType::OpenTerminalsOrPlugins,
+            PermissionType::RunCommands,
+            PermissionType::ReadPaneContents,
+            PermissionType::WriteToStdin,
+        ],
+    );
+    cache.write_to_file().unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(NO_SIDEBAR_LAYOUT.into()))
+        .start();
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"BASE AGENT");
+    zellij.send_stdin(&keys::ctrl(first));
+    zellij.wait_until("both multipane children load", |grid| {
+        grid.contains("Ask something.") && grid.contains(" Agents │")
+    });
+    zellij.wait_until("requested child retains startup focus", |_| {
+        panel_members(&zellij).iter().any(|pane| {
+            pane["is_focused"] == true
+                && pane["plugin_url"]
+                    == if first == 'a' {
+                        "hocus-agents"
+                    } else {
+                        "hocus"
+                    }
+        })
+    });
+    let members = panel_members(&zellij);
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0]["multipane"], members[1]["multipane"]);
+    let info: MultipaneInfo = serde_json::from_value(members[0]["multipane"].clone()).unwrap();
+    let focused = members
+        .iter()
+        .find(|pane| pane["is_focused"] == true)
+        .unwrap_or_else(|| {
+            panic!(
+                "no focused child: {members:#?}\n{}",
+                format!("{:?}", zellij.snapshot())
+            )
+        });
+    assert_eq!(
+        focused["plugin_url"],
+        if first == 'a' {
+            "hocus-agents"
+        } else {
+            "hocus"
+        }
+    );
+    // Drag only the divider. Coordinates in the SGR mouse protocol are one-based.
+    let divider = info.x + 1 + (info.columns - 3) * usize::from(info.split.ratio) / 10_000;
+    let row = info.y + 3;
+    for (button, column, suffix) in [
+        (0, divider + 1, 'M'),
+        (32, divider + 8, 'M'),
+        (0, divider + 8, 'm'),
+    ] {
+        zellij.send_stdin(format!("\x1b[<{button};{column};{row}{suffix}").as_bytes());
+    }
+    zellij.wait_until("divider share is stored by the host", |_| {
+        panel_members(&zellij)
+            .first()
+            .is_some_and(|pane| pane["multipane"]["split"]["ratio"] != info.split.ratio)
+    });
+    let dragged: MultipaneInfo =
+        serde_json::from_value(panel_members(&zellij)[0]["multipane"].clone()).unwrap();
+    assert_eq!(
+        (dragged.x, dragged.y, dragged.columns, dragged.rows),
+        (info.x, info.y, info.columns, info.rows)
+    );
+    for _ in 0..3 {
+        zellij.send_stdin(&keys::ESC);
+        zellij.send_stdin(&keys::ctrl('b'));
+    }
+    zellij.wait_until("rapid reveal keeps the whole container visible", |grid| {
+        grid.contains("Ask something.") && grid.contains(" Agents │")
+    });
+    let members = panel_members(&zellij);
+    assert!(members
+        .iter()
+        .all(|pane| pane["is_suppressed"] == false && pane["multipane"]["id"] == info.id.0));
+    zellij.send_stdin(&[keys::ctrl('t'), keys::key('n')].concat());
+    let new_shell = zellij.expect_pty_spawn();
+    new_shell.output(b"NEXT TAB");
+    zellij.wait_until("one transfer moves both children to the new tab", |_| {
+        let members = panel_members(&zellij);
+        members.len() == 2
+            && members
+                .iter()
+                .all(|pane| pane["tab_position"] == 1 && pane["multipane"]["id"] == info.id.0)
+    });
+    for size in [
+        zellij_types::pane_size::Size { rows: 12, cols: 50 },
+        TERMINAL_SIZE,
+    ] {
+        zellij.resize(size);
+        zellij.wait_until("both children survive a terminal resize", |_| {
+            let members = panel_members(&zellij);
+            let outer = members.first().map(|pane| &pane["multipane"]);
+            let resized = outer.is_some_and(|outer| {
+                if size == TERMINAL_SIZE {
+                    outer["columns"] == info.columns && outer["rows"] == info.rows
+                } else {
+                    outer["columns"].as_u64().unwrap() <= size.cols as u64
+                        && outer["rows"].as_u64().unwrap() <= size.rows as u64
+                }
+            });
+            resized
+                && members.len() == 2
+                && members.iter().all(|pane| {
+                    pane["multipane"]["id"] == info.id.0
+                        && pane["multipane"]["split"]["ratio"] == dragged.split.ratio
+                })
+        });
+    }
+    let owner = panel_members(&zellij)
+        .into_iter()
+        .find(|pane| pane["plugin_url"] == "hocus")
+        .unwrap();
+    zellij.run_cli_action(zellij_cli::args::CliAction::FocusPaneId {
+        pane_id: format!("plugin_{}", owner["id"]),
+    });
+    zellij.send_stdin(b"reload-marker");
+    zellij.wait_until("input reaches the child before reload", |grid| {
+        grid.contains("reload-marker")
+    });
+    zellij.run_cli_action(zellij_cli::args::CliAction::StartOrReloadPlugin {
+        url: "hocus".into(),
+        configuration: None,
+    });
+    zellij.wait_until(
+        "reload retains both slots and the dragged divider",
+        |grid| grid.contains("Ask something.") && grid.contains(" Agents │"),
+    );
+    let members = panel_members(&zellij);
+    assert_eq!(members.len(), 2);
+    assert!(members
+        .iter()
+        .all(|pane| pane["multipane"]["id"] == info.id.0
+            && pane["multipane"]["split"]["ratio"] == dragged.split.ratio));
+    zellij.quit();
+}
+
+#[test]
+fn hocus_multipane_chat_first_keeps_ownership_through_its_lifecycle() {
+    multipane_startup_and_lifecycle('b');
+}
+#[test]
+fn hocus_multipane_agents_first_keeps_ownership_through_its_lifecycle() {
+    multipane_startup_and_lifecycle('a');
 }

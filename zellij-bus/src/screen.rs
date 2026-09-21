@@ -203,6 +203,7 @@ pub enum ScreenInstruction {
     SetPaneFrameStyle(PaneFrameStyle, Option<NotificationEnd>),
     SetSelectable(PaneId, bool),
     ShowPluginCursor(PluginId, ClientId, Option<(usize, usize)>),
+    CloseSelf(PluginId, ClientId),
     ClosePane(
         PaneId,
         Option<ClientId>,
@@ -744,6 +745,11 @@ pub enum ScreenInstruction {
     /// The `bool` says the placement is a user gesture made through the plugin, and so may
     /// reclaim a position the user dragged or a size they resized - see
     /// `OverlayPanes::change_pane_coordinates`.
+    Multipane {
+        operation: zellij_types::multipane::MultipaneOperation,
+        client_id: ClientId,
+        response: crossbeam::channel::Sender<zellij_types::multipane::MultipaneResponse>,
+    },
     ChangeOverlayCoordinates(
         Vec<(PaneId, FloatingPaneCoordinates)>,
         bool,

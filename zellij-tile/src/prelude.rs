@@ -27,3 +27,8 @@ pub use zellij_types::units::{
 };
 
 pub use zellij_types::position::{CellCoordinates, Column, ColumnCount, Row, RowCount};
+
+pub use zellij_types::multipane::{
+    CreateMultipane, MultipaneChild, MultipaneDirection, MultipaneId, MultipaneInfo,
+    MultipaneSplit, ReplaceMultipaneChild, UpdateMultipane,
+};

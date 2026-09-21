@@ -837,6 +837,8 @@ pub struct PaneInfo {
     pub is_stack_list_member: bool,
     #[prost(string, optional, tag="35")]
     pub restart_error: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="36")]
+    pub multipane: ::core::option::Option<MultipaneInfo>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1155,6 +1157,26 @@ pub struct ContextMenuItemSelectedPayload {
 pub struct InitialKeybindsPayload {
     #[prost(message, repeated, tag="1")]
     pub keybinds: ::prost::alloc::vec::Vec<InputModeKeybinds>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MultipaneInfo {
+    #[prost(uint64, tag="1")]
+    pub id: u64,
+    #[prost(message, repeated, tag="2")]
+    pub children: ::prost::alloc::vec::Vec<PaneId>,
+    #[prost(uint64, tag="3")]
+    pub x: u64,
+    #[prost(uint64, tag="4")]
+    pub y: u64,
+    #[prost(uint64, tag="5")]
+    pub rows: u64,
+    #[prost(uint64, tag="6")]
+    pub columns: u64,
+    #[prost(bool, tag="7")]
+    pub top_bottom: bool,
+    #[prost(uint32, tag="8")]
+    pub ratio: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

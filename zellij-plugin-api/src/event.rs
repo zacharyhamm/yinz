@@ -2281,6 +2281,10 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
     type Error = &'static str;
     fn try_from(protobuf_pane_info: ProtobufPaneInfo) -> Result<Self, &'static str> {
         Ok(PaneInfo {
+            multipane: protobuf_pane_info
+                .multipane
+                .map(TryInto::try_into)
+                .transpose()?,
             id: zellij_types::pane_id::PaneId::from_legacy(
                 protobuf_pane_info.id,
                 protobuf_pane_info.is_plugin,
@@ -2358,6 +2362,7 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
     type Error = &'static str;
     fn try_from(pane_info: PaneInfo) -> Result<Self, &'static str> {
         Ok(ProtobufPaneInfo {
+            multipane: pane_info.multipane.clone().map(Into::into),
             id: pane_info.id.legacy_parts().0,
             is_plugin: pane_info.is_plugin(),
             is_focused: pane_info.is_focused,
@@ -3389,6 +3394,7 @@ fn serialize_session_update_event_with_non_default_values() {
     index_in_pane_group_2.insert(ClientId::new(3), 1);
     let panes_list = vec![
         PaneInfo {
+            multipane: None,
             host: Some("firecracker:review".to_owned()),
             target: PaneTarget::Firecracker {
                 vm: "review".to_owned(),
@@ -3425,6 +3431,7 @@ fn serialize_session_update_event_with_non_default_values() {
             cwd: Some("/work/hocus".to_owned()),
         },
         PaneInfo {
+            multipane: None,
             host: None,
             target: Default::default(),
             agent: None,
@@ -4455,4 +4462,92 @@ fn cursor_protobuf_preserves_xy_order_and_rejects_invalid_coordinates() {
         };
         assert!(ProtobufPaneInfo::try_from(pane).is_err());
     }
+}
+
+impl TryFrom<MultipaneInfo> for zellij_types::multipane::MultipaneInfo {
+    type Error = &'static str;
+    fn try_from(info: MultipaneInfo) -> Result<Self, Self::Error> {
+        use zellij_types::multipane::{MultipaneDirection, MultipaneId, MultipaneSplit};
+        let children = info
+            .children
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| "multipane must have exactly two children")?;
+        let split = MultipaneSplit {
+            direction: if info.top_bottom {
+                MultipaneDirection::TopBottom
+            } else {
+                MultipaneDirection::LeftRight
+            },
+            ratio: u16::try_from(info.ratio).map_err(|_| "multipane ratio exceeds u16")?,
+        };
+        split.validate()?;
+        Ok(Self {
+            id: MultipaneId(info.id),
+            children,
+            x: usize::try_from(info.x).map_err(|_| "multipane x exceeds usize")?,
+            y: usize::try_from(info.y).map_err(|_| "multipane y exceeds usize")?,
+            rows: usize::try_from(info.rows).map_err(|_| "multipane rows exceeds usize")?,
+            columns: usize::try_from(info.columns)
+                .map_err(|_| "multipane columns exceeds usize")?,
+            split,
+        })
+    }
+}
+impl From<zellij_types::multipane::MultipaneInfo> for MultipaneInfo {
+    fn from(info: zellij_types::multipane::MultipaneInfo) -> Self {
+        Self {
+            id: info.id.0,
+            children: info
+                .children
+                .into_iter()
+                .map(|id| ProtobufPaneId {
+                    id: id.legacy_parts().0,
+                    pane_type: if matches!(id, PaneId::Plugin(_)) {
+                        ProtobufPaneType::Plugin as i32
+                    } else {
+                        ProtobufPaneType::Terminal as i32
+                    },
+                })
+                .collect(),
+            x: info.x as u64,
+            y: info.y as u64,
+            rows: info.rows as u64,
+            columns: info.columns as u64,
+            top_bottom: info.split.direction
+                == zellij_types::multipane::MultipaneDirection::TopBottom,
+            ratio: u32::from(info.split.ratio),
+        }
+    }
+}
+
+#[test]
+fn multipane_manifest_metadata_roundtrips_and_rejects_invalid_ratios() {
+    use zellij_types::multipane::*;
+    let info = MultipaneInfo {
+        id: MultipaneId(71),
+        children: [
+            zellij_types::pane_id::PaneId::from_legacy(3, true),
+            zellij_types::pane_id::PaneId::from_legacy(4, false),
+        ],
+        x: 5,
+        y: 6,
+        rows: 20,
+        columns: 80,
+        split: MultipaneSplit {
+            direction: MultipaneDirection::TopBottom,
+            ratio: 3700,
+        },
+    };
+    let pane = PaneInfo {
+        multipane: Some(info.clone()),
+        ..Default::default()
+    };
+    let wire = ProtobufPaneInfo::try_from(pane.clone()).unwrap();
+    assert_eq!(PaneInfo::try_from(wire.clone()).unwrap(), pane);
+    let mut wire = wire;
+    wire.multipane.as_mut().unwrap().ratio = 10_000;
+    assert!(PaneInfo::try_from(wire).is_err());
 }

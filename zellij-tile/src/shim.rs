@@ -3513,6 +3513,28 @@ pub fn cancel_plugin_test(request_id: &str) {
     send(command);
 }
 
+/// Compose two panes into one host-owned overlay.
+pub fn create_multipane(
+    request: zellij_types::multipane::CreateMultipane,
+) -> zellij_types::multipane::MultipaneResponse {
+    multipane_response(PluginCommand::CreateMultipane(request))
+}
+pub fn update_multipane(
+    request: zellij_types::multipane::UpdateMultipane,
+) -> zellij_types::multipane::MultipaneResponse {
+    multipane_response(PluginCommand::UpdateMultipane(request))
+}
+pub fn replace_multipane_child(
+    request: zellij_types::multipane::ReplaceMultipaneChild,
+) -> zellij_types::multipane::MultipaneResponse {
+    multipane_response(PluginCommand::ReplaceMultipaneChild(request))
+}
+fn multipane_response(command: PluginCommand) -> zellij_types::multipane::MultipaneResponse {
+    let response: zellij_plugin_api::plugin_command::ProtobufMultipaneResponse =
+        call(command)?;
+    serde_json::from_str(&response.json).map_err(|error| error.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

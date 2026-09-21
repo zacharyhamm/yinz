@@ -1,4 +1,5 @@
 use super::generated_api::api::plugin_command as generated;
+pub use super::generated_api::api::plugin_command::MultipaneResponse as ProtobufMultipaneResponse;
 pub use super::generated_api::api::{
     action::{Action as ProtobufAction, PaneIdAndShouldFloat, SwitchToModePayload},
     event::{
@@ -2488,6 +2489,24 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     _ => Err("Mismatched payload for ChangeFloatingPanesCoordinates"),
                 }
             },
+            Some(CommandName::CreateMultipane) => match protobuf_plugin_command.payload {
+                Some(Payload::CreateMultipanePayload(json)) => serde_json::from_str(&json)
+                    .map(PluginCommand::CreateMultipane)
+                    .map_err(|_| "Invalid CreateMultipane payload"),
+                _ => Err("Mismatched CreateMultipane payload"),
+            },
+            Some(CommandName::UpdateMultipane) => match protobuf_plugin_command.payload {
+                Some(Payload::UpdateMultipanePayload(json)) => serde_json::from_str(&json)
+                    .map(PluginCommand::UpdateMultipane)
+                    .map_err(|_| "Invalid UpdateMultipane payload"),
+                _ => Err("Mismatched UpdateMultipane payload"),
+            },
+            Some(CommandName::ReplaceMultipaneChild) => match protobuf_plugin_command.payload {
+                Some(Payload::ReplaceMultipaneChildPayload(json)) => serde_json::from_str(&json)
+                    .map(PluginCommand::ReplaceMultipaneChild)
+                    .map_err(|_| "Invalid ReplaceMultipaneChild payload"),
+                _ => Err("Mismatched ReplaceMultipaneChild payload"),
+            },
             Some(CommandName::ChangeOverlayCoordinates) => match protobuf_plugin_command.payload {
                 Some(Payload::ChangeOverlayCoordinatesPayload(
                     change_overlay_coordinates_payload,
@@ -4954,6 +4973,27 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                                 })
                                 .collect(),
                     },
+                )),
+            }),
+            PluginCommand::CreateMultipane(request) => Ok(ProtobufPluginCommand {
+                name: CommandName::CreateMultipane as i32,
+                payload: Some(Payload::CreateMultipanePayload(
+                    serde_json::to_string(&request)
+                        .map_err(|_| "Failed to encode CreateMultipane")?,
+                )),
+            }),
+            PluginCommand::UpdateMultipane(request) => Ok(ProtobufPluginCommand {
+                name: CommandName::UpdateMultipane as i32,
+                payload: Some(Payload::UpdateMultipanePayload(
+                    serde_json::to_string(&request)
+                        .map_err(|_| "Failed to encode UpdateMultipane")?,
+                )),
+            }),
+            PluginCommand::ReplaceMultipaneChild(request) => Ok(ProtobufPluginCommand {
+                name: CommandName::ReplaceMultipaneChild as i32,
+                payload: Some(Payload::ReplaceMultipaneChildPayload(
+                    serde_json::to_string(&request)
+                        .map_err(|_| "Failed to encode ReplaceMultipaneChild")?,
                 )),
             }),
             PluginCommand::ChangeOverlayCoordinates {
@@ -7899,6 +7939,9 @@ mod tests {
         fn as_the_plugin_wire_carries_it(command: PluginCommand) -> Option<PluginCommand> {
             Some(match command {
                 carried @ (PluginCommand::Subscribe(_)
+                | PluginCommand::CreateMultipane(..)
+                | PluginCommand::UpdateMultipane(..)
+                | PluginCommand::ReplaceMultipaneChild(..)
                 | PluginCommand::CheckPlugin { .. }
                 | PluginCommand::TestPlugin { .. }
                 | PluginCommand::CancelPluginTest(_)

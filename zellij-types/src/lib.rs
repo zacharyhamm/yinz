@@ -32,6 +32,7 @@ pub mod mouse;
 
 pub mod firecracker;
 pub mod geometry;
+pub mod multipane;
 pub mod pane_size;
 
 pub mod agent;

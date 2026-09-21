@@ -694,3 +694,184 @@ export default {{async load(){{
     });
     zellij.quit();
 }
+
+#[test]
+fn deno_multipane_reserves_launch_slots_and_keeps_exit_and_failed_plugin_in_place() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("multipane.js");
+    let permission_child = directory.path().join("permission-child.js");
+    fs::write(
+        &permission_child,
+        r#"
+import { zellij } from 'zellij:plugin';
+let state = 'CHILD LOADING';
+export default {
+  async load() { await zellij.waitForPermissions(['WebAccess']); state = 'CHILD READY'; },
+  render() { return state; }
+};
+"#,
+    )
+    .unwrap();
+    fs::write(&plugin, r#"
+import { zellij } from 'zellij:plugin';
+let state = 'requesting composition', container;
+export default {
+  async load() {
+    await zellij.waitForPermissions(['ChangeApplicationState', 'RunCommands', 'OpenTerminalsOrPlugins', 'ReadApplicationState']);
+    const own = { Plugin: zellij.host.getPluginIds().plugin_id };
+    const placement = {kind: 'Dismissible', coordinates: {x: {Fixed: 3}, y: {Fixed: 3}, width: {Fixed: 90}, height: {Fixed: 18}}};
+    const split = {direction: 'LeftRight', ratio: 5000};
+    try {
+      zellij.host.createMultipane({children: [{Existing: own}, {Existing: own}], placement, split, focus: null});
+      throw Error('duplicate adoption succeeded');
+    } catch (error) { if (!String(error).includes('distinct')) throw error; }
+    container = zellij.host.createMultipane({children: [{Existing: own}, {Terminal: {path: 'multipane-command'}}], placement, split, focus: 0});
+    if (container.children[0].Plugin !== own.Plugin || container.children[1].Terminal === undefined) throw Error('child order');
+    zellij.host.updateMultipane({id: container.id, coordinates: null, split: {direction: 'TopBottom', ratio: 4000}, override_user_placement: false});
+    zellij.subscribe(['Key']);
+    state = 'COMPOSITION OWNER';
+  },
+  update(event) {
+    const key = event.Key?.bare_key?.Char;
+    if (key === 't') {
+      zellij.host.replaceMultipaneChild({id: container.id, slot: 1, child: {Terminal: {path: 'multipane-replacement'}}});
+      return true;
+    }
+    if (key === 'p') {
+      zellij.host.replaceMultipaneChild({id: container.id, slot: 1, child: {Plugin: {url: 'PERMISSION_CHILD', configuration: {}}}});
+      return true;
+    }
+    if (key === 'q') zellij.host.closeSelf();
+    if (key === 'r') {
+      zellij.host.replaceMultipaneChild({id: container.id, slot: 1, child: {Plugin: {url: 'file:/missing-multipane-child.wasm', configuration: {}}}});
+      state = 'SIBLING SURVIVED';
+      return true;
+    }
+  },
+  render() { return state; }
+};
+"#.replace("PERMISSION_CHILD", &format!("file:{}", permission_child.display()))).unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{\n pane\n pane focus=true {{plugin location=\"file:{}\";}}\n}}",
+            plugin.display()
+        )))
+        .start();
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"BASE SHELL");
+    zellij.wait_until("composition permission prompt", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    let command = zellij.expect_pty_spawn();
+    command.wait_for_command("multipane-command");
+    command.output(b"LAUNCHED IN SLOT");
+    zellij.wait_until("both owned slots render", |grid| {
+        grid.contains("COMPOSITION OWNER") && grid.contains("LAUNCHED IN SLOT")
+    });
+    let list = || {
+        let (code, output) = zellij.run_cli_action_reporting(CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: true,
+            geometry: true,
+            all: true,
+            json: true,
+        });
+        assert_eq!(code, 0, "{output}");
+        serde_json::from_str::<Vec<serde_json::Value>>(&output).unwrap()
+    };
+    let panes = list();
+    let members: Vec<_> = panes
+        .iter()
+        .filter(|pane| pane.get("multipane").is_some())
+        .collect();
+    assert_eq!(members.len(), 2);
+    let info = members[0]["multipane"].clone();
+    assert_eq!(members[1]["multipane"], info);
+    assert_eq!(info["split"]["direction"], "TopBottom");
+    command.exit(Some(17));
+    zellij.wait_until("exited command stays in its slot", |_| {
+        list().iter().any(|pane| {
+            pane["multipane"]["id"] == info["id"]
+                && pane["is_held"] == true
+                && pane["exit_status"] == 17
+        })
+    });
+    zellij.run_cli_action(CliAction::FocusPaneId {
+        pane_id: format!("terminal_{}", command.terminal_id()),
+    });
+    zellij.wait_until("focused exit status uses the outer frame", |grid| {
+        grid.contains("COMPOSITION OWNER") && grid.contains("17")
+    });
+    let owner = members
+        .iter()
+        .find(|pane| pane["is_plugin"] == true)
+        .unwrap();
+    zellij.run_cli_action(CliAction::FocusPaneId {
+        pane_id: format!("plugin_{}", owner["id"]),
+    });
+    assert_eq!(
+        list()
+            .iter()
+            .filter(|pane| pane["multipane"]["id"] == info["id"])
+            .count(),
+        2
+    );
+    // Replacement must start immediately even when the current child is still running.
+    for message in ["FIRST REPLACEMENT", "RUNNING CHILD REPLACED"] {
+        zellij.send_stdin(b"t");
+        let replacement = zellij.expect_pty_spawn();
+        replacement.wait_for_command("multipane-replacement");
+        replacement.output(message.as_bytes());
+        zellij.wait_until("terminal replacement stays beside its owner", |grid| {
+            grid.contains(message) && grid.contains("COMPOSITION OWNER")
+        });
+    }
+    zellij.send_stdin(b"r");
+    zellij.wait_until("failed child launch stays beside its sibling", |grid| {
+        grid.contains("SIBLING SURVIVED")
+            && (grid.contains("Failed") || grid.contains("failed") || grid.contains("ERROR"))
+    });
+    let members: Vec<_> = list()
+        .into_iter()
+        .filter(|pane| pane["multipane"]["id"] == info["id"])
+        .collect();
+    assert_eq!(members.len(), 2);
+    assert!(members.iter().all(|pane| pane["is_plugin"] == true));
+    assert_eq!(members[0]["multipane"], members[1]["multipane"]);
+    zellij.send_stdin(b"p");
+    zellij.wait_until("child permission prompt stays in its slot", |grid| {
+        grid.contains("SIBLING SURVIVED") && grid.contains("Allow? (y/n)")
+    });
+    assert_eq!(
+        list()
+            .iter()
+            .filter(|pane| pane["multipane"]["id"] == info["id"])
+            .count(),
+        2
+    );
+    let child = list()
+        .into_iter()
+        .find(|pane| pane["multipane"]["id"] == info["id"] && pane["id"] != owner["id"])
+        .unwrap();
+    zellij.run_cli_action(CliAction::FocusPaneId {
+        pane_id: format!("plugin_{}", child["id"]),
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("delayed child finishes in its slot", |grid| {
+        grid.contains("SIBLING SURVIVED") && grid.contains("CHILD READY")
+    });
+    zellij.run_cli_action(CliAction::FocusPaneId {
+        pane_id: format!("plugin_{}", owner["id"]),
+    });
+    zellij.send_stdin(b"q");
+    zellij.wait_until("close_self closes the container", |grid| {
+        grid.contains("BASE SHELL")
+            && !grid.contains("SIBLING SURVIVED")
+            && !grid.contains("CHILD READY")
+    });
+    assert!(list().iter().all(|pane| pane.get("multipane").is_none()));
+    zellij.quit();
+}

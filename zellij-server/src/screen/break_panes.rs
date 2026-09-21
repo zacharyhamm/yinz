@@ -43,6 +43,19 @@ impl Screen {
         let active_pane_id = active_tab
             .get_active_pane_id(client_id)
             .with_context(err_context)?;
+        if active_tab.pane_is_overlay(active_pane_id) {
+            let tab_id = self.break_multiple_panes_to_new_tab(
+                vec![active_pane_id],
+                default_shell,
+                true,
+                None,
+                client_id,
+            )?;
+            if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                tab.focus_pane_with_id(active_pane_id, false, false, client_id)?;
+            }
+            return Ok(());
+        }
         // read before the extraction, which forgets that this was an overlay
         let placement = active_tab.placement_for_extraction(active_pane_id);
         let pane_is_overlay = matches!(placement, ExtractedPanePlacement::Overlay(..));
@@ -139,6 +152,7 @@ impl Screen {
     ) -> Result<TabId> {
         let err_context = || "failed break multiple panes to a new tab".to_string();
 
+        let mut containers = vec![];
         let all_tabs = self.get_tabs_mut();
         let mut extracted_panes: Vec<ExtractedPane> = vec![];
         for pane_id in pane_ids {
@@ -146,7 +160,10 @@ impl Screen {
                 if !tab.has_pane_with_pid(&pane_id) {
                     continue;
                 }
-                // read before the extraction, which forgets that this was an overlay
+                if let Some(container) = tab.take_overlay_container(pane_id) {
+                    containers.push(container);
+                    break;
+                }
                 let placement = tab.placement_for_extraction(pane_id);
                 let carried_respawn = tab.take_pending_respawn(pane_id);
                 // here we pass None instead of the client_id we have because we do not need to
@@ -176,6 +193,9 @@ impl Screen {
             tab.name = new_tab_name.clone();
         }
         let tab_size = tab.size;
+        for container in containers {
+            tab.accept_overlay_container(container);
+        }
         for (placement, mut pane, carried_respawn) in extracted_panes {
             let run_instruction = pane.invoked_with().clone();
             let pane_id = pane.pid();
@@ -228,6 +248,30 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || "failed break pane out of tab".to_string();
         if self.tabs.len() > 1 {
+            let active_tab = self.get_active_tab_mut(client_id)?;
+            let active = active_tab
+                .get_active_pane_id(client_id)
+                .context("no active pane")?;
+            if active_tab.pane_is_overlay(active) {
+                match direction {
+                    Direction::Right | Direction::Down => {
+                        self.switch_tab_next(None, true, client_id)?
+                    },
+                    Direction::Left | Direction::Up => {
+                        self.switch_tab_prev(None, true, client_id)?
+                    },
+                }
+                let destination = self.get_active_tab_mut(client_id)?.id;
+                self.break_multiple_panes_to_tab_with_id(
+                    vec![active],
+                    destination,
+                    false,
+                    client_id,
+                )?;
+                self.get_active_tab_mut(client_id)?
+                    .focus_pane_with_id(active, false, false, client_id)?;
+                return Ok(());
+            }
             let (
                 active_pane_id,
                 active_pane,
@@ -415,6 +459,32 @@ impl Screen {
             }
         }
 
+        let mut containers = vec![];
+        let mut moved_members = std::collections::HashSet::new();
+        for pane_id in &to_extract {
+            if moved_members.contains(pane_id) {
+                continue;
+            }
+            if let Some(source) = self
+                .tabs
+                .values_mut()
+                .find(|tab| tab.pane_is_overlay(*pane_id))
+            {
+                if let Some(container) = source.take_overlay_container(*pane_id) {
+                    moved_members.extend(container.pane_ids());
+                    containers.push(container);
+                }
+            }
+        }
+        // The destination was preflighted before any ownership moved.
+        if let Some(destination) = self.tabs.get_mut(&tab_id) {
+            for container in containers {
+                destination.accept_overlay_container(container);
+            }
+        }
+        outcome.moved.extend(moved_members.iter().copied());
+        to_extract.retain(|id| !moved_members.contains(id));
+
         // remember where each pane came from, so that a destination that refuses it can
         // be recovered from rather than losing the pane
         let mut extracted: Vec<ExtractedPaneWithSource> = Vec::with_capacity(to_extract.len());
@@ -470,16 +540,6 @@ impl Screen {
                         AcceptedPane::LostInAdd => outcome.closed.push(pane_id),
                     }
                 }
-                // A batch carried over as one arrives as one: two overlays moved together and
-                // landing edge to edge are the panel they were on the tab they left, seam
-                // included. A move of a single pane links nothing.
-                let together: Vec<PaneId> = outcome
-                    .moved
-                    .iter()
-                    .chain(outcome.already_in_destination.iter())
-                    .copied()
-                    .collect();
-                destination.link_touching_overlays(&together);
             },
             // Unreachable: the destination was found by this same key above, and
             // nothing since has removed a tab. Handled as a refusal anyway rather than

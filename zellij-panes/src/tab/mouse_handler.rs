@@ -663,11 +663,29 @@ impl MouseHandler {
         let overlay_is_movable = !tab.overlay_panes.pane_is_fullscreen(&pane_id);
         let on_seam = tab.overlay_panes.seam_at(position);
         let is_hidden_stack_list_member = tab.pane_is_hidden_stack_list_member(&pane_id);
+        let overlay_frame = is_overlay && tab.overlay_panes.position_is_on_frame(pane_id, position);
+        let outer = tab.overlay_panes.outer_geom(pane_id);
         let pane = Self::get_pane_at(tab, position, false).ok()??;
 
-        let on_frame = !is_hidden_stack_list_member && pane.position_is_on_frame(position);
+        let on_frame = if is_overlay {
+            overlay_frame || on_seam.is_some()
+        } else {
+            !is_hidden_stack_list_member && pane.position_is_on_frame(position)
+        };
         let frame_intercepted = on_frame && pane.intercept_mouse_event_on_frame(event, client_id);
-        let edge = if on_frame {
+        let edge = if overlay_frame {
+            outer.map(|geom| {
+                match (
+                    (position.line() as usize) < geom.y + geom.rows.as_usize() / 2,
+                    position.column() < geom.x + geom.cols.as_usize() / 2,
+                ) {
+                    (true, true) => PaneEdge::TopLeft,
+                    (true, false) => PaneEdge::TopRight,
+                    (false, true) => PaneEdge::BottomLeft,
+                    (false, false) => PaneEdge::BottomRight,
+                }
+            })
+        } else if on_frame {
             pane.get_edge_at_position(position)
         } else {
             None
@@ -712,10 +730,16 @@ impl MouseHandler {
             ResizeDragTarget::Tiled
         };
 
-        let start_geom = tab
-            .rendered_pane(pane_id)
-            .map(|pane| pane.position_and_size())
-            .with_context(err_context)?;
+        let start_geom = match target {
+            ResizeDragTarget::Overlay => tab
+                .overlay_panes
+                .outer_geom(pane_id)
+                .with_context(err_context)?,
+            ResizeDragTarget::Floating | ResizeDragTarget::Tiled => tab
+                .rendered_pane(pane_id)
+                .map(|pane| pane.position_and_size())
+                .with_context(err_context)?,
+        };
 
         tab.pane_being_resized_with_mouse = Some(PaneResizeState {
             pane_id,

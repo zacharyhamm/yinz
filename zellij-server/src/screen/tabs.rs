@@ -9,7 +9,7 @@ use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::pty::PtyInstruction;
 use crate::route::NotificationEnd;
-use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane, SuppressedPanes, Tab};
+use crate::tab::{SuppressedPanes, Tab};
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -484,8 +484,7 @@ impl Screen {
     /// [`Tab::extract_overlay_panes`] for why they close with their tab instead.
     fn move_overlay_panes_from_closed_tab(
         &mut self,
-        overlay_panes: Vec<(ExtractedPanePlacement, Box<dyn Pane>)>,
-        mut pending_respawns: HashMap<PaneId, (RunCommand, bool)>,
+        overlay_panes: Vec<crate::tab::OverlayTransfer>,
         client: Option<ClientId>,
     ) {
         if overlay_panes.is_empty() {
@@ -514,23 +513,8 @@ impl Screen {
         let mut homeless = vec![];
         match destination_tab_id.and_then(|tab_id| self.get_tab_by_id_mut(tab_id)) {
             Some(destination) => {
-                for (placement, pane) in overlay_panes {
-                    let pane_id = pane.pid();
-                    match destination.accept_extracted_pane(pane, placement) {
-                        // an overlay is not on a layer and does not tile, so `accept_extracted_pane`
-                        // has nothing to run out of and this arm is the only one it can reach for
-                        // one - `NoRoom` and `LostInAdd` are here for the contract, not because
-                        // they are expected
-                        AcceptedPane::Accepted => {
-                            if let Some(entry) = pending_respawns.remove(&pane_id) {
-                                destination.restore_pending_respawn(pane_id, entry);
-                            }
-                        },
-                        AcceptedPane::NoRoom(..) | AcceptedPane::LostInAdd => {
-                            log::error!("Tab {destination_tab_id:?} would not take overlay {pane_id:?}; closing it");
-                            homeless.push(pane_id);
-                        },
-                    }
+                for container in overlay_panes {
+                    destination.accept_overlay_container(container);
                 }
             },
             // Unreachable: the caller only extracts overlays when a tab survives, and nothing
@@ -538,7 +522,11 @@ impl Screen {
             // dropped overlay is a plugin that stops existing with nothing told about it.
             None => {
                 log::error!("No tab left to re-home a closed tab's overlays into; closing them");
-                homeless.extend(overlay_panes.into_iter().map(|(_, pane)| pane.pid()));
+                homeless.extend(
+                    overlay_panes
+                        .iter()
+                        .flat_map(|container| container.pane_ids()),
+                );
             },
         }
         for pane_id in homeless {
@@ -982,7 +970,13 @@ impl Screen {
     }
 
     pub(super) fn replacement_exit_command(&self, pane_id: PaneId) -> Option<RunCommand> {
-        let tab = self.tabs.get(&self.replacement_tab?)?;
+        let tab = self.tab_containing_pane(pane_id)?;
+        if tab.stands_in_for_a_pane(pane_id).is_some() {
+            return None;
+        }
+        if Some(tab.id) != self.replacement_tab && tab.multipane_info(pane_id).is_none() {
+            return None;
+        }
         if !matches!(pane_id, PaneId::Terminal(_)) || !tab.has_pane_with_pid(&pane_id) {
             return None;
         }
@@ -1084,22 +1078,6 @@ impl Screen {
         }
         let mut pane_ids = tab_to_close.get_all_pane_ids();
 
-        // here we extract the suppressed panes (these are background panes that don't care which
-        // tab they are in, and in the future we should probably make them global to screen rather
-        // than to each tab) and move them to another tab if there is one
-        let suppressed_panes = tab_to_close.extract_suppressed_panes();
-        let suppressed_respawns = suppressed_panes
-            .keys()
-            .filter_map(|pane_id| {
-                tab_to_close
-                    .take_pending_respawn(*pane_id)
-                    .map(|entry| (*pane_id, entry))
-            })
-            .collect();
-        for suppressed_pane_id in suppressed_panes.keys() {
-            pane_ids.retain(|p| p != suppressed_pane_id);
-        }
-
         // The same treatment, and for a stronger reason: an overlay is drawn over the whole
         // session surface rather than inside this tab, and hocus keeps a session's worth of
         // conversation in one. Taken out here so that the teardown below - `PaneClosed`, the
@@ -1117,25 +1095,32 @@ impl Screen {
             for (&plugin_id, notice) in &self.quit_notices {
                 let id = PaneId::Plugin(plugin_id);
                 if notice.guard && tab_to_close.pane_is_overlay(id) {
-                    let placement = tab_to_close.placement_for_extraction(id);
-                    if let Some(pane) = tab_to_close.extract_pane(id, true) {
-                        overlay_panes.push((placement, pane));
+                    if let Some(container) = tab_to_close.take_overlay_container(id) {
+                        overlay_panes.push(container);
                     }
                 }
             }
         }
-        let overlay_respawns = overlay_panes
-            .iter()
-            .filter_map(|(_, pane)| {
-                let pane_id = pane.pid();
+        for container in &overlay_panes {
+            for id in container.pane_ids() {
+                pane_ids.retain(|p| *p != id);
+            }
+        }
+
+        // here we extract the suppressed panes (these are background panes that don't care which
+        // tab they are in, and in the future we should probably make them global to screen rather
+        // than to each tab) and move them to another tab if there is one
+        let suppressed_panes = tab_to_close.extract_suppressed_panes();
+        let suppressed_respawns = suppressed_panes
+            .keys()
+            .filter_map(|pane_id| {
                 tab_to_close
-                    .take_pending_respawn(pane_id)
-                    .map(|entry| (pane_id, entry))
+                    .take_pending_respawn(*pane_id)
+                    .map(|entry| (*pane_id, entry))
             })
             .collect();
-        for (_, overlay_pane) in &overlay_panes {
-            let overlay_pane_id = overlay_pane.pid();
-            pane_ids.retain(|p| p != &overlay_pane_id);
+        for suppressed_pane_id in suppressed_panes.keys() {
+            pane_ids.retain(|p| p != suppressed_pane_id);
         }
 
         // The plugins going down with the tab take what they had to say about a quit with them,
@@ -1197,11 +1182,7 @@ impl Screen {
             // After the clients, which is what wrote `overlay_client`'s destination into
             // `active_tab_ids`, and before the resize and the state report below, so the tab they
             // land in is measured and announced with them already in it.
-            self.move_overlay_panes_from_closed_tab(
-                overlay_panes,
-                overlay_respawns,
-                overlay_client,
-            );
+            self.move_overlay_panes_from_closed_tab(overlay_panes, overlay_client);
             // Belt and braces, and it has to come before the visibility pass below.
             // `move_clients_from_closed_tab` only ever hears about the clients
             // `drain_connected_clients` handed it, so a client the closing tab did not count as

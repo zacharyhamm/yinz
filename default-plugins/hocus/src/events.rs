@@ -180,24 +180,8 @@ impl State {
                     self.follow_tab(target);
                 }
             }
-            // Outside the visibility gate, deliberately, where the tab-following above is not. The
-            // surface is cached a few lines up whatever is on screen, and this event is the only
-            // thing that ever reports it - so a resize seen while both panes were set aside is the
-            // last word on the surface and would never be re-reported. Skipping the placement for
-            // it would leave a pane revealed afterwards at the old size, in the old corner.
-            //
-            // Placing a hidden pane is not painting one: the server re-resolves a hidden overlay
-            // like any other (`OverlayPanes::reapply_coordinates`) and gates the paint separately
-            // (`stack_layer_ids`). It has to be hocus that restates it - these coordinates are
-            // `Fixed`, because the panes are anchored to the *bottom*, so nothing on the server
-            // can recompute them.
-            //
-            // `!placed` as well as `resized`: the first `TabUpdate` is the only one that ever
-            // reports a *change* of display area, so a placement it could not land - our pane
-            // not being on a tab yet - would otherwise never be retried. See `State::placed`.
-            // `!agents_placed` for the same reason, about the other pane - see
-            // `State::agents_placed`.
-            if resized || !self.placed || !self.agents_placed {
+            // Placement also follows terminal resizes while the container is hidden.
+            if resized || !self.placed {
                 self.apply_overlay_geometry();
             }
         }
@@ -681,273 +665,78 @@ impl State {
         true
     }
 
-    /// Watch our own pane for the two things only the server knows: which tab it is on, and
-    /// whether it has been set aside.
-    ///
-    /// The reveal comes from *outside* - the `c` keybinding, or a `show_self` from a tool - and
-    /// this is the only word hocus gets of it. `is_suppressed` is what an overlay reports while
-    /// hidden, the same field a suppressed tab pane uses.
-    ///
-    /// The agent list is *not* discovered here. It announces itself with `AGENT_SELECTION` on
-    /// load, which carries its plugin id and is what `agents_plugin` is already set from; a pane
-    /// url cannot tell two instances apart, so there would be nothing gained by matching on one.
+    /// Read visibility, placement and child identities from the host-owned container.
     pub(crate) fn on_panes(&mut self, manifest: PaneManifest) -> bool {
-        let own_id = self.own_plugin_id;
-        // Whether the panel had a second half before this manifest. The cut depends on that and
-        // on nothing else about the list, so this is what says the panel has to be placed again.
-        let had_agents = self.agents_plugin.is_some();
-        // An agent list the user closed has to be forgotten, or `open_agents_pane` keeps
-        // revealing a pane that is not there and never opens a new one. Cleared from the whole
-        // manifest rather than from our own tab: the two halves can be on different tabs for as
-        // long as it takes a `follow_tab` to land.
-        //
-        // Whether it is *drawn* is read in the same pass, because the `a` keybinding can reveal
-        // the list on its own while this half is still set aside - see below.
-        let mut agents_visible = false;
-        // Read in the same pass, and for the same reason: it is the only word this half gets about
-        // what happened to the other one. `rejoin` reads it to tell a list the user summoned from
-        // an apart list that was simply left behind - both bindings focus what they summon.
-        let mut agents_focused = false;
-        if let Some(agents_id) = self.agents_plugin {
-            self.agents_tab_index = manifest.panes.iter().find_map(|(tab_index, panes)| {
-                let agents = panes
-                    .iter()
-                    .find(|pane| pane.id == PaneId::Plugin(agents_id))?;
-                agents_visible = !agents.is_suppressed;
-                agents_focused = agents.is_focused;
-                Some(*tab_index)
-            });
-            if self.agents_tab_index.is_none() {
-                self.agents_plugin = None;
-                self.vm_panel_pending = None;
-                // Nobody here asked for it to go, so it was closed from outside - and a closure is
-                // not a missing half to grow back. Without this the repair arm below would read
-                // the `None` this line just wrote as a panel owing itself a list and launch
-                // another one on the very manifest that reported the old one gone, which makes the
-                // list unclosable. Cleared by the next thing that asks for a panel.
-                self.agents_closed = true;
-                // A list that is gone is nothing to place. Said rather than left behind, because
-                // the next one the user opens is a fresh pane at the centered default and the
-                // retry that moves it out of the way reads this.
-                self.agents_placed = true;
-                // And nothing is on its way, either: whatever `open_agents_pane` last asked for
-                // has come and gone, so a panel that is up may ask again.
-                self.agents_open_requested = false;
-            } else {
-                // The list that answered is the one that was asked for, so the request is done.
-                self.agents_open_requested = false;
-            }
-        }
-        // Held for `on_tabs`, which has no manifest of its own and has to know whether there is
-        // anything on screen to carry to the tab the user switched to, and read below to catch
-        // the two halves disagreeing about whether the panel is up.
-        if self.agents_visible != agents_visible {
-            self.send_vm_panel_visibility(agents_visible);
-        }
-        self.agents_visible = agents_visible;
-        // The one thing about the list that reaches the *cut*: a panel with a second half is
-        // split, one without takes the whole width for the conversation. Visibility is not part
-        // of it any more - both halves hide together, so a hidden panel is cut as it will return.
-        let agents_presence_changed = had_agents != self.agents_plugin.is_some();
-        for (tab_index, panes) in &manifest.panes {
-            let Some(own) = panes.iter().find(|pane| pane.id == PaneId::Plugin(own_id)) else {
-                continue;
-            };
-            self.own_tab_index = Some(*tab_index);
-            // Whether any of the rest of this applies at all. Only the manifest says whether this
-            // hocus is the overlay panel or a pane in someone's layout, and this is where it says
-            // it - see `State::own_is_floating`.
-            self.own_is_floating = Some(own.is_floating);
-            // The ring's stop within this half - the bar's highlight, the released box - only
-            // means anything while the keyboard is here. It can leave by routes the ring knows
-            // nothing about: a click on the other half, `Ctrl e a`, a tool focusing a pane. A
-            // stop left standing through one of those would greet the user with the bar lit or
-            // the box let go the next time they came back, so it is dropped on the way out.
-            //
-            // Except while this half is waiting on a focus it asked for itself: the updates
-            // generated before it still report us unfocused, and one arriving late is not the
-            // user leaving. Those are spent against a budget rather than believed, so a
-            // request that never lands lapses instead of wedging the reset off. See
-            // `overlay::RING_FOCUS_PENDING_FRAMES`.
-            if self.ring_focus_pending > 0 && !own.is_focused {
-                self.ring_focus_pending -= 1;
-            } else if self.own_is_focused == Some(true) && !own.is_focused {
-                self.reset_ring_stop();
-            }
-            if own.is_focused {
-                self.ring_focus_pending = 0;
-            }
-            self.own_is_focused = Some(own.is_focused);
-            // Placement, or anything else outside hocus, may have renamed the
-            // pane since our last render. Forgetting what we asked for is what
-            // makes the next render assert the title again; see
-            // `State::last_pane_title`.
-            if self.last_pane_title.as_deref() != Some(own.title.as_str()) {
-                self.last_pane_title = None;
-            }
-            // Every pane on our tab, which Ctrl-o no longer reads - it only cycles corners - but
-            // which `reported_panel` uses to find the rectangle our halves are actually drawn at.
-            // Read before the placement retry below, so a manifest that both places and records
-            // us does so once.
-            self.tab_panes = panes.clone();
-            // Where the user dragged the divider, if they did: the seam drag happens in the
-            // server and claims nothing, so the manifest is how it reaches the next placement.
-            self.read_split(panes);
-            // Everything below this line belongs to the panel: where its two halves go, and the
-            // reconciliation of the one visibility they share. A hocus the user put in their
-            // layout has neither - it fills the pane it was given and owns nothing else - and what
-            // it does need from the manifest has already been read above: where it is, what is
-            // around it, and whether the title it asked for still stands.
-            //
-            // `break` rather than a wrapping `if`, for the same reason the arm below breaks: our
-            // own pane is on exactly one tab, so once it has been found there is nothing left in
-            // the manifest to look at.
-            if !self.is_panel() {
-                break;
-            }
-            // A placement of ours is only believed once the manifest echoes it; until then a
-            // manifest reporting something else is a snapshot taken before the move. The first
-            // manifest that shows the rectangle we asked for proves the placement landed and
-            // clears the budget, and the budget lapses like the others so a panel the user
-            // dragged is eventually believed - see `State::placement_pending` and
-            // `overlay::State::reposition`.
-            if self.placement_pending > 0 {
-                if self.panel.placed_rect == self.reported_panel() {
-                    self.placement_pending = 0;
-                } else {
-                    self.placement_pending -= 1;
-                }
-            }
-            // The manifest is what makes a placement possible at all: it names the tab a pane is
-            // on, which is the thing `change_overlay_coordinates` needs to find it. A pane still
-            // sitting at the centered default the host gave it is placed here, whichever event
-            // failed to place it first. Converges by construction - the call sets both flags.
-            //
-            // Either half, and the list's half is the one that had nowhere else to be caught:
-            // `agents_tab_index` was read from this very manifest a few lines up, so this is the
-            // first pass that can place a list which announced itself before it was on a tab.
-            if !self.placed || !self.agents_placed || agents_presence_changed {
-                self.apply_overlay_geometry();
-            }
-            // The panel's visibility, reconciled against what the server actually reports. Both
-            // halves are on screen or neither is, so the manifest showing them disagree is
-            // either a reveal half-arrived (one of the two keybindings, which reveals only the
-            // half it names) or a suppression from outside hocus - and both are repaired by
-            // moving the other half to match.
-            if self.hide_pending > 0 && !(own.is_suppressed && !agents_visible) {
-                // A snapshot taken before one or both of our hides reached the server. Reading a
-                // half still standing in it as a reveal would put the panel straight back on the
-                // very Esc that dismissed it, so a hide we have asked for and not yet seen land
-                // in full suppresses exactly one thing: this inference.
-                //
-                // And spends a frame of the budget doing it. A reveal from *outside* - `c`
-                // pressed in the window between the Esc and the hides landing - reaches hocus
-                // only as a manifest of exactly this shape, so it is indistinguishable from the
-                // stale frame and there is no rule that tells them apart. What there is, is an
-                // end: a hide that is real lands within a frame or two, so once the budget is
-                // spent the next manifest is read at face value and the panel obeys the user
-                // rather than sitting wedged. See `overlay::HIDE_PENDING_FRAMES`.
-                self.hide_pending -= 1;
-                if own.is_suppressed && agents_visible {
-                    // Our half went down and the list's did not. Nothing else will say so again -
-                    // this arm is where such a frame ends - so the hide is restated rather than
-                    // waited on, and converges: the next manifest has both halves down and takes
-                    // the arm below.
-                    if let Some(agents_id) = self.agents_plugin {
-                        hide_pane_with_id(PaneId::Plugin(agents_id));
-                        self.note_visibility(PaneId::Plugin(agents_id), false);
-                    }
-                }
-            } else if own.is_suppressed && agents_visible {
-                // The list is up and we are not: the `a` keybinding, which reveals and focuses
-                // the half it names and leaves the other suppressed. Join it, without taking the
-                // keyboard off the pane the user asked for.
-                //
-                // Read as a reveal rather than as a stray half because nothing hides one half on
-                // purpose any more, and the budget above has already accounted for the one
-                // moment a dismissal looks like this - the frame between the two hides landing.
-                self.reveal_self_beside_agents();
-            } else if own.is_suppressed {
-                // The hide we asked for has landed, on both halves.
-                self.hide_pending = 0;
-                self.hidden = true;
-            } else if self.hidden {
-                // We came back first: the `c` keybinding, or a tool's `show_self`. Bring the list
-                // back beside us, or open one if the panel has no other half.
-                self.reveal_panel();
-            } else if !agents_visible {
-                // The panel is up and its other half is not. Either there is a list that something
-                // outside hocus suppressed, or there is no list at all - and the panel is both
-                // halves, so both are repaired by putting the other one back.
-                //
-                // Except a list the user *closed*: that is not a half gone missing, it is a pane
-                // they got rid of, and the conversation takes the whole panel instead. See
-                // `State::agents_closed` - without it this arm relaunched the list on the same
-                // manifest that reported it closed.
-                match self.agents_plugin {
-                    Some(agents_id) => {
-                        show_pane_with_id(PaneId::Plugin(agents_id), false, false);
-                        self.note_visibility(PaneId::Plugin(agents_id), true);
-                    },
-                    None if !self.agents_closed => self.open_agents_pane(),
-                    None => {},
-                }
-            }
-            break;
-        }
-        self.rejoin_agents_pane(agents_focused);
-        false
-    }
-
-    /// Put a parted pair back together, in whichever direction the user asked for.
-    ///
-    /// `follow_tab` moves the pair together and so cannot part them, but two paths outside hocus
-    /// can. The `a` and `c` keybindings carry `move_to_focused_tab`, which moves only the pane the
-    /// binding names - so a summon from another tab brings one half across and leaves the other
-    /// where it was. `follow_tab` is no help afterwards: `own_tab_index` has already been set from
-    /// this very manifest, so it reads as a pane that is where it belongs and returns.
-    ///
-    /// **Which half moved decides which way this goes**, and `overlay::rejoin` is where that is
-    /// decided - see it for why the answer is "whichever half the server focused". Dragging
-    /// unconditionally was wrong in one of the two cases: an unconditional drag took the list the
-    /// user had just summoned with `a` straight off their tab again.
-    ///
-    /// Converges by construction either way: the move is what makes the next manifest report the
-    /// two together, at which point this does nothing.
-    fn rejoin_agents_pane(&mut self, agents_is_focused: bool) {
-        // Reached from `on_panes` after the panel gate has already broken out of the loop, so it is
-        // stated again here: a tiled hocus has no pair to put back together, and dragging a list
-        // to its tab would be moving a pane it never opened.
-        if !self.is_panel() {
-            return;
-        }
-        let (Some(agents_id), Some(own_tab), Some(agents_tab)) = (
-            self.agents_plugin,
-            self.own_tab_index,
-            self.agents_tab_index,
-        ) else {
-            return;
+        let own_id = PaneId::Plugin(self.own_plugin_id);
+        let Some((tab_index, own, panes)) = manifest.panes.iter().find_map(|(tab, panes)| {
+            panes
+                .iter()
+                .find(|pane| pane.id == own_id)
+                .map(|own| (*tab, own, panes))
+        }) else {
+            return false;
         };
-        let agents_tab_is_someones = self.client_tabs.values().any(|tab| *tab == agents_tab);
-        match overlay::rejoin(
-            own_tab,
-            agents_tab,
-            agents_is_focused,
-            agents_tab_is_someones,
-        ) {
-            // `follow_tab` carries both panes and restates both indices, so the list stays where
-            // the user put it and the conversation arrives beside it.
-            Some(overlay::Rejoin::Follow(tab_index)) => self.follow_tab(tab_index),
-            Some(overlay::Rejoin::Drag(tab_index)) => {
-                break_panes_to_tab_with_index(&[PaneId::Plugin(agents_id)], tab_index, false);
-                self.agents_tab_index = Some(tab_index);
-                // The destination resolves coordinates against its own surface, and the list
-                // arrives with whatever the keybinding's launch gave it - the same restatement
-                // `follow_tab` makes.
-                self.apply_overlay_geometry();
-            },
-            None => {},
+        self.own_tab_index = Some(tab_index);
+        self.own_is_floating = Some(own.is_floating);
+        if self.ring_focus_pending > 0 && !own.is_focused {
+            self.ring_focus_pending -= 1;
+        } else if self.own_is_focused == Some(true) && !own.is_focused {
+            self.reset_ring_stop();
         }
+        if own.is_focused {
+            self.ring_focus_pending = 0;
+        }
+        self.own_is_focused = Some(own.is_focused);
+        if self.last_pane_title.as_deref() != Some(own.title.as_str()) {
+            self.last_pane_title = None;
+        }
+        if !self.is_panel() {
+            return false;
+        }
+        self.hidden = own.is_suppressed;
+        // The host's metadata is authoritative, including after a plugin reload.
+        if let Some(info) = &own.multipane {
+            self.multipane = Some(info.clone());
+            self.placed = true;
+            self.panel.placed_rect = self.reported_panel();
+            self.agents_plugin = info.children.iter().find_map(|id| match id {
+                PaneId::Plugin(id) if *id != self.own_plugin_id => Some(*id),
+                _ => None,
+            });
+            self.agents_tab_index = Some(tab_index);
+        } else {
+            if self.agents_plugin.is_none() {
+                self.agents_plugin = panes.iter().find_map(|pane| match pane.id {
+                    PaneId::Plugin(id)
+                        if matches!(
+                            pane.plugin_url.as_deref(),
+                            Some("hocus-agents" | "zellij:hocus-agents")
+                        ) && pane.is_floating
+                            && pane.multipane.is_none() =>
+                    {
+                        Some(id)
+                    },
+                    _ => None,
+                });
+            }
+            self.agents_tab_index = self.agents_plugin.and_then(|id| {
+                manifest.panes.iter().find_map(|(tab, panes)| {
+                    panes
+                        .iter()
+                        .any(|pane| pane.id == PaneId::Plugin(id))
+                        .then_some(*tab)
+                })
+            });
+            if !self.hidden || self.agents_plugin.is_some() {
+                self.apply_overlay_geometry();
+            }
+        }
+        let visible = self.multipane.is_some() && !self.hidden;
+        if visible != self.agents_visible {
+            self.send_vm_panel_visibility(visible);
+        }
+        self.agents_visible = visible;
+        false
     }
 
     pub(crate) fn on_key(&mut self, key: KeyWithModifier) -> bool {

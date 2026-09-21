@@ -5632,8 +5632,7 @@ fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
             .position_and_size()
     };
     let drag = |screen: &mut Screen, pane_id, tab_id| {
-        let before = geom(screen, tab_id, pane_id);
-        // The middle of the top frame is an outer edge of either half, never the seam.
+        let before = screen.tabs[&tab_id].multipane_info(pane_id).unwrap();
         let from = Position::new(before.y as i32, (before.x + 5) as u16);
         let to = Position::new(before.y as i32 + 2, (before.x + 8) as u16);
         screen.handle_mouse_event(MouseEvent::new_left_press_event(from), client_id);
@@ -5673,7 +5672,18 @@ fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
                     .tabs
                     .get_mut(&TabId::new(0))
                     .unwrap()
-                    .link_touching_overlays(&[pair[0].1, pair[1].1]);
+                    .create_multipane(
+                        [pair[0].1, pair[1].1],
+                        zellij_types::multipane::MultipaneSplit {
+                            direction: zellij_types::multipane::MultipaneDirection::LeftRight,
+                            ratio: 5000,
+                        },
+                        OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
+                            width: Some(PercentOrFixed::Fixed(50)),
+                            ..coordinates(5)
+                        })),
+                    )
+                    .unwrap();
                 if previously_placed {
                     let before = geom(&screen, TabId::new(0), pair[1].1);
                     screen
@@ -5689,8 +5699,9 @@ fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
                         geom(&screen, TabId::new(0), pair[1].1).cols.as_usize()
                             > before.cols.as_usize()
                     );
+                    let before_drag = geom(&screen, TabId::new(0), pair[1].1);
                     drag(&mut screen, pair[0].1, TabId::new(0));
-                    assert_eq!(geom(&screen, TabId::new(0), pair[1].1).x, before.x + 3);
+                    assert_eq!(geom(&screen, TabId::new(0), pair[1].1).x, before_drag.x + 3);
                 }
                 let before = pair
                     .each_ref()
@@ -6276,4 +6287,549 @@ fn an_expanded_overlay_fills_the_viewport_a_resize_leaves() {
         "it fills the viewport as it is now, not as it was before the resize"
     );
     assert_eq!(expanded.cols.as_usize(), 120, "which is the wider screen");
+}
+
+#[test]
+fn multipane_structural_commands_and_transfers_keep_mixed_children_contained() {
+    use zellij_types::multipane::*;
+    for direction in [MultipaneDirection::LeftRight, MultipaneDirection::TopBottom] {
+        for selected in 0..2 {
+            let mut screen = create_non_mirrored_screen(Size {
+                cols: 120,
+                rows: 40,
+            });
+            new_tab(&mut screen, 1, TabId::new(0));
+            new_tab(&mut screen, 2, TabId::new(1));
+            let plugin = open_overlay_plugin(
+                &mut screen,
+                PluginId::new(7),
+                TabId::new(0),
+                popup_coordinates(),
+            )
+            .1;
+            let terminal = PaneId::Terminal(crate::TerminalId::new(1));
+            let children = [plugin, terminal];
+            let info = screen
+                .multipane_command(
+                    MultipaneOperation::Create {
+                        children,
+                        split: MultipaneSplit {
+                            direction,
+                            ratio: 4300,
+                        },
+                        placement: OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
+                            x: Some(PercentOrFixed::Fixed(3)),
+                            y: Some(PercentOrFixed::Fixed(3)),
+                            width: Some(PercentOrFixed::Fixed(80)),
+                            height: Some(PercentOrFixed::Fixed(24)),
+                            ..Default::default()
+                        })),
+                        focus: Some(selected),
+                    },
+                    CLIENT_1,
+                )
+                .unwrap()
+                .unwrap();
+            screen.settle_tabs().unwrap();
+            let assert_contained = |screen: &Screen| {
+                let tab = screen
+                    .tabs
+                    .values()
+                    .find(|tab| tab.has_pane_with_pid(&plugin))
+                    .unwrap();
+                for child in children {
+                    assert_eq!(tab.multipane_info(child).unwrap().id, info.id);
+                }
+                assert_eq!(tab.multipane_info(terminal).unwrap().split.ratio, 4300);
+            };
+            assert_contained(&screen);
+            assert!(screen.selection_has_multipane(&[
+                children[selected],
+                PaneId::Terminal(crate::TerminalId::new(2))
+            ]));
+            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            assert!(tab.extract_pane(children[selected], true).is_none());
+            assert!(tab
+                .toggle_pane_embed_or_floating_for_pane_id(children[selected], None)
+                .is_err());
+            assert!(screen
+                .stack_panes(vec![
+                    children[selected],
+                    PaneId::Terminal(crate::TerminalId::new(2))
+                ])
+                .is_none());
+            assert_contained(&screen);
+            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            tab.new_stacked_pane(
+                PaneId::Terminal(crate::TerminalId::new(99)),
+                None,
+                None,
+                false,
+                true,
+                Some(children[selected]),
+                Some(CLIENT_1),
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(!tab.has_pane_with_pid(&PaneId::Terminal(crate::TerminalId::new(99))));
+            let before = tab.multipane_info(plugin).unwrap();
+            tab.move_pane_right(children[selected]);
+            assert_eq!(tab.multipane_info(plugin).unwrap().x, before.x + 10);
+            let before = tab.multipane_info(plugin).unwrap();
+            screen.change_floating_panes_coordinates(vec![
+                (plugin, popup_coordinates()),
+                (terminal, FloatingPaneCoordinates::default()),
+            ]);
+            assert_eq!(
+                screen.tabs[&TabId::new(0)].multipane_info(plugin).unwrap(),
+                before
+            );
+            assert_contained(&screen);
+            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            tab.hide_overlay_pane(children[selected]);
+            assert!(children.iter().all(|id| tab.overlay_carry_for(*id).hidden));
+            tab.show_overlay_pane(children[1 - selected]);
+            tab.toggle_fullscreen_by_pane_id(children[selected]);
+            assert_contained(&screen);
+            screen
+                .break_multiple_panes_to_tab_with_id(
+                    vec![
+                        children[selected],
+                        children[1 - selected],
+                        children[selected],
+                    ],
+                    TabId::new(1),
+                    false,
+                    CLIENT_1,
+                )
+                .unwrap();
+            assert_contained(&screen);
+            assert!(screen.tabs[&TabId::new(1)].has_pane_with_pid(&plugin));
+            // No plugin event or repair runs between any operation and these assertions.
+            screen.close_pane_explicitly(children[selected], None);
+            assert!(screen
+                .tabs
+                .values()
+                .all(|tab| children.iter().all(|id| !tab.has_pane_with_pid(id))));
+        }
+    }
+}
+
+#[test]
+fn multipane_scrollback_editor_exit_restores_the_child_while_ordinary_exits_hold() {
+    use zellij_types::multipane::*;
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 120,
+        rows: 40,
+    });
+    new_tab(&mut screen, 1, TabId::new(0));
+    let original = PaneId::Terminal(crate::TerminalId::new(1));
+    let sibling = open_overlay_plugin(
+        &mut screen,
+        PluginId::new(7),
+        TabId::new(0),
+        popup_coordinates(),
+    )
+    .1;
+    let info = screen
+        .multipane_command(
+            MultipaneOperation::Create {
+                children: [original, sibling],
+                split: MultipaneSplit {
+                    direction: MultipaneDirection::LeftRight,
+                    ratio: 4300,
+                },
+                placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+                focus: Some(0),
+            },
+            CLIENT_1,
+        )
+        .unwrap()
+        .unwrap();
+    let editor = PaneId::Terminal(crate::TerminalId::new(9));
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .replace_pane_with_editor_pane(editor, original)
+        .unwrap();
+    assert_eq!(
+        screen.tabs[&TabId::new(0)]
+            .multipane_info(editor)
+            .unwrap()
+            .children,
+        [editor, sibling]
+    );
+
+    crate::screen::replay_pending_plugin_events(
+        &mut screen,
+        vec![ScreenInstruction::ClosePane(editor, None, None, Some(0))],
+    )
+    .unwrap();
+    let tab = &screen.tabs[&TabId::new(0)];
+    assert!(
+        !tab.has_pane_with_pid(&editor),
+        "the exited editor must leave its slot"
+    );
+    assert_eq!(tab.multipane_info(original).unwrap(), info);
+    assert_eq!(tab.multipane_info(sibling).unwrap(), info);
+    assert!(!tab.get_pane_with_id(original).unwrap().is_held());
+
+    crate::screen::replay_pending_plugin_events(
+        &mut screen,
+        vec![ScreenInstruction::ClosePane(original, None, None, Some(17))],
+    )
+    .unwrap();
+    let tab = &screen.tabs[&TabId::new(0)];
+    assert_eq!(tab.multipane_info(original).unwrap(), info);
+    assert!(tab.get_pane_with_id(original).unwrap().is_held());
+}
+
+#[test]
+fn multipane_replacing_a_child_with_the_last_working_pane_retains_the_tab() {
+    use zellij_types::multipane::*;
+    for floating in [false, true] {
+        // The structural command and both variants of the generic replacement share this policy.
+        for replacement_path in 0..3 {
+            let mut screen = create_non_mirrored_screen(Size {
+                cols: 120,
+                rows: 40,
+            });
+            new_tab(&mut screen, 1, TabId::new(0));
+            new_tab(&mut screen, 2, TabId::new(1));
+            screen
+                .switch_active_tab(TabPosition::new(0), None, true, CLIENT_1)
+                .unwrap();
+            let terminal = PaneId::Terminal(crate::TerminalId::new(1));
+            if floating {
+                screen
+                    .tabs
+                    .get_mut(&TabId::new(0))
+                    .unwrap()
+                    .toggle_pane_embed_or_floating_for_pane_id(terminal, None)
+                    .unwrap();
+            }
+            let children = [7, 8].map(|id| {
+                open_overlay_plugin(
+                    &mut screen,
+                    PluginId::new(id),
+                    TabId::new(0),
+                    popup_coordinates(),
+                )
+                .1
+            });
+            let info = screen
+                .multipane_command(
+                    MultipaneOperation::Create {
+                        children,
+                        split: MultipaneSplit {
+                            direction: MultipaneDirection::LeftRight,
+                            ratio: 4300,
+                        },
+                        placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+                        focus: Some(0),
+                    },
+                    CLIENT_1,
+                )
+                .unwrap()
+                .unwrap();
+            if replacement_path == 0 {
+                screen
+                    .multipane_command(
+                        MultipaneOperation::Replace {
+                            id: info.id,
+                            slot: 0,
+                            child: terminal,
+                        },
+                        CLIENT_1,
+                    )
+                    .unwrap();
+            } else {
+                screen.replace_pane_with_existing_pane(
+                    children[0],
+                    terminal,
+                    replacement_path == 2,
+                    None,
+                );
+            }
+            screen.settle_tabs().unwrap();
+            assert_eq!(
+                screen.active_tab_ids[&CLIENT_1],
+                TabId::new(0),
+                "replacement must not move the client to the other usable tab"
+            );
+            let tab = &screen.tabs[&TabId::new(0)];
+            assert!(tab.has_selectable_panes());
+            let updated = tab.multipane_info(terminal).unwrap();
+            assert_eq!(updated.id, info.id);
+            assert_eq!(updated.children, [terminal, children[1]]);
+            screen
+                .switch_active_tab(TabPosition::new(1), None, true, CLIENT_1)
+                .unwrap();
+            screen.settle_tabs().unwrap();
+            screen
+                .switch_active_tab(TabPosition::new(0), None, true, CLIENT_1)
+                .unwrap();
+            screen.settle_tabs().unwrap();
+            assert_eq!(screen.active_tab_ids[&CLIENT_1], TabId::new(0));
+
+            // Replacing with an overlay later must preserve the container's retention.
+            let overlay = open_overlay_plugin(
+                &mut screen,
+                PluginId::new(9),
+                TabId::new(0),
+                popup_coordinates(),
+            )
+            .1;
+            screen.replace_pane_with_existing_pane(terminal, overlay, false, None);
+            screen.settle_tabs().unwrap();
+            assert_eq!(screen.active_tab_ids[&CLIENT_1], TabId::new(0));
+            assert_eq!(
+                screen.tabs[&TabId::new(0)]
+                    .multipane_info(overlay)
+                    .unwrap()
+                    .id,
+                info.id
+            );
+        }
+    }
+}
+
+#[test]
+fn multipane_rejected_adoption_changes_nothing_and_child_replacement_retains_the_slot() {
+    use zellij_types::multipane::*;
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 120,
+        rows: 40,
+    });
+    new_tab(&mut screen, 1, TabId::new(0));
+    let first = open_overlay_plugin(
+        &mut screen,
+        PluginId::new(7),
+        TabId::new(0),
+        popup_coordinates(),
+    )
+    .1;
+    let second = open_overlay_plugin(
+        &mut screen,
+        PluginId::new(8),
+        TabId::new(0),
+        popup_coordinates(),
+    )
+    .1;
+    let create = |children, ratio| MultipaneOperation::Create {
+        children,
+        split: MultipaneSplit {
+            direction: MultipaneDirection::LeftRight,
+            ratio,
+        },
+        placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+        focus: None,
+    };
+    for operation in [
+        create([first, first], 5000),
+        create([first, second], 0),
+        create([first, PaneId::Plugin(PluginId::new(99))], 5000),
+    ] {
+        assert!(screen.multipane_command(operation, CLIENT_1).is_err());
+        for child in [first, second] {
+            assert!(screen.tabs[&TabId::new(0)].has_pane_with_pid(&child));
+            assert!(screen.tabs[&TabId::new(0)].multipane_info(child).is_none());
+        }
+    }
+    let info = screen
+        .multipane_command(create([first, second], 5000), CLIENT_1)
+        .unwrap()
+        .unwrap();
+    let terminal = PaneId::Terminal(crate::TerminalId::new(1));
+    let updated = screen
+        .multipane_command(
+            MultipaneOperation::Replace {
+                id: info.id,
+                slot: 0,
+                child: terminal,
+            },
+            CLIENT_1,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.children, [terminal, second]);
+    assert_eq!(updated.id, info.id);
+    assert!(screen.tabs[&TabId::new(0)].multipane_info(first).is_none());
+    assert!(screen
+        .multipane_command(create([terminal, second], 5000), CLIENT_1)
+        .is_err());
+    let command = screen.replacement_exit_command(terminal).unwrap();
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .hold_pane(terminal, Some(17), false, command);
+    assert_eq!(
+        screen.tabs[&TabId::new(0)].multipane_info(second).unwrap(),
+        updated
+    );
+    assert!(screen.tabs[&TabId::new(0)]
+        .get_pane_with_id(terminal)
+        .unwrap()
+        .is_held());
+}
+
+#[test]
+fn multipane_transfer_carries_replacements_and_tab_closure_keeps_the_container() {
+    use zellij_types::multipane::*;
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 120,
+        rows: 40,
+    });
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    let first = open_overlay_plugin(
+        &mut screen,
+        PluginId::new(7),
+        TabId::new(0),
+        popup_coordinates(),
+    )
+    .1;
+    let second = open_overlay_plugin(
+        &mut screen,
+        PluginId::new(8),
+        TabId::new(0),
+        popup_coordinates(),
+    )
+    .1;
+    let info = screen
+        .multipane_command(
+            MultipaneOperation::Create {
+                children: [first, second],
+                split: MultipaneSplit {
+                    direction: MultipaneDirection::TopBottom,
+                    ratio: 3500,
+                },
+                placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+                focus: Some(1),
+            },
+            CLIENT_1,
+        )
+        .unwrap()
+        .unwrap();
+    let editor = PaneId::Terminal(crate::TerminalId::new(9));
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .replace_pane_with_editor_pane(editor, first)
+        .unwrap();
+    screen
+        .break_multiple_panes_to_tab_with_id(vec![editor, second], TabId::new(1), false, CLIENT_1)
+        .unwrap();
+    assert!(!screen.tabs[&TabId::new(0)].has_pane_with_pid(&first));
+    let destination = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    assert!(destination.has_pane_with_pid(&first));
+    assert_eq!(
+        destination.multipane_info(second).unwrap().children,
+        [editor, second]
+    );
+    destination
+        .replace_pane_with_suppressed_pane(editor)
+        .unwrap();
+    assert_eq!(destination.multipane_info(first).unwrap().id, info.id);
+    assert!(destination.warp_pane_ids(Some(first)).is_err());
+    screen.close_tab_by_id(TabId::new(1)).unwrap();
+    assert_eq!(
+        screen.tabs[&TabId::new(0)].multipane_info(first).unwrap(),
+        info
+    );
+    let close = screen.close_self_instruction(PluginId::new(8), CLIENT_1);
+    assert!(matches!(&close, ScreenInstruction::ClosePane(id, Some(_), _, _) if *id == second));
+    crate::screen::replay_pending_plugin_events(&mut screen, vec![close]).unwrap();
+    assert!(screen
+        .tabs
+        .values()
+        .all(|tab| !tab.has_pane_with_pid(&first) && !tab.has_pane_with_pid(&second)));
+}
+
+#[test]
+fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
+    use zellij_types::multipane::*;
+    let (mut screen, events) = screen_with_plugin_sender(Size {
+        cols: 120,
+        rows: 40,
+    });
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    let children = [7, 8].map(|id| {
+        open_overlay_plugin(
+            &mut screen,
+            PluginId::new(id),
+            TabId::new(0),
+            popup_coordinates(),
+        )
+        .1
+    });
+    screen
+        .multipane_command(
+            MultipaneOperation::Create {
+                children,
+                split: MultipaneSplit {
+                    direction: MultipaneDirection::LeftRight,
+                    ratio: 5000,
+                },
+                placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+                focus: None,
+            },
+            CLIENT_1,
+        )
+        .unwrap();
+    // Both tabs retain their visibility during the move: only container adoption can notify
+    // the children that they have arrived on a visible tab.
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .visible(false)
+        .unwrap();
+    screen
+        .tabs
+        .get_mut(&TabId::new(1))
+        .unwrap()
+        .visible(true)
+        .unwrap();
+    events.try_iter().for_each(drop);
+    let assert_visible = |visible| {
+        let actual: Vec<_> = events
+            .try_iter()
+            .flat_map(|(event, _)| match event {
+                PluginInstruction::Update(updates) => updates
+                    .into_iter()
+                    .filter_map(|(id, _, event)| match event {
+                        Event::Visible(value) => Some((id, value)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => vec![],
+            })
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                (Some(PluginId::new(7)), visible),
+                (Some(PluginId::new(8)), visible)
+            ]
+        );
+    };
+    screen
+        .break_multiple_panes_to_tab_with_id(vec![children[0]], TabId::new(1), false, CLIENT_1)
+        .unwrap();
+    assert_visible(true);
+    let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    assert!(tab.hide_overlay_pane(children[0]));
+    assert_visible(false);
+    assert!(tab.show_overlay_pane(children[1]));
+    assert_visible(true);
+    screen
+        .break_multiple_panes_to_tab_with_id(vec![children[1]], TabId::new(0), false, CLIENT_1)
+        .unwrap();
+    assert_visible(false);
 }

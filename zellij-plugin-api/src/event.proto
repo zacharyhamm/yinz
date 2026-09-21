@@ -617,6 +617,7 @@ message PaneInfo {
     optional command.PaneTarget target = 33;
     bool is_stack_list_member = 34;
     optional string restart_error = 35;
+    optional MultipaneInfo multipane = 36;
 }
 
 message AgentInfo {
@@ -816,4 +817,15 @@ message ContextMenuItemSelectedPayload {
 
 message InitialKeybindsPayload {
   repeated InputModeKeybinds keybinds = 1;
+}
+
+message MultipaneInfo {
+    uint64 id = 1;
+    repeated PaneId children = 2;
+    uint64 x = 3;
+    uint64 y = 4;
+    uint64 rows = 5;
+    uint64 columns = 6;
+    bool top_bottom = 7;
+    uint32 ratio = 8;
 }

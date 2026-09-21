@@ -330,6 +330,9 @@ pub(crate) fn screen_thread_main(
 
         // The same conversion applies to exits replayed after layout application.
         let event = match event {
+            ScreenInstruction::CloseSelf(plugin, client) => {
+                screen.close_self_instruction(plugin, client)
+            },
             ScreenInstruction::ClosePane(id, None, None, status) => {
                 match screen.replacement_exit_command(id) {
                     Some(command) => ScreenInstruction::HoldPane(id, status, command),
@@ -340,6 +343,9 @@ pub(crate) fn screen_thread_main(
         };
         'instruction: {
             match event {
+                ScreenInstruction::CloseSelf(..) => {
+                    unreachable!("close_self is resolved before dispatch")
+                },
                 ScreenInstruction::SubscribePaneOutput(plugin, client, context, generation) => {
                     screen.pane_output_subscriptions.remove(&(plugin, client));
                     if let Some(context) = context {
@@ -3330,6 +3336,18 @@ pub(crate) fn screen_thread_main(
                     screen.change_floating_panes_coordinates(pane_ids_and_coordinates);
                     let _ = screen.render(None);
                 },
+                ScreenInstruction::Multipane {
+                    operation,
+                    client_id,
+                    response,
+                } => {
+                    let result = screen
+                        .multipane_command(operation, client_id)
+                        .map_err(|error| error.to_string());
+                    let _ = response.send(result);
+                    screen.log_and_report_session_state().non_fatal();
+                    screen.render(None)?;
+                },
                 ScreenInstruction::ChangeOverlayCoordinates(
                     pane_ids_and_coordinates,
                     override_user_placement,
@@ -3413,6 +3431,13 @@ pub(crate) fn screen_thread_main(
                     screen.reveal_pane_with_id(pane_id, label, client_id)?;
                 },
                 ScreenInstruction::FloatMultiplePanes(pane_ids_to_float, client_id) => {
+                    if screen.selection_has_multipane(&pane_ids_to_float) {
+                        Err::<(), _>(anyhow!(
+                            "cannot detach a multipane child from its container"
+                        ))
+                        .non_fatal();
+                        break 'instruction;
+                    }
                     {
                         let mut ejected_panes_in_group = vec![];
                         for pane_id in pane_ids_to_float {
@@ -3441,6 +3466,13 @@ pub(crate) fn screen_thread_main(
                     let _ = screen.log_and_report_session_state();
                 },
                 ScreenInstruction::EmbedMultiplePanes(pane_ids_to_float, client_id) => {
+                    if screen.selection_has_multipane(&pane_ids_to_float) {
+                        Err::<(), _>(anyhow!(
+                            "cannot detach a multipane child from its container"
+                        ))
+                        .non_fatal();
+                        break 'instruction;
+                    }
                     {
                         let mut embedded_panes_in_group = vec![];
                         for pane_id in pane_ids_to_float {

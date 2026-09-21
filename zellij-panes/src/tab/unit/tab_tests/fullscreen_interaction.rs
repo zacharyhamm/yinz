@@ -1,6 +1,81 @@
 use super::*;
 
 #[test]
+fn hiding_an_expanded_overlay_allows_the_next_fullscreen_shortcut_to_reach_the_terminal() {
+    use zellij_types::multipane::*;
+    for multipane in [false, true] {
+        for covers_ui in [false, true] {
+            let client_id = ClientId::new(1);
+            let mut tab = create_tab_with_four_panes();
+            let terminal = tab.get_active_pane_id(client_id).unwrap();
+            let children = [5, 6].map(|id| PaneId::Terminal(TerminalId::new(id)));
+            let placement = OverlayPlacement::dismissible(None);
+            for child in children.into_iter().take(if multipane { 2 } else { 1 }) {
+                tab.new_pane(
+                    child,
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::Overlay(placement.clone()),
+                    Some(client_id),
+                    None,
+                )
+                .unwrap();
+            }
+            if multipane {
+                tab.create_multipane(
+                    children,
+                    MultipaneSplit {
+                        direction: MultipaneDirection::LeftRight,
+                        ratio: 4300,
+                    },
+                    placement,
+                )
+                .unwrap();
+            }
+            let normal_geoms: Vec<_> = tab
+                .overlay_panes
+                .get_panes()
+                .map(|(id, pane)| (*id, pane.position_and_size()))
+                .collect();
+            tab.focus_pane_with_id(children[0], false, false, client_id)
+                .unwrap();
+            let toggle = |tab: &mut Tab| {
+                if covers_ui {
+                    tab.toggle_active_pane_no_ui_fullscreen(client_id);
+                } else {
+                    tab.toggle_active_pane_fullscreen(client_id);
+                }
+            };
+            toggle(&mut tab);
+            assert!(tab.overlay_panes.fullscreen_is_active());
+            assert!(tab.hide_overlay_pane(children[usize::from(multipane)]));
+            assert_eq!(tab.get_active_pane_id(client_id), Some(terminal));
+            toggle(&mut tab);
+            assert_eq!(
+                tab.tiled_panes.fullscreen_pane_id(),
+                Some(terminal),
+                "one shortcut must fullscreen the terminal after hiding the overlay"
+            );
+            assert_eq!(tab.fullscreen_covers_ui(), covers_ui);
+            assert!(!tab.overlay_panes.fullscreen_is_active());
+            toggle(&mut tab);
+            assert!(tab.show_overlay_pane(children[0]));
+            let shown_geoms: Vec<_> = tab
+                .overlay_panes
+                .get_panes()
+                .map(|(id, pane)| (*id, pane.position_and_size()))
+                .collect();
+            assert_eq!(
+                shown_geoms, normal_geoms,
+                "showing must restore normal placement"
+            );
+        }
+    }
+}
+
+#[test]
 pub fn opening_new_pane_while_fullscreen_unsets_fullscreen() {
     let mut tab = create_tab_with_four_panes();
     tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
