@@ -47,14 +47,19 @@ impl<T: Clone> SenderWithContext<T> {
     }
 
     /// Sends an event, along with the current [`ErrorContext`], on this
-    /// [`SenderWithContext`]'s channel.
+    /// [`SenderWithContext`]'s channel, tolerating disconnects during shutdown.
     pub fn send(&self, event: T) -> Result<(), SendError<(T, ErrorContext)>> {
-        let err_ctx = get_current_ctx();
-        match self.sender.send((event, err_ctx)) {
+        match self.send_required(event) {
             // Check after sending: a bounded send may have been waiting when teardown began.
             Err(_) if self.shutdown.0.load(Ordering::Relaxed) => Ok(()),
             result => result,
         }
+    }
+
+    /// Sends an event with the current [`ErrorContext`], returning an undelivered
+    /// event even during shutdown so the caller can clean up resources it owns.
+    pub fn send_required(&self, event: T) -> Result<(), SendError<(T, ErrorContext)>> {
+        self.sender.send((event, get_current_ctx()))
     }
 }
 
@@ -106,6 +111,28 @@ mod tests {
         cloned_sender.send("clone").unwrap();
         bounded_sender.send("bounded").unwrap();
         bounded_sender.clone().send("bounded clone").unwrap();
+    }
+
+    #[test]
+    fn required_sends_preserve_delivery_errors_after_shutdown() {
+        for (sender, receiver) in [unbounded(), bounded(2)] {
+            let shutdown = Shutdown::default();
+            let sender = shutdown.sender(sender);
+            let cloned_sender = sender.clone();
+            sender.send_required("before shutdown").unwrap();
+            shutdown.begin();
+            cloned_sender.send_required("after shutdown").unwrap();
+            assert_eq!(receiver.try_recv().unwrap().0, "before shutdown");
+            assert_eq!(receiver.try_recv().unwrap().0, "after shutdown");
+            drop(receiver);
+
+            let (undelivered, context) = sender.send_required("original").unwrap_err().0;
+            assert_eq!(undelivered, "original");
+            assert_eq!(context.calls(), get_current_ctx().calls());
+            let (undelivered, context) = cloned_sender.send_required("clone").unwrap_err().0;
+            assert_eq!(undelivered, "clone");
+            assert_eq!(context.calls(), get_current_ctx().calls());
+        }
     }
 
     #[test]

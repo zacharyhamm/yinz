@@ -53,12 +53,14 @@ impl ThreadSenders {
                 .unwrap_or_else(|| Ok(()));
             Ok(())
         } else {
-            self.to_pty
-                .as_ref()
-                .context("failed to get pty sender")?
-                .send(instruction)
-                .to_anyhow()
-                .context("failed to send message to pty")
+            let sender = self.to_pty.as_ref().context("failed to get pty sender")?;
+            match instruction {
+                // A failed handoff must let the spawn worker tear down its terminals.
+                PtyInstruction::SpawnResolved(_) => sender.send_required(instruction),
+                _ => sender.send(instruction),
+            }
+            .to_anyhow()
+            .context("failed to send message to pty")
         }
     }
 

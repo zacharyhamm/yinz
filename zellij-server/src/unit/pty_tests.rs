@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
-use zellij_runtime::channels::{self, SenderWithContext};
+use zellij_runtime::channels::{self, SenderWithContext, Shutdown};
 use zellij_types::command::PaneTarget;
 use zellij_types::data::Event;
 use zellij_types::diagnostics::ErrorContext;
@@ -1157,8 +1157,9 @@ fn a_remote_spawn_after_the_pty_exits_clears_its_terminal_id() {
     os_api.transport_started = Arc::new(Barrier::new(2));
     os_api.transport_release = Arc::new(Barrier::new(2));
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let shutdown = Shutdown::default();
     let (pty_tx, pty_rx) = channels::unbounded();
-    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    pty.bus.senders.to_pty = Some(shutdown.sender(pty_tx));
     pty.bus.senders.should_silently_fail = false;
 
     pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
@@ -1168,6 +1169,7 @@ fn a_remote_spawn_after_the_pty_exits_clears_its_terminal_id() {
     .unwrap();
     os_api.transport_started.wait();
     // The worker must observe the failed handback and clean up the transport itself.
+    shutdown.begin();
     drop(pty_rx);
     os_api.transport_release.wait();
     pty.spawn_workers.pop().unwrap().join().unwrap();
