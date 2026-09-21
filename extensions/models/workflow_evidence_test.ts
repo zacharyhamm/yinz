@@ -158,4 +158,100 @@ Deno.test("review and gate evidence cannot be inferred from missing findings, pr
     assert(saved.get("assessment-current")?.ready === false);
     await methods.assess.execute({ review, test, current: evidence }, c);
     assert(saved.get("assessment-current")?.ready === true);
+    const check = async (
+        overrides: Partial<Parameters<typeof methods.check_status.execute>[0]> =
+            {},
+    ) => {
+        await methods.check_status.execute(
+            { evidence, review, test, ...overrides },
+            c,
+        );
+        return resources.checks.schema.parse(saved.get("checks-current"));
+    };
+    assert((await check()).ready);
+    const missing = await check({ review: null, test: null });
+    assert(
+        missing.codeReview === "missing" &&
+            missing.recommendation.includes("Run Review"),
+    );
+    const dirty = await check({
+        evidence: { ...evidence, source: { ...revision, clean: false } },
+        review: null,
+        test: null,
+    });
+    assert(!dirty.ready && dirty.recommendation.includes("Commit & rebase"));
+    const paused = await check({
+        evidence: {
+            ...evidence,
+            source: { ...revision, rebasing: true, conflicts: ["file"] },
+        },
+    });
+    assert(
+        !paused.ready && paused.recommendation.startsWith("Resolve and stage"),
+    );
+    const blockedContinuation = await check({
+        evidence: {
+            ...evidence,
+            source: { ...revision, rebasing: true },
+            target: { ...evidence.target, clean: false },
+        },
+    });
+    assert(
+        !blockedContinuation.ready &&
+            blockedContinuation.recommendation.includes("target checkout"),
+    );
+    const incomplete = await check({
+        review: {
+            ...review,
+            valid: false,
+            resolved: false,
+            problem: "Missing findings",
+        },
+    });
+    assert(incomplete.codeReview === "incomplete" && !incomplete.repairReview);
+    assert(incomplete.recommendation.includes("retry Review"));
+    const findings = await check({
+        review: {
+            ...review,
+            resolved: false,
+            findings: [{
+                severity: "warning",
+                file: "file",
+                message: "Fix this",
+            }],
+        },
+    });
+    assert(
+        findings.codeReview === "failed" && findings.repairReview &&
+            !findings.ready,
+    );
+    const truncated = await check({
+        test: {
+            ...test,
+            passed: false,
+            outputComplete: false,
+            captureError: "Capture lost",
+        },
+    });
+    assert(
+        truncated.tests === "incomplete" && !truncated.repairTests &&
+            !truncated.ready,
+    );
+    const failing = await check({
+        test: { ...test, passed: false, exitCode: 1 },
+    });
+    assert(failing.tests === "failed" && failing.repairTests);
+    const cancelled = await check({
+        test: { ...test, passed: false, outcome: "cancelled" },
+    });
+    assert(cancelled.tests === "cancelled" && !cancelled.repairTests);
+    const stale = await check({
+        evidence: {
+            ...evidence,
+            target: { ...evidence.target, commit: "b".repeat(40) },
+        },
+    });
+    assert(
+        stale.codeReview === "stale" && stale.tests === "stale" && !stale.ready,
+    );
 });

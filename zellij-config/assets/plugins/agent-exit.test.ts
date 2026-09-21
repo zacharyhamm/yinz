@@ -49,6 +49,28 @@ async function checkout(
   return plugin;
 }
 
+async function prepareDeletion(
+  plugin: Awaited<ReturnType<typeof loadPlugin>>,
+  listingOutput = listing(),
+): Promise<void> {
+  const before = plugin.commands.length;
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  if (
+    plugin.commands
+      .slice(before)
+      .some((entry) => typeof entry === "object" && entry != null && "RunCommand" in entry)
+  )
+    await reply(plugin, listingOutput);
+  await plugin.render(24, 200);
+}
+async function confirmDeletion(
+  plugin: Awaited<ReturnType<typeof loadPlugin>>,
+  listingOutput = listing(),
+): Promise<void> {
+  await prepareDeletion(plugin, listingOutput);
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+}
+
 for (const [key, commands] of [
   ["Enter", ["RerunCommandPane", "CloseSelf"]],
   ["Esc", ["CloseTerminalPane", "CloseSelf"]],
@@ -132,7 +154,7 @@ test("agent-exit shows thrown project reads while inspecting Git", async () => {
 test("agent-exit confirms and cancels secondary worktree deletion", async () => {
   const plugin = await checkout();
   assert((await plugin.render()).includes("Delete: Delete worktree & branch and close pane"));
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await prepareDeletion(plugin);
   const confirmation = await plugin.render();
   assert(confirmation.includes("/repo/topic"));
   assert(confirmation.includes("topic"));
@@ -141,8 +163,7 @@ test("agent-exit confirms and cancels secondary worktree deletion", async () => 
 });
 test("agent-exit revalidates then removes the worktree and branch", async () => {
   const plugin = await checkout();
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   await reply(plugin, listing());
   await reply(plugin, "");
   await reply(plugin, "");
@@ -154,29 +175,34 @@ test("agent-exit revalidates then removes the worktree and branch", async () => 
 });
 test("agent-exit refuses branch deletion when the worktree disappeared externally", async () => {
   const plugin = await checkout();
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   await reply(plugin, listing(false));
   assert((await plugin.render()).includes("worktree disappeared"));
   assert(!JSON.stringify(plugin.commands).includes('"update-ref"'));
 });
 test("agent-exit keeps diagnostics visible and retries after partial cleanup", async () => {
   const plugin = await checkout();
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   await reply(plugin, listing());
   await reply(plugin, "");
   await reply(plugin, "", 1, "branch is locked");
+  const failure = await plugin.render();
+  assert(failure.includes("branch is locked"));
+  assert(failure.includes("Worktree removed; branch cleanup remains."));
+  assert(!failure.includes("restart agent"));
+  const count = plugin.commands.length;
+  await plugin.event({ Key: { bare_key: "Enter", key_modifiers: [] } });
+  assertEquals(plugin.commands.length, count);
+  await prepareDeletion(plugin);
+  await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
   assert((await plugin.render()).includes("branch is locked"));
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   await reply(plugin, "");
   assertEquals(plugin.commands.at(-1), "CloseSelf");
 });
 test("agent-exit treats an already absent branch as completed", async () => {
   const plugin = await checkout();
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   await reply(plugin, listing());
   await reply(plugin, "");
   await reply(plugin, "");
@@ -184,8 +210,7 @@ test("agent-exit treats an already absent branch as completed", async () => {
 });
 test("agent-exit refuses a branch whose head changed", async () => {
   const plugin = await checkout();
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   await reply(plugin, listing());
   await reply(plugin, "");
   await reply(plugin, "", 128, "cannot lock ref: is at another head but expected original");
@@ -202,7 +227,7 @@ test("agent-exit closes a guarded Firecracker VM before Git deletion", async () 
     agent_zellij_config_file: "/config/config.kdl",
     agent_zellij_config_dir: "/config",
   });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await prepareDeletion(plugin);
   assert((await plugin.render(24, 200)).includes("VM: review"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
   const first = plugin.commands.at(-1);
@@ -235,8 +260,7 @@ test("agent-exit refuses Git deletion while another VM lease remains", async () 
     agent_session: "work",
     agent_zellij_executable: "/bin/zellij",
   });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   const vm = {
     session: "work",
     name: "review",
@@ -257,8 +281,7 @@ test("agent-exit refuses a named Firecracker VM that moved to another worktree",
     agent_session: "work",
     agent_zellij_executable: "/bin/zellij",
   });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   await reply(
     plugin,
     JSON.stringify({
@@ -292,14 +315,12 @@ test("agent-exit retries only branch cleanup after guarded Firecracker removal",
     worktree: "/repo/topic",
     metrics: { generation: "42:100" },
   };
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   await reply(plugin, JSON.stringify({ vms: [vm], recoveries: [] }));
   await reply(plugin, "");
   await reply(plugin, "", 1, "branch is locked");
   const closes = JSON.stringify(plugin.commands).match(/"firecracker","close"/g)?.length ?? 0;
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await confirmDeletion(plugin);
   await reply(plugin, "");
   assertEquals(
     JSON.stringify(plugin.commands).match(/"firecracker","close"/g)?.length ?? 0,
@@ -365,6 +386,96 @@ async function rpcReply(
     }),
   });
 }
+async function configuredCheckout(
+  projectWorkflow: string | null = "fixture",
+): Promise<Awaited<ReturnType<typeof loadPlugin>>> {
+  const plugin = await loadPlugin("./agent-exit.ts", {
+    configuration: {
+      agent_cwd: "/repo/topic",
+      agent_target: "local",
+      agent_pane_id: "7",
+      agent_exit_token: "exit-1",
+    },
+    replies: {
+      GetPluginIds: { plugin_id: 1 },
+      GetPaneInfo: { is_suppressed: false },
+      ProjectConfigRead: { config: { workflow: projectWorkflow } },
+      RunCommand: null,
+      MessageToPlugin: null,
+      SetSelfMouseSelectionSupport: null,
+      SubscribePaneOutput: null,
+      SetPaneSubtitle: null,
+      CloseTerminalPane: null,
+      CloseSelf: null,
+    },
+  });
+  await reply(plugin, "/repo/topic\n");
+  await reply(plugin, listing());
+  return plugin;
+}
+test("agent-exit preserves normal Delete and Esc editing keys in answers", async () => {
+  const plugin = await configuredCheckout();
+  await rpcReply(plugin, "workflow_run", { outcome: "completed" });
+  await rpcReply(plugin, "workflow_show", {
+    launch: "exit-1",
+    run: "run-1",
+    root: "/repo",
+    history: { status: "suspended" },
+    questions: {
+      results: [
+        {
+          model: "question",
+          version: 1,
+          attributes: {
+            run: "run-1",
+            question: "q",
+            state: "pending",
+            kind: "text",
+            prompt: "What next?",
+          },
+        },
+      ],
+    },
+  });
+  await plugin.render();
+  await plugin.event({ PastedText: "abc" });
+  const count = plugin.commands.length;
+  await plugin.event({ Key: { bare_key: "Home", key_modifiers: [] } });
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
+  assertEquals(plugin.commands.length, count);
+  assert(!(await plugin.render()).includes("Delete again"));
+  await plugin.event({ Key: { bare_key: "Tab", key_modifiers: [] } });
+  await plugin.event({ Key: { bare_key: "Enter", key_modifiers: [] } });
+  assertEquals(rpcRequest(plugin, "workflow_answer").payload.inputs.answer, "bc");
+});
+test("agent-exit returns to the workflow when checkout inspection fails before cleanup", async () => {
+  const plugin = await configuredCheckout();
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await reply(plugin, "", 1, "checkout inspection failed");
+  const failure = await plugin.render();
+  assert(failure.includes("checkout inspection failed"));
+  assert(failure.includes("Enter: back to workflow"));
+  assert(!failure.includes("Enter: restart agent"));
+  assert(!rpcRequest(plugin, "cleanup_prepare"));
+  await plugin.event({ Key: { bare_key: "Enter", key_modifiers: [] } });
+  assert((await plugin.render()).includes("Starting workflow"));
+});
+for (const [action, notice] of [
+  ["restart", "Restarting agent..."],
+  ["fork", "Opening agent picker..."],
+]) {
+  test(`agent-exit acknowledges ${action} before the bridge responds`, async () => {
+    const plugin = await configuredCheckout();
+    if (action === "fork") await plugin.event({ Key: { bare_key: "Tab", key_modifiers: [] } });
+    await plugin.event({ Key: { bare_key: "Enter", key_modifiers: [] } });
+    assertEquals(rpcRequest(plugin, "pane_action").payload.action, action);
+    assert((await plugin.render()).includes(notice));
+    const count = plugin.commands.length;
+    await plugin.event({ Key: { bare_key: "Enter", key_modifiers: [] } });
+    assertEquals(plugin.commands.length, count);
+  });
+}
 async function assertHiddenControls(plugin: Awaited<ReturnType<typeof loadPlugin>>) {
   const count = plugin.commands.length;
   // The workflow was rendered at 24x80: its input and buttons occupy these rows.
@@ -381,28 +492,7 @@ async function assertHiddenControls(plugin: Awaited<ReturnType<typeof loadPlugin
 }
 for (const state of ["absent", "starting", "running", "question", "completed", "failed"]) {
   test(`agent-exit cleanup is available while workflow is ${state}`, async () => {
-    const plugin = await loadPlugin("./agent-exit.ts", {
-      configuration: {
-        agent_cwd: "/repo/topic",
-        agent_target: "local",
-        agent_pane_id: "7",
-        agent_exit_token: "exit-1",
-      },
-      replies: {
-        GetPluginIds: { plugin_id: 1 },
-        GetPaneInfo: { is_suppressed: false },
-        ProjectConfigRead: { config: { workflow: state === "absent" ? null : "fixture" } },
-        RunCommand: null,
-        MessageToPlugin: null,
-        SetSelfMouseSelectionSupport: null,
-        SubscribePaneOutput: null,
-        SetPaneSubtitle: null,
-        CloseTerminalPane: null,
-        CloseSelf: null,
-      },
-    });
-    await reply(plugin, "/repo/topic\n");
-    await reply(plugin, listing());
+    const plugin = await configuredCheckout(state === "absent" ? null : "fixture");
     if (state !== "absent" && state !== "starting") {
       await rpcReply(plugin, "workflow_run", { outcome: "completed" });
       await rpcReply(plugin, "workflow_show", {
@@ -435,15 +525,15 @@ for (const state of ["absent", "starting", "running", "question", "completed", "
         },
       });
     }
+    if (state === "question") await plugin.event({ Key: { bare_key: "Tab", key_modifiers: [] } });
     assert((await plugin.render()).includes("Delete worktree & branch and close pane"));
-    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await prepareDeletion(plugin);
     assert((await plugin.render()).includes("This cancels the workflow"));
     assert(!rpcRequest(plugin, "cleanup_prepare"));
     if (state !== "absent") await assertHiddenControls(plugin);
     await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
     assert(!(await plugin.render()).includes("Delete again"));
-    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await confirmDeletion(plugin);
     await plugin.render();
     if (state !== "absent") await assertHiddenControls(plugin);
     const count = plugin.commands.length;
@@ -460,8 +550,7 @@ for (const state of ["absent", "starting", "running", "question", "completed", "
       assert(rpcRequest(plugin, "workflow_show")?.call_id !== before);
     }
     assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
-    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await confirmDeletion(plugin);
     await rpcReply(plugin, "cleanup_prepare", { ready: true });
     await reply(plugin, listing());
     await reply(plugin, "");
@@ -473,7 +562,7 @@ for (const state of ["absent", "starting", "running", "question", "completed", "
 test("agent-exit removes a detached secondary checkout without deleting a branch", async () => {
   const detached = listing().replace("branch refs/heads/topic", "detached");
   const plugin = await checkout({}, detached);
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await prepareDeletion(plugin, detached);
   assert((await plugin.render()).includes("detached HEAD"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
   await reply(plugin, detached);
@@ -484,8 +573,7 @@ test("agent-exit removes a detached secondary checkout without deleting a branch
 for (const field of ["head", "branch"]) {
   test(`agent-exit refuses cleanup when the confirmed ${field} changes`, async () => {
     const plugin = await checkout();
-    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await confirmDeletion(plugin);
     await reply(
       plugin,
       field === "head"
@@ -496,6 +584,57 @@ for (const field of ["head", "branch"]) {
     assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
   });
 }
+test("agent-exit refreshes a changed checkout before confirming its exact revision", async () => {
+  const plugin = await checkout();
+  const next = "1".repeat(40);
+  const changed = listing()
+    .replaceAll(head, next)
+    .replace("refs/heads/topic", "refs/heads/rebased");
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  assert((await plugin.render()).includes("Checking current checkout"));
+  const count = plugin.commands.length;
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  assertEquals(plugin.commands.length, count);
+  await reply(plugin, changed);
+  const confirmation = await plugin.render();
+  assert(confirmation.includes(next));
+  assert(confirmation.includes("Branch: rebased"));
+  assert(confirmation.includes("unmerged commits"));
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await reply(plugin, changed);
+  await reply(plugin, "");
+  await reply(plugin, "");
+  assert(JSON.stringify(plugin.commands).includes(`"refs/heads/rebased","${next}"`));
+  assertEquals(plugin.commands.at(-1), "CloseSelf");
+});
+test("agent-exit requires the complete confirmation to be visible before deleting", async () => {
+  const plugin = await checkout();
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await reply(plugin, listing());
+  let count = plugin.commands.length;
+  // A confirmation that has not rendered yet cannot be accepted by a repeated key.
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  assertEquals(plugin.commands.length, count);
+  for (const [rows, cols] of [
+    [1, 1],
+    [2, 8],
+    [8, 24],
+  ]) {
+    await plugin.render(rows, cols);
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    assertEquals(plugin.commands.length, count);
+  }
+  assert((await plugin.render(8, 24)).includes("Deletion disabled"));
+  assert((await plugin.render(8, 24)).includes("Esc: cancel"));
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  assertEquals(plugin.commands.length, count);
+  await plugin.render(24, 80);
+  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  assert(plugin.commands.length > count);
+  count = plugin.commands.length;
+  await plugin.event({ Key: { bare_key: "Enter", key_modifiers: [] } });
+  assertEquals(plugin.commands.length, count);
+});
 test("agent-exit never inspects an SSH pane's path locally", async () => {
   const plugin = await loadPlugin("./agent-exit.ts", {
     configuration: { agent_cwd: "/repo/topic", agent_target: "ssh" },
@@ -531,7 +670,7 @@ for (const secondary of [false, true]) {
     await reply(plugin, listing(secondary));
     assert((await plugin.render(24, 200)).includes("Esc: close pane"));
     if (secondary) {
-      await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+      await prepareDeletion(plugin);
       await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
       assert(!plugin.commands.includes("CloseSelf"));
     }

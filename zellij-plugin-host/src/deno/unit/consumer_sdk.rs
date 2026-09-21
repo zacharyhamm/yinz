@@ -387,7 +387,7 @@ fn deno_workflow_view_preserves_question_races_focus_previews_and_scrolling() {
     "#);
     run(&mut runtime, "resolve([q('one',2,['yes'],'pending','child')]);");
     run(&mut runtime, r#"
-      check(M.notice.includes('Command failed')); M.cancellable=true; focus('cancel_run'); key('Enter'); key('Enter');
+      check(M.notice.includes('Command failed')); M.snapshot.history.status='running'; focus('cancel_run_run'); key('Enter'); key('Enter');
       check(commands.length===4 && commands[3].options.payload.method==='workflow_cancel'); finish(3);
     "#);
     run(&mut runtime, "resolve([q('preview')]);");
@@ -430,11 +430,13 @@ fn deno_workflow_view_keeps_restart_explicit_and_all_details_reachable() {
       check(!seen().has('restart')&&!seen().has('fork')&&seen().has('choice_1'));
       M.pending[0].attributes.answers=[];
       M.snapshot={root:'/work',history:{status:'failed'},logs:'history '.repeat(100)+'HISTORY-END'};
-      M.render(8,24);
+      M.details=true;M.render(8,24);
       while(M.scroll>0){key('PageUp');M.render(8,24);}
       let rendered='';
       for(let i=0;i<100;i++){rendered+=plain(M.render(8,24));key('PageDown');}
-      check(rendered.includes('QUESTION-END') && rendered.includes('HISTORY-END'));
+      check(rendered.includes('HISTORY-END'));
+      while(M.focusedControl()!=='question')key('Tab');key('Enter');key('End');
+      check(plain(M.render(8,24)).includes('QUESTION-END'));
     "#);
 }
 
@@ -539,7 +541,7 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
       check(!plain(M.render(12,100)).includes('�'));key('End');
       emit('launch-b','SECOND-SOURCE','build',8);check(plain(M.render(12,100)).includes('Live build / pane 8'));
       emit('launch-b','FIRST-SOURCE','build',7);check(plain(M.render(12,100)).includes('NEW-PANEFIRST-SOURCE'));
-      focus('cancel_run');key('Enter');check(M.submitting && commands.length===2);
+      focus('cancel_run_b');key('Enter');check(M.submitting && commands.length===2);
       commands[0].resolve(ok);
     "#);
     run(&mut runtime, r#"
@@ -552,7 +554,7 @@ fn deno_workflow_live_output_and_attachment_submissions_are_isolated() {
       check(M.submitting && M.notice==='Submitting answer...' && polls.length===0);
       M.attach({directory:'/d',launch:'launch-d'});show('d','launch-d');
     "#);
-    run(&mut runtime, "focus('cancel_run');key('Enter');commands[2].reject(Error('OLD-ANSWER'));");
+    run(&mut runtime, "focus('cancel_run_d');key('Enter');commands[2].reject(Error('OLD-ANSWER'));");
     run(&mut runtime, r#"
       check(M.submitting && M.notice==='Requesting cancellation...' && polls.length===0);
       M.attach({directory:'/e',launch:'launch-e'});show('e','launch-e');
@@ -615,13 +617,13 @@ fn deno_workflow_admission_deadlines_and_same_run_show_preserve_pending_state() 
     run(&mut runtime, "check(!M.submitting && M.notice==='Answer recorded' && M.pending.length===0);");
     capture_commands(&mut runtime);
     run(&mut runtime, "snapshot.questions.results[0].version++;reply(lastId(),snapshot);");
-    run(&mut runtime, "advance(90001);check(!M.noticeError && cancelled.length===0);key('Tab');key('Enter');check(M.submitting);");
+    run(&mut runtime, "advance(90001);check(!M.noticeError && cancelled.length===0);while(M.focusedControl()!=='answer')key('Tab');bridge('update',{PastedText:'next draft'},2);key('Tab');key('Enter');check(M.submitting);");
     capture_commands(&mut runtime);
     run(&mut runtime, "answerId=lastId();reply(answerId,{status:'waiting'},true);advance(180000);reply(answerId,{status:'ready'},true);advance(90000);");
-    run(&mut runtime, "check(!M.submitting && M.noticeError && M.notice.includes('TimeoutError'));check(cancelled.join(',')==='AbortError');");
+    run(&mut runtime, "check(!M.submitting && M.noticeError && M.notice.includes('Request timed out'));check(cancelled.join(',')==='AbortError');");
     capture_commands(&mut runtime);
-    run(&mut runtime, "reply(lastId(),snapshot);");
-    run(&mut runtime, "key('Enter');check(M.submitting);");
+    run(&mut runtime, "snapshot.questions.results[0].version++;snapshot.questions.results[0].attributes.state='recorded';snapshot.questions.results[0].attributes.answer='kept draft';reply(lastId(),snapshot);");
+    run(&mut runtime, "while(M.focusedControl()!=='recover')key('Tab');key('Enter');check(M.submitting);");
     capture_commands(&mut runtime);
     run(&mut runtime, r#"
       answerId=lastId();reply(answerId,{status:'waiting'},true);reply(answerId,{status:'ready'},true);
@@ -986,7 +988,7 @@ fn deno_workflow_reports_are_complete_scrollable_cached_and_attachment_scoped() 
         let frame=plain(M.render(24,100));check(frame.includes('Test report: FAILED')&&frame.includes('first failure output')&&!frame.includes('Execution details:'));
         check(M.focusedControl()==='choice_1');
         let middle=false,last=false;
-        for(let i=0;i<270;i++){key('PageDown');frame=plain(M.render(24,100));middle ||= frame.includes('middle failure output');last ||= frame.includes('last failure output');}
+        for(let previous=-1;M.scroll!==previous;){previous=M.scroll;key('PageDown');frame=plain(M.render(24,100));middle ||= frame.includes('middle failure output');last ||= frame.includes('last failure output');}
         check(middle&&last);
         key('Home');check(plain(M.render(24,100)).includes('Test report: FAILED'));
         check(!markdowns.some(text=>text.includes('failure output')),'reports must not become Markdown');
@@ -1084,10 +1086,10 @@ fn deno_agent_exit_actions_are_available_during_launch_and_ignore_duplicate_pres
       M.load({agent_pane_id:'7',agent_cwd:'/work',agent_exit_token:'launch'});
       globalThis.key=bare_key=>M.update({Key:{bare_key,key_modifiers:[]}});
       globalThis.focus=id=>{for(let i=0;i<10;i++){if(view.focusedControl()===id)return;key('Tab');}throw Error('missing '+id);};
-      focus('fork');key('Enter');focus('restart');key('Enter');
+      focus('fork');key('Enter');key('Tab');key('Enter');
       check(actions.length===1&&actions[0].action==='fork'&&actions[0].key.startsWith('fork-'));settle({});
     "#);
-    run(&mut runtime, "key('Enter');check(actions.length===2&&actions[1].action==='restart');refuse(Error('Cannot restart agent: unsupported print option'));");
+    run(&mut runtime, "focus('restart');key('Enter');check(actions.length===2&&actions[1].action==='restart');refuse(Error('Cannot restart agent: unsupported print option'));");
     run(&mut runtime, r#"
       view.status='Workflow running';
       check(view.action==='restart'&&view.noticeError&&view.notice.includes('unsupported print option'));

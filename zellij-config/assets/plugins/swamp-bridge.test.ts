@@ -403,6 +403,239 @@ test("cleanup waits for an answer already submitting and recancels its resumed r
   });
 });
 
+test("answer recovery uses the exact saved question without submitting a new answer", async () => {
+  const f = await cleanupFixture();
+  f.seed("run-1", "attachment", { work: "exit", root: "/repo", run: "run-1" });
+  const recovery = await f.request({
+    method: "workflow_recover",
+    directory: "/repo",
+    model: "run-1-question",
+    inputs: { run: "run-1", question: "merge", answer: "ignored", submission: "ignored" },
+  });
+  await f.swampReply("model.get", { type: "@hammz/question" });
+  const commands = f.p.commands as {
+    SwampRequest?: { id: string; operation: string; payload: string };
+  }[];
+  const query = commands
+    .filter((entry) => entry.SwampRequest?.operation === "data.query")
+    .at(-1)!.SwampRequest!;
+  assertEquals(JSON.parse(query.payload), {
+    predicate:
+      'modelName == "run-1-question" && specName == "question" && attributes.run == "run-1" && attributes.question == "merge"',
+    select: '{"attributes":attributes}',
+  });
+  await f.swampReply("data.query", {
+    results: [
+      {
+        attributes: {
+          run: "run-1",
+          question: "merge",
+          state: "recorded",
+          answer: "merge",
+          submission: "original",
+        },
+      },
+    ],
+  });
+  const method = (f.p.commands as typeof commands)
+    .filter((entry) => entry.SwampRequest?.operation === "model.method.run")
+    .at(-1)!.SwampRequest!;
+  assertEquals(JSON.parse(method.payload), {
+    modelIdOrName: "run-1-question",
+    methodName: "recover",
+    inputs: { run: "run-1", question: "merge" },
+  });
+  await f.p.event({
+    CustomMessage: [
+      "swamp-response",
+      JSON.stringify({
+        id: method.id,
+        type: "managed.progress",
+        payload: { status: "recovering" },
+      }),
+    ],
+  });
+  assert(JSON.stringify(f.p.commands).includes("zellij_rpc_progress"));
+  await f.swampReply("model.method.run", { run: { status: "succeeded" } });
+  assertEquals(recovery.reply().result, { status: "succeeded" });
+});
+
+for (const failure of [
+  "wrong checkout",
+  "wrong model",
+  "wrong question",
+  "closed",
+  "closed during lookup",
+]) {
+  test(`answer recovery refuses ${failure}`, async () => {
+    const f = await cleanupFixture();
+    f.seed("run-1", "attachment", {
+      work: "exit",
+      root: failure === "wrong checkout" ? "/other" : "/repo",
+      run: "run-1",
+    });
+    if (failure === "closed") f.seed("exit", "view", { closed: true });
+    const recovery = await f.request({
+      method: "workflow_recover",
+      directory: "/repo",
+      model: "question",
+      inputs: { run: "run-1", question: "merge" },
+    });
+    if (!["closed", "wrong checkout"].includes(failure)) {
+      await f.swampReply("model.get", {
+        type: failure === "wrong model" ? "@swamp/git" : "@hammz/question",
+      });
+      if (failure !== "wrong model") {
+        if (failure === "closed during lookup") f.seed("exit", "view", { closed: true });
+        await f.swampReply("data.query", {
+          results: [
+            {
+              attributes: {
+                run: "run-1",
+                question: failure === "wrong question" ? "different" : "merge",
+              },
+            },
+          ],
+        });
+      }
+    }
+    assert(recovery.reply().error);
+    assert(!JSON.stringify(f.p.commands).includes('"operation":"model.method.run"'));
+  });
+}
+
+test("cleanup waits for an answer recovery already dispatched", async () => {
+  const f = await cleanupFixture();
+  f.seed("exit", "launch", {
+    request: JSON.stringify({ method: "workflow_run" }),
+    checkout: "/repo",
+    run: "run-1",
+    outcome: "completed",
+  });
+  f.seed("run-1", "attachment", { work: "exit", root: "/repo", run: "run-1" });
+  const recovery = await f.request({
+    method: "workflow_recover",
+    directory: "/repo",
+    model: "question",
+    inputs: { run: "run-1", question: "merge" },
+  });
+  await f.swampReply("model.get", { type: "@hammz/question" });
+  await f.swampReply("data.query", {
+    results: [{ attributes: { run: "run-1", question: "merge" } }],
+  });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: false,
+  });
+  await f.swampReply("workflow.history.get", { status: "suspended" });
+  await f.swampReply("model.method.run", {});
+  assert(recovery.reply().result);
+  await f.swampReply("workflow.history.get", { status: "running" });
+  await f.swampReply("workflow.cancel", {});
+  await f.swampReply("workflow.history.get", { status: "cancelled" });
+  assertEquals((await f.request({ method: "cleanup_prepare", work: "exit" })).reply().result, {
+    ready: true,
+  });
+});
+
+for (const status of ["succeeded", "failed", "cancelled", "suspended", "running", "unknown"]) {
+  test(`workflow cancellation reports the exact ${status} execution truthfully`, async () => {
+    const f = await cleanupFixture();
+    const attachment = { work: "exit", root: "/repo", run: "run-1", workflow: "fixture" };
+    f.seed("exit", "launch", { checkout: "/repo", not_dispatched: true, request: "{}" });
+    f.seed("run-1", "attachment", attachment);
+    f.seed("exit", "runs", { entries: { "run-1": attachment } });
+    const cancellation = await f.request({
+      method: "workflow_cancel",
+      directory: "/repo",
+      run: "run-1",
+    });
+    await f.swampReply("workflow.history.get", {
+      id: "run-1",
+      status,
+      inputs: { session: f.identity.session, launch: "exit" },
+    });
+    await f.swampReply("data.query", { results: [] });
+    const commands = f.p.commands as { SwampRequest?: { operation: string; payload: string } }[];
+    const outputs = commands
+      .filter((entry) => entry.SwampRequest?.operation === "data.query")
+      .at(-1)!.SwampRequest!;
+    const projection = JSON.parse(outputs.payload).select as string;
+    assert(projection.length <= 4096, `Projection exceeds Swamp limit: ${projection.length}`);
+    for (const field of ["reason", "recommendation", "repairReview", "repairTests", "evidence"])
+      assert(projection.includes('"' + field + '"'));
+    await f.swampReply("data.query", { results: [] });
+    await f.swampReply("workflow.history.logs", { log: { lines: [] } });
+    await f.swampReply("workflow.history.get", { id: "run-1", status });
+    if (status === "running") {
+      const command = (f.p.commands as typeof commands)
+        .filter((entry) => entry.SwampRequest?.operation === "workflow.cancel")
+        .at(-1)!.SwampRequest!;
+      assertEquals(JSON.parse(command.payload), { runId: "run-1" });
+      await f.swampReply("workflow.cancel", { cancelled: true });
+      assertEquals(cancellation.reply().result, { operations: [{ cancelled: true }] });
+    } else {
+      if (status === "unknown") assert(cancellation.reply().error.includes("state is uncertain"));
+      else assertEquals(cancellation.reply().result, { operations: [], alreadyFinished: true });
+      assert(
+        !(f.p.commands as typeof commands).some(
+          (entry) => entry.SwampRequest?.operation === "workflow.cancel",
+        ),
+      );
+    }
+  });
+}
+
+for (const [diagnostic, expected] of [
+  [
+    'Module not found "file:///repo/.swamp/pulled-extensions/@swamp/git/models/git.ts"',
+    "swamp extension pull @swamp/git --repo-dir '/repo'",
+  ],
+  ["@hammz/zellij could not be resolved", "swamp doctor extensions --repo-dir '/repo' --json"],
+  ["Network unavailable", ""],
+]) {
+  test(`workflow setup diagnostics preserve the cause: ${diagnostic}`, async () => {
+    const f = await cleanupFixture();
+    const request = await f.request({
+      method: "swamp_read",
+      directory: "/repo",
+      operation: "workflow.history.get",
+      payload: { workflowIdOrName: "run-1" },
+    });
+    await f.swampReply("workflow.history.get", {
+      error: { code: "not_dispatched", message: diagnostic },
+    });
+    const error = request.reply().error;
+    if (expected) assert(error.includes(expected));
+    else assert(!error.includes("swamp extension pull") && !error.includes("swamp doctor"));
+    assert(error.includes(diagnostic.split('"')[0]));
+  });
+}
+
+test("failed launch validation names the control checkout and extension diagnostic command", async () => {
+  const f = await cleanupFixture();
+  const launch = await f.request({
+    method: "workflow_run",
+    work: "exit",
+    key: "launch",
+    directory: "/repo",
+    exactInputs: true,
+  });
+  await f.swampReply("workflow.get", { name: "fixture" });
+  await f.swampReply("workflow.validate", {
+    passed: false,
+    errors: ["@hammz/zellij could not be resolved"],
+  });
+  assert(launch.reply().error.includes("swamp doctor extensions --repo-dir '/repo' --json"));
+  assert(!launch.reply().error.includes("swamp extension pull"));
+  assert(!JSON.stringify(f.p.commands).includes('"operation":"workflow.run"'));
+  f.seed("exit", "launch", { outcome: "failed", error: launch.reply().error, checkout: "/repo" });
+  const shown = await f.request({ method: "workflow_show", launch: "exit", directory: "/repo" });
+  await f.swampReply("managed.endpoint", {});
+  assert(
+    shown.reply().result.problem.includes("swamp doctor extensions --repo-dir '/repo' --json"),
+  );
+});
+
 function closedHelpers(p: Awaited<ReturnType<typeof loadPlugin>>) {
   return p.commands.filter(
     (command) => typeof command === "object" && command != null && "CloseTerminalPane" in command,

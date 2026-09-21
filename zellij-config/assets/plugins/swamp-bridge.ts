@@ -382,6 +382,7 @@ function launchFailure(
   history: { id: string; workflowName: string; status: string };
   children: History[];
   active: boolean;
+  problem: string;
   logs: string;
 } {
   return {
@@ -390,6 +391,7 @@ function launchFailure(
     history: { id: work, workflowName: launch.workflow ?? "Workflow launch", status: "failed" },
     children: [],
     active: active(work),
+    problem: logs,
     logs,
   };
 }
@@ -674,6 +676,15 @@ function changed(work: string): void {
       z.log(String(error));
     });
 }
+function setupDiagnostic(detail: string, directory: string): string {
+  const root = "'" + directory.replaceAll("'", "'\"'\"'") + "'";
+  const setup = /Module not found[^\n]*\.swamp\/pulled-extensions\/@swamp\/git\//u.test(detail)
+    ? `\nMissing @swamp/git in control checkout ${directory}. Run: swamp extension pull @swamp/git --repo-dir ${root}`
+    : /(?:@hammz\/zellij|@swamp\/git).*could not be resolved/u.test(detail)
+      ? `\nInspect extensions in control checkout ${directory}: swamp doctor extensions --repo-dir ${root} --json`
+      : "";
+  return detail + setup;
+}
 // oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers. This helper shares mutable plugin state and SDK wire types with its callers. This lifecycle handler keeps its ordered protocol transitions together. Keep this existing protocol decision tree together for review.
 async function swamp(request: SwampRequest, directory: string): Promise<string> {
   const workflow = request.payload?.["workflow"];
@@ -702,7 +713,7 @@ async function swamp(request: SwampRequest, directory: string): Promise<string> 
   };
   if (reply["error"]) {
     if (reply["error"].code === "not_dispatched") request.onNotDispatched?.(reply["error"]);
-    throw new Error(encode(reply["error"]));
+    throw new Error(setupDiagnostic(encode(reply["error"]), directory));
   }
   const query = request.payload?.["query"];
   if (
@@ -761,12 +772,14 @@ async function cancelRun(run: string, root: string, verify = false): Promise<unk
       ),
       "Workflow cancellation is not complete; retry cleanup",
     );
-  } else if (verify)
+  } else
     assert(
       ["succeeded", "suspended", "completed", "failed", "cancelled", "interrupted"].includes(
         history.status,
       ),
-      "Workflow termination is uncertain; reconcile before cleanup",
+      verify
+        ? "Workflow termination is uncertain; reconcile before cleanup"
+        : "Workflow execution state is uncertain; refresh before cancelling",
     );
   return undefined;
 }
@@ -1326,14 +1339,64 @@ async function handle(
     assert(response.results.length === 1, "Saved test report unavailable at this version");
     return response.results[0];
   }
-  if (args.method === "workflow_answer") {
+  if (args.method === "workflow_answer" || args.method === "workflow_recover") {
     ensureOpen(typeof args.inputs?.["run"] === "string" ? args.inputs["run"] : undefined);
+    let inputs = args.inputs ?? {};
+    if (args.method === "workflow_recover") {
+      const question = key(string(inputs["question"])),
+        run = key(string(inputs["run"]));
+      const attachment = read<Attachment>(scope(run, "attachment"))[0];
+      const config = z.projectConfig.read(args.directory);
+      assert(!config.error, config.error ?? "Invalid project config");
+      assert(
+        attachment?.root === config.root,
+        "Question run belongs to a different control checkout",
+      );
+      const definition = parsedObject(
+        await swamp(
+          { operation: "model.get", payload: { modelIdOrName: args.model } },
+          config.root,
+        ),
+      );
+      assert(
+        definition["type"] === "@hammz/question",
+        "Only the workflow question model may recover answers",
+      );
+      const questions = parsedObject(
+        await swamp(
+          {
+            operation: "data.query",
+            payload: {
+              predicate: `modelName == ${encode(args.model)} && specName == "question" && attributes.run == ${encode(run)} && attributes.question == ${encode(question)}`,
+              select: '{"attributes":attributes}',
+            },
+          },
+          config.root,
+        ),
+      );
+      const results = questions["results"];
+      assert(
+        Array.isArray(results) && results.length === 1,
+        "Question is absent or ambiguous; inspect its saved state",
+      );
+      const saved = object(object(results[0])["attributes"]);
+      assert(
+        saved["run"] === run && saved["question"] === question,
+        "Question does not belong to this run",
+      );
+      ensureOpen(run);
+      inputs = { run, question };
+    }
     // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
     const reply: { run?: { status: string } } = JSON.parse(
       await swamp(
         {
           operation: "model.method.run",
-          payload: { modelIdOrName: args.model, methodName: "submit", inputs: args.inputs ?? {} },
+          payload: {
+            modelIdOrName: args.model,
+            methodName: args.method === "workflow_recover" ? "recover" : "submit",
+            inputs,
+          },
           onProgress,
         },
         args.directory,
@@ -1352,7 +1415,9 @@ async function handle(
     })) as { root: string; history: History; children: History[] };
     ensureOpen(args.run);
     const operation = await cancelRun(args.run, snapshot.root);
-    return { operations: operation == null ? [] : [operation] };
+    return operation == null
+      ? { operations: [], alreadyFinished: true }
+      : { operations: [operation] };
   }
   if (args.method === "workflow_show") {
     const failed = args.launch ? read(scope(args.launch, "launch"))[0] : undefined;
@@ -1793,7 +1858,7 @@ async function handle(
     ensureOpen(args.work);
     assert(
       parsedObject(validation)["passed"] === true,
-      "Workflow validation failed: " + validation,
+      "Workflow validation failed: " + setupDiagnostic(validation, config.root),
     );
     const inputs = { ...args.inputs };
     if (args.exactInputs) {
@@ -2215,6 +2280,10 @@ const projection = `{"model":modelName,"name":name,"version":version,"createdAt"
     "test":attributes.test == null ? attributes.test : ${testPreview("attributes.test")},
     "evidence":has(attributes.evidence) ? attributes.evidence : null,
     "tests":has(attributes.tests) ? attributes.tests : "", "codeReview":has(attributes.codeReview) ? attributes.codeReview : "",
+    "reason":has(attributes.reason) ? attributes.reason : null,
+    "recommendation":has(attributes.recommendation) ? attributes.recommendation : null,
+    "repairReview":has(attributes.repairReview) && attributes.repairReview,
+    "repairTests":has(attributes.repairTests) && attributes.repairTests,
     "ready":has(attributes.ready) && attributes.ready} : attributes}`;
 // Share the attributes expression to stay within Swamp's 4096-character select limit.
 const outputProjection = `[attributes].map(a,${projection.replaceAll("attributes.", "a.")})[0]`;
@@ -2301,6 +2370,7 @@ async function invokeInner(
       if (
         flight.work &&
         (args.method === "workflow_answer" ||
+          args.method === "workflow_recover" ||
           (args.method === "swamp_read" && args.operation === "workflow.approve"))
       )
         cancelIfClosed(flight.work);

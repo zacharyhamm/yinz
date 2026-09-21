@@ -1327,14 +1327,17 @@ and the pane it opens is itself an agent pane, so this hook runs again when *tha
 
 The builtin `agent-exit` hook launches the workflow bound in the control checkout.
 Escape closes both the held agent pane and the exit view without deleting files, with or without a configured workflow.
+When the answer field has focus, Escape and Delete edit the answer instead of closing or deleting the pane.
 During deletion confirmation, Escape dismisses the confirmation. During deletion, the exit view ignores keys.
 Without a configured workflow, Enter restarts the agent.
 A verified local or Firecracker secondary worktree always offers **Delete worktree & branch and close pane**.
 This option is available while the workflow starts, runs, waits for input, or has completed or failed.
 It is also available without a workflow. Configuration errors remain visible and do not prevent checkout inspection.
 
-Press Delete to show the worktree, branch, associated VM, and cancellation warning.
-Press Delete again to confirm, or Escape to dismiss the confirmation.
+Press Delete to refresh the checkout identity and show its worktree, branch, revision, associated VM, and cancellation warning.
+Deletion can discard uncommitted work and unmerged commits.
+After the full confirmation is visible, press Delete again to confirm, or Escape to dismiss it.
+If the pane cannot display the confirmation, enlarge it before confirming.
 Confirmation cancels the workflow and waits for verified termination of its owned operations before deletion.
 The exit pane stays open during cancellation and shows failures for retry. New operations cannot start during cleanup.
 Deletion force-removes the worktree and compare-deletes its branch at the confirmed HEAD with `git update-ref -d`.
@@ -1345,6 +1348,7 @@ A detached secondary checkout removes only the worktree.
 Local deletion revalidates the worktree immediately before removing it. Firecracker deletion validates and removes
 the worktree under the provider's lease lock. Failures remain visible in the exit view and can be retried, including
 a branch deletion that failed after the worktree was already removed.
+Failure actions describe the remaining cleanup. A removed worktree cannot restart an agent.
 
 Configure `.zellij/swamp-workflows.kdl` in the control checkout:
 

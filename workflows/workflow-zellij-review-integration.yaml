@@ -368,9 +368,9 @@ jobs:
         prompt: '${{ "Review: " + data.latest(run.id + "-checks", "checks-current").attributes.codeReview + ". Tests: " + data.latest(run.id +
           "-checks", "checks-current").attributes.tests + ". " + (data.latest(run.id + "-inspect", "evidence-current").attributes.source.rebasing
           ? "Rebase paused. Resolvers stage changes; Continue rebase is a separate choice. " : "") + (data.latest(run.id + "-checks", "checks-current").attributes.ready
-          ? "Ready for merge approval." : data.latest(run.id + "-checks", "checks-current").attributes.reason) }}'
-        answers: '${{ ["show-diff", "review", "commit-and-rebase", "run-tests", "merge", "leave"] + (inputs.state.review != null ? ["fix-review-with-agent",
-          "review-again"] : []) + (inputs.state.test != null && !inputs.state.test.passed ? ["fix-tests-with-agent", "retry-tests"] : []) + (data.latest(run.id
+          ? "Ready for merge approval." : data.latest(run.id + "-checks", "checks-current").attributes.recommendation) }}'
+        answers: '${{ ["show-diff", "review", "commit-and-rebase", "run-tests", "merge", "leave"] + (data.latest(run.id + "-checks", "checks-current").attributes.repairReview
+          ? ["fix-review-with-agent"] : []) + (data.latest(run.id + "-checks", "checks-current").attributes.repairTests ? ["fix-tests-with-agent"] : []) + (data.latest(run.id
           + "-inspect", "evidence-current").attributes.source.rebasing ? ["resolve-with-agent", "continue-rebase", "leave-paused"] : []) + (inputs.sourcePane
           >= 0 ? ["restart", "fork"] : []) }}'
         resumeInput: answer
@@ -1763,7 +1763,8 @@ jobs:
         question: cleanup
         step: cleanup-approval
         kind: cleanup
-        prompt: Integration succeeded. Remove clean worktree or Keep?
+        prompt: '${{ inputs.phase == "cleanup" ? "Integrated " + inputs.state.evidence.source.commit + " into local " + inputs.targetBranch + ". Worktree: " + inputs.checkout
+          + ". Remove clean worktree or Keep? The branch is retained." + (inputs.firecracker != "" ? " VM " + inputs.firecracker + " is retained." : "") : "" }}'
         answers:
         - remove-clean-worktree
         - keep

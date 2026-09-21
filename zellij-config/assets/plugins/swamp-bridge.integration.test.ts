@@ -35,8 +35,14 @@ test(
       ),
       { attached: true },
     );
-    await session.waitForText("persisted-launch");
     await session.waitForText("failed");
+    await session.waitForText("Swamp");
+    // The launch correlation id is available in the execution details.
+    session.resize(40, 160);
+    await session.waitForText("1/1 Details");
+    session.key("Enter");
+    session.key("Home");
+    await session.waitForText("persisted-launch");
     assertEquals(
       deliveryValues().find((value) => value.outcome === "failed"),
       failed,

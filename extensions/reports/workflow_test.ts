@@ -30,6 +30,13 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
             workflowRunId: "run",
             specName: "checks",
         }, {
+            evidence: {
+                source: { branch: "topic", commit: "abc" },
+                target: { branch: "main", commit: "def" },
+            },
+            codeReview: "current",
+            tests: "failed",
+            recommendation: "Fix test failures, then commit and rerun checks.",
             test: {
                 output: "preview",
                 outputRef: {
@@ -67,7 +74,7 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
         }],
     ] as const;
     try {
-        const result = await report.execute({
+        const context: Parameters<typeof report.execute>[0] = {
             repoDir: ".",
             workflowRunId: "run",
             workflowName: "review",
@@ -122,7 +129,8 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
                     );
                 },
             },
-        });
+        };
+        const result = await report.execute(context);
         if (
             result.json.resources.length !== 5 ||
             result.json.outstanding[0] !== "approval" ||
@@ -141,6 +149,46 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
             throw new Error(
                 "Report lost saved evidence, exact versions, or missing content",
             );
+        }
+        if (
+            !result.json.summary.some((line) =>
+                line.includes('"topic" → "main"')
+            ) ||
+            !result.json.summary.includes("Review: current. Tests: failed.") ||
+            result.markdown.indexOf("Next:") > result.markdown.indexOf("Run:")
+        ) {
+            throw new Error(
+                "Report did not lead with the outcome and next action",
+            );
+        }
+        const kept = await report.execute({
+            ...context,
+            inputs: { phase: "cleanup", answer: "keep", checkout: "/topic" },
+        });
+        if (
+            !kept.json.summary.includes(
+                "Integration completed locally. No commits were pushed.",
+            ) ||
+            !kept.json.summary.includes(
+                "Worktree, branch and VM resources kept.",
+            ) || kept.json.summary.some((line) => line.startsWith("Next:"))
+        ) throw new Error("Cleanup report recommended already completed work");
+        for (const phase of ["commit", "review-agent", "tests"]) {
+            const action = await report.execute({
+                ...context,
+                inputs: { phase },
+            });
+            if (
+                action.json.summary.some((line) =>
+                    line.startsWith("Next:") || line.startsWith("Review:")
+                ) || !action.json.summary.some((line) =>
+                    line.startsWith("Source revision before action:")
+                )
+            ) {
+                throw new Error(
+                    "Action report presented pre-action checks as current",
+                );
+            }
         }
     } finally {
         Deno.Command = original;
