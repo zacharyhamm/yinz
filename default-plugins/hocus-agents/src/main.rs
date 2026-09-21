@@ -248,6 +248,7 @@ struct State {
     mouse_position: Option<(isize, usize)>,
     last_rows: usize,
     last_cols: usize,
+    last_footer_row: Option<usize>,
     /// How many rows the last render gave the list. Below it are the divider and the history
     /// half, which point at nothing: a click down there has to be rejected rather than mapped
     /// through `last_window_start` onto a row that was never drawn.
@@ -627,6 +628,7 @@ impl ZellijPlugin for State {
     fn render(&mut self, rows: usize, cols: usize) {
         self.last_rows = rows;
         self.last_cols = cols;
+        self.last_footer_row = None;
         // Host commands must precede drawing; keep the dropdown output until
         // after the issue list so it paints over the rows beneath it.
         let swamp_form = if self.surface == Surface::Swamp {
@@ -656,9 +658,9 @@ impl ZellijPlugin for State {
             return;
         }
         let label = if self.search_editing {
-            format!("Search: {}  [Enter apply  Esc cancel]", self.search_query)
+            format!("Search: {}", self.search_query)
         } else if let Some(previous) = &self.predecessors {
-            format!("Previous agents: {} — c clear · p previous", previous.title)
+            format!("Previous agents: {}", previous.title)
         } else if self.search_base.is_some() {
             let suffix = self
                 .search_error
@@ -668,7 +670,7 @@ impl ZellijPlugin for State {
                     if self.search_truncated {
                         "  more matches omitted".to_owned()
                     } else {
-                        "  [c clear  / edit]".to_owned()
+                        String::new()
                     }
                 });
             format!("Search: {}{}", self.search_query, suffix)
@@ -714,22 +716,20 @@ impl ZellijPlugin for State {
             for cell in &self.tab_cells {
                 print_text_with_coordinates(cell.styled(), cell.x, 0, Some(cell.width), None);
             }
-            if self.surface == Surface::Agents {
-                let x = self.tab_cells.last().map_or(0, |cell| cell.x + cell.width);
-                if x < cols {
-                    print_text_with_coordinates(
-                        Text::new(" p previous"),
-                        x,
-                        0,
-                        Some(cols - x),
-                        None,
-                    );
-                }
-            }
         } else {
             print_text_with_coordinates(Text::new(label), 0, 0, Some(cols), None);
         }
-        let rows = rows.saturating_sub(1);
+        if let Some(hint) = self.footer_hint() {
+            self.last_footer_row = Some(rows - 1);
+            print_text_with_coordinates(
+                Text::new(hint).dim_range(..),
+                0,
+                rows - 1,
+                Some(cols),
+                Some(1),
+            );
+        }
+        let rows = rows.saturating_sub(1 + usize::from(self.last_footer_row.is_some()));
         if rows == 0 {
             return;
         }
@@ -1114,6 +1114,26 @@ impl Predecessors {
 }
 
 impl State {
+    fn footer_hint(&self) -> Option<String> {
+        if self.surface != Surface::Agents
+            || self.reading.is_some()
+            || self.last_rows < 3
+            || self.last_cols == 0
+        {
+            return None;
+        }
+        let hint = if self.search_editing {
+            "Enter apply · Esc cancel"
+        } else if self.predecessors.is_some() {
+            "c clear · p previous"
+        } else if self.search_base.is_some() {
+            "c clear · / edit"
+        } else {
+            "p previous"
+        };
+        Some(agents::cut_to_width(hint.to_owned(), self.last_cols))
+    }
+
     fn switch_surface(&mut self, surface: Surface) {
         if self.surface == surface {
             return;
@@ -1607,6 +1627,9 @@ impl State {
         }
         if let Some((line, column)) = self.mouse_position {
             if line < 0 || line as usize >= self.last_rows || column >= self.last_cols {
+                return false;
+            }
+            if self.last_footer_row == Some(line as usize) {
                 return false;
             }
         }
@@ -3893,7 +3916,7 @@ mod tests {
             .collect();
         state.run = Some(run);
 
-        let (_, history_rows) = split(20);
+        let (_, history_rows) = split(19);
         state.render(21, 50);
         assert_eq!(state.last_history_rows, history_rows);
         // Two header rows and the rule under them.
@@ -3911,7 +3934,7 @@ mod tests {
         let mut cramped = State::default();
         std::mem::swap(&mut cramped, &mut state);
         cramped.render(10, 50);
-        let (_, cramped_rows) = split(9);
+        let (_, cramped_rows) = split(8);
         assert_eq!(cramped_rows, 4, "three rows of header and one of timeline");
         assert_eq!(
             cramped.last_history_max_scroll,
@@ -4547,6 +4570,130 @@ mod tests {
     }
 
     #[test]
+    fn footer_hints_follow_the_view_and_fit_one_line() {
+        let check = |state: &mut State, expected: &str| {
+            for cols in 1..=expected.width() + 1 {
+                state.render(12, cols);
+                let hint = state.footer_hint().unwrap();
+                assert_eq!(hint, expected.chars().take(cols).collect::<String>());
+                assert!(hint.width() <= cols);
+                assert!(!hint.contains('\n'));
+                assert_eq!(state.last_footer_row, Some(11));
+            }
+        };
+        let mut state = State::default();
+        check(&mut state, "p previous");
+        state.set_rows(unfocused(strip()));
+        check(&mut state, "p previous");
+        assert!(state.begin_predecessors());
+        check(&mut state, "c clear · p previous");
+        assert!(state.begin_search());
+        check(&mut state, "Enter apply · Esc cancel");
+        state.search_query = "a query".into();
+        assert!(state.search_key(KeyWithModifier::new(BareKey::Enter)));
+        check(&mut state, "Enter apply · Esc cancel");
+        let result = search_reply(&mut state, &[]);
+        assert!(state.apply_search_result(result));
+        check(&mut state, "c clear · / edit");
+        state.search_truncated = true;
+        check(&mut state, "c clear · / edit");
+        state.search_error = Some("search failed".into());
+        check(&mut state, "c clear · / edit");
+        assert!(state.clear_search());
+        check(&mut state, "p previous");
+    }
+
+    #[test]
+    fn the_footer_leaves_room_for_the_header_and_content_on_resize() {
+        let mut state = State::default();
+        state.set_rows(unfocused((0..20).map(|id| agent(id, "claude")).collect()));
+        for cols in [0, 1, 40] {
+            for (rows, list, history, footer) in [
+                (12, 4, 5, Some(11)),
+                (0, 0, 0, None),
+                (1, 0, 0, None),
+                (2, 1, 0, None),
+                (3, 1, 0, Some(2)),
+                (4, 2, 0, Some(3)),
+                (8, 6, 0, Some(7)),
+                (9, 3, 3, Some(8)),
+                (12, 4, 5, Some(11)),
+            ] {
+                state.render(rows, cols);
+                let expected = if cols == 0 {
+                    (0, 0, None)
+                } else {
+                    (list, history, footer)
+                };
+                assert_eq!(
+                    (
+                        state.last_list_rows,
+                        state.last_history_rows,
+                        state.last_footer_row,
+                    ),
+                    expected,
+                    "{rows} rows, {cols} columns"
+                );
+                assert_eq!(state.footer_hint().is_some(), expected.2.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn the_footer_ignores_clicks_and_wheel_events() {
+        let mut state = reading(&"word ".repeat(1000));
+        state.close_reader();
+        state.rows.extend((0..20).map(|id| agent(id, "claude")));
+        for rows in [3, 12] {
+            state.render(rows, 50);
+            state.list_scroll = Some(3);
+            state.history_scroll = 1;
+            for focus in [Focus::List, Focus::History] {
+                state.focus = focus;
+                state.tabs_focused = true;
+                let selected = state.selected;
+                let footer = state.last_footer_row.unwrap() as isize;
+                for event in [
+                    Mouse::Hover(footer, 49),
+                    Mouse::ScrollUp(1),
+                    Mouse::ScrollDown(1),
+                    Mouse::LeftClick(footer, 0),
+                    Mouse::RightClick(footer, 0),
+                    Mouse::ScrollUp(1),
+                    Mouse::ScrollDown(1),
+                ] {
+                    assert!(!state.on_mouse(event));
+                    assert_eq!(state.selected, selected);
+                    assert_eq!(state.list_scroll, Some(3));
+                    assert_eq!(state.history_scroll, 1);
+                    assert_eq!(state.focus, focus);
+                    assert!(state.tabs_focused);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readers_and_other_tabs_have_no_agents_footer() {
+        let mut state = reading(&"word ".repeat(1000));
+        state.render(12, 50);
+        assert!(state.footer_hint().is_none());
+        assert_eq!(state.last_footer_row, None);
+        assert_eq!(state.last_reader_rows, 10);
+        state.on_mouse(Mouse::Hover(11, 0));
+        assert!(state.on_mouse(Mouse::ScrollDown(1)));
+        state.close_reader();
+        state.render(12, 50);
+        assert_eq!(state.last_footer_row, Some(11));
+        for surface in [Surface::Todos, Surface::Vms, Surface::Swamp] {
+            state.surface = surface;
+            state.render(12, 50);
+            assert!(state.footer_hint().is_none());
+            assert_eq!(state.last_footer_row, None);
+        }
+    }
+
+    #[test]
     fn the_wheel_scrolls_the_list_without_selecting_and_clicks_use_its_window() {
         let mut state = State::default();
         state.set_rows(unfocused((0..20).map(|id| agent(id, "claude")).collect()));
@@ -4572,9 +4719,9 @@ mod tests {
         assert!(!state.on_mouse(Mouse::ScrollDown(1)));
         assert!(state.on_mouse(Mouse::ScrollUp(1)));
         state.render(12, 50);
-        assert_eq!(state.last_window_start, 14);
+        assert_eq!(state.last_window_start, 15);
         assert!(state.on_mouse(Mouse::LeftClick(2, 0)));
-        assert_eq!(state.selected, 15);
+        assert_eq!(state.selected, 16);
         assert_eq!(state.list_scroll, None);
     }
 
@@ -4588,10 +4735,10 @@ mod tests {
         assert!(state.on_mouse(Mouse::ScrollDown(100)));
         assert!(!state.set_rows(unfocused(rows.clone())));
         state.render(16, 50);
-        assert_eq!(state.last_window_start, 13);
+        assert_eq!(state.last_window_start, 14);
         state.set_rows(unfocused(rows[..10].to_vec()));
         state.render(16, 50);
-        assert_eq!(state.last_window_start, 3);
+        assert_eq!(state.last_window_start, 4);
         assert_eq!(state.selected, 0);
         assert!(
             state.on_key(KeyWithModifier::new(BareKey::Up)),
@@ -4771,7 +4918,7 @@ mod tests {
         });
         state.run = Some(run);
         // Four rows below the divider, against five timeline rows including the result.
-        state.render(9, 50);
+        state.render(10, 50);
         assert_eq!(state.last_history_rows, 4);
         assert_eq!(state.last_history_max_scroll, 1);
 
@@ -4824,7 +4971,7 @@ mod tests {
         state.run = Some(run);
 
         // Three rows below the divider, and every one of them a line of timeline.
-        state.render(8, 50);
+        state.render(9, 50);
         assert_eq!(state.last_history_rows, 3);
         let lines = state.cached_history_lines(50).entries.len();
         assert!(lines > 5, "a summary longer than the half: {lines} lines");
@@ -4841,7 +4988,7 @@ mod tests {
         // the summary has scrolled off the bottom.
         state.on_mouse(Mouse::Hover((state.last_list_rows + 1) as isize, 0));
         assert!(state.on_mouse(Mouse::ScrollUp(50)));
-        state.render(8, 50);
+        state.render(9, 50);
         assert_eq!(state.history_scroll, state.last_history_max_scroll);
         let history = state.cached_history_lines(50);
         assert!(history.entries[0]
@@ -4878,8 +5025,8 @@ mod tests {
             created_at_ms: None,
         });
         state.run = Some(run);
-        // two lines of timeline against three entries: exactly one line to scroll
-        state.render(8, 50);
+        // Three rows of timeline, with older events available above them.
+        state.render(9, 50);
         assert_eq!(state.selected, 1);
 
         assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
@@ -4962,10 +5109,10 @@ mod tests {
         state.run = Some(run);
         state.focus = Focus::History;
         state.render(21, 50);
-        // Thirty one-line events against the seven rows the pinned header leaves of the ten:
+        // Thirty one-line events against the six rows the pinned header leaves of the nine:
         // the half is at the newest end.
-        assert_eq!(state.last_history_rows, 10);
-        assert_eq!(state.last_history_body_rows, 7);
+        assert_eq!(state.last_history_rows, 9);
+        assert_eq!(state.last_history_body_rows, 6);
         assert_eq!(state.history_scroll, 0);
 
         // Walk the cursor past the top of the window and the half follows it back.
@@ -4975,7 +5122,7 @@ mod tests {
         state.render(21, 50);
         assert_eq!(state.history_cursor, 12);
         assert_eq!(
-            state.history_scroll, 6,
+            state.history_scroll, 7,
             "wound back just far enough to put the event on the oldest row"
         );
 
@@ -4983,7 +5130,7 @@ mod tests {
         assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
         state.render(21, 50);
         assert_eq!(state.history_cursor, 11);
-        assert_eq!(state.history_scroll, 6, "still on screen, so nothing moved");
+        assert_eq!(state.history_scroll, 7, "still on screen, so nothing moved");
 
         // The cursor stops at the oldest event rather than running off the end.
         for _ in 0..50 {
@@ -5178,7 +5325,7 @@ mod tests {
         let mut state = State::default();
         state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
         state.render(21, 40);
-        let (list_rows, history_rows) = split(20);
+        let (list_rows, history_rows) = split(19);
         assert_eq!(state.last_list_rows, list_rows);
         assert_eq!(state.last_history_rows, history_rows);
 
