@@ -4,6 +4,7 @@ mod authoring;
 pub(crate) mod background_worker;
 mod checker;
 mod event;
+mod image;
 mod limits;
 mod loader;
 mod permissions;
@@ -42,6 +43,7 @@ use super::zellij_exports::{
     check_command_permission, permission_answer_pending, run_plugin_command,
 };
 use super::{PluginId, PluginInstruction};
+use image::op_zellij_image;
 use limits::op_zellij_encode;
 use ui::{op_zellij_ui_call, op_zellij_ui_create, op_zellij_ui_pure};
 use zellij_bus::global_async_runtime::get_tokio_runtime;
@@ -53,6 +55,12 @@ const SDK: &str = include_str!("sdk.js");
 pub(crate) const SDK_MODULE: &str = "export const zellij = globalThis.zellij; export const definePlugin = zellij.definePlugin; export default zellij;";
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+#[op2]
+#[string]
+fn op_zellij_uuid() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 #[op2(fast)]
 fn op_zellij_monotonic_ms() -> f64 {
     static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
@@ -293,7 +301,9 @@ deno_core::extension!(
         op_zellij_worker_started,
         op_zellij_ui_create,
         op_zellij_ui_call,
-        op_zellij_ui_pure
+        op_zellij_ui_pure,
+        op_zellij_image,
+        op_zellij_uuid
     ],
     state = |state| state.put(VecDeque::<background_worker::PostReservation>::new())
 );
@@ -1082,7 +1092,9 @@ mod sdk_tests {
             op_zellij_worker_started,
             op_zellij_ui_create,
             op_zellij_ui_call,
-            op_zellij_ui_pure
+            op_zellij_ui_pure,
+            op_zellij_image,
+            op_zellij_uuid
         ],
         state = |state| state.put(VecDeque::<background_worker::PostReservation>::new())
     );
@@ -2223,6 +2235,7 @@ mod sdk_tests {
     }
     include!("unit/trace_sdk.rs");
     include!("unit/ui_sdk.rs");
+    include!("unit/image_sdk.rs");
     include!("unit/rpc_sdk.rs");
     include!("unit/agent_sdk.rs");
     include!("unit/pane_sdk.rs");

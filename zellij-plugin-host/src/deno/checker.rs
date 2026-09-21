@@ -1,9 +1,7 @@
 //! Offline authoring checks. Only the bundled compiler executes in this isolate;
 //! plugin source is passed to TypeScript as data, never loaded as an ES module.
 use super::limits::Limits;
-use super::loader::{
-    file_specifier, transpile, PluginModuleLoader, SDK_SPECIFIER, WORKFLOW_PATH, WORKFLOW_SPECIFIER,
-};
+use super::loader::{compiler_specifier, transpile, PluginModuleLoader, SDK_SPECIFIER};
 use deno_core::{op2, JsRuntime, OpState, RuntimeOptions};
 use deno_error::JsErrorBox;
 use std::sync::{
@@ -87,13 +85,7 @@ fn op_zellij_check_read(
 ) -> std::result::Result<String, JsErrorBox> {
     let files = state.borrow::<CompilerFiles>();
     let read = || -> Result<String> {
-        if name == WORKFLOW_PATH {
-            return files.loader.read_source(
-                &deno_core::ModuleSpecifier::parse(WORKFLOW_SPECIFIER)?,
-                true,
-            );
-        }
-        let url = file_specifier(Path::new(name))?;
+        let url = compiler_specifier(Path::new(name))?;
         files.loader.read_source(&url, true)
     };
     read()
@@ -112,31 +104,25 @@ fn op_zellij_check_resolve(
     #[string] referrer: &str,
 ) -> std::result::Result<String, JsErrorBox> {
     let resolve = || -> Result<String> {
-        if name == WORKFLOW_SPECIFIER {
-            return Ok(WORKFLOW_PATH.to_owned());
-        }
         if name == SDK_SPECIFIER {
             return Ok("/$zellij/sdk.d.ts".to_owned());
-        }
-        if referrer == WORKFLOW_PATH {
-            bail!("embedded modules may import only registered modules");
         }
         let files = state.borrow::<CompilerFiles>();
         if name == "zellij:testing" && files.loader.testing() {
             return Ok("/$zellij/testing.d.ts".to_owned());
         }
-        let referrer = file_specifier(Path::new(referrer))?;
+        let referrer = compiler_specifier(Path::new(referrer))?;
         let url = files.loader.resolve_local(name, referrer.as_str(), true)?;
-        let path = url
-            .to_file_path()
-            .map_err(|_| anyhow!("invalid compiler module path: {url}"))?;
-        let lexical = referrer
-            .join(name)
-            .context("resolve import alias")?
-            .to_file_path()
-            .map_err(|_| anyhow!("invalid import alias"))?;
-        if lexical != path {
-            files.aliases.borrow_mut().push((lexical, path.clone()));
+        let path = files.loader.module_path(&url, true)?;
+        if url.scheme() == "file" {
+            let lexical = referrer
+                .join(name)
+                .context("resolve import alias")?
+                .to_file_path()
+                .map_err(|_| anyhow!("invalid import alias"))?;
+            if lexical != path {
+                files.aliases.borrow_mut().push((lexical, path.clone()));
+            }
         }
         path.to_str()
             .map(str::to_owned)
@@ -218,10 +204,7 @@ fn check_loader(
     strict: bool,
     diagnostics: bool,
 ) -> Result<Graph> {
-    let entry = loader
-        .entrypoint()
-        .to_file_path()
-        .map_err(|_| anyhow!("invalid checker entrypoint"))?;
+    let entry = loader.module_path(loader.entrypoint(), true)?;
     let entry = entry.to_str().context("compiler path is not UTF-8")?;
     let input = serde_json::json!({
         "entry": entry,

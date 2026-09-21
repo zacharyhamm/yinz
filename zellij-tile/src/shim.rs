@@ -2220,9 +2220,24 @@ pub fn read_plugin_log(name: &str, lines: usize) -> Result<String, String> {
 
 /// The contents of `path`, up to `max_bytes` (the host's own cap otherwise).
 pub fn fs_read(path: &Path, max_bytes: Option<usize>) -> Result<Vec<u8>, String> {
+    fs_read_at(path, max_bytes, None)
+}
+
+/// Read up to `max_bytes` from a byte offset, even when the file exceeds the host's read cap.
+/// Returns fewer bytes at EOF. Separate calls reopen the file and do not form a snapshot.
+pub fn fs_read_range(path: &Path, offset: u64, max_bytes: usize) -> Result<Vec<u8>, String> {
+    fs_read_at(path, Some(max_bytes), Some(offset))
+}
+
+fn fs_read_at(
+    path: &Path,
+    max_bytes: Option<usize>,
+    offset: Option<u64>,
+) -> Result<Vec<u8>, String> {
     let response: ProtobufFsReadResponse = call(PluginCommand::FsRead {
         path: path.to_path_buf(),
         max_bytes,
+        offset,
     })?;
     match response.result {
         Some(fs_read_response::Result::Contents(contents)) => Ok(contents),

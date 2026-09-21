@@ -1,4 +1,114 @@
 #[test]
+fn deno_markdown_lines_keep_native_styles_when_composed_into_transcripts() {
+    use zellij_tile::ui_components::{serialize_text, Text};
+    use zellij_tile_markdown::{render, style_text, Options};
+    let mut runtime = sdk();
+    let source = "# 日本🙂\n\n**bold** and ~~gone~~\n\n| Name | Value |\n| --- | --- |\n| a | `code` |";
+    run(&mut runtime,&format!("globalThis.prose = zellij.ui.markdown({},{{dim:true}});",json!(source)));
+    for width in [40, 12, 0, 40] {
+        let lines = render(source,width,Options::default());
+        let expected: Vec<_> = lines.iter().map(|line| {
+            let text = style_text(&line.text,&line.styles,true).selected().color_all(2);
+            json!([line.text,serialize_text(&text)])
+        }).collect();
+        run(&mut runtime,&format!("check(JSON.stringify(prose.lines({width}).map(line => [line.content(),line.selected().emphasis(2).render()])) === JSON.stringify({}));",json!(expected)));
+    }
+    let expected = serialize_text(&Text::new("日🙂x").strike_range(1..3));
+    run(&mut runtime,&format!("check(zellij.ui.text('日🙂x').strike(1,3).render() === {});",json!(expected)));
+    run(&mut runtime,r#"
+        const struck = zellij.ui.text('done').strike();
+        check(zellij.ui.nestedList([struck]).render().includes('0,1,2,3$'));
+        const first = prose.lines(20)[0], pristine = first.render();
+        first.selected();
+        check(prose.lines(20)[0].render() === pristine);
+        let refused = false; try { zellij.ui.text('x').emphasis(9); } catch (_) { refused = true; } check(refused);
+    "#);
+}
+
+#[test]
+fn deno_text_editor_supports_custom_prompt_cursors_history_and_completion() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+        const prompt = zellij.ui.textInput({value:'日本🙂 draft'});
+        const inputKey = (bare_key, key_modifiers = []) => prompt.handleInputKey({Key:{bare_key,key_modifiers}});
+        check(prompt.cursorPosition() === 9);
+        prompt.setCursorPosition(2).insertText('x\r\ny\u0007');
+        check(prompt.value() === '日本x\ny🙂 draft' && prompt.cursorPosition() === 5);
+        check(prompt.undo() && prompt.value() === '日本🙂 draft' && prompt.cursorPosition() === 2);
+        check(prompt.redo() && prompt.value() === '日本x\ny🙂 draft');
+        prompt.replaceText('日🙂a',1);
+        check(prompt.cursorPosition() === 1 && !prompt.undo() && !prompt.redo());
+        prompt.setCursorPosition(999);
+        check(prompt.cursorPosition() === 3);
+        prompt.setCursorPosition(Number.MAX_SAFE_INTEGER);
+        check(prompt.cursorPosition() === 3);
+        prompt.setHistory(['first','日本🙂']).replaceText('draft',2);
+        check(inputKey('Up') === 'continue' && prompt.value() === '日本🙂');
+        check(inputKey('Up') === 'continue' && prompt.value() === 'first');
+        inputKey('Down'); inputKey('Down');
+        check(prompt.value() === 'draft');
+        check(inputKey('Tab') === 'complete' && inputKey('Enter') === 'submit');
+        check(inputKey('Esc') === 'cancel' && inputKey({Char:'q'},['Ctrl']) === 'ignored');
+        check(prompt.drainText() === 'draft' && prompt.value() === '' && prompt.cursorPosition() === 0);
+        check(JSON.stringify(prompt.history()) === JSON.stringify(['first','日本🙂','draft']));
+        inputKey({Char:'p'},['Ctrl']);
+        check(prompt.value() === 'draft');
+        for (const action of [() => prompt.setCursorPosition(-1), () => prompt.replaceText('x',0.5), () => prompt.setHistory([1])]) {
+            let refused = false; try { action(); } catch (_) { refused = true; } check(refused);
+        }
+    "#);
+    assert!(runtime.op_state().borrow().borrow::<TestHost>().commands.is_empty());
+}
+
+#[test]
+fn deno_lossless_input_wrapping_and_fuzzy_matches_use_the_shared_native_helpers() {
+    use zellij_tile::{text::wrap_input, ui_components::forms::fuzzy_filter};
+    let mut runtime = sdk();
+    for source in ["", "one two  three", "日本🙂 a\nb", "full\n", "a\u{0301}bc"] {
+        for width in [0, 1, 3, 4, 80] {
+            let expected: Vec<_> = wrap_input(source, width).into_iter()
+                .map(|line| json!({"text":line.text,"start":line.start})).collect();
+            run(&mut runtime, &format!("check(JSON.stringify(zellij.text.wrapInput({}, {width})) === JSON.stringify({}));",json!(source),json!(expected)));
+        }
+    }
+    let options: Vec<_> = ["日本🙂 layout", "compact", "default", "compact"].into_iter().map(str::to_owned).collect();
+    for query in ["", "layout", "cmp", "dt", "impossible"] {
+        let expected: Vec<_> = fuzzy_filter(&options, query).into_iter()
+            .map(|m| json!({"index":m.index,"score":m.score,"indices":m.indices})).collect();
+        run(&mut runtime,&format!("check(JSON.stringify(zellij.text.fuzzyFilter({}, {})) === JSON.stringify({}));",json!(options),json!(query),json!(expected)));
+    }
+    run(&mut runtime, r#"
+        let refused = false;
+        try { zellij.text.fuzzyFilter(['x'.repeat(10000)], 'x'.repeat(10000)); } catch (_) { refused = true; }
+        check(refused);
+        const match = zellij.text.fuzzyFilter(['日本🙂 layout'],'layout')[0];
+        check(match.indices[0] === 4);
+        const paths = Array.from({length:10000}, (_,i) => `src/${'directory/'.repeat(8)}file-${i}.ts`);
+        const matches = zellij.text.fuzzyFilter(paths,'directory');
+        check(matches.length === paths.length && matches.every(match => match.indices.length === 9));
+    "#);
+}
+
+#[test]
+fn deno_filesystem_reads_forward_optional_offsets_exactly() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+        bind({load() {
+          zellij.fs.read('/host/large', {maxBytes:4096,offset:0});
+          zellij.fs.read('/host/large', {maxBytes:4096n,offset:9007199254740993n});
+          zellij.fs.read('/host/small');
+        }});
+        bridge('load',{},1);
+    "#);
+    let state = runtime.op_state();
+    let state = state.borrow();
+    let commands = &state.borrow::<TestHost>().commands;
+    assert_eq!(commands[0].0, json!({"FsRead":{"path":"/host/large","max_bytes":4096,"offset":0}}));
+    assert_eq!(commands[1].0, json!({"FsRead":{"path":"/host/large","max_bytes":4096,"offset":9007199254740993_u64}}));
+    assert_eq!(commands[2].0, json!({"FsRead":{"path":"/host/small","max_bytes":null,"offset":null}}));
+}
+
+#[test]
 fn deno_padding_preserves_long_combining_sequences_that_fit() {
     let mut runtime = sdk();
     run(&mut runtime, r#"

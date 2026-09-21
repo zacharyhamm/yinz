@@ -1,5 +1,5 @@
 import { definePlugin } from "zellij:plugin";
-import { view } from "zellij:workflow-view";
+import { view } from "./workflow-view.ts";
 export default definePlugin({
   load: () => {
     view.load();

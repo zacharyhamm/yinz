@@ -1,10 +1,11 @@
 # Deno capability and verification status
 
-Historical verification record from 2026-09-11. Lua support was subsequently removed; see [migration](LUA_REMOVAL.md).
+Current audit: 2026-09-21. Start with "Builtin migration audit" below for the gaps found in actual
+Wasm builtin dependencies and the changes enabling their ports.
 
-Updated 2026-09-11. An independent three-layer audit (host, guest SDK, tooling and docs)
-found capability parity complete and closed the gaps below; see "Parity closure" first.
-The earlier sections record the state before it. The seven requested changes are implemented in this checkout:
+The historical 2026-09-11 audit examined the host, guest SDK, tooling, and docs.
+Its findings and earlier verification remain below. Lua support was subsequently removed; see [migration](LUA_REMOVAL.md).
+The seven changes from that audit are implemented in this checkout:
 exact numeric inputs, runtime/checker quotas, host-path tests and queue ownership,
 complete raw SDK declarations, filesystem/configuration helpers, persistence helpers,
 and runtime-aware Hocus authoring. The existing asynchronous SDK remains in place.
@@ -13,6 +14,58 @@ This is a capability record, not a claim of full Wasm/Lua/Deno parity.
 **Verified** below means the stated outcome has passed a named Linux test. Raw access
 and compiler inventory coverage do not establish every command's host behavior.
 Native macOS verification requires a macOS host and remains outstanding.
+
+## Builtin migration audit (2026-09-21)
+
+Command coverage did not cover every capability used by the Wasm builtins. This audit also traced
+their filesystem calls, rendering libraries, editor state, request IDs, module structure, and worker paths.
+The following gaps are now implemented:
+
+| Missing capability | Existing consumers | Deno replacement |
+|---|---|---|
+| Read large files without an external process | Hocus legacy chat/prompt imports, hocus-store legacy data | `fs.read(path, {offset, maxBytes})`, through the shared permissioned dispatcher |
+| Direct editor state, history, completion, undo | Hocus prompt editor | Native text-input editor methods and `handleInputKey` |
+| Lossless wrapping with source offsets | Hocus input layout | `text.wrapInput` |
+| Styled Markdown lines and strike-through | Hocus transcript composition | `markdown.lines`, `StyledText.content`, and `strike` |
+| Fuzzy scores and character indices | Strider, file-finder, session-manager, layout-manager | `text.fuzzyFilter`, using the existing Rust matcher |
+| PNG transmission and placeholder rows | Hocus animated wand | `ui.image`, using the existing Kitty sequence builders |
+| Random UUID request IDs | Session-manager, plugin-manager | `randomUUID`, using the existing host UUID library |
+| Multiple embedded source modules | Large builtin ports and shared modules | Confined relative imports from the compiled asset tree |
+
+The existing Deno commands already cover filesystem metadata/list/write/append/remove/mkdir,
+process execution and streamed output, HTTP, pane/session actions, data persistence and watches,
+plugin messages and pipes, permissions, and subscriptions. Persistent named workers already support
+independent state, asynchronous host replies, FIFO jobs, and parent cancellation. Themed components,
+Markdown, Unicode widths, and monotonic time also existed before this audit.
+
+The audit covered all 18 production Wasm builtins. `shared-test` and `fixture-plugin-for-tests`
+remain test harnesses, and `hocus-proto` is a Rust library rather than a plugin.
+
+| Builtins inspected | Existing subsystem coverage |
+|---|---|
+| tab-bar, compact-bar, status-bar | State events, key/action rendering, themed components, Unicode widths, persistent cache files |
+| about, quit-confirmation, multiple-select, configuration | Key/mouse events, controls, timers, pane actions, rebinding and configuration |
+| session-manager, plugin-manager, layout-manager | Session/plugin/layout commands and events, plus the new fuzzy matcher and UUID helper |
+| strider, file-finder, link | Scans, filesystem watches, metadata/list/read/remove, folder changes, editor actions, pipes |
+| hocus | Streamed HTTP/commands, revision-guarded data, plugin authoring, workers, plus the new editor, Markdown, file, and image APIs |
+| hocus-agentd, hocus-agents, hocus-new-agent, hocus-store | Headless lifecycle, agent/pane events, host commands, shared data, pipes, project configuration, forms |
+
+The filesystem addition preserves the 8 MiB per-call limit and the old whole-file failure behavior.
+It does not grant access outside existing roots. Ranged reads reopen files and do not promise a snapshot.
+Embedded imports remain confined to compiled sources. No npm, remote imports, raw Deno I/O, or unrestricted workers were added.
+
+This prepares the subsystem for ports. It does not replace the remaining Wasm builtin implementations
+or prove their complete UI behavior equivalent. Each port still needs its existing behavior and snapshot tests.
+Plugin-specific Rust algorithms and data models must be translated or vendored as local TypeScript modules.
+Native macOS execution remains unverified here.
+
+Verification: `cargo x ci check` passed on Linux after the fixes, including format, lint,
+shipped TypeScript checks, all 8,301 enabled unit tests (51 skipped), doctests, and all 446 integration tests.
+The complete gate took 219 seconds. The new graphics integration test sends Hocus's actual PNG bytes
+from a TypeScript plugin through the shared renderer to terminal output. Large-file tests exercise
+permissions, confinement, symlinks, EOF, exact offsets, and nonblocking FIFO rejection.
+UI tests compare native rendering and editor behavior, including a 10,000-path fuzzy search.
+Loader and checker tests cover embedded graphs, missing imports, source maps, and offline authoring.
 
 ## Background workers (2026-09-21)
 

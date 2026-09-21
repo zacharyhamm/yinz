@@ -5,7 +5,7 @@ function required<T>(value: T): NonNullable<T> {
   return value;
 }
 
-import { view } from "zellij:workflow-view";
+import { view } from "./workflow-view.ts";
 type Worktree = { path: string; head: string; branch?: string };
 type Checkout = Worktree & { primary: string };
 type Vm = Readonly<{

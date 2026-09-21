@@ -651,7 +651,7 @@
   });
 
   const fs = Object.freeze({
-    read: (path, {maxBytes = null} = {}) => command('FsRead', {path, max_bytes: maxBytes}),
+    read: (path, {maxBytes = null, offset = null} = {}) => command('FsRead', {path, max_bytes: maxBytes, offset}),
     list: (path) => command('FsList', {path}),
     metadata: (path) => command('FsMetadata', {path}),
     write(path, contents, {append = false, createDirs = false} = {}) {
@@ -1004,8 +1004,8 @@
     } catch (error) { reply(null, error ?? "RPC handler failed"); }
     return true;
   }
-  function uiInteger(n, name) {
-    if (!Number.isSafeInteger(n) || n < 0 || n > 262144) throw new RangeError(`${name} must be an integer between 0 and 262144`);
+  function uiInteger(n, name, max = 262144) {
+    if (!Number.isSafeInteger(n) || n < 0 || n > max) throw new RangeError(`${name} must be an integer between 0 and ${max}`);
     return n;
   }
   function coordinates(c) {
@@ -1018,6 +1018,8 @@
   const text = Object.freeze({
     width: (s) => pure('Width', s), sanitize: (s) => pure('Sanitize', s),
     wrap: (s, width) => pure('Wrap', [s, uiInteger(width,'width')]),
+    wrapInput: (s, width) => pure('WrapInput', [s, uiInteger(width,'width')]),
+    fuzzyFilter: (options, query) => pure('FuzzyFilter', [options, query]),
     truncate: (s, width, ellipsis = '…') => pure('Truncate', [s, uiInteger(width,'width'), ellipsis]),
     pad: (s, width) => pure('Pad', [s, uiInteger(width,'width')]),
     padLeft: (s, width) => pure('PadLeft', [s, uiInteger(width,'width')]),
@@ -1223,21 +1225,25 @@
   }
   function structuredStyle(d) { return {...d, levels:d.levels.map(indices => [...indices])}; }
   function styledText(value = '', ribbon = false) {
-    const d = textDescriptor(value);
+    return styledDescriptor(textDescriptor(value),ribbon);
+  }
+  function styledDescriptor(d, ribbon = false) {
     const w = {
+      content: () => d.text,
       len: () => [...d.text].length,
       selected() { d.selected = true; return w; },
       opaque() { d.opaque = true; return w; },
       disabled() { d.disabled = true; return w; },
       emphasis(level, from = 0, to = w.len()) {
         uiInteger(level,'level'); uiInteger(from,'from'); uiInteger(to,'to');
-        if (level > 7 || from > to || to > w.len()) throw new RangeError('style range or level out of bounds');
+        if (level > 8 || from > to || to > w.len()) throw new RangeError('style range or level out of bounds');
         while (d.levels.length <= level) d.levels.push([]);
         for (let i = from; i < to; i++) d.levels[level].push(i);
         return w;
       },
       dim: (from,to) => w.emphasis(4,from,to), unbold: (from,to) => w.emphasis(5,from,to),
       error: (from,to) => w.emphasis(6,from,to), success: (from,to) => w.emphasis(7,from,to),
+      strike: (from,to) => w.emphasis(8,from,to),
       render: (c) => pure(ribbon ? 'Ribbon' : 'Text', [d, c === undefined ? null : coordinates(c)]),
       toString: () => w.render(),
     };
@@ -1285,10 +1291,30 @@
         return result.text;
       },
     };
+    if (single && descriptors[0].kind === 'text_input') {
+      const input = (op, args) => call('Input',[singleId,args === undefined ? {op} : {op,args}]);
+      Object.assign(w, {
+        cursorPosition: () => input('CursorPosition'),
+        setCursorPosition(cursor) { input('SetCursorPosition',uiInteger(cursor,'cursor',Number.MAX_SAFE_INTEGER)); return w; },
+        replaceText(text, cursor = [...text].length) { input('ReplaceText',[text,uiInteger(cursor,'cursor',Number.MAX_SAFE_INTEGER)]); return w; },
+        history: () => input('History'),
+        setHistory(history) { input('SetHistory',history); return w; },
+        drainText: () => input('DrainText'),
+        handleInputKey: (key) => input('Key',unwrapEvent(key,['Key','InterceptedKeyPress'])),
+        insertText(text) { input('InsertText',text); return w; },
+        undo: () => input('Undo'), redo: () => input('Redo'),
+      });
+    }
     if (dialog) w.setStatus = (text = null) => { call('SetStatus',text); return w; };
     return w;
   }
   const ui = {
+    image: Object.freeze({
+      maxId: 0xffffff, maxDimension: 297,
+      transmitPng: (id, png) => core.ops.op_zellij_image({op:'TransmitPng',args:[uiInteger(id,'image id',0xffffff),png]}),
+      place: (id, columns, rows) => core.ops.op_zellij_image({op:'Place',args:[uiInteger(id,'image id',0xffffff),uiInteger(columns,'columns'),uiInteger(rows,'rows')]}),
+      row: (id, row, columns) => core.ops.op_zellij_image({op:'Row',args:[uiInteger(id,'image id',0xffffff),uiInteger(row,'row'),uiInteger(columns,'columns')]}),
+    }),
     text: (s) => styledText(s), ribbon: (s) => styledText(s,true),
     form: (fields) => construct(fields),
     dialog(d) {
@@ -1298,7 +1324,10 @@
     },
     markdown(source, {compact = false, dim = false} = {}) {
       const state = core.ops.op_zellij_ui_create({kind:'Markdown',source,compact,dim});
-      return {render: (c) => core.ops.op_zellij_ui_call(state,{op:'Render',args:coordinates(c)})};
+      return {
+        render: (c) => core.ops.op_zellij_ui_call(state,{op:'Render',args:coordinates(c)}),
+        lines: (width) => core.ops.op_zellij_ui_call(state,{op:'Lines',args:uiInteger(width,'width')}).map(line => styledDescriptor(line)),
+      };
     },
     table(rows = []) {
       if (!Array.isArray(rows)) throw new TypeError('table rows must be an array');
@@ -1343,6 +1372,7 @@
     get serverIncarnation() { return metadata.serverIncarnation; },
     get swampTiming() { return metadata.swampTiming === true; },
     monotonicMs: () => core.ops.op_zellij_monotonic_ms(),
+    randomUUID: () => core.ops.op_zellij_uuid(),
     get instanceId() { return rpcPrefix; },
     command,
     trace,

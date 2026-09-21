@@ -34,8 +34,10 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   replacement. Reload order: `BeforeClose` to the old instance, its registrations cleared, then
   the replacement loads. Unload clears them after guest cleanup.
 - **Modules are confined** (`loader.rs`): an import is an explicit relative `.js/.mjs/.ts/.mts`
-  inside the entrypoint's folder after symlink resolution, plus `zellij:plugin`; a builtin may also
-  import `zellij:workflow-view`, the one registered embedded module, with no filesystem fallback.
+  inside the entrypoint's folder after symlink resolution, plus `zellij:plugin`. Builtins resolve
+  relative imports within the compiled `zellij-config/assets/plugins` tree, including shared and
+  nested modules, with no filesystem fallback. `zellij:workflow-view` remains an alias to the
+  embedded `workflow-view.ts`; the checker and strict authoring use the same module graph.
   Remote, npm, JSR and `node:` specifiers are refused, and so is a remote `https://…/plugin.ts`
   URL, before download (`zellij_runtime::plugin_location`). Sources are bounded before parsing
   (8 MiB a file, 64 MiB a graph). Each instance keeps its source maps, so diagnostics name the

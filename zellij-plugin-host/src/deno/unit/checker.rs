@@ -168,6 +168,21 @@ fn sdk_keybinding_and_helper_types_check_modes_actions_and_pane_keys() {
       const absent: 0 = zellij.data.REV_ABSENT;
       zellij.data.put('note', {}, {expectRev: zellij.data.REV_ABSENT});
       const rendered: string = zellij.ui.text('x').toString(); const inline: string = `${zellij.ui.text('x')}`;
+      const input = zellij.ui.textInput({value:'日🙂'});
+      input.setHistory(['earlier']).replaceText('draft',2).setCursorPosition(1).insertText('x');
+      const cursor: number = input.cursorPosition(); const history: string[] = input.history();
+      const undone: boolean = input.undo(); const redone: boolean = input.redo(); const draft: string = input.drainText();
+      const intent: import('zellij:plugin').InputAction = input.handleInputKey({Key:{bare_key:'Enter',key_modifiers:[]}});
+      const lines: {text:string;start:number}[] = zellij.text.wrapInput(draft,20);
+      const matches: {index:number;score:number;indices:number[]}[] = zellij.text.fuzzyFilter(['日本 layout'],'lay');
+      for (const line of zellij.ui.markdown('**hello**').lines(40)) {
+        const content: string = line.content();
+        line.selected().emphasis(2).strike().render({width:40,height:1});
+      }
+      // @ts-expect-error editor offsets are numeric character positions
+      input.setCursorPosition('1');
+      // @ts-expect-error checkbox controls do not expose editor state
+      zellij.ui.checkbox().cursorPosition();
       zellij.on('Key', (key, event) => { zellij.ui.form([]).handleKey(key); zellij.ui.form([]).handleKey(event as {Key: typeof key}); });
       zellij.on('Mouse', (mouse, event) => { zellij.ui.form([]).handleMouse(mouse); zellij.ui.form([]).handleMouse(event as {Mouse: typeof mouse}); });
       // @ts-expect-error a plugin pane is not a command pane
@@ -246,6 +261,7 @@ fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
       // @ts-expect-error real values cannot be bigint
       zellij.command('SetTimeout', 1n);
       const file: Uint8Array = zellij.fs.read('/host/file', {maxBytes: 8n});
+      const range: Uint8Array = zellij.fs.read('/host/file', {maxBytes: 8n, offset: 9007199254740993n});
       zellij.fs.write('/host/file', file, {append:true, createDirs:true});
       const absent: import('zellij:plugin').FileMetadata | null = zellij.fs.metadata('/host/missing');
       zellij.projectConfig.write('.', 'agent_exit {}', null);
@@ -380,9 +396,29 @@ fn shim_reply_readers_independently_require_decoder_entries() {
 #[test]
 fn shipped_builtins_typecheck_offline() {
     for (name, source) in zellij_config::consts::BUILTIN_DENO_PLUGINS {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("../zellij-config/assets/plugins/{name}.ts"));
-        check_semantic_source(&path, source).unwrap();
+        let loader = PluginModuleLoader::embedded(name, source).unwrap();
+        check_loader(
+            Path::new(name),
+            loader,
+            Limits::new("builtin checker".into()),
+            false,
+            true,
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn embedded_module_graphs_keep_types_and_reject_unregistered_dependencies() {
+    for (source, valid) in [
+        ("import {view} from './workflow-view.ts'; import './agent-exit.ts'; view.attach({directory:'/work'});", true),
+        ("import {view} from './workflow-view.ts'; view.attach({directory:42});", false),
+        ("import './not-embedded.ts';", false),
+        ("import 'file:///tmp/other.ts';", false),
+    ] {
+        let loader = PluginModuleLoader::embedded("graph-test", source).unwrap();
+        let result = check_loader(Path::new("graph-test.ts"), loader, Limits::new("embedded checker".into()), false, true);
+        assert_eq!(result.is_ok(), valid, "{source}: {:?}", result.err());
     }
 }
 

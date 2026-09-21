@@ -1,4 +1,4 @@
-//! Filesystem modules share the checker boundary; embedded entrypoints can import only explicitly registered modules.
+//! Filesystem modules share the checker boundary; builtin modules resolve only from embedded assets.
 use super::limits;
 use deno_ast::{MediaType, ParseParams, ParsedSource};
 use deno_core::{
@@ -18,9 +18,21 @@ use zellij_runtime::errors::prelude::*;
 
 pub const SDK_SPECIFIER: &str = "zellij:plugin";
 pub(super) const WORKFLOW_SPECIFIER: &str = "zellij:workflow-view";
-pub(super) const WORKFLOW_PATH: &str = "/__zellij_builtin__/workflow-view.ts";
-pub(super) const WORKFLOW_SOURCE: &str =
-    include_str!("../../../zellij-config/assets/plugins/workflow-view.ts");
+pub(super) const EMBEDDED_ROOT: &str = "/__zellij_builtin__";
+
+fn embedded_url(path: &Path) -> Result<ModuleSpecifier> {
+    let url = file_specifier(&Path::new("/").join(path))?;
+    ModuleSpecifier::parse(&format!("zellij-builtin://{}", url.path()))
+        .context("invalid embedded module path")
+}
+
+pub(super) fn compiler_specifier(path: &Path) -> Result<ModuleSpecifier> {
+    if let Ok(relative) = path.strip_prefix(EMBEDDED_ROOT) {
+        embedded_url(relative)
+    } else {
+        file_specifier(path)
+    }
+}
 
 pub struct PluginModuleLoader {
     root: PathBuf,
@@ -46,10 +58,9 @@ impl PluginModuleLoader {
     }
 
     pub fn embedded(name: &str, source: &str) -> Result<Self> {
-        let entrypoint = ModuleSpecifier::parse(&format!("zellij-builtin:///{name}.ts"))
-            .context("resolve embedded plugin entrypoint")?;
+        let entrypoint = embedded_url(Path::new(&format!("{name}.ts")))?;
         let mut loader = Self {
-            root: PathBuf::from(format!("/__zellij_builtin__/{name}.ts")),
+            root: PathBuf::from(EMBEDDED_ROOT),
             embedded: true,
             entrypoint,
             source_maps: RefCell::new(HashMap::new()),
@@ -66,13 +77,7 @@ impl PluginModuleLoader {
             .borrow()
             .iter()
             .map(|(url, source)| {
-                let path = if url == WORKFLOW_SPECIFIER {
-                    PathBuf::from(WORKFLOW_PATH)
-                } else {
-                    ModuleSpecifier::parse(url)?
-                        .to_file_path()
-                        .map_err(|_| anyhow!("invalid checked module path"))?
-                };
+                let path = self.module_path(&ModuleSpecifier::parse(url)?, true)?;
                 Ok((path, source.clone()))
             })
             .collect()
@@ -96,18 +101,24 @@ impl PluginModuleLoader {
         if let Some(source) = self.sources.borrow().get(url.as_str()) {
             return Ok(source.clone());
         }
-        let source = if url.as_str() == WORKFLOW_SPECIFIER {
-            WORKFLOW_SOURCE.to_owned()
-        } else {
-            match self
-                .entry_source
-                .as_ref()
-                .filter(|_| url == self.entrypoint())
-            {
-                Some(source) => source.clone(),
-                None => limits::read_source(&self.local_path(url, declarations)?)?,
-            }
+        let source = match self
+            .entry_source
+            .as_ref()
+            .filter(|_| url == self.entrypoint())
+        {
+            Some(source) => source.clone(),
+            None if url.scheme() == "zellij-builtin" => {
+                let path = self.module_path(url, declarations)?;
+                let relative = path.strip_prefix(EMBEDDED_ROOT)?;
+                zellij_config::consts::BUILTIN_DENO_FILES
+                    .get_file(relative)
+                    .and_then(|file| file.contents_utf8())
+                    .with_context(|| format!("embedded module is not registered: {url}"))?
+                    .to_owned()
+            },
+            None => limits::read_source(&self.local_path(url, declarations)?)?,
         };
+        limits::check_source(&self.module_path(url, declarations)?, &source)?;
         let mut sources = self.sources.borrow_mut();
         let total: usize = sources.values().map(String::len).sum();
         if source.len() > limits::MAX_GRAPH_BYTES - total {
@@ -205,6 +216,35 @@ impl PluginModuleLoader {
         Ok(canonical)
     }
 
+    pub(super) fn module_path(&self, url: &ModuleSpecifier, declarations: bool) -> Result<PathBuf> {
+        if url.scheme() != "zellij-builtin" {
+            if url == self.entrypoint() && self.entry_source.is_some() {
+                return url
+                    .to_file_path()
+                    .map_err(|_| anyhow!("invalid plugin entrypoint"));
+            }
+            return self.local_path(url, declarations);
+        }
+        if url.host_str().is_some() || url.query().is_some() || url.fragment().is_some() {
+            bail!("invalid embedded module path: {url}");
+        }
+        // Parse as a file URL to decode escaped names, then look up only compiled-in files.
+        let file_url = ModuleSpecifier::parse(&format!("file://{}", url.path()))?;
+        let path = file_url
+            .to_file_path()
+            .map_err(|_| anyhow!("invalid embedded module path"))?;
+        let relative = path.strip_prefix("/")?;
+        media_type(relative, declarations)?;
+        if url != self.entrypoint()
+            && zellij_config::consts::BUILTIN_DENO_FILES
+                .get_file(relative)
+                .is_none()
+        {
+            bail!("embedded module is not registered: {url}");
+        }
+        Ok(Path::new(EMBEDDED_ROOT).join(relative))
+    }
+
     pub(super) fn for_tests(path: &Path, root: &Path) -> Result<Self> {
         let mut loader = Self::for_check(path, false)?;
         loader.root = root.canonicalize().context("resolve test root")?;
@@ -231,14 +271,10 @@ impl PluginModuleLoader {
             return ModuleSpecifier::parse(specifier).context("resolve testing SDK");
         }
         if specifier == WORKFLOW_SPECIFIER {
-            return ModuleSpecifier::parse(WORKFLOW_SPECIFIER)
-                .context("resolve embedded workflow view");
+            return embedded_url(Path::new("workflow-view.ts"));
         }
         if specifier == SDK_SPECIFIER {
             return ModuleSpecifier::parse(SDK_SPECIFIER).context("resolve embedded plugin SDK");
-        }
-        if self.embedded || referrer == WORKFLOW_SPECIFIER {
-            bail!("unsupported import {specifier:?} from {referrer}: embedded plugins may import only registered modules (zellij:plugin, zellij:workflow-view)");
         }
         if !(specifier.starts_with("./") || specifier.starts_with("../"))
             || specifier.contains(['\\', '?', '#'])
@@ -249,11 +285,14 @@ impl PluginModuleLoader {
         // Referrers normally originate here. Validate again for callers of
         // import.meta.resolve and for the offline compiler host.
         if referrer != self.entrypoint {
-            self.local_path(&referrer, declarations)?;
+            self.module_path(&referrer, declarations)?;
         }
         let url = referrer
             .join(specifier)
             .context("resolve relative module import")?;
+        if referrer.scheme() == "zellij-builtin" {
+            return compiler_specifier(&self.module_path(&url, declarations)?);
+        }
         file_specifier(&self.local_path(&url, declarations)?)
     }
 
@@ -264,24 +303,14 @@ impl PluginModuleLoader {
             include_str!("testing/module.js").to_owned()
         } else {
             // Resolve again at load time: a symlink may have changed since resolve.
-            let path = if url.as_str() == WORKFLOW_SPECIFIER {
-                PathBuf::from(WORKFLOW_PATH)
-            } else if self.embedded && url == self.entrypoint() {
-                self.root.clone()
-            } else if url == self.entrypoint() && self.entry_source.is_some() {
-                url.to_file_path()
-                    .map_err(|_| anyhow!("invalid plugin entrypoint"))?
-            } else {
-                self.local_path(url, false)?
-            };
+            let path = self.module_path(url, false)?;
             let source = self.read_source(url, false)?;
             // Builtin sources are compiled in, so their emitted text is worth keeping for the
             // life of the process.
-            let pinned =
-                url.as_str() == WORKFLOW_SPECIFIER || (self.embedded && url == self.entrypoint());
+            let pinned = url.scheme() == "zellij-builtin";
             let emitted = transpile_cached(&path, &source, false, pinned)?;
             if let Some(mut map) = emitted.source_map.clone() {
-                if self.embedded {
+                if pinned {
                     let mut mapped: serde_json::Value =
                         serde_json::from_str(&map).context("decode embedded plugin source map")?;
                     mapped["sources"] = serde_json::json!([url.as_str()]);
@@ -321,6 +350,7 @@ impl ModuleLoader for PluginModuleLoader {
                 .map_err(loader_error);
         }
         self.resolve_local(specifier, referrer, false)
+            .with_context(|| format!("resolve import {specifier:?} from {referrer}"))
             .map_err(loader_error)
     }
 

@@ -6,7 +6,7 @@ use super::{
 };
 use deno_core::{cppgc::GarbageCollected, op2, v8, OpState};
 use deno_error::JsErrorBox;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     cell::{Cell, RefCell},
@@ -160,7 +160,23 @@ enum Operation {
     Mouse(Mouse),
     Paste(String),
     Render(Coordinates),
+    Lines(usize),
     SetStatus(Option<String>),
+    Input((String, InputOperation)),
+}
+#[derive(Deserialize)]
+#[serde(tag = "op", content = "args", deny_unknown_fields)]
+enum InputOperation {
+    CursorPosition,
+    SetCursorPosition(usize),
+    ReplaceText((String, usize)),
+    History,
+    SetHistory(Vec<String>),
+    DrainText,
+    Key(KeyWithModifier),
+    InsertText(String),
+    Undo,
+    Redo,
 }
 pub(super) fn action(event: FormEvent) -> Value {
     let render = event.should_render();
@@ -216,6 +232,36 @@ fn call(native: &NativeUi, op: Operation, bytes: usize) -> Result<Value> {
             .grow(bytes.checked_mul(256).context("UI allocation overflow")?)?;
     }
     let mut state = native.state.borrow_mut();
+    if let Operation::Lines(width) = op {
+        anyhow::ensure!(width <= MAX / 256, "text width exceeds transport budget");
+        let State::Markdown(md) = &mut *state else {
+            bail!("lines requires Markdown");
+        };
+        let budget = md.wrapping_budget(width).saturating_mul(2);
+        if budget > native.cache_budget.get() {
+            native
+                .charge
+                .borrow_mut()
+                .grow(budget - native.cache_budget.get())?;
+            native.cache_budget.set(budget);
+        }
+        let lines: Vec<_> = md
+            .styled_lines(width)
+            .map(|line| StyledText {
+                text: line.content().to_owned(),
+                levels: line.indices().to_vec(),
+                selected: false,
+                opaque: false,
+                disabled: false,
+            })
+            .collect();
+        let result = json!(lines);
+        anyhow::ensure!(
+            result.to_string().len() <= MAX,
+            "UI output exceeds transport budget"
+        );
+        return Ok(result);
+    }
     if let Operation::Render(c) = op {
         c.check()?;
         let result = match &mut *state {
@@ -246,7 +292,7 @@ fn call(native: &NativeUi, op: Operation, bytes: usize) -> Result<Value> {
         return Ok(result);
     }
     let State::Widget(widget) = &mut *state else {
-        bail!("Markdown supports only render");
+        bail!("Markdown supports only render and lines");
     };
     if let Operation::SetStatus(status) = op {
         let Widget::Dialog(dialog) = widget else {
@@ -257,6 +303,56 @@ fn call(native: &NativeUi, op: Operation, bytes: usize) -> Result<Value> {
     }
     let form = widget.form_mut();
     Ok(match op {
+        Operation::Input((id, op)) => {
+            let input = form
+                .field_by_id_mut(&id)
+                .and_then(Field::input_mut)
+                .context("editor operation requires a text input")?;
+            if !matches!(
+                op,
+                InputOperation::CursorPosition
+                    | InputOperation::History
+                    | InputOperation::SetCursorPosition(_)
+            ) {
+                // Edits can retain a copy in undo/history even when the request is tiny.
+                native.charge.borrow_mut().grow(
+                    bytes
+                        .checked_mul(256)
+                        .and_then(|bytes| input.get_text().len().checked_mul(2)?.checked_add(bytes))
+                        .context("UI allocation overflow")?,
+                )?;
+            }
+            match op {
+                InputOperation::CursorPosition => json!(input.cursor_position()),
+                InputOperation::SetCursorPosition(cursor) => {
+                    input.set_cursor_position(cursor);
+                    Value::Null
+                },
+                InputOperation::ReplaceText((text, cursor)) => {
+                    input.replace_text(text, cursor);
+                    Value::Null
+                },
+                InputOperation::History => json!(input.history()),
+                InputOperation::SetHistory(history) => {
+                    input.set_history(history);
+                    Value::Null
+                },
+                InputOperation::DrainText => json!(input.drain_text()),
+                InputOperation::Key(key) => json!(match input.handle_key(key) {
+                    InputAction::Submit => "submit",
+                    InputAction::Cancel => "cancel",
+                    InputAction::Continue => "continue",
+                    InputAction::Complete => "complete",
+                    InputAction::NoAction => "ignored",
+                }),
+                InputOperation::InsertText(text) => {
+                    input.insert_text(&text);
+                    Value::Null
+                },
+                InputOperation::Undo => json!(input.undo()),
+                InputOperation::Redo => json!(input.redo()),
+            }
+        },
         Operation::Value(id) => field_value(form.field_by_id(&id).context("unknown field ID")?),
         Operation::Values => Value::Object(
             form.fields()
@@ -342,11 +438,11 @@ fn call(native: &NativeUi, op: Operation, bytes: usize) -> Result<Value> {
             }
             Value::Null
         },
-        Operation::Render(_) | Operation::SetStatus(_) => unreachable!(),
+        Operation::Render(_) | Operation::Lines(_) | Operation::SetStatus(_) => unreachable!(),
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StyledText {
     text: String,
@@ -358,8 +454,8 @@ struct StyledText {
 impl StyledText {
     fn build(self) -> Result<Text> {
         anyhow::ensure!(
-            self.levels.len() <= 8,
-            "style level must be between 0 and 7"
+            self.levels.len() <= 9,
+            "style level must be between 0 and 8"
         );
         let len = self.text.chars().count();
         let mut text = Text::new(self.text);
@@ -384,6 +480,8 @@ impl StyledText {
 enum Pure {
     Width(String),
     Wrap((String, usize)),
+    WrapInput((String, usize)),
+    FuzzyFilter((Vec<String>, String)),
     Sanitize(String),
     Truncate((String, usize, String)),
     Pad((String, usize)),
@@ -428,6 +526,46 @@ pub(super) fn op_zellij_ui_pure<'s>(
             Pure::Wrap((s, width)) => {
                 width_check(width)?;
                 return Ok(json!(text::wrap(&s, width)));
+            },
+            Pure::WrapInput((s, width)) => {
+                width_check(width)?;
+                let lines: Vec<_> = text::wrap_input(&s, width)
+                    .into_iter()
+                    .map(|line| json!({"text":line.text,"start":line.start}))
+                    .collect();
+                let output = json!(lines);
+                anyhow::ensure!(
+                    output.to_string().len() <= MAX,
+                    "UI output exceeds transport budget"
+                );
+                return Ok(output);
+            },
+            Pure::FuzzyFilter((options, query)) => {
+                // Bound the native matcher's quadratic work before entering it.
+                let (cells, peak) = options
+                    .iter()
+                    .try_fold((0usize, 0usize), |(total, peak), option| {
+                        let cells = option
+                            .len()
+                            .checked_add(1)?
+                            .checked_mul(query.len().checked_add(1)?)?;
+                        Some((total.checked_add(cells)?, peak.max(cells)))
+                    })
+                    .context("fuzzy matching work overflow")?;
+                anyhow::ensure!(cells <= MAX, "fuzzy matching exceeds work budget");
+                // Candidates are matched sequentially; only one matrix is live at a time.
+                // The input-sized charge above covers the accumulated match indices/results.
+                temporary.grow(peak.checked_mul(256).context("UI allocation overflow")?)?;
+                let matches: Vec<_> = fuzzy_filter(&options, &query)
+                    .into_iter()
+                    .map(|m| json!({"index":m.index,"score":m.score,"indices":m.indices}))
+                    .collect();
+                let output = json!(matches);
+                anyhow::ensure!(
+                    output.to_string().len() <= MAX,
+                    "UI output exceeds transport budget"
+                );
+                return Ok(output);
             },
             Pure::Sanitize(s) => text::sanitize(&s),
             Pure::Truncate((s, width, ellipsis)) => {
@@ -532,7 +670,7 @@ pub(super) fn op_zellij_ui_pure<'s>(
                         if s.disabled {
                             item = item.disabled();
                         }
-                        anyhow::ensure!(s.levels.len() <= 8, "style level out of range");
+                        anyhow::ensure!(s.levels.len() <= 9, "style level out of range");
                         let len = s.text.chars().count();
                         for (level, indices) in s.levels.into_iter().enumerate() {
                             anyhow::ensure!(

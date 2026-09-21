@@ -365,6 +365,11 @@ impl Text {
         &self.text
     }
 
+    /// Character indices grouped by style level, for adapters that preserve styling.
+    pub fn indices(&self) -> &[Vec<usize>] {
+        &self.indices
+    }
+
     /// Replace the content, keeping the styling that still lands on it.
     ///
     /// For rewriting text a renderer has already been handed - clipping it to

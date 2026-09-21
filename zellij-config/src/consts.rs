@@ -75,5 +75,5 @@ pub const BUILTIN_PLUGIN_RELEASE_DIR: &str = concat!(
     "/../target/wasm32-wasip1/release"
 );
 
-/// Sources and adjacent tests shipped for installed TypeScript plugin testing.
-pub static BUILTIN_DENO_TEST_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets/plugins");
+/// Module sources and adjacent tests shipped with TypeScript builtins.
+pub static BUILTIN_DENO_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets/plugins");
