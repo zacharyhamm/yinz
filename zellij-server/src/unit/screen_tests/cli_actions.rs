@@ -742,24 +742,33 @@ pub fn send_cli_scroll_down_action() {
         crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
     // scroll up some
     send_cli_action_to_server(&session_metadata, scroll_up_cli_action.clone(), client_id);
     send_cli_action_to_server(&session_metadata, scroll_up_cli_action.clone(), client_id);
     send_cli_action_to_server(&session_metadata, scroll_up_cli_action.clone(), client_id);
     send_cli_action_to_server(&session_metadata, scroll_up_cli_action.clone(), client_id);
 
+    wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "the pane to scroll up before scrolling down",
+        |snapshot| snapshot.contains("SCROLL:  4/13"),
+    );
+    // Exclude earlier frames, which may already show the target position.
+    let checkpoint = received_server_instructions.lock().len();
+
     // scroll down some
     send_cli_action_to_server(&session_metadata, scroll_down_cli_action.clone(), client_id);
     send_cli_action_to_server(&session_metadata, scroll_down_cli_action.clone(), client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    mock_screen.teardown(vec![server_instruction, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
+    let settled = wait_for_render_after(
+        &received_server_instructions,
         size,
+        checkpoint,
+        "the pane to reach the requested scroll position",
+        |_, snapshot| snapshot.contains("SCROLL:  2/13"),
     );
-    let (_cursor_position, last_snapshot) = snapshots.last().unwrap();
-    assert_snapshot!(last_snapshot.to_string());
+    mock_screen.teardown(vec![server_instruction, screen_thread]);
+    assert_snapshot!(settled);
 }
 
 #[test]
@@ -791,12 +800,20 @@ pub fn send_cli_scroll_to_bottom_action() {
         crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
     // scroll up some
     send_cli_action_to_server(&session_metadata, scroll_up_cli_action.clone(), client_id);
     send_cli_action_to_server(&session_metadata, scroll_up_cli_action.clone(), client_id);
     send_cli_action_to_server(&session_metadata, scroll_up_cli_action.clone(), client_id);
     send_cli_action_to_server(&session_metadata, scroll_up_cli_action.clone(), client_id);
+
+    wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "the pane to scroll up before scrolling down",
+        |snapshot| snapshot.contains("SCROLL:  4/13"),
+    );
+    // Exclude earlier frames, which may already show the target position.
+    let checkpoint = received_server_instructions.lock().len();
 
     // scroll to bottom
     send_cli_action_to_server(
@@ -804,14 +821,15 @@ pub fn send_cli_scroll_to_bottom_action() {
         scroll_to_bottom_action.clone(),
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    mock_screen.teardown(vec![server_instruction, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
+    let settled = wait_for_render_after(
+        &received_server_instructions,
         size,
+        checkpoint,
+        "the pane to reach the requested scroll position",
+        |_, snapshot| snapshot.contains("SCROLL:  0/13"),
     );
-    let (_cursor_position, last_snapshot) = snapshots.last().unwrap();
-    assert_snapshot!(last_snapshot.to_string());
+    mock_screen.teardown(vec![server_instruction, screen_thread]);
+    assert_snapshot!(settled);
 }
 
 #[test]
@@ -842,20 +860,16 @@ pub fn send_cli_scroll_to_top_action() {
         crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
     // scroll to top
     send_cli_action_to_server(&session_metadata, scroll_to_top_action.clone(), client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    mock_screen.teardown(vec![server_instruction, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
+    let settled = wait_for_settled_render(
+        &received_server_instructions,
         size,
+        "the pane to reach the requested scroll position",
+        |snapshot| snapshot.contains("SCROLL:  13/13"),
     );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(snapshot.to_string());
-    }
-    assert_snapshot!(format!("{}", snapshot_count));
+    mock_screen.teardown(vec![server_instruction, screen_thread]);
+    assert_snapshot!(settled);
 }
 
 #[test]
@@ -879,7 +893,6 @@ pub fn send_cli_page_scroll_up_action() {
     );
     let page_scroll_up_action = CliAction::PageScrollUp { pane_id: None };
     let mut pane_contents = String::new();
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     for i in 0..20 {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
@@ -887,19 +900,15 @@ pub fn send_cli_page_scroll_up_action() {
         crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
     send_cli_action_to_server(&session_metadata, page_scroll_up_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    mock_screen.teardown(vec![server_instruction, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
+    let settled = wait_for_settled_render(
+        &received_server_instructions,
         size,
+        "the pane to reach the requested scroll position",
+        |snapshot| snapshot.contains("SCROLL:  9/13"),
     );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(snapshot.to_string());
-    }
-    assert_snapshot!(format!("{}", snapshot_count));
+    mock_screen.teardown(vec![server_instruction, screen_thread]);
+    assert_snapshot!(settled);
 }
 
 #[test]
@@ -927,33 +936,35 @@ pub fn send_cli_page_scroll_down_action() {
     for i in 0..20 {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
         crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
 
     // scroll up some
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     send_cli_action_to_server(&session_metadata, page_scroll_up_action.clone(), client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     send_cli_action_to_server(&session_metadata, page_scroll_up_action.clone(), client_id);
 
-    // scroll down
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
-    send_cli_action_to_server(&session_metadata, page_scroll_down_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    mock_screen.teardown(vec![server_instruction, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
+    wait_for_settled_render(
+        &received_server_instructions,
         size,
+        "the pane to scroll up before scrolling down",
+        |snapshot| snapshot.contains("SCROLL:  13/13"),
     );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(snapshot.to_string());
-    }
-    assert_snapshot!(format!("{}", snapshot_count));
+    // Exclude earlier frames, which may already show the target position.
+    let checkpoint = received_server_instructions.lock().len();
+
+    // scroll down
+    send_cli_action_to_server(&session_metadata, page_scroll_down_action, client_id);
+    let settled = wait_for_render_after(
+        &received_server_instructions,
+        size,
+        checkpoint,
+        "the pane to reach the requested scroll position",
+        |_, snapshot| snapshot.contains("SCROLL:  5/13"),
+    );
+    mock_screen.teardown(vec![server_instruction, screen_thread]);
+    assert_snapshot!(settled);
 }
 
 #[test]
@@ -984,19 +995,15 @@ pub fn send_cli_half_page_scroll_up_action() {
         crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
     send_cli_action_to_server(&session_metadata, half_page_scroll_up_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    mock_screen.teardown(vec![server_instruction, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
+    let settled = wait_for_settled_render(
+        &received_server_instructions,
         size,
+        "the pane to reach the requested scroll position",
+        |snapshot| snapshot.contains("SCROLL:  4/13"),
     );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(snapshot.to_string());
-    }
-    assert_snapshot!(format!("{}", snapshot_count));
+    mock_screen.teardown(vec![server_instruction, screen_thread]);
+    assert_snapshot!(settled);
 }
 
 #[test]
@@ -1021,7 +1028,6 @@ pub fn send_cli_half_page_scroll_down_action() {
     let half_page_scroll_up_action = CliAction::HalfPageScrollUp { pane_id: None };
     let half_page_scroll_down_action = CliAction::HalfPageScrollDown { pane_id: None };
     let mut pane_contents = String::new();
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     for i in 0..20 {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
@@ -1029,7 +1035,6 @@ pub fn send_cli_half_page_scroll_down_action() {
         crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
 
     // scroll up some
     send_cli_action_to_server(
@@ -1037,27 +1042,32 @@ pub fn send_cli_half_page_scroll_down_action() {
         half_page_scroll_up_action.clone(),
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     send_cli_action_to_server(
         &session_metadata,
         half_page_scroll_up_action.clone(),
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
+
+    wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "the pane to scroll up before scrolling down",
+        |snapshot| snapshot.contains("SCROLL:  8/13"),
+    );
+    // Exclude earlier frames, which may already show the target position.
+    let checkpoint = received_server_instructions.lock().len();
 
     // scroll down
     send_cli_action_to_server(&session_metadata, half_page_scroll_down_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    mock_screen.teardown(vec![server_instruction, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
+    let settled = wait_for_render_after(
+        &received_server_instructions,
         size,
+        checkpoint,
+        "the pane to reach the requested scroll position",
+        |_, snapshot| snapshot.contains("SCROLL:  4/13"),
     );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(snapshot.to_string());
-    }
-    assert_snapshot!(format!("{}", snapshot_count));
+    mock_screen.teardown(vec![server_instruction, screen_thread]);
+    assert_snapshot!(settled);
 }
 
 #[test]

@@ -1709,45 +1709,34 @@ mod tests {
     }
 
     /// Verify that `try_write_to_fd` returns Ok(0) — not an error — when the
-    /// fd is completely full and cannot accept any bytes at all.
+    /// fd cannot accept the requested write.
     #[test]
-    fn try_write_to_fd_returns_zero_on_stuck_pty() {
-        let pty = openpty(None, &None).expect("openpty failed");
-        let master_fd = pty.master.into_raw_fd();
-        let slave_fd = pty.slave.into_raw_fd();
-        let borrowed_master = unsafe { BorrowedFd::borrow_raw(master_fd) };
-        let borrowed_slave = unsafe { BorrowedFd::borrow_raw(slave_fd) };
-
-        let mut attrs = termios::tcgetattr(borrowed_slave).expect("tcgetattr failed");
-        termios::cfmakeraw(&mut attrs);
-        termios::tcsetattr(borrowed_slave, termios::SetArg::TCSANOW, &attrs)
-            .expect("tcsetattr failed");
-
-        let flags = fcntl(borrowed_master, FcntlArg::F_GETFL).expect("F_GETFL");
+    fn try_write_to_fd_returns_zero_on_full_pipe() {
+        // A PTY's line discipline can free capacity after EAGAIN even without a slave
+        // reader. An unread pipe keeps this precondition stable between the two writes.
+        let (_reader, writer) = unistd::pipe().expect("pipe failed");
+        let flags = fcntl(&writer, FcntlArg::F_GETFL).expect("F_GETFL");
         let mut oflags = OFlag::from_bits_truncate(flags);
         oflags.insert(OFlag::O_NONBLOCK);
-        fcntl(borrowed_master, FcntlArg::F_SETFL(oflags)).expect("F_SETFL");
+        fcntl(&writer, FcntlArg::F_SETFL(oflags)).expect("F_SETFL");
 
-        // Fill the buffer completely — keep writing until we get Ok(0)
-        let fill = vec![0x42u8; 1024];
+        // Establish EAGAIN independently of the function under test. Use the same
+        // payload below: a smaller atomic pipe write could still fit in the buffer.
+        let fill = [0x42u8; 1024];
+        let deadline = std::time::Instant::now() + zellij_test_support::default_timeout();
         loop {
-            match super::try_write_to_fd(master_fd, &fill) {
-                Ok(0) => break,
-                Ok(_) => continue,
+            assert!(std::time::Instant::now() < deadline, "pipe did not fill");
+            match unistd::write(&writer, &fill) {
+                Ok(n) => assert!(n > 0, "pipe write made no progress"),
+                Err(nix::errno::Errno::EAGAIN) => break,
+                Err(nix::errno::Errno::EINTR) => continue,
                 Err(e) => panic!("unexpected error filling buffer: {e}"),
             }
         }
 
-        // Now the buffer is full — next write should return Ok(0)
-        let written = super::try_write_to_fd(master_fd, &[0x01, 0x02, 0x03])
+        let written = super::try_write_to_fd(writer.as_raw_fd(), &fill)
             .expect("try_write_to_fd should not error on EAGAIN");
-
         assert_eq!(written, 0, "expected zero bytes written on full buffer");
-
-        unsafe {
-            libc::close(master_fd);
-            libc::close(slave_fd);
-        }
     }
 
     /// The real backend, releasing a remote pane, on the thread that would

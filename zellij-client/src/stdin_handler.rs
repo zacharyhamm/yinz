@@ -82,7 +82,6 @@ pub(crate) fn stdin_loop(
                 }
             }
         });
-    let mut needs_finalization = false;
     // When the pending partial is allowed to be drained to the keyboard. Kept apart from the
     // probe's deadline: waking for the probe must never cut this window short.
     let mut finalize_at: Option<Instant> = None;
@@ -105,11 +104,7 @@ pub(crate) fn stdin_loop(
         }
         // The loop would otherwise park in `recv()` forever on an idle client, and the probe's
         // deadline would never be looked at.
-        let wait = next_wakeup(
-            Instant::now(),
-            needs_finalization.then_some(finalize_at).flatten(),
-            kitty_probe_deadline,
-        );
+        let wait = next_wakeup(Instant::now(), finalize_at, kitty_probe_deadline);
         let received = match wait {
             Some(wait) => stdin_rx.recv_timeout(wait),
             None => stdin_rx
@@ -168,7 +163,6 @@ pub(crate) fn stdin_loop(
                             schedule_finalization(
                                 &stdin_ansi_parser,
                                 false,
-                                &mut needs_finalization,
                                 &mut finalize_at,
                                 &mut reply_in_progress_since,
                             );
@@ -192,7 +186,6 @@ pub(crate) fn stdin_loop(
                         schedule_finalization(
                             &stdin_ansi_parser,
                             fed_termwiz,
-                            &mut needs_finalization,
                             &mut finalize_at,
                             &mut reply_in_progress_since,
                         );
@@ -213,7 +206,7 @@ pub(crate) fn stdin_loop(
                 // window: flushing here with nothing pending - or with a partial whose 50ms
                 // window has not run out yet - would turn a lone ESC into a premature Escape
                 // key, or split a host reply the rest of which is still in flight.
-                if !needs_finalization || finalize_at.is_some_and(|at| Instant::now() < at) {
+                if finalize_at.is_none_or(|at| Instant::now() < at) {
                     continue;
                 }
                 let pending = stdin_ansi_parser.lock().unwrap().pending_partial();
@@ -235,11 +228,9 @@ pub(crate) fn stdin_loop(
                                 break 'stdin;
                             }
                         }
-                        needs_finalization = false;
                         finalize_at = None;
                         reply_in_progress_since = None;
                     } else {
-                        needs_finalization = true;
                         // Without a fresh window `next_wakeup` would return zero and this
                         // branch would spin for the whole `PARTIAL_REPLY_FLUSH_GUARD`.
                         finalize_at = Some(Instant::now() + LONE_ESC_FLUSH_INTERVAL);
@@ -258,7 +249,6 @@ pub(crate) fn stdin_loop(
                             break 'stdin;
                         }
                     }
-                    needs_finalization = false;
                     finalize_at = None;
                     reply_in_progress_since = None;
                 }
@@ -291,17 +281,15 @@ fn next_wakeup(
 fn schedule_finalization(
     stdin_ansi_parser: &Arc<Mutex<StdinAnsiParser>>,
     fed_termwiz: bool,
-    needs_finalization: &mut bool,
     finalize_at: &mut Option<Instant>,
     reply_in_progress_since: &mut Option<Instant>,
 ) {
     let pending = stdin_ansi_parser.lock().unwrap().pending_partial();
-    if fed_termwiz || pending != PendingPartial::None {
-        *needs_finalization = true;
-    }
     // Every read chunk restarts the window, as it did when the wait was a bare
     // `recv_timeout(LONE_ESC_FLUSH_INTERVAL)`.
-    *finalize_at = (*needs_finalization).then(|| Instant::now() + LONE_ESC_FLUSH_INTERVAL);
+    if finalize_at.is_some() || fed_termwiz || pending != PendingPartial::None {
+        *finalize_at = Some(Instant::now() + LONE_ESC_FLUSH_INTERVAL);
+    }
     if pending.uses_reply_flush_guard() {
         if reply_in_progress_since.is_none() {
             *reply_in_progress_since = Some(Instant::now());
@@ -579,10 +567,11 @@ fn extract_focus_reports(residue: Vec<u8>) -> (Vec<u8>, Vec<bool>) {
 mod tests {
     use super::{
         build_startup_query_string, drain_partial_to_keyboard, extract_focus_reports,
-        forget_held_modifiers, next_wakeup, parse_keyboard_bytes, LONE_ESC_FLUSH_INTERVAL,
-        PIXEL_SIZE_QUERY,
+        forget_held_modifiers, next_wakeup, parse_keyboard_bytes, schedule_finalization,
+        LONE_ESC_FLUSH_INTERVAL, PIXEL_SIZE_QUERY,
     };
     use crate::{stdin_ansi_parser::StdinAnsiParser, InputInstruction};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use zellij_runtime::vendored::termwiz::input::{InputEvent, InputParser, KeyCode, Modifiers};
     use zellij_types::keys::BareKey;
@@ -651,6 +640,47 @@ mod tests {
             },
             other => panic!("expected plain y, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn finalization_deadline_tracks_pending_input_and_preserves_the_reply_guard() {
+        let parser = Arc::new(Mutex::new(StdinAnsiParser::new()));
+        let mut deadline = None;
+        let mut reply_started = None;
+
+        schedule_finalization(&parser, false, &mut deadline, &mut reply_started);
+        assert!(deadline.is_none());
+        assert!(reply_started.is_none());
+
+        schedule_finalization(&parser, true, &mut deadline, &mut reply_started);
+        assert!(deadline.is_some());
+        assert!(reply_started.is_none());
+
+        // A reply-only chunk still restarts an existing keyboard flush window.
+        let past = Instant::now() - Duration::from_secs(1);
+        deadline = Some(past);
+        schedule_finalization(&parser, false, &mut deadline, &mut reply_started);
+        assert!(deadline.is_some_and(|at| at > past));
+
+        deadline = None;
+        parser.lock().unwrap().feed(b"\x1b]11;rgb:");
+        schedule_finalization(&parser, false, &mut deadline, &mut reply_started);
+        assert!(deadline.is_some());
+        assert!(reply_started.is_some());
+
+        reply_started = Some(past);
+        schedule_finalization(&parser, false, &mut deadline, &mut reply_started);
+        assert_eq!(reply_started, Some(past));
+
+        parser.lock().unwrap().feed(b"ffff/ffff/ffff\x07");
+        schedule_finalization(&parser, false, &mut deadline, &mut reply_started);
+        assert!(deadline.is_some());
+        assert!(reply_started.is_none());
+
+        // Draining the keyboard window returns the loop to an idle state.
+        deadline = None;
+        schedule_finalization(&parser, false, &mut deadline, &mut reply_started);
+        assert!(deadline.is_none());
     }
 
     #[test]

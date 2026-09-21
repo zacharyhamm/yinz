@@ -510,6 +510,71 @@ mod tests {
     }
 
     #[test]
+    fn failed_event_batches_preserve_existing_recordings_and_can_be_retried() -> Result<()> {
+        let dir = tempdir()?;
+        let mut session =
+            SqliteRecordingSession::open(dir.path(), "atomic", false, UnixMicros::new(0))?;
+        let existing = RecordedEvent::output(
+            TerminalId::new(1),
+            ElapsedMicros::new(0),
+            b"existing".to_vec(),
+        );
+        session.record_events(&[existing])?;
+        session.connection.execute_batch(
+            "CREATE TRIGGER fail_second_event BEFORE INSERT ON recording_events
+             WHEN NEW.elapsed_us = 2
+             BEGIN SELECT RAISE(ABORT, 'injected event write failure'); END;",
+        )?;
+        let batch = [
+            RecordedEvent::output(TerminalId::new(2), ElapsedMicros::new(1), b"first".to_vec()),
+            RecordedEvent::output(
+                TerminalId::new(3),
+                ElapsedMicros::new(2),
+                b"second".to_vec(),
+            ),
+        ];
+        let error = session.record_events(&batch).unwrap_err();
+        assert!(error.to_string().contains("injected event write failure"));
+
+        // Both speculative pane rows and the first event must roll back with the failed event.
+        let (panes, events): (i64, i64) = session.connection.query_row(
+            "SELECT (SELECT COUNT(*) FROM recording_panes),
+                    (SELECT COUNT(*) FROM recording_events)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!((panes, events), (1, 1));
+        let saved: Vec<u8> =
+            session
+                .connection
+                .query_row("SELECT data FROM recording_events", [], |row| row.get(0))?;
+        assert_eq!(saved, b"existing");
+
+        session
+            .connection
+            .execute_batch("DROP TRIGGER fail_second_event")?;
+        session.record_events(&batch)?;
+        let mut statement = session.connection.prepare(
+            "SELECT p.terminal_id, e.data FROM recording_events e
+             JOIN recording_panes p ON p.id = e.pane_id ORDER BY e.id",
+        )?;
+        let saved = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(
+            saved,
+            vec![
+                (1, b"existing".to_vec()),
+                (2, b"first".to_vec()),
+                (3, b"second".to_vec())
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn finishes_pane_and_session() -> Result<()> {
         let dir = tempdir()?;
         let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(1_000))?;

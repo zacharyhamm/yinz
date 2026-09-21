@@ -200,7 +200,7 @@ scripts the whole thing in one session (~1.5 s): `zellij plugins write` a hook, 
 --write` it to `agent_start`, `agent_waiting`, `pane_exit` and `agent_exit`, run a fake `claude`
 under `zellij run --block-until-exit` that reports through `agent-report`, and read the three
 headless firings off the log and busy → waiting → exited off `zellij events`. Loop it after any
-hook change: `cargo x integration-test -- -j 16 -E 'test(a_written_hook)'`.
+hook change: `cargo x integration-test -j 16 -E 'test(a_written_hook)'`.
 
 ## Notes for the next session
 
@@ -230,23 +230,19 @@ oneof 163 (`agent_event`; 161–162 are `main`'s text-selection actions; next 16
 **Test recipes.**
 
 ```sh
-cargo x test -p zellij-types -p zellij-runtime -p zellij-config -p zellij-plugin-api -p zellij-ipc -p zellij-session -p zellij-cli -p zellij-bus -p zellij-panes -p zellij-plugin-host -p zellij-server -p zellij -p hocus -p hocus-agentd -p hocus-proto \
-  -E 'test(/agent/) | test(/events/) | test(/reconfigure/) | test(/set_hook/) | test(/overlay/) \
-      | test(/plugin_authoring/) | test(/lua/) | test(/pipe/) | test(/hook/) \
-      | test(/job/) | test(/chat/) | test(/plugin_/) | test(/shipped/)'
-# nextest flags go after `--`
-cargo x integration-test -- -j 16 -E 'binary(cli) | binary(/hocus_/) | binary(new_agent_modal) | binary(plugins)'
+cargo x test \
+  -E 'test(/agent/) | test(/events/) | test(/reconfigure/) | test(/set_hook/) | test(/overlay/) | test(/plugin_authoring/) | test(/pipe/) | test(/hook/) | test(/job/) | test(/chat/) | test(/plugin_/) | test(/shipped/)'
+# Pass nextest flags directly.
+cargo x integration-test -j 16 -E 'binary(cli) | binary(/hocus_/) | binary(new_agent_modal) | binary(plugins)'
 ```
 
-The whole integration suite exceeds ten minutes at `-j 16`; under a foreground limit run it in
-three chunks by binary (`ls zellij-integration-tests/tests` is the list): `about_pane`…`mouse`,
-`nested_fullscreen`…`resurrection`, `scroll`…`warp`, each as
-`-E 'binary(/^(a|b|…)$/)'`.
+For a smaller or busy machine, use `cargo x integration-test -j 4`.
+To select integration binaries, use a filter such as `-E 'binary(cli) | binary(plugins)'`.
+Run the complete local gate before handing off a branch.
 
-**Known red, none of it this branch's** (CLAUDE.md keeps the list): `misc::quit_with_keybinding`,
-the `nested_*` group, `stacked_pane_list::a_stack_list_survives_session_resurrection`.
-`cli::send_command_through_the_cli` is a snapshot race under load. The box is shared
-with sibling worktrees running their own gates: run a red test alone before believing it.
+The former quit, nested-session, and resurrection failures were fixed. Do not use them as exceptions to the gate.
+If a test times out, check for competing suites and rerun the named test alone.
+See [Reading a red run](../AGENTS.md#reading-a-red-run) for the current diagnosis procedure.
 
 One race worth knowing about, fixed in its test: since `main`'s `9003d98e6` a tab's plugins hear
 about mode changes only while a client is on that tab, and get a fresh `ModeUpdate` when one
@@ -286,7 +282,7 @@ The proof is `zellij-integration-tests/tests/lua_agent_harness.rs`: a written pl
 fake `claude` through the planner, awaits its record moving to `waiting` off `zellij events`'
 own source, prompts it, awaits its exit, and on reload finds its permissions in force from
 `load`. Loop it after touching any of the above:
-`cargo x integration-test -- -j 16 -E 'test(/harness/) | test(a_written_hook)'`.
+`cargo x integration-test -j 16 -E 'test(/harness/) | test(a_written_hook)'`.
 
 - **`zellij.hocus.complete`**: a one-shot, tool-capable completion served by hocus-agentd, so a
   plugin can run its own model turn rather than only give hocus's model a tool. Stateless — the
