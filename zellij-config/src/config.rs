@@ -1057,6 +1057,14 @@ pub async fn watch_layout_dir_changes<F, Fut>(
                 break;
             }
 
+            // Publish after registration too: a reload (or a newly created directory) may
+            // already contain layouts without producing any subsequent filesystem events.
+            let (layouts, layout_errors) = crate::layout::list_available_layouts(
+                Some(layout_dir.clone()),
+                &default_layout_name,
+            );
+            on_layout_change(layouts, layout_errors).await;
+
             while let Some(event_result) = rx.recv().await {
                 match event_result {
                     Ok(event) => {

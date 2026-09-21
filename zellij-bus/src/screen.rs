@@ -790,7 +790,11 @@ pub enum ScreenInstruction {
     SetFollowedClient(ClientId),
     WatcherTerminalResize(ClientId, Size),
     ClearMouseHelpText(ClientId),
-    UpdateAvailableLayouts(Vec<LayoutInfo>, Vec<LayoutWithError>),
+    UpdateAvailableLayouts {
+        generation: u64,
+        layouts: Vec<LayoutInfo>,
+        errors: Vec<LayoutWithError>,
+    },
     SetPluginRegexHighlights {
         pane_id: PaneId,
         plugin_id: PluginId,
