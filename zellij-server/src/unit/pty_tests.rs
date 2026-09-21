@@ -1161,6 +1161,31 @@ fn closing_a_new_remote_pane_while_it_connects_tears_down_the_late_transport() {
 }
 
 #[test]
+fn a_remote_spawn_after_the_pty_exits_clears_its_terminal_id() {
+    let mut os_api = MockOsApi::new();
+    os_api.transport_started = Arc::new(Barrier::new(2));
+    os_api.transport_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    pty.bus.senders.should_silently_fail = false;
+
+    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
+        terminal_id: TERMINAL_41,
+        terminal_action: TerminalAction::RunCommand(firecracker_command()),
+    }))
+    .unwrap();
+    os_api.transport_started.wait();
+    // The worker must observe the failed handback and clean up the transport itself.
+    drop(pty_rx);
+    os_api.transport_release.wait();
+    pty.spawn_workers.pop().unwrap().join().unwrap();
+
+    assert_eq!(*os_api.resolved_spawns.lock().unwrap(), [TERMINAL_41]);
+    assert_eq!(*os_api.cleared_terminal_ids.lock().unwrap(), [TERMINAL_41]);
+}
+
+#[test]
 fn a_firecracker_layout_appears_before_preflight_finishes() {
     let mut os_api = MockOsApi::new();
     os_api.spawn_started = Arc::new(Barrier::new(2));

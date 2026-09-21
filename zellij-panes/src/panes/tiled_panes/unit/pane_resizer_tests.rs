@@ -919,6 +919,57 @@ fn stacked_pane_with_override() {
 
 use hegel::generators;
 
+#[hegel::test]
+fn valid_layouts_still_partition_the_screen_after_resize(tc: hegel::TestCase) {
+    let a = tc.draw(generators::integers::<usize>().min_value(1).max_value(4)) * 10;
+    let b = tc.draw(generators::integers::<usize>().min_value(1).max_value(4)) * 10;
+    let c = tc.draw(generators::integers::<usize>().min_value(1).max_value(4)) * 10;
+    let space = tc.draw(
+        generators::integers::<usize>()
+            .min_value(100)
+            .max_value(300),
+    );
+
+    // Two bands share the rightmost pane; the lower band splits the left pane again.
+    // Unlike arbitrary rectangles, these inputs are feasible and must tile the entire axis.
+    // Exercise both axes and fixed/percentage spans for every generated set of dimensions.
+    for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
+        for fixed in [false, true] {
+            let flex = if fixed { a + b } else { a + b + c };
+            let dimension = |size| dim_pct(100.0 * size as f64 / flex as f64, size);
+            let mut specs = vec![
+                spec(1, 0, 0, dimension(a + b), dim_pct(50.0, 10)),
+                spec(
+                    2,
+                    a + b,
+                    0,
+                    if fixed { dim_fixed(c) } else { dimension(c) },
+                    dim_pct(100.0, 20),
+                ),
+                spec(3, 0, 10, dimension(a), dim_pct(50.0, 10)),
+                spec(4, a, 10, dimension(b), dim_pct(50.0, 10)),
+            ];
+            if direction == SplitDirection::Vertical {
+                for spec in &mut specs {
+                    std::mem::swap(&mut spec.x, &mut spec.y);
+                    std::mem::swap(&mut spec.cols, &mut spec.rows);
+                }
+            }
+            let fixture = Fixture {
+                name: "valid generated partition",
+                specs,
+                direction,
+                space,
+                class: Class::B,
+                bands: vec![vec![tid(1), tid(2)], vec![tid(3), tid(4), tid(2)]],
+            };
+            let run = fixture.run();
+            assert_eq!(run.panes.len(), fixture.specs.len());
+            assert_class_b_invariants(&fixture, &run);
+        }
+    }
+}
+
 /// Generated `PaneSpec`s for the class-B oracle.
 ///
 /// Two narrowings, both harness limitations rather than contract restrictions:

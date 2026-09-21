@@ -912,6 +912,7 @@ impl TestSession {
         if let Some(server_thread) = self.server_thread.lock().unwrap().take() {
             join_server_thread_with_timeout(server_thread);
         }
+        test_env::assert_no_background_panics();
     }
 
     fn send_quit_without_joining(&self) {
@@ -1031,6 +1032,58 @@ fn strip_trailing_whitespace(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_thread_panics_fail_session_shutdown() {
+        const PROBE_ENV: &str = "ZELLIJ_TEST_BACKGROUND_PANIC_PROBE";
+        if std::env::var_os(PROBE_ENV).is_some() {
+            let mut session = TestRunner::new(crate::TERMINAL_SIZE)
+                .with_config("load_plugins clear-defaults=true {}")
+                .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+                .start();
+            session.expect_pty_spawn().output(b"ready");
+            session.wait_until("probe session loaded", |grid| grid.contains("ready"));
+            // Server teardown discards worker join errors. This must still fail the test
+            // even when its visible behavior and outer server shutdown both succeed.
+            let _ = std::thread::Builder::new()
+                .name("fault_injected_worker".into())
+                .spawn(|| panic!("injected worker invariant failure"))
+                .unwrap()
+                .join();
+            session.quit();
+            return;
+        }
+
+        // Isolate the intentional panic from this process's panic recorder, including when
+        // bare cargo test runs other tests alongside this one.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runner::tests::background_thread_panics_fail_session_shutdown",
+                "--nocapture",
+            ])
+            .env(PROBE_ENV, "1")
+            .output()
+            .unwrap();
+        let diagnostic = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !output.status.success(),
+            "worker panic passed:\n{diagnostic}"
+        );
+        assert!(diagnostic.contains("fault_injected_worker"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("injected worker invariant failure"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("background thread panicked during integration test"),
+            "{diagnostic}"
+        );
+    }
 
     /// A compact bar is drawn on the terminal's last row, which has no newline after it. An
     /// end-anchored strip has to reach it there too, or the indicator only ever survives into

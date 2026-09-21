@@ -736,16 +736,11 @@ mod character_chunk_props {
             chunk.width(),
             original_width
         );
-        assert!(
-            drained_width <= x,
-            "drain_by_width({}) drained {} columns",
-            x,
-            drained_width
-        );
+        assert_eq!(drained_width, x.min(original_width));
     }
 
-    /// Replaces `test_character_chunk_retain_by_width`: the point of retaining
-    /// is that the chunk then fits the budget, at any budget.
+    /// Retaining must fill the budget when enough text exists: dropping all
+    /// text also fits the budget, but would erase uncovered cells.
     #[hegel::test]
     fn retaining_never_leaves_more_than_the_budget(tc: hegel::TestCase) {
         let mut chunk = tc.draw(chunks());
@@ -753,20 +748,7 @@ mod character_chunk_props {
         let x = tc.draw(generators::integers::<usize>().max_value(original_width + 5));
 
         chunk.retain_by_width(x);
-        assert!(
-            chunk.width() <= x,
-            "retain_by_width({}) left {} columns",
-            x,
-            chunk.width()
-        );
-        if x >= original_width {
-            assert_eq!(
-                chunk.width(),
-                original_width,
-                "retain_by_width({}) shrank a chunk that already fit",
-                x
-            );
-        }
+        assert_eq!(chunk.width(), x.min(original_width));
     }
 
     /// Replaces `test_character_chunk_cut_middle_out`, which cut one hardcoded
@@ -782,6 +764,7 @@ mod character_chunk_props {
         let Ok((left, right)) = chunk.cut_middle_out(middle_start, middle_end) else {
             // Out-of-range spans are reported, not panicked on - that is the
             // property for those inputs.
+            assert!(middle_end > width, "a valid cut must succeed");
             return;
         };
         let left_width: usize = left.iter().map(|c| c.width()).sum();
@@ -805,6 +788,99 @@ mod character_chunk_props {
             width,
             right_width
         );
+    }
+
+    #[test]
+    fn clipping_keeps_text_and_blanks_only_the_split_wide_character() {
+        let text = "a界b語c";
+        let prefixes = ["", "a", "a ", "a界", "a界b", "a界b ", "a界b語", text];
+        let suffixes = [text, "界b語c", " b語c", "b語c", "語c", " c", "c", ""];
+        let as_text =
+            |chars: &[TerminalCharacter]| chars.iter().map(|c| c.character).collect::<String>();
+
+        for cut in 0..=9 {
+            let mut chunk = create_character_chunk_from_str(text, 0, 0);
+            let drained: Vec<_> = chunk.drain_by_width(cut).collect();
+            assert_eq!(as_text(&drained), prefixes[cut.min(7)], "drain at {cut}");
+            assert_eq!(as_text(&chunk.terminal_characters), suffixes[cut.min(7)]);
+
+            let mut chunk = create_character_chunk_from_str(text, 0, 0);
+            chunk.retain_by_width(cut);
+            assert_eq!(as_text(&chunk.terminal_characters), prefixes[cut.min(7)]);
+        }
+        for (start, prefix) in prefixes.iter().enumerate() {
+            for (end, suffix) in suffixes.iter().enumerate().skip(start) {
+                let mut chunk = create_character_chunk_from_str(text, 0, 0);
+                let (left, right) = chunk.cut_middle_out(start, end).unwrap();
+                assert_eq!(as_text(&left), *prefix, "left of {start}..{end}");
+                assert_eq!(as_text(&right), *suffix, "right of {start}..{end}");
+            }
+        }
+    }
+
+    #[hegel::test]
+    fn occlusion_preserves_exactly_the_uncovered_styled_cells(tc: hegel::TestCase) {
+        use crate::panes::terminal_character::DEFAULT_STYLES;
+        use std::collections::BTreeMap;
+
+        let mut chunks = Vec::new();
+        let mut source_cells = BTreeMap::new();
+        for y in 0..3 {
+            let x = tc.draw(generators::integers::<usize>().max_value(8));
+            let length = tc.draw(generators::integers::<usize>().min_value(1).max_value(16));
+            let characters: Vec<_> = (0..length)
+                .map(|i| {
+                    let character = TerminalCharacter::new_styled(
+                        char::from(b'a' + i as u8),
+                        DEFAULT_STYLES
+                            .foreground(Some(AnsiCode::ColorIndex((i + y * 16) as u8)))
+                            .into(),
+                    );
+                    source_cells.insert((x + i, y), character.clone());
+                    character
+                })
+                .collect();
+            chunks.push(CharacterChunk::new(characters, x, y));
+        }
+        let layer_count = tc.draw(generators::integers::<usize>().max_value(5));
+        let layers = (0..layer_count)
+            .map(|_| {
+                create_pane_geom(
+                    tc.draw(generators::integers::<usize>().max_value(24)),
+                    tc.draw(generators::integers::<usize>().max_value(3)),
+                    tc.draw(generators::integers::<usize>().min_value(1).max_value(16)),
+                    tc.draw(generators::integers::<usize>().min_value(1).max_value(3)),
+                )
+            })
+            .collect();
+        let stack = FloatingPanesStack { layers };
+
+        // The oracle removes covered cells directly; it never splits a chunk or
+        // calls the clipping helpers used by the renderer.
+        for z_index in std::iter::once(None).chain((0..=layer_count).map(Some)) {
+            let mut expected = source_cells.clone();
+            expected.retain(|&(x, y), _| {
+                !stack.layers.iter().enumerate().any(|(layer, pane)| {
+                    layer >= z_index.unwrap_or(0)
+                        && (pane.x..pane.x + pane.cols.as_usize()).contains(&x)
+                        && (pane.y..pane.y + pane.rows.as_usize()).contains(&y)
+                })
+            });
+            let visible = stack
+                .visible_character_chunks(chunks.clone(), z_index)
+                .unwrap();
+            let mut actual = BTreeMap::new();
+            for chunk in visible {
+                for (offset, character) in chunk.terminal_characters.into_iter().enumerate() {
+                    let position = (chunk.x + offset, chunk.y);
+                    assert!(
+                        actual.insert(position, character).is_none(),
+                        "duplicate cell {position:?}"
+                    );
+                }
+            }
+            assert_eq!(actual, expected, "z-index {z_index:?}, stack {stack:?}");
+        }
     }
 }
 

@@ -1585,11 +1585,16 @@ impl WasmBridge {
                                     .with_context(err_context)
                                     {
                                         Ok(plugin_render_assets) => {
+                                            // The screen may already have exited during shutdown.
+                                            // Release the guest before publishing, as event and
+                                            // pipe renders do, so a send cannot poison its lock.
+                                            drop(running_plugin);
                                             senders
                                                 .send_to_screen(ScreenInstruction::PluginBytes(
                                                     plugin_render_assets,
                                                 ))
-                                                .unwrap();
+                                                .with_context(err_context)
+                                                .non_fatal();
                                         },
                                         Err(e) => log::error!("{}", e),
                                     }

@@ -32,6 +32,34 @@ impl<T: Clone> SenderWithContext<T> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disconnected_sends_return_the_undelivered_message() {
+        let (sender, receiver) = unbounded();
+        let sender = SenderWithContext::new(sender);
+        let cloned_sender = sender.clone();
+        drop(receiver);
+
+        let (undelivered, _) = sender.send("original").unwrap_err().0;
+        assert_eq!(undelivered, "original");
+        let (undelivered, _) = cloned_sender.send("clone").unwrap_err().0;
+        assert_eq!(undelivered, "clone");
+    }
+
+    #[test]
+    fn connected_sends_deliver_in_order() {
+        let (sender, receiver) = unbounded();
+        let sender = SenderWithContext::new(sender);
+        sender.send("finish queued work").unwrap();
+        sender.send("exit").unwrap();
+        assert_eq!(receiver.try_recv().unwrap().0, "finish queued work");
+        assert_eq!(receiver.try_recv().unwrap().0, "exit");
+    }
+}
+
 thread_local!(
     /// A key to some thread local storage (TLS) that holds a representation of the thread's call
     /// stack in the form of an [`ErrorContext`].
