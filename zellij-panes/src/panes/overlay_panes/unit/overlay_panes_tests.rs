@@ -649,6 +649,89 @@ fn setting_an_overlay_borderless_travels_with_its_placement() {
 }
 
 #[test]
+fn coordinate_updates_preserve_borderlessness_unless_explicitly_overridden() {
+    for direction in [
+        None,
+        Some(MultipaneDirection::LeftRight),
+        Some(MultipaneDirection::TopBottom),
+    ] {
+        for batch in [false, true] {
+            let (mut panes, children) = if let Some(direction) = direction {
+                let (panes, children, _) = composed(direction);
+                (panes, children.to_vec())
+            } else {
+                let mut panes = overlay_panes(120, 40);
+                add(
+                    &mut panes,
+                    1,
+                    OverlayKind::Dismissible,
+                    coordinates("50", "20"),
+                );
+                (panes, vec![PaneId::Terminal(TerminalId::new(1))])
+            };
+            for (step, (borderless, expected)) in [
+                (Some(true), true),
+                (None, true),
+                (Some(false), false),
+                (None, false),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut coordinates = placed_coordinates("5", "3", &(60 + step).to_string(), "20");
+                coordinates.borderless = borderless;
+                if batch {
+                    panes
+                        .change_pane_coordinates_batch(
+                            children
+                                .iter()
+                                .map(|id| (*id, coordinates.clone()))
+                                .collect(),
+                            false,
+                        )
+                        .unwrap();
+                } else {
+                    panes
+                        .change_pane_coordinates(children[0], coordinates, false)
+                        .unwrap();
+                }
+                panes.reapply_coordinates();
+                let outer = panes.outer_geom(children[0]).unwrap();
+                assert_eq!(outer.cols.as_usize(), 60 + step);
+                assert_eq!(
+                    panes.overlay(&children[0]).unwrap().coordinates.borderless,
+                    Some(expected)
+                );
+                assert_eq!(
+                    panes.position_is_on_frame(
+                        children[0],
+                        &Position::new(outer.y as i32, outer.x as u16)
+                    ),
+                    !expected,
+                );
+                for child in &children {
+                    let pane = panes.get(child).unwrap();
+                    assert_eq!(pane.borderless(), expected);
+                    assert_eq!(
+                        pane.get_content_offset(),
+                        if expected || direction.is_some() {
+                            Offset::default()
+                        } else {
+                            Offset::frame(1)
+                        }
+                    );
+                }
+                if direction.is_some() {
+                    let first = panes.get(&children[0]).unwrap().current_geom();
+                    let inset = usize::from(!expected);
+                    assert_eq!((first.x, first.y), (outer.x + inset, outer.y + inset));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_borderless_overlay_stays_borderless_when_its_pane_is_replaced() {
     let mut panes = overlay_panes(80, 20);
     add(

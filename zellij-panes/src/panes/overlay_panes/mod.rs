@@ -885,6 +885,9 @@ impl OverlayPanes {
             }
         }
         let mut new_coordinates = new_coordinates;
+        new_coordinates.borderless = new_coordinates
+            .borderless
+            .or(overlay.coordinates.borderless);
         if override_user_placement {
             overlay.carry.position_is_user_stated = false;
         }
