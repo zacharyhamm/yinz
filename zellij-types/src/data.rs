@@ -2845,10 +2845,13 @@ pub enum PluginCommand {
     ///
     /// Answers synchronously, so that a plugin can read a config file in one expression rather
     /// than through a subscription. `max_bytes` caps the read; the host applies its own ceiling
-    /// regardless, so this can only ask for less.
+    /// regardless, so this can only ask for less. Without `offset`, oversized files fail rather
+    /// than return a truncated file. With `offset`, return a bounded range starting at that byte,
+    /// possibly empty at EOF. Each call opens the file afresh; ranges are not a snapshot.
     FsRead {
         path: PathBuf,
         max_bytes: Option<usize>,
+        offset: Option<u64>,
     },
     /// List a directory. Answers with one entry per child, its path spelled in the same virtual
     /// root the request used, so a plugin can feed the answer straight back in.

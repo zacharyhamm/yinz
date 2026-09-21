@@ -1847,6 +1847,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::FsRead => PluginCommand::FsRead {
             path: paths(tc),
             max_bytes: optional_usize_as_u32(tc),
+            offset: booleans(tc).then(|| tc.draw(generators::integers::<u64>())),
         },
         CommandType::FsList => PluginCommand::FsList { path: paths(tc) },
         CommandType::FsMetadata => PluginCommand::FsMetadata { path: paths(tc) },

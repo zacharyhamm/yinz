@@ -166,14 +166,10 @@ impl Markdown {
             total.saturating_add(chars.saturating_mul(128).saturating_add(512))
         })
     }
-    pub fn render(
+    pub fn styled_lines(
         &mut self,
-        x: usize,
-        y: usize,
         width: usize,
-        height: usize,
-        scroll: usize,
-    ) -> (String, usize) {
+    ) -> impl Iterator<Item = zellij_tile::ui_components::Text> + '_ {
         if self.width != Some(width) {
             self.lines = markdown::wrap(
                 &self.blocks,
@@ -184,17 +180,34 @@ impl Markdown {
             );
             self.width = Some(width);
         }
+        let dim = self.dim;
+        self.lines
+            .iter()
+            .map(move |line| markdown::style_text(&line.text, &line.styles, dim))
+    }
+    pub fn render(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        scroll: usize,
+    ) -> (String, usize) {
         let mut output = String::new();
-        if width > 0 {
-            for (row, line) in self.lines.iter().skip(scroll).take(height).enumerate() {
-                output.push_str(&serialize_text_with_coordinates(
-                    &markdown::style_text(&line.text, &line.styles, self.dim),
-                    x,
-                    y + row,
-                    Some(width),
-                    Some(1),
-                ));
-            }
+        let visible = if width > 0 { height } else { 0 };
+        for (row, line) in self
+            .styled_lines(width)
+            .skip(scroll)
+            .take(visible)
+            .enumerate()
+        {
+            output.push_str(&serialize_text_with_coordinates(
+                &line,
+                x,
+                y + row,
+                Some(width),
+                Some(1),
+            ));
         }
         (output, self.lines.len())
     }

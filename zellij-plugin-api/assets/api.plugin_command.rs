@@ -446,6 +446,8 @@ pub struct FsReadPayload {
     pub path: ::prost::alloc::string::String,
     #[prost(uint64, optional, tag="2")]
     pub max_bytes: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag="3")]
+    pub offset: ::core::option::Option<u64>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

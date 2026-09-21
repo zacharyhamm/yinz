@@ -1787,6 +1787,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 Some(Payload::FsReadPayload(payload)) => Ok(PluginCommand::FsRead {
                     path: PathBuf::from(payload.path),
                     max_bytes: payload.max_bytes.map(|b| b as usize),
+                    offset: payload.offset,
                 }),
                 _ => Err("Mismatched payload for FsRead"),
             },
@@ -4336,11 +4337,16 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::WatchFilesystem as i32,
                 payload: None,
             }),
-            PluginCommand::FsRead { path, max_bytes } => Ok(ProtobufPluginCommand {
+            PluginCommand::FsRead {
+                path,
+                max_bytes,
+                offset,
+            } => Ok(ProtobufPluginCommand {
                 name: CommandName::FsRead as i32,
                 payload: Some(Payload::FsReadPayload(FsReadPayload {
                     path: path.display().to_string(),
                     max_bytes: max_bytes.map(|b| b as u64),
+                    offset,
                 })),
             }),
             PluginCommand::FsList { path } => Ok(ProtobufPluginCommand {

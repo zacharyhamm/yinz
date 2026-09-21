@@ -4,13 +4,15 @@ mod multipanes;
 use super::PluginInstruction;
 use crate::plugin_map::{PluginEnv, ResponseSink};
 use crate::wasm_bridge::handle_plugin_crash;
+use anyhow::ensure;
 use log::warn;
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     process,
     sync::{atomic, OnceLock},
@@ -779,7 +781,11 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 source,
                 expected,
             } => project_config(env, directory, Some((source, expected))),
-            PluginCommand::FsRead { path, max_bytes } => fs_read(env, path, max_bytes),
+            PluginCommand::FsRead {
+                path,
+                max_bytes,
+                offset,
+            } => fs_read(env, path, max_bytes, offset),
             PluginCommand::FsList { path } => fs_list(env, path),
             PluginCommand::FsMetadata { path } => fs_metadata(env, path),
             PluginCommand::FsWrite {
@@ -6200,8 +6206,8 @@ fn set_pane_color(env: &PluginEnv, pane_id: PaneId, fg: Option<String>, bg: Opti
 /// The maximum number of bytes an `FsRead` will return, whatever the plugin asks for.
 ///
 /// These commands answer inline on the plugin thread, so a read is a pause for every plugin
-/// pinned to that thread. 8 MiB is comfortably more than the config files and scripts this is
-/// meant for, and small enough that the pause is not felt.
+/// pinned to that thread. Larger files are read in ranges so one call cannot buffer the entire
+/// file or monopolize the thread with an unbounded read.
 const MAX_FS_READ_BYTES: usize = 8 * 1024 * 1024;
 
 /// Where a plugin-visible path actually lives, and whether it left the plugin's own folders.
@@ -6463,7 +6469,7 @@ fn project_config(
         .non_fatal();
 }
 
-fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>) {
+fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>, offset: Option<u64>) {
     let cap = max_bytes
         .unwrap_or(MAX_FS_READ_BYTES)
         .min(MAX_FS_READ_BYTES);
@@ -6474,9 +6480,22 @@ fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>) {
         FsPathResolution::FollowSymlink,
     )
     .and_then(|real| {
-        let metadata =
-            fs::metadata(&real).with_context(|| format!("failed to read '{}'", path.display()))?;
-        if metadata.len() as usize > cap {
+        // A FIFO can replace a file between path resolution and open. Do not let its open
+        // block this thread, and check the opened file rather than a stale path's metadata.
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&real)
+            .with_context(|| format!("failed to open '{}'", path.display()))?;
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("failed to inspect '{}'", path.display()))?;
+        ensure!(
+            metadata.is_file(),
+            "'{}' is not a regular file",
+            path.display()
+        );
+        if offset.is_none() && metadata.len() > cap as u64 {
             return Err(anyhow!(
                 "'{}' is {} bytes, more than the {} byte limit for a plugin read",
                 path.display(),
@@ -6484,7 +6503,23 @@ fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>) {
                 cap
             ));
         }
-        fs::read(&real).with_context(|| format!("failed to read '{}'", path.display()))
+        if let Some(offset) = offset {
+            file.seek(SeekFrom::Start(offset))
+                .with_context(|| format!("failed to seek '{}'", path.display()))?;
+        }
+        // Bound the actual read too: the file can grow after metadata was read. The extra
+        // byte detects truncation for whole-file reads without buffering the entire file.
+        let mut contents = Vec::new();
+        file.take((cap + usize::from(offset.is_none())) as u64)
+            .read_to_end(&mut contents)
+            .with_context(|| format!("failed to read '{}'", path.display()))?;
+        ensure!(
+            contents.len() <= cap,
+            "'{}' grew beyond the {} byte limit for a plugin read",
+            path.display(),
+            cap
+        );
+        Ok(contents)
     });
 
     let response = ProtobufFsReadResponse {

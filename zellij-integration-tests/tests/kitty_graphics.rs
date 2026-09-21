@@ -75,6 +75,59 @@ fn setup_kitty_host(zellij: &TestSession, terminal: &FakePtyHandle) {
 }
 
 #[test]
+fn deno_plugin_images_reach_the_terminal_through_the_shared_render_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("image.ts");
+    let png = include_bytes!("../../default-plugins/hocus/assets/wand/frame-00.png");
+    std::fs::write(&plugin, format!(r#"
+const png = new Uint8Array({});
+const image = zellij.ui.image;
+const transmitted = new Set<number>();
+let supported = false;
+export default {{
+  async load() {{
+    zellij.on('ModeUpdate', info => {{ supported = info.capabilities.kitty_graphics; return true; }});
+    zellij.subscribe(['ModeUpdate']);
+    await zellij.waitForPermissions(['ReadApplicationState']);
+  }},
+  render() {{
+    if (!supported) return 'waiting for graphics';
+    const client = zellij.getPluginIds().client_id;
+    let frame = '';
+    if (!transmitted.has(client)) {{
+      frame = image.transmitPng(45056, png) + image.place(45056, 10, 6);
+      transmitted.add(client);
+    }}
+    for (let row = 0; row < 6; row++) frame += `\x1b[${{row + 1}};1H` + image.row(45056, row, 10);
+    return frame;
+  }}
+}};
+"#, serde_json::to_string(png.as_slice()).unwrap())).unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(zellij_integration_tests::LayoutInfo::Stringified(format!(
+            "layout {{ pane {{ plugin location=\"file:{}\"; }}; }}",
+            plugin.display()
+        )))
+        .start();
+    zellij.wait_until_raw_output("client sent its graphics probe", |bytes| {
+        contains_bytes(bytes, b"\x1b_Ga=q,i=31,")
+    });
+    zellij.send_stdin(b"\x1b[6;21;8t\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+    zellij.wait_until("Deno image plugin asks for permissions", |screen| {
+        screen.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(&keys::key('y'));
+    zellij.wait_until_raw_output("Deno image reaches the terminal", |bytes| {
+        contains_bytes(bytes, b"\x1b_Ga=t,q=2,")
+            && contains_bytes(bytes, b"\x1b_Ga=p,q=2,")
+            && contains_bytes(bytes, "\u{10eeee}".as_bytes())
+    });
+    zellij.quit();
+}
+
+#[test]
 fn hocus_wand_uses_the_startup_kitty_probe() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config("load_plugins clear-defaults=true {}")

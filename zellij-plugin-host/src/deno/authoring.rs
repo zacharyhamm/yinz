@@ -20,8 +20,8 @@ pub(super) fn run(path: &Path, source: &str, mode: PluginCheckMode) -> Result<Op
     let root = scratch.path();
     let source_root = root.join("source");
     let stage_path = |original: &Path| -> Result<PathBuf> {
-        if original == Path::new(loader::WORKFLOW_PATH) {
-            return Ok(root.join("sdk/workflow-view.ts"));
+        if let Ok(relative) = original.strip_prefix(loader::EMBEDDED_ROOT) {
+            return Ok(root.join("sdk/builtins").join(relative));
         }
         let relative = original
             .strip_prefix(&graph.root)
@@ -79,7 +79,7 @@ pub(super) fn run(path: &Path, source: &str, mode: PluginCheckMode) -> Result<Op
     config["compilerOptions"]["lib"] = serde_json::json!(["es2022"]);
     config["compilerOptions"]["paths"] = serde_json::json!({
         "zellij:plugin": ["./sdk/sdk.d.ts"],
-        "zellij:workflow-view": ["./sdk/workflow-view.ts"]
+        "zellij:workflow-view": ["./sdk/builtins/workflow-view.ts"]
     });
     config["files"] = serde_json::to_value(files)?;
     std::fs::write(root.join("tsconfig.json"), serde_json::to_vec(&config)?)?;
@@ -220,7 +220,7 @@ pub(super) fn run(path: &Path, source: &str, mode: PluginCheckMode) -> Result<Op
                 .unwrap_or(path);
             native_mappings.push((native.clone(), original.clone(), contents, rewritten, edits));
             native_files.push(native.clone());
-            if original != Path::new(loader::WORKFLOW_PATH) {
+            if !original.starts_with(loader::EMBEDDED_ROOT) {
                 lint_files.push(native.clone());
             }
         }

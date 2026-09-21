@@ -110,6 +110,9 @@ Subscribe by the Rust variant name:
 zellij.subscribe(["Key", "TabUpdate", "PaneUpdate"]);
 ```
 
+Call `subscribe` during `load`. Register state handlers and subscriptions before awaiting permissions.
+Initial mode, tab, and pane reports can arrive with the permission answer. A later subscription does not replay those reports.
+
 An event arrives as its JSON variant: a unit event is a string (`"InputReceived"`), and every other event is one
 `{Type: payload}` object. `update(event)` receives that object; `zellij.on(type, handler)` hands a handler the payload
 and the whole event. Tuple payloads are positional arrays with `null` in an absent slot, bytes in an event are `number[]`
@@ -608,16 +611,23 @@ A callback failure stops that timer and uses the existing lifecycle error report
 ## Files and project configuration
 
 These helpers are synchronous and use the existing host permissions and confined paths.
-`fs.read(path, {maxBytes?})` returns `Uint8Array`. `fs.list(path)` and `fs.metadata(path)` return typed host results;
+`fs.read(path, {maxBytes?, offset?})` returns `Uint8Array`. `fs.list(path)` and `fs.metadata(path)` return typed host results;
 missing metadata is `null`. `fs.write(path, contents, {append?, createDirs?})` accepts UTF-8 strings or `Uint8Array`.
 `fs.remove(path, {recursive?})`, `fs.mkdir(path, {all?})`, and `fs.rename(from, to)` return normally on success and throw on failure.
 All flags default to false. Reads require `ReadFiles`; mutations require `WriteFiles`.
 Writing under `/plugins` also requires `AuthorPlugins`. Existing traversal, symlink, and size limits apply.
 
+Without `offset`, a read fails if the whole file exceeds `maxBytes` or the host's 8 MiB limit.
+With `offset`, it reads up to that limit from the specified byte position, including from larger files.
+Use `bigint` for offsets above JavaScript's exact integer range. A read at EOF returns an empty array.
+Each call opens the file again, so multiple ranges do not form a snapshot if another process changes the file.
+Reads accept regular files only. Directories, devices, and FIFOs are refused.
+
 ```ts
 await zellij.waitForPermissions(['ReadFiles', 'WriteFiles']);
 zellij.fs.write('/host/result.bin', new Uint8Array([0, 128, 255]));
 const bytes = zellij.fs.read('/host/result.bin');
+const range = zellij.fs.read('/host/result.bin', {offset: 1n, maxBytes: 2});
 const previous = zellij.projectConfig.read('.');
 zellij.projectConfig.write('.', 'agent_exit { default_branch "main"; }', previous.source);
 ```
@@ -1285,7 +1295,7 @@ Construct components during module initialization if needed. Rendering returns t
 The plugin controls subscriptions, host commands, and submission behavior.
 
 Use `text`, `ribbon`, `table`, and `nestedList` for themed components.
-Styled text supports `selected()`, `opaque()`, `disabled()`, `emphasis(level, from, to)`, `dim()`, `unbold()`, `error()`, and `success()`.
+Styled text supports `selected()`, `opaque()`, `disabled()`, `emphasis(level, from, to)`, `dim()`, `unbold()`, `error()`, `success()`, and `strike()`.
 Style ranges use Unicode character indices, with a zero-based start and exclusive end.
 They do not use JavaScript UTF-16 offsets: `ui.text('🙂a').emphasis(1, 1, 2)` styles only `a`.
 
@@ -1304,12 +1314,21 @@ Interaction results contain `kind` and `shouldRender`, plus `id` when applicable
 Kinds are `fieldChanged`, `complete`, `buttonPressed`, `focusMoved`, `cancel`, and `ignored`.
 Handle these results explicitly. A button reports intent and does not run a command.
 
+Text inputs also expose the editor used by Hocus: `cursorPosition()`, `setCursorPosition(n)`,
+`replaceText(text, cursor?)`, `history()`, `setHistory(entries)`, `drainText()`, `insertText(text)`, `undo()`, and `redo()`.
+Cursor positions count Unicode characters. `replaceText` clears undo history and defaults the cursor to the end.
+`drainText` clears the draft and adds nonblank text to history.
+Use `handleInputKey(key)` for direct editing without form navigation.
+It returns `submit`, `cancel`, `continue`, `complete`, or `ignored`. Enter submits, Tab completes, and Up/Down recall history.
+
 `render({x, y, width, height})` returns a terminal string. `x` and `y` default to zero.
 Widget cursors are published only with an accepted plugin render, for that render's client.
 Discarded async renders cannot move the cursor. Rendering outside the lifecycle callback does not publish a cursor.
 
 `ui.markdown(source, {compact})` retains parsed blocks and caches wrapping for the current width.
 Its `render({x, y, width, height, scroll})` returns `{text, totalRows}`. `scroll` counts rows and defaults to zero.
+Use `lines(width)` when composing a transcript line by line. It returns `StyledText` objects with the original Markdown styles.
+`line.content()` returns the plain text. Apply additional styles to the line and call `render()` to position it.
 A width change rebuilds wrapping. A zero-sized viewport produces no visible output.
 Native state belongs to one isolate and is released on garbage collection or runtime disposal.
 Native allocations share the isolate's backing-store budget. Mutation inputs are conservatively charged until collection, including retained capacity and caches.
@@ -1318,6 +1337,21 @@ Input, coordinates, and output are bounded by transport limits. Excessive native
 `zellij.text` provides `width`, `truncate`, `pad`, `padLeft`, `center`, `wrap`, `sanitize`, and `sanitizeBytes`.
 Widths measure terminal columns. `truncate` defaults to `…` and accepts a replacement ellipsis as its third argument.
 Padding truncates oversized text without an ellipsis. `wrap` and `sanitize` use the shared Rust implementation.
+
+`wrapInput(text, width)` preserves editor whitespace and returns `{text, start}` lines, with starts measured in Unicode characters.
+`fuzzyFilter(options, query)` uses the same matcher as the Rust selectors.
+It returns `{index, score, indices}` matches in descending score order, preserving input order for ties.
+Highlight indices count Unicode characters. An empty query returns every option in order.
+Matching has a bounded work budget. Split unusually large candidate sets into batches.
+
+`zellij.ui.image.transmitPng(id, bytes)`, `place(id, columns, rows)`, and `row(id, row, columns)` return Kitty graphics sequences.
+Append these strings to the frame returned by `render`. Image IDs range from 1 through `image.maxId` (`0xffffff`).
+Dimensions are limited to `image.maxDimension` (297). PNG inputs are limited to 8 MiB.
+Transmit and place each image once per client, then draw its placeholder rows in every frame.
+Use `getPluginIds().client_id` to track transmission and `ModeUpdate.capabilities.kitty_graphics` to choose a text fallback.
+
+`zellij.randomUUID()` generates a UUID v4 for request IDs, including during module initialization.
+It needs no host permission and uses the same random UUID implementation as the Rust plugins.
 
 See [forms.ts](../example-plugins/forms.ts), or `plugin_docs section=example_forms`.
 
@@ -1628,6 +1662,11 @@ Each module must remain inside the entrypoint directory after symlink resolution
 The runtime rejects remote URLs, package imports, CommonJS, JSX/TSX, and unsupported file types.
 Local `.d.ts` files are available to the checker only.
 
+Embedded builtins can also import relative modules, including modules in subdirectories.
+Their modules come only from compiled files under `zellij-config/assets/plugins`, with no filesystem fallback.
+The runtime, checker, and authoring tools use the same module graph.
+`zellij:workflow-view` remains an alias for the embedded `workflow-view.ts` module.
+
 TypeScript is transpiled when a plugin loads. Transpilation does not check types.
 For semantic checking, run:
 
@@ -1692,7 +1731,7 @@ commands, where the permission system can see them. Gone, and staying gone:
 - **`Deno.*` and Core's internals**: no process, filesystem, network or raw ops. Files go through `zellij.fs`,
   commands through `zellij.runCommand`, HTTP through `zellij.webRequest` - each confined and permissioned.
 - **Remote, npm, JSR and `node:` imports**: only explicit relative imports of `.js`, `.mjs`, `.ts` and `.mts` files
-  inside the plugin's own folder, plus `zellij:plugin` (a builtin may also import `zellij:workflow-view`). Nor is
+  inside the plugin's own folder or the compiled builtin module tree, plus `zellij:plugin` and `zellij:workflow-view`. Nor is
   `https://…/plugin.ts` a plugin URL: download the file and load it with `file:`.
 - **Web Workers**: the browser `Worker` API is unavailable. Use [named background workers](#background-workers) through the SDK.
 - **Top-level `await`**: module initialization must complete without a pending promise, and host commands and event

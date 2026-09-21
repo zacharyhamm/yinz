@@ -498,6 +498,7 @@ SetPaneSubtitlePayload set_pane_subtitle_payload = 229;
 message FsReadPayload {
 string path = 1;
 optional uint64 max_bytes = 2;
+optional uint64 offset = 3;
 }
 message FsListPayload {
 string path = 1;

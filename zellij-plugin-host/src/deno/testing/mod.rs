@@ -211,7 +211,7 @@ pub fn run_named(
 ) -> Result<PluginTestReport> {
     if zellij_config::consts::builtin_deno_plugin(name).is_some() || name == "workflow-view" {
         let root = tempfile::tempdir().context("unpack builtin tests")?;
-        zellij_config::consts::BUILTIN_DENO_TEST_FILES
+        zellij_config::consts::BUILTIN_DENO_FILES
             .extract(root.path())
             .context("extract builtin test sources")?;
         return run(
@@ -469,7 +469,9 @@ deno_core::extension!(
         super::limits::op_zellij_encode,
         super::ui::op_zellij_ui_create,
         super::ui::op_zellij_ui_call,
-        super::ui::op_zellij_ui_pure
+        super::ui::op_zellij_ui_pure,
+        super::image::op_zellij_image,
+        super::op_zellij_uuid
     ],
     state = |state| state.put(std::collections::VecDeque::<
         super::background_worker::PostReservation,

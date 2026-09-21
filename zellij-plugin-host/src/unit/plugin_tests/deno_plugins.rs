@@ -88,6 +88,7 @@ export default {
     assert(zellij.fs.metadata('/host/files/nested/b').len === 4);
     for (const path of ['/host/../escape', '/host/link/secret', '/host/link/new/nested']) {
       assert(refused(() => zellij.fs.read(path)));
+      assert(refused(() => zellij.fs.read(path, {offset: 0, maxBytes: 1})));
       assert(refused(() => zellij.fs.write(path, 'bad', {createDirs: true})));
       assert(refused(() => zellij.fs.rename('/host/files/nested/b', path)));
       assert(refused(() => zellij.fs.rename(path, '/host/files/from-outside')));
@@ -131,6 +132,60 @@ export default {
         "unchanged"
     );
     assert!(!outside.path().join("new").exists());
+}
+
+#[test]
+fn deno_file_ranges_read_large_files_without_weakening_whole_file_limits() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'starting';
+export default {
+  async load() { try {
+    const assert = (ok) => { if (!ok) throw Error('file range assertion'); };
+    const refused = (call) => { try { call(); return false; } catch (_) { return true; } };
+    const path = '/host/large.bin', cap = 8 * 1024 * 1024;
+    assert(refused(() => zellij.fs.read(path, {offset: 0, maxBytes: 5})));
+    await zellij.waitForPermissions(['ReadFiles']);
+    assert(refused(() => zellij.fs.read(path)));
+    assert(refused(() => zellij.fs.read(path, {maxBytes: cap * 2})));
+    assert(refused(() => zellij.command('FsRead', {path, max_bytes: null, offset: null})));
+    assert(zellij.decodeUtf8(zellij.fs.read(path, {offset: 0, maxBytes: 5})) === 'start');
+    assert([...zellij.fs.read(path, {offset: BigInt(cap - 2), maxBytes: 8n})].join() === '1,2,3,4,5,6');
+    assert([...zellij.command('FsRead', {path, offset: cap, max_bytes: 3})].join() === '3,4,5');
+    assert([...zellij.fs.read('/host/inside-link', {offset: cap})].join() === '3,4,5,6');
+    assert(zellij.fs.read(path, {offset: cap + 4}).length === 0);
+    assert(zellij.fs.read(path, {offset: cap + 100, maxBytes: 1}).length === 0);
+    assert(zellij.fs.read(path, {offset: 0, maxBytes: 0}).length === 0);
+    for (const offset of [-1, 1.5, 18446744073709551616n]) {
+      assert(refused(() => zellij.fs.read(path, {offset})));
+    }
+    assert(refused(() => zellij.fs.read(path, {offset: 0, maxBytes: -1})));
+    assert(refused(() => zellij.fs.read('/host', {offset: 0, maxBytes: 1})));
+    assert(refused(() => zellij.fs.read('/host/fifo', {offset: 0, maxBytes: 1})));
+    state = 'file ranges verified';
+  } catch (error) {state = 'file ranges failed: ' + error.stack;} },
+  render() { return state; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    let path = harness.directory.path().join("large.bin");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(b"start").unwrap();
+    file.seek(SeekFrom::Start(8 * 1024 * 1024 - 2)).unwrap();
+    file.write_all(&[1, 2, 3, 4, 5, 6]).unwrap();
+    std::os::unix::fs::symlink(&path, harness.directory.path().join("inside-link")).unwrap();
+    nix::unistd::mkfifo(
+        &harness.directory.path().join("fifo"),
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .unwrap();
+    harness.load();
+    let frame = harness.rendered("file ranges");
+    assert!(frame.contains("file ranges verified"), "{frame}");
 }
 
 #[test]
