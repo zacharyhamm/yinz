@@ -6859,6 +6859,116 @@ fn multipane_transfer_carries_replacements_and_tab_closure_keeps_the_container()
 }
 
 #[test]
+fn closing_a_multipane_repaints_the_idle_terminal_underneath() {
+    use zellij_types::multipane::*;
+    for selected in 0..2 {
+        let size = Size {
+            cols: 120,
+            rows: 40,
+        };
+        let mut screen = create_non_mirrored_screen(size);
+        new_tab(&mut screen, 1, TabId::new(0));
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(size);
+        let underlying = PaneId::Terminal(crate::TerminalId::new(1));
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(crate::TerminalId::new(1), b"IDLE TERMINAL".to_vec())
+            .unwrap();
+        open_popup(&mut screen, 2, "LEFT CHILD");
+        open_popup(&mut screen, 3, "RIGHT CHILD");
+        let children = [2, 3].map(|id| PaneId::Terminal(crate::TerminalId::new(id)));
+        screen
+            .multipane_command(
+                MultipaneOperation::Create {
+                    children,
+                    split: MultipaneSplit {
+                        direction: MultipaneDirection::LeftRight,
+                        ratio: 5000,
+                    },
+                    placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+                    focus: None,
+                },
+                CLIENT_1,
+            )
+            .unwrap();
+        screen
+            .focus_pane_with_id(underlying, false, false, CLIENT_1)
+            .unwrap();
+        // Drain synchronous incremental renders so no earlier invalidation can mask the close.
+        for _ in 0..3 {
+            render_frame_into(&mut screen, &receiver, CLIENT_1, &mut grid);
+        }
+        screen.close_pane_explicitly(children[selected], None);
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT_1, &mut grid);
+        assert!(frame.contains("IDLE TERMINAL"), "{frame}");
+        assert!(
+            !frame.contains("LEFT CHILD") && !frame.contains("RIGHT CHILD"),
+            "{frame}"
+        );
+        assert_eq!(screen.active_pane_id(CLIENT_1), Some(underlying));
+    }
+}
+
+#[test]
+fn retained_multipane_repairs_focus_when_the_last_working_pane_exits() {
+    use zellij_types::multipane::*;
+    for (hidden, first_selectable) in [(false, true), (true, true), (false, false)] {
+        let mut screen = create_non_mirrored_screen(Size {
+            cols: 120,
+            rows: 40,
+        });
+        let (writer, writes) = channels::unbounded();
+        screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(writer));
+        new_tab(&mut screen, 1, TabId::new(0));
+        open_floating_pane(&mut screen, TabId::new(0), 2, "FIRST", false);
+        open_floating_pane(&mut screen, TabId::new(0), 3, "SECOND", false);
+        let children = [2, 3].map(|id| PaneId::Terminal(crate::TerminalId::new(id)));
+        let underlying = PaneId::Terminal(crate::TerminalId::new(1));
+        screen
+            .focus_pane_with_id(underlying, false, false, CLIENT_1)
+            .unwrap();
+        screen
+            .multipane_command(
+                MultipaneOperation::Create {
+                    children,
+                    split: MultipaneSplit {
+                        direction: MultipaneDirection::LeftRight,
+                        ratio: 5000,
+                    },
+                    placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+                    focus: None,
+                },
+                CLIENT_1,
+            )
+            .unwrap();
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        tab.set_pane_selectable(children[0], first_selectable);
+        if hidden {
+            assert!(tab.hide_overlay_pane(children[0]));
+        }
+        assert_eq!(tab.get_active_pane_id(CLIENT_1), Some(underlying));
+        tab.close_pane(underlying, false, Some(0));
+        screen.settle_tabs().unwrap();
+        assert!(screen.tabs.contains_key(&TabId::new(0)));
+        let expected = children[usize::from(!first_selectable)];
+        assert_eq!(screen.active_pane_id(CLIENT_1), Some(expected));
+        writes.try_iter().for_each(drop);
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .write_to_active_terminal(&None, b"x".to_vec(), false, CLIENT_1)
+            .unwrap();
+        assert!(writes.try_iter().any(|(instruction, _)| matches!(instruction,
+            PtyWriteInstruction::Write(bytes, id, _) if PaneId::Terminal(id) == expected && bytes == b"x"
+        )));
+    }
+}
+
+#[test]
 fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
     use zellij_types::multipane::*;
     let (mut screen, events) = screen_with_plugin_sender(Size {
@@ -6905,8 +7015,8 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
         .visible(true)
         .unwrap();
     events.try_iter().for_each(drop);
-    let assert_visible = |visible| {
-        let actual: Vec<_> = events
+    let visibility_events = || {
+        events
             .try_iter()
             .flat_map(|(event, _)| match event {
                 PluginInstruction::Update(updates) => updates
@@ -6918,9 +7028,11 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
                     .collect::<Vec<_>>(),
                 _ => vec![],
             })
-            .collect();
+            .collect::<Vec<_>>()
+    };
+    let assert_visible = |visible| {
         assert_eq!(
-            actual,
+            visibility_events(),
             vec![
                 (Some(PluginId::new(7)), visible),
                 (Some(PluginId::new(8)), visible)
@@ -6937,7 +7049,47 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
     assert!(tab.show_overlay_pane(children[1]));
     assert_visible(true);
     screen
+        .switch_active_tab(TabPosition::new(1), None, true, CLIENT_1)
+        .unwrap();
+    events.try_iter().for_each(drop);
+    for child in children {
+        for launch in [false, true] {
+            let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+            assert!(tab.hide_overlay_pane(child));
+            assert_visible(false);
+            let run_plugin = match tab.get_pane_with_id(child).unwrap().invoked_with() {
+                Some(Run::Plugin(run)) => run.clone(),
+                _ => panic!("expected plugin child"),
+            };
+            for attempt in 0..2 {
+                if launch {
+                    assert!(screen
+                        .focus_plugin_pane(&run_plugin, true, true, false, CLIENT_1, &mut None)
+                        .unwrap());
+                } else {
+                    // ShowSelf and FocusPaneWithId both reach this screen entry point.
+                    screen
+                        .focus_pane_with_id(child, true, false, CLIENT_1)
+                        .unwrap();
+                }
+                assert!(!screen.tabs[&TabId::new(1)].overlay_carry_for(child).hidden);
+                assert_eq!(screen.active_pane_id(CLIENT_1), Some(child));
+                if attempt == 0 {
+                    assert_visible(true);
+                } else {
+                    assert!(visibility_events().is_empty());
+                }
+            }
+        }
+    }
+    screen
         .break_multiple_panes_to_tab_with_id(vec![children[1]], TabId::new(0), false, CLIENT_1)
+        .unwrap();
+    assert_visible(false);
+    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    assert!(tab.hide_overlay_pane(children[0]));
+    assert_visible(false);
+    tab.focus_pane_with_id(children[1], false, false, CLIENT_1)
         .unwrap();
     assert_visible(false);
 }
