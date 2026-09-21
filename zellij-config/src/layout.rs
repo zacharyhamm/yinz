@@ -46,10 +46,7 @@ pub fn list_available_layouts(
                         Some(layout_dir.clone()),
                     ) {
                         Ok(_layout) => {
-                            let file_path = layout_dir.join(file.path()); // TODO: do we
-                                                                          // need
-                                                                          // file_stem()
-                                                                          // here too?
+                            let file_path = file.path();
                             available_layouts.push(LayoutInfo::File(
                                 layout_name,
                                 crate::layout::metadata_from_path(&file_path),

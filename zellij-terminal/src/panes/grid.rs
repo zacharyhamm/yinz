@@ -2830,7 +2830,8 @@ impl Grid {
             for row in self.viewport.iter_mut().skip(self.cursor.y + 1) {
                 row.replace_columns(replace_with_columns.clone());
             }
-            self.output_buffer.update_all_lines(); // TODO: only update the changed lines
+            self.output_buffer
+                .update_lines(self.cursor.y, self.viewport.len() - 1);
         }
     }
     pub fn clear_all_before_cursor(&mut self, replace_with: TerminalCharacter) {
@@ -2840,7 +2841,7 @@ impl Grid {
             for row in self.viewport.iter_mut().take(self.cursor.y) {
                 row.replace_columns(replace_with_columns.clone());
             }
-            self.output_buffer.update_all_lines(); // TODO: only update the changed lines
+            self.output_buffer.update_lines(0, self.cursor.y);
         }
     }
     pub fn clear_cursor_line(&mut self) {
@@ -2950,12 +2951,12 @@ impl Grid {
                 self.scroll_region_content_down(
                     current_line_index,
                     scroll_region_bottom,
-                    Row::new().canonical(),
+                    Row::new()
+                        .canonical()
+                        .with_bg_color(self.cursor.pending_styles.background),
                 );
-            } else if current_line_index > scroll_region_top
-                && current_line_index <= scroll_region_bottom
-            {
-                self.move_cursor_up(count);
+            } else {
+                self.move_cursor_up(1);
             }
         }
         self.output_buffer.update_all_lines();
@@ -5992,7 +5993,6 @@ impl Perform for Grid {
                 self.move_cursor_to_beginning_of_line();
             },
             (b'M', None) => {
-                // TODO: if cursor is at the top, it should go down one
                 self.move_cursor_up_with_scrolling(1);
             },
             (b'c', None) => {

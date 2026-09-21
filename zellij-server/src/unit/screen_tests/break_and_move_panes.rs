@@ -3,6 +3,168 @@ use zellij_test_support::Watched;
 use zellij_types::internal_ids::TabId;
 
 #[test]
+fn moving_a_plugin_in_place_replaces_and_restores_the_active_pane() {
+    for (replace_floating, overlay, empty_destination) in [
+        (false, None, false),
+        (true, None, false),
+        (false, None, true),
+        (false, Some(OverlayPlacement::dismissible(None)), false),
+        (true, Some(OverlayPlacement::dismissible(None)), false),
+        (false, Some(OverlayPlacement::modal(None)), false),
+        (true, Some(OverlayPlacement::modal(None)), false),
+        (false, Some(OverlayPlacement::dismissible(None)), true),
+        (false, Some(OverlayPlacement::modal(None)), true),
+    ] {
+        let client_id = ClientId::new(1);
+        let plugin_id = PaneId::Plugin(crate::PluginId::new(7));
+        let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
+        let (plugin_sender, _plugin_receiver) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
+        new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
+        let run_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "file:/path/to/fake/plugin",
+            &None,
+            None,
+            None,
+        )
+        .unwrap();
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .new_pane(
+                plugin_id,
+                None,
+                Some(Run::Plugin(run_plugin.clone())),
+                false,
+                true,
+                NewPanePlacement::Tiled {
+                    direction: None,
+                    borderless: None,
+                },
+                Some(client_id),
+                None,
+            )
+            .unwrap();
+        let destination = screen.get_active_tab_mut(client_id).unwrap();
+        if replace_floating {
+            destination
+                .new_pane(
+                    PaneId::Terminal(TerminalId::new(3)),
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::Floating(None),
+                    Some(client_id),
+                    None,
+                )
+                .unwrap();
+        }
+        if empty_destination {
+            destination.close_pane(PaneId::Terminal(TerminalId::new(2)), false, None);
+        }
+        if empty_destination && overlay.is_none() {
+            assert!(screen
+                .focus_plugin_pane(&run_plugin, false, true, true, client_id, &mut None)
+                .is_err());
+            let source = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            assert!(source.has_non_suppressed_pane_with_pid(&plugin_id));
+            let plugin = source.extract_pane(plugin_id, true).unwrap();
+            let destination = screen.get_active_tab_mut(client_id).unwrap();
+            assert!(!destination.has_pane_with_pid(&plugin_id));
+            destination.park_pane(plugin);
+            assert!(destination
+                .focus_pane_with_id(plugin_id, false, true, client_id)
+                .is_err());
+            assert!(destination.has_pane_with_pid(&plugin_id));
+            assert!(!destination.has_non_suppressed_pane_with_pid(&plugin_id));
+            destination
+                .focus_pane_with_id(plugin_id, true, false, client_id)
+                .unwrap();
+            assert_eq!(destination.get_active_pane_id(client_id), Some(plugin_id));
+            continue;
+        }
+        if let Some(placement) = overlay {
+            destination
+                .new_pane(
+                    PaneId::Terminal(TerminalId::new(4)),
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::Overlay(placement),
+                    Some(client_id),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                destination.get_active_pane_id(client_id),
+                Some(PaneId::Terminal(TerminalId::new(4)))
+            );
+        }
+        let replaced_id = destination.get_active_pane_id(client_id).unwrap();
+        let replaced_geom = destination
+            .get_pane_with_id(replaced_id)
+            .unwrap()
+            .current_geom();
+        let replaced_overlay = destination.overlay_placement_for(replaced_id);
+        let underlying_panes: Vec<_> = destination
+            .get_all_pane_ids()
+            .into_iter()
+            .filter(|id| *id != replaced_id)
+            .map(|id| (id, destination.get_pane_with_id(id).unwrap().current_geom()))
+            .collect();
+
+        assert!(screen
+            .focus_plugin_pane(&run_plugin, false, true, true, client_id, &mut None)
+            .unwrap());
+        assert!(!screen.tabs[&TabId::new(0)].has_pane_with_pid(&plugin_id));
+        let destination = screen.get_active_tab_mut(client_id).unwrap();
+        assert_eq!(destination.get_active_pane_id(client_id), Some(plugin_id));
+        assert_eq!(destination.are_floating_panes_visible(), replace_floating);
+        assert_eq!(
+            destination
+                .get_pane_with_id(plugin_id)
+                .unwrap()
+                .current_geom(),
+            replaced_geom
+        );
+        assert!(destination.has_pane_with_pid(&replaced_id));
+        assert!(!destination.has_non_suppressed_pane_with_pid(&replaced_id));
+        assert_eq!(
+            destination.overlay_placement_for(plugin_id),
+            replaced_overlay
+        );
+        for (id, geom) in &underlying_panes {
+            assert!(destination.has_non_suppressed_pane_with_pid(id));
+            assert_eq!(
+                destination.get_pane_with_id(*id).unwrap().current_geom(),
+                *geom
+            );
+        }
+
+        destination.close_pane(plugin_id, false, None);
+        assert_eq!(destination.get_active_pane_id(client_id), Some(replaced_id));
+        assert!(destination.has_non_suppressed_pane_with_pid(&replaced_id));
+        assert!(!destination.has_pane_with_pid(&plugin_id));
+        assert_eq!(
+            destination.overlay_placement_for(replaced_id),
+            replaced_overlay
+        );
+        assert_eq!(
+            destination
+                .get_pane_with_id(replaced_id)
+                .unwrap()
+                .current_geom(),
+            replaced_geom
+        );
+        assert_eq!(destination.are_floating_panes_visible(), replace_floating);
+    }
+}
+
+#[test]
 pub fn screen_can_suppress_pane() {
     let size = Size { cols: 80, rows: 20 };
     let initial_layout = TiledPaneLayout {

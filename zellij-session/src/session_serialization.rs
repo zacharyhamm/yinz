@@ -164,7 +164,7 @@ fn serialize_tiled_pane(
 ) -> KdlNode {
     let (command, args) = extract_command_and_args(&layout.run);
     let (plugin, plugin_config) = extract_plugin_and_config(&layout.run);
-    let (edit, _line_number) = extract_edit_and_line_number(&layout.run);
+    let (edit, line_number) = extract_edit_and_line_number(&layout.run);
     let cwd = layout.run.as_ref().and_then(|r| r.get_cwd());
     let has_children = layout.external_children_index.is_some() || !layout.children.is_empty();
 
@@ -172,6 +172,7 @@ fn serialize_tiled_pane(
     serialize_pane_title_and_attributes(
         &command,
         &edit,
+        line_number,
         &layout.name,
         cwd,
         layout.focus,
@@ -301,7 +302,6 @@ pub fn extract_plugin_and_config(
 }
 pub fn extract_edit_and_line_number(layout_run: &Option<Run>) -> (Option<String>, Option<usize>) {
     match &layout_run {
-        // TODO: line number in layouts?
         Some(Run::EditFile(path, line_number, _cwd)) => {
             (Some(path.display().to_string()), *line_number)
         },
@@ -313,6 +313,7 @@ pub fn extract_edit_and_line_number(layout_run: &Option<Run>) -> (Option<String>
 fn serialize_pane_title_and_attributes(
     command: &Option<String>,
     edit: &Option<String>,
+    line_number: Option<usize>,
     name: &Option<String>,
     cwd: Option<PathBuf>,
     focus: Option<bool>,
@@ -325,9 +326,18 @@ fn serialize_pane_title_and_attributes(
         (Some(command), _) => kdl_node
             .entries_mut()
             .push(KdlEntry::new_prop("command", command.to_owned())),
-        (None, Some(edit)) => kdl_node
-            .entries_mut()
-            .push(KdlEntry::new_prop("edit", edit.to_owned())),
+        (None, Some(edit)) => {
+            kdl_node
+                .entries_mut()
+                .push(KdlEntry::new_prop("edit", edit.to_owned()));
+            // KDL integers are signed. An out-of-range editor position must not make the
+            // entire session layout unreadable.
+            if let Some(line_number) = line_number.and_then(|line| i64::try_from(line).ok()) {
+                kdl_node
+                    .entries_mut()
+                    .push(KdlEntry::new_prop("line_number", line_number));
+            }
+        },
         _ => {},
     };
     if let Some(name) = name {
@@ -680,12 +690,13 @@ fn serialize_floating_pane(
     let mut floating_pane_node_children = KdlDocument::new();
     let (command, args) = extract_command_and_args(&layout.run);
     let (plugin, plugin_config) = extract_plugin_and_config(&layout.run);
-    let (edit, _line_number) = extract_edit_and_line_number(&layout.run);
+    let (edit, line_number) = extract_edit_and_line_number(&layout.run);
     let cwd = layout.run.as_ref().and_then(|r| r.get_cwd());
     let has_children = false;
     serialize_pane_title_and_attributes(
         &command,
         &edit,
+        line_number,
         &layout.name,
         cwd,
         layout.focus,
@@ -1519,6 +1530,50 @@ mod tests {
             r#"{ "x": 0, "y": 41, "rows": { "constraint": "Fixed(5)", "inner": 5 }, "cols": { "constraint": "Percent(100.0)", "inner": 211 }, "is_stacked": false }"#,
         ],
     ];
+
+    #[test]
+    fn editor_line_numbers_survive_tiled_and_floating_session_serialization() {
+        for line_number in [Some(42), Some(0), Some(usize::MAX), None] {
+            let run = Some(Run::EditFile("/tmp/notes.md".into(), line_number, None));
+            let manifest = GlobalLayoutManifest {
+                tabs: vec![(
+                    "editors".to_owned(),
+                    TabLayoutManifest {
+                        tiled_panes: vec![PaneLayoutManifest {
+                            run: run.clone(),
+                            geom: PaneGeom {
+                                rows: Dimension::fixed(20),
+                                cols: Dimension::fixed(80),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }],
+                        floating_panes: vec![PaneLayoutManifest {
+                            run: run.clone(),
+                            geom: PaneGeom {
+                                rows: Dimension::fixed(10),
+                                cols: Dimension::fixed(40),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                )],
+                ..Default::default()
+            };
+            let (raw, _) = serialize_session_layout(manifest).unwrap();
+            let layout = zellij_config::kdl::layout::from_kdl(&raw, None, None, None).unwrap();
+            let (_, tiled, floating) = &layout.tabs()[0];
+            let expected = Some(Run::EditFile(
+                "/tmp/notes.md".into(),
+                line_number.filter(|line| i64::try_from(*line).is_ok()),
+                None,
+            ));
+            assert_eq!(tiled.children[0].run, expected);
+            assert_eq!(floating[0].run, expected);
+        }
+    }
 
     #[test]
     fn geoms() {

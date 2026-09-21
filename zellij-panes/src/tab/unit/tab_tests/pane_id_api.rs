@@ -1,6 +1,214 @@
 use super::*;
 
 #[test]
+fn revealing_a_suppressed_pane_in_place_replaces_the_focused_overlay() {
+    let client = ClientId::new(1);
+    let tiled = PaneId::Terminal(TerminalId::new(1));
+    let floating = PaneId::Terminal(TerminalId::new(2));
+    let replacement = PaneId::Terminal(TerminalId::new(3));
+    let overlay = PaneId::Terminal(TerminalId::new(4));
+    for show_floating in [false, true] {
+        for placement in [
+            OverlayPlacement::dismissible(None),
+            OverlayPlacement::modal(None),
+        ] {
+            let mut tab = create_new_tab(
+                Size {
+                    cols: 121,
+                    rows: 20,
+                },
+                false,
+            );
+            tab.new_pane(
+                replacement,
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::Tiled {
+                    direction: None,
+                    borderless: None,
+                },
+                Some(client),
+                None,
+            )
+            .unwrap();
+            tab.suppress_pane(replacement, Some(client));
+            if show_floating {
+                tab.new_floating_pane(floating, None, None, false, true, None, None)
+                    .unwrap();
+            }
+            tab.new_pane(
+                overlay,
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::Overlay(placement),
+                Some(client),
+                None,
+            )
+            .unwrap();
+            let original_geom = tab.get_pane_with_id(overlay).unwrap().current_geom();
+            let underlying: Vec<_> = [tiled, floating]
+                .into_iter()
+                .filter_map(|id| {
+                    tab.get_pane_with_id(id)
+                        .map(|pane| (id, pane.current_geom()))
+                })
+                .collect();
+            assert!(tab.can_replace_active_pane(client));
+            tab.focus_pane_with_id(replacement, false, true, client)
+                .unwrap();
+            assert_eq!(tab.get_active_pane_id(client), Some(replacement));
+            assert!(tab.pane_is_overlay(replacement));
+            assert_eq!(
+                tab.get_pane_with_id(replacement).unwrap().current_geom(),
+                original_geom
+            );
+            assert!(tab.has_pane_with_pid(&overlay));
+            assert!(!tab.has_non_suppressed_pane_with_pid(&overlay));
+            assert_eq!(tab.are_floating_panes_visible(), show_floating);
+            for (id, geom) in underlying {
+                assert!(tab.has_non_suppressed_pane_with_pid(&id));
+                assert_eq!(tab.get_pane_with_id(id).unwrap().current_geom(), geom);
+            }
+            tab.close_pane(replacement, false, None);
+            assert_eq!(tab.get_active_pane_id(client), Some(overlay));
+            assert!(tab.pane_is_overlay(overlay));
+            assert_eq!(
+                tab.get_pane_with_id(overlay).unwrap().current_geom(),
+                original_geom
+            );
+            assert!(!tab.has_pane_with_pid(&replacement));
+        }
+    }
+}
+
+#[test]
+fn focusing_an_unselectable_pane_preserves_focus_and_layer_visibility() {
+    let client = ClientId::new(1);
+    let tiled = PaneId::Terminal(TerminalId::new(1));
+    let floating = PaneId::Terminal(TerminalId::new(2));
+    let overlay = PaneId::Terminal(TerminalId::new(3));
+    for target in [tiled, floating, overlay] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            false,
+        );
+        tab.new_floating_pane(floating, None, None, false, true, None, None)
+            .unwrap();
+        tab.new_pane(
+            overlay,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        tab.get_pane_with_id_mut(target)
+            .unwrap()
+            .set_selectable(false);
+        if target == overlay {
+            tab.overlay_panes.defocus_pane(client);
+            tab.hide_overlay_pane(overlay);
+        }
+        let focus_before = tab.get_active_pane_id(client);
+        let overlay_before = tab.overlay_panes.rendered_pane_ids();
+        assert!(tab
+            .focus_pane_with_id(target, false, false, client)
+            .is_err());
+        assert_eq!(tab.get_active_pane_id(client), focus_before);
+        assert!(tab.are_floating_panes_visible());
+        assert_eq!(tab.overlay_panes.rendered_pane_ids(), overlay_before);
+    }
+
+    // Explicitly revealing a parked pane still makes it selectable.
+    let mut tab = create_tab_with_two_floating_panes();
+    tab.suppress_pane(floating, Some(client));
+    tab.get_pane_with_id_mut(floating)
+        .unwrap()
+        .set_selectable(false);
+    tab.focus_pane_with_id(floating, true, false, client)
+        .unwrap();
+    assert_eq!(tab.get_active_pane_id(client), Some(floating));
+    assert!(tab.get_pane_with_id(floating).unwrap().selectable());
+}
+
+#[test]
+fn floating_hit_testing_uses_topmost_matching_pane() {
+    use zellij_types::position::Position;
+
+    let mut tab = create_tab_with_two_floating_panes();
+    let client = ClientId::new(1);
+    let lower = PaneId::Terminal(TerminalId::new(2));
+    let upper = PaneId::Terminal(TerminalId::new(3));
+    let geom = floating_pane_geom(&tab, lower);
+    tab.floating_panes
+        .get_pane_mut(upper)
+        .unwrap()
+        .set_geom(geom);
+    tab.floating_panes.focus_pane(upper, client);
+    let point = Position::new((geom.y + 1) as i32, (geom.x + 1) as u16);
+    assert_eq!(
+        tab.floating_panes.get_pane_id_at(&point, true).unwrap(),
+        Some(upper)
+    );
+    tab.floating_panes
+        .get_pane_mut(upper)
+        .unwrap()
+        .set_selectable(false);
+    assert_eq!(
+        tab.floating_panes.get_pane_id_at(&point, true).unwrap(),
+        Some(lower)
+    );
+    assert_eq!(
+        tab.floating_panes.get_pane_id_at(&point, false).unwrap(),
+        Some(upper)
+    );
+
+    tab.set_floating_pane_pinned(lower, true);
+    assert_eq!(
+        tab.floating_panes
+            .get_pinned_pane_id_at(&point, false)
+            .unwrap(),
+        Some(lower)
+    );
+    tab.set_floating_pane_pinned(upper, true);
+    assert_eq!(
+        tab.floating_panes
+            .get_pinned_pane_id_at(&point, false)
+            .unwrap(),
+        Some(upper)
+    );
+    assert_eq!(
+        tab.floating_panes
+            .get_pinned_pane_id_at(&point, true)
+            .unwrap(),
+        Some(lower)
+    );
+    assert!(tab.floating_panes.has_pinned_pane_at(&point));
+    let outside = Position::new(20, 121);
+    assert_eq!(
+        tab.floating_panes.get_pane_id_at(&outside, false).unwrap(),
+        None
+    );
+    assert_eq!(
+        tab.floating_panes
+            .get_pinned_pane_id_at(&outside, false)
+            .unwrap(),
+        None
+    );
+    assert!(!tab.floating_panes.has_pinned_pane_at(&outside));
+}
+
+#[test]
 fn correctly_resize_frameless_panes_on_pane_close() {
     // check that https://github.com/zellij-org/zellij/issues/1773 is fixed
     let cols = 60;

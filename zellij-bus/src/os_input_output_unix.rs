@@ -16,7 +16,6 @@ use nix::{
 use tokio::io::unix::AsyncFd;
 
 use libc::{self, ioctl, TIOCSWINSZ};
-use signal_hook::consts::*;
 
 use std::{
     collections::BTreeMap,
@@ -28,7 +27,7 @@ use std::{
         process::CommandExt,
     },
     path::PathBuf,
-    process::{Child, Command},
+    process::Command,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
@@ -152,61 +151,9 @@ fn set_terminal_size_using_fd(
     unsafe { ioctl(fd, TIOCSWINSZ, &winsize) };
 }
 
-/// Handle some signals for the child process. This will loop until the child
-/// process exits.
-fn handle_command_exit(mut child: Child) -> Result<Option<i32>> {
-    let id = ProcessId::new(child.id());
-    let err_context = || {
-        format!(
-            "failed to handle signals and command exit for child process pid {}",
-            id
-        )
-    };
-
-    // returns the exit status, if any
-    let mut should_exit = false;
-    let mut attempts = 3;
-    let mut signals =
-        signal_hook::iterator::Signals::new([SIGINT, SIGTERM]).with_context(err_context)?;
-    'handle_exit: loop {
-        // test whether the child process has exited
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // if the child process has exited, break outside of the loop
-                // and exit this function
-                // TODO: handle errors?
-                break 'handle_exit Ok(status.code());
-            },
-            Ok(None) => {
-                thread::sleep(Duration::from_millis(10));
-            },
-            Err(e) => panic!("error attempting to wait: {}", e),
-        }
-
-        if !should_exit {
-            for signal in signals.pending() {
-                if signal == SIGINT || signal == SIGTERM {
-                    should_exit = true;
-                }
-            }
-        } else if attempts > 0 {
-            // let's try nicely first...
-            attempts -= 1;
-            kill(crate::pty_host::process_pid(id)?, Some(Signal::SIGTERM))
-                .with_context(err_context)?;
-            continue;
-        } else {
-            // when I say whoa, I mean WHOA!
-            let _ = child.kill();
-            break 'handle_exit Ok(None);
-        }
-    }
-}
-
 /// Block until the child exits, reporting every stop and continue on the way.
 ///
-/// `nix`'s `waitpid` reaps, so the caller's `Child` must not be waited on again;
-/// `handle_command_exit`'s `try_wait` will simply see `ECHILD` and fall through.
+/// `nix`'s `waitpid` reaps, so the caller's `Child` must not be waited on again.
 ///
 /// The mirror of `pty_host::host::spawn_child_waiter`, polling while stopped for
 /// the same reason: on XNU nothing wakes a blocking wait for a continue, so the
@@ -315,12 +262,8 @@ fn handle_openpty(
     thread::spawn(move || {
         // `Child::wait` is `waitpid` without `WUNTRACED`, so it cannot tell a
         // stopped child from a busy one — and a `^Z`'d command pane looks
-        // exactly like a hang. Wait for the stops too, and only then hand the
-        // now-reaped child to `handle_command_exit` for its signal handling.
+        // exactly like a hang. This waiter reaps the child and owns its exit status.
         let exit_status = wait_reporting_stops(child_id, terminal_id, child_state_cb.as_ref());
-        handle_command_exit(child)
-            .with_context(|| err_context(&cmd))
-            .fatal();
         let _ = unistd::close(pid_secondary);
         quit_cb(PaneId::Terminal(terminal_id), exit_status, cmd);
     });
@@ -1387,6 +1330,37 @@ mod tests {
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
     use nix::sys::termios;
     use std::io::Read;
+
+    #[test]
+    fn in_process_pane_exit_reports_status_after_reaping_the_child() {
+        for (command, expected_status) in [("exit 7", Some(7)), ("kill -TERM $$", None)] {
+            let (exited, exit) = std::sync::mpsc::channel();
+            let terminal_id = TerminalId::new(1);
+            let run_command = RunCommand {
+                command: PathBuf::from("/bin/sh"),
+                args: vec!["-c".into(), command.into()],
+                ..Default::default()
+            };
+            let (master, _) = handle_terminal(
+                run_command.clone(),
+                None,
+                None,
+                Box::new(move |pane_id, status, command| {
+                    exited.send((pane_id, status, command)).unwrap();
+                }),
+                None,
+                terminal_id,
+            )
+            .unwrap();
+            let master = unsafe { File::from_raw_fd(master) };
+            let result = exit.recv_timeout(Duration::from_secs(10));
+            drop(master);
+            assert_eq!(
+                result.expect("the pane exit must reach its quit callback"),
+                (PaneId::Terminal(terminal_id), expected_status, run_command)
+            );
+        }
+    }
 
     /// Not a test: the entry point `original_termios_reaches_both_local_pane_paths` re-execs
     /// this binary at, to run a real supervisor over the production fd-3 handoff. In every

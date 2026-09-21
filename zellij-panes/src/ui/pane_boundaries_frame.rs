@@ -1424,20 +1424,46 @@ impl PaneFrame {
         Ok(res)
     }
     pub fn clicked_on_pinned(&mut self, position: Position) -> bool {
-        if self.is_floating {
-            // TODO: this is not entirely accurate because our relative position calculation in
-            // itself isn't - when that is fixed, we should adjust this as well
-            let checkbox_center_position = self.geom.cols.saturating_sub(5);
-            let checkbox_position_start = checkbox_center_position.saturating_sub(1);
-            let checkbox_position_end = checkbox_center_position + 1;
-            if position.line() == -1 - isize::from(self.subtitle.is_some())
-                && (position.column() >= checkbox_position_start
-                    && position.column() <= checkbox_position_end)
-            {
-                return true;
-            }
+        if !self.is_floating
+            || !self.is_selectable
+            || !self.show_pinned_indication
+            || !self.should_draw_pane_frames
+            || self.omit_title
+            || self.stack_list_entry.is_some()
+            || position.line()
+                != -(self.content_offset.top as isize) - isize::from(self.subtitle.is_some())
+        {
+            return false;
         }
-        false
+        // Match the space assigned to the right side by the title layout. A title
+        // that consumes it all has no pin control to click.
+        let total_title_length = self.geom.cols.saturating_sub(2);
+        let right_side_space = match self.render_title_middle(total_title_length) {
+            Some((_, middle_length)) => {
+                let side_space = total_title_length.saturating_sub(middle_length + 2) / 2;
+                self.render_title_left_side(side_space).map(|_| side_space)
+            },
+            None => self
+                .render_title_left_side(total_title_length)
+                .map(|(_, length)| total_title_length.saturating_sub(length + 1)),
+        };
+        let Some(right_side_space) = right_side_space else {
+            return false;
+        };
+        let attention_width = self
+            .render_agent_attention(right_side_space)
+            .map(|(_, width)| width)
+            .unwrap_or(0);
+        if self
+            .render_pinned_indication(right_side_space.saturating_sub(attention_width))
+            .is_none()
+        {
+            return false;
+        }
+        // The checkbox is followed by one space, the attention indicator and the
+        // right border. Mouse positions are relative to the pane's content.
+        let start = self.geom.cols - 5 - attention_width - self.content_offset.left;
+        (start..start + 3).contains(&position.column())
     }
     pub fn render(&self) -> Result<(Vec<CharacterChunk>, Option<String>)> {
         let err_context = || "failed to render pane frame";
@@ -1705,8 +1731,50 @@ mod tests {
     #[test]
     fn subtitle_moves_the_floating_pin_hit_target_with_the_title() {
         let mut frame = pane_frame_with(false, true, 80);
+        frame.title = "pane".into();
+        frame.content_offset = Offset::frame(1);
         frame.subtitle = Some(("review · running".into(), 1));
         assert!(frame.clicked_on_pinned(Position::new(-2, 75)));
+        assert!(!frame.clicked_on_pinned(Position::new(-1, 75)));
+    }
+
+    #[test]
+    fn pin_hit_target_matches_the_visible_checkbox() {
+        for cols in [10, 20, 40, 80] {
+            for attention in [None, Some(false), Some(true)] {
+                for show_pin in [false, true] {
+                    for title in ["", "pane 界", "a title that takes all available space"] {
+                        let mut frame = pane_frame_with(false, true, cols);
+                        frame.title = title.into();
+                        frame.content_offset = Offset::frame(1);
+                        frame.scroll_position = (3, 20);
+                        frame.show_pinned_indication = show_pin;
+                        frame.agent_attention = attention;
+                        let rendered = characters_to_string(&frame.render_title().unwrap());
+                        let checkbox = rendered.rfind(" PIN [").map(|start| {
+                            let column = rendered[..start].width() + 5 - frame.content_offset.left;
+                            column..column + 3
+                        });
+                        for column in 0..cols {
+                            assert_eq!(
+                                frame.clicked_on_pinned(Position::new(-1, column as u16)),
+                                checkbox
+                                    .as_ref()
+                                    .is_some_and(|range| range.contains(&column)),
+                                "column {column} of {rendered:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let mut frame = pane_frame_with(false, true, 80);
+        frame.title = "pane".into();
+        frame.content_offset = Offset::frame(1);
+        frame.is_selectable = false;
+        assert!(!frame.clicked_on_pinned(Position::new(-1, 75)));
+        frame.is_selectable = true;
+        frame.omit_title = true;
         assert!(!frame.clicked_on_pinned(Position::new(-1, 75)));
     }
 

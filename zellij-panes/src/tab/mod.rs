@@ -9160,6 +9160,11 @@ impl Tab {
             })
     }
 
+    pub fn can_replace_active_pane(&self, client_id: ClientId) -> bool {
+        self.get_active_pane_id(client_id)
+            .is_some_and(|pane_id| self.has_non_suppressed_pane_with_pid(&pane_id))
+    }
+
     pub fn focus_pane_with_id(
         &mut self,
         pane_id: PaneId,
@@ -9167,19 +9172,49 @@ impl Tab {
         should_be_in_place: bool,
         client_id: ClientId,
     ) -> Result<()> {
-        // TODO: should error if pane is not selectable
-        //
+        // Revealing a suppressed pane explicitly makes it selectable below. Hidden stack
+        // members retain their selectability when swapped into the visible slot.
+        if self
+            .get_pane_with_id(pane_id)
+            .is_some_and(|pane| !pane.selectable())
+            && (!self.suppressed_panes.contains_key(&pane_id)
+                || self.pane_is_hidden_stack_list_member(&pane_id))
+        {
+            return Err(anyhow!(
+                "Cannot focus pane {pane_id:?}: pane is not selectable"
+            ));
+        }
+
+        // Resolve the replacement before a dismissible overlay can give up focus.
+        let pane_id_to_replace = if !should_float
+            && should_be_in_place
+            && self.suppressed_panes.contains_key(&pane_id)
+            && !self.pane_is_hidden_stack_list_member(&pane_id)
+        {
+            Some(
+                self.get_active_pane_id(client_id)
+                    .filter(|id| self.has_non_suppressed_pane_with_pid(id))
+                    .with_context(|| {
+                        format!("no active pane to replace for client {client_id}; pane {pane_id:?} remains suppressed")
+                    })?,
+            )
+        } else {
+            None
+        };
+
         // A pane named by id is the pane the user just asked for, so this takes the *opening*
         // shape of the rule rather than the moving one that `lower_layer_may_take_focus` applies
         // to the focus-move family: a dismissible overlay gives the keyboard up so it can dismiss
         // itself, a modal keeps it, and either way the focus underneath still lands where it was
         // asked to - exactly as `add_floating_pane` does.
         //
-        // Asked only for a pane that is not itself an overlay - the overlay arm of the chain below
-        // is the one place this must not fire, or a request to focus one overlay would defocus
-        // another on the way in - and only for a pane this tab actually holds, since a request
-        // naming a pane that is not here focuses nothing and should dismiss nothing.
-        if !self.overlay_panes.panes_contain(&pane_id) && self.get_pane_with_id(pane_id).is_some() {
+        // A replacement keeps the focus of its slot. Otherwise, defocus only for a pane this
+        // tab holds outside the overlay collection: focusing another overlay or naming an
+        // absent pane should dismiss nothing.
+        if pane_id_to_replace.is_none()
+            && !self.overlay_panes.panes_contain(&pane_id)
+            && self.get_pane_with_id(pane_id).is_some()
+        {
             self.overlay_panes.defocus_pane_if_dismissible(client_id);
         }
         if self.focus_hidden_stack_list_member(pane_id, client_id) {
@@ -9219,14 +9254,23 @@ impl Tab {
                                 self.show_floating_panes();
                             }
                             self.add_floating_pane(pane, pane_id, None, true, Some(client_id))
-                        } else if should_be_in_place {
-                            let replaced_pane = if self.are_floating_panes_visible() {
-                                self.floating_panes
-                                    .replace_active_pane(pane, client_id)
-                                    .ok()
-                            } else {
-                                self.tiled_panes.replace_active_pane(pane, client_id)
-                            };
+                        } else if let Some(pane_id_to_replace) = pane_id_to_replace {
+                            let replaced_pane =
+                                if self.overlay_panes.panes_contain(&pane_id_to_replace) {
+                                    Some(
+                                        self.overlay_panes
+                                            .replace_pane(pane_id_to_replace, pane)
+                                            .context("failed to replace active overlay pane")?,
+                                    )
+                                } else if self.floating_panes.panes_contain(&pane_id_to_replace) {
+                                    Some(
+                                        self.floating_panes
+                                            .replace_pane(pane_id_to_replace, pane)
+                                            .context("failed to replace active floating pane")?,
+                                    )
+                                } else {
+                                    self.tiled_panes.replace_pane(pane_id_to_replace, pane)
+                                };
                             if let Some(replaced_pane) = replaced_pane {
                                 let is_scrollback_editor = false;
                                 self.track_stack_list_member_id_swap(replaced_pane.pid(), pane_id);
@@ -9373,7 +9417,7 @@ impl Tab {
     ///
     /// Nothing brings it back on its own - it has to be asked for by name (a plugin's
     /// `show_self`, selecting a stack-list member).
-    fn park_pane(&mut self, pane: Box<dyn Pane>) {
+    pub fn park_pane(&mut self, pane: Box<dyn Pane>) {
         self.suppressed_panes
             .insert(pane.pid(), SuppressedPane::parked(pane));
     }
