@@ -46,6 +46,7 @@ fn confirmation_policy_lists_tools_correctly() {
         "set_floating_pane_geometry",
         "scroll_pane",
         "web_search",
+        "openrouter_decisions",
         "schedule",
         "unschedule",
         "agent_register",
@@ -105,7 +106,7 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 122);
+    assert_eq!(names.len(), 123);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
     assert_eq!(confirmed, 28);
 }

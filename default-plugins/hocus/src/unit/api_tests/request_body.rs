@@ -217,9 +217,9 @@ fn the_tool_payload_floor_stays_under_22_kb() {
 /// name (`deno_commands`) after that, which is what moved the cap from 37,000 to 37,500.
 /// The workflow family adds definition, diagnostics and control schemas only when loaded.
 /// Project rename and merge add two schemas to the deferred project family.
-/// The two deferred Swamp issue readers bring the total to 51,487 bytes.
+/// The deferred Decisions schema brings the current total to 52,388 bytes.
 #[test]
-fn the_fully_loaded_tool_payload_stays_under_52_kb() {
+fn the_fully_loaded_tool_payload_stays_under_53_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     // A load of every deferred family, which is what puts them in the array — the
@@ -244,7 +244,7 @@ fn the_fully_loaded_tool_payload_stays_under_52_kb() {
     // and a real conversation's transcript is not this one.
     let tools_bytes = serde_json::to_vec(&value["tools"]).unwrap().len();
     assert!(
-        tools_bytes < 52_000,
+        tools_bytes < 53_000,
         "the fully loaded tool payload grew to {tools_bytes} bytes",
     );
 }

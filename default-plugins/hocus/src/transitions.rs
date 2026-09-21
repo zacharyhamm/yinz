@@ -445,6 +445,7 @@ impl State {
         match self.status {
             Status::AwaitingCommand
             | Status::AwaitingSearch
+            | Status::AwaitingDecisions
             | Status::AwaitingExtension
             | Status::AwaitingPluginLoad
             | Status::AwaitingPluginTest
@@ -484,7 +485,10 @@ impl State {
         // A Slack call names itself: "running: slack_backfill" beats a joke when
         // what you actually want to know is what you are waiting on.
         let head = self.pending.front();
-        if matches!(self.status, Status::AwaitingCommand) {
+        if matches!(
+            self.status,
+            Status::AwaitingCommand | Status::AwaitingDecisions
+        ) {
             if let Some(call) = head {
                 return Some(format!("{spinner} running: {}", call.name));
             }
