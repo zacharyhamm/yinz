@@ -276,6 +276,70 @@ fn a_reload_that_turns_the_kitty_keyboard_protocol_off_reaches_an_open_pane() {
 }
 
 #[test]
+fn a_reload_enabling_mirroring_reconciles_tiled_focus_beneath_floating_panes() {
+    for reload_client in [ClientId::new(2), ClientId::new(99)] {
+        let clients = [ClientId::new(1), ClientId::new(2)];
+        let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.add_client(clients[1]).unwrap();
+        let tab = screen.get_active_tab_mut(clients[1]).unwrap();
+        tab.new_pane(
+            PaneId::Terminal(TerminalId::new(2)),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(clients[1]),
+            None,
+        )
+        .unwrap();
+        assert_ne!(
+            tab.get_active_pane_id(clients[0]),
+            tab.get_active_pane_id(clients[1])
+        );
+        let reference_client = if reload_client == clients[1] {
+            clients[1]
+        } else {
+            clients[0]
+        };
+        let expected_tiled_pane = tab.get_active_pane_id(reference_client).unwrap();
+        let floating_pane = PaneId::Terminal(TerminalId::new(3));
+        tab.new_pane(
+            floating_pane,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Floating(None),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(tab.are_floating_panes_visible());
+        for client in clients {
+            assert_eq!(tab.get_active_pane_id(client), Some(floating_pane));
+        }
+
+        let mut config = test_screen_config();
+        config.session_is_mirrored = true;
+        screen
+            .reconfigure(config, Keybinds::default(), reload_client)
+            .unwrap();
+
+        let tab = screen.get_active_tab_mut(clients[0]).unwrap();
+        assert!(tab.are_floating_panes_visible());
+        for client in clients {
+            assert_eq!(tab.get_active_pane_id(client), Some(floating_pane));
+        }
+        tab.hide_floating_panes();
+        for client in clients {
+            assert_eq!(tab.get_active_pane_id(client), Some(expected_tiled_pane));
+        }
+    }
+}
+
+#[test]
 fn a_reload_enabling_mirroring_reconciles_client_tabs_and_pane_focus() {
     // A connected caller supplies the focus; a detached caller falls back to the lowest ID.
     for reload_client in [ClientId::new(2), ClientId::new(99)] {

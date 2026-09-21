@@ -3656,9 +3656,9 @@ impl Screen {
             let shared_focus = clients.iter().find_map(|id| {
                 self.get_active_tab(*id)
                     .ok()
-                    .map(|tab| (tab.position, tab.get_active_pane_id(*id)))
+                    .map(|tab| (*id, tab.position, tab.get_active_pane_id(*id)))
             });
-            if let Some((tab_position, pane_id)) = shared_focus {
+            if let Some((reference_client_id, tab_position, pane_id)) = shared_focus {
                 for client_id in clients {
                     self.switch_active_tab(tab_position, None, true, client_id)
                         .context("failed to reconcile client tabs before enabling mirroring")?;
@@ -3674,6 +3674,8 @@ impl Screen {
                         self.sync_scroll_mode_on_focus(client_id).non_fatal();
                     }
                 }
+                self.get_active_tab_mut(reference_client_id)?
+                    .reconcile_tiled_focus(reference_client_id);
                 self.log_and_report_session_state()
                     .context("failed to report reconciled client focus")?;
             }
