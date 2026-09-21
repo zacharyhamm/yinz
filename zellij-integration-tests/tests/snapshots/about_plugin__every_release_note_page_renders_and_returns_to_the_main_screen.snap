@@ -25,7 +25,7 @@ $
                │                                                                                        │
                │Help: <ESC> - Go back                                                                   │
                └────────────────────────────────────────────────────────────────────────────────────────┘
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT   
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT   
 === Kitty Graphics Protocol
  Zellij (test)  [0] Tab #1  + 
 $
@@ -49,7 +49,7 @@ $
                │                                                                                        │
                │Help: <ESC> - Go back                                                                   │
                └────────────────────────────────────────────────────────────────────────────────────────┘
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT   
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT   
 === Scroll By Command
  Zellij (test)  [0] Tab #1  + 
 $
@@ -73,7 +73,7 @@ $
                │                                                                                        │
                │Help: <ESC> - Go back                                                                   │
                └────────────────────────────────────────────────────────────────────────────────────────┘
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT   
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT   
 === New UI
  Zellij (test)  [0] Tab #1  + 
 $
@@ -97,7 +97,7 @@ $
                │                                                                                        │
                │Help: <ESC> - Go back                                                                   │
                └────────────────────────────────────────────────────────────────────────────────────────┘
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT   
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT   
 === Focus Last Pane and Fullscreen Floating Panes
  Zellij (test)  [0] Tab #1  + 
 $
@@ -121,4 +121,4 @@ $
                │                                                                                        │
                │Help: <ESC> - Go back                                                                   │
                └────────────────────────────────────────────────────────────────────────────────────────┘
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

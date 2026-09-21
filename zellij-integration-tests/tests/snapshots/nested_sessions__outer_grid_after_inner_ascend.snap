@@ -7,5 +7,5 @@ expression: normalized(&outer_after_inner_ascend)
  Zellij (test)  [0] Tab #1  + 
 █
  Descend: Ctrl + <o> + <[>
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
  Ascend: Ctrl + <o> + <]>

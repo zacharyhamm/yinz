@@ -626,6 +626,16 @@ pub fn first_line(
         ),
         KeyShortcut::new(
             KeyMode::UnselectedAlternate,
+            KeyAction::Agent,
+            to_char(action_key(
+                binds,
+                &[Action::SwitchToMode {
+                    input_mode: InputMode::Agent,
+                }],
+            )),
+        ),
+        KeyShortcut::new(
+            KeyMode::Unselected,
             KeyAction::Pane,
             to_char(action_key(
                 binds,
@@ -635,7 +645,7 @@ pub fn first_line(
             )),
         ),
         KeyShortcut::new(
-            KeyMode::Unselected,
+            KeyMode::UnselectedAlternate,
             KeyAction::Tab,
             to_char(action_key(
                 binds,
@@ -645,7 +655,7 @@ pub fn first_line(
             )),
         ),
         KeyShortcut::new(
-            KeyMode::UnselectedAlternate,
+            KeyMode::Unselected,
             KeyAction::Resize,
             to_char(action_key(
                 binds,
@@ -655,7 +665,7 @@ pub fn first_line(
             )),
         ),
         KeyShortcut::new(
-            KeyMode::Unselected,
+            KeyMode::UnselectedAlternate,
             KeyAction::Move,
             to_char(action_key(
                 binds,
@@ -665,7 +675,7 @@ pub fn first_line(
             )),
         ),
         KeyShortcut::new(
-            KeyMode::UnselectedAlternate,
+            KeyMode::Unselected,
             KeyAction::Search,
             to_char(action_key(
                 binds,
@@ -675,22 +685,12 @@ pub fn first_line(
             )),
         ),
         KeyShortcut::new(
-            KeyMode::Unselected,
+            KeyMode::UnselectedAlternate,
             KeyAction::Session,
             to_char(action_key(
                 binds,
                 &[Action::SwitchToMode {
                     input_mode: InputMode::Session,
-                }],
-            )),
-        ),
-        KeyShortcut::new(
-            KeyMode::UnselectedAlternate,
-            KeyAction::Agent,
-            to_char(action_key(
-                binds,
-                &[Action::SwitchToMode {
-                    input_mode: InputMode::Agent,
                 }],
             )),
         ),
@@ -1267,6 +1267,7 @@ mod tests {
             keybinds : vec![
                 (InputMode::Normal, vec![
                     (KeyWithModifier::new(BareKey::Char('a')).with_ctrl_modifier(), vec![Action::SwitchToMode{input_mode: InputMode::Locked}]),
+                    (KeyWithModifier::new(BareKey::Char('g')), vec![Action::SwitchToMode{input_mode: InputMode::Agent}]),
                     (KeyWithModifier::new(BareKey::Backspace), vec![Action::SwitchToMode{input_mode: InputMode::Pane}]),
                     (KeyWithModifier::new(BareKey::Enter), vec![Action::SwitchToMode{input_mode: InputMode::Tab}]),
                     (KeyWithModifier::new(BareKey::Tab), vec![Action::SwitchToMode{input_mode: InputMode::Resize}]),
@@ -1281,7 +1282,7 @@ mod tests {
 
         assert_eq!(
             ret,
-            " <Ctrl a> LOCK >> <BACKSPACE> PANE >> <ENTER> TAB >> <TAB> SIZE >> <←> MOVE >"
+            " <Ctrl a> LOCK >> <g> AGENT >> <BACKSPACE> PANE >> <ENTER> TAB >> <TAB> SIZE >> <←> MOVE >"
                 .to_string()
         );
     }
