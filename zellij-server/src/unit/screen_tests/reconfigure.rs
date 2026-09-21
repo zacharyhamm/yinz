@@ -249,18 +249,110 @@ fn a_reload_that_turns_the_kitty_keyboard_protocol_off_reaches_an_open_pane() {
         vec![b"\x1b[?1u".to_vec()],
         "the app negotiated the protocol"
     );
+    active_pane_replies(&mut screen, b"\x1b[?1049h");
 
     let mut config = test_screen_config();
     config.support_kitty_keyboard_protocol = false;
     screen
         .reconfigure(config, Keybinds::default(), client_id)
         .unwrap();
+    active_pane_replies(&mut screen, b"\x1b[?1049l");
 
     assert_eq!(
         active_pane_replies(&mut screen, b"\x1b[?u"),
         vec![b"\x1b[?0u".to_vec()],
         "the reload turned it off in the open pane"
     );
+    let pane = screen
+        .get_active_tab_mut(client_id)
+        .unwrap()
+        .get_active_pane_mut(client_id)
+        .unwrap();
+    let key = zellij_types::keys::KeyWithModifier::new(zellij_types::keys::BareKey::Enter);
+    assert!(matches!(
+        pane.adjust_input_to_terminal(&Some(key), vec![b'\r'], false, Some(client_id)),
+        Some(crate::tab::AdjustedInput::WriteBytesToTerminal(bytes)) if bytes == b"\r"
+    ));
+}
+
+#[test]
+fn a_reload_enabling_mirroring_reconciles_client_tabs_and_pane_focus() {
+    // A connected caller supplies the focus; a detached caller falls back to the lowest ID.
+    for reload_client in [ClientId::new(2), ClientId::new(99)] {
+        let clients = [ClientId::new(1), ClientId::new(2), ClientId::new(3)];
+        let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
+        screen.add_client(clients[1]).unwrap();
+        screen.add_client(clients[2]).unwrap();
+        screen
+            .get_active_tab_mut(clients[2])
+            .unwrap()
+            .new_pane(
+                PaneId::Terminal(TerminalId::new(3)),
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::default(),
+                Some(clients[2]),
+                None,
+            )
+            .unwrap();
+        screen
+            .switch_active_tab(TabPosition::new(0), None, true, clients[0])
+            .unwrap();
+        assert_ne!(
+            screen.get_active_pane_id(&clients[1]),
+            screen.get_active_pane_id(&clients[2]),
+            "clients in the same tab start on different panes"
+        );
+        let reference_client = if reload_client == clients[1] {
+            clients[1]
+        } else {
+            clients[0]
+        };
+        let expected_tab = screen.active_tab_ids[&reference_client];
+        let expected_pane = screen.get_active_pane_id(&reference_client);
+        let mut config = test_screen_config();
+        config.session_is_mirrored = true;
+        screen
+            .reconfigure(config.clone(), Keybinds::default(), reload_client)
+            .unwrap();
+
+        for client in clients {
+            assert_eq!(screen.active_tab_ids[&client], expected_tab);
+            assert_eq!(screen.get_active_pane_id(&client), expected_pane);
+            for (tab_id, tab) in &screen.tabs {
+                assert_eq!(tab.has_connected_client(&client), *tab_id == expected_tab);
+            }
+        }
+        let tab_history = screen.tab_history.clone();
+        screen
+            .reconfigure(config, Keybinds::default(), clients[2])
+            .unwrap();
+        assert_eq!(screen.tab_history, tab_history);
+
+        let next_tab = screen
+            .tabs
+            .values()
+            .find(|tab| tab.id != expected_tab)
+            .unwrap();
+        let (next_id, next_position) = (next_tab.id, next_tab.position);
+        screen
+            .switch_active_tab(next_position, None, true, clients[2])
+            .unwrap();
+        for client in clients {
+            assert_eq!(screen.active_tab_ids[&client], next_id);
+            assert_eq!(
+                screen.get_active_pane_id(&client),
+                screen.get_active_pane_id(&clients[2])
+            );
+            for (tab_id, tab) in &screen.tabs {
+                assert_eq!(tab.has_connected_client(&client), *tab_id == next_id);
+            }
+        }
+    }
 }
 
 /// The probe answer outlives the option: turning the protocol off masks it, turning the
