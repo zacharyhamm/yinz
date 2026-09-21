@@ -826,6 +826,11 @@ pub trait Pane {
     fn store_pane_name(&mut self);
     fn load_pane_name(&mut self);
     fn set_borderless(&mut self, borderless: bool);
+    /// Set border metadata and the content inset together, without a temporary frame resize.
+    fn set_borderless_with_content_offset(&mut self, borderless: bool, offset: Offset) {
+        self.set_borderless(borderless);
+        self.set_content_offset(offset);
+    }
     fn borderless(&self) -> bool;
     fn set_exclude_from_sync(&mut self, exclude_from_sync: bool);
     fn exclude_from_sync(&self) -> bool;

@@ -2987,10 +2987,9 @@ impl Screen {
 
     fn close_self_instruction(&self, plugin: PluginId, client: ClientId) -> ScreenInstruction {
         let id = PaneId::Plugin(plugin);
-        let composed = self
-            .tab_containing_pane(id)
-            .and_then(|tab| tab.multipane_info(id))
-            .is_some();
+        let composed = self.tab_containing_pane(id).is_some_and(|tab| {
+            tab.multipane_info(id).is_some() && tab.stands_in_for_a_pane(id).is_none()
+        });
         ScreenInstruction::ClosePane(id, composed.then_some(client), None, None)
     }
 

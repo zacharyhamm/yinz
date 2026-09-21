@@ -409,7 +409,10 @@ impl OverlayPanes {
             .iter_mut()
             .find(|(id, _)| *id == pane_id)
             .context("overlay child not found")?;
-        with_pane.set_borderless(overlay.coordinates.borderless.unwrap_or(false));
+        with_pane.set_borderless_with_content_offset(
+            overlay.coordinates.borderless.unwrap_or(false),
+            pane.get_content_offset(),
+        );
         *id = with_id;
         let mut old = std::mem::replace(pane, with_pane);
         old.reset_size_and_position_override();
@@ -878,7 +881,7 @@ impl OverlayPanes {
 
         if let Some(borderless) = new_coordinates.borderless {
             for (_, pane) in overlay.children.as_mut_slice() {
-                pane.set_borderless(borderless);
+                pane.set_borderless_with_content_offset(borderless, pane.get_content_offset());
             }
         }
         let mut new_coordinates = new_coordinates;
@@ -907,7 +910,7 @@ impl OverlayPanes {
             return false;
         };
         for (_, pane) in overlay.children.as_mut_slice() {
-            pane.set_borderless(borderless);
+            pane.set_borderless_with_content_offset(borderless, pane.get_content_offset());
         }
         overlay.coordinates.borderless = Some(borderless);
         self.set_pane_frames().non_fatal();
@@ -1410,14 +1413,15 @@ impl OverlayPanes {
                     pane.reset_size_and_position_override();
                 }
                 if split.is_some() {
-                    pane.set_borderless(!framed);
+                    pane.set_borderless_with_content_offset(!framed, Offset::default());
+                } else {
+                    pane.set_content_offset(if framed {
+                        Offset::frame(1)
+                    } else {
+                        Offset::default()
+                    });
                 }
                 pane.set_frame(framed && split.is_none());
-                pane.set_content_offset(if framed && split.is_none() {
-                    Offset::frame(1)
-                } else {
-                    Offset::default()
-                });
                 let current = pane.current_geom();
                 if current.cols.as_usize() > 0 && current.rows.as_usize() > 0 {
                     resize_pty!(pane, os_api, self.senders, self.character_cell_size)
