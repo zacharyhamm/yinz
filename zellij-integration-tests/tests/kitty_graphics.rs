@@ -75,6 +75,31 @@ fn setup_kitty_host(zellij: &TestSession, terminal: &FakePtyHandle) {
 }
 
 #[test]
+fn hocus_wand_uses_the_startup_kitty_probe() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(zellij_integration_tests::LayoutInfo::Stringified(
+            "layout { pane { plugin location=\"zellij:hocus\" { shared true; }; }; }".to_owned(),
+        ))
+        .start();
+    zellij.wait_until_raw_output("client sent its graphics probe", |bytes| {
+        contains_bytes(bytes, b"\x1b_Ga=q,i=31,")
+    });
+    // Answer as soon as the query is written, before waiting for Hocus to load.
+    zellij.send_stdin(b"\x1b[6;21;8t\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+    zellij.wait_until("Hocus asks for permissions", |screen| {
+        screen.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(&keys::key('y'));
+    zellij.wait_until_raw_output("Hocus wand image reaches the terminal", |bytes| {
+        contains_bytes(bytes, b"\x1b_Ga=t,q=2,")
+            && contains_bytes(bytes, b"\x1b_Ga=p,q=2,")
+            && contains_bytes(bytes, "\u{10eeee}".as_bytes())
+    });
+    zellij.quit();
+}
+
+#[test]
 fn pane_kitty_image_reaches_client_with_transmit_and_placement() {
     let mut zellij = start_zellij();
     let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);

@@ -76,6 +76,12 @@ pub enum ServerInstruction {
     ForwardQueryToHost(u32, Vec<u8>, bool),
     KeyPassthroughChanged(ClientId, PaneId, PaneId, bool, Option<Direction>, bool),
     EmitNestedSessionFrameToClient(ClientId, Vec<u8>),
+    /// Keep the startup graphics answer ordered after client registration and before removal,
+    /// just like `SynchronizedOutputSupport`.
+    KittyGraphicsSupport {
+        client_id: ClientId,
+        supported: bool,
+    },
     /// Whether this client's host terminal presents each frame atomically (DECSET 2026).
     ///
     /// It comes the long way round, through this loop rather than straight from the router to

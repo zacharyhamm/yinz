@@ -48,13 +48,18 @@ impl Screen {
     }
 
     pub fn update_kitty_graphics_support(&mut self, client_id: ClientId, supported: bool) {
-        // The probe reply can outlive its client. `remove_client` drops both this entry and the
-        // `mode_info` one because client ids are recycled; re-creating them here would put the
-        // departed terminal's capability back into the tab aggregate, and into every tab
-        // created afterwards.
-        if !self.connected_clients_contains(&client_id) {
+        // The server registers the first client's size before spawning its layout, but it joins
+        // connected_clients only when that layout lands. Keep a probe that arrives in between.
+        // Both registrations are removed on detach, so a departed client's reply stays ignored.
+        if !self.connected_clients_contains(&client_id)
+            && !self.client_sizes.contains_key(&client_id)
+        {
             return;
         }
+        log::info!(
+            "kitty graphics: client {client_id} probe={supported}, protocol_enabled={}",
+            self.support_kitty_graphics_protocol
+        );
         self.kitty_probe_answers.insert(client_id, supported);
         let supported = supported && self.support_kitty_graphics_protocol;
         self.kitty_host_capabilities
@@ -135,12 +140,9 @@ impl Screen {
 
     /// Remember whether this client's host presents each frame atomically (DECSET 2026).
     ///
-    /// Unguarded, unlike `update_kitty_graphics_support`: that one arrives long after attach and
-    /// can outlive its client, so it has to check that the id still means what it meant. This one
-    /// is sent by the client the moment it attaches, and takes the same route through the server's
-    /// main loop as `AddClient` and `RemoveClient` do - so it cannot land on the wrong side of
-    /// either, and there is nothing left for a guard here to catch. Watchers report too, and they
-    /// are not in `connected_clients`, so a guard would in fact throw their answers away.
+    /// Like Kitty support, this takes the same route through the server's main loop as
+    /// `AddClient` and `RemoveClient`, preserving their order. Watchers report too, and they
+    /// are not in `connected_clients`, so no connected-client guard applies here.
     pub fn update_synchronized_output_support(
         &mut self,
         client_id: ClientId,

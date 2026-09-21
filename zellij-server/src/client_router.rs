@@ -543,16 +543,13 @@ pub(crate) fn route_thread_main(
                             .with_context(err_context)?;
                         },
                         ClientToServerMsg::KittyGraphicsSupport { supported } => {
-                            send_to_screen_or_retry_queue!(
-                                senders,
-                                ScreenInstruction::SetKittyGraphicsSupport {
+                            // A fast probe must not overtake FirstClientConnected/AttachClient.
+                            to_server
+                                .send(ServerInstruction::KittyGraphicsSupport {
                                     client_id,
-                                    supported
-                                },
-                                instruction,
-                                retry_queue
-                            )
-                            .with_context(err_context)?;
+                                    supported,
+                                })
+                                .with_context(err_context)?;
                         },
                         ClientToServerMsg::SynchronizedOutputSupport { supported } => {
                             // Through the server's main loop rather than straight to Screen, so
