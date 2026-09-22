@@ -1074,6 +1074,50 @@ fn layout_with_new_tab_template() {
 }
 
 #[test]
+fn plugin_pane_template_keeps_the_plugin_when_the_consumer_sets_a_cwd() {
+    // A consumer that only adds `cwd` to a plugin template used to come back as
+    // `Run::Cwd`: the plugin was dropped and the pane opened a shell instead.
+    let raw = r#"
+        layout {
+            pane_template name="files" { plugin location="zellij:strider"; }
+            files cwd="/tmp"
+            files
+        }
+    "#;
+    let layout = crate::kdl::layout::from_kdl(raw, None, None, None).unwrap();
+    let (tiled, _) = layout.template.unwrap();
+    let with_cwd = tiled.children[0].run.as_ref().expect("a run");
+    let without_cwd = tiled.children[1].run.as_ref().expect("a run");
+    match with_cwd {
+        Run::Plugin(plugin) => {
+            assert_eq!(plugin.get_initial_cwd(), Some(PathBuf::from("/tmp")));
+            assert_eq!(plugin.location_string(), "zellij:strider");
+        },
+        other => panic!("expected the template's plugin with a cwd, got {other:?}"),
+    }
+    match without_cwd {
+        Run::Plugin(plugin) => assert_eq!(plugin.get_initial_cwd(), None),
+        other => panic!("expected the template's plugin, got {other:?}"),
+    }
+}
+
+#[test]
+fn cwd_only_pane_template_gives_its_cwd_to_a_plugin_consumer() {
+    let raw = r#"
+        layout {
+            pane_template name="in_tmp" cwd="/tmp"
+            in_tmp { plugin location="zellij:strider"; }
+        }
+    "#;
+    let layout = crate::kdl::layout::from_kdl(raw, None, None, None).unwrap();
+    let (tiled, _) = layout.template.unwrap();
+    match tiled.children[0].run.as_ref().expect("a run") {
+        Run::Plugin(plugin) => assert_eq!(plugin.get_initial_cwd(), Some(PathBuf::from("/tmp"))),
+        other => panic!("expected a plugin with the template's cwd, got {other:?}"),
+    }
+}
+
+#[test]
 fn layout_with_pane_templates() {
     let kdl_layout = r#"
         layout {
