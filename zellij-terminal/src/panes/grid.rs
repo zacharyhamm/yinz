@@ -834,7 +834,6 @@ struct KittyRowSnapshot {
     split_rows: u64,
 }
 
-#[derive(Clone)]
 pub struct Grid {
     pub(crate) lines_above: VecDeque<Row>,
     pub(crate) viewport: VecDeque<Row>,
@@ -4199,14 +4198,10 @@ impl Grid {
             } else {
                 (x_pixel_coordinates, y_pixel_coordinates)
             };
-            let new_image_id = self.sixel_grid.next_image_id();
-            let new_sixel_image =
-                self.sixel_grid
-                    .end_image(new_image_id, x_pixel_coordinates, y_pixel_coordinates);
-            if let Some(new_sixel_image) = new_sixel_image {
-                let (image_pixel_height, _image_pixel_width) = new_sixel_image.pixel_size();
-                self.sixel_grid
-                    .new_sixel_image(new_image_id, new_sixel_image);
+            if let Some((image_pixel_height, _image_pixel_width)) = self
+                .sixel_grid
+                .end_image(x_pixel_coordinates, y_pixel_coordinates)
+            {
                 if !self.sixel_scrolling {
                     self.move_cursor_down_by_pixels(image_pixel_height);
                 }
@@ -5392,12 +5387,6 @@ impl Perform for Grid {
                             if let Some(mut alternate_screen_state) =
                                 self.alternate_screen_state.take()
                             {
-                                if let Some(image_ids_to_reap) = self.sixel_grid.clear() {
-                                    // reap images before dropping the alternate_screen_state contents
-                                    // - we can't implement a drop method for this because the store is
-                                    // outside of the alternate_screen_state struct
-                                    self.sixel_grid.reap_images(image_ids_to_reap);
-                                }
                                 self.kitty_grid.clear_all_placements();
                                 alternate_screen_state.apply_contents_to(
                                     &mut self.lines_above,
@@ -6037,7 +6026,6 @@ impl Perform for Grid {
     }
 }
 
-#[derive(Clone)]
 pub struct AlternateScreenState {
     lines_above: VecDeque<Row>,
     viewport: VecDeque<Row>,

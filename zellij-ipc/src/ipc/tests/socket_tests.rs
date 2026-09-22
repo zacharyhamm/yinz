@@ -99,6 +99,64 @@ fn send_apis_propagate_flush_failures() {
     }
 }
 
+#[test]
+fn a_partial_write_permanently_closes_the_sender_without_retrying_on_drop() {
+    struct PartialWriteStream(std::sync::Arc<AtomicU32>);
+    impl std::io::Read for PartialWriteStream {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Ok(0)
+        }
+    }
+    impl std::io::Write for PartialWriteStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            match self.0.fetch_add(1, Ordering::SeqCst) {
+                0 => Ok(buf.len().min(2)),
+                1 => Err(std::io::ErrorKind::TimedOut.into()),
+                _ => Ok(buf.len()),
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl IpcStream for PartialWriteStream {
+        fn try_clone_stream(&self) -> std::io::Result<Box<dyn IpcStream>> {
+            Ok(Box::new(Self(self.0.clone())))
+        }
+        fn set_read_timeout(&self, _: Option<std::time::Duration>) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    for from_client in [true, false] {
+        let writes = std::sync::Arc::new(AtomicU32::new(0));
+        let mut sender = IpcSenderWithContext::<ClientToServerMsg>::from_boxed(Box::new(
+            PartialWriteStream(writes.clone()),
+        ));
+        let result = if from_client {
+            sender.send_client_msg(ClientToServerMsg::BackgroundColor {
+                color: "x".repeat(16 * 1024),
+            })
+        } else {
+            sender.send_server_msg(ServerToClientMsg::Render {
+                content: "x".repeat(16 * 1024),
+            })
+        };
+        assert!(result.is_err());
+        assert!(sender
+            .send_client_msg(ClientToServerMsg::KillSession)
+            .is_err());
+        assert!(sender
+            .send_server_msg(ServerToClientMsg::UnblockInputThread)
+            .is_err());
+        drop(sender);
+        assert_eq!(
+            writes.load(Ordering::SeqCst),
+            2,
+            "failed frames must never be retried"
+        );
+    }
+}
+
 fn try_connect(name: &IpcName) -> std::io::Result<interprocess::local_socket::Stream> {
     use interprocess::local_socket::{GenericFilePath, Stream as LocalSocketStream};
     LocalSocketStream::connect(name.as_path().to_fs_name::<GenericFilePath>().unwrap())

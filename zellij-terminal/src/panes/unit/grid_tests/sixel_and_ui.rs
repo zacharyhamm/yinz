@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn sixel_images_are_reaped_when_a_pane_exits_or_resets_in_the_alternate_screen() {
+    for reset in [false, true] {
+        let mut grid = create_grid_with_content("");
+        *grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+            width: 8,
+            height: 6,
+        });
+        let store = grid.sixel_grid.sixel_image_store.clone();
+        let image = b"\x1bPq\"1;1;16;12#1;2;100;0;0#1!16~-!16~\x1b\\";
+        let mut parser = vte::Parser::new();
+        parser.advance(&mut grid, image);
+        parser.advance(&mut grid, b"\x1b[?1049h");
+        parser.advance(&mut grid, image);
+        assert_eq!(store.borrow().image_count(), 2);
+
+        if reset {
+            grid.reset_terminal_state();
+        } else {
+            drop(grid);
+        }
+        assert_eq!(store.borrow().image_count(), 0, "reset: {reset}");
+    }
+}
+
+#[test]
 pub fn sixel_images_are_reaped_when_scrolled_off() {
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));

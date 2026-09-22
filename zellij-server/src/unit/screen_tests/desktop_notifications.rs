@@ -83,6 +83,26 @@ fn an_osc_99_notification_reaching_an_osc_9_host_is_translated_down() {
 }
 
 #[test]
+fn encoded_notification_text_cannot_inject_a_host_clipboard_command() {
+    let (mut screen, server_receiver) =
+        screen_with_a_client_for_notifications(HostNotificationProtocol::Osc9, BTreeMap::new());
+    let pane = screen
+        .get_active_tab_mut(ClientId::new(1))
+        .unwrap()
+        .get_active_pane_mut(ClientId::new(1))
+        .unwrap();
+    // Decodes to "done", BEL, an OSC 52 clipboard write, and BEL.
+    pane.handle_pty_bytes(b"\x1b]99;e=1;ZG9uZQcbXTUyO2M7WVdKagc=\x07".to_vec());
+    let notifications = pane.drain_desktop_notifications();
+    assert_eq!(notifications.len(), 1);
+    screen.forward_desktop_notifications(notifications, TerminalId::new(1));
+
+    let output = collect_forwarded_notifications(&server_receiver);
+    assert!(output.contains("\x1b]9;done]52;c;YWJj\x07"), "{output:?}");
+    assert!(!output.contains("\x1b]52;"), "{output:?}");
+}
+
+#[test]
 fn an_osc_99_request_with_nothing_to_show_is_not_sent_to_an_osc_9_host() {
     let (mut screen, server_receiver) =
         screen_with_a_client_for_notifications(HostNotificationProtocol::Auto, BTreeMap::new());

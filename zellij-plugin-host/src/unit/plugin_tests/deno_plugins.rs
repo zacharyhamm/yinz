@@ -4439,6 +4439,72 @@ fn deno_a_symlink_out_of_a_root_is_followed_and_then_refused() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn deno_fs_write_cannot_create_through_a_dangling_symlink() {
+    let dirs = FsDirs::new();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("must-not-be-created");
+    let link = dirs.host.path().join("escape");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    for path in ["/host/escape", "/host/escape/", "/host/escape/child"] {
+        for append in [false, true] {
+            let rendered = deno_render_with_dirs(
+                &format!(
+                    "zellij.fs.write('{path}', 'escaped', {{append: {append}, createDirs: true}}); return 'written';"
+                ),
+                &dirs,
+                file_permissions(),
+            );
+            assert!(rendered.contains("unresolved symlink"), "{rendered}");
+            assert!(!target.exists());
+            assert!(link.is_symlink());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn deno_fs_write_refuses_fifos_and_keeps_regular_file_write_modes() {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let dirs = FsDirs::new();
+    let fifo = dirs.host.path().join("fifo");
+    nix::unistd::mkfifo(
+        &fifo,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .unwrap();
+    for append in [false, true] {
+        // The reader makes the old blocking open complete, so the regression fails on the
+        // missing type check without hanging. Then verify a FIFO without a reader too.
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
+        let body = format!(
+            "zellij.fs.write('/host/fifo', 'data', {{append: {append}}}); return 'written';"
+        );
+        let rendered = deno_render_with_dirs(&body, &dirs, file_permissions());
+        assert!(rendered.contains("not a regular file"), "{rendered}");
+        drop(reader);
+        let rendered = deno_render_with_dirs(&body, &dirs, file_permissions());
+        assert!(rendered.starts_with("error:"), "{rendered}");
+    }
+    assert_eq!(
+        deno_render_with_dirs(
+            "zellij.fs.write('/host/file', 'original'); \
+             zellij.fs.write('/host/file', 'new'); \
+             zellij.fs.write('/host/file', '+append', {append: true}); \
+             return zellij.decodeUtf8(zellij.fs.read('/host/file'));",
+            &dirs,
+            file_permissions(),
+        ),
+        "new+append"
+    );
+}
+
 #[test]
 fn deno_the_plugin_folder_is_a_root_that_needs_author_plugins_to_write() {
     let dirs = FsDirs::new();
@@ -4496,6 +4562,48 @@ fn deno_full_hd_access_reaches_absolute_paths_and_nothing_less_does() {
     let mut with = file_permissions().unwrap();
     with.insert(PermissionType::FullHdAccess);
     assert_eq!(deno_render_with_dirs(&body, &dirs, Some(with)), "elsewhere");
+}
+
+#[cfg(unix)]
+#[test]
+fn deno_full_hd_access_follows_absolute_links_for_io_and_preserves_entries() {
+    let dirs = FsDirs::new();
+    // /tmp is a virtual root, so use a temporary directory in the crate's real checkout.
+    let outside = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let target = outside.path().join("target");
+    let link = outside.path().join("link");
+    std::fs::write(&target, "original").unwrap();
+    std::os::unix::fs::symlink("target", &link).unwrap();
+    let path = serde_json::to_string(&link).unwrap();
+    let body = format!(
+        "const path = {path}; \
+         const text = zellij.decodeUtf8(zellij.fs.read(path)); \
+         zellij.fs.write(path, text + '+updated'); \
+         return String(zellij.fs.metadata(path).is_symlink);"
+    );
+    let refused = deno_render_with_dirs(&body, &dirs, file_permissions());
+    assert!(refused.contains("FullHdAccess"), "{refused}");
+    let mut permissions = file_permissions().unwrap();
+    permissions.insert(PermissionType::FullHdAccess);
+    assert_eq!(
+        deno_render_with_dirs(&body, &dirs, Some(permissions.clone())),
+        "true"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "original+updated"
+    );
+    assert!(link.is_symlink());
+    assert_eq!(
+        deno_render_with_dirs(
+            &format!("zellij.fs.remove({path}); return 'removed';"),
+            &dirs,
+            Some(permissions),
+        ),
+        "removed"
+    );
+    assert!(!link.is_symlink());
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "original+updated");
 }
 
 #[test]

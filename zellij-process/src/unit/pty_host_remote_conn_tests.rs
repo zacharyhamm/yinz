@@ -236,6 +236,28 @@ fn a_lost_transport_refuses_further_writes_rather_than_pretending() {
     assert!(conn.write_input(b"hello").is_err());
 }
 
+#[test]
+fn the_first_failed_socket_write_is_reported_to_input_and_control_callers() {
+    for input in [true, false] {
+        let (conn, peer) = conn_pair();
+        peer.shutdown(std::net::Shutdown::Read).unwrap();
+        let result = if input {
+            conn.write_input(b"must not be acknowledged").map(|_| ())
+        } else {
+            conn.terminate()
+        };
+        assert!(
+            result.is_err(),
+            "the write that discovers the failure must fail"
+        );
+        assert!(conn.write_input(b"retry").is_err());
+        assert!(conn.terminate().is_err());
+        let out = conn.outbound.lock().unwrap();
+        assert!(out.control.is_empty() && out.input.is_empty());
+        assert_eq!(out.queued_input_bytes, 0);
+    }
+}
+
 /// A budget of zero is a caller that has already given up, and std refuses to
 /// bound a socket by it. Refused here, up front, the socket is left exactly as
 /// it was — non-blocking, nothing written — rather than flipped to blocking on

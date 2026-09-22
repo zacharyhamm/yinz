@@ -60,7 +60,7 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     // caller's package selection and link the whole tree anyway. When the caller narrowed to
     // packages, theirs is the only selection - and the `EXCLUDED` sweep, which only exists to keep
     // `--workspace` off the integration tests, has nothing left to do.
-    let selection = selection(&flags.args);
+    let (selection, filtered) = selection(&flags.args);
     let narrowed_to_packages = matches!(selection, Selection::Packages(_));
 
     let mut cmd = if use_nextest {
@@ -91,7 +91,7 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     // narrowed the same way the nextest run was, as far as `cargo test --doc` can express it.
     if use_nextest {
         match &selection {
-            Selection::Skip => {
+            _ if filtered => {
                 println!();
                 println!(">> skipping doctests: run narrowed by a test filter");
             },
@@ -118,7 +118,6 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
                         }
                         doc = doc.args(extra_excludes);
                     },
-                    Selection::Skip => unreachable!("handled above"),
                 }
                 if doc.run().is_err() {
                     failed.push("doctests");
@@ -202,10 +201,6 @@ enum Selection {
     /// The caller named packages - the one selection `cargo test --doc` shares with nextest. The
     /// tokens are ready to hand to it verbatim.
     Packages(Vec<OsString>),
-    /// The run was narrowed by a test name or filterset, which `cargo test --doc` cannot express.
-    /// Running every doctest anyway would defeat the narrowing and let an unrelated doctest
-    /// failure fail the run, so the doctest pass is skipped.
-    Skip,
 }
 
 /// Flags that take a separate value, so the token after them is not a test filter.
@@ -270,12 +265,15 @@ const BOOLEAN_FLAGS: &[&str] = &[
 const PACKAGE_FLAGS: &[&str] = &["-p", "--package", "--exclude"];
 const FILTER_FLAGS: &[&str] = &["-E", "--filterset", "--filter-expr"];
 
-fn selection(args: &[OsString]) -> Selection {
+// Package scope and test filtering are independent: a filter skips doctests, but must
+// never widen a package-selected build back to the whole workspace.
+fn selection(args: &[OsString]) -> (Selection, bool) {
     let mut selectors: Vec<OsString> = Vec::new();
     let mut named_a_package = false;
     let mut previous: Option<&OsString> = None;
     let mut skip_next = false;
     let mut package_value_next = false;
+    let mut filtered = false;
 
     for arg in args {
         if skip_next || package_value_next {
@@ -294,7 +292,7 @@ fn selection(args: &[OsString]) -> Selection {
         };
 
         if FILTER_FLAGS.contains(&name.as_str()) {
-            return Selection::Skip;
+            filtered = true;
         }
         if PACKAGE_FLAGS.contains(&name.as_str()) {
             named_a_package |= name != "--exclude";
@@ -319,16 +317,17 @@ fn selection(args: &[OsString]) -> Selection {
             prev.starts_with('-') && !prev.contains('=') && !BOOLEAN_FLAGS.contains(&prev.as_ref())
         });
         if !is_value_of_unknown_flag {
-            return Selection::Skip;
+            filtered = true;
         }
         previous = Some(arg);
     }
 
-    if named_a_package {
+    let scope = if named_a_package {
         Selection::Packages(selectors)
     } else {
         Selection::Workspace(selectors)
-    }
+    };
+    (scope, filtered)
 }
 
 pub fn nextest_available(sh: &Shell, cargo: &std::path::Path) -> bool {
@@ -345,7 +344,11 @@ mod tests {
     use std::ffi::OsString;
 
     fn selection(args: &[&str]) -> Selection {
-        super::selection(&args.iter().map(OsString::from).collect::<Vec<_>>())
+        super::selection(&args.iter().map(OsString::from).collect::<Vec<_>>()).0
+    }
+
+    fn filtered(args: &[&str]) -> bool {
+        super::selection(&args.iter().map(OsString::from).collect::<Vec<_>>()).1
     }
 
     fn packages(args: &[&str]) -> Selection {
@@ -387,26 +390,40 @@ mod tests {
 
     #[test]
     fn a_filterset_skips_the_doctest_pass() {
-        assert_eq!(selection(&["-E", "test(x)"]), Selection::Skip);
-        assert_eq!(selection(&["--filterset=test(x)"]), Selection::Skip);
-        assert_eq!(
-            selection(&["-p", "zellij-server", "-E", "test(x)"]),
-            Selection::Skip
-        );
+        assert!(filtered(&["-E", "test(x)"]));
+        assert!(filtered(&["--filterset=test(x)"]));
+        assert!(filtered(&["-p", "zellij-server", "-E", "test(x)"]));
+    }
+
+    #[test]
+    fn test_filters_preserve_package_scope_in_either_order() {
+        for args in [
+            vec!["-p", "zellij-server", "-E", "test(x)"],
+            vec!["-E", "test(x)", "-p", "zellij-server"],
+            vec!["some_test", "-p", "zellij-server"],
+            vec!["-p", "zellij-server", "some_test"],
+        ] {
+            assert_eq!(selection(&args), packages(&["-p", "zellij-server"]));
+            assert!(filtered(&args));
+        }
     }
 
     #[test]
     fn a_bare_filter_skips_the_doctest_pass() {
-        assert_eq!(selection(&["some_test_name"]), Selection::Skip);
-        assert_eq!(
-            selection(&["--no-capture", "some_test_name"]),
-            Selection::Skip
-        );
-        assert_eq!(selection(&["-j", "1", "some_test_name"]), Selection::Skip);
+        assert!(filtered(&["some_test_name"]));
+        assert!(filtered(&["--no-capture", "some_test_name"]));
+        assert!(filtered(&["-j", "1", "some_test_name"]));
     }
 
     #[test]
     fn output_and_concurrency_flags_do_not_narrow() {
+        assert!(!filtered(&[
+            "--no-capture",
+            "-j",
+            "1",
+            "-p",
+            "zellij-types"
+        ]));
         assert_eq!(selection(&["--no-capture"]), workspace(&[]));
         assert_eq!(selection(&["-j", "1"]), workspace(&[]));
         assert_eq!(

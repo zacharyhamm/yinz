@@ -27,6 +27,10 @@ use {
 
 pub const DEFAULT_CONFIG_FILE_NAME: &str = "config.kdl";
 
+#[cfg(test)]
+#[path = "unit/config_write_test.rs"]
+mod config_write_test;
+
 type ConfigResult = Result<Config, ConfigError>;
 
 /// Main configuration.
@@ -525,13 +529,12 @@ impl Config {
     /// Write `config` - this configuration's own text, from `Config::to_string` - to
     /// `config_file_path`, backing the existing file up first. Refused before the file is
     /// touched when the text does not load back as this configuration's keybindings and
-    /// context menu, and after when what was written does not read back as what was parsed.
+    /// context menu. Stage and validate the replacement before publishing it atomically.
     pub fn write_config_to_disk(
         &self,
         config: String,
         config_file_path: &Path,
     ) -> Result<Config, ConfigWriteError> {
-        let config_file_path = config_file_path.to_path_buf();
         let at = |path: &Path, reason: String| ConfigWriteError {
             path: Some(path.to_path_buf()),
             reason,
@@ -543,7 +546,41 @@ impl Config {
         // Two parses of the same text agree whatever the serializer left out; only the source
         // can say what it should have said.
         self.keybinds_survive_the_written_form(&parsed_config)
-            .map_err(|reason| at(&config_file_path, reason))?;
+            .map_err(|reason| at(config_file_path, reason))?;
+        // Preserve symlink-based dotfile setups. A dangling link is an error, not a file
+        // to replace with a new, unrelated configuration.
+        let config_file_path = match std::fs::symlink_metadata(config_file_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                std::fs::canonicalize(config_file_path).map_err(|e| {
+                    at(
+                        config_file_path,
+                        format!("failed to resolve config link: {e}"),
+                    )
+                })?
+            },
+            Ok(_) => config_file_path.to_path_buf(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => config_file_path.to_path_buf(),
+            Err(e) => {
+                return Err(at(
+                    config_file_path,
+                    format!("failed to inspect config: {e}"),
+                ))
+            },
+        };
+        // Atomic replacement needs directory access, but saving must also honor file write access.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .open(&config_file_path)
+        {
+            Ok(_) => {},
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+            Err(e) => {
+                return Err(at(
+                    &config_file_path,
+                    format!("failed to open config for writing: {e}"),
+                ))
+            },
+        }
         let backed_up_file_name =
             Config::backup_current_config(&config_file_path).map_err(|path| ConfigWriteError {
                 reason: "failed to back up the current configuration".to_owned(),
@@ -559,13 +596,13 @@ impl Config {
             },
             None => config,
         };
-        std::fs::write(&config_file_path, config.as_bytes()).map_err(|e| {
+        let staged = Self::stage_config(&config_file_path, &config).map_err(|e| {
             at(
                 &config_file_path,
                 format!("failed to write the configuration: {e}"),
             )
         })?;
-        let written_config = std::fs::read_to_string(&config_file_path).map_err(|e| {
+        let written_config = std::fs::read_to_string(staged.path()).map_err(|e| {
             at(
                 &config_file_path,
                 format!("failed to read the written configuration back: {e}"),
@@ -578,6 +615,12 @@ impl Config {
             )
         })?;
         if parsed_written_config == parsed_config {
+            staged.persist(&config_file_path).map_err(|e| {
+                at(
+                    &config_file_path,
+                    format!("failed to replace the configuration: {e}"),
+                )
+            })?;
             Ok(parsed_config)
         } else {
             Err(at(
@@ -736,24 +779,60 @@ impl Config {
             log::error!("Could not find file path to write config");
             return false;
         };
-        if config_file_path.exists() {
-            false
-        } else {
-            if let Err(e) = std::fs::write(&config_file_path, config.as_bytes()) {
-                log::error!("Failed to write config to disk: {}", e);
-                return false;
-            }
-            match std::fs::read_to_string(&config_file_path) {
-                Ok(written_config) => written_config == config,
-                Err(e) => {
-                    log::error!("Failed to read written config: {}", e);
-                    false
-                },
-            }
+        if config_file_path.symlink_metadata().is_ok() {
+            return false;
+        }
+        let written = Self::stage_config(&config_file_path, &config).and_then(|staged| {
+            staged
+                .persist_noclobber(&config_file_path)
+                .map_err(|e| e.error)
+        });
+        match written {
+            Ok(_) => true,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
+            Err(e) => {
+                log::error!("Failed to write initial config to disk: {}", e);
+                false
+            },
         }
     }
-    fn find_free_backup_file_name(config_file_path: &Path) -> Option<PathBuf> {
-        let mut backup_config_path = None;
+
+    fn stage_config(path: &Path, contents: &str) -> io::Result<tempfile::NamedTempFile> {
+        use std::io::Write;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+        staged.write_all(contents.as_bytes())?;
+        match std::fs::metadata(path) {
+            Ok(metadata) => staged.as_file().set_permissions(metadata.permissions())?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+            Err(e) => return Err(e),
+        }
+        staged.as_file().sync_all()?;
+        Ok(staged)
+    }
+
+    fn backup_current_config(
+        config_file_path: &PathBuf,
+    ) -> Result<Option<PathBuf>, Option<PathBuf>> {
+        let current_config = match std::fs::read_to_string(config_file_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                log::error!(
+                    "Failed to read current config {}: {}",
+                    config_file_path.display(),
+                    e
+                );
+                return Err(Some(config_file_path.clone()));
+            },
+        };
+        let mut staged = Self::stage_config(config_file_path, &current_config).map_err(|e| {
+            log::error!("Failed to stage config backup: {}", e);
+            Some(config_file_path.clone())
+        })?;
         let config_file_name = config_file_path
             .file_name()
             .and_then(|f| f.to_str())
@@ -766,70 +845,23 @@ impl Config {
             };
             let mut potential_config_path = config_file_path.to_path_buf();
             potential_config_path.set_file_name(new_file_name);
-            if !potential_config_path.exists() {
-                backup_config_path = Some(potential_config_path);
-                break;
-            }
-        }
-        backup_config_path
-    }
-    fn backup_config_with_written_content_confirmation(
-        current_config: &str,
-        current_config_file_path: &PathBuf,
-        backup_config_path: &PathBuf,
-    ) -> bool {
-        let _ = std::fs::copy(current_config_file_path, backup_config_path);
-        match std::fs::read_to_string(backup_config_path) {
-            Ok(backed_up_config) => current_config == backed_up_config,
-            Err(e) => {
-                log::error!(
-                    "Failed to back up config file {}: {:?}",
-                    backup_config_path.display(),
-                    e
-                );
-                false
-            },
-        }
-    }
-    fn backup_current_config(
-        config_file_path: &PathBuf,
-    ) -> Result<Option<PathBuf>, Option<PathBuf>> {
-        // if we fail, try to return the PathBuf of the file we were not able to write to
-        // if let Some(config_file_path) = Config::config_file_path(&opts) {
-        match std::fs::read_to_string(config_file_path) {
-            Ok(current_config) => {
-                let Some(backup_config_path) = Config::find_free_backup_file_name(config_file_path)
-                else {
-                    log::error!("Failed to find a file name to back up the configuration to, ran out of files.");
-                    return Err(None);
-                };
-                if Config::backup_config_with_written_content_confirmation(
-                    &current_config,
-                    config_file_path,
-                    &backup_config_path,
-                ) {
-                    Ok(Some(backup_config_path))
-                } else {
+            match staged.persist_noclobber(&potential_config_path) {
+                Ok(_) => return Ok(Some(potential_config_path)),
+                Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => staged = e.file,
+                Err(e) => {
                     log::error!(
-                        "Failed to back up config file: {}",
-                        backup_config_path.display()
-                    );
-                    Err(Some(backup_config_path))
-                }
-            },
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    Ok(None)
-                } else {
-                    log::error!(
-                        "Failed to read current config {}: {}",
-                        config_file_path.display(),
+                        "Failed to back up config file {}: {}",
+                        potential_config_path.display(),
                         e
                     );
-                    Err(Some(config_file_path.clone()))
-                }
-            },
+                    return Err(Some(potential_config_path));
+                },
+            }
         }
+        log::error!(
+            "Failed to find a file name to back up the configuration to, ran out of files."
+        );
+        Err(None)
     }
     fn autogen_config_message(backed_up_file_name: PathBuf) -> String {
         format!("//\n// THIS FILE WAS AUTOGENERATED BY ZELLIJ, THE PREVIOUS FILE AT THIS LOCATION WAS COPIED TO: {}\n//\n\n", backed_up_file_name.display())

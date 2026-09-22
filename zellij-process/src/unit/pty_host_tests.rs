@@ -655,7 +655,11 @@ fn an_exec_failure_is_reported_instead_of_announcing_a_spawned_child() {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("broken-command");
     std::fs::write(&script, b"#!/nonexistent/zellij-test-interpreter\n").unwrap();
-    for mode in [0o600, 0o700] {
+    for (mode, expected_kind) in [
+        (0o600, SpawnFailureKind::CommandNotFound),
+        // Executable access passes preflight, but exec cannot find the interpreter.
+        (0o700, SpawnFailureKind::Other),
+    ] {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(mode)).unwrap();
         let (mut host, _, _) = TestHost::start();
         host.send(&ServerToHostMsg::Spawn {
@@ -673,13 +677,11 @@ fn an_exec_failure_is_reported_instead_of_announcing_a_spawned_child() {
             env: vec![],
             login_session: false,
         });
-        assert!(matches!(
-            host.recv(),
-            HostToServerMsg::SpawnFailed {
-                kind: SpawnFailureKind::Other,
-                ..
-            }
-        ));
+        let response = host.recv();
+        assert!(
+            matches!(&response, HostToServerMsg::SpawnFailed { kind, .. } if *kind == expected_kind),
+            "{response:?}"
+        );
         assert!(host.handle.take().unwrap().join().unwrap().is_err());
     }
 }
