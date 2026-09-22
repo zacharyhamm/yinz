@@ -70,6 +70,55 @@ fn a_client_detaching_does_not_forget_which_pane_the_layout_focused() {
 }
 
 #[test]
+fn a_fresh_client_preserves_fullscreen_when_the_layout_focus_is_hidden() {
+    for covers_ui in [false, true] {
+        let layout = TiledPaneLayout {
+            children: vec![
+                TiledPaneLayout::default(),
+                TiledPaneLayout {
+                    focus: Some(true),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut tab = create_new_tab_with_layout(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            layout,
+        );
+        let first = ClientId::new(1);
+        let layout_focus = tab.get_active_pane_id(first).unwrap();
+        let fullscreen_pane = PaneId::Terminal(TerminalId::new(0));
+        assert_ne!(layout_focus, fullscreen_pane);
+        tab.focus_pane_with_id(fullscreen_pane, false, false, first)
+            .unwrap();
+        if covers_ui {
+            tab.toggle_active_pane_no_ui_fullscreen(first);
+        } else {
+            tab.toggle_active_pane_fullscreen(first);
+        }
+        assert!(tab.is_fullscreen_active());
+        assert!(tab.tiled_panes.panes_to_hide_contains(layout_focus));
+        tab.remove_client(first);
+        assert!(tab.has_no_connected_clients());
+        let joining = ClientId::new(2);
+
+        tab.add_client(joining, None).unwrap();
+
+        assert!(tab.has_connected_client(&joining));
+        assert!(tab.is_fullscreen_active(), "covers_ui={covers_ui}");
+        assert_eq!(tab.fullscreen_covers_ui(), covers_ui);
+        assert_eq!(tab.get_active_pane_id(joining), Some(fullscreen_pane));
+        assert_eq!(tab.tiled_panes.fullscreen_pane_id(), Some(fullscreen_pane));
+        assert!(tab.tiled_panes.panes_to_hide_contains(layout_focus));
+        assert!(!tab.tiled_panes.panes_to_hide_contains(fullscreen_pane));
+    }
+}
+
+#[test]
 fn a_closed_focus_pane_is_not_offered_to_a_joining_client() {
     let layout = TiledPaneLayout {
         children: vec![

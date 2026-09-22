@@ -3051,7 +3051,10 @@ impl Tab {
             let mut pane_ids: Vec<PaneId> = self.tiled_panes.pane_ids().copied().collect();
             let focus_pane_id = self
                 .focus_pane_id
-                .filter(|focus_pane_id| pane_ids.contains(focus_pane_id))
+                .filter(|focus_pane_id| {
+                    pane_ids.contains(focus_pane_id)
+                        && !self.tiled_panes.panes_to_hide_contains(*focus_pane_id)
+                })
                 .or_else(|| {
                     // Deterministic: `PaneId: Ord`, and the ids came out of a `BTreeMap`.
                     pane_ids.sort();
