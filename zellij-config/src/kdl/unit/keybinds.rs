@@ -613,6 +613,7 @@ fn keybinds_to_string_with_all_actions() {
                         launch_new true;
                         skip_cache true;
                         floating true;
+                        in_place true;
                         title "plugin_title";
                         config_key_1 "config_value_1";
                         config_key_2 "config_value_2";
@@ -712,6 +713,40 @@ fn keybinds_to_string_with_shared_modes() {
 }
 
 #[test]
+fn message_plugin_in_place_is_read_and_written_back() {
+    // `in_place` used to parse to `None` here while the same child key worked on
+    // `Run`/`LaunchPlugin`, so the plugin opened floating with no diagnostic.
+    let fake_config = r#"
+        keybinds {
+            normal {
+                bind "Ctrl y" {
+                    MessagePlugin "zellij:session-manager" {
+                        name "go";
+                        in_place true;
+                    };
+                }
+            }
+        }"#;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = crate::kdl::keybinds::from_kdl(
+        document.get("keybinds").unwrap(),
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    let key = KeyWithModifier::new(BareKey::Char('y')).with_ctrl_modifier();
+    let actions = deserialized
+        .get_actions_for_key_in_mode(&InputMode::Normal, &key)
+        .expect("the binding");
+    match &actions[0] {
+        Action::KeybindPipe { in_place, .. } => assert_eq!(*in_place, Some(true)),
+        other => panic!("expected a pipe, got {other:?}"),
+    }
+    let serialized = crate::kdl::keybinds::to_kdl(&deserialized, true).unwrap();
+    assert!(serialized.to_string().contains("in_place true"), "{serialized}");
+}
+
+#[test]
 fn keybinds_to_string_with_multiple_multiline_actions() {
     let fake_config = r#"
         keybinds {
@@ -726,6 +761,7 @@ fn keybinds_to_string_with_multiple_multiline_actions() {
                         launch_new true;
                         skip_cache true;
                         floating true;
+                        in_place true;
                         title "plugin_title";
                         config_key_1 "config_value_1";
                         config_key_2 "config_value_2";
