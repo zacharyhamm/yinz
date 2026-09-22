@@ -328,12 +328,16 @@ struct Host {
 
 #[op2]
 #[serde]
-fn op_zellij_command(
+fn op_zellij_command<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
     state: &mut OpState,
-    #[serde] command: serde_json::Value,
+    command: v8::Local<'s, v8::Value>,
     #[smi] _client: u32,
     #[string] _completion: Option<String>,
 ) -> std::result::Result<serde_json::Value, JsErrorBox> {
+    // SDK filesystem writes carry Uint8Array, just as they do in a live plugin.
+    let command = super::transport::from_v8(scope, command)
+        .map_err(|error| JsErrorBox::generic(format!("{error:#}")))?;
     let host = state.borrow_mut::<Host>();
     let name = command
         .as_str()

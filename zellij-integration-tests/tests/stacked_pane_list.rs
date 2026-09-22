@@ -195,6 +195,7 @@ fn a_layout_stack_renders_as_a_title_list() {
 
     let grid_snapshot = zellij.wait_until("layout stack rendered as a list", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("[0] Tab #1")
             && has_selected_entry(grid_snapshot, "Pane #1")
             && grid_snapshot.contains("Pane #2")
             && grid_snapshot.contains("Pane #3")
@@ -501,6 +502,7 @@ fn entries_share_a_uniform_width_sized_by_the_widest_title() {
     }
     let grid_snapshot = zellij.wait_until("mixed-width entries rendered", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("[0] Tab #1")
             && grid_snapshot.contains("member-command")
             && has_selected_entry(grid_snapshot, "Pane #1")
             && grid_snapshot.cursor_is_at(col(2).row(4))
@@ -817,6 +819,7 @@ fn a_stack_list_survives_session_resurrection() {
 
     let grid_snapshot = zellij.wait_until("stack list resurrected", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("[2] Tab #1")
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
             && has_selected_entry(grid_snapshot, "Pane #3")

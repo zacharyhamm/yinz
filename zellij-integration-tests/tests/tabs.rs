@@ -2,8 +2,9 @@
 
 use insta::assert_snapshot;
 use zellij_integration_tests::{
-    claim_first_terminal_and_wait_for_prompt, col, keys, normalized, start_zellij, FakePtyHandle,
-    GridSnapshot, Size, TestSession, PROMPT, TERMINAL_SIZE,
+    claim_first_terminal_and_wait_for_prompt, col, keys, normalized, start_zellij,
+    tab_bar_shows_no_lone_pane_id, FakePtyHandle, GridSnapshot, Size, TestSession, PROMPT,
+    TERMINAL_SIZE,
 };
 
 fn tabs_in_order(grid_snapshot: &GridSnapshot, labels: &[&str]) -> bool {
@@ -68,7 +69,7 @@ fn go_to_previous_tab() {
 
     let grid_snapshot = zellij.wait_until("previous tab focused", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && grid_snapshot.contains("Tab #2")
+            && grid_snapshot.contains("[1] Tab #2")
             && grid_snapshot.contains("oneone")
             && !grid_snapshot.contains("twotwo")
     });
@@ -94,7 +95,7 @@ fn go_to_next_tab() {
 
     let grid_snapshot = zellij.wait_until("next tab focused again", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && grid_snapshot.contains("Tab #2")
+            && grid_snapshot.contains("[1] Tab #2")
             && grid_snapshot.contains("twotwo")
             && !grid_snapshot.contains("oneone")
     });
@@ -114,6 +115,7 @@ fn go_to_tab_by_number() {
 
     let grid_snapshot = zellij.wait_until("first tab focused by number", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("[1] Tab #2")
             && grid_snapshot.contains("oneone")
             && !grid_snapshot.contains("twotwo")
     });
@@ -134,7 +136,7 @@ fn toggle_tab_returns_to_last_used() {
 
     let grid_snapshot = zellij.wait_until("toggled back to the first tab", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && grid_snapshot.contains("Tab #2")
+            && grid_snapshot.contains("[1] Tab #2")
             && grid_snapshot.contains("oneone")
             && !grid_snapshot.contains("twotwo")
     });
@@ -301,6 +303,7 @@ fn break_pane_to_the_left() {
             && grid_snapshot.contains("alpha")
             && grid_snapshot.contains("beta")
             && !grid_snapshot.contains("Tab #2")
+            && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();

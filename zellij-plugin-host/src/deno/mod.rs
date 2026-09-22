@@ -969,6 +969,7 @@ mod sdk_tests {
         fail_command: Option<&'static str>,
         session_list: Value,
         pane_info: Value,
+        replies: BTreeMap<String, Value>,
     }
 
     #[op2]
@@ -1003,6 +1004,18 @@ mod sdk_tests {
             if command.get(name).is_some() || command == json!(name) {
                 return Err(JsErrorBox::generic(format!("{name} dispatch failed")));
             }
+        }
+        let name = command.as_str().or_else(|| {
+            command
+                .as_object()
+                .and_then(|c| c.keys().next().map(String::as_str))
+        });
+        if let Some(reply) = name.and_then(|name| host.replies.get(name)) {
+            return Ok(if name == Some("FsRead") {
+                json!({"bytes": reply})
+            } else {
+                json!({"json": reply})
+            });
         }
         if command == json!("GetPluginIds") {
             Ok(json!({ "json": { "client_id": client } }))
@@ -2242,6 +2255,9 @@ mod sdk_tests {
     include!("unit/completion_sdk.rs");
     include!("unit/consumer_sdk.rs");
     include!("unit/host_sdk.rs");
+    mod status_bar {
+        include!("unit/status_bar.rs");
+    }
 }
 
 #[cfg(test)]

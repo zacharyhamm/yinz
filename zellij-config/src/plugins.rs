@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn an_ordinary_builtin_is_still_wasm() {
         assert_eq!(
-            builtin_plugin("status-bar").runtime(),
+            builtin_plugin("tab-bar").runtime(),
             super::PluginRuntime::Wasm
         );
     }

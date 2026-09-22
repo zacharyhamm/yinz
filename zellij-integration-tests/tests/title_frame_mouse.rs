@@ -1,7 +1,9 @@
 #![cfg(unix)]
 
 use insta::assert_snapshot;
-use zellij_integration_tests::{normalized, FakePtyHandle, Size, TestRunner, TestSession};
+use zellij_integration_tests::{
+    normalized, tab_bar_shows_no_lone_pane_id, FakePtyHandle, Size, TestRunner, TestSession,
+};
 
 const PROMPT: &[u8] = b"$ ";
 const STATUS_BAR_TEST_COLS: usize = 205;
@@ -97,6 +99,8 @@ fn mouse_click_new_pane_in_status_bar_opens_a_new_pane() {
     let grid_snapshot = zellij.wait_until("the clicked new pane rendered", |grid_snapshot| {
         grid_snapshot.contains("opened from the status bar")
             && grid_snapshot.contains("Change Focus")
+            // The independent tab-bar render must also drop the lone pane's borrowed title.
+            && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -123,6 +127,7 @@ fn mouse_click_new_pane_in_status_bar_twice_opens_two_panes() {
         |grid_snapshot| {
             grid_snapshot.contains("first pane from the status bar")
                 && grid_snapshot.contains("second pane from the status bar")
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
         },
     );
     assert_snapshot!(normalized(&grid_snapshot));
@@ -209,7 +214,9 @@ fn mouse_click_new_tab_button_in_tab_bar_opens_a_new_tab() {
     new_tab_terminal.output(PROMPT);
 
     let grid_snapshot = zellij.wait_until("a second tab opened", |grid_snapshot| {
-        grid_snapshot.contains("Tab #1") && grid_snapshot.contains("Tab #2")
+        grid_snapshot.contains("[0] Tab #1")
+            && grid_snapshot.contains("[1] Tab #2")
+            && grid_snapshot.status_bar_appears()
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();

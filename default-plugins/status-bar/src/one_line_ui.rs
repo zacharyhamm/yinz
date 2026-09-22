@@ -1634,13 +1634,13 @@ fn add_shortcut_with_inline_key(
     } else if is_selected {
         serialize_ribbon(
             &Text::new(format!("<{}> {}", key_string, text))
-                .color_range(0, 1..key_string.width() + 1)
+                .color_range(0, 1..key_string.chars().count() + 1)
                 .selected(),
         )
     } else {
         serialize_ribbon(
             &Text::new(format!("<{}> {}", key_string, text))
-                .color_range(0, 1..key_string.width() + 1),
+                .color_range(0, 1..key_string.chars().count() + 1),
         )
     };
     ret.part = ribbon;
@@ -1849,11 +1849,13 @@ fn style_key_with_modifier(
             Text::new(&key_string_text).disabled().opaque()
         } else if let Some(color_index) = color_index {
             Text::new(&key_string_text)
-                .color_range(color_index, ..modifier_str.width() + 1)
+                .color_range(color_index, ..modifier_str.chars().count() + 1)
                 .color_range(
                     color_index,
-                    modifier_str.width() + 3
-                        ..modifier_str.width() + 3 + key_string_without_modifier.width(),
+                    modifier_str.chars().count() + 3
+                        ..modifier_str.chars().count()
+                            + 3
+                            + key_string_without_modifier.chars().count(),
                 )
                 .opaque()
         } else {
@@ -1888,6 +1890,33 @@ mod tests {
 
     /// An arbitrary but fixed instant, read at UTC so the test does not depend on the host.
     const FIXED_MS: i64 = 1_757_000_000_000;
+
+    #[test]
+    fn unicode_key_emphasis_counts_characters_while_layout_counts_columns() {
+        let help = ModeInfo::default();
+        let ribbon =
+            add_shortcut_with_inline_key(&help, "Pane", vec!["界".parse().unwrap()], false);
+        assert_eq!(
+            ribbon.part,
+            serialize_ribbon(&Text::new("<界> Pane").color_range(0, 1..2))
+        );
+        assert_eq!(ribbon.len, 11);
+        let group = style_key_with_modifier(
+            &["Ctrl 界".parse().unwrap(), "Ctrl 🦀".parse().unwrap()],
+            Some(2),
+            false,
+        );
+        assert_eq!(
+            group.part,
+            serialize_text(
+                &Text::new(" Ctrl <界|🦀> ")
+                    .color_range(2, ..5)
+                    .color_range(2, 7..10)
+                    .opaque()
+            )
+        );
+        assert_eq!(group.len, 14);
+    }
 
     #[test]
     fn base_mode_menus_put_agent_between_lock_and_pane() {

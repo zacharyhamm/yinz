@@ -672,6 +672,10 @@ impl TryFrom<ProtobufAction> for Action {
                     _ => Err("Wrong payload for Action::NewTab"),
                 }
             },
+            Some(ProtobufActionName::Copy) => match protobuf_action.optional_payload {
+                Some(_) => Err("Copy should not have a payload"),
+                None => Ok(Action::Copy),
+            },
             Some(ProtobufActionName::NoOp) => match protobuf_action.optional_payload {
                 Some(_) => Err("NoOp should not have a payload"),
                 None => Ok(Action::NoOp),
@@ -2216,6 +2220,10 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::ToggleHostFullscreen as i32,
                 optional_payload: None,
             }),
+            Action::Copy => Ok(ProtobufAction {
+                name: ProtobufActionName::Copy as i32,
+                optional_payload: None,
+            }),
             Action::NoOp => Ok(ProtobufAction {
                 name: ProtobufActionName::NoOp as i32,
                 optional_payload: None,
@@ -2223,7 +2231,6 @@ impl TryFrom<Action> for ProtobufAction {
             Action::Confirm
             | Action::NewInPlacePluginPane { .. }
             | Action::Deny
-            | Action::Copy
             | Action::DumpLayout
             | Action::CliPipe { .. }
             | Action::ListClients
@@ -3905,6 +3912,7 @@ pub(crate) mod tests {
                 | Action::PaneNameInput { .. }
                 | Action::UndoRenamePane
                 | Action::NoOp
+                | Action::Copy
                 | Action::GoToNextTab
                 | Action::GoToPreviousTab
                 | Action::CloseTab
@@ -4215,7 +4223,6 @@ pub(crate) mod tests {
                 | Action::WarpTab { .. }
                 | Action::AdoptTab { .. }
                 | Action::WarpTabFrom { .. }
-                | Action::Copy
                 | Action::Confirm
                 | Action::Deny
                 | Action::SkipConfirm { .. }

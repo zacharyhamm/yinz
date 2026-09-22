@@ -344,8 +344,10 @@ pub fn unblock_input_plugin_command() {
 pub fn block_input_plugin_command() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
-    let plugin_host_folder = PathBuf::from(temp_folder.path());
-    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+                                          // Permission bookkeeping must not become input to the fixture's filesystem watcher.
+    let plugin_host_folder = temp_folder.path().join("host");
+    std::fs::create_dir(&plugin_host_folder).unwrap();
+    let cache_path = temp_folder.path().join("permissions_test.kdl");
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
     let plugin_should_float = Some(false);
@@ -363,15 +365,13 @@ pub fn block_input_plugin_command() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ReadCliPipes,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -393,8 +393,7 @@ pub fn block_input_plugin_command() {
         None,
         None,
     ));
-    // extra long time because we only start the fs watcher on plugin load
-    std::thread::sleep(std::time::Duration::from_millis(5000));
+    wait_for_permissions(&received_screen_instructions);
 
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
         pipe_id: "input_pipe_id".to_owned(),
@@ -411,20 +410,23 @@ pub fn block_input_plugin_command() {
         cli_client_id: client_id,
         source_pane_id: None,
     });
-    screen_thread.join().unwrap(); // this might take a while if the cache is cold
+    let plugin_bytes_events = Some(received_screen_instructions.wait_until_described(
+        "the plugin to block its CLI input pipe",
+        default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .find(|instruction| {
+                    matches!(instruction, ScreenInstruction::PluginBytes(assets) if assets.iter().any(|asset| {
+                        matches!(asset.cli_pipes.get("input_pipe_id"), Some(zellij_bus::plugins::PipeStateChange::Block))
+                    }))
+                })
+                .cloned()
+        },
+        |log| describe_renders(log),
+    ));
     teardown();
-    let plugin_bytes_events = received_screen_instructions
-        .lock()
-        .iter()
-        .rev()
-        .find_map(|i| {
-            if let ScreenInstruction::PluginBytes(..) = i {
-                Some(i.clone())
-            } else {
-                None
-            }
-        })
-        .clone();
+    screen_thread.join().unwrap();
     assert_snapshot!(format!("{:#?}", plugin_bytes_events));
 }
 
