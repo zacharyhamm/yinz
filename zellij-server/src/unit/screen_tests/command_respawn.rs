@@ -235,32 +235,43 @@ fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
 }
 
 #[test]
-fn a_suppressed_pane_replacement_survives_its_tab_closing() {
+fn a_suppressed_pane_replacement_closes_with_its_tab() {
+    // The pane behind an in-place replacement closes with its tab, as its stand-in does:
+    // moved to another tab it would wait forever behind a pane that no longer exists,
+    // and a replacement re-run there would run in a pane nothing could ever show. The
+    // stashed replacement goes with it.
     let mut screen = screen_with_a_pane_replaced_in_place();
+    let replaced = PaneId::Terminal(crate::TerminalId::new(1));
+    let stand_in = PaneId::Terminal(crate::TerminalId::new(9));
     screen
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
-        .restore_pending_respawn(
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            (step_command("step2", "2"), true),
-        );
+        .restore_pending_respawn(replaced, (step_command("step2", "2"), true));
+    let (to_pty, pty_receiver) = zellij_runtime::channels::unbounded();
+    screen
+        .bus
+        .senders
+        .replace_to_pty(zellij_runtime::channels::SenderWithContext::new(to_pty));
 
     screen.close_tab_by_id(TabId::new(0)).unwrap();
-    let (_, replacement, keep_scrollback) = screen
-        .tabs
-        .get_mut(&TabId::new(1))
-        .unwrap()
-        .hold_pane(
-            PaneId::Terminal(crate::TerminalId::new(1)),
-            Some(0),
-            false,
-            step_command("step1", "1"),
-        )
-        .expect("the replacement should follow the suppressed pane");
 
-    assert_eq!(replacement.command, PathBuf::from("step2"));
-    assert!(keep_scrollback);
+    let remaining = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    assert!(!remaining.has_pane_with_pid(&replaced));
+    assert!(remaining
+        .hold_pane(replaced, Some(0), false, step_command("step1", "1"))
+        .is_none());
+    let closed: Vec<PaneId> = pty_receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PtyInstruction::CloseTab(ids) => ids,
+            _ => vec![],
+        })
+        .collect();
+    assert!(
+        closed.contains(&replaced) && closed.contains(&stand_in),
+        "{closed:?}"
+    );
 }
 
 #[test]
