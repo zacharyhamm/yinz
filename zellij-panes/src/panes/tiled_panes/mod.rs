@@ -555,12 +555,18 @@ impl TiledPanes {
             },
         }
     }
+    /// Put `pane` in the stack of `client_id`'s active pane, making a stack of that pane
+    /// if it is not in one, or hand the pane back if there is no room for it.
+    ///
+    /// `Some` means the pane was *not* placed and is still the caller's to dispose of,
+    /// as with [`insert_pane`](Self::insert_pane).
+    #[must_use]
     pub fn add_pane_to_stack_of_active_pane(
         &mut self,
         pane_id: PaneId,
         mut pane: Box<dyn Pane>,
         client_id: ClientId,
-    ) {
+    ) -> Option<Box<dyn Pane>> {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
@@ -569,7 +575,7 @@ impl TiledPanes {
         );
         let Some(active_pane_id) = self.active_panes.get(&client_id) else {
             log::error!("Could not find active pane id for client_id");
-            return;
+            return Some(pane);
         };
         let pane_id_is_stacked = pane_grid
             .get_pane_geom(active_pane_id)
@@ -584,18 +590,26 @@ impl TiledPanes {
                 self.add_pane_with_existing_geom(pane_id, pane);
                 self.resize_ptys_in_stack_of(&pane_id);
                 self.reset_boundaries();
+                None
             },
             Err(e) => {
                 log::error!("Failed to add pane to stack: {}", e);
+                Some(pane)
             },
         }
     }
+    /// Put `pane` in the stack of `root_pane_id`, making a stack of that pane if it is
+    /// not in one, or hand the pane back if there is no room for it.
+    ///
+    /// `Some` means the pane was *not* placed and is still the caller's to dispose of,
+    /// as with [`insert_pane`](Self::insert_pane).
+    #[must_use]
     pub fn add_pane_to_stack_of_pane_id(
         &mut self,
         pane_id: PaneId,
         mut pane: Box<dyn Pane>,
         root_pane_id: PaneId,
-    ) {
+    ) -> Option<Box<dyn Pane>> {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
             &self.panes_to_hide,
@@ -617,9 +631,11 @@ impl TiledPanes {
                 self.add_pane_with_existing_geom(pane_id, pane);
                 self.resize_ptys_in_stack_of(&pane_id);
                 self.reset_boundaries();
+                None
             },
             Err(e) => {
                 log::error!("Failed to add pane to stack: {}", e);
+                Some(pane)
             },
         }
     }

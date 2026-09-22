@@ -1528,9 +1528,9 @@ impl SuppressedPaneModel {
             1 => NewPanePlacement::Floating(None),
             // Named, and named a tiled pane. A stack is a shape the tiled layout
             // takes, so there is no such thing as stacking under a floating pane
-            // or under nothing at all - and `Tab` drops the pane on the floor in
-            // both cases rather than refusing it, which is worth knowing but is
-            // not what this is asking about.
+            // or under nothing at all - and `Tab` parks the pane in both cases
+            // rather than refusing it, which is worth knowing but is not what
+            // this is asking about.
             _ => NewPanePlacement::Stacked {
                 pane_id_to_stack_under: Some(Self::pick(&tc, &self.tiled())),
                 borderless: None,
