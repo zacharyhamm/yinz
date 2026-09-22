@@ -550,15 +550,13 @@ pub fn pipe_message_to_plugin_plugin_command() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        3,
-        &PermissionType::ReadCliPipes,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -580,7 +578,7 @@ pub fn pipe_message_to_plugin_plugin_command() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
         pipe_id: "input_pipe_id".to_owned(),
         name: "pipe_message_to_plugin".to_owned(),
@@ -596,7 +594,7 @@ pub fn pipe_message_to_plugin_plugin_command() {
         cli_client_id: client_id,
         source_pane_id: None,
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(&received_screen_instructions, "Payload from self:");
     teardown();
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
