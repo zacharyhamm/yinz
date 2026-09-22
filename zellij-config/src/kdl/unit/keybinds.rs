@@ -743,7 +743,10 @@ fn message_plugin_in_place_is_read_and_written_back() {
         other => panic!("expected a pipe, got {other:?}"),
     }
     let serialized = crate::kdl::keybinds::to_kdl(&deserialized, true).unwrap();
-    assert!(serialized.to_string().contains("in_place true"), "{serialized}");
+    assert!(
+        serialized.to_string().contains("in_place true"),
+        "{serialized}"
+    );
 }
 
 #[test]

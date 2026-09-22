@@ -1030,7 +1030,10 @@ fn scroll_region_operations_redraw_only_the_rows_they_touch() {
         (&b"\x1b[L"[..], 4, vec![3, 4, 5]),
     ] {
         let mut grid = create_grid_with_size_and_raw(8, 5, content);
-        feed_bytes(&mut grid, format!("\x1b[3;6r\x1b[{cursor_row};1H").as_bytes());
+        feed_bytes(
+            &mut grid,
+            format!("\x1b[3;6r\x1b[{cursor_row};1H").as_bytes(),
+        );
         grid.read_changes(0, 0);
 
         feed_bytes(&mut grid, sequence);

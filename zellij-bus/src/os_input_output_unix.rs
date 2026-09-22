@@ -15,7 +15,6 @@ use nix::{
 };
 use tokio::io::unix::AsyncFd;
 
-
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -1348,8 +1347,7 @@ mod tests {
     fn a_winsize_set_on_the_pty_master_is_what_the_pty_reports() {
         let pty = nix::pty::openpty(None, None).unwrap();
 
-        set_terminal_size_using_fd(pty.master.as_raw_fd(), 91, 37, Some(728), Some(666))
-            .unwrap();
+        set_terminal_size_using_fd(pty.master.as_raw_fd(), 91, 37, Some(728), Some(666)).unwrap();
 
         let mut reported = Winsize {
             ws_row: 0,
