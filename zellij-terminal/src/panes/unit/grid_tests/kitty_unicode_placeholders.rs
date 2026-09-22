@@ -112,7 +112,7 @@ fn placeholder_cells_materialise_the_image() {
 #[test]
 fn contiguous_cells_in_a_row_become_one_placement() {
     // Spec: the terminal is free to coalesce, and a run of adjacent cells of the same image is
-    // one rectangle. Two cells of a 2x2 image cover its left and right halves.
+    // one rectangle. These two cells cover the fitted image’s full width.
     let mut session = KittySession::new(10, 20);
     virtual_placement(&mut session, 1, 2, 2);
 
@@ -132,7 +132,7 @@ fn contiguous_cells_in_a_row_become_one_placement() {
         placement.source_rect.width, 20,
         "the full width of the image"
     );
-    assert_eq!(placement.source_rect.height, 10, "the top half of it");
+    assert_eq!(placement.source_rect.height, 20, "the full fitted height");
 }
 
 #[test]
@@ -158,8 +158,12 @@ fn cells_that_are_not_adjacent_stay_separate() {
 
 #[test]
 fn each_cell_shows_its_own_part_of_the_image() {
-    // The second row of a 2x2 placement is the bottom half of the image.
+    // With square cells, the second row of a 2x2 placement is the bottom half.
     let mut session = KittySession::new(10, 20);
+    session.change_character_cell_size(SizeInPixels {
+        width: 10,
+        height: 10,
+    });
     virtual_placement(&mut session, 1, 2, 2);
 
     session.feed(
@@ -469,4 +473,123 @@ fn deleting_by_image_id_does_remove_a_virtual_placement() {
 
     session.feed(cells.as_bytes());
     assert_eq!(session.placement_count(), 0);
+}
+
+#[test]
+fn a_ten_by_six_placeholder_covers_the_fitted_raster_without_seams() {
+    // Spec, Unicode placeholders: "The image will eventually be fit to the specified
+    // rectangle, its aspect ratio preserved."
+    // https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders
+    // A square image leaves unused rows in tall cells, or unused columns in wide cells.
+    // Exercise both coalesced strips and individually positioned, fragmented cells.
+    for (width, height, fitted, row_heights, column_widths) in [
+        (7, 15, 70, vec![15, 15, 15, 15, 10], vec![7; 10]),
+        (10, 20, 100, vec![20; 5], vec![10; 10]),
+        (13, 27, 130, vec![27, 27, 27, 27, 22], vec![13; 10]),
+        (11, 7, 42, vec![7; 6], vec![11, 11, 11, 9]),
+    ] {
+        for fragmented in [false, true] {
+            let mut session = KittySession::new(15, 25);
+            session.change_character_cell_size(SizeInPixels { width, height });
+            virtual_placement(&mut session, 1, 10, 6);
+            for row in 0..6 {
+                for column in 0..10 {
+                    let screen_column = if fragmented { column * 2 } else { column };
+                    session.feed(format!("\x1b[{};{}H", row + 2, screen_column + 2).as_bytes());
+                    session.feed(
+                        placeholder_cells(
+                            PlaceholderColor::Indexed(1),
+                            None,
+                            &[PlaceholderCell::at(row, column)],
+                        )
+                        .as_bytes(),
+                    );
+                }
+            }
+            session.grid.read_changes(0, 0);
+            let placements = session.grid.kitty_placements();
+            let expected_columns = if fragmented {
+                column_widths.clone()
+            } else {
+                vec![fitted]
+            };
+            assert_eq!(placements.len(), row_heights.len() * expected_columns.len());
+            let mut source_y = 0;
+            let mut area = 0;
+            for (row, &strip_height) in row_heights.iter().enumerate() {
+                let mut source_x = 0;
+                for (column, &strip_width) in expected_columns.iter().enumerate() {
+                    let placement = &placements[row * expected_columns.len() + column];
+                    assert_eq!(placement.scaled_px, Some((fitted, fitted)));
+                    assert_eq!(
+                        placement.source_rect,
+                        PixelRect {
+                            x: source_x,
+                            y: source_y as isize,
+                            width: strip_width,
+                            height: strip_height,
+                        }
+                    );
+                    assert_eq!(
+                        placement.display_rect,
+                        PixelRect {
+                            x: (1 + if fragmented { column * 2 } else { 0 }) * width,
+                            y: ((row + 1) * height) as isize,
+                            width: strip_width,
+                            height: strip_height,
+                        }
+                    );
+                    assert_eq!((placement.emit_x, placement.emit_y), (source_x, source_y));
+                    source_x += strip_width;
+                    area += strip_width * strip_height;
+                }
+                assert_eq!(source_x, fitted);
+                source_y += strip_height;
+            }
+            assert_eq!(source_y, fitted);
+            assert_eq!(area, fitted * fitted);
+        }
+    }
+}
+
+#[test]
+fn a_placeholder_run_starting_inside_the_image_clips_at_the_right_edge() {
+    let mut session = KittySession::new(10, 20);
+    session.change_character_cell_size(SizeInPixels {
+        width: 11,
+        height: 7,
+    });
+    virtual_placement(&mut session, 1, 10, 6); // fitted raster: 42 x 42
+    session.feed(
+        placeholder_cells(
+            PlaceholderColor::Indexed(1),
+            None,
+            &(2..10)
+                .map(|column| PlaceholderCell::at(1, column))
+                .collect::<Vec<_>>(),
+        )
+        .as_bytes(),
+    );
+    session.grid.read_changes(0, 0);
+    let placements = session.grid.kitty_placements();
+    assert_eq!(placements.len(), 1);
+    assert_eq!(
+        placements[0].source_rect,
+        PixelRect {
+            x: 22,
+            y: 7,
+            width: 20,
+            height: 7
+        }
+    );
+    assert_eq!(
+        placements[0].display_rect,
+        PixelRect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 7
+        }
+    );
+    assert_eq!((placements[0].emit_x, placements[0].emit_y), (22, 7));
 }

@@ -13,7 +13,7 @@
 
 use super::output_tests::{
     create_test_kitty_parts, extract_kitty_commands, kitty_chunk, run_kitty_frame,
-    store_test_kitty_image,
+    run_kitty_frame_with_cell_size, store_test_kitty_image,
 };
 
 /// The control data of a command, as key/value pairs.
@@ -283,5 +283,184 @@ fn the_payload_of_every_transmitted_chunk_is_valid_base64() {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')),
             "a chunk payload contained a character outside the base64 alphabet"
         );
+    }
+}
+
+#[test]
+fn kitty_placeholder_crops_share_a_raster_across_render_frames_and_drop_stale_resized_strips() {
+    use crate::panes::grid::Grid;
+    use crate::panes::kitty_graphics::test_support::{
+        apc_b64, feed_bytes, placeholder_cells, PlaceholderCell, PlaceholderColor,
+    };
+    use crate::panes::kitty_graphics::KittyApcInterceptor;
+    use crate::panes::sixel::SixelImageStore;
+    use crate::panes::LinkHandler;
+    use std::{cell::RefCell, collections::HashMap, rc::Rc};
+    use zellij_types::{
+        data::{Palette, Style},
+        pane_size::SizeInPixels,
+    };
+
+    // Spec: "The image will eventually be fit to the specified rectangle, its aspect
+    // ratio preserved." Crops of that fitted raster must meet at terminal-cell boundaries.
+    // https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders
+    let parts = create_test_kitty_parts();
+    let cell = Rc::new(RefCell::new(Some(SizeInPixels {
+        width: 10,
+        height: 19,
+    })));
+    let mut grid = Grid::new(
+        10,
+        20,
+        Rc::new(RefCell::new(Palette::default())),
+        Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        cell.clone(),
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        parts.0.clone(),
+        Style::default(),
+        false,
+        true,
+        true,
+        true,
+        false,
+    );
+    let run_frame =
+        |chunks| run_kitty_frame_with_cell_size(&parts, chunks, None, cell.borrow().unwrap());
+    let mut parser = vte::Parser::new();
+    let mut interceptor = KittyApcInterceptor::new();
+    let mut bytes = apc_b64("a=T,f=24,s=20,v=20,i=1,U=1,c=10,r=6,q=2", &[255; 1200]);
+    let placeholder_start = bytes.len();
+    for row in 0..6 {
+        bytes.extend_from_slice(format!("\x1b[{};1H", row + 1).as_bytes());
+        bytes.extend_from_slice(
+            placeholder_cells(
+                PlaceholderColor::Indexed(1),
+                None,
+                &(0..10)
+                    .map(|column| PlaceholderCell::at(row, column))
+                    .collect::<Vec<_>>(),
+            )
+            .as_bytes(),
+        );
+    }
+    feed_bytes(&mut grid, &mut parser, &mut interceptor, &bytes);
+    let chunks = grid.read_changes(0, 0).2;
+    assert_eq!(chunks.len(), 6);
+    let uids: Vec<_> = chunks.iter().map(|chunk| chunk.placement_uid).collect();
+    for (row, chunk) in chunks.iter().enumerate() {
+        assert_eq!((chunk.cell_x, chunk.cell_y), (0, row));
+        assert_eq!((chunk.source_px_x, chunk.source_px_y), (0, row * 19));
+        assert_eq!(
+            (chunk.source_px_width, chunk.source_px_height),
+            (100, if row == 5 { 5 } else { 19 })
+        );
+    }
+    let first = extract_kitty_commands(&run_frame(chunks));
+    let transmissions: Vec<_> = first
+        .iter()
+        .filter(|command| action_of(command) == "t")
+        .map(|command| control_of(command))
+        .filter(|control| value_of(control, "s").is_some())
+        .collect();
+    assert_eq!(
+        transmissions.len(),
+        1,
+        "all strips share one fitted raster upload"
+    );
+    assert_eq!(value_of(&transmissions[0], "s"), Some("100"));
+    assert_eq!(value_of(&transmissions[0], "v"), Some("100"));
+    let placements: Vec<_> = first
+        .iter()
+        .filter(|command| action_of(command) == "p")
+        .map(|command| control_of(command))
+        .collect();
+    assert_eq!(placements.len(), 6);
+    for (row, control) in placements.iter().enumerate() {
+        for (key, expected) in [
+            ("x", 0),
+            ("y", row * 19),
+            ("w", 100),
+            ("h", if row == 5 { 5 } else { 19 }),
+        ] {
+            assert_eq!(value_of(control, key), Some(expected.to_string().as_str()));
+        }
+        assert_eq!(value_of(control, "i"), value_of(&placements[0], "i"));
+    }
+
+    // Plugin render frames rebuild their viewport. Redrawing continuing runs must reuse
+    // their placement identities and the single fitted raster already sent to the host.
+    grid.delete_viewport_and_scroll();
+    feed_bytes(
+        &mut grid,
+        &mut parser,
+        &mut interceptor,
+        &bytes[placeholder_start..],
+    );
+    let chunks = grid.read_changes(0, 0).2;
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| chunk.placement_uid)
+            .collect::<Vec<_>>(),
+        uids
+    );
+    assert!(extract_kitty_commands(&run_frame(chunks)).is_empty());
+
+    // Taller cells leave the last two placeholder rows entirely outside the 100x100 raster.
+    *cell.borrow_mut() = Some(SizeInPixels {
+        width: 10,
+        height: 25,
+    });
+    grid.character_cell_size_possibly_changed();
+    let chunks = grid.read_changes(0, 0).2;
+    assert_eq!(chunks.len(), 4);
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| chunk.placement_uid)
+            .collect::<Vec<_>>(),
+        uids[..4]
+    );
+    for (row, chunk) in chunks.iter().enumerate() {
+        assert_eq!(chunk.source_px_y, row * 25);
+        assert_eq!(chunk.source_px_height, 25);
+    }
+    let resized = extract_kitty_commands(&run_frame(chunks));
+    for obsolete in &placements[4..] {
+        assert!(
+            resized.iter().any(|command| {
+                let control = control_of(command);
+                action_of(command) == "d"
+                    && value_of(&control, "p") == value_of(obsolete, "p")
+                    && value_of(&control, "i") == value_of(obsolete, "i")
+            }),
+            "obsolete strip must be withdrawn from the host"
+        );
+    }
+
+    // A scrolled/fragmented run can start inside the image, at a different screen row.
+    // Its source offsets must survive serialization rather than being reset to zero.
+    let mut offset_run = b"\x1b[1;1H\x1b[2K".to_vec();
+    offset_run.extend_from_slice(
+        placeholder_cells(
+            PlaceholderColor::Indexed(1),
+            None,
+            &(2..10)
+                .map(|column| PlaceholderCell::at(1, column))
+                .collect::<Vec<_>>(),
+        )
+        .as_bytes(),
+    );
+    feed_bytes(&mut grid, &mut parser, &mut interceptor, &offset_run);
+    let shifted = extract_kitty_commands(&run_frame(grid.read_changes(0, 0).2));
+    let shifted_placements: Vec<_> = shifted
+        .iter()
+        .filter(|command| action_of(command) == "p")
+        .map(|command| control_of(command))
+        .collect();
+    assert_eq!(shifted_placements.len(), 1);
+    for (key, expected) in [("x", "20"), ("y", "25"), ("w", "80"), ("h", "25")] {
+        assert_eq!(value_of(&shifted_placements[0], key), Some(expected));
     }
 }
