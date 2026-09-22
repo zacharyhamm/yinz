@@ -246,6 +246,93 @@ fn partial_scroll_region_selection_adjusted_on_csi_m() {
 }
 
 #[test]
+fn partial_scroll_region_repaints_moved_selection_rows() {
+    for (sequence, count) in [
+        (b"\x1b[1S", 1),
+        (b"\x1b[1M", 1),
+        (b"\x1b[2S", 2),
+        (b"\x1b[2M", 2),
+    ] {
+        for active in [false, true] {
+            let mut grid = create_grid_with_size_and_raw(10, 40, FILL_8_LINES);
+            feed_bytes(&mut grid, b"\x1b[1;3r");
+            grid.start_selection(&Position::new(7, 1));
+            grid.update_selection(&Position::new(7, 3));
+            if !active {
+                grid.end_selection(&Position::new(7, 3));
+            }
+            grid.read_changes(0, 0);
+
+            feed_bytes(&mut grid, sequence);
+
+            assert_eq!(grid.selection.start, Position::new(7 - count, 1));
+            assert_eq!(
+                grid.selection.end,
+                Position::new(if active { 7 } else { 7 - count }, 3)
+            );
+            assert_eq!(grid.selection.is_active(), active);
+            let (chunks, _, _) = grid.read_changes(0, 0);
+            let expected_rows: Vec<_> = (0..=2).chain((7 - count as usize)..=7).collect();
+            assert_eq!(
+                chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+                expected_rows,
+                "sequence={sequence:?}, active={active}"
+            );
+        }
+    }
+}
+
+#[test]
+fn partial_scroll_region_repaints_moved_command_output_flash_rows() {
+    for (sequence, count) in [
+        (b"\x1b[1S", 1),
+        (b"\x1b[1M", 1),
+        (b"\x1b[2S", 2),
+        (b"\x1b[2M", 2),
+    ] {
+        let mut grid = create_grid_with_size_and_raw(10, 40, FILL_8_LINES);
+        feed_bytes(&mut grid, b"\x1b[1;3r");
+        grid.set_command_output_flash(Position::new(7, 1), Position::new(7, 3));
+        grid.read_changes(0, 0);
+
+        feed_bytes(&mut grid, sequence);
+
+        let flash = grid.command_output_flash.unwrap();
+        assert_eq!(flash.start, Position::new(7 - count, 1));
+        assert_eq!(flash.end, Position::new(7 - count, 3));
+        let (chunks, _, _) = grid.read_changes(0, 0);
+        let expected_rows: Vec<_> = (0..=2).chain((7 - count as usize)..=7).collect();
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+            expected_rows,
+            "sequence={sequence:?}"
+        );
+    }
+}
+
+#[test]
+fn partial_scroll_region_without_highlights_repaints_only_the_region() {
+    for sequence in [b"\x1b[1S", b"\x1b[1M", b"\x1b[2S", b"\x1b[2M"] {
+        let mut grid = create_grid_with_size_and_raw(10, 40, FILL_8_LINES);
+        feed_bytes(&mut grid, b"\x1b[1;3r");
+        // An empty selection below the region must not add damage when it moves.
+        grid.start_selection(&Position::new(7, 1));
+        grid.end_selection(&Position::new(7, 1));
+        grid.read_changes(0, 0);
+
+        feed_bytes(&mut grid, sequence);
+
+        assert!(grid.selection.is_empty());
+        let (chunks, _, _) = grid.read_changes(0, 0);
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "sequence={sequence:?}"
+        );
+    }
+}
+
+#[test]
 fn partial_scroll_region_all_three_mechanisms_transfer_in_order() {
     let mut content: Vec<u8> = Vec::new();
     content.extend_from_slice(PARTIAL_SR);

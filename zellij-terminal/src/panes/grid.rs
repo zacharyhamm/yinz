@@ -2551,9 +2551,22 @@ impl Grid {
             && !self.viewport.is_empty()
         {
             self.transfer_rows_to_lines_above(1);
+            let old_selection = self.selection;
+            let old_command_output_flash = self.command_output_flash;
             self.selection.move_up(1);
             if let Some(command_output_flash) = self.command_output_flash.as_mut() {
                 command_output_flash.move_up(1);
+            }
+            // Highlights can move outside a partial scroll region, whose rows alone are
+            // invalidated by CSI S and CSI M.
+            let current_selection = self.selection;
+            if !old_selection.is_empty() || !current_selection.is_empty() {
+                self.update_selected_lines(&old_selection, &current_selection);
+            }
+            if let (Some(old_flash), Some(current_flash)) =
+                (old_command_output_flash, self.command_output_flash)
+            {
+                self.update_selected_lines(&old_flash, &current_flash);
             }
             RegionRowsScrolled::IntoScrollback
         } else if at < self.viewport.len() {
