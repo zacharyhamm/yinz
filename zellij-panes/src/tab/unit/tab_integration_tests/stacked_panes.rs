@@ -3508,3 +3508,91 @@ fn a_pane_stacked_onto_an_existing_stack_is_inset_and_its_pty_resized() {
         .collect();
     assert!(resized.contains(&loose), "{resized:?}");
 }
+
+/// A stack with no room left hands the pane back instead of dropping it. Dropping the box
+/// destroyed the pane: no `PaneClosed`, no `PtyInstruction::ClosePane`, and a process with
+/// nothing left that could reap it. Parked, as `add_tiled_pane` parks a pane the tiled grid
+/// hands back.
+#[test]
+fn a_pane_a_full_stack_cannot_take_is_parked_rather_than_dropped() {
+    let (pty_write_tx, pty_write_rx) = channels::unbounded();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        Size { cols: 80, rows: 7 },
+        ModeInfo::default(),
+        SenderWithContext::new(pty_write_tx),
+    );
+    let (pty_tx, pty_rx) = channels::unbounded();
+    tab.senders.replace_to_pty(SenderWithContext::new(pty_tx));
+    let client_id = crate::ClientId::new(1);
+    let root = PaneId::Terminal(crate::TerminalId::new(1));
+    let refused = PaneId::Terminal(crate::TerminalId::new(4));
+
+    // 7 rows fit two more members: the flexible pane must be above MIN_TERMINAL_HEIGHT
+    // (5) before each insert, and each insert leaves it a row shorter - 7, then 6, then 5.
+    for id in [2, 3] {
+        tab.new_stacked_pane(
+            PaneId::Terminal(crate::TerminalId::new(id)),
+            None,
+            None,
+            false,
+            false,
+            Some(root),
+            Some(client_id),
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    let _ = pty_write_rx.try_iter().count();
+
+    tab.new_stacked_pane(
+        refused,
+        None,
+        None,
+        false,
+        false,
+        Some(root),
+        Some(client_id),
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert!(
+        tab.has_pane_with_pid(&refused),
+        "the pane still exists somewhere"
+    );
+    assert!(
+        tab.suppressed_panes.contains_key(&refused),
+        "the stack had no room, so the pane is parked: {:?}",
+        tab.get_all_pane_ids(),
+    );
+    assert!(tab.tiled_panes.get_pane(refused).is_none());
+    assert_eq!(
+        tab.suppressed_panes[&refused].pane.get_content_offset(),
+        zellij_types::pane_size::Offset::frame(1),
+        "parked with a plausible geometry, as `park_new_pane` gives one",
+    );
+    let resized: Vec<PaneId> = pty_write_rx
+        .try_iter()
+        .filter_map(|(msg, _)| match msg {
+            PtyWriteInstruction::ResizePty(id, ..) => Some(PaneId::Terminal(id)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        resized.contains(&refused),
+        "the parked pane was told its size: {resized:?}"
+    );
+    let closed: Vec<PaneId> = pty_rx
+        .try_iter()
+        .filter_map(|(msg, _)| match msg {
+            crate::pty::PtyInstruction::ClosePane(id, _) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        closed.is_empty(),
+        "no room is not a reason to close a pane: {closed:?}"
+    );
+}
