@@ -131,3 +131,57 @@
 - Decision: `zellij-utils/assets/plugins/*.wasm` is gitignored; the wasm lives under `target/wasm32-wasip1/` and is installed by `cargo x install`.
 - Consequence for syncs: an upstream commit that touches `assets/plugins/*.wasm` now merges as a modify/delete conflict. Resolve with `git rm zellij-utils/assets/plugins/<name>.wasm`; the plugin sources are what get adapted.
 - Reconsider only if: The user reopens this decision.
+
+## 2026-09-22 — Session-probe receive timeout
+
+- Upstream commits: `fa131c8b4a99bf2370a30bed112e168eec90df34`
+- Upstream range: `e839bfffa586992364309a685b2c71f3b23c247e..fa131c8b4a99bf2370a30bed112e168eec90df34`
+- Fork baseline: `main` at `f2c1d9812c2053257c98fd86879bbf564ff6379f`
+- Decision: Skip
+- Reason: The fork already sets 500 ms receive and send timeouts in zellij-session/src/sessions.rs. It also bounds connection attempts, probes sessions concurrently, and distinguishes an unresponsive server from an absent session. Existing real-socket tests cover this behavior. The upstream five-second receive timeout adds no protection and would increase the wait.
+- Reconsider only if: The user reopens this decision.
+
+## 2026-09-22 — Spelling corrections in retained text
+
+- Upstream commits: `af38660c5884f50bb3726682fb92961326c4268f`, `a162323384dff3fbd9c68a4c0971f4f6efca424a` (spelling corrections only)
+- Upstream range: `e839bfffa586992364309a685b2c71f3b23c247e..fa131c8b4a99bf2370a30bed112e168eec90df34`
+- Fork baseline: `main` at `f2c1d9812c2053257c98fd86879bbf564ff6379f`
+- Decision: Skip
+- Reason: The corrections affect comments, API documentation, the plugin issue template, and two diagnostic messages across numerous files. They provide little benefit for this sync. The layout-manager README target correction from a162323384dff3fbd9c68a4c0971f4f6efca424a is approved separately.
+- Reconsider only if: The user reopens this decision.
+
+## 2026-09-22 — Corrections and compiler-guide removal in deleted documentation
+
+- Upstream commits: `a162323384dff3fbd9c68a4c0971f4f6efca424a` (CONTRIBUTING.md, docs/RELEASE.md, and docs/TERMINOLOGY.md portions)
+- Upstream range: `e839bfffa586992364309a685b2c71f3b23c247e..fa131c8b4a99bf2370a30bed112e168eec90df34`
+- Fork baseline: `main` at `f2c1d9812c2053257c98fd86879bbf564ff6379f`
+- Decision: Skip
+- Reason: These three files are already absent from the fork. The obsolete compiler guide is therefore already removed. There is no remaining release or terminology text to correct. The deleted files will not be restored.
+- Reconsider only if: The user reopens this decision.
+
+## 2026-09-22 — Upstream sponsor credit
+
+- Upstream commits: `232c93721dee4ab7419db66f5f74a98c2e87236f`
+- Upstream range: `e839bfffa586992364309a685b2c71f3b23c247e..fa131c8b4a99bf2370a30bed112e168eec90df34`
+- Fork baseline: `main` at `f2c1d9812c2053257c98fd86879bbf564ff6379f`
+- Decision: Skip
+- Reason: The credit names an upstream sponsor. The fork replaced the upstream README with its own identity. This change has no functional benefit for the fork.
+- Reconsider only if: The user reopens this decision.
+
+## 2026-09-22 — Upstream policy for generated issue and PR descriptions
+
+- Upstream commits: `8037b970ec90bd199195c59afba2a8c5ce5f5ffe`
+- Upstream range: `e839bfffa586992364309a685b2c71f3b23c247e..fa131c8b4a99bf2370a30bed112e168eec90df34`
+- Fork baseline: `main` at `f2c1d9812c2053257c98fd86879bbf564ff6379f`
+- Decision: Skip
+- Reason: This is an upstream contribution policy. The fork has no CONTRIBUTING.md. Adopting the policy would require a separate decision.
+- Reconsider only if: The user reopens this decision.
+
+## 2026-09-22 — Upstream changelog edits
+
+- Upstream commits: `a162323384dff3fbd9c68a4c0971f4f6efca424a`, `474ea0cef620c83d6ec05a7c28c7f80c4f63bbbb` (CHANGELOG.md portions only)
+- Upstream range: `e839bfffa586992364309a685b2c71f3b23c247e..fa131c8b4a99bf2370a30bed112e168eec90df34`
+- Fork baseline: `main` at `f2c1d9812c2053257c98fd86879bbf564ff6379f`
+- Decision: Skip
+- Reason: Upstream changelog edits remain excluded under the prior decision. The fork has since removed CHANGELOG.md. The OSC 7 behavior from 474ea0cef620c83d6ec05a7c28c7f80c4f63bbbb is approved separately.
+- Reconsider only if: The user reopens this decision.
