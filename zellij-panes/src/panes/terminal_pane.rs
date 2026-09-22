@@ -1047,13 +1047,23 @@ impl Pane for TerminalPane {
         let cursor_in_the_middle =
             to.line.get() >= 0 && (to.line.get() as usize) < self.grid.height;
 
-        // TODO: check how far up/down mouse is relative to pane, to increase scroll lines?
+        // The further past the edge the pointer is, the more lines each step scrolls, up
+        // to a cap: one line per interval made selecting a long scrollback a crawl.
+        const MAX_LINES_PER_STEP: usize = 10;
         if cursor_at_the_bottom {
-            self.grid.scroll_up_one_line();
+            let overshoot = to.line.get().unsigned_abs();
+            for _ in 0..overshoot.clamp(1, MAX_LINES_PER_STEP) {
+                // Past the end of the scrollback this is a no-op; the bool it returns is
+                // about search results, not about whether it scrolled.
+                self.grid.scroll_up_one_line();
+            }
             self.selection_scrolled_at = time::Instant::now();
             self.set_should_render(true);
         } else if cursor_at_the_top {
-            self.grid.scroll_down_one_line();
+            let overshoot = (to.line.get() as usize).saturating_sub(self.grid.height) + 1;
+            for _ in 0..overshoot.clamp(1, MAX_LINES_PER_STEP) {
+                self.grid.scroll_down_one_line();
+            }
             self.selection_scrolled_at = time::Instant::now();
             self.set_should_render(true);
         } else if cursor_in_the_middle {

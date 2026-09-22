@@ -1918,3 +1918,55 @@ fn restart_refusal_keeps_held_state_and_explicit_replacements_work() {
     pane.hold(Some(0), false, command.clone());
     assert_eq!(pane.rerun(), Some(command), "ordinary reruns are unchanged");
 }
+
+#[test]
+fn dragging_a_selection_past_the_edge_scrolls_further_the_further_it_goes() {
+    // One line per interval regardless of the pointer's distance made selecting a long
+    // scrollback take seconds; the overshoot now sets the step, capped at ten.
+    let mut fake_win_size = PaneGeom::default();
+    fake_win_size.cols.set_inner(40);
+    fake_win_size.rows.set_inner(20);
+    let mut terminal_pane = TerminalPane::new(
+        crate::TerminalId::new(1),
+        fake_win_size,
+        Style::default(),
+        0,
+        String::new(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(None)),
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        Rc::new(RefCell::new(KittyImageStore::default())),
+        Rc::new(RefCell::new(Palette::default())),
+        Rc::new(RefCell::new(HashMap::new())),
+        None,
+        None,
+        false,
+        true,
+        true,
+        true,
+        false,
+        None,
+    );
+    let mut text = String::new();
+    for i in 0..60 {
+        writeln!(&mut text, "\rline {}", i + 1).unwrap();
+    }
+    terminal_pane.handle_pty_bytes(text.into_bytes());
+    let client_id = crate::ClientId::new(1);
+    let interval_elapsed =
+        || std::time::Instant::now() - std::time::Duration::from_millis(50);
+    let lines_scrolled_up = |pane: &TerminalPane| pane.grid.scrollback_position_and_length().0;
+    terminal_pane.start_selection(&zellij_types::position::Position::new(5, 0), client_id);
+
+    terminal_pane.selection_scrolled_at = interval_elapsed();
+    terminal_pane.update_selection(&zellij_types::position::Position::new(-8, 0), client_id);
+    assert_eq!(lines_scrolled_up(&terminal_pane), 8, "eight lines above the pane: eight up");
+
+    terminal_pane.selection_scrolled_at = interval_elapsed();
+    terminal_pane.update_selection(&zellij_types::position::Position::new(-50, 0), client_id);
+    assert_eq!(lines_scrolled_up(&terminal_pane), 18, "capped at ten per step");
+
+    terminal_pane.selection_scrolled_at = interval_elapsed();
+    terminal_pane.update_selection(&zellij_types::position::Position::new(22, 0), client_id);
+    assert_eq!(lines_scrolled_up(&terminal_pane), 15, "three lines below the pane: three down");
+}
