@@ -573,9 +573,12 @@ impl Pane for PluginPane {
         };
 
         let is_pinned = frame_geom.is_pinned;
+        // A plugin scrolls its own content: the host grid's scrollback says nothing the
+        // user can act on, and reporting it froze a `SCROLL: 0/N` into the title.
+        let no_scroll_indication = (0, 0);
         let mut frame = PaneFrame::new(
             frame_geom.into(),
-            grid.scrollback_position_and_length(),
+            no_scroll_indication,
             pane_title,
             frame_params,
         )
@@ -1233,6 +1236,68 @@ mod tests {
 
     fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {
         test_plugin_pane_with_cell_size(rows, cols, content_offset, None)
+    }
+
+    fn frame_params() -> FrameParams {
+        FrameParams {
+            focused_client: Some(ClientId::new(1)),
+            is_main_client: true,
+            other_focused_clients: vec![],
+            style: Style::default(),
+            color: None,
+            other_cursors_exist_in_session: false,
+            pane_is_stacked_over: false,
+            pane_is_stacked_under: false,
+            pane_is_stacked: false,
+            should_draw_pane_frames: true,
+            pane_is_floating: false,
+            show_pinned_indication: false,
+            show_scroll_indication: true,
+            content_offset: Offset::frame(1),
+            mouse_is_hovering_over_pane: false,
+            pane_is_selectable: true,
+            show_help_text: false,
+            highlight_tooltip: None,
+            omit_title: false,
+            frame_geom_override: None,
+            stack_list_entry: None,
+            blank_title: false,
+            mouse_scroll_resize: false,
+            dimmed: false,
+            guest_choice_indicator: None,
+            opening_ripple: None,
+        }
+    }
+
+    fn rendered_text(chunks: &[CharacterChunk]) -> String {
+        chunks
+            .iter()
+            .flat_map(|chunk| chunk.terminal_characters.iter().map(|c| c.character))
+            .collect()
+    }
+
+    #[test]
+    fn a_plugin_pane_frame_never_shows_a_scroll_indicator() {
+        // The host grid keeps a scrollback for a plugin that renders more rows than fit,
+        // but the host cannot scroll a plugin pane - `scroll_up` only forwards a mouse
+        // event to the plugin - so the indicator sat at `SCROLL: 0/N` for good.
+        let mut pane = test_plugin_pane(5, 60, Offset::frame(1));
+        let client_id = ClientId::new(1);
+        let many_rows: String = (0..30).map(|i| format!("row {i}\r\n")).collect();
+        pane.handle_plugin_bytes(client_id, many_rows.into_bytes());
+        let scrollback = pane.grids[&client_id].scrollback_position_and_length().1;
+        assert!(scrollback > 0, "precondition: the host grid holds scrollback");
+
+        let (frame, _) = pane
+            .render_frame(client_id, frame_params(), InputMode::Normal)
+            .unwrap()
+            .expect("a framed pane renders a frame");
+
+        assert!(
+            !rendered_text(&frame).contains("SCROLL"),
+            "{}",
+            rendered_text(&frame)
+        );
     }
 
     #[test]
