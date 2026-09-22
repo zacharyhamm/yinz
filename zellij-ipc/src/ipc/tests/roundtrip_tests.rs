@@ -1029,7 +1029,7 @@ fn test_client_messages() {
         tab_number_to_focus: None,
         pane_to_focus: None,
     });
-    // TODO: Action
+    // --- Action ---
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::Quit,
         terminal_id: None,

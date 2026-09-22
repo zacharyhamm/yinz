@@ -96,7 +96,7 @@ pub struct SearchResult {
     // Does case matter?
     pub case_insensitive: bool,
     // Only search whole words, not parts inside a word
-    pub whole_word_only: bool, // TODO
+    pub whole_word_only: bool,
     // Jump from the bottom to the top (or vice versa), if we run out of lines to search
     pub wrap_search: bool,
 }

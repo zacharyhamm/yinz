@@ -3257,7 +3257,10 @@ pub(crate) fn screen_thread_main(
                     if let Some(c) = completion_tx.as_mut() {
                         c.set_affected_tab_id(tab_id)
                     }
-                    // TODO: is this a race?
+                    // Not a race: everything here runs on the screen thread, and the
+                    // background job re-enters through the same serialised instruction
+                    // queue. The only hazard is a stale clear if the panes gain another
+                    // frame-colour override before the flash ends.
                     let pane_group = screen.get_client_pane_group(&client_id);
                     if !pane_group.is_empty() {
                         let _ = screen.bus.senders.send_to_background_jobs(

@@ -42,7 +42,9 @@ use {
     zellij_types::data::PaletteColor, zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
 
-const TABSTOP_WIDTH: usize = 8; // TODO: is this always right?
+/// The ECMA-48 default; HTS/TBC (`set_horizontal_tabstop`, `clear_tabstop_at_position`)
+/// let an application move them.
+const TABSTOP_WIDTH: usize = 8;
 pub const MAX_TITLE_STACK_SIZE: usize = 1000;
 
 const BASE64_DECODER: GeneralPurpose = GeneralPurpose::new(
@@ -6405,7 +6407,7 @@ impl Row {
                         // (eg. we added an English character in place of a wide emoji)
                         // we must make sure to add padding either before the character we added
                         // or after it, depending on our position inside said removed wide character
-                        // TODO: support characters wider than 2
+                        // (`unicode_width` never yields more than 2 for a single `char`)
                         if position_inside_character > 0 {
                             self.columns
                                 .insert(absolute_x_index, EMPTY_TERMINAL_CHARACTER);

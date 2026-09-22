@@ -61,7 +61,7 @@ const ENTER_NEWLINE: &[u8] = &[10];
 const ESC: &[u8] = &[27];
 const ENTER_CARRIAGE_RETURN: &[u8] = &[13];
 const SPACE: &[u8] = &[32];
-const CTRL_C: &[u8] = &[3]; // TODO: check this to be sure it fits all types of CTRL_C (with mac, etc)
+const CTRL_C: &[u8] = &[3]; // raw-byte fallback; the `KeyWithModifier` check comes first
 const TERMINATING_STRING: &str = "\0";
 const DELETE_KEY: &str = "\u{007F}";
 const BACKSPACE_KEY: &str = "\u{0008}";
@@ -1650,18 +1650,6 @@ impl Pane for TerminalPane {
     }
     fn set_pinned(&mut self, should_be_pinned: bool) {
         self.geom.is_pinned = should_be_pinned;
-    }
-    fn intercept_left_mouse_click(&mut self, position: &Position, client_id: ClientId) -> bool {
-        if self.position_is_on_frame(position) {
-            let relative_position = self.relative_position(position);
-            if let Some(client_frame) = self.frame.get_mut(&client_id) {
-                if client_frame.clicked_on_pinned(relative_position) {
-                    self.toggle_pinned();
-                    return true;
-                }
-            }
-        }
-        false
     }
     fn intercept_mouse_event_on_frame(&mut self, event: &MouseEvent, client_id: ClientId) -> bool {
         if self.position_is_on_frame(&event.position) {

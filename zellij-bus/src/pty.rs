@@ -360,7 +360,8 @@ pub enum PtyInstruction {
     ReRunCommandInPane(PaneId, RunCommand, Option<NotificationEnd>),
     DropToShellInPane {
         pane_id: PaneId,
-        shell: Option<PathBuf>,
+        /// The session's configured default shell, as `Tab::default_shell` holds it.
+        shell: PathBuf,
         working_dir: Option<PathBuf>,
         completion_tx: Option<NotificationEnd>,
     },
