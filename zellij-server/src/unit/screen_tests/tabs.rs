@@ -204,6 +204,87 @@ pub fn closing_a_tab_closes_the_pane_behind_its_scrollback_editor_and_moves_park
 }
 
 #[test]
+pub fn closing_a_tab_closes_the_pane_behind_an_in_place_replacement() {
+    // The same fate as the pane behind a scrollback editor, for the same reason: the
+    // stand-in that would have brought it back closed with the tab. Only the editor case
+    // used to be handled; a pane replaced in place (`edit --in-place`, a plugin opened in
+    // place) was moved to another tab behind a stand-in that no longer existed.
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = crate::ClientId::new(1);
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, TabId::new(1));
+    new_tab(&mut screen, 2, TabId::new(2));
+    let original = PaneId::Terminal(crate::TerminalId::new(2));
+    let parked = PaneId::Terminal(crate::TerminalId::new(3));
+    let stand_in = PaneId::Terminal(crate::TerminalId::new(4));
+    {
+        let tab = screen.get_active_tab_mut(client_id).unwrap();
+        tab.new_pane(
+            parked,
+            None,
+            None,
+            false,
+            false,
+            zellij_types::data::NewPanePlacement::default(),
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+        tab.suppress_pane(parked, None);
+        assert_eq!(
+            tab.get_active_pane_id(client_id),
+            Some(original),
+            "precondition"
+        );
+        let close_replaced_pane = false;
+        tab.suppress_pane_and_replace_with_pid(
+            original,
+            stand_in,
+            close_replaced_pane,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            tab.stands_in_for_a_pane(stand_in),
+            Some(original),
+            "precondition"
+        );
+    }
+    let (to_pty, pty_receiver) = zellij_runtime::channels::unbounded();
+    screen
+        .bus
+        .senders
+        .replace_to_pty(zellij_runtime::channels::SenderWithContext::new(to_pty));
+
+    screen.close_tab(client_id).unwrap();
+
+    assert_eq!(screen.tabs.len(), 1);
+    let remaining = screen.tabs.values().next().unwrap();
+    let remaining_ids = remaining.get_all_pane_ids();
+    assert!(remaining_ids.contains(&parked), "{remaining_ids:?}");
+    assert!(!remaining_ids.contains(&original), "{remaining_ids:?}");
+    assert!(!remaining_ids.contains(&stand_in), "{remaining_ids:?}");
+    assert!(remaining.stands_in_for_a_pane(stand_in).is_none());
+    let closed: Vec<PaneId> = pty_receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PtyInstruction::CloseTab(ids) => ids,
+            _ => vec![],
+        })
+        .collect();
+    assert!(
+        closed.contains(&original) && closed.contains(&stand_in),
+        "{closed:?}"
+    );
+    assert!(!closed.contains(&parked), "{closed:?}");
+}
+
+#[test]
 pub fn close_the_middle_tab() {
     let size = Size {
         cols: 121,
