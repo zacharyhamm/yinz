@@ -195,9 +195,6 @@ impl TiledPanes {
         }
         self.panes.insert(pane_id, pane);
     }
-    /// Tell every pty in `pane_id`'s stack its current size. Making room for a new member
-    /// resizes the others through `StackedPanes`, which changes their geometry without
-    /// reaching the pty; a relayout would send the sizes, but the stack paths run none.
     /// Every pane's content size, taken before a resize so that afterwards only the
     /// panes it changed hear about it. Telling every pane made each step of a held
     /// resize key a SIGWINCH to every process in the tab.
@@ -218,12 +215,17 @@ impl TiledPanes {
             }
         }
     }
-    fn resize_ptys_in_stack_of(&mut self, pane_id: &PaneId) {
-        for id in self.pane_ids_in_stack_of_pane_id(pane_id) {
-            if let Some(pane) = self.panes.get_mut(&id) {
-                resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
-            }
-        }
+    /// Put a pane whose geometry a stack has already made room for into that stack, and
+    /// tell the stack - and only the stack - what that did to its members' sizes.
+    ///
+    /// `add_pane_with_existing_geom` insets only under full frames, and the member the
+    /// stack just collapsed to a title row keeps the offset it had as a flexible pane, so
+    /// a bare insert leaves two panes whose content size is wrong until something
+    /// relayouts. `reapply_pane_frames_in_stack_of` derives both from the style.
+    fn insert_into_stack(&mut self, pane_id: PaneId, geom: PaneGeom, mut pane: Box<dyn Pane>) {
+        pane.set_geom(geom);
+        self.panes.insert(pane_id, pane);
+        self.reapply_pane_frames_in_stack_of(&pane_id);
     }
     pub fn replace_active_pane(
         &mut self,
@@ -369,7 +371,7 @@ impl TiledPanes {
     pub fn add_pane_to_stack(
         &mut self,
         pane_id_in_stack: &PaneId,
-        mut pane: Box<dyn Pane>,
+        pane: Box<dyn Pane>,
     ) -> Option<Box<dyn Pane>> {
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
@@ -379,11 +381,8 @@ impl TiledPanes {
         );
         match pane_grid.make_room_in_stack_of_pane_id_for_pane(pane_id_in_stack) {
             Ok(new_pane_geom) => {
-                pane.set_geom(new_pane_geom);
                 let pane_id = pane.pid();
-                self.add_pane_with_existing_geom(pane_id, pane);
-                self.resize_ptys_in_stack_of(&pane_id);
-                self.reset_boundaries();
+                self.insert_into_stack(pane_id, new_pane_geom, pane);
                 None
             },
             Err(_e) => {
@@ -544,10 +543,7 @@ impl TiledPanes {
                 let _ = pane_grid.make_pane_stacked(active_pane_id);
                 match pane_grid.make_room_in_stack_of_pane_id_for_pane(active_pane_id) {
                     Ok(new_pane_geom) => {
-                        pane.set_geom(new_pane_geom);
-                        self.add_pane_with_existing_geom(pane_id, pane);
-                        self.resize_ptys_in_stack_of(&pane_id);
-                        self.reset_boundaries();
+                        self.insert_into_stack(pane_id, new_pane_geom, pane);
                         None
                     },
                     Err(_e) => self.add_pane_without_stacked_resize(pane_id, pane, should_relayout),
@@ -564,7 +560,7 @@ impl TiledPanes {
     pub fn add_pane_to_stack_of_active_pane(
         &mut self,
         pane_id: PaneId,
-        mut pane: Box<dyn Pane>,
+        pane: Box<dyn Pane>,
         client_id: ClientId,
     ) -> Option<Box<dyn Pane>> {
         let mut pane_grid = TiledPaneGrid::new(
@@ -586,10 +582,7 @@ impl TiledPanes {
         }
         match pane_grid.make_room_in_stack_of_pane_id_for_pane(active_pane_id) {
             Ok(new_pane_geom) => {
-                pane.set_geom(new_pane_geom);
-                self.add_pane_with_existing_geom(pane_id, pane);
-                self.resize_ptys_in_stack_of(&pane_id);
-                self.reset_boundaries();
+                self.insert_into_stack(pane_id, new_pane_geom, pane);
                 None
             },
             Err(e) => {
@@ -607,7 +600,7 @@ impl TiledPanes {
     pub fn add_pane_to_stack_of_pane_id(
         &mut self,
         pane_id: PaneId,
-        mut pane: Box<dyn Pane>,
+        pane: Box<dyn Pane>,
         root_pane_id: PaneId,
     ) -> Option<Box<dyn Pane>> {
         let mut pane_grid = TiledPaneGrid::new(
@@ -627,10 +620,7 @@ impl TiledPanes {
         }
         match pane_grid.make_room_in_stack_of_pane_id_for_pane(&root_pane_id) {
             Ok(new_pane_geom) => {
-                pane.set_geom(new_pane_geom);
-                self.add_pane_with_existing_geom(pane_id, pane);
-                self.resize_ptys_in_stack_of(&pane_id);
-                self.reset_boundaries();
+                self.insert_into_stack(pane_id, new_pane_geom, pane);
                 None
             },
             Err(e) => {
@@ -737,113 +727,68 @@ impl TiledPanes {
         // same as set_pane_frames except it reapplies the current situation
         self.set_pane_frames(self.pane_frame_style);
     }
+    /// Give every member of `pane_id`'s stack the frame and content offset the current
+    /// style calls for, and tell their ptys the size that leaves them.
+    ///
+    /// Making room for a new member reshapes the others through `StackedPanes`, which
+    /// changes their geometry without touching offsets or ptys. A relayout would do both,
+    /// but the stack paths run none, and `reapply_pane_frames` would do it for the whole
+    /// tab: a SIGWINCH to every process in it for a change confined to one stack.
+    pub fn reapply_pane_frames_in_stack_of(&mut self, pane_id: &PaneId) {
+        let pane_ids = self.pane_ids_in_stack_of_pane_id(pane_id);
+        let frame_context = self.frame_context();
+        for id in pane_ids {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                apply_frame(&frame_context, pane);
+                resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+            }
+        }
+        self.reset_boundaries();
+    }
     pub fn set_pane_frames(&mut self, pane_frame_style: PaneFrameStyle) {
         self.pane_frame_style = pane_frame_style;
-        let draws_full_frames = pane_frame_style.draws_full_frames();
-        let draws_titles = pane_frame_style.draws_titles();
+        let frame_context = self.frame_context();
+        for pane in self.panes.values_mut() {
+            apply_frame(&frame_context, pane);
+            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+        }
+        self.reset_boundaries();
+    }
+    /// What `apply_frame` needs to know about the tab as a whole, gathered once: the
+    /// stacks' rectangles and the count of selectable panes are answers about the whole
+    /// map, and asking per pane would be quadratic.
+    fn frame_context(&mut self) -> FrameContext {
+        let draws_full_frames = self.pane_frame_style.draws_full_frames();
+        let draws_titles = self.pane_frame_style.draws_titles();
         let single_selectable_tiled_pane = self
             .panes
             .values()
             .filter(|p| p.selectable() && !p.borderless())
             .count()
             == 1;
-        let viewport = *self.viewport.borrow();
-        let boundary_viewport = *self.viewport.borrow();
         let no_ui_fullscreen_pane_id = if *self.fullscreen_covers_ui.borrow() {
             self.fullscreen_is_active
         } else {
             None
         };
-        let position_and_sizes_of_stacks = {
+        let position_and_sizes_of_stacks =
             StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
                 .positions_and_sizes_of_all_stacks()
-                .unwrap_or_default()
-        };
+                .unwrap_or_default();
         let reserved_top_rows = if self.fullscreen_is_active.is_some() {
             HashMap::new()
         } else {
             self.reserved_top_rows.borrow().clone()
         };
-        for pane in self.panes.values_mut() {
-            pane.set_subtitle_enabled(draws_full_frames || draws_titles);
-            if no_ui_fullscreen_pane_id == Some(pane.pid()) {
-                pane.set_frame(false);
-                pane.set_content_offset(Offset::default());
-                resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
-                continue;
-            }
-            if !pane.borderless() {
-                pane.set_frame(draws_full_frames);
-            }
-
-            let pane_viewport = &viewport;
-            let reserved_rows = reserved_top_rows.get(&pane.pid()).copied().unwrap_or(0);
-
-            #[allow(clippy::if_same_then_else)]
-            if reserved_rows > 0 {
-                if draws_full_frames && !pane.borderless() {
-                    pane.set_content_offset(Offset {
-                        top: 1 + reserved_rows,
-                        bottom: 1,
-                        left: 1,
-                        right: 1,
-                    });
-                } else {
-                    let position_and_size = pane.current_geom();
-                    let (pane_columns_offset, pane_rows_offset) =
-                        pane_content_offset(&position_and_size, &boundary_viewport);
-                    let visible_member_title_rows = if draws_full_frames { 1 } else { 0 };
-                    pane.set_content_offset(Offset {
-                        top: visible_member_title_rows + reserved_rows,
-                        bottom: pane_rows_offset,
-                        left: 0,
-                        right: pane_columns_offset,
-                    });
-                }
-            } else if draws_full_frames && !pane.borderless() {
-                pane.set_content_offset(Offset::frame(1));
-            } else if draws_full_frames && pane.borderless() {
-                pane.set_content_offset(Offset::default());
-            } else if !is_inside_viewport(pane_viewport, pane) {
-                pane.set_content_offset(Offset::default());
-            } else {
-                let mut position_and_size = pane.current_geom();
-                let is_stacked = position_and_size.is_stacked();
-                let is_flexible = !position_and_size.rows.is_fixed();
-                // A collapsed stack member is a single title row with no content of its
-                // own, so it never reserves a title row. A fixed-size pane outside a stack
-                // does: its title is drawn over its own top row.
-                let is_one_liner_in_stack = is_stacked && !is_flexible;
-                let pane_is_borderless = pane.borderless();
-                if let Some(position_and_size_of_stack) = position_and_size
-                    .stacked
-                    .and_then(|s_id| position_and_sizes_of_stacks.get(&s_id))
-                {
-                    position_and_size = *position_and_size_of_stack;
-                };
-                let (pane_columns_offset, pane_rows_offset) =
-                    pane_content_offset(&position_and_size, &boundary_viewport);
-                let reserve_title_row = if draws_titles {
-                    !pane_is_borderless
-                        && (!single_selectable_tiled_pane || pane.subtitle().is_some())
-                        && !is_one_liner_in_stack
-                } else {
-                    is_stacked && is_flexible
-                };
-                if reserve_title_row {
-                    pane.set_content_offset(Offset::shift_right_top_and_bottom(
-                        pane_columns_offset,
-                        1,
-                        pane_rows_offset,
-                    ));
-                } else {
-                    pane.set_content_offset(Offset::shift(pane_rows_offset, pane_columns_offset));
-                }
-            }
-
-            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+        FrameContext {
+            draws_full_frames,
+            draws_titles,
+            single_selectable_tiled_pane,
+            viewport: *self.viewport.borrow(),
+            no_ui_fullscreen_pane_id,
+            position_and_sizes_of_stacks,
+            reserved_top_rows,
         }
-        self.reset_boundaries();
     }
     pub fn can_split_pane_horizontally(&mut self, client_id: ClientId) -> bool {
         match self.active_panes.get(&client_id).copied() {
@@ -3199,6 +3144,102 @@ impl TiledPanes {
             *self.viewport.borrow(),
         );
         pane_grid.next_selectable_pane_id_to_the_right(pane_id)
+    }
+}
+
+/// What `apply_frame` needs to know about the tab as a whole. `set_pane_frames` used to
+/// work it out inline; `reapply_pane_frames_in_stack_of` needs the same answers for a few
+/// panes, so `TiledPanes::frame_context` gathers them once.
+struct FrameContext {
+    draws_full_frames: bool,
+    draws_titles: bool,
+    single_selectable_tiled_pane: bool,
+    /// Both the viewport a pane is measured against and the boundary its content offset
+    /// is computed from: `set_pane_frames` read the same field twice under two names.
+    viewport: Viewport,
+    no_ui_fullscreen_pane_id: Option<PaneId>,
+    position_and_sizes_of_stacks: HashMap<usize, PaneGeom>,
+    reserved_top_rows: HashMap<PaneId, usize>,
+}
+
+/// Give one pane the frame and content offset the tab's current style calls for.
+///
+/// The body of `set_pane_frames`'s loop, minus the pty resize: callers decide whom to
+/// tell, because the point of `reapply_pane_frames_in_stack_of` is to tell a stack and
+/// not a tab.
+fn apply_frame(ctx: &FrameContext, pane: &mut Box<dyn Pane>) {
+    pane.set_subtitle_enabled(ctx.draws_full_frames || ctx.draws_titles);
+    if ctx.no_ui_fullscreen_pane_id == Some(pane.pid()) {
+        pane.set_frame(false);
+        pane.set_content_offset(Offset::default());
+        return;
+    }
+    if !pane.borderless() {
+        pane.set_frame(ctx.draws_full_frames);
+    }
+
+    let reserved_rows = ctx.reserved_top_rows.get(&pane.pid()).copied().unwrap_or(0);
+
+    #[allow(clippy::if_same_then_else)]
+    if reserved_rows > 0 {
+        if ctx.draws_full_frames && !pane.borderless() {
+            pane.set_content_offset(Offset {
+                top: 1 + reserved_rows,
+                bottom: 1,
+                left: 1,
+                right: 1,
+            });
+        } else {
+            let position_and_size = pane.current_geom();
+            let (pane_columns_offset, pane_rows_offset) =
+                pane_content_offset(&position_and_size, &ctx.viewport);
+            let visible_member_title_rows = if ctx.draws_full_frames { 1 } else { 0 };
+            pane.set_content_offset(Offset {
+                top: visible_member_title_rows + reserved_rows,
+                bottom: pane_rows_offset,
+                left: 0,
+                right: pane_columns_offset,
+            });
+        }
+    } else if ctx.draws_full_frames && !pane.borderless() {
+        pane.set_content_offset(Offset::frame(1));
+    } else if ctx.draws_full_frames && pane.borderless() {
+        pane.set_content_offset(Offset::default());
+    } else if !is_inside_viewport(&ctx.viewport, pane) {
+        pane.set_content_offset(Offset::default());
+    } else {
+        let mut position_and_size = pane.current_geom();
+        let is_stacked = position_and_size.is_stacked();
+        let is_flexible = !position_and_size.rows.is_fixed();
+        // A collapsed stack member is a single title row with no content of its
+        // own, so it never reserves a title row. A fixed-size pane outside a stack
+        // does: its title is drawn over its own top row.
+        let is_one_liner_in_stack = is_stacked && !is_flexible;
+        let pane_is_borderless = pane.borderless();
+        if let Some(position_and_size_of_stack) = position_and_size
+            .stacked
+            .and_then(|s_id| ctx.position_and_sizes_of_stacks.get(&s_id))
+        {
+            position_and_size = *position_and_size_of_stack;
+        };
+        let (pane_columns_offset, pane_rows_offset) =
+            pane_content_offset(&position_and_size, &ctx.viewport);
+        let reserve_title_row = if ctx.draws_titles {
+            !pane_is_borderless
+                && (!ctx.single_selectable_tiled_pane || pane.subtitle().is_some())
+                && !is_one_liner_in_stack
+        } else {
+            is_stacked && is_flexible
+        };
+        if reserve_title_row {
+            pane.set_content_offset(Offset::shift_right_top_and_bottom(
+                pane_columns_offset,
+                1,
+                pane_rows_offset,
+            ));
+        } else {
+            pane.set_content_offset(Offset::shift(pane_rows_offset, pane_columns_offset));
+        }
     }
 }
 

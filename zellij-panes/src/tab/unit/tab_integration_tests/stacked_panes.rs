@@ -3596,3 +3596,139 @@ fn a_pane_a_full_stack_cannot_take_is_parked_rather_than_dropped() {
         "no room is not a reason to close a pane: {closed:?}"
     );
 }
+
+/// A flexible stack member reserves a row for the stack's title line under every frame
+/// style (`set_pane_frames`: `reserve_title_row` is `is_stacked && is_flexible` when titles
+/// are off, and true for a non-one-liner member when they are on). Inserting a pane into a
+/// stack used to inset it only under full frames, so under `Titles` or `None` it kept
+/// `Offset::default()` and its pty heard a size one row too tall until the next relayout.
+#[test]
+fn a_pane_joining_a_stack_is_told_the_size_its_title_row_leaves_it() {
+    for style in [PaneFrameStyle::Titles, PaneFrameStyle::None] {
+        let (tx, rx) = channels::unbounded();
+        let mut tab = create_new_tab_with_mock_pty_writer(
+            Size { cols: 80, rows: 30 },
+            ModeInfo::default(),
+            SenderWithContext::new(tx),
+        );
+        let client_id = crate::ClientId::new(1);
+        let root = PaneId::Terminal(crate::TerminalId::new(1));
+        let member = PaneId::Terminal(crate::TerminalId::new(2));
+        tab.set_pane_frames(style);
+        let _ = rx.try_iter().count(); // the style change resized what was already here
+
+        // Unfocused: focusing a stack member reaches `reapply_pane_frames`, which would
+        // paper over the offset the insert itself is responsible for.
+        tab.new_stacked_pane(
+            member,
+            None,
+            None,
+            false,
+            false,
+            Some(root),
+            Some(client_id),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let resized: Vec<(PaneId, u16, u16)> = rx
+            .try_iter()
+            .filter_map(|(msg, _)| match msg {
+                PtyWriteInstruction::ResizePty(id, cols, rows, ..) => {
+                    Some((PaneId::Terminal(id), cols, rows))
+                },
+                _ => None,
+            })
+            .collect();
+
+        let pane = tab
+            .tiled_panes
+            .get_pane(member)
+            .expect("the pane joined the stack");
+        let geom = pane.position_and_size();
+        assert!(geom.is_stacked(), "{style:?}: {geom:?}");
+        assert!(
+            !geom.rows.is_fixed(),
+            "{style:?}: the new member is the flexible one"
+        );
+        assert_eq!(
+            pane.get_content_rows(),
+            geom.rows.as_usize() - 1,
+            "{style:?}: a flexible stack member reserves a row for its title",
+        );
+        assert_eq!(
+            resized
+                .iter()
+                .filter(|(id, ..)| *id == member)
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![(
+                member,
+                pane.get_content_columns() as u16,
+                pane.get_content_rows() as u16
+            )],
+            "{style:?}: one resize, at the size the pane ended up: {resized:?}",
+        );
+    }
+}
+
+/// The member a stack collapses to a title row is reframed too. Under `Titles` a
+/// full-height pane beside another carries `Offset { top: 1, right: 1, .. }`; collapsing it
+/// to `rows: fixed(1)` without reframing left `get_content_rows()` at zero, and that zero
+/// went straight to the shell.
+#[test]
+fn the_member_a_stack_collapses_is_reframed_before_its_pty_hears_the_new_size() {
+    let (tx, rx) = channels::unbounded();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        Size { cols: 80, rows: 30 },
+        ModeInfo::default(),
+        SenderWithContext::new(tx),
+    );
+    let client_id = crate::ClientId::new(1);
+    let root = PaneId::Terminal(crate::TerminalId::new(1));
+    let beside = PaneId::Terminal(crate::TerminalId::new(2));
+    let member = PaneId::Terminal(crate::TerminalId::new(3));
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+    tab.vertical_split(beside, None, client_id, None, None)
+        .unwrap();
+    tab.tiled_panes.focus_pane(root, client_id);
+    let _ = rx.try_iter().count();
+
+    tab.new_stacked_pane(
+        member,
+        None,
+        None,
+        false,
+        false,
+        Some(root),
+        Some(client_id),
+        None,
+        None,
+    )
+    .unwrap();
+
+    let root_pane = tab
+        .tiled_panes
+        .get_pane(root)
+        .expect("the root is still in the grid");
+    assert!(
+        root_pane.position_and_size().rows.is_fixed(),
+        "the root collapsed"
+    );
+    assert_eq!(
+        root_pane.get_content_rows(),
+        1,
+        "a collapsed member is one row of content, not zero",
+    );
+    let rows_for_root: Vec<u16> = rx
+        .try_iter()
+        .filter_map(|(msg, _)| match msg {
+            PtyWriteInstruction::ResizePty(id, _, rows, ..) if PaneId::Terminal(id) == root => {
+                Some(rows)
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows_for_root, vec![1], "{rows_for_root:?}");
+}
