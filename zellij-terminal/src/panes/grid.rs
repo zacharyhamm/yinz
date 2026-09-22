@@ -2684,12 +2684,11 @@ impl Grid {
             return;
         }
         if self.viewport.len() <= self.cursor.y + 1 {
-            // The new row takes the pending background (BCE), as the scroll-region branch
-            // above already does. The colour travels in `Row::bg_color` rather than as pad
-            // characters, so the row's width is unchanged and reflow is unaffected.
-            let new_row = Row::new()
-                .canonical()
-                .with_bg_color(self.cursor.pending_styles.background);
+            // Nothing scrolls here (the cursor is above the scroll region's bottom), so this
+            // is a plain cursor move onto a screen row the sparse viewport had not
+            // materialised yet. A linefeed that does not scroll paints nothing: the pending
+            // background belongs to the scroll branch above and to the erase handlers.
+            let new_row = Row::new().canonical();
             self.viewport.push_back(new_row);
         }
         if self.cursor.y == self.height.saturating_sub(1) {
@@ -2890,8 +2889,9 @@ impl Grid {
         } else {
             self.cursor.y += 1;
             if self.viewport.len() <= self.cursor.y {
-                let line_wrapped_row =
-                    Row::new().with_bg_color(self.cursor.pending_styles.background);
+                // A wrap that does not scroll paints nothing but the wrapped character, so
+                // the row it lands on takes no background (see `add_canonical_line`).
+                let line_wrapped_row = Row::new();
                 self.viewport.push_back(line_wrapped_row);
                 self.output_buffer.update_line(self.cursor.y);
             } else if let Some(current_line) = self.viewport.get_mut(self.cursor.y) {
