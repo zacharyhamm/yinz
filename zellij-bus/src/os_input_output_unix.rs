@@ -716,6 +716,13 @@ impl UnixPtyBackend {
         Ok((async_reader, child_pid))
     }
 
+    /// Tell the pane's pty its new size, whichever transport holds it.
+    ///
+    /// A failure on any transport is returned rather than logged here: the session
+    /// recorder records a resize only when it went through, and the cached-resize drain
+    /// keys on the result the same way, so a swallowed failure would have recorded a
+    /// size the pane never got. A pane with no pty yet (reserved, or unknown) is a
+    /// failure too.
     pub fn set_terminal_size(
         &self,
         terminal_id: TerminalId,
@@ -754,14 +761,12 @@ impl UnixPtyBackend {
                         width_in_pixels: width_in_pixels.unwrap_or(0),
                         height_in_pixels: height_in_pixels.unwrap_or(0),
                     })
-                    .with_context(err_context)
-                    .non_fatal();
+                    .with_context(err_context)?;
                 }
             },
             Some(PaneTransport::Reserved) | None => {
-                Err::<(), _>(anyhow!("failed to find terminal fd for id {terminal_id}"))
-                    .with_context(err_context)
-                    .non_fatal();
+                return Err(anyhow!("failed to find terminal fd for id {terminal_id}"))
+                    .with_context(err_context);
             },
         }
         Ok(())
@@ -1440,6 +1445,25 @@ mod tests {
                 "a failed spawn leaked its pty slave: {read:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_resize_for_a_terminal_with_no_pty_is_an_error() {
+        // The recorder and the cached-resize drain record a resize when it returns
+        // `Ok`; a pane that has no pty to receive one must not read as resized.
+        let backend = UnixPtyBackend::with_termios(None).expect("a backend");
+        backend
+            .terminal_id_to_transport
+            .lock()
+            .unwrap()
+            .insert(TerminalId::new(7), PaneTransport::Reserved);
+
+        assert!(backend
+            .set_terminal_size(TerminalId::new(7), 80, 24, None, None)
+            .is_err());
+        assert!(backend
+            .set_terminal_size(TerminalId::new(8), 80, 24, None, None)
+            .is_err());
     }
 
     #[test]
