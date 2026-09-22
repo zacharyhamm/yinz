@@ -31,6 +31,7 @@ fn mirrored_sessions() {
 
     let mirror_focused_right_pane = |grid_snapshot: &GridSnapshot| {
         grid_snapshot.tab_bar_appears()
+            && tab_bar_shows_no_lone_pane_id(grid_snapshot)
             && session_name_rendered(grid_snapshot)
             && grid_snapshot.status_bar_appears()
             && grid_snapshot.contains("Pane #2")
@@ -71,6 +72,7 @@ fn multiple_users_in_same_pane_and_tab() {
     let second_grid =
         second_client.wait_until("second client shares the focused pane", |grid_snapshot| {
             grid_snapshot.tab_bar_appears()
+                && grid_snapshot.contains("Tab #1 [ ]")
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("MY FOCUS")
@@ -80,6 +82,7 @@ fn multiple_users_in_same_pane_and_tab() {
         "main client shows the shared-focus indicator",
         |grid_snapshot| {
             grid_snapshot.tab_bar_appears()
+                && grid_snapshot.contains("Tab #1 [ ]")
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("MY FOCUS")
@@ -111,6 +114,8 @@ fn multiple_users_in_different_panes_and_same_tab() {
         "second client focused the new right pane",
         |grid_snapshot| {
             grid_snapshot.tab_bar_appears()
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
+                && grid_snapshot.contains("Tab #1 [ ]")
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.cursor_is_at(col(62).row(2))
@@ -120,6 +125,8 @@ fn multiple_users_in_different_panes_and_same_tab() {
         "main client sees the second client's split while staying on the left pane",
         |grid_snapshot| {
             grid_snapshot.tab_bar_appears()
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
+                && grid_snapshot.contains("Tab #1 [ ]")
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.contains("Pane #2")
                 && grid_snapshot.status_bar_appears()

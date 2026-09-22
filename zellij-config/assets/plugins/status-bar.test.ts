@@ -1,0 +1,149 @@
+import z, { type TabInfo } from "zellij:plugin";
+import { test, loadPlugin, assert, assertEquals } from "zellij:testing";
+import { defaultMode } from "./status-bar/default-mode.ts";
+
+const activeTab: TabInfo = {
+  position: 0,
+  name: "main",
+  active: true,
+  panes_to_hide: 0,
+  is_fullscreen_active: false,
+  is_sync_panes_active: false,
+  are_floating_panes_visible: false,
+  other_focused_clients: [],
+  active_swap_layout_name: null,
+  is_swap_layout_dirty: false,
+  viewport_rows: 24,
+  viewport_columns: 80,
+  display_area_rows: 24,
+  display_area_columns: 80,
+  selectable_tiled_panes_count: 1,
+  selectable_floating_panes_count: 0,
+  tab_id: 0,
+  has_bell_notification: false,
+  is_flashing_bell: false,
+};
+
+const replies = { GetLocalUtcOffset: 0, GetZellijVersion: "test", FsMetadata: null, FsWrite: null };
+const named = (commands: unknown[], name: string) =>
+  commands.filter((c) => typeof c === "object" && c !== null && name in c);
+
+for (const failure of ["FsMetadata", "FsRead", "FsWrite", "malformed", "invalid counts"]) {
+  test(`status bar keeps drawing when tip cache fails: ${failure}`, async () => {
+    const cache =
+      failure === "malformed"
+        ? "{"
+        : failure === "invalid counts"
+          ? '{"zellij_version":"test","cached_data":{"quicknav":-1}}'
+          : '{"zellij_version":"test","cached_data":{"quicknav":1}}';
+    const p = await loadPlugin("./status-bar.ts", {
+      replies: {
+        ...replies,
+        FsMetadata: {},
+        FsRead: () => z.encodeUtf8(cache),
+        ...(["FsMetadata", "FsRead", "FsWrite"].includes(failure)
+          ? {
+              [failure]: () => {
+                throw Error("cache unavailable");
+              },
+            }
+          : {}),
+      },
+    });
+    const frame = await p.render(1, 80);
+    assert(frame.includes("00:00"));
+    await p.event({ TabUpdate: [activeTab] });
+    assert((await p.render(2, 200)).includes("open new pane"));
+    assertEquals(named(p.commands, "SetTimeout"), [{ SetTimeout: 60 }]);
+  });
+}
+for (const [version, hits, expected] of [
+  ["test", 20, 21],
+  ["old", 300, 2],
+] as const) {
+  test(`status bar tip cache threshold and version: ${version}/${hits}`, async () => {
+    const p = await loadPlugin("./status-bar.ts", {
+      replies: {
+        ...replies,
+        FsMetadata: {},
+        FsRead: () =>
+          z.encodeUtf8(
+            JSON.stringify({ zellij_version: version, cached_data: { quicknav: hits } }),
+          ),
+      },
+    });
+    const writes = p.commands.filter(
+      (c): c is { FsWrite: { contents: number[] } } =>
+        typeof c === "object" && c !== null && "FsWrite" in c,
+    );
+    assertEquals(writes.length, 1, JSON.stringify(p.commands));
+    const contents = JSON.parse(z.decodeUtf8(new Uint8Array(writes[0]!.FsWrite.contents)));
+    assertEquals(contents.zellij_version, "test");
+    assertEquals(contents.cached_data.quicknav, expected);
+  });
+}
+
+test("status bar deduplicates timers through repeated Alt and pointer reveals", async () => {
+  const p = await loadPlugin("./status-bar.ts", { replies });
+  await p.render(1, 80);
+  for (let i = 0; i < 20; i++) {
+    await p.event({ ModifiersHeld: { modifiers: ["Alt"], is_live: false } });
+    await p.event({ Mouse: { Hover: [0, 0] } });
+    await p.event({ Mouse: { Hover: [0, 65535] } });
+  }
+  assertEquals(named(p.commands, "SetTimeout"), [{ SetTimeout: 60 }, { SetTimeout: 3 }]);
+  await p.advance(3000);
+  assertEquals(named(p.commands, "SetTimeout").at(-1), { SetTimeout: 57 });
+  // A late, superseded timeout must not start another permanent timer chain.
+  await p.advance(1000);
+  assertEquals(named(p.commands, "SetTimeout").length, 3);
+  await p.advance(56000);
+  assertEquals(named(p.commands, "SetTimeout").length, 4);
+  assert((await p.render(1, 80)).includes("00:01"));
+});
+
+test("status bar refreshes the UTC offset at the next whole hour", async () => {
+  const p = await loadPlugin("./status-bar.ts", {
+    replies: { ...replies, GetLocalUtcOffset: 19800 },
+  });
+  assert((await p.render(1, 80)).includes("05:30"));
+  await p.advance(3599999);
+  assertEquals(named(p.commands, "GetLocalUtcOffset").length, 1);
+  p.stub("GetLocalUtcOffset", -18000);
+  await p.advance(1);
+  assertEquals(named(p.commands, "GetLocalUtcOffset").length, 2);
+  assert((await p.render(1, 80)).includes("20:00"));
+});
+
+test("status bar clipboard messages clear on input and live Alt release restores the clock", async () => {
+  const p = await loadPlugin("./status-bar.ts", { replies });
+  const mode = defaultMode();
+  mode.keybinds = [
+    [
+      "Normal",
+      [
+        [
+          { bare_key: { Char: "n" }, key_modifiers: ["Alt"] },
+          [{ NewPane: { direction: null, pane_name: null, start_suppressed: false } }],
+        ],
+        [
+          { bare_key: { Char: "p" }, key_modifiers: ["Ctrl"] },
+          [{ SwitchToMode: { input_mode: "Pane" } }],
+        ],
+      ],
+    ],
+  ];
+  await p.event({ ModeUpdate: mode });
+  await p.event({ ModifiersHeld: { modifiers: ["Alt"], is_live: true } });
+  assert((await p.render(1, 200)).includes("New Pane"));
+  await p.event({ ModifiersHeld: { modifiers: [], is_live: true } });
+  assert((await p.render(1, 200)).includes("00:00"));
+  await p.event({ CopyToClipboard: "System" });
+  assert((await p.render(1, 200)).includes("Text copied to system clipboard"));
+  await p.event("SystemClipboardFailure");
+  assert((await p.render(1, 200)).includes("Text copied to system clipboard"));
+  await p.event("InputReceived");
+  assert((await p.render(1, 200)).includes("00:00"));
+  await p.event("SystemClipboardFailure");
+  assert((await p.render(1, 200)).includes("Error using the system clipboard"));
+});

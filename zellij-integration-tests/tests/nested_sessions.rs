@@ -119,7 +119,9 @@ fn host_own_tab_bar_settled(grid_snapshot: &GridSnapshot, guest_session_name: &s
     let guest_pane_title_row_present = lines
         .get(1)
         .is_some_and(|second_line| second_line.contains(guest_session_name));
-    first_row_is_host_tab_bar && guest_pane_title_row_present
+    first_row_is_host_tab_bar
+        && guest_pane_title_row_present
+        && tab_bar_shows_no_lone_pane_id(grid_snapshot)
 }
 
 fn host_tab_bar_renamed_to_guest(grid_snapshot: &GridSnapshot, guest_session_name: &str) -> bool {

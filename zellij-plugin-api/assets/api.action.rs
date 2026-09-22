@@ -1189,6 +1189,7 @@ pub enum ActionName {
     MoveNotificationSelection = 119,
     ActivateNotification = 120,
     ToggleNotificationDetail = 121,
+    Copy = 122,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1315,6 +1316,7 @@ impl ActionName {
             ActionName::MoveNotificationSelection => "MoveNotificationSelection",
             ActionName::ActivateNotification => "ActivateNotification",
             ActionName::ToggleNotificationDetail => "ToggleNotificationDetail",
+            ActionName::Copy => "Copy",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1438,6 +1440,7 @@ impl ActionName {
             "MoveNotificationSelection" => Some(Self::MoveNotificationSelection),
             "ActivateNotification" => Some(Self::ActivateNotification),
             "ToggleNotificationDetail" => Some(Self::ToggleNotificationDetail),
+            "Copy" => Some(Self::Copy),
             _ => None,
         }
     }

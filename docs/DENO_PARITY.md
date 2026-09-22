@@ -531,6 +531,45 @@ Run with `cargo x test -p zellij-plugin-host -E 'test(numeric_transport_audit)' 
 This is an audit diagnostic, not an acceptance test that should preserve broken behavior.
 The transport and real-store regressions now assert exact values and rejection of invalid revision guards. The tables above record the former boundary only.
 
+## Status bar migration (2026-09-22)
+
+`zellij:status-bar` now loads the embedded `status-bar.ts` entry point and its local modules.
+The public name, layout files, and `classic` configuration option stay the same.
+The Rust crate remains a test reference. Installation excludes its Wasm artifact.
+
+`deno::sdk_tests::status_bar` loads the actual Wasm artifact and the embedded TypeScript plugin.
+It supplies the same events and controls time, UTC offsets, cache contents, and Wasm entropy.
+The tests compare terminal cells, including colors and attributes, redraw decisions, and host commands.
+ANSI encodings can differ when they produce the same cells.
+
+The comparisons cover all input modes, normal and locked base modes, missing and custom bindings,
+plugin aliases, Unicode keys, indexed and RGB colors, both font settings, and both layouts.
+They also cover width transitions, nested sessions, clipboard messages, swap layouts, fullscreen and floating panes,
+agent counts and animation frames, clock rollover, reveal deadlines, pointer hover, ribbon clicks, and reconfiguration.
+All ten tips are compared at several widths. Random choice sequences are not required to match.
+The adjacent `status-bar.test.ts` suite checks cache failures, version changes, selection thresholds, timers, and state transitions.
+`status-bar.integration.test.ts` loads the embedded builtin in a real session and checks mode updates and selectability.
+Existing integration tests now wait for the tab bar to reflect the final pane and client state before taking snapshots.
+Three snapshots now capture settled output: one includes the loaded status bar, and two omit the old single-pane label after a split.
+The full gate also exposed a CLI-pipe test race. That test now waits for the blocked-pipe result and keeps its permission cache outside the fixture's watched folder.
+
+The migration exposed three reference defects:
+
+- The plugin action wire format omitted `Copy`. Action number 122 now carries it without a payload.
+- The Rust tip cache requested file creation without write access. The cache now opens with read and write access.
+- Ribbon emphasis used terminal columns as character indices. Both implementations now use Unicode scalar indices for emphasis.
+
+The installed test harness also used JSON-only command decoding, which rejected filesystem writes containing `Uint8Array`.
+It now uses the same command transport as the live Deno host.
+
+Remaining difference: cache write failures return the `quicknav` fallback in TypeScript.
+The Rust reference can panic on write failures during cache initialization or random-tip bookkeeping.
+Random tip sequences and redundant cache writes also differ. The selection rules and successful final cache contents remain compatible.
+
+Validation on Linux: `NEXTEST_TEST_THREADS=16 cargo x ci check` passed formatting, lint, all 8,352 enabled workspace tests, doctests, and all 450 integration tests.
+The workspace run skipped 51 tests that need separate opt-in suites. Integration tests used 16 workers.
+An earlier run at default workspace concurrency timed out in `can_subscribe_to_hd_events`; that test passed in isolation and in the final gate with 16 workers.
+
 [guide]: DENO_PLUGINS.md
 [architecture]: ARCHITECTURE.md
 [render-path]: PLUGIN_RENDER_PIPELINE.md

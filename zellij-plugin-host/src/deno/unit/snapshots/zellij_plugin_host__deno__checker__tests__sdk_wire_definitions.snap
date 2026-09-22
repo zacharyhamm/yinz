@@ -3069,6 +3069,7 @@ ArrangePanesByProject = 118;
 MoveNotificationSelection = 119;
 ActivateNotification = 120;
 ToggleNotificationDetail = 121;
+Copy = 122;
 reserved 110;
 }
 message Position {

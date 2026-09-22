@@ -5,7 +5,6 @@ pub const FEATURES: &[&str] = &[];
 
 pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "compact-bar",
-    "status-bar",
     "tab-bar",
     "strider",
     "session-manager",
@@ -27,6 +26,10 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
 
 /// TypeScript builtins are compiled into the server and transpiled by its worker.
 pub const BUILTIN_DENO_PLUGINS: &[(&str, &str)] = &[
+    (
+        "status-bar",
+        include_str!("../assets/plugins/status-bar.ts"),
+    ),
     (
         "context-menu",
         include_str!("../assets/plugins/context-menu.ts"),

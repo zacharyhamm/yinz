@@ -2,7 +2,8 @@
 
 use insta::assert_snapshot;
 use zellij_integration_tests::{
-    claim_first_terminal_and_wait_for_prompt, col, keys, normalized, start_zellij, PROMPT,
+    claim_first_terminal_and_wait_for_prompt, col, keys, normalized, start_zellij,
+    tab_bar_shows_no_lone_pane_id, PROMPT,
 };
 
 #[test]
@@ -308,7 +309,9 @@ fn scrolling_inside_a_pane() {
 
     let grid_snapshot =
         zellij.wait_until("scrolled up one line inside the pane", |grid_snapshot| {
-            grid_snapshot.contains("SCROLL: 2/2") && grid_snapshot.contains("PgDn|PgUp")
+            grid_snapshot.contains("SCROLL: 2/2")
+                && grid_snapshot.contains("PgDn|PgUp")
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
         });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
