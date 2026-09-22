@@ -1118,8 +1118,8 @@ pub fn start_server_impl(
                     to_server.clone(),
                     shutdown.clone(),
                     client_attributes.clone(),
-                    Box::new(runtime_config_options.clone()), // TODO: no box
-                    Box::new(layout.clone()),                 // TODO: no box
+                    runtime_config_options.clone(),
+                    layout.clone(),
                     cli_assets.clone(),
                     config.clone(),
                     config.plugins.clone(),
@@ -2208,14 +2208,14 @@ fn init_session(
     to_server: SenderWithContext<ServerInstruction>,
     shutdown: Shutdown,
     client_attributes: ClientAttributes,
-    config_options: Box<Options>,
-    layout: Box<Layout>,
+    config_options: Options,
+    layout: Layout,
     cli_assets: CliAssets,
     mut config: Config,
     plugin_aliases: PluginAliases,
     client_id: ClientId,
 ) -> SessionMetaData {
-    config.options = config.options.merge(*config_options.clone());
+    config.options = config.options.merge(config_options.clone());
 
     let _ = SCROLL_BUFFER_SIZE.set(
         config_options
@@ -2338,7 +2338,7 @@ fn init_session(
     let pty_thread = thread::Builder::new()
         .name("pty".to_string())
         .spawn({
-            let layout = layout.clone();
+            let layout = Box::new(layout.clone());
             let session_recorder_handle = session_recorder_handle.clone();
             let mut bus = Bus::new(
                 vec![pty_receiver],
@@ -2392,7 +2392,7 @@ fn init_session(
 
             let client_attributes_clone = client_attributes.clone();
             let debug = cli_assets.is_debug;
-            let layout = layout.clone();
+            let layout = Box::new(layout.clone());
             let config = config.clone();
             let config_file_path = cli_assets.config_file_path.clone();
             let config_dir = cli_assets.config_dir.clone();
@@ -2452,7 +2452,7 @@ fn init_session(
             }
             let engine = get_engine();
 
-            let layout = layout.clone();
+            let layout = Box::new(layout.clone());
             let default_shell = default_shell.clone();
             let layout_dir = config_options
                 .layout_dir

@@ -2142,7 +2142,6 @@ impl OutputBuffer {
             },
         };
 
-        // TODO: move this whole thing to output_buffer
         if self.should_update_all_lines {
             // for line_index in 0..self.viewport.len() {
             for line_index in 0..viewport_height {

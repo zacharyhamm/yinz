@@ -883,7 +883,9 @@ pub use crate::style::{
     DEFAULT_STYLES,
 };
 
-// FIXME: Poor devs hashtable since HashTable can't derive `Default`...
+/// Keybinds as an ordered list rather than a map: this crosses the plugin wire
+/// (`ModeInfo.keybinds`, `Event::InitialKeybinds`) and the status bars render it in
+/// order, so the order has to be stable and part of the type.
 pub type KeybindsVec = Vec<(InputMode, Vec<(KeyWithModifier, Vec<Action>)>)>;
 
 /// Provides information helpful in rendering the Zellij controls for UI bars
@@ -2832,7 +2834,7 @@ pub enum PluginCommand {
     MessageToPlugin(MessageToPlugin),
     DisconnectOtherClients,
     KillSessions(Vec<SessionName>), // one or more session names
-    ScanHostFolder(PathBuf),        // TODO: rename to ScanHostFolder
+    ScanHostFolder(PathBuf),
     WatchFilesystem,
     /// Read a file, answering with its bytes.
     ///

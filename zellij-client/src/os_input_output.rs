@@ -307,17 +307,9 @@ impl TtyControl for ClientOsInputOutput {
         crossterm::terminal::disable_raw_mode()
     }
     fn load_palette(&self) -> Palette {
-        // this was removed because termbg doesn't release stdin in certain scenarios (we know of
-        // some terminals (including FreeBSD): https://github.com/zellij-org/zellij/issues/538
-        //
-        // let palette = default_palette();
-        // let timeout = std::time::Duration::from_millis(100);
-        // if let Ok(rgb) = termbg::rgb(timeout) {
-        //     palette.bg = PaletteColor::Rgb((rgb.r as u8, rgb.g as u8, rgb.b as u8));
-        //     // TODO: also dynamically get all other colors from the user's terminal
-        //     // this should be done in the same method (OSC ]11), but there might be other
-        //     // considerations here, hence using the library
-        // };
+        // The terminal's own colours are not probed here: querying them over stdin
+        // deadlocked some terminals (zellij-org/zellij#538). Light/dark detection now
+        // happens through `theme_dark`/`theme_light` (see `zellij-cli/src/options.rs`).
         default_palette()
     }
     fn enable_mouse(&self) -> Result<()> {

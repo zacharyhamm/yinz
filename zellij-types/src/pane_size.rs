@@ -140,21 +140,18 @@ impl Dimension {
         self.inner = inner;
     }
 
-    pub fn adjust_inner(&mut self, full_size: usize) -> f64 {
-        // returns the leftover from
-        // rounding if any
-        // TODO: elsewhere?
+    /// Resolve the constraint against `full_size`, rounding a percentage down.
+    ///
+    /// The rounding remainder is not returned: the one caller (`split_space`) corrects
+    /// rounding across all panes afterwards with `adjust_geoms_for_rounding_errors`.
+    pub fn adjust_inner(&mut self, full_size: usize) {
         match self.constraint {
             Constraint::Percent(percent) => {
                 let new_inner = (percent / 100.0) * full_size as f64;
-                let rounded = new_inner.floor();
-                let leftover = rounded - new_inner;
-                self.set_inner(rounded as usize);
-                leftover
+                self.set_inner(new_inner.floor() as usize);
             },
             Constraint::Fixed(fixed_size) => {
                 self.set_inner(fixed_size);
-                0.0
             },
         }
     }

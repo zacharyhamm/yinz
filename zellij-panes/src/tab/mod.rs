@@ -829,10 +829,6 @@ pub trait Pane {
             (false, false) => PaneEdge::BottomRight,
         })
     }
-    // TODO: get rid of this in favor of intercept_mouse_event_on_frame
-    fn intercept_left_mouse_click(&mut self, _position: &Position, _client_id: ClientId) -> bool {
-        false
-    }
     fn intercept_mouse_event_on_frame(
         &mut self,
         _event: &MouseEvent,
@@ -852,8 +848,6 @@ pub trait Pane {
     fn set_exclude_from_sync(&mut self, exclude_from_sync: bool);
     fn exclude_from_sync(&self) -> bool;
 
-    // TODO: this should probably be merged with the mouse_right_click
-    fn handle_right_click(&mut self, _to: &Position, _client_id: ClientId) {}
     fn mouse_event(&self, _event: &MouseEvent, _client_id: ClientId) -> Option<String> {
         None
     }
@@ -5337,7 +5331,7 @@ impl Tab {
                         self.senders
                             .send_to_pty(PtyInstruction::DropToShellInPane {
                                 pane_id: PaneId::Terminal(active_terminal_id),
-                                shell: Some(self.default_shell.clone()),
+                                shell: self.default_shell.clone(),
                                 working_dir,
                                 completion_tx,
                             })
@@ -8513,8 +8507,9 @@ impl Tab {
         }
     }
 
+    /// Handler for `ScreenInstruction::ClearScroll`. Returns whether anything was
+    /// scrolled, so the caller can skip a render when nothing changed.
     pub fn clear_active_terminal_scroll(&mut self, client_id: ClientId) -> Result<bool> {
-        // TODO: is this a thing?
         let err_context =
             || format!("failed to clear scroll in active pane for client {client_id}");
 

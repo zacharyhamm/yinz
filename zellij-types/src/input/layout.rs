@@ -1160,10 +1160,6 @@ impl Layout {
         self.template.clone().unwrap_or_default()
     }
 
-    pub fn is_empty(&self) -> bool {
-        !self.tabs.is_empty()
-    }
-    // TODO: do we need both of these?
     pub fn has_tabs(&self) -> bool {
         !self.tabs.is_empty()
     }
