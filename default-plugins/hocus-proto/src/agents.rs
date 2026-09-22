@@ -3081,8 +3081,8 @@ pub fn tab_projects(
 ///
 /// Sorted so the label does not shuffle when the panes come back in another
 /// order. A tab whose panes have no known project gets no entry, as before.
-pub fn tab_project_labels(
-    panes: &[AgentPane],
+pub fn tab_project_labels<'a>(
+    panes: impl IntoIterator<Item = &'a AgentPane>,
     owners: &BTreeMap<u32, String>,
 ) -> BTreeMap<TabId, Vec<String>> {
     let mut found: BTreeMap<TabId, BTreeSet<String>> = BTreeMap::new();

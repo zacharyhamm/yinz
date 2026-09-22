@@ -571,6 +571,8 @@ pub struct State {
     /// Terminal panes from hocus-agentd's latest event-fed snapshot. This is the
     /// only snapshot agent tools trust, which stops them acting on a closed pane.
     panes: Vec<agents::AgentPane>,
+    /// Hidden terminal metadata used only to derive tab labels.
+    suppressed_panes: Vec<agents::AgentPane>,
     /// Agent CWDs resolved by hocus-agentd to Git checkout identities.
     /// What Git said about each folder an agent is in, keyed by folder *and*
     /// machine. Filled from the daemon's snapshot; see `wire::PollReply`.
@@ -662,12 +664,11 @@ pub struct State {
     /// `tab_projects` as the daemon last heard it, so an unchanged map costs no
     /// message. See `send_tab_assignments`.
     sent_tab_projects: BTreeMap<TabId, String>,
-    /// What each tab is called after the project in it, as last told to the host.
+    /// What each tab is called after its panes' projects.
     ///
     /// Not the same map as the two above: a tab whose agents are in two projects
     /// is named after both, where an *assignment* has to pick one and so picks
-    /// neither. Kept so the host is only told when the answer changes — this is
-    /// recomputed on every poll and the answer is usually the same one.
+    /// neither. hocus-store publishes the host's copy; this one is for display.
     tab_project_labels: BTreeMap<TabId, String>,
     /// The tabs as of the last `TabUpdate`.
     ///
@@ -898,6 +899,7 @@ impl Default for State {
             scheduled_run: None,
             retry: None,
             panes: Vec::new(),
+            suppressed_panes: Vec::new(),
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
             zellij_session_name: SessionName::default(),
@@ -1244,6 +1246,7 @@ impl ZellijPlugin for State {
         self.merge_run_headers(reply.runs);
 
         if let Some(panes) = reply.panes {
+            self.suppressed_panes = reply.suppressed_panes;
             self.apply_poll(
                 panes,
                 reply.activity,

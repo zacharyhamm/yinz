@@ -126,6 +126,7 @@ mod tests {
     }
     fn reply(panes: Vec<agents::AgentPane>, repositories: projects::Probed) -> PollReply {
         PollReply {
+            suppressed_panes: Vec::new(),
             panes: Some(panes),
             repositories,
             activity: agents::Activity::new(),

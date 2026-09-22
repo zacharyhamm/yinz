@@ -291,6 +291,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
+                suppressed_panes: Vec::new(),
                 panes: Some(vec![
                     agent_in(3, "/work/hocus", TabId::new(1)),
                     agent_in(5, "/work/trees/topic", TabId::new(2)),
@@ -707,6 +708,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
+                suppressed_panes: Vec::new(),
                 panes: Some(panes),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
@@ -736,6 +738,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
+                suppressed_panes: Vec::new(),
                 panes: Some(vec![
                     agent_in(3, "/work/hocus", TabId::new(1)),
                     agent_in(5, NESTED_WORKTREE, TabId::new(2)),

@@ -2436,6 +2436,7 @@ impl State {
     pub(crate) fn pane_project_labels(&self) -> BTreeMap<u32, String> {
         self.panes
             .iter()
+            .chain(&self.suppressed_panes)
             .filter_map(|pane| {
                 let location = Self::pane_location(pane)?;
                 let label = projects::label_for_cwd(&self.repositories, &self.projects, &location)?;
@@ -2516,8 +2517,7 @@ impl State {
         self.send_tab_assignments();
     }
 
-    /// Tell the daemon when the hand-made assignments changed, so it can pass
-    /// them to the plugin that names the tabs.
+    /// Relay changed manual assignments as project metadata to the daemon's subscribers.
     ///
     /// Here rather than at each of the four places that write `tab_projects`,
     /// because this runs on every poll and so cannot be forgotten by a fifth.
@@ -2540,16 +2540,12 @@ impl State {
     /// two the store uses, so the two cannot answer differently.
     fn refresh_tab_project_labels(&mut self) {
         let owners = self.pane_project_labels();
-        let detected = agents::tab_project_labels(&self.panes, &owners);
+        let detected =
+            agents::tab_project_labels(self.panes.iter().chain(&self.suppressed_panes), &owners);
         let mut labels: BTreeMap<TabId, String> = detected
             .into_iter()
             .filter_map(|(tab_id, projects)| Some((tab_id, agents::tab_project_label(&projects)?)))
             .collect();
-        // An assignment the user made outranks what the panes in the tab suggest,
-        // the same way it does everywhere else.
-        for (tab_id, project) in &self.tab_projects {
-            labels.insert(*tab_id, project.clone());
-        }
         if !self.tabs.is_empty() {
             labels.retain(|tab_id, _| self.tabs.iter().any(|tab| tab.tab_id == *tab_id));
         }
