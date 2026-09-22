@@ -2682,10 +2682,12 @@ impl Grid {
             return;
         }
         if self.viewport.len() <= self.cursor.y + 1 {
-            // FIXME: this should add an empty line with the pad_character
-            // but for some reason this breaks rendering in various situations
-            // it needs to be investigated and fixed
-            let new_row = Row::new().canonical();
+            // The new row takes the pending background (BCE), as the scroll-region branch
+            // above already does. The colour travels in `Row::bg_color` rather than as pad
+            // characters, so the row's width is unchanged and reflow is unaffected.
+            let new_row = Row::new()
+                .canonical()
+                .with_bg_color(self.cursor.pending_styles.background);
             self.viewport.push_back(new_row);
         }
         if self.cursor.y == self.height.saturating_sub(1) {
@@ -2876,7 +2878,8 @@ impl Grid {
             if scroll_region_top >= self.viewport.len() {
                 return;
             }
-            self.scroll_region_up_at_bottom(Row::new(), true);
+            let wrapped_row = Row::new().with_bg_color(self.cursor.pending_styles.background);
+            self.scroll_region_up_at_bottom(wrapped_row, true);
         } else if self.cursor.y == self.height.saturating_sub(1) {
             // the cursor is on the last line of the screen but below the scroll region's
             // bottom margin: there is nowhere to scroll to, so we wrap onto the same line
@@ -2885,7 +2888,8 @@ impl Grid {
         } else {
             self.cursor.y += 1;
             if self.viewport.len() <= self.cursor.y {
-                let line_wrapped_row = Row::new();
+                let line_wrapped_row =
+                    Row::new().with_bg_color(self.cursor.pending_styles.background);
                 self.viewport.push_back(line_wrapped_row);
                 self.output_buffer.update_line(self.cursor.y);
             } else if let Some(current_line) = self.viewport.get_mut(self.cursor.y) {
