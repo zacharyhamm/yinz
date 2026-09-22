@@ -1075,3 +1075,54 @@ fn erase_below_without_a_background_leaves_the_viewport_sparse() {
     assert_eq!(grid.viewport.len(), 1);
     assert_eq!(grid.viewport[0].bg_color, None);
 }
+
+/// A coloured erase-below makes its background the padding colour of every row from the
+/// cursor down; the colourless erase that follows has to take it away again, or a later
+/// widening pads those rows in a colour the application reset long ago.
+#[test]
+fn a_colourless_erase_below_takes_an_earlier_background_away() {
+    let mut grid = create_grid_with_size_and_raw(5, 4, b"x");
+    grid.read_changes(0, 0);
+
+    feed_bytes(&mut grid, b"\x1b[48;5;4m\x1b[J");
+    for y in 1..=4 {
+        assert_eq!(
+            grid.viewport[y].bg_color,
+            Some(AnsiCode::ColorIndex(4)),
+            "row {y} after the coloured erase"
+        );
+    }
+
+    feed_bytes(&mut grid, b"\x1b[0m\x1b[J");
+    for y in 0..=4 {
+        assert_eq!(
+            grid.viewport[y].bg_color, None,
+            "row {y} after the colourless erase"
+        );
+    }
+
+    // The cursor row takes the colour too: its padding beyond the erase is the erase's.
+    feed_bytes(&mut grid, b"\x1b[48;5;4m\x1b[J");
+    assert_eq!(grid.viewport[0].bg_color, Some(AnsiCode::ColorIndex(4)));
+    feed_bytes(&mut grid, b"\x1b[0m\x1b[J");
+    assert_eq!(grid.viewport[0].bg_color, None);
+
+    grid.change_size(5, 8);
+    let (chunks, _, _) = grid.read_changes(0, 0);
+    let rows_rendered: Vec<usize> = chunks
+        .iter()
+        .filter(|chunk| (1..=4).contains(&chunk.y))
+        .map(|chunk| chunk.y)
+        .collect();
+    assert!(!rows_rendered.is_empty(), "widening re-renders the rows");
+    for chunk in chunks.iter().filter(|chunk| (1..=4).contains(&chunk.y)) {
+        assert!(
+            chunk
+                .terminal_characters
+                .iter()
+                .all(|character| { character.styles.background != Some(AnsiCode::ColorIndex(4)) }),
+            "row {} still pads in the erased colour",
+            chunk.y
+        );
+    }
+}

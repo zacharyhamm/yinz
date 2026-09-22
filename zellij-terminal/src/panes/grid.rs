@@ -2837,16 +2837,22 @@ impl Grid {
         self.output_buffer.update_line(self.cursor.y);
     }
     pub fn clear_all_after_cursor(&mut self, replace_with: TerminalCharacter) {
+        let erase_bg = replace_with
+            .styles
+            .background
+            .filter(|bg| !matches!(bg, AnsiCode::Reset));
         if let Some(cursor_row) = self.viewport.get_mut(self.cursor.y) {
             cursor_row.truncate(self.cursor.x);
+            // The erase's background is the padding colour of every row it touches from
+            // now on, and a colourless erase takes an earlier one away: the rows are
+            // filled to `width` here, but a widening or a DCH reopens the padding, and
+            // `replace_columns` leaves `bg_color` alone.
+            cursor_row.bg_color = erase_bg;
             let replace_with_columns = VecDeque::from(vec![replace_with.clone(); self.width]);
-            let erase_bg = replace_with
-                .styles
-                .background
-                .filter(|bg| !matches!(bg, AnsiCode::Reset));
             self.replace_characters_in_line_after_cursor(replace_with);
             for row in self.viewport.iter_mut().skip(self.cursor.y + 1) {
                 row.replace_columns(replace_with_columns.clone());
+                row.bg_color = erase_bg;
             }
             // The screen rows below the viewport are erased too. They render as default
             // until they exist, so only a coloured erase has to materialise them, and
