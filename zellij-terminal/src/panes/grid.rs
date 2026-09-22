@@ -1552,6 +1552,19 @@ impl Grid {
         let mut live_uids = HashSet::with_capacity(runs.len());
         let mut derived = Vec::with_capacity(runs.len());
         for run in runs {
+            // The raster is already fitted to the whole `c` x `r` box. Crop at cell
+            // boundaries, matching the screen positions below; dividing it into `r`
+            // equal strips would leave gaps whenever the fitted height is smaller.
+            let (fit_w, fit_h) = run.fitted_px;
+            let slice_x = run.column_in_image as usize * cell.width;
+            let slice_y = run.row_in_image as usize * cell.height;
+            let end_x = ((run.column_in_image as usize + run.span) * cell.width).min(fit_w);
+            let end_y = ((run.row_in_image as usize + 1) * cell.height).min(fit_h);
+            if slice_x >= end_x || slice_y >= end_y {
+                continue;
+            }
+            let slice_w = end_x - slice_x;
+            let slice_h = end_y - slice_y;
             let key = (
                 run.image_id,
                 run.placement_id,
@@ -1560,15 +1573,6 @@ impl Grid {
             );
             live_uids.insert(key);
             let placement_uid = self.kitty_grid.placeholder_uid(key);
-            // The emitted raster is the image already fitted to the whole `c` x `r` box, so both
-            // the part this run shows and the space it takes up are fractions of that raster
-            // rather than of the original image.
-            let (fit_w, fit_h) = run.fitted_px;
-            let slice_x = fit_w * run.column_in_image as usize / run.columns as usize;
-            let slice_y = fit_h * run.row_in_image as usize / run.rows as usize;
-            let slice_w =
-                fit_w * (run.column_in_image as usize + run.span) / run.columns as usize - slice_x;
-            let slice_h = fit_h / run.rows as usize;
             let display_rect = PixelRect {
                 x: run.screen_column * cell.width,
                 y: ((scrollback_rows + run.screen_row) * cell.height) as isize,

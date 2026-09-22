@@ -1680,7 +1680,25 @@ pub(super) fn run_kitty_frame(
     chunks: Vec<KittyImageChunk>,
     floating_panes_stack: Option<FloatingPanesStack>,
 ) -> String {
+    run_kitty_frame_with_cell_size(
+        parts,
+        chunks,
+        floating_panes_stack,
+        SizeInPixels {
+            width: 10,
+            height: 20,
+        },
+    )
+}
+
+pub(super) fn run_kitty_frame_with_cell_size(
+    parts: &KittyTestParts,
+    chunks: Vec<KittyImageChunk>,
+    floating_panes_stack: Option<FloatingPanesStack>,
+    cell_size: SizeInPixels,
+) -> String {
     let mut output = create_test_kitty_output(parts);
+    *output.character_cell_size.borrow_mut() = Some(cell_size);
     let client_ids: HashSet<ClientId> = create_test_clients(1);
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, floating_panes_stack);
