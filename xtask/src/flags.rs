@@ -110,6 +110,8 @@ xflags::xflags! {
         cmd remote-test {
             /// Build the musl binary and bring the containers up
             optional --build
+            /// With --build on Linux, use a native debug binary instead of musl
+            optional --native
             /// Run the tests
             optional --test
             /// Take the containers down and remove the generated keypair
@@ -286,6 +288,7 @@ pub struct RemoteTest {
     pub args: Vec<OsString>,
 
     pub build: bool,
+    pub native: bool,
     pub test: bool,
     pub clean: bool,
 }

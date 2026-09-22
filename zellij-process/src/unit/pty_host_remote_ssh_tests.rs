@@ -9,6 +9,46 @@ use super::*;
 use std::os::unix::net::UnixStream;
 
 #[test]
+fn bootstrap_captures_output_larger_than_both_pipe_buffers() {
+    let mut command = Command::new("/bin/sh");
+    command.args([
+        "-c",
+        "head -c 1048576 /dev/zero; printf '\nendpoint\n'; head -c 1048576 /dev/zero >&2; printf 'diagnostic\n' >&2; exit 7",
+    ]);
+    let output = bootstrap_output(&mut command, zellij_test_support::default_timeout()).unwrap();
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(output.stdout.len(), SSH_OUTPUT_CAPACITY);
+    assert!(output.stdout.ends_with(b"\nendpoint\n"));
+    assert_eq!(output.stderr.len(), SSH_OUTPUT_CAPACITY);
+    assert!(output.stderr.ends_with(b"diagnostic\n"));
+}
+
+#[test]
+fn forward_stderr_drains_a_live_writer_and_keeps_only_its_tail() {
+    use std::io::Write;
+    use zellij_test_support::Watched;
+    let (reader, mut writer) = UnixStream::pair().unwrap();
+    let mut capture = SshOutputCapture::new(reader).unwrap();
+    let written: Watched<Option<UnixStream>> = Watched::default();
+    let completed = written.clone();
+    let sending = std::thread::spawn(move || {
+        writer.write_all(&vec![b'x'; 2 * 1024 * 1024]).unwrap();
+        writer.write_all(b"final diagnostic").unwrap();
+        *completed.lock() = Some(writer);
+    });
+    written.wait_until(
+        "SSH stderr to drain while its writer is still running",
+        zellij_test_support::default_timeout(),
+        |writer| writer.is_some().then_some(()),
+    );
+    sending.join().unwrap();
+    let _still_open = written.lock().take().unwrap();
+    let output = capture.finish().unwrap();
+    assert_eq!(output.len(), SSH_OUTPUT_CAPACITY);
+    assert!(output.ends_with(b"final diagnostic"));
+}
+
+#[test]
 fn a_broker_endpoint_parses_from_the_line_ensure_prints() {
     let line = serde_json::json!({
         "socket": "/run/user/1000/zellij/cv1/pty-broker-v2.sock",
@@ -403,6 +443,7 @@ fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
             host: host.to_owned(),
             local_socket: local_socket.clone(),
             ssh,
+            stderr: None,
         }),
     );
 
@@ -479,6 +520,7 @@ fn a_resume_through_a_forward_that_never_answers_gives_up_and_rebuilds() {
             host: host.to_owned(),
             local_socket: local_socket.clone(),
             ssh,
+            stderr: None,
         }),
     );
 

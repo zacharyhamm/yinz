@@ -24,28 +24,28 @@ const z: any = {...real,
     return {exitCode: 0, stdout: real.encodeUtf8(stdout), stderr: new Uint8Array()};
   },
   async swampRequest(opts: any) {
-    const op = opts.operation, p = opts.payload;
+    const op = opts.operation, p = opts.payload, run = `run-${token}`;
     if (op === 'workflow.get') return {name: 'fixture'};
     if (op === 'workflow.validate') return {passed: true};
-    if (op === 'workflow.run') return {runId: 'run'};
+    if (op === 'workflow.run') return {runId: run};
     if (op === 'model.method.run') {
-      if (p.inputs.run !== 'run' || p.modelIdOrName !== 'questions' || p.inputs.question !== 'exit' || p.inputs.answer !== 'leave') throw Error('bad answer');
+      if (p.inputs.run !== run || p.modelIdOrName !== 'questions' || p.inputs.question !== 'exit' || p.inputs.answer !== 'leave') throw Error('bad answer');
       status = 'completed';
       if ((await call({method: 'pane_action', work: token, key: 'leave', action: 'leave'})).outcome !== 'completed') throw Error('leave failed');
     } else if (op === 'workflow.cancel') status = 'cancelled';
-    else if (op === 'workflow.history.search') return {results: [{runId: 'run', workflowName: 'fixture', inputs: {session: real.serverSession, launch: token}}]};
+    else if (op === 'workflow.history.search') return {results: [{runId: run, workflowName: 'fixture', inputs: {session: real.serverSession, launch: token}}]};
     else if (op === 'workflow.history.logs') return {type: 'log', log: {lines: Array.from({length: 100}, (_, i) => `LOG ${String(i + 1).padStart(3, '0')} selectable output`)}};
     else if (op === 'workflow.history.get') {
       if (refreshFailed) throw Error('fixture history unavailable');
-      return {id: 'run', workflowName: 'fixture', status, jobs: [{name: 'workflow', steps: [{name: step, status: status === 'suspended' ? 'waiting_approval' : status}]}],
+      return {id: run, workflowName: 'fixture', status, jobs: [{name: 'workflow', steps: [{name: step, status: status === 'suspended' ? 'waiting_approval' : status}]}],
         inputs: {session: real.serverSession, launch: token}};
     }
     else if (op === 'data.query') {
       let results: any[] = [];
       if (p.predicate.includes('question') && status === 'suspended') {
-        if (p.predicate !== 'specName == "question" && attributes.run in ["run"]') throw Error('bad predicate');
-        results = [{model: 'questions', version: 2, attributes: {question: 'exit', run: 'run', kind: 'choice', prompt: 'Agent exited. Choose Restart, Fork, Begin review, or Leave.', answers: ['restart', 'fork', 'begin-review', 'leave'], state: 'pending'}},
-          {model: 'questions', version: 1, attributes: {question: 'exit', run: 'run', kind: 'choice', prompt: 'Stale question', answers: ['old'], state: 'pending'}}];
+        if (p.predicate !== `specName == "question" && attributes.run in ${JSON.stringify([run])}`) throw Error('bad predicate');
+        results = [{model: 'questions', version: 2, attributes: {question: 'exit', run, kind: 'choice', prompt: 'Agent exited. Choose Restart, Fork, Begin review, or Leave.', answers: ['restart', 'fork', 'begin-review', 'leave'], state: 'pending'}},
+          {model: 'questions', version: 1, attributes: {question: 'exit', run, kind: 'choice', prompt: 'Stale question', answers: ['old'], state: 'pending'}}];
       }
       return {results: [], projected: {shape: 'map', rows: results}};
     }

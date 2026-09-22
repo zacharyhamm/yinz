@@ -53,6 +53,49 @@ async fn output_frames_arrive_as_plain_pty_bytes() {
     assert_eq!(read_to_string(&mut reader, 11).await, "hello world");
 }
 
+#[tokio::test]
+async fn gaps_between_replay_chunks_advance_offsets_without_counting_notices() {
+    let (mut reader, conn, mut peer) = reader_pair();
+    let mut framed = Vec::new();
+    write_output(&mut framed, b"before").unwrap();
+    for (dropped, output) in [(4096, "after"), (10, "tail"), (0, "end")] {
+        write_control(&mut framed, &BrokerToServerMsg::OutputGap { dropped }).unwrap();
+        write_output(&mut framed, output.as_bytes()).unwrap();
+    }
+    write_control(
+        &mut framed,
+        &BrokerToServerMsg::ChildExited { status: Some(0) },
+    )
+    .unwrap();
+    send(&mut peer, &framed);
+
+    assert_eq!(read_to_string(&mut reader, 6).await, "before");
+    let mut received = 6;
+    assert_eq!(conn.received(), received);
+    for (dropped, output) in [(4096, "after"), (10, "tail"), (0, "end")] {
+        received += dropped;
+        if dropped > 0 {
+            let notice = format!(
+                "\x1b[2J\x1b[H\x1b[33m── reconnected; {dropped} bytes of output were lost ──\x1b[0m\r\n"
+            );
+            for expected in notice.bytes() {
+                let mut byte = [0];
+                assert_eq!(reader.read(&mut byte).await.unwrap(), 1);
+                assert_eq!(byte[0], expected);
+                assert_eq!(conn.received(), received, "a notice is not remote output");
+            }
+        }
+        for expected in output.bytes() {
+            let mut byte = [0];
+            assert_eq!(reader.read(&mut byte).await.unwrap(), 1);
+            assert_eq!(byte[0], expected);
+            received += 1;
+            assert_eq!(conn.received(), received);
+        }
+    }
+    assert_eq!(reader.read(&mut [0]).await.unwrap(), 0);
+}
+
 /// Frames are split across reads routinely over a network, so the decoder must
 /// hold a partial frame rather than mistaking it for a corrupt one.
 #[tokio::test]
@@ -603,7 +646,7 @@ async fn injected_notices_do_not_count_as_delivered_output() {
 /// real output. Clear the screen and say so instead.
 #[tokio::test]
 async fn a_lossy_replay_clears_the_screen_and_says_so() {
-    let (mut reader, _conn, peer, peer_rx, _rc) = reconnecting_pair(4096, 0);
+    let (mut reader, conn, peer, peer_rx, _rc) = reconnecting_pair(4096, 0);
     answer_next_reconnect(peer_rx, b"fresh");
     drop(peer);
 
@@ -621,6 +664,59 @@ async fn a_lossy_replay_clears_the_screen_and_says_so() {
         got.contains("4096 bytes of output were lost"),
         "and must say how much was lost: {got}"
     );
+    assert_eq!(
+        conn.received(),
+        4101,
+        "lost bytes must advance the stream offset"
+    );
+}
+
+#[test]
+fn successive_lossy_reconnects_resume_after_delivered_and_lost_bytes() {
+    let (_reader, conn, _peer, _peer_rx, rc) = reconnecting_pair(4096, 0);
+    // A warp restores both its old offset and the gap encountered during adoption.
+    conn.restore_received(10, 4);
+    conn.reconnect().unwrap();
+    conn.note_received(5);
+    conn.reconnect().unwrap();
+    assert_eq!(*rc.seen.lock().unwrap(), [14, 4115]);
+    assert_eq!(conn.received(), 8211);
+}
+
+#[tokio::test]
+async fn a_gap_received_before_transport_loss_is_in_the_next_resume_offset() {
+    let (mut reader, conn, mut peer, peer_rx, rc) = reconnecting_pair(0, 0);
+    write_control(&mut peer, &BrokerToServerMsg::OutputGap { dropped: 17 }).unwrap();
+    drop(peer);
+
+    let notice = read_to_string(&mut reader, 1).await;
+    assert!(notice.contains("17 bytes of output were lost"));
+    assert_eq!(conn.received(), 17);
+
+    let broker = std::thread::spawn(move || {
+        let mut peer = peer_rx
+            .recv_timeout(zellij_test_support::default_timeout())
+            .unwrap();
+        write_output(&mut peer, b"tail").unwrap();
+        write_control(
+            &mut peer,
+            &BrokerToServerMsg::ChildExited { status: Some(0) },
+        )
+        .unwrap();
+    });
+    let mut output = Vec::new();
+    loop {
+        let mut bytes = [0; 256];
+        let received = reader.read(&mut bytes).await.unwrap();
+        if received == 0 {
+            break;
+        }
+        output.extend_from_slice(&bytes[..received]);
+    }
+    broker.join().unwrap();
+    assert!(output.ends_with(b"tail"));
+    assert_eq!(*rc.seen.lock().unwrap(), [17]);
+    assert_eq!(conn.received(), 21);
 }
 
 /// A link that is down for a moment is the ordinary case, so one failure must

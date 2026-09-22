@@ -1,6 +1,88 @@
 use super::*;
 
 #[test]
+fn malformed_unicode_component_indices_do_not_panic() {
+    for component in [
+        "text;€$65",
+        "ribbon;€$65",
+        "table;1;1;€$65",
+        "nested_list;€$65",
+    ] {
+        let mut grid = create_grid_with_content("");
+        crate::ui::components::UiComponentParser::new(&mut grid, Style::default(), true)
+            .parse(component.as_bytes().to_vec())
+            .unwrap();
+        assert!(grid.dump_screen(false).contains('A'));
+    }
+}
+
+#[test]
+fn invalid_legacy_color_lengths_are_ignored() {
+    for length in [0, 1, 2, 4, 5, 7, 8, 10, 11, 13, 24, 51] {
+        let mut grid = create_grid_with_content("");
+        let color = format!("#{}", "0".repeat(length));
+        let commands = format!("\x1b]4;1;{color}\x07\x1b]10;{color}\x07\x1b]11;{color}\x07");
+        vte::Parser::new().advance(&mut grid, commands.as_bytes());
+        assert!(grid.changed_colors.is_none(), "length: {length}");
+        assert!(grid.pane_default_fg.is_none(), "length: {length}");
+        assert!(grid.pane_default_bg.is_none(), "length: {length}");
+    }
+    for (color, expected) in [
+        ("#abc", (0xa0, 0xb0, 0xc0)),
+        ("#aabbcc", (0xaa, 0xbb, 0xcc)),
+        ("#aaabbbccc", (0xaa, 0xbb, 0xcc)),
+        ("#aaaabbbbcccc", (0xaa, 0xbb, 0xcc)),
+    ] {
+        assert_eq!(
+            crate::panes::alacritty_functions::xparse_color(color.as_bytes()),
+            Some(AnsiCode::RgbCode(expected))
+        );
+    }
+}
+
+#[test]
+fn component_coordinates_preserve_terminal_clamping_without_overflow() {
+    for coordinates in [
+        format!("{}/0//", usize::MAX),
+        format!("0/{}//", usize::MAX),
+        "80/0//".to_owned(),
+        "0/20//".to_owned(),
+    ] {
+        for component in ["text", "ribbon", "nested_list", "table"] {
+            let mut grid = create_grid_with_content("");
+            let table_dimensions = if component == "table" { "1;1;" } else { "" };
+            let command = format!("\x1bPz{component};{coordinates};{table_dimensions}65\x1b\\");
+            vte::Parser::new().advance(&mut grid, command.as_bytes());
+            assert!(
+                grid.dump_screen(false).contains('A'),
+                "{component}: {coordinates}"
+            );
+        }
+    }
+    // Existing SDK callers place bottom help at y=rows and rely on the terminal's clamp.
+    let grid = create_grid_with_content("\x1bPztext;0/20/80/20;65\x1b\\");
+    assert_eq!(grid.viewport[19].columns[0].character, 'A');
+}
+
+#[test]
+fn component_dimensions_are_clipped_before_rendering() {
+    for component in ["text", "ribbon", "nested_list", "table"] {
+        let mut grid = create_grid_with_content("");
+        let table_dimensions = if component == "table" { "1;1;" } else { "" };
+        let command = format!(
+            "\x1bPz{component};1/1/{0}/{0};{table_dimensions}z65\x1b\\",
+            usize::MAX
+        );
+        vte::Parser::new().advance(&mut grid, command.as_bytes());
+        assert_eq!((grid.width, grid.height), (80, 20));
+        assert!(
+            grid.lines_above.is_empty(),
+            "{component} must not scroll the pane"
+        );
+    }
+}
+
+#[test]
 fn sixel_images_are_reaped_when_a_pane_exits_or_resets_in_the_alternate_screen() {
     for reset in [false, true] {
         let mut grid = create_grid_with_content("");

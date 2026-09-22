@@ -24,16 +24,19 @@ impl CopyCommand {
             .stdin(Stdio::piped())
             .spawn()
             .with_context(|| format!("couldn't spawn {}", self.command))?;
-        process
+        let write_result = process
             .stdin
             .take()
-            .context("could not get stdin")?
-            .write_all(value.as_bytes())
-            .with_context(|| format!("couldn't write to {} stdin", self.command))?;
+            .context("could not get stdin")
+            .and_then(|mut stdin| {
+                stdin
+                    .write_all(value.as_bytes())
+                    .with_context(|| format!("couldn't write to {} stdin", self.command))
+            });
 
         reap(process);
 
-        Ok(())
+        write_result
     }
 }
 
@@ -110,6 +113,41 @@ mod tests {
         assert_eq!(
             waitpid(pid, Some(WaitPidFlag::WNOHANG)).err(),
             Some(Errno::ECHILD),
+        );
+    }
+
+    #[test]
+    fn copy_command_is_reaped_after_a_failed_stdin_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("close-stdin");
+        let pid_file = dir.path().join("pid");
+        std::fs::write(&script, "echo $$ > \"$1\"\nexec 0<&-\nexit 0\n").unwrap();
+        let command = CopyCommand {
+            command: "sh".to_owned(),
+            args: vec![script.display().to_string(), pid_file.display().to_string()],
+        };
+
+        // Larger than a pipe buffer: the helper closes its read end before this can finish.
+        let error = command.set("x".repeat(4 * 1024 * 1024)).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        let pid = Pid::from_raw(
+            std::fs::read_to_string(pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while nix::sys::signal::kill(pid, None).is_ok() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            waitpid(pid, Some(WaitPidFlag::WNOHANG)).err(),
+            Some(Errno::ECHILD),
+            "even a failed clipboard write must reap its child"
         );
     }
 }

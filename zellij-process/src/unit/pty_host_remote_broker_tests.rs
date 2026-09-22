@@ -500,6 +500,71 @@ fn a_connection_that_just_ends_is_not_a_terminate() {
     );
 }
 
+#[test]
+fn an_overrun_during_catch_up_reports_the_gap_before_the_surviving_output() {
+    use crate::pty_host::client::PtyHostHandle;
+    use nix::sys::socket::{setsockopt, sockopt::SndBuf};
+
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let (control, _control_peer) = UnixStream::pair().unwrap();
+    let (mut ours, theirs) = UnixStream::pair().unwrap();
+    setsockopt(&theirs, SndBuf, &4096).unwrap();
+    ours.set_read_timeout(Some(zellij_test_support::default_timeout()))
+        .unwrap();
+    theirs
+        .set_write_timeout(Some(zellij_test_support::default_timeout()))
+        .unwrap();
+    let wire: Wire = Arc::new(Mutex::new(theirs));
+    let session = Arc::new(PaneSession::new(
+        "token".to_owned(),
+        "/bin/sh".to_owned(),
+        PtyHostHandle::for_test(control),
+        pty.master,
+        ProcessId::new(std::process::id()),
+    ));
+    let initial = vec![b'x'; MAX_STREAM_PAYLOAD];
+    assert!(session.append_output(&initial).is_none());
+    let generation = session.try_begin_attach().unwrap();
+    let broker_session = session.clone();
+    let broker = std::thread::spawn(move || {
+        catch_up_and_attach(&broker_session, &wire, "token", 0, generation)
+    });
+
+    let resumed = protocol::read_frame(&mut ours).unwrap().unwrap();
+    assert_eq!(
+        resumed.decode_control::<BrokerToServerMsg>().unwrap(),
+        BrokerToServerMsg::Resumed { dropped: 0 }
+    );
+    // The initial replay cannot fit in the socket. Before draining it, overrun the ring so
+    // the next catch-up round must report a loss that was absent from the Resumed message.
+    let replay_capacity = 4 * 1024 * 1024;
+    assert!(session
+        .append_output(&vec![b'y'; replay_capacity + 17])
+        .is_none());
+    assert_eq!(
+        protocol::read_frame(&mut ours).unwrap().unwrap(),
+        Frame::Output(initial)
+    );
+    assert_eq!(
+        protocol::read_frame(&mut ours)
+            .unwrap()
+            .unwrap()
+            .decode_control::<BrokerToServerMsg>()
+            .unwrap(),
+        BrokerToServerMsg::OutputGap { dropped: 17 }
+    );
+    let mut received = 0;
+    while received < replay_capacity {
+        let Frame::Output(bytes) = protocol::read_frame(&mut ours).unwrap().unwrap() else {
+            panic!("expected the surviving replay after the gap");
+        };
+        assert!(bytes.iter().all(|byte| *byte == b'y'));
+        received += bytes.len();
+    }
+    assert_eq!(received, replay_capacity);
+    broker.join().unwrap().unwrap();
+}
+
 // --- handing a pane to another server ---
 //
 // A warp is a resume by a *different* server, and the broker cannot tell the two

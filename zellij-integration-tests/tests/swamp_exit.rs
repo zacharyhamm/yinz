@@ -536,9 +536,13 @@ fn fixture_reply(zellij: &TestSession, payload: &str) -> String {
 /// Clicks the native form button, whose label can also appear in the focus hint.
 fn click(zellij: &TestSession, label: &str) {
     let screen = zellij.wait_until("workflow action button", |s| {
-        s.lines()
-            .iter()
-            .any(|line| line.contains('') && line.contains(label))
+        // Installing the workflow subtitle changes the content origin and height.
+        // Wait for the subtitle and bottom help to render together before hit-testing.
+        s.contains("fixture · workflow/")
+            && s.contains("Esc: close pane")
+            && s.lines()
+                .iter()
+                .any(|line| line.contains('') && line.contains(label))
     });
     let (row, line) = screen
         .lines()

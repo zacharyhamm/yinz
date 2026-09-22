@@ -133,10 +133,9 @@ pub struct RemoteConn {
     /// name what it runs — and so unable to title itself, be re-run on the right
     /// machine when held, or be attributed to a project.
     cmd: RunCommand,
-    /// Output bytes actually taken delivery of. The broker replays from exactly
-    /// here, so this must count bytes *handed to the reader's caller*, not bytes
-    /// received off the socket — anything still buffered locally when the
-    /// transport dies has to be replayed.
+    /// The output offset to resume from: delivered bytes plus gaps the broker
+    /// reported as lost. Bytes buffered locally do not count until handed to
+    /// the reader's caller, so a transport failure replays them.
     received: AtomicU64,
     /// The last size sent, kept so a reconnect can nudge the window and make a
     /// full-screen application redraw.
@@ -327,9 +326,11 @@ impl RemoteConn {
     /// starts at zero, but the pane it speaks for is not — the broker's stream
     /// is already thousands of bytes in. Left at zero, the *next* reconnect
     /// would ask to resume from the start and be replayed the whole ring on top
-    /// of a grid that already shows it.
-    pub fn restore_received(&self, received: u64) {
-        self.received.store(received, Ordering::SeqCst);
+    /// of a grid that already shows it. Include any gap reported by the broker:
+    /// lost bytes still occupy positions in that stream.
+    pub fn restore_received(&self, received: u64, dropped: u64) {
+        self.received
+            .store(received.saturating_add(dropped), Ordering::SeqCst);
     }
 
     pub fn received(&self) -> u64 {
@@ -345,7 +346,8 @@ impl RemoteConn {
             .reconnector
             .as_ref()
             .ok_or_else(|| anyhow!("this pane has no way to reconnect"))?;
-        let resumed = reconnector.reconnect(&self.host, &self.pane_token, self.received())?;
+        let received = self.received();
+        let resumed = reconnector.reconnect(&self.host, &self.pane_token, received)?;
         let mut out = self
             .outbound
             .lock()
@@ -366,6 +368,7 @@ impl RemoteConn {
         out.socket = resumed.write_socket;
         out.broken = false;
         drop(out);
+        self.restore_received(received, resumed.dropped);
         self.transport_lost.store(false, Ordering::SeqCst);
         if let Ok(target) = self.git_probe_target.lock() {
             if let Some((cwd, refresh_token)) = target.as_ref() {

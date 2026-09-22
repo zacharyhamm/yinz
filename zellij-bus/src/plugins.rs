@@ -251,7 +251,6 @@ pub enum PluginInstruction {
         /// differed from the source, or the filesystem said no.
         reason: Option<String>,
     },
-    WatchFilesystem,
     ListClientsToPlugin(SessionLayoutMetadata, PluginId, ClientId, Option<u64>),
     ChangePluginHostDir(PathBuf, PluginId, ClientId, Option<u64>),
     PaneRenderReport(PaneRenderReport),

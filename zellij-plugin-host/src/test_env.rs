@@ -38,6 +38,7 @@ pub(crate) fn test_env() -> PluginEnv {
         path_to_default_shell: PathBuf::from("."),
         default_shell: None,
         plugin_cwd: PathBuf::from("."),
+        filesystem_watcher: None,
         session_env_vars: BTreeMap::new(),
         plugin_aliases: Arc::new(Mutex::new(Default::default())),
         input_pipes_to_unblock: Arc::new(Mutex::new(HashSet::new())),

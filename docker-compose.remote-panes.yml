@@ -33,8 +33,8 @@ services:
       # switched in place has to be waited out before it is reported.
       ZELLIJ_REMOTE_GIT_REFRESH_SECS: "5"
     volumes:
-      # The same bind-mount trick the e2e container uses: the musl binary the
-      # build drops into ./target simply appears here, with nothing copied.
+      # The selected binary is linked at target/remote-test/zellij by the build.
+      # Its relative link works through this mount for both musl and native builds.
       - type: bind
         source: ./target
         target: /usr/src/zellij

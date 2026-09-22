@@ -1283,9 +1283,6 @@ pub fn plugin_thread_main(
                     .update_plugins(updates, shutdown_send.clone())
                     .non_fatal();
             },
-            PluginInstruction::WatchFilesystem => {
-                wasm_bridge.start_fs_watcher_if_not_started();
-            },
             PluginInstruction::ChangePluginHostDir(
                 new_host_folder,
                 plugin_id,

@@ -304,7 +304,7 @@ mod attaching {
 
         // The pane says something while that is in flight. The pumps cannot send
         // it — there is no wire yet — so the catch-up has to.
-        session.append_output(b"while you were out");
+        assert!(session.append_output(b"while you were out").is_none());
 
         match session.resume_step(0, &wire(), generation) {
             ResumeStep::Replay { bytes, .. } => assert_eq!(
@@ -321,7 +321,7 @@ mod attaching {
     fn a_caught_up_connection_attaches_rather_than_replaying_forever() {
         let (session, _control, _master) = test_session();
         let generation = session.try_begin_attach().expect("claim failed");
-        session.append_output(b"first");
+        assert!(session.append_output(b"first").is_none());
 
         let sent = match session.resume_step(0, &wire(), generation) {
             ResumeStep::Replay { bytes, .. } => bytes.len() as u64,
@@ -331,6 +331,30 @@ mod attaching {
             session.resume_step(sent, &wire(), generation),
             ResumeStep::Attached
         ));
+    }
+
+    #[test]
+    fn output_chooses_replay_or_live_delivery_before_a_reconnect_can_attach() {
+        let (session, _control, _master) = test_session();
+        let generation = session.try_begin_attach().unwrap();
+        let recipient = wire();
+        let replayed_recipient = session.append_output(b"replayed");
+        assert!(matches!(
+            session.resume_step(0, &recipient, generation),
+            ResumeStep::Replay { bytes, dropped: 0 } if bytes == b"replayed"
+        ));
+        assert!(matches!(
+            session.resume_step(8, &recipient, generation),
+            ResumeStep::Attached
+        ));
+        assert!(
+            replayed_recipient.is_none(),
+            "a delayed pump must not send the replayed chunk to the newly attached wire"
+        );
+        let (live, live_generation) = session.append_output(b"live").unwrap();
+        assert!(Arc::ptr_eq(&live, &recipient));
+        assert_eq!(live_generation, generation);
+        assert_eq!(session.replay_from(8), (b"live".to_vec(), 0));
     }
 
     /// A resume that lost the pane while catching up must be told, not left to

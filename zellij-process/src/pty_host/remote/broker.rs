@@ -665,6 +665,9 @@ fn catch_up_and_attach(
     loop {
         match session.resume_step(sent_upto, wire, generation) {
             ResumeStep::Replay { bytes, dropped } => {
+                if dropped > 0 {
+                    send(wire, &BrokerToServerMsg::OutputGap { dropped })?;
+                }
                 sent_upto += dropped + bytes.len() as u64;
                 send_output(wire, &bytes)?;
             },
@@ -907,8 +910,7 @@ fn start_output_pump(session: Arc<PaneSession>) -> Result<()> {
                         // Buffer first, always. If the send fails or there is
                         // nobody to send to, these are exactly the bytes a
                         // reconnect will need.
-                        session.append_output(chunk);
-                        if let Some((wire, generation)) = session.wire_and_generation() {
+                        if let Some((wire, generation)) = session.append_output(chunk) {
                             if send_output(&wire, chunk).is_err() {
                                 // The server went away mid-write. Not a
                                 // teardown: keep the pane and keep buffering.

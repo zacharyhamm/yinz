@@ -12,7 +12,7 @@
 //! the bytes an outage swallowed.
 //!
 //! So these tests use a real one. `docker-compose.remote-panes.yml` stands up an
-//! sshd with `AllowStreamLocalForwarding yes` and the musl build of this very
+//! sshd with `AllowStreamLocalForwarding yes` and a build of this very
 //! tree on its PATH, reachable through a proxy that a test can switch off
 //! mid-pane. Nothing below the test is mocked: a real `ssh` subprocess, a real
 //! detached broker, a real supervisor, a real pty, real `/proc`.
@@ -22,6 +22,7 @@
 //!
 //! ```sh
 //! cargo x remote-test --build   # musl binary, keypair, containers
+//! # On Linux, use --build --native when musl build dependencies are unavailable.
 //! cargo x remote-test --test
 //! ```
 //!
@@ -1481,7 +1482,7 @@ fn adopt_elsewhere(hosts: &Arc<RemoteHosts>, token: &str, received: u64) -> (Pan
         )
         .expect("failed to build a connection for an adopted pane"),
     );
-    conn.restore_received(received);
+    conn.restore_received(received, resumed.dropped);
     let reader = RemoteReader::new(conn.clone(), resumed.read_socket)
         .expect("failed to build a reader for an adopted pane");
     (pump(conn, reader), resumed.dropped)
@@ -2115,20 +2116,40 @@ fn a_remote_pane_has_a_working_terminfo() {
 #[ignore]
 fn the_locale_crosses_but_the_asking_machines_filesystem_does_not() {
     let hosts = start();
+    let env = vec![
+        ("LANG".to_owned(), "en_US.UTF-8".to_owned()),
+        ("LC_TIME".to_owned(), "C".to_owned()),
+        // Neither of these is on the allowlist, so neither should arrive
+        // even though they are handed to the pane-opening call.
+        (
+            "PATH".to_owned(),
+            "/nonsense-from-the-asking-machine".to_owned(),
+        ),
+        ("HOME".to_owned(), "/nonsense-home".to_owned()),
+    ];
+
+    // Inspect the environment before a login profile can repair it. The script
+    // is an explicit command, so a terminal echo cannot satisfy these assertions.
+    let explicit = open_pane_with(
+        &hosts,
+        &format!(
+            "printf 'lang=%s lc_time=%s\\npath=%s\\nhome=%s\\n' \
+             \"$LANG\" \"$LC_TIME\" \"$PATH\" \"$HOME\"; {}",
+            idle_marked("environment")
+        ),
+        None,
+        env.clone(),
+        zellij_types::internal_ids::TerminalId::new(0),
+    );
+    explicit.wait_for_output("lang=en_US.UTF-8 lc_time=C");
+    explicit.wait_for_output("path=/usr/local/bin:/usr/bin:/bin");
+    explicit.wait_for_output("home=/home/test");
+    explicit.close();
+
     let pane = open_default_shell_pane_with(
         &hosts,
         None,
-        vec![
-            ("LANG".to_owned(), "en_US.UTF-8".to_owned()),
-            ("LC_TIME".to_owned(), "C".to_owned()),
-            // Neither of these is on the allowlist, so neither should arrive
-            // even though they are handed to the pane-opening call.
-            (
-                "PATH".to_owned(),
-                "/nonsense-from-the-asking-machine".to_owned(),
-            ),
-            ("HOME".to_owned(), "/nonsense-home".to_owned()),
-        ],
+        env,
         zellij_types::internal_ids::TerminalId::new(0),
     );
     pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
@@ -2137,7 +2158,7 @@ fn the_locale_crosses_but_the_asking_machines_filesystem_does_not() {
     pane.wait_for_output("lang=en_US.UTF-8 lc_time=C");
 
     pane.send_line("case \"$PATH:$HOME\" in *nonsense*) echo leak=yes;; *) echo leak=no;; esac");
-    pane.wait_for_output("leak=no");
+    pane.wait_for_output("\r\nleak=no\r\n");
 
     pane.close();
 }
