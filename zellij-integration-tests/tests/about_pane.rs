@@ -6,20 +6,34 @@ use zellij_integration_tests::{
 
 const PIN_MARKER: &str = "PIN [ ]";
 
-fn start_zellij_with_startup_tip() -> (TestSession, FakePtyHandle) {
+fn start_zellij_with_about(plugin_settings: &str) -> (TestSession, FakePtyHandle) {
     let zellij = TestRunner::new(TERMINAL_SIZE)
-        .with_config("show_startup_tips true")
+        .with_config(
+            r#"
+keybinds {
+    normal {
+        bind "Ctrl b" {
+            LaunchOrFocusPlugin "zellij:about" { floating true; PLUGIN_SETTINGS }
+        }
+    }
+}
+"#
+            .replace("PLUGIN_SETTINGS", plugin_settings)
+            .as_str(),
+        )
         .start();
     let terminal = zellij.expect_pty_spawn();
     terminal.output(PROMPT);
+    zellij.wait_until("terminal ready", |grid| grid.contains("$ "));
+    zellij.send_stdin(&keys::ctrl('b'));
     (zellij, terminal)
 }
 
 #[test]
-fn hidden_startup_tip_stays_hidden_after_terminal_resize() {
-    let (mut zellij, terminal) = start_zellij_with_startup_tip();
-    zellij.wait_until("startup tip floating pane shown", |grid_snapshot| {
-        grid_snapshot.contains(PIN_MARKER)
+fn hidden_about_stays_hidden_after_terminal_resize() {
+    let (mut zellij, terminal) = start_zellij_with_about("");
+    zellij.wait_until("About floating pane shown", |grid_snapshot| {
+        grid_snapshot.contains(PIN_MARKER) && grid_snapshot.contains("Nested Sessions")
     });
     zellij.send_stdin(&keys::alt('f'));
     zellij.wait_until("floating panes hidden", |grid_snapshot| {
@@ -52,8 +66,57 @@ fn hidden_startup_tip_stays_hidden_after_terminal_resize() {
 
     assert!(
         !settled.contains(PIN_MARKER),
-        "hidden startup tip floating pane must stay hidden after a terminal resize\n{}",
+        "hidden About floating pane must stay hidden after a terminal resize\n{}",
         settled.text,
     );
+    zellij.quit();
+}
+
+#[test]
+fn startup_without_tip_setting_has_no_tip_pane() {
+    assert_startup_has_no_tip_pane("");
+}
+
+#[test]
+fn legacy_tip_setting_cannot_enable_a_startup_pane() {
+    assert_startup_has_no_tip_pane("show_startup_tips true");
+}
+
+fn assert_startup_has_no_tip_pane(config: &str) {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE).with_config(config).start();
+    let terminal = zellij.expect_pty_spawn();
+    terminal.output(PROMPT);
+    let ready = zellij.wait_until("startup ready", |grid| {
+        grid.contains("$ ") && grid.status_bar_appears()
+    });
+    assert!(!ready.contains(PIN_MARKER), "{}", ready.text);
+    assert!(!ready.contains("About Zellij"), "{}", ready.text);
+    zellij.quit();
+}
+
+#[test]
+fn about_has_no_tips_browser() {
+    assert_about_has_no_tips_browser("");
+}
+
+#[test]
+fn legacy_plugin_setting_cannot_enable_tips() {
+    assert_about_has_no_tips_browser("is_startup_tip true;");
+}
+
+fn assert_about_has_no_tips_browser(plugin_settings: &str) {
+    let (mut zellij, _terminal) = start_zellij_with_about(plugin_settings);
+    let about = zellij.wait_until("About content ready", |grid| {
+        grid.contains("Nested Sessions") && grid.contains("Dismiss")
+    });
+    assert!(!about.contains("Usage Tips"), "{}", about.text);
+    zellij.send_stdin(b"?");
+    // Navigation is a content barrier after the question mark: it must still
+    // select the first About item, rather than changing to a tip page.
+    zellij.send_stdin(b"\x1b[B");
+    zellij.send_stdin(&keys::ENTER);
+    zellij.wait_until("About navigation still works", |grid| {
+        grid.contains("Nested Sessions") && grid.contains("Go back")
+    });
     zellij.quit();
 }

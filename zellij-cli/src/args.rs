@@ -2112,6 +2112,13 @@ mod tests {
     }
 
     #[test]
+    fn removed_startup_tips_flag_is_unknown() {
+        let error =
+            try_parse_cli(["zellij", "options", "--show-startup-tips", "true"]).unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
     fn a_plugin_launch_takes_the_url_and_nothing_else_by_default() {
         let cli = try_parse_cli(["zellij", "action", "launch-or-focus-plugin", "hocus"]).unwrap();
         assert!(matches!(

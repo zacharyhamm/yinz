@@ -706,7 +706,6 @@ fn test_client_messages() {
                 agent_pane_min_columns: Some(100),
                 agent_pane_min_rows: Some(30),
                 stacked_pane_list: Some(true),
-                show_startup_tips: Some(true),
                 show_release_notes: Some(true),
                 advanced_mouse_actions: Some(true),
                 mouse_scroll_resize: Some(true),

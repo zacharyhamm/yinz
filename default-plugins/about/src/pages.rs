@@ -979,7 +979,7 @@ impl Page {
         row_count += self.components_to_render.len();
         row_count
     }
-    pub fn render(&mut self, rows: usize, columns: usize, error: &Option<String>) {
+    pub fn render(&mut self, rows: usize, columns: usize) {
         let base_x = columns.saturating_sub(self.ui_column_count()) / 2;
         let base_y = rows.saturating_sub(self.ui_row_count()) / 2;
         let mut current_y = base_y;
@@ -995,12 +995,6 @@ impl Page {
         }
         for rendered_component in &mut self.components_to_render {
             let is_help = matches!(rendered_component, RenderedComponent::HelpText(_));
-            if is_help {
-                if let Some(error) = error {
-                    render_error(error, rows);
-                    continue;
-                }
-            }
             let y = if is_help { rows } else { current_y };
             let columns = if is_help {
                 columns
@@ -1018,16 +1012,6 @@ impl Page {
             current_y += rendered_rows + 1; // 1 for the line space between components
         }
     }
-}
-
-fn render_error(error: &str, y: usize) {
-    print_text_with_coordinates(
-        Text::new(format!("ERROR: {}", error)).color_range(3, ..),
-        0,
-        y,
-        None,
-        None,
-    );
 }
 
 fn changelog_link_unselected(version: String) -> Text {
@@ -1102,9 +1086,6 @@ fn main_screen_help_text(
         help_text.push_str(", <u> - Update Keybindings");
     }
     help_text.push_str(", <ESC> - Dismiss");
-    if !menu_item_is_selected {
-        help_text.push_str(", <?> - Usage Tips");
-    }
     color_help_keys(help_text)
 }
 

@@ -11,4 +11,3 @@ workspace = true
 
 [dependencies]
 zellij-tile = { path = "../../zellij-tile" }
-rand = { workspace = true }

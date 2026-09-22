@@ -200,11 +200,6 @@ Options:
       --stacked-pane-list <STACKED_PANE_LIST>
           [possible values: true, false]
 
-      --show-startup-tips <SHOW_STARTUP_TIPS>
-          Whether to show startup tips when starting a new session default is true
-          
-          [possible values: true, false]
-
       --show-release-notes <SHOW_RELEASE_NOTES>
           Whether to show release notes on first run of a new version default is true
           
