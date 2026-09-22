@@ -55,6 +55,19 @@ fn create_plugin_fs_entries(plugin_own_data_dir: &PathBuf, plugin_own_cache_dir:
     }
 }
 
+/// The compiled module for `key`, left in the cache. A `Module` is cheap to clone, so
+/// there is no reason to take it out: doing so meant any failure between here and the
+/// instance being ready lost the entry, and a worker loading the same plugin in that
+/// window found nothing.
+fn cached_module(plugin_cache: &PluginCache, key: &PluginCacheKey) -> Result<Module> {
+    plugin_cache
+        .lock()
+        .unwrap()
+        .get(key)
+        .cloned()
+        .ok_or_else(|| anyhow!("Plugin is not stored in memory"))
+}
+
 fn plugin_cache_key(
     plugin_config: &PluginConfig,
     builtin_plugins_dir: Option<&Path>,
@@ -329,20 +342,20 @@ impl<'a> PluginLoader<'a> {
             self.plugin_config.path.display(),
             timer.elapsed()
         );
+        // Cached as soon as it compiles, so that a failure later in this load (WASI
+        // setup, the start function, a limiter trip) does not cost the next load a
+        // recompile.
+        self.plugin_cache.lock().unwrap().insert(
+            plugin_cache_key(&self.plugin_config, self.builtin_plugins_dir.as_deref()),
+            module.clone(),
+        );
         Ok(module)
     }
     fn load_module_from_memory(&mut self) -> Result<Module> {
-        let module = self
-            .plugin_cache
-            .lock()
-            .unwrap()
-            .remove(&plugin_cache_key(
-                &self.plugin_config,
-                self.builtin_plugins_dir.as_deref(),
-            )) // TODO: do we still bring it back later?
-            // maybe we can forgo this dance?
-            .ok_or(anyhow!("Plugin is not stored in memory"))?;
-        Ok(module)
+        cached_module(
+            &self.plugin_cache,
+            &plugin_cache_key(&self.plugin_config, self.builtin_plugins_dir.as_deref()),
+        )
     }
     fn load_plugin_instance(
         &mut self,
@@ -493,8 +506,6 @@ impl<'a> PluginLoader<'a> {
             stdin_pipe.clone(),
             stdout_pipe.clone(),
         )?;
-        let plugin_cache_key =
-            plugin_cache_key(&self.plugin_config, self.builtin_plugins_dir.as_deref());
         let plugin_env =
             self.create_plugin_env(Some(wasi_ctx), stdin_pipe.clone(), stdout_pipe.clone());
         let mut store = Store::new(&self.engine, plugin_env);
@@ -521,11 +532,6 @@ impl<'a> PluginLoader<'a> {
                 let _ = typed_func.call(&mut store, ());
             }
         }
-
-        self.plugin_cache
-            .lock()
-            .unwrap()
-            .insert(plugin_cache_key, module);
         Ok((store, instance))
     }
     pub fn clone_instance_for_other_clients(&mut self) -> Result<()> {
@@ -745,7 +751,9 @@ impl<'a> PluginLoader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{plugin_cache_key, PluginLoader};
+    use super::{cached_module, plugin_cache_key, PluginLoader};
+    use std::collections::HashMap;
+    use wasmi::{Engine, Module};
     use std::collections::VecDeque;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
@@ -774,6 +782,23 @@ mod tests {
             plugin_cache_key(&external, Some(Path::new("one"))),
             plugin_cache_key(&external, Some(Path::new("two")))
         );
+    }
+
+    #[test]
+    fn reading_a_module_from_the_cache_leaves_it_there() {
+        // Loading used to `remove` the entry and re-insert it only once the instance was
+        // up, so a failed start cost the next load a recompile and a concurrent worker
+        // load found nothing.
+        let engine = Engine::default();
+        let empty_module = Module::new(&engine, b"\0asm\x01\0\0\0").unwrap();
+        let key = (std::path::PathBuf::from("plugin.wasm"), None);
+        let cache = Arc::new(Mutex::new(HashMap::from([(key.clone(), empty_module)])));
+
+        cached_module(&cache, &key).expect("the cached module");
+
+        assert!(cache.lock().unwrap().contains_key(&key));
+        let missing = (std::path::PathBuf::from("other.wasm"), None);
+        assert!(cached_module(&cache, &missing).is_err());
     }
 
     #[test]
