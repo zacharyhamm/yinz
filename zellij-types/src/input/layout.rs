@@ -270,7 +270,20 @@ impl Run {
                 }
                 Some(Run::Plugin(merged))
             },
-            (Some(Run::EditFile(file_to_edit, line_number, _)), Some(Run::Cwd(other_cwd))) => {
+            (
+                Some(Run::EditFile(file_to_edit, line_number, edit_cwd)),
+                Some(Run::Cwd(other_cwd)),
+            ) => {
+                // The parser anchored the template's `edit` to the template's own cwd
+                // (`parse_pane_command`); the consumer's cwd replaces that anchor, as it
+                // replaces a command template's cwd. An `edit` written as an absolute
+                // path stays where it points - unless it lies under the template's own
+                // cwd, where it cannot be told from a relative one and follows the
+                // consumer too.
+                let file_to_edit = edit_cwd
+                    .as_ref()
+                    .and_then(|cwd| file_to_edit.strip_prefix(cwd).ok())
+                    .unwrap_or(file_to_edit);
                 Some(Run::EditFile(
                     other_cwd.join(file_to_edit),
                     *line_number,

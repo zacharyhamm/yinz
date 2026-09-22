@@ -1118,6 +1118,69 @@ fn cwd_only_pane_template_gives_its_cwd_to_a_plugin_consumer() {
 }
 
 #[test]
+fn edit_pane_template_follows_the_consumer_cwd() {
+    // The parser anchors a template's `edit` to the template's cwd, so by the time the
+    // consumer's cwd is merged in the file is already an absolute path; joining onto it
+    // was a no-op, and the editor opened the template's file from the consumer's cwd.
+    let raw = r#"
+        layout {
+            pane_template name="notes" edit="notes.md" cwd="/a"
+            pane_template name="loose_notes" edit="notes.md"
+            notes cwd="/b"
+            notes
+            loose_notes cwd="/b"
+        }
+    "#;
+    let layout = crate::kdl::layout::from_kdl(raw, None, None, None).unwrap();
+    let (tiled, _) = layout.template.unwrap();
+    let runs: Vec<_> = tiled
+        .children
+        .iter()
+        .map(|child| child.run.clone().expect("a run"))
+        .collect();
+    assert_eq!(
+        runs,
+        vec![
+            Run::EditFile(
+                PathBuf::from("/b/notes.md"),
+                None,
+                Some(PathBuf::from("/b"))
+            ),
+            Run::EditFile(
+                PathBuf::from("/a/notes.md"),
+                None,
+                Some(PathBuf::from("/a"))
+            ),
+            Run::EditFile(
+                PathBuf::from("/b/notes.md"),
+                None,
+                Some(PathBuf::from("/b"))
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_absolute_edit_in_a_pane_template_stays_put_when_the_consumer_sets_a_cwd() {
+    let raw = r#"
+        layout {
+            pane_template name="hosts" edit="/etc/hosts" cwd="/a"
+            hosts cwd="/b"
+        }
+    "#;
+    let layout = crate::kdl::layout::from_kdl(raw, None, None, None).unwrap();
+    let (tiled, _) = layout.template.unwrap();
+    assert_eq!(
+        tiled.children[0].run,
+        Some(Run::EditFile(
+            PathBuf::from("/etc/hosts"),
+            None,
+            Some(PathBuf::from("/b"))
+        ))
+    );
+}
+
+#[test]
 fn layout_with_pane_templates() {
     let kdl_layout = r#"
         layout {
