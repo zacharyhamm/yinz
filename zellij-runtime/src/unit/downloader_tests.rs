@@ -14,6 +14,37 @@ use tokio::sync::mpsc;
 const FILE_NAME: &str = "plugin.wasm";
 const BODY: &[u8] = b"0123456789";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocking_download_works_with_and_without_a_tokio_runtime() {
+    let (url, _requests) = serve(
+        (0..3)
+            .map(|_| Exchange::new("HTTP/1.1 200 OK\r\nContent-Length: 9", b"layout {}"))
+            .collect(),
+    )
+    .await;
+    // The existing server runs on the other worker even while the caller blocks.
+    std::thread::spawn(move || {
+        let download = || {
+            assert_eq!(
+                Downloader::download_without_cache_blocking(&url).unwrap(),
+                "layout {}"
+            )
+        };
+        download();
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async { download() });
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .build()
+            .unwrap()
+            .block_on(async { download() });
+    })
+    .join()
+    .unwrap();
+}
+
 /// One canned response for one connection.
 struct Exchange {
     /// Status line plus headers, without the terminating blank line.

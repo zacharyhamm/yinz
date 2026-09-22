@@ -105,6 +105,78 @@ fn a_write_that_changes_the_results_notifies_the_watch() {
 }
 
 #[test]
+fn blob_contents_cannot_hide_a_watch_change_as_a_field_boundary() {
+    let (store, _dir) = store();
+    let def = EntityDef::new("binary", 1)
+        .attr(AttrDef::blob("left"))
+        .attr(AttrDef::blob("right"));
+    store.define_entity(NS, OWNER, &def, false).unwrap();
+    let put = |left, right| {
+        store
+            .apply(
+                NS,
+                &[Mutation::put("binary")
+                    .uid("one")
+                    .set("left", DataValue::Blob(left))
+                    .set("right", DataValue::Blob(right))
+                    .build()],
+            )
+            .unwrap();
+    };
+    put(vec![1], vec![2, 0xfe, 5, 3]);
+    let handle = store
+        .register_watch(
+            NS,
+            PLUGIN,
+            CLIENT,
+            FetchRequest::entity("binary").select(["left", "right"]),
+            WatchMode::Rows,
+        )
+        .unwrap();
+    // These rows used to hash the same bytes: the separator and Blob tag also occur in data.
+    put(vec![1, 0xfe, 5, 2], vec![3]);
+    let changes = store.refresh_watches(NS, &touched("binary")).unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].watch_id, handle.watch_id);
+    assert_eq!(
+        changes[0].rows.rows,
+        vec![vec![
+            DataValue::Blob(vec![1, 0xfe, 5, 2]),
+            DataValue::Blob(vec![3])
+        ]]
+    );
+    assert!(store
+        .refresh_watches(NS, &touched("binary"))
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn replacing_identical_rows_notifies_a_watch_when_its_page_cursor_changes() {
+    let (store, _dir) = defined();
+    for _ in 0..3 {
+        put(&store, "zellij", "same", 1);
+    }
+    let handle = store
+        .register_watch(
+            NS,
+            PLUGIN,
+            CLIENT,
+            FetchRequest::entity("agent").select(["summary"]).limit(1),
+            WatchMode::Rows,
+        )
+        .unwrap();
+    let cursor = handle.rows.next_cursor.unwrap();
+    store
+        .apply(NS, &[Mutation::delete("agent", Pred::eq("id", cursor))])
+        .unwrap();
+    let changes = store.refresh_watches(NS, &touched("agent")).unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].rows.rows, handle.rows.rows);
+    assert_ne!(changes[0].rows.next_cursor, Some(cursor));
+}
+
+#[test]
 fn writing_the_same_values_again_is_silent() {
     let (store, _dir) = defined();
     store

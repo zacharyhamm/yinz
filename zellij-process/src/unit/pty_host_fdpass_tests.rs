@@ -205,3 +205,56 @@ fn only_the_first_descriptor_of_a_handoff_is_kept() {
         }
     }
 }
+
+#[test]
+fn rejected_handoffs_close_every_installed_descriptor() {
+    for (sentinel, count) in [(FD_SENTINEL, MAX_HANDOFF_FDS + 4), (b'X', 1)] {
+        let (sender, receiver) = stream_pair();
+        let (mut probe, extra) = stream_pair();
+        probe
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let fds = vec![extra.as_raw_fd(); count];
+        sendmsg::<()>(
+            sender.as_raw_fd(),
+            &[IoSlice::new(&[sentinel])],
+            &[ControlMessage::ScmRights(&fds)],
+            MsgFlags::empty(),
+            None,
+        )
+        .unwrap();
+        drop(extra);
+
+        assert!(recv_fd(&receiver).is_err());
+        assert_eq!(
+            probe
+                .read(&mut [0u8; 1])
+                .expect("rejected handoff leaked a descriptor"),
+            0,
+            "no received descriptor may keep the peer alive after rejection"
+        );
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn a_control_only_handoff_closes_its_descriptor_before_reporting_eof() {
+    let (sender, receiver) = stream_pair();
+    let (mut probe, extra) = stream_pair();
+    probe
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    sendmsg::<()>(
+        sender.as_raw_fd(),
+        &[IoSlice::new(&[])],
+        &[ControlMessage::ScmRights(&[extra.as_raw_fd()])],
+        MsgFlags::empty(),
+        None,
+    )
+    .unwrap();
+    sender.shutdown(std::net::Shutdown::Write).unwrap();
+    drop(extra);
+
+    assert!(recv_fd(&receiver).is_err());
+    assert_eq!(probe.read(&mut [0u8; 1]).unwrap(), 0);
+}

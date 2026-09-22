@@ -1169,11 +1169,9 @@ fn start_session(
         )
     };
 
-    // Must happen before the fork. `close_open_fds` below closes the CLOEXEC pipe
-    // `std` uses to report exec failure back to the parent, so `spawn()` returns
-    // Ok even when the exec fails — the caller would otherwise see a child that
-    // silently exits 1. The server does the same check before spawning us at all;
-    // this one is the TOCTOU backstop.
+    // Give missing commands the structured error the server displays in the pane.
+    // `spawn()` below still reports failures such as a missing script interpreter
+    // or a command removed after this check.
     // Against the `PATH` the *child* will get, not this supervisor's: for a remote
     // pane those differ, and `Command` execs against the environment it was given.
     // Searching the wrong one would reject a command that would have exec'd fine.
@@ -1234,8 +1232,8 @@ fn start_session(
     // in particular the next pane's supervisor, if a descriptor ever leaked into
     // the server — must not inherit them: a leaked *slave* would keep a pane's
     // pty open after its shell exits and suppress the EOF that closes it.
-    let _ = fdpass::set_cloexec(master.as_raw_fd());
-    let _ = fdpass::set_cloexec(slave.as_raw_fd());
+    fdpass::set_cloexec(master.as_raw_fd()).with_context(err_context)?;
+    fdpass::set_cloexec(slave.as_raw_fd()).with_context(err_context)?;
 
     let slave_raw = slave.as_raw_fd();
     let mut command = Command::new(&cmd.command);
@@ -1344,9 +1342,9 @@ fn start_session(
             } else if libc::login_tty(slave_raw) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            // Mandatory, not hygiene: closes the master, the control socket, the
-            // listener and the wake channel so none of them leak into the shell.
-            close_fds::close_open_fds(3, &[]);
+            // Keep std's exec-error pipe open until exec succeeds, while ensuring
+            // the shell inherits no master, control socket, listener or wake fd.
+            close_fds::set_fds_cloexec(3, &[]);
             Ok(())
         });
     }

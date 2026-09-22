@@ -648,6 +648,42 @@ fn a_missing_command_is_reported_rather_than_panicking() {
     }
 }
 
+#[test]
+fn an_exec_failure_is_reported_instead_of_announcing_a_spawned_child() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("broken-command");
+    std::fs::write(&script, b"#!/nonexistent/zellij-test-interpreter\n").unwrap();
+    for mode in [0o600, 0o700] {
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(mode)).unwrap();
+        let (mut host, _, _) = TestHost::start();
+        host.send(&ServerToHostMsg::Spawn {
+            job_control: true,
+            terminal_id: 0,
+            session_name: None,
+            cmd: RunCommand {
+                command: script.clone(),
+                ..Default::default()
+            },
+            failover_cmd: None,
+            termios: None,
+            initial_size: None,
+            arg0: None,
+            env: vec![],
+            login_session: false,
+        });
+        assert!(matches!(
+            host.recv(),
+            HostToServerMsg::SpawnFailed {
+                kind: SpawnFailureKind::Other,
+                ..
+            }
+        ));
+        assert!(host.handle.take().unwrap().join().unwrap().is_err());
+    }
+}
+
 /// A supervisor may outlive the zellij that spawned it, so a later server can
 /// meet an older host. It must refuse cleanly, leaving the server free to fall
 /// back to spawning the pty in-process.

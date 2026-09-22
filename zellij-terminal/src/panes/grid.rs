@@ -5494,6 +5494,9 @@ impl Perform for Grid {
                         },
                         1049 => {
                             // enter alternate buffer
+                            if self.alternate_screen_state.is_some() {
+                                continue;
+                            }
                             let current_lines_above = std::mem::take(&mut self.lines_above);
                             let current_viewport = std::mem::replace(
                                 &mut self.viewport,

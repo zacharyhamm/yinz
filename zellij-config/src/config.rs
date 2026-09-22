@@ -388,10 +388,22 @@ impl Config {
     /// always one the loader accepts.
     pub fn write_managed_fragment(overlay_dir: &Path, fragment: &str) -> Result<PathBuf, String> {
         use kdl::KdlDocument;
+        use std::io::Write;
         let path = overlay_dir.join(MANAGED_CONFIG_FILE_NAME);
         let fragment: KdlDocument = fragment
             .parse()
             .map_err(|e: kdl::KdlError| format!("the config fragment is not valid KDL: {e}"))?;
+        std::fs::create_dir_all(overlay_dir)
+            .map_err(|e| format!("failed to create {}: {e}", overlay_dir.display()))?;
+        // Serialize the read/merge/write across sessions. Keep the lock inode after use.
+        let lock = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(overlay_dir.join(format!(".{MANAGED_CONFIG_FILE_NAME}.lock")))
+            .map_err(|e| format!("failed to open lock for {}: {e}", path.display()))?;
+        lock.lock()
+            .map_err(|e| format!("failed to lock {}: {e}", path.display()))?;
         let mut managed: KdlDocument = match std::fs::read_to_string(&path) {
             Ok(text) => text.parse().map_err(|e: kdl::KdlError| {
                 format!(
@@ -407,15 +419,12 @@ impl Config {
         let defaults = Config::from_default_assets().map_err(|e| e.to_string())?;
         Config::from_kdl(&text, Some(defaults))
             .map_err(|e| format!("the merged {} would not load: {e}", path.display()))?;
-        std::fs::create_dir_all(overlay_dir)
-            .map_err(|e| format!("failed to create {}: {e}", overlay_dir.display()))?;
-        let tmp = overlay_dir.join(format!(
-            ".{MANAGED_CONFIG_FILE_NAME}.{}",
-            std::process::id()
-        ));
-        std::fs::write(&tmp, &text)
-            .map_err(|e| format!("failed to write {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &path)
+        let mut tmp = tempfile::NamedTempFile::new_in(overlay_dir)
+            .map_err(|e| format!("failed to stage {}: {e}", path.display()))?;
+        tmp.write_all(text.as_bytes())
+            .and_then(|_| tmp.as_file().sync_all())
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        tmp.persist(&path)
             .map_err(|e| format!("failed to replace {}: {e}", path.display()))?;
         Ok(path)
     }
@@ -2312,6 +2321,45 @@ mod overlay_tests {
             "a refused write changes nothing"
         );
         assert!(Config::write_managed_fragment(&overlay_dir, "hooks {").is_err());
+    }
+
+    #[test]
+    fn concurrent_managed_fragments_preserve_every_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|i| {
+                    let dir = dir.path();
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        Config::write_managed_fragment(
+                            dir,
+                            &format!("env {{ SETTING_{i} \"{i}\"; }}\n"),
+                        )
+                        .unwrap();
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
+        let text = std::fs::read_to_string(dir.path().join(MANAGED_CONFIG_FILE_NAME)).unwrap();
+        let managed: kdl::KdlDocument = text.parse().unwrap();
+        let env = managed.get("env").unwrap().children().unwrap();
+        for i in 0..8 {
+            assert_eq!(
+                env.get(&format!("SETTING_{i}"))
+                    .unwrap()
+                    .get(0)
+                    .unwrap()
+                    .value()
+                    .as_string(),
+                Some(i.to_string().as_str())
+            );
+        }
     }
 
     /// Drop-ins layer in file-name order over the config, and a broken one is skipped.

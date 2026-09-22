@@ -7,14 +7,14 @@
 //! dropped if a plain `read` gets there first — so the control socket is always
 //! read with exact-sized reads and never wrapped in a `BufReader`.
 
-use std::io::{IoSlice, IoSliceMut};
+use std::io::IoSlice;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 use nix::{
     errno::Errno,
     fcntl::{fcntl, FcntlArg, FdFlag},
-    sys::socket::{recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags},
+    sys::socket::{sendmsg, ControlMessage, MsgFlags},
 };
 use zellij_runtime::errors::prelude::*;
 
@@ -23,9 +23,18 @@ use zellij_runtime::errors::prelude::*;
 const FD_SENTINEL: u8 = b'F';
 
 /// How many descriptors a single handoff is willing to receive. Only the first is
-/// kept; the rest are closed. A peer that attaches more than this fails the
-/// receive outright on macOS, which is a reported error rather than a leak.
+/// kept; the rest are closed, including the descriptors installed before an
+/// oversized ancillary message is truncated.
 const MAX_HANDOFF_FDS: usize = 4;
+
+// XNU installs every descriptor before copying out ancillary bytes and does not
+// close the ones hidden by MSG_CTRUNC. Its sockargs(MT_CONTROL) rejects buffers
+// larger than MCLBYTES (2048), so receive that full bound on Apple platforms.
+// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/uipc_syscalls.c
+#[cfg(target_vendor = "apple")]
+const HANDOFF_CONTROL_BYTES: usize = 2048;
+#[cfg(not(target_vendor = "apple"))]
+const HANDOFF_CONTROL_BYTES: usize = nix::sys::socket::cmsg_space::<[RawFd; MAX_HANDOFF_FDS]>();
 
 pub fn send_fd(sock: &UnixStream, fd: RawFd) -> Result<()> {
     let err_context = || "failed to hand off pty descriptor".to_string();
@@ -68,42 +77,72 @@ pub fn recv_fd(sock: &UnixStream) -> Result<OwnedFd> {
 
     loop {
         let mut buf = [0u8; 1];
-        let mut iov = [IoSliceMut::new(&mut buf)];
-        // Room for more than the one descriptor a correct peer sends: Linux
-        // truncates an oversized set of rights and closes the excess, but macOS
-        // refuses the whole `recvmsg` with ENOBUFS and strands them. Receiving the
-        // extras is what lets the loop below close them.
-        let mut cmsg_buffer = nix::cmsg_space!([RawFd; MAX_HANDOFF_FDS]);
-        let msg = match recvmsg::<()>(
-            sock.as_raw_fd(),
-            &mut iov,
-            Some(cmsg_buffer.as_mut_slice()),
-            flags,
-        ) {
-            Ok(msg) => msg,
-            Err(Errno::EINTR) => continue,
-            Err(e) => return Err(e).with_context(err_context),
+        let mut iov = libc::iovec {
+            iov_base: buf.as_mut_ptr().cast(),
+            iov_len: buf.len(),
         };
-        if msg.bytes == 0 {
+        // nix refuses to iterate any SCM_RIGHTS after MSG_CTRUNC, but the kernel
+        // has already installed the descriptors that fit. Receive directly so
+        // they acquire owners even on that error path. usize supplies alignment.
+        let mut cmsg_buffer =
+            [0usize; HANDOFF_CONTROL_BYTES.div_ceil(std::mem::size_of::<usize>())];
+        // SAFETY: msghdr is a C struct valid when zeroed; all buffers below stay
+        // alive for the syscall and the subsequent ancillary-data iteration.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsg_buffer.as_mut_ptr().cast();
+        msg.msg_controllen = std::mem::size_of_val(&cmsg_buffer) as _;
+        let bytes = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags.bits()) };
+        if bytes < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).with_context(err_context);
+        }
+        let mut received: Option<OwnedFd> = None;
+        let mut received_count = 0;
+        // SAFETY: recvmsg populated msg and its aligned control buffer. Bound
+        // each payload by the returned buffer length even on truncation; only
+        // complete RawFds supplied by the kernel become owned descriptors.
+        unsafe {
+            let mut header = libc::CMSG_FIRSTHDR(&msg);
+            while !header.is_null() {
+                let offset = header.cast::<u8>().offset_from(msg.msg_control.cast()) as usize;
+                let len = ((*header).cmsg_len as usize)
+                    .min(msg.msg_controllen as usize - offset)
+                    .saturating_sub(libc::CMSG_LEN(0) as usize);
+                if (*header).cmsg_level == libc::SOL_SOCKET
+                    && (*header).cmsg_type == libc::SCM_RIGHTS
+                {
+                    let data = libc::CMSG_DATA(header).cast::<RawFd>();
+                    for index in 0..len / std::mem::size_of::<RawFd>() {
+                        let owned = OwnedFd::from_raw_fd(data.add(index).read_unaligned());
+                        received_count += 1;
+                        if received.is_none() {
+                            received = Some(owned);
+                        }
+                    }
+                }
+                header = libc::CMSG_NXTHDR(&msg, header);
+            }
+        }
+        if bytes == 0 {
             return Err(anyhow!(
                 "control channel closed before the pty descriptor arrived"
             ))
             .with_context(err_context);
         }
-        let mut received: Option<OwnedFd> = None;
-        for cmsg in msg.cmsgs().with_context(err_context)? {
-            if let ControlMessageOwned::ScmRights(fds) = cmsg {
-                for fd in fds {
-                    // SAFETY: the kernel just installed these descriptors in this
-                    // process and nothing else owns them.
-                    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-                    if received.is_none() {
-                        received = Some(owned);
-                    }
-                    // Anything past the first is a protocol violation; dropping
-                    // `owned` closes it.
-                }
-            }
+        if msg.msg_flags & libc::MSG_CTRUNC != 0 {
+            return Err(anyhow!("descriptor handoff was truncated")).with_context(err_context);
+        }
+        if received_count > MAX_HANDOFF_FDS {
+            return Err(anyhow!("descriptor handoff carried too many descriptors"))
+                .with_context(err_context);
+        }
+        if buf[0] != FD_SENTINEL {
+            return Err(anyhow!("invalid descriptor handoff sentinel")).with_context(err_context);
         }
         let received = received
             .ok_or_else(|| anyhow!("handoff carried no descriptor"))

@@ -181,47 +181,31 @@ pub(super) fn apply_watch_mode(mut request: FetchRequest, mode: WatchMode) -> Fe
 
 /// A digest of a result set, for telling "changed" from "written again with the same values".
 ///
-/// Hand-rolled rather than `Hash` because `f64` is not `Hash`; floats are folded in by their bit
-/// pattern, which is what an equality check on the stored value amounts to anyway.
+/// Use `Hash`'s length framing for variable-size values: a delimiter alone can also occur in a
+/// blob and make different rows indistinguishable. Floats are hashed by their bit pattern.
 pub(super) fn digest_rows(rows: &DataRows) -> u64 {
-    use std::hash::Hasher;
+    use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for column in &rows.columns {
-        hasher.write(column.as_bytes());
-        hasher.write_u8(0xff);
-    }
+    rows.columns.hash(&mut hasher);
+    rows.rows.len().hash(&mut hasher);
     for row in &rows.rows {
+        row.len().hash(&mut hasher);
         for value in row {
+            std::mem::discriminant(value).hash(&mut hasher);
             match value {
-                DataValue::Null => hasher.write_u8(0),
-                DataValue::Int(i) => {
-                    hasher.write_u8(1);
-                    hasher.write_i64(*i);
-                },
-                DataValue::Real(f) => {
-                    hasher.write_u8(2);
-                    hasher.write_u64(f.to_bits());
-                },
-                DataValue::Text(s) => {
-                    hasher.write_u8(3);
-                    hasher.write(s.as_bytes());
-                },
-                DataValue::Bool(b) => {
-                    hasher.write_u8(4);
-                    hasher.write_u8(*b as u8);
-                },
-                DataValue::Blob(b) => {
-                    hasher.write_u8(5);
-                    hasher.write(b);
-                },
+                DataValue::Null => {},
+                DataValue::Int(i) => i.hash(&mut hasher),
+                DataValue::Real(f) => f.to_bits().hash(&mut hasher),
+                DataValue::Text(s) => s.hash(&mut hasher),
+                DataValue::Bool(b) => b.hash(&mut hasher),
+                DataValue::Blob(b) => b.hash(&mut hasher),
             }
-            hasher.write_u8(0xfe);
         }
-        hasher.write_u8(0xfd);
     }
     // Truncation is part of the result set: a watch whose rows were cut off and then were not is a
     // change worth reporting.
-    hasher.write_u8(rows.truncated as u8);
+    rows.truncated.hash(&mut hasher);
+    rows.next_cursor.hash(&mut hasher);
     hasher.finish()
 }
 

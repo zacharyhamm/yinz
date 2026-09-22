@@ -7260,34 +7260,36 @@ fn try_save_layout(
         .or_else(default_layout_dir)
         .ok_or_else(|| "Layout directory not found".to_string())?;
 
-    // Step 4: Create file path
     let file_path = layout_dir.join(format!("{}.kdl", safe_name));
-
-    // Step 5: Check if file exists when overwrite=false
-    if file_path.exists() && !overwrite {
-        return Err(format!(
-            "Layout file '{}' already exists. Use overwrite flag to replace it.",
-            safe_name
-        ));
-    }
-
-    // Step 6: Ensure layout directory exists
-    std::fs::create_dir_all(layout_dir)
+    std::fs::create_dir_all(&layout_dir)
         .map_err(|e| format!("Failed to create layout directory: {}", e))?;
 
-    // Step 7: Write to disk
-    let mut parsed_layout: KdlDocument = layout_kdl.parse().unwrap(); // unwrap
-                                                                      // should
-                                                                      // be
-                                                                      // safe,
-                                                                      // but
-                                                                      // let's
-                                                                      // do
-                                                                      // it
-                                                                      // nicer
+    let mut parsed_layout: KdlDocument = layout_kdl
+        .parse()
+        .map_err(|e| format!("Invalid layout KDL: {}", e))?;
     parsed_layout.fmt();
-    std::fs::write(&file_path, parsed_layout.to_string())
-        .map_err(|io_error| format!("Failed to write layout file: {}", io_error))?;
+    // Publish a complete file, without following a destination symlink or racing another save.
+    let mut staged = tempfile::NamedTempFile::new_in(&layout_dir)
+        .map_err(|e| format!("Failed to stage layout file: {}", e))?;
+    staged
+        .write_all(parsed_layout.to_string().as_bytes())
+        .and_then(|_| staged.as_file().sync_all())
+        .map_err(|e| format!("Failed to write layout file: {}", e))?;
+    let published = if overwrite {
+        staged.persist(&file_path)
+    } else {
+        staged.persist_noclobber(&file_path)
+    };
+    published.map_err(|e| {
+        if e.error.kind() == std::io::ErrorKind::AlreadyExists {
+            format!(
+                "Layout file '{}' already exists. Use overwrite flag to replace it.",
+                safe_name
+            )
+        } else {
+            format!("Failed to publish layout file: {}", e)
+        }
+    })?;
 
     Ok(())
 }
@@ -8796,6 +8798,53 @@ mod permission_tests {
 
         symlink(&outside, layout_dir.join("safe.swap.kdl")).unwrap();
         assert!(validate_plugin_layout_path("safe", Some(&layout_dir)).is_err());
+    }
+
+    #[test]
+    fn saving_layouts_preserves_existing_files_until_replacement_succeeds() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = crate::test_env::test_env();
+        let layout_dir = temp.path().join("layouts");
+        env.layout_dir = Some(layout_dir.clone());
+        try_save_layout(&env, "saved", "layout {}", false).unwrap();
+        let path = layout_dir.join("saved.kdl");
+        let original = std::fs::read(&path).unwrap();
+
+        assert!(try_save_layout(&env, "saved", "layout { pane; }", false)
+            .unwrap_err()
+            .contains("already exists"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(try_save_layout(&env, "saved", "invalid {", true).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        try_save_layout(&env, "saved", "layout { pane; }", true).unwrap();
+        assert!(std::fs::read_to_string(path).unwrap().contains("pane"));
+        assert_eq!(std::fs::read_dir(layout_dir).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_layouts_never_writes_through_destination_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = crate::test_env::test_env();
+        let layout_dir = temp.path().join("layouts");
+        std::fs::create_dir(&layout_dir).unwrap();
+        env.layout_dir = Some(layout_dir.clone());
+        let outside = temp.path().join("outside");
+        let destination = layout_dir.join("linked.kdl");
+        symlink(&outside, &destination).unwrap();
+
+        // A dangling link is still occupied, even though Path::exists reports false.
+        assert!(try_save_layout(&env, "linked", "layout {}", false).is_err());
+        assert!(!outside.exists());
+        std::fs::write(&outside, "keep").unwrap();
+        assert!(try_save_layout(&env, "linked", "layout {}", false).is_err());
+        try_save_layout(&env, "linked", "layout {}", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep");
+        assert!(!std::fs::symlink_metadata(destination).unwrap().is_symlink());
+        assert_eq!(std::fs::read_dir(layout_dir).unwrap().count(), 1);
     }
 
     #[test]

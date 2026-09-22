@@ -767,7 +767,7 @@ impl From<StyleDeclaration> for CharacterStyles {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LinkAnchor {
-    Start(u16),
+    Start(u32),
     End,
 }
 
