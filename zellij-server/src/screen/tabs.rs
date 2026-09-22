@@ -428,14 +428,18 @@ impl Screen {
         Ok(())
     }
 
+    /// Give a closed tab's suppressed panes to a tab that is still here.
+    ///
+    /// Parked panes (a hidden plugin, a stack-list member) do not care which tab they are
+    /// in, and a pane replaced in place moves with the pending respawn that restores it.
+    /// The pane under a scrollback editor never arrives here: `close_tab_by_id` closes it
+    /// with the tab, since only its editor closing would bring it back and the editor is
+    /// gone with the tab.
     fn move_suppressed_panes_from_closed_tab(
         &mut self,
         suppressed_panes: SuppressedPanes,
         pending_respawns: HashMap<PaneId, (RunCommand, bool)>,
     ) -> Result<()> {
-        // TODO: this is not entirely accurate, these also sometimes contain a pane who's
-        // scrollback is being edited - in this case we need to close it or to move it to the
-        // appropriate tab
         let err_context = || "Failed to move suppressed panes from closed tab";
         let first_tab_index = self
             .tabs
@@ -1107,10 +1111,22 @@ impl Screen {
             }
         }
 
-        // here we extract the suppressed panes (these are background panes that don't care which
-        // tab they are in, and in the future we should probably make them global to screen rather
-        // than to each tab) and move them to another tab if there is one
-        let suppressed_panes = tab_to_close.extract_suppressed_panes();
+        // Suppressed panes move to another tab if there is one: parked panes (no stand-in:
+        // a hidden plugin, a stack-list member) do not care which tab they are in, and a
+        // pane replaced in place travels with the pending respawn that will bring it back.
+        // The pane under a scrollback editor is the exception and closes with the tab, as
+        // the editor does: only the editor closing restores it, and moved it would wait
+        // forever behind a stand-in that no longer exists. Its id stays in `pane_ids`, so
+        // the pty thread and the plugins hear of it like every other pane in the tab.
+        let (behind_editors, suppressed_panes): (SuppressedPanes, SuppressedPanes) = tab_to_close
+            .extract_suppressed_panes()
+            .into_iter()
+            .partition(|(_, suppressed)| {
+                suppressed
+                    .restored_by
+                    .is_some_and(|stand_in| stand_in.is_scrollback_editor)
+            });
+        drop(behind_editors);
         let suppressed_respawns = suppressed_panes
             .keys()
             .filter_map(|pane_id| {
