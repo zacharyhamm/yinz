@@ -1849,6 +1849,7 @@ pub fn route_action(
                         args,
                         configuration,
                         floating,
+                        should_open_in_place,
                         pane_id_to_replace,
                         cwd,
                         pane_title,
@@ -2903,5 +2904,54 @@ mod tests {
                 .any(|event| matches!(event, Event::InputReceived)),
             "an action belonging to a keystroke that copied stays silent"
         );
+    }
+
+    /// A keybind is routed with no pane id, so its `in_place` can never become a
+    /// `pane_id_to_replace`; the instruction carries the intent on its own for the host to
+    /// resolve against the client's focused pane.
+    #[test]
+    fn a_keybind_pipe_opened_in_place_carries_the_intent_without_a_pane_id() {
+        let (tx, rx) = zellij_runtime::channels::unbounded();
+        let senders = ThreadSenders {
+            to_plugin: Some(SenderWithContext::new(tx)),
+            should_silently_fail: true,
+            ..Default::default()
+        };
+        let _ = route_action(
+            Action::KeybindPipe {
+                name: Some("go".to_owned()),
+                payload: None,
+                args: None,
+                plugin: Some("zellij:session-manager".to_owned()),
+                plugin_id: None,
+                configuration: None,
+                launch_new: false,
+                skip_cache: false,
+                floating: Some(false),
+                in_place: Some(true),
+                cwd: None,
+                pane_title: None,
+            },
+            ClientId::new(1),
+            None,
+            None,
+            senders,
+            None,
+            None,
+            InputMode::Normal,
+            None,
+            false,
+        );
+        let placement = std::iter::from_fn(|| rx.try_recv().ok())
+            .find_map(|(instruction, _ctx)| match instruction {
+                PluginInstruction::KeybindPipe {
+                    should_open_in_place,
+                    pane_id_to_replace,
+                    ..
+                } => Some((should_open_in_place, pane_id_to_replace)),
+                _ => None,
+            })
+            .expect("the keybind reached the plugin thread");
+        assert_eq!(placement, (true, None));
     }
 }
