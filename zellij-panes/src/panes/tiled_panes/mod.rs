@@ -195,6 +195,16 @@ impl TiledPanes {
         }
         self.panes.insert(pane_id, pane);
     }
+    /// Tell every pty in `pane_id`'s stack its current size. Making room for a new member
+    /// resizes the others through `StackedPanes`, which changes their geometry without
+    /// reaching the pty; a relayout would send the sizes, but the stack paths run none.
+    fn resize_ptys_in_stack_of(&mut self, pane_id: &PaneId) {
+        for id in self.pane_ids_in_stack_of_pane_id(pane_id) {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+            }
+        }
+    }
     pub fn replace_active_pane(
         &mut self,
         pane: Box<dyn Pane>,
@@ -350,8 +360,10 @@ impl TiledPanes {
         match pane_grid.make_room_in_stack_of_pane_id_for_pane(pane_id_in_stack) {
             Ok(new_pane_geom) => {
                 pane.set_geom(new_pane_geom);
-                self.panes.insert(pane.pid(), pane);
-                self.set_force_render(); // TODO: why do we need this?
+                let pane_id = pane.pid();
+                self.add_pane_with_existing_geom(pane_id, pane);
+                self.resize_ptys_in_stack_of(&pane_id);
+                self.reset_boundaries();
                 None
             },
             Err(_e) => {
@@ -427,7 +439,7 @@ impl TiledPanes {
                 match pane_grid.make_room_in_stack_for_pane() {
                     Ok(new_pane_geom) => {
                         pane.set_geom(new_pane_geom);
-                        self.panes.insert(pane_id, pane); // TODO: is set_geom the right one?
+                        self.add_pane_with_existing_geom(pane_id, pane);
                         self.expand_pane_in_stack(pane_id);
                         None
                     },
@@ -513,7 +525,9 @@ impl TiledPanes {
                 match pane_grid.make_room_in_stack_of_pane_id_for_pane(active_pane_id) {
                     Ok(new_pane_geom) => {
                         pane.set_geom(new_pane_geom);
-                        self.panes.insert(pane_id, pane); // TODO: is set_geom the right one?
+                        self.add_pane_with_existing_geom(pane_id, pane);
+                        self.resize_ptys_in_stack_of(&pane_id);
+                        self.reset_boundaries();
                         None
                     },
                     Err(_e) => self.add_pane_without_stacked_resize(pane_id, pane, should_relayout),
@@ -547,8 +561,9 @@ impl TiledPanes {
         match pane_grid.make_room_in_stack_of_pane_id_for_pane(active_pane_id) {
             Ok(new_pane_geom) => {
                 pane.set_geom(new_pane_geom);
-                self.panes.insert(pane_id, pane);
-                self.set_force_render(); // TODO: why do we need this?
+                self.add_pane_with_existing_geom(pane_id, pane);
+                self.resize_ptys_in_stack_of(&pane_id);
+                self.reset_boundaries();
             },
             Err(e) => {
                 log::error!("Failed to add pane to stack: {}", e);
@@ -579,8 +594,9 @@ impl TiledPanes {
         match pane_grid.make_room_in_stack_of_pane_id_for_pane(&root_pane_id) {
             Ok(new_pane_geom) => {
                 pane.set_geom(new_pane_geom);
-                self.panes.insert(pane_id, pane);
-                self.set_force_render(); // TODO: why do we need this?
+                self.add_pane_with_existing_geom(pane_id, pane);
+                self.resize_ptys_in_stack_of(&pane_id);
+                self.reset_boundaries();
             },
             Err(e) => {
                 log::error!("Failed to add pane to stack: {}", e);
