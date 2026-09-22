@@ -2495,7 +2495,8 @@ impl Grid {
                 );
             }
         }
-        self.output_buffer.update_all_lines(); // TODO: only update scroll region lines
+        self.output_buffer
+            .update_lines(scroll_region_top, scroll_region_bottom);
     }
     pub fn rotate_scroll_region_down(&mut self, count: usize) {
         let (scroll_region_top, scroll_region_bottom) = self.scroll_region;
@@ -2511,7 +2512,8 @@ impl Grid {
                 Row::from_columns(columns).canonical(),
             );
         }
-        self.output_buffer.update_all_lines(); // TODO: only update scroll region lines
+        self.output_buffer
+            .update_lines(scroll_region_top, scroll_region_bottom);
     }
     pub fn fill_viewport(&mut self, character: TerminalCharacter) {
         if self.alternate_screen_state.is_some() {
@@ -3037,7 +3039,8 @@ impl Grid {
                     Row::from_columns(columns).canonical(),
                 );
             }
-            self.output_buffer.update_all_lines(); // TODO: move accurately
+            self.output_buffer
+                .update_lines(current_line_index, scroll_region_bottom);
         }
     }
     pub fn add_empty_lines_in_scroll_region(
@@ -3060,7 +3063,8 @@ impl Grid {
                     Row::from_columns(columns).canonical(),
                 );
             }
-            self.output_buffer.update_all_lines(); // TODO: move accurately
+            self.output_buffer
+                .update_lines(current_line_index, scroll_region_bottom);
         }
     }
     pub fn move_cursor_to_column(&mut self, column: usize) {
