@@ -2840,9 +2840,23 @@ impl Grid {
         if let Some(cursor_row) = self.viewport.get_mut(self.cursor.y) {
             cursor_row.truncate(self.cursor.x);
             let replace_with_columns = VecDeque::from(vec![replace_with.clone(); self.width]);
+            let erase_bg = replace_with
+                .styles
+                .background
+                .filter(|bg| !matches!(bg, AnsiCode::Reset));
             self.replace_characters_in_line_after_cursor(replace_with);
             for row in self.viewport.iter_mut().skip(self.cursor.y + 1) {
                 row.replace_columns(replace_with_columns.clone());
+            }
+            // The screen rows below the viewport are erased too. They render as default
+            // until they exist, so only a coloured erase has to materialise them, and
+            // `Row::bg_color` paints their padding without giving them a width (`ESC[2J`
+            // goes through `fill_viewport` and already covers the whole screen).
+            if erase_bg.is_some() {
+                while self.viewport.len() < self.height {
+                    self.viewport
+                        .push_back(Row::new().canonical().with_bg_color(erase_bg));
+                }
             }
             self.output_buffer
                 .update_lines(self.cursor.y, self.viewport.len() - 1);
