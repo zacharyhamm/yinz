@@ -1029,3 +1029,49 @@ fn a_line_wrapped_at_the_scroll_region_bottom_takes_the_pending_background() {
         "the row the wrap scrolled in"
     );
 }
+
+/// `ESC[J` erases to the end of the screen, rows the sparse viewport does not hold included.
+/// `ESC[2J` materialises them through `fill_viewport`; erase-below has to as well, or a
+/// coloured erase paints only the rows that happen to exist.
+#[test]
+fn erase_below_with_a_background_paints_rows_the_viewport_does_not_hold() {
+    let mut grid = create_grid_with_size_and_raw(5, 4, b"x");
+    grid.read_changes(0, 0);
+
+    feed_bytes(&mut grid, b"\x1b[48;5;4m\x1b[J");
+
+    assert_eq!(grid.viewport.len(), 5);
+    for y in 1..=4 {
+        assert_eq!(
+            grid.viewport[y].bg_color,
+            Some(AnsiCode::ColorIndex(4)),
+            "row {y}"
+        );
+    }
+    let (chunks, _, _) = grid.read_changes(0, 0);
+    for y in 1..=4 {
+        let chunk = chunks
+            .iter()
+            .find(|chunk| chunk.y == y)
+            .unwrap_or_else(|| panic!("row {y} was not rendered"));
+        assert!(
+            chunk.terminal_characters.iter().all(|character| {
+                character.character == ' '
+                    && character.styles.background == Some(AnsiCode::ColorIndex(4))
+            }),
+            "row {y}"
+        );
+    }
+}
+
+/// The colourless erase a shell emits on every redraw has nothing to paint below the
+/// viewport, so it leaves the viewport as sparse as it found it.
+#[test]
+fn erase_below_without_a_background_leaves_the_viewport_sparse() {
+    let mut grid = create_grid_with_size_and_raw(5, 4, b"x");
+
+    feed_bytes(&mut grid, b"\x1b[J");
+
+    assert_eq!(grid.viewport.len(), 1);
+    assert_eq!(grid.viewport[0].bg_color, None);
+}
