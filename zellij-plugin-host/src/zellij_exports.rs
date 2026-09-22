@@ -6232,8 +6232,8 @@ struct ResolvedPath {
 /// parent for operations on the directory entry), and refuse anything that does not land inside.
 /// Canonicalizing catches symlinks pointing out of the root along the path being accessed.
 ///
-/// A path naming no virtual root is left exactly as it was written and marked `escaped_roots`,
-/// so that the caller can ask for `FullHdAccess` rather than quietly rewriting it.
+/// A path naming no virtual root is resolved against the real filesystem and marked
+/// `escaped_roots`, so that the caller can ask for `FullHdAccess`.
 /// The virtual root a plugin's own plugin folder is mounted at. Present only when the session
 /// has one configured or defaulted; a write under it needs `AuthorPlugins` on top of `WriteFiles`.
 pub const PLUGINS_FS_ROOT: &str = "/plugins";
@@ -6274,18 +6274,13 @@ fn resolve_plugin_fs_path(
         Some((prefix, root, rest)) => (Some(prefix), root.clone(), rest.to_path_buf()),
         // A relative path is the plugin's cwd, the same reading `translate_plugin_path` gives it.
         None if path.is_relative() => (Some("/host"), env.plugin_cwd.clone(), path.to_path_buf()),
-        // An absolute path naming no root: passed through untouched, for `FullHdAccess` to judge.
-        None => {
-            return Ok(ResolvedPath {
-                real: path.to_path_buf(),
-                escaped_roots: true,
-                root: None,
-            })
-        },
+        // FullHdAccess paths still resolve links before O_NOFOLLOW opens their final entry.
+        // They use the real filesystem root, with the permission check applied below.
+        None => (None, PathBuf::from("/"), path.to_path_buf()),
     };
 
     let canonical_root = root.canonicalize().unwrap_or(root);
-    let joined = canonical_root.join(&relative);
+    let joined: PathBuf = canonical_root.join(&relative).components().collect();
 
     // A write names a file that does not exist yet, so canonicalizing the whole path would fail.
     // Canonicalize the deepest ancestor that does exist and re-attach the rest: the containment
@@ -6310,17 +6305,33 @@ fn resolve_plugin_fs_path(
                     .rev()
                     .fold(canonical, |path: PathBuf, name| path.join(name))
             },
-            Err(_) => match (existing.parent(), existing.file_name()) {
-                (Some(parent), Some(name)) => {
-                    tail.push(name.to_os_string());
-                    existing = parent;
-                },
-                _ => {
-                    return Err(anyhow!(
-                        "'{}' could not be resolved to a real path",
-                        path.display()
-                    ))
-                },
+            Err(error) => {
+                // A dangling link is an existing entry, not a missing path component.
+                // Reattaching it unchecked would let a subsequent create follow it outside
+                // the root. Entry operations above still preserve the final link itself.
+                ensure!(
+                    !existing
+                        .symlink_metadata()
+                        .is_ok_and(|metadata| metadata.file_type().is_symlink()),
+                    "'{}' contains an unresolved symlink; refusing to follow it",
+                    path.display()
+                );
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(error)
+                        .with_context(|| format!("failed to resolve '{}'", path.display()));
+                }
+                match (existing.parent(), existing.file_name()) {
+                    (Some(parent), Some(name)) => {
+                        tail.push(name.to_os_string());
+                        existing = parent;
+                    },
+                    _ => {
+                        return Err(anyhow!(
+                            "'{}' could not be resolved to a real path",
+                            path.display()
+                        ))
+                    },
+                }
             },
         }
     };
@@ -6350,7 +6361,7 @@ fn resolve_plugin_fs_path(
 
     Ok(ResolvedPath {
         real: resolved,
-        escaped_roots: false,
+        escaped_roots: prefix.is_none(),
         root: prefix,
     })
 }
@@ -6484,7 +6495,7 @@ fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>, offset:
         // block this thread, and check the opened file rather than a stale path's metadata.
         let mut file = fs::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NONBLOCK)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
             .open(&real)
             .with_context(|| format!("failed to open '{}'", path.display()))?;
         let metadata = file
@@ -6616,9 +6627,22 @@ fn fs_write(
             .write(true)
             .create(true)
             .append(append)
-            .truncate(!append)
+            // Resolve legitimate links before opening; refuse a replacement link or a FIFO
+            // without waiting for another process. Validate before truncating or writing.
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
             .open(&real)
             .with_context(|| format!("failed to open '{}' for writing", path.display()))?;
+        ensure!(
+            file.metadata()
+                .with_context(|| format!("failed to inspect '{}'", path.display()))?
+                .is_file(),
+            "'{}' is not a regular file",
+            path.display()
+        );
+        if !append {
+            file.set_len(0)
+                .with_context(|| format!("failed to truncate '{}'", path.display()))?;
+        }
         file.write_all(&contents)
             .with_context(|| format!("failed to write '{}'", path.display()))
     });

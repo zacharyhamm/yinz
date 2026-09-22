@@ -59,7 +59,7 @@ impl PixelRect {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct SixelGrid {
     sixel_image_locations: HashMap<usize, PixelRect>,
     previous_cell_size: Option<SizeInPixels>,
@@ -80,7 +80,10 @@ impl SixelGrid {
             previous_cell_size,
             character_cell_size,
             sixel_image_store,
-            ..Default::default()
+            sixel_image_locations: HashMap::new(),
+            currently_parsing: None,
+            image_ids_to_reap: Vec::new(),
+            sixel_parser: None,
         }
     }
     pub fn handle_byte(&mut self, byte: u8) {
@@ -142,54 +145,44 @@ impl SixelGrid {
         }
         self.handle_byte(b'q');
     }
+    /// Finish and store the current image, returning its pixel (height, width).
     pub fn end_image(
         &mut self,
-        new_image_id: usize,
         x_pixel_coordinates: usize,
         y_pixel_coordinates: usize,
-    ) -> Option<SixelImage> {
-        // usize is image_id
+    ) -> Option<(usize, usize)> {
         self.sixel_parser = None;
-        if let Some(sixel_deserializer) = self.currently_parsing.as_mut() {
-            if let Ok(sixel_image) = sixel_deserializer.create_image() {
-                let image_pixel_size = sixel_image.pixel_size();
-                let image_size_and_coordinates = PixelRect::new(
-                    x_pixel_coordinates,
-                    y_pixel_coordinates,
-                    image_pixel_size.0,
-                    image_pixel_size.1,
-                );
+        let sixel_image = self.currently_parsing.take()?.create_image().ok()?;
+        let image_pixel_size = sixel_image.pixel_size();
+        let image_size_and_coordinates = PixelRect::new(
+            x_pixel_coordinates,
+            y_pixel_coordinates,
+            image_pixel_size.0,
+            image_pixel_size.1,
+        );
 
-                // here we remove images which this image covers completely to save on system
-                // resources - TODO: also do this with partial covers, eg. if several images
-                // together cover one image
-                for (image_id, pixel_rect) in &self.sixel_image_locations {
-                    if let Some(intersecting_rect) =
-                        pixel_rect.intersecting_rect(&image_size_and_coordinates)
-                    {
-                        if intersecting_rect.x == pixel_rect.x
-                            && intersecting_rect.y == pixel_rect.y
-                            && intersecting_rect.height == pixel_rect.height
-                            && intersecting_rect.width == pixel_rect.width
-                        {
-                            self.image_ids_to_reap.push(*image_id);
-                        }
-                    }
+        // Reclaim images fully covered by this one. Intersections are relative to the old image.
+        for (image_id, pixel_rect) in &self.sixel_image_locations {
+            if let Some(intersecting_rect) =
+                pixel_rect.intersecting_rect(&image_size_and_coordinates)
+            {
+                if intersecting_rect.x == 0
+                    && intersecting_rect.y == 0
+                    && intersecting_rect.height == pixel_rect.height
+                    && intersecting_rect.width == pixel_rect.width
+                {
+                    self.image_ids_to_reap.push(*image_id);
                 }
-                for image_id in &self.image_ids_to_reap {
-                    self.sixel_image_locations.remove(image_id);
-                }
-
-                self.sixel_image_locations
-                    .insert(new_image_id, image_size_and_coordinates);
-                self.currently_parsing = None;
-                Some(sixel_image)
-            } else {
-                None
             }
-        } else {
-            None
         }
+        for image_id in &self.image_ids_to_reap {
+            self.sixel_image_locations.remove(image_id);
+        }
+
+        let image_id = self.new_sixel_image(sixel_image);
+        self.sixel_image_locations
+            .insert(image_id, image_size_and_coordinates);
+        Some(image_pixel_size)
     }
     pub fn image_coordinates(&self) -> impl Iterator<Item = (usize, &PixelRect)> {
         self.sixel_image_locations
@@ -261,14 +254,15 @@ impl SixelGrid {
             None
         }
     }
-    pub fn next_image_id(&self) -> usize {
-        self.sixel_image_store.borrow().sixel_images.keys().len()
-    }
-    pub fn new_sixel_image(&mut self, sixel_image_id: usize, sixel_image: SixelImage) {
-        self.sixel_image_store
-            .borrow_mut()
+    fn new_sixel_image(&mut self, sixel_image: SixelImage) -> usize {
+        let mut store = self.sixel_image_store.borrow_mut();
+        // The store is shared by panes; removing an image must never recycle another live ID.
+        let image_id = store.next_image_id;
+        store.next_image_id += 1;
+        store
             .sixel_images
-            .insert(sixel_image_id, (sixel_image, HashMap::new()));
+            .insert(image_id, (sixel_image, HashMap::new()));
+        image_id
     }
     pub fn remove_pixels_from_image(&mut self, image_id: usize, pixel_rect: PixelRect) {
         if let Some((sixel_image, sixel_image_cache)) = self
@@ -301,43 +295,20 @@ impl SixelGrid {
             Some(character_cell_size) => self
                 .sixel_image_locations
                 .values()
-                .map(|pixel_rect| {
+                .filter_map(|pixel_rect| {
                     let scrollback_size_in_pixels = scrollback_height * character_cell_size.height;
-                    let y_pixel_coordinates_in_viewport =
-                        pixel_rect.y - scrollback_size_in_pixels as isize;
-                    let image_y = std::cmp::max(y_pixel_coordinates_in_viewport, 0) as usize
-                        / character_cell_size.height;
-                    let image_x = pixel_rect.x / character_cell_size.width;
-                    let image_height_in_pixels = if y_pixel_coordinates_in_viewport < 0 {
-                        pixel_rect.height as isize + y_pixel_coordinates_in_viewport
-                    } else {
-                        pixel_rect.height as isize
-                    };
-                    let image_height = image_height_in_pixels as usize / character_cell_size.height;
-                    let image_width = pixel_rect.width / character_cell_size.width;
-                    let height_remainder = if !(image_height_in_pixels as usize)
-                        .is_multiple_of(character_cell_size.height)
-                    {
-                        1
-                    } else {
-                        0
-                    };
-                    let width_remainder = if pixel_rect.width % character_cell_size.width > 0 {
-                        1
-                    } else {
-                        0
-                    };
-                    let image_top_edge = image_y;
-                    let image_bottom_edge =
-                        std::cmp::min(image_y + image_height + height_remainder, viewport_height);
-                    let image_left_edge = image_x;
-                    let image_right_edge = image_x + image_width + width_remainder;
-                    (
-                        image_top_edge,
-                        image_bottom_edge,
-                        image_left_edge,
-                        image_right_edge,
-                    )
+                    let top = pixel_rect.y - scrollback_size_in_pixels as isize;
+                    let bottom = (top + pixel_rect.height as isize).max(0) as usize;
+                    let top = top.max(0) as usize;
+                    let bottom = bottom.min(viewport_height * character_cell_size.height);
+                    (top < bottom).then(|| {
+                        (
+                            top / character_cell_size.height,
+                            bottom.div_ceil(character_cell_size.height),
+                            pixel_rect.x / character_cell_size.width,
+                            (pixel_rect.x + pixel_rect.width).div_ceil(character_cell_size.width),
+                        )
+                    })
                 })
                 .collect(),
             None => vec![],
@@ -355,69 +326,31 @@ impl SixelGrid {
         if let Some(character_cell_size) = { *self.character_cell_size.borrow() } {
             for (sixel_image_id, sixel_image_pixel_rect) in self.image_coordinates() {
                 for (line_index, line_count) in &changed_rects {
-                    let changed_rect_pixel_height = line_count * character_cell_size.height;
-                    let changed_rect_top_edge = ((line_index + scrollback_size_in_lines)
-                        * character_cell_size.height)
-                        as isize;
-                    let changed_rect_bottom_edge =
-                        changed_rect_top_edge + changed_rect_pixel_height as isize;
-                    let sixel_image_top_edge = sixel_image_pixel_rect.y;
-                    let sixel_image_bottom_edge =
-                        sixel_image_pixel_rect.y + sixel_image_pixel_rect.height as isize;
-
-                    let cell_x_in_current_pane =
-                        sixel_image_pixel_rect.x / character_cell_size.width;
-                    let cell_x = viewport_x_offset + cell_x_in_current_pane;
-                    let sixel_image_pixel_width = if sixel_image_pixel_rect.x
-                        + sixel_image_pixel_rect.width
-                        <= (viewport_width_in_cells * character_cell_size.width)
-                    {
-                        sixel_image_pixel_rect.width
-                    } else {
-                        (viewport_width_in_cells * character_cell_size.width)
-                            .saturating_sub(sixel_image_pixel_rect.x)
-                    };
-                    if sixel_image_pixel_width == 0 {
-                        continue;
-                    }
-
-                    let sixel_image_cell_distance_from_scrollback_top =
-                        sixel_image_top_edge as usize / character_cell_size.height;
-                    // if the image is above the rect top, this will be 0
-                    let sixel_image_cell_distance_from_changed_rect_top =
-                        sixel_image_cell_distance_from_scrollback_top
-                            .saturating_sub(line_index + scrollback_size_in_lines);
-                    let cell_y = viewport_y_offset
-                        + line_index
-                        + sixel_image_cell_distance_from_changed_rect_top;
-                    let sixel_image_pixel_x = 0;
-                    // if the image is above the rect top, this will be 0
-                    let sixel_image_pixel_y = (changed_rect_top_edge as usize)
-                        .saturating_sub(sixel_image_top_edge as usize);
-                    let sixel_image_pixel_height = std::cmp::min(
-                        (std::cmp::min(changed_rect_bottom_edge, sixel_image_bottom_edge)
-                            - std::cmp::max(changed_rect_top_edge, sixel_image_top_edge))
-                            as usize,
-                        sixel_image_pixel_rect.height,
+                    let changed_rect = PixelRect::new(
+                        0,
+                        (line_index + scrollback_size_in_lines) * character_cell_size.height,
+                        line_count * character_cell_size.height,
+                        viewport_width_in_cells * character_cell_size.width,
                     );
-
-                    if (sixel_image_top_edge >= changed_rect_top_edge
-                        && sixel_image_top_edge <= changed_rect_bottom_edge)
-                        || (sixel_image_bottom_edge >= changed_rect_top_edge
-                            && sixel_image_bottom_edge <= changed_rect_bottom_edge)
-                        || (sixel_image_bottom_edge >= changed_rect_bottom_edge
-                            && sixel_image_top_edge <= changed_rect_top_edge)
-                    {
-                        changed_sixel_image_chunks.push(SixelImageChunk {
-                            cell_x,
-                            cell_y,
-                            sixel_image_pixel_x,
-                            sixel_image_pixel_y,
-                            sixel_image_pixel_width,
-                            sixel_image_pixel_height,
-                            sixel_image_id,
-                        });
-                    }
+                    let Some(intersection) =
+                        sixel_image_pixel_rect.intersecting_rect(&changed_rect)
+                    else {
+                        continue;
+                    };
+                    // Clip while coordinates are signed: an image can extend above scrollback.
+                    let visible_top = (sixel_image_pixel_rect.y + intersection.y) as usize;
+                    changed_sixel_image_chunks.push(SixelImageChunk {
+                        cell_x: viewport_x_offset
+                            + (sixel_image_pixel_rect.x + intersection.x)
+                                / character_cell_size.width,
+                        cell_y: viewport_y_offset + visible_top / character_cell_size.height
+                            - scrollback_size_in_lines,
+                        sixel_image_pixel_x: intersection.x,
+                        sixel_image_pixel_y: intersection.y as usize,
+                        sixel_image_pixel_width: intersection.width,
+                        sixel_image_pixel_height: intersection.height,
+                        sixel_image_id,
+                    });
                 }
             }
         }
@@ -425,10 +358,19 @@ impl SixelGrid {
     }
 }
 
+impl Drop for SixelGrid {
+    fn drop(&mut self) {
+        if let Some(image_ids) = self.clear() {
+            self.reap_images(image_ids);
+        }
+    }
+}
+
 type SixelImageCache = HashMap<PixelRect, String>;
 #[derive(Debug, Clone, Default)]
 pub struct SixelImageStore {
     sixel_images: HashMap<usize, (SixelImage, SixelImageCache)>,
+    next_image_id: usize,
 }
 
 impl SixelImageStore {

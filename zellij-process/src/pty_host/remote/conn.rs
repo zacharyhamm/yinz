@@ -211,7 +211,7 @@ impl RemoteConn {
         }
         // Drain first: a queue that fully flushed last tick should not report
         // back-pressure this tick just because nothing has emptied it since.
-        Self::flush_locked(&mut out);
+        Self::flush_locked(&mut out)?;
 
         let free = OUTBOUND_CAPACITY.saturating_sub(out.queued_input_bytes);
         let take = buf.len().min(MAX_STREAM_PAYLOAD).min(free);
@@ -223,7 +223,7 @@ impl RemoteConn {
             .context("failed to frame input for a remote pane")?;
         out.queued_input_bytes += take;
         out.input.push_back(framed);
-        Self::flush_locked(&mut out);
+        Self::flush_locked(&mut out)?;
         Ok(take)
     }
 
@@ -249,8 +249,7 @@ impl RemoteConn {
         protocol::write_control(&mut framed, msg)
             .context("failed to frame a control message for a remote pane")?;
         out.control.push_back(framed);
-        Self::flush_locked(&mut out);
-        Ok(())
+        Self::flush_locked(&mut out)
     }
 
     pub fn resize(&self, size: WireWinsize) -> Result<()> {
@@ -448,7 +447,12 @@ impl RemoteConn {
         out.socket
             .set_read_timeout(Some(timeout))
             .context("failed to bound a remote pane's release reply")?;
-        Self::flush_locked(&mut out);
+        Self::flush_locked(&mut out)?;
+        if !out.control.is_empty() || !out.input.is_empty() {
+            return Err(anyhow!(
+                "timed out draining queued frames before releasing the remote pane"
+            ));
+        }
 
         let mut framed: Vec<u8> = Vec::new();
         protocol::write_control(&mut framed, &ServerToBrokerMsg::Release)
@@ -507,7 +511,7 @@ impl RemoteConn {
     ///
     /// At each frame boundary control is preferred over input, so a resize or a
     /// signal issued behind a backlog still goes out next rather than last.
-    fn flush_locked(out: &mut Outbound) {
+    fn flush_locked(out: &mut Outbound) -> Result<()> {
         loop {
             // Pick a source. Mid-frame we are committed to whichever we were
             // already writing; at a boundary, control wins.
@@ -523,8 +527,17 @@ impl RemoteConn {
                 None => break,
             };
 
-            match out.socket.write(&frame[out.offset..]) {
-                Ok(0) => break,
+            let written = out.socket.write(&frame[out.offset..]).and_then(|n| {
+                if n == 0 {
+                    Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "remote pane socket accepted no bytes",
+                    ))
+                } else {
+                    Ok(n)
+                }
+            });
+            match written {
                 Ok(n) => {
                     out.offset += n;
                     if out.offset >= frame.len() {
@@ -544,16 +557,16 @@ impl RemoteConn {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    log::warn!("remote pane write failed: {e}");
                     out.broken = true;
                     out.control.clear();
                     out.input.clear();
                     out.queued_input_bytes = 0;
                     out.offset = 0;
-                    break;
+                    return Err(e).context("failed to write a remote pane frame");
                 },
             }
         }
+        Ok(())
     }
 
     // --- state the reader publishes and the server consumes ---

@@ -1353,8 +1353,9 @@ mod tests {
         let terminal_id = TerminalId::new(1);
         for (command, expected_errno) in [
             (dir.path().join("missing-command"), None),
+            // The executable passes preflight; its missing interpreter fails at exec.
             (script, Some(libc::ENOENT)),
-            (non_executable, Some(libc::EACCES)),
+            (non_executable, None),
         ] {
             let pty = openpty(None, None).unwrap();
             let mut master = File::from(pty.master.try_clone().unwrap());
@@ -1369,7 +1370,7 @@ mod tests {
                 None,
                 terminal_id,
             );
-            let error = result.expect_err("an exec failure must reach the caller");
+            let error = result.expect_err("a failed spawn must reach the caller");
             match (error.downcast_ref::<ZellijError>(), expected_errno) {
                 (
                     Some(ZellijError::CommandNotFound {

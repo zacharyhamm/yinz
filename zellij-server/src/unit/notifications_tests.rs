@@ -121,3 +121,25 @@ fn a_missing_title_or_body_is_not_padded_with_a_separator() {
         Some("\u{1b}]9;title\u{7}".to_owned())
     );
 }
+
+#[test]
+fn notification_text_cannot_escape_its_host_terminal_sequence() {
+    let title = "build\u{7}\u{1b}]52;c;YWJj\u{1b}\\";
+    let body = "finished\u{9c}\u{9b}2J\n✓";
+    for (protocol, prefix) in [
+        (NotificationProtocol::Osc9, "\u{1b}]9;"),
+        (NotificationProtocol::Osc99, "\u{1b}]99;;"),
+    ] {
+        let output = protocol.render(title, body).unwrap();
+        assert_eq!(
+            output,
+            format!("{prefix}build]52;c;YWJj\\: finished2J✓\u{7}")
+        );
+        let payload = output
+            .strip_prefix(prefix)
+            .unwrap()
+            .strip_suffix('\u{7}')
+            .unwrap();
+        assert!(payload.chars().all(|c| !c.is_control()));
+    }
+}

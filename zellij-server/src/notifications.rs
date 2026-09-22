@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use zellij_types::input::options::HostNotificationProtocol;
+use zellij_types::text::clean_string_from_control_and_linebreak;
 
 /// The protocol notifications are sent to one host terminal with, once `auto` is resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,6 +52,8 @@ impl NotificationProtocol {
         } else {
             format!("{}: {}", title, body)
         };
+        // OSC 99 can carry base64-decoded text, including terminal control sequences.
+        let payload = clean_string_from_control_and_linebreak(&payload);
         match self {
             NotificationProtocol::Osc99 => Some(format!("\u{1b}]99;;{}\u{7}", payload)),
             NotificationProtocol::Osc9 => Some(format!("\u{1b}]9;{}\u{7}", payload)),

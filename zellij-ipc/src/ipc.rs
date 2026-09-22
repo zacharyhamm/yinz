@@ -346,38 +346,48 @@ There are a few things you can try now:
 
 /// Sends messages on a stream socket, along with an [`ErrorContext`].
 pub struct IpcSenderWithContext<T: Serialize> {
-    sender: io::BufWriter<Box<dyn IpcStream>>,
+    sender: Box<dyn IpcStream>,
+    closed: bool,
     _phantom: PhantomData<T>,
 }
 
 impl<T: Serialize> IpcSenderWithContext<T> {
     /// Returns a sender to the given [LocalSocketStream](interprocess::local_socket::LocalSocketStream).
     pub fn new(sender: LocalSocketStream) -> Self {
-        Self {
-            sender: io::BufWriter::new(Box::new(sender)),
-            _phantom: PhantomData,
-        }
+        Self::from_boxed(Box::new(sender))
     }
 
     fn from_boxed(sender: Box<dyn IpcStream>) -> Self {
         Self {
-            sender: io::BufWriter::new(sender),
+            sender,
+            closed: false,
             _phantom: PhantomData,
         }
     }
 
     pub fn send_client_msg(&mut self, msg: ClientToServerMsg) -> Result<()> {
         let proto_msg: ProtoClientToServerMsg = msg.try_into()?;
-        write_protobuf_message(&mut self.sender, &proto_msg)?;
-        self.sender.flush()?;
-        Ok(())
+        self.send_message(&proto_msg)
     }
 
     pub fn send_server_msg(&mut self, msg: ServerToClientMsg) -> Result<()> {
         let proto_msg: ProtoServerToClientMsg = msg.into();
-        write_protobuf_message(&mut self.sender, &proto_msg)?;
-        self.sender.flush()?;
-        Ok(())
+        self.send_message(&proto_msg)
+    }
+
+    fn send_message(&mut self, msg: &impl Message) -> Result<()> {
+        if self.closed {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "IPC sender is closed").into());
+        }
+        let result = write_protobuf_message(&mut self.sender, msg)
+            .and_then(|()| self.sender.flush().map_err(Into::into));
+        // A partial write loses the frame boundary. Retrying on this stream would
+        // make the next message part of the failed one. Encoding/size errors occur
+        // before any bytes are written, so those leave the sender usable.
+        if result.as_ref().is_err_and(|error| error.is::<io::Error>()) {
+            self.closed = true;
+        }
+        result
     }
 
     /// Returns an [`IpcReceiverWithContext`] with the same socket as this sender.
@@ -385,7 +395,7 @@ impl<T: Serialize> IpcSenderWithContext<T> {
     where
         F: for<'de> Deserialize<'de> + Serialize,
     {
-        let socket = self.sender.get_ref().try_clone_stream().unwrap();
+        let socket = self.sender.try_clone_stream().unwrap();
         IpcReceiverWithContext::from_boxed(socket)
     }
 }
@@ -583,21 +593,19 @@ fn read_protobuf_message<T: Message + Default>(reader: &mut impl Read) -> Result
 }
 
 fn write_protobuf_message<T: Message>(writer: &mut impl Write, msg: &T) -> Result<()> {
-    let encoded = msg.encode_to_vec();
-    if encoded.len() > MAX_IPC_FRAME_LEN {
+    let len = msg.encoded_len();
+    if len > MAX_IPC_FRAME_LEN {
         return Err(anyhow!(
             "refusing to send a {} byte IPC frame, over the {MAX_IPC_FRAME_LEN} byte limit",
-            encoded.len()
+            len
         ));
     }
-    let len = encoded.len() as u32;
-
-    // we measure the length of the message and transmit it first so that the reader will be able
-    // to first read exactly 4 bytes (representing this length) and then read that amount of bytes
-    // as the actual message - this is so that we are able to distinct whole messages over the wire
-    // stream
-    writer.write_all(&len.to_le_bytes())?;
-    writer.write_all(&encoded)?;
+    // Build one complete frame before touching the socket. There is no buffered
+    // writer to retry an undelivered tail when it is dropped after a write error.
+    let mut frame = Vec::with_capacity(4 + len);
+    frame.extend_from_slice(&(len as u32).to_le_bytes());
+    msg.encode(&mut frame)?;
+    writer.write_all(&frame)?;
     Ok(())
 }
 

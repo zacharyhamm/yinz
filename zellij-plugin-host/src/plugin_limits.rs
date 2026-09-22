@@ -41,8 +41,12 @@ const MAX_PLUGIN_INSTANCES: usize = 1;
 /// Linear memories per plugin. A Rust wasm module declares one.
 const MAX_PLUGIN_MEMORIES: usize = 4;
 
-/// Tables per plugin. Not a cap on their elements, which stays unbounded.
+/// Tables per plugin.
 const MAX_PLUGIN_TABLES: usize = 16;
+
+/// Table elements allocate host memory outside the linear-memory budget. Bound each table
+/// as well as their count; a module that omits its own maximum must still have a ceiling.
+const MAX_PLUGIN_TABLE_ELEMENTS: usize = 1024 * 1024;
 
 pub struct PluginResourceLimits {
     plugin_id: PluginId,
@@ -95,6 +99,16 @@ impl ResourceLimiter for PluginResourceLimits {
         desired: usize,
         maximum: Option<usize>,
     ) -> Result<bool, LimiterError> {
+        if desired > MAX_PLUGIN_TABLE_ELEMENTS {
+            log::error!(
+                "Plugin {} asked to grow a table to {} elements, past its {} limit (currently {})",
+                self.plugin_id,
+                desired,
+                MAX_PLUGIN_TABLE_ELEMENTS,
+                current,
+            );
+            return Err(LimiterError::ResourceLimiterDeniedAllocation);
+        }
         if let Some(maximum) = maximum {
             if desired > maximum {
                 log::error!(
@@ -184,10 +198,44 @@ mod tests {
         )));
     }
 
-    /// Tables are capped in number, not in elements — as they were before.
     #[test]
-    fn tables_grow_unbounded_unless_the_module_says_otherwise() {
-        assert_eq!(limits().table_growing(0, usize::MAX, None).ok(), Some(true));
+    fn table_elements_obey_both_host_and_module_limits() {
+        assert_eq!(
+            limits()
+                .table_growing(0, MAX_PLUGIN_TABLE_ELEMENTS, None)
+                .ok(),
+            Some(true)
+        );
+        assert!(denied(limits().table_growing(
+            0,
+            MAX_PLUGIN_TABLE_ELEMENTS + 1,
+            None
+        )));
         assert!(denied(limits().table_growing(0, 17, Some(16))));
+    }
+
+    #[test]
+    fn wasmi_checks_the_table_limit_at_creation_and_growth() {
+        use wasmi::{Engine, Func, Ref, Store, Table, TableType, Val, ValType};
+
+        let mut store = Store::new(&Engine::default(), limits());
+        store.limiter(|limits| limits);
+        let null = Val::from(Ref::<Func>::Null);
+        let oversized = TableType::new(
+            ValType::FuncRef,
+            (MAX_PLUGIN_TABLE_ELEMENTS + 1) as u32,
+            None,
+        );
+        assert!(Table::new(&mut store, oversized, null.clone()).is_err());
+        let table = Table::new(
+            &mut store,
+            TableType::new(ValType::FuncRef, 1, None),
+            null.clone(),
+        )
+        .unwrap();
+        assert!(table
+            .grow(&mut store, MAX_PLUGIN_TABLE_ELEMENTS as u64, null)
+            .is_err());
+        assert_eq!(table.size(&store), 1);
     }
 }

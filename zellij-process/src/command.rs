@@ -1,15 +1,20 @@
-use std::{env, path::PathBuf};
+use nix::unistd::{access, AccessFlags};
+use std::{
+    env,
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+};
 use zellij_types::input::command::RunCommand;
 
 fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {
-    if candidate.exists() && candidate.is_file() {
+    if candidate.is_file() && access(candidate, AccessFlags::X_OK).is_ok() {
         return Some(candidate.to_path_buf());
     }
     None
 }
 
-/// Resolve a command to its absolute path, searching the working directory,
-/// then this process's PATH.
+/// Resolve a command as the child will: explicit paths from its working directory,
+/// bare names through PATH. Relative PATH entries also start at the child's cwd.
 pub fn resolve_command(cmd: &RunCommand) -> Option<PathBuf> {
     resolve_command_with_path(cmd, None)
 }
@@ -37,20 +42,30 @@ pub fn resolve_command_with_path(
             inherited.as_deref()
         },
     };
-    match cmd.cwd.as_ref() {
-        Some(cwd) => {
-            if let Some(resolved) = find_executable(&cwd.join(command)) {
-                return Some(resolved);
-            }
-        },
-        None => {
-            if let Some(resolved) = find_executable(command) {
-                return Some(resolved);
-            }
-        },
+    if command.is_absolute() {
+        return find_executable(command);
+    }
+    // Both spawn paths retain the inherited cwd when the requested directory
+    // disappeared. Keep their preflight check in agreement with that fallback.
+    let cwd = std::path::absolute(
+        cmd.cwd
+            .as_deref()
+            .filter(|cwd| cwd.is_dir())
+            .unwrap_or(Path::new(".")),
+    )
+    .ok();
+    if command.as_os_str().as_bytes().contains(&b'/') {
+        return find_executable(&cwd?.join(command));
     }
     if let Some(paths) = search_path {
         for path in env::split_paths(paths) {
+            let path = if path.is_absolute() {
+                path
+            } else if let Some(cwd) = &cwd {
+                cwd.join(path)
+            } else {
+                continue;
+            };
             if let Some(resolved) = find_executable(&path.join(command)) {
                 return Some(resolved);
             }
@@ -62,3 +77,7 @@ pub fn resolve_command_with_path(
 pub fn command_exists(cmd: &RunCommand) -> bool {
     resolve_command(cmd).is_some()
 }
+
+#[cfg(test)]
+#[path = "unit/command_tests.rs"]
+mod tests;
