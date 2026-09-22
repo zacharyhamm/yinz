@@ -1,5 +1,6 @@
 ---
-source: zellij-config/src/kdl/mod.rs
+source: zellij-config/src/kdl/./unit/keybinds.rs
+assertion_line: 668
 expression: serialized.to_string()
 ---
 keybinds clear-defaults=true {
@@ -39,6 +40,7 @@ keybinds clear-defaults=true {
                 launch_new true
                 skip_cache true
                 floating true
+                in_place true
                 title "plugin_title"
                 config_key_1 "config_value_1"
                 config_key_2 "config_value_2"

@@ -981,9 +981,6 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
             Err(shape(value, "message `args` have no config spelling"))
         },
         Action::KeybindPipe {
-            in_place: Some(_), ..
-        } => Err(shape(value, "`in_place` has no config spelling on a message")),
-        Action::KeybindPipe {
             name: Some(name),
             payload,
             args: None,
@@ -1030,7 +1027,7 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
             launch_new,
             skip_cache,
             floating: Some(floating),
-            in_place: None,
+            in_place,
             cwd,
             pane_title,
         } => {
@@ -1051,6 +1048,9 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
             push_plugin_flag(&mut children, "launch_new", *launch_new);
             push_plugin_flag(&mut children, "skip_cache", *skip_cache);
             children.nodes_mut().push(child("floating", *floating));
+            if let Some(in_place) = in_place {
+                children.nodes_mut().push(child("in_place", *in_place));
+            }
             if let Some(title) = pane_title {
                 children.nodes_mut().push(child("title", title.clone()));
             }
@@ -1983,6 +1983,8 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             let title = command_metadata
                 .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "title"))
                 .map(|t| t.to_owned());
+            let in_place =
+                command_metadata.and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "in_place"));
             let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
             let configuration = if configuration.inner().is_empty() {
                 None
@@ -2001,13 +2003,16 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             Ok(Action::KeybindPipe {
                 name,
                 payload,
-                args: None, // TODO: consider supporting this if there's a need
+                // `args` has no config spelling yet: the metadata block's children
+                // already flow into `configuration`, so a spelling has to be chosen
+                // that keeps the two apart.
+                args: None,
                 plugin: plugin_path,
                 configuration,
                 launch_new,
                 skip_cache,
                 floating: Some(should_float),
-                in_place: None, // TODO: support this
+                in_place,
                 cwd,
                 pane_title: title,
                 plugin_id: None,
@@ -2050,13 +2055,15 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             Ok(Action::KeybindPipe {
                 name,
                 payload,
-                args: None, // TODO: consider supporting this if there's a need
+                // See `MessagePlugin` for `args`. A message to a running plugin never
+                // launches one, so `floating`/`in_place` do not apply.
+                args: None,
                 plugin: None,
                 configuration,
                 launch_new,
                 skip_cache,
                 floating: None,
-                in_place: None, // TODO: support this
+                in_place: None,
                 cwd: None,
                 pane_title: None,
                 plugin_id,
