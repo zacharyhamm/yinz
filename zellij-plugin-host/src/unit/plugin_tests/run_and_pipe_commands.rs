@@ -1249,3 +1249,71 @@ pub fn cli_pipe_is_released_when_plugin_panics_while_handling_it() {
     screen_thread.join().unwrap();
     server_thread.join().unwrap();
 }
+
+/// A keybind is routed without a pane id, so its `in_place` arrives as a flag rather than as a
+/// `pane_id_to_replace`; the host must still ask the screen to replace the client's focused pane.
+#[test]
+#[serial(plugin_tests)]
+pub fn a_keybind_pipe_opened_in_place_asks_the_screen_to_replace_the_focused_pane() {
+    let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
+                                          // destructor removes the directory
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = ClientId::new(1);
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = grant_permissions_and_log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::AddPlugin,
+        screen_receiver,
+        1,
+        &PermissionType::ReadCliPipes,
+        cache_path,
+        plugin_thread_sender,
+        client_id
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::KeybindPipe {
+        name: "go".to_owned(),
+        payload: None,
+        plugin: Some(format!("file:{}", *PLUGIN_FIXTURE)),
+        args: None,
+        configuration: None,
+        floating: Some(false),
+        should_open_in_place: true,
+        pane_id_to_replace: None,
+        pane_title: None,
+        cwd: None,
+        skip_cache: false,
+        cli_client_id: client_id,
+        plugin_and_client_id: None,
+        notification_end: None,
+    });
+    screen_thread.join().unwrap(); // this might take a while if the cache is cold
+    teardown();
+    let placement = received_screen_instructions
+        .lock()
+        .iter()
+        .find_map(|instruction| match instruction {
+            ScreenInstruction::AddPlugin(
+                should_float,
+                should_be_open_in_place,
+                _,
+                _,
+                _,
+                _,
+                _,
+                pane_id_to_replace,
+                ..,
+            ) => Some((*should_float, *should_be_open_in_place, *pane_id_to_replace)),
+            _ => None,
+        })
+        .expect("the pipe loaded the plugin");
+    assert_eq!(
+        placement,
+        (Some(false), true, None),
+        "in place, with the focused pane left for the screen to resolve"
+    );
+}

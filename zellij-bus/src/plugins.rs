@@ -212,6 +212,9 @@ pub enum PluginInstruction {
         args: Option<BTreeMap<String, String>>,
         configuration: Option<BTreeMap<String, String>>,
         floating: Option<bool>,
+        /// Replace the client's focused pane when `pane_id_to_replace` names none. A keybind
+        /// is routed without a pane id, so this is how its `in_place` reaches the host.
+        should_open_in_place: bool,
         pane_id_to_replace: Option<PaneId>,
         pane_title: Option<String>,
         cwd: Option<PathBuf>,

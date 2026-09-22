@@ -3196,6 +3196,7 @@ fn keybind_pipe(name: &str) -> PluginInstruction {
         args: None,
         configuration: None,
         floating: None,
+        should_open_in_place: false,
         pane_id_to_replace: None,
         pane_title: None,
         cwd: None,
