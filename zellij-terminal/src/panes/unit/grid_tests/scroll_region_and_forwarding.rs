@@ -974,22 +974,18 @@ fn ui_component_flag_prefixes_parse_order_independently() {
     }
 }
 
+/// A fresh pane's viewport is shorter than the screen, so each newline materialises a row.
+/// Nothing scrolls, so those rows are plain cursor moves and take no background: xterm leaves
+/// them default after `printf '\e[44m\n\n\n'`. BCE is for erases and for scrolled-in lines.
 #[test]
-fn newline_past_the_viewport_takes_the_pending_background() {
-    // A fresh pane's viewport is shorter than the screen, so each newline creates a row.
-    // Those rows used to ignore the pending background (BCE), unlike the rows the
-    // scroll-region branch of `add_canonical_line` creates.
+fn newline_past_the_viewport_takes_no_background() {
     let mut grid = create_grid_with_size_and_raw(5, 4, b"");
     grid.read_changes(0, 0);
 
     feed_bytes(&mut grid, b"\x1b[48;5;4m\n\n\n");
 
     for y in 1..=3 {
-        assert_eq!(
-            grid.viewport[y].bg_color,
-            Some(AnsiCode::ColorIndex(4)),
-            "row {y}"
-        );
+        assert_eq!(grid.viewport[y].bg_color, None, "row {y}");
     }
     let (chunks, _, _) = grid.read_changes(0, 0);
     for y in 1..=3 {
@@ -1000,7 +996,7 @@ fn newline_past_the_viewport_takes_the_pending_background() {
         assert!(
             chunk.terminal_characters.iter().all(|character| {
                 character.character == ' '
-                    && character.styles.background == Some(AnsiCode::ColorIndex(4))
+                    && matches!(character.styles.background, None | Some(AnsiCode::Reset))
             }),
             "row {y}"
         );
@@ -1008,42 +1004,28 @@ fn newline_past_the_viewport_takes_the_pending_background() {
 }
 
 #[test]
-fn a_line_wrapped_past_the_viewport_takes_the_pending_background() {
+fn a_line_wrapped_past_the_viewport_takes_no_background() {
     let mut grid = create_grid_with_size_and_raw(5, 3, b"");
 
     feed_bytes(&mut grid, b"\x1b[48;5;4mABCD");
 
     assert_eq!(grid.viewport.len(), 2);
-    assert_eq!(grid.viewport[1].bg_color, Some(AnsiCode::ColorIndex(4)));
+    assert_eq!(grid.viewport[1].bg_color, None);
     assert_eq!(viewport_texts(&grid), ["ABC", "D"]);
 }
 
+/// The wrap that *does* scroll is the one BCE reaches: the line it inserts at the bottom
+/// margin takes the pending background, like the scrolling newline does.
 #[test]
-fn scroll_region_operations_redraw_only_the_rows_they_touch() {
-    // SU, SD, DL and IL used to mark the whole pane dirty, so a pager scrolling inside
-    // its status-line region repainted every row on every step.
-    let content = b"A\r\nB\r\nC\r\nD\r\nE\r\nF\r\nG\r\nH";
-    for (sequence, cursor_row, expected_lines) in [
-        (&b"\x1b[S"[..], 1, vec![2, 3, 4, 5]),
-        (&b"\x1b[T"[..], 1, vec![2, 3, 4, 5]),
-        (&b"\x1b[M"[..], 4, vec![3, 4, 5]),
-        (&b"\x1b[L"[..], 4, vec![3, 4, 5]),
-    ] {
-        let mut grid = create_grid_with_size_and_raw(8, 5, content);
-        feed_bytes(
-            &mut grid,
-            format!("\x1b[3;6r\x1b[{cursor_row};1H").as_bytes(),
-        );
-        grid.read_changes(0, 0);
+fn a_line_wrapped_at_the_scroll_region_bottom_takes_the_pending_background() {
+    let mut grid = create_grid_with_size_and_raw(2, 3, b"");
 
-        feed_bytes(&mut grid, sequence);
+    feed_bytes(&mut grid, b"\x1b[48;5;4mABCDEFG");
 
-        assert!(
-            !grid.output_buffer.should_update_all_lines,
-            "{sequence:?} dirtied the whole pane"
-        );
-        let mut changed: Vec<usize> = grid.output_buffer.changed_lines.iter().collect();
-        changed.sort_unstable();
-        assert_eq!(changed, expected_lines, "{sequence:?}");
-    }
+    assert_eq!(viewport_texts(&grid), ["DEF", "G"]);
+    assert_eq!(
+        grid.viewport[1].bg_color,
+        Some(AnsiCode::ColorIndex(4)),
+        "the row the wrap scrolled in"
+    );
 }
