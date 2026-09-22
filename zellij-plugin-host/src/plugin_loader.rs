@@ -575,16 +575,11 @@ impl<'a> PluginLoader<'a> {
                 plugin_id
             )
         };
-        let module = self
-            .plugin_cache
-            .lock()
-            .unwrap()
-            .get(&plugin_cache_key(
-                &self.plugin_config,
-                self.builtin_plugins_dir.as_deref(),
-            ))
-            .with_context(err_context)?
-            .clone();
+        let module = cached_module(
+            &self.plugin_cache,
+            &plugin_cache_key(&self.plugin_config, self.builtin_plugins_dir.as_deref()),
+        )
+        .with_context(err_context)?;
         let (store, instance) = self.create_plugin_instance_env(&module)?;
         Ok((store, instance))
     }
