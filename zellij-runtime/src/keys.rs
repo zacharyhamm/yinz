@@ -320,31 +320,40 @@ pub fn parse_keys(input_bytes: &[u8]) -> Vec<KeyWithModifier> {
     let maybe_more = false;
     let parse_input_event = |input_event: InputEvent| {
         if let InputEvent::Key(key_event) = input_event {
-            ret.push(cast_termwiz_key(key_event, input_bytes, |_| false));
+            if let Some(key) = cast_termwiz_key(key_event, input_bytes, |_| false) {
+                ret.push(key);
+            }
         }
     };
     input_parser.parse(input_bytes, parse_input_event, maybe_more);
     ret
 }
 
-// FIXME: This is an absolutely cursed function that should be destroyed as soon
-// as an alternative that doesn't touch zellij-tile can be developed...
+/// Turn a termwiz key event into zellij's key, or `None` for a key zellij has no name
+/// for (media and browser keys, modifier-only presses, `Select`, `Execute`, ...).
+///
+/// A key with no name is dropped by the caller rather than mapped to something else:
+/// this used to fall through to `Esc`, so a numpad or media key cancelled whatever mode
+/// the user was in.
+///
+/// Two deliberate departures from a pure per-key mapping, both about bytes termwiz
+/// cannot tell apart: a raw `0x08` is read as Ctrl-h rather than Backspace, and a raw
+/// `0x0a` is read as Ctrl-j when the user has bound it (`is_bound`), Enter otherwise.
 pub fn cast_termwiz_key(
     event: KeyEvent,
     raw_bytes: &[u8],
     is_bound: impl FnOnce(&KeyWithModifier) -> bool,
-) -> KeyWithModifier {
+) -> Option<KeyWithModifier> {
     let termwiz_modifiers = event.modifiers;
 
-    // *** THIS IS WHERE WE SHOULD WORK AROUND ISSUES WITH TERMWIZ ***
     if raw_bytes == [8] {
-        return KeyWithModifier::new(BareKey::Char('h')).with_ctrl_modifier();
+        return Some(KeyWithModifier::new(BareKey::Char('h')).with_ctrl_modifier());
     };
 
     if raw_bytes == [10] {
         let ctrl_j = KeyWithModifier::new(BareKey::Char('j')).with_ctrl_modifier();
         if is_bound(&ctrl_j) {
-            return ctrl_j;
+            return Some(ctrl_j);
         }
     }
     let mut modifiers = BTreeSet::new();
@@ -358,45 +367,87 @@ pub fn cast_termwiz_key(
         modifiers.insert(KeyModifier::Shift);
     }
 
-    match event.key {
-        KeyCode::Char(c) => {
-            if c == '\0' {
-                // NUL character, probably ctrl-space
-                KeyWithModifier::new(BareKey::Char(' ')).with_ctrl_modifier()
-            } else {
-                KeyWithModifier::new_with_modifiers(BareKey::Char(c), modifiers)
-            }
+    let bare_key = match event.key {
+        KeyCode::Char('\0') => {
+            // NUL character, probably ctrl-space
+            return Some(KeyWithModifier::new(BareKey::Char(' ')).with_ctrl_modifier());
         },
-        KeyCode::Backspace => KeyWithModifier::new_with_modifiers(BareKey::Backspace, modifiers),
-        KeyCode::LeftArrow | KeyCode::ApplicationLeftArrow => {
-            KeyWithModifier::new_with_modifiers(BareKey::Left, modifiers)
-        },
-        KeyCode::RightArrow | KeyCode::ApplicationRightArrow => {
-            KeyWithModifier::new_with_modifiers(BareKey::Right, modifiers)
-        },
-        KeyCode::UpArrow | KeyCode::ApplicationUpArrow => {
-            KeyWithModifier::new_with_modifiers(BareKey::Up, modifiers)
-        },
-        KeyCode::DownArrow | KeyCode::ApplicationDownArrow => {
-            KeyWithModifier::new_with_modifiers(BareKey::Down, modifiers)
-        },
-        KeyCode::Home => KeyWithModifier::new_with_modifiers(BareKey::Home, modifiers),
-        KeyCode::End => KeyWithModifier::new_with_modifiers(BareKey::End, modifiers),
-        KeyCode::PageUp => KeyWithModifier::new_with_modifiers(BareKey::PageUp, modifiers),
-        KeyCode::PageDown => KeyWithModifier::new_with_modifiers(BareKey::PageDown, modifiers),
-        KeyCode::Tab => KeyWithModifier::new_with_modifiers(BareKey::Tab, modifiers),
-        KeyCode::Delete => KeyWithModifier::new_with_modifiers(BareKey::Delete, modifiers),
-        KeyCode::Insert => KeyWithModifier::new_with_modifiers(BareKey::Insert, modifiers),
-        KeyCode::Function(n) => KeyWithModifier::new_with_modifiers(BareKey::F(n), modifiers),
-        KeyCode::Escape => KeyWithModifier::new_with_modifiers(BareKey::Esc, modifiers),
-        KeyCode::Enter => KeyWithModifier::new_with_modifiers(BareKey::Enter, modifiers),
-        _ => KeyWithModifier::new(BareKey::Esc),
-    }
+        KeyCode::Char(c) => BareKey::Char(c),
+        KeyCode::Backspace => BareKey::Backspace,
+        KeyCode::LeftArrow | KeyCode::ApplicationLeftArrow => BareKey::Left,
+        KeyCode::RightArrow | KeyCode::ApplicationRightArrow => BareKey::Right,
+        KeyCode::UpArrow | KeyCode::ApplicationUpArrow => BareKey::Up,
+        KeyCode::DownArrow | KeyCode::ApplicationDownArrow => BareKey::Down,
+        KeyCode::Home | KeyCode::KeyPadHome => BareKey::Home,
+        KeyCode::End | KeyCode::KeyPadEnd => BareKey::End,
+        KeyCode::PageUp | KeyCode::KeyPadPageUp => BareKey::PageUp,
+        KeyCode::PageDown | KeyCode::KeyPadPageDown => BareKey::PageDown,
+        KeyCode::Tab => BareKey::Tab,
+        KeyCode::Delete => BareKey::Delete,
+        KeyCode::Insert => BareKey::Insert,
+        KeyCode::Function(n) => BareKey::F(n),
+        KeyCode::Escape => BareKey::Esc,
+        KeyCode::Enter => BareKey::Enter,
+        KeyCode::Numpad0 => BareKey::Char('0'),
+        KeyCode::Numpad1 => BareKey::Char('1'),
+        KeyCode::Numpad2 => BareKey::Char('2'),
+        KeyCode::Numpad3 => BareKey::Char('3'),
+        KeyCode::Numpad4 => BareKey::Char('4'),
+        KeyCode::Numpad5 => BareKey::Char('5'),
+        KeyCode::Numpad6 => BareKey::Char('6'),
+        KeyCode::Numpad7 => BareKey::Char('7'),
+        KeyCode::Numpad8 => BareKey::Char('8'),
+        KeyCode::Numpad9 => BareKey::Char('9'),
+        KeyCode::Multiply => BareKey::Char('*'),
+        KeyCode::Add => BareKey::Char('+'),
+        KeyCode::Subtract => BareKey::Char('-'),
+        KeyCode::Decimal => BareKey::Char('.'),
+        KeyCode::Divide => BareKey::Char('/'),
+        KeyCode::CapsLock => BareKey::CapsLock,
+        KeyCode::ScrollLock => BareKey::ScrollLock,
+        KeyCode::NumLock => BareKey::NumLock,
+        KeyCode::PrintScreen => BareKey::PrintScreen,
+        KeyCode::Pause => BareKey::Pause,
+        KeyCode::Menu => BareKey::Menu,
+        _ => return None,
+    };
+    Some(KeyWithModifier::new_with_modifiers(bare_key, modifiers))
 }
 
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
+
+    #[test]
+    fn keys_zellij_has_no_name_for_are_dropped_not_read_as_escape() {
+        let event = |key| KeyEvent {
+            key,
+            modifiers: Modifiers::empty(),
+        };
+        // A numpad digit is the digit; it used to come out as Esc and cancel the mode.
+        assert_eq!(
+            cast_termwiz_key(event(KeyCode::Numpad5), b"", |_| false),
+            Some(KeyWithModifier::new(BareKey::Char('5')))
+        );
+        assert_eq!(
+            cast_termwiz_key(event(KeyCode::KeyPadPageUp), b"", |_| false),
+            Some(KeyWithModifier::new(BareKey::PageUp))
+        );
+        assert_eq!(
+            cast_termwiz_key(event(KeyCode::Menu), b"", |_| false),
+            Some(KeyWithModifier::new(BareKey::Menu))
+        );
+        for unnamed in [
+            KeyCode::VolumeUp,
+            KeyCode::MediaPlayPause,
+            KeyCode::BrowserBack,
+            KeyCode::LeftShift,
+            KeyCode::Select,
+        ] {
+            assert_eq!(cast_termwiz_key(event(unnamed), b"", |_| false), None);
+        }
+        assert!(parse_keys(b"").is_empty());
+    }
 
     #[test]
     fn escape_is_disambiguated_only_in_kitty_mode() {
@@ -422,15 +473,15 @@ mod compatibility_tests {
         let ctrl_j = KeyWithModifier::new(BareKey::Char('j')).with_ctrl_modifier();
         assert_eq!(
             cast_termwiz_key(enter.clone(), b"\n", |key| key == &ctrl_j),
-            ctrl_j
+            Some(ctrl_j.clone())
         );
         assert_eq!(
             cast_termwiz_key(enter.clone(), b"\n", |_| false),
-            KeyWithModifier::new(BareKey::Enter)
+            Some(KeyWithModifier::new(BareKey::Enter))
         );
         assert_eq!(
             cast_termwiz_key(enter, &[8], |_| panic!("only line feed consults bindings")),
-            KeyWithModifier::new(BareKey::Char('h')).with_ctrl_modifier()
+            Some(KeyWithModifier::new(BareKey::Char('h')).with_ctrl_modifier())
         );
         // The existing encoder keeps Ctrl-J as line feed, including in Kitty mode.
         assert_eq!(serialize_kitty(&ctrl_j).as_deref(), Some("\n"));

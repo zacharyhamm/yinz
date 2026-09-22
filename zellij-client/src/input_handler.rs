@@ -184,7 +184,11 @@ impl InputHandler {
                                     .get_actions_for_key_in_mode(&self.mode, key)
                                     .is_some_and(|actions| !actions.is_empty())
                             });
-                            self.handle_key(&key, raw_bytes, false);
+                            // A key zellij has no name for (a media key, a bare modifier)
+                            // is neither bound nor forwarded.
+                            if let Some(key) = key {
+                                self.handle_key(&key, raw_bytes, false);
+                            }
                         },
                         InputEvent::Mouse(mouse_event) => {
                             let mouse_event = from_termwiz(&mut self.mouse_old_event, mouse_event);
