@@ -769,7 +769,7 @@ impl Pane for PluginPane {
         if self.supports_mouse_selection {
             if let Some(grid) = self.grids.get_mut(&client_id) {
                 grid.update_selection(position);
-                self.set_should_render(true); // TODO: no??
+                self.set_should_render(true);
             }
         }
         self.send_plugin_instructions
@@ -784,6 +784,10 @@ impl Pane for PluginPane {
         if self.supports_mouse_selection {
             if let Some(grid) = self.grids.get_mut(&client_id) {
                 grid.end_selection(end);
+                // The grid only marks lines dirty; nothing else flips the pane's own
+                // flag, and a selection finished by a double-click has no later
+                // `update_selection` to do it.
+                self.set_should_render(true);
             }
         }
         self.send_plugin_instructions
@@ -1277,6 +1281,24 @@ mod tests {
     }
 
     #[test]
+    fn ending_a_selection_marks_the_pane_for_rendering() {
+        // `start_selection` and `update_selection` set the flag; `end_selection` did
+        // not, so a double-click word selection stayed invisible until an unrelated
+        // event repainted the pane.
+        let (mut pane, _plugin_rx) =
+            test_plugin_pane_and_plugin_receiver(5, 40, Offset::frame(1), None);
+        let client_id = ClientId::new(1);
+        pane.handle_plugin_bytes(client_id, b"some text to select".to_vec());
+        pane.set_mouse_selection_support(true);
+        pane.start_selection(&Position::new(0, 0), client_id);
+        pane.set_should_render(false);
+
+        pane.end_selection(&Position::new(0, 4), client_id);
+
+        assert!(pane.should_render());
+    }
+
+    #[test]
     fn a_plugin_pane_frame_never_shows_a_scroll_indicator() {
         // The host grid keeps a scrollback for a plugin that renders more rows than fit,
         // but the host cannot scroll a plugin pane - `scroll_up` only forwards a mouse
@@ -1341,7 +1363,21 @@ mod tests {
         content_offset: Offset,
         cell_size: Option<SizeInPixels>,
     ) -> PluginPane {
-        let (plugin_tx, _plugin_rx) = channels::unbounded();
+        test_plugin_pane_and_plugin_receiver(rows, cols, content_offset, cell_size).0
+    }
+
+    /// Also hands back the plugin thread's receiver, for a test that drives a path which
+    /// sends to it (the mouse handlers `unwrap` that send).
+    fn test_plugin_pane_and_plugin_receiver(
+        rows: usize,
+        cols: usize,
+        content_offset: Offset,
+        cell_size: Option<SizeInPixels>,
+    ) -> (
+        PluginPane,
+        channels::Receiver<(PluginInstruction, zellij_types::diagnostics::ErrorContext)>,
+    ) {
+        let (plugin_tx, plugin_rx) = channels::unbounded();
         let geom = PaneGeom {
             rows: Dimension::fixed(rows),
             cols: Dimension::fixed(cols),
@@ -1367,7 +1403,7 @@ mod tests {
             false,
         );
         pane.set_content_offset(content_offset);
-        pane
+        (pane, plugin_rx)
     }
 
     // regression test: a content offset (the border/title reservation a framed pane applies)
