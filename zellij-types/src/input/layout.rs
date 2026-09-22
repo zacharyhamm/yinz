@@ -196,10 +196,9 @@ pub enum Run {
 
 impl Run {
     pub fn merge(base: &Option<Run>, other: &Option<Run>) -> Option<Run> {
-        // This method is necessary to merge between pane_templates and their consumers
-        // TODO: reconsider the way we parse command/edit/plugin pane_templates from layouts to prevent this
-        // madness
-        // TODO: handle Plugin variants once there's a need
+        // Merges a pane_template's run (`base`) with its consumer's (`other`). Every
+        // pair is spelled out: a new `Run` variant has to say what it inherits, rather
+        // than silently replacing the template's run the way a catch-all did.
         match (base, other) {
             (Some(Run::Command(base_run_command)), Some(Run::Command(other_run_command))) => {
                 let mut merged = other_run_command.clone();
@@ -259,8 +258,35 @@ impl Run {
                     Some(cwd),
                 ))
             },
-            (Some(_base), Some(other)) => Some(other.clone()),
-            (Some(base), _) => Some(base.clone()),
+            (Some(Run::Plugin(base_plugin)), Some(Run::Cwd(other_cwd))) => {
+                let mut merged = base_plugin.clone();
+                merged.add_initial_cwd(other_cwd);
+                Some(Run::Plugin(merged))
+            },
+            (Some(Run::Cwd(base_cwd)), Some(Run::Plugin(other_plugin))) => {
+                let mut merged = other_plugin.clone();
+                if merged.get_initial_cwd().is_none() {
+                    merged.add_initial_cwd(base_cwd);
+                }
+                Some(Run::Plugin(merged))
+            },
+            (
+                Some(Run::EditFile(file_to_edit, line_number, _)),
+                Some(Run::Cwd(other_cwd)),
+            ) => Some(Run::EditFile(
+                other_cwd.join(file_to_edit),
+                *line_number,
+                Some(other_cwd.clone()),
+            )),
+            // The consumer names a run of its own, so it replaces the template's.
+            (
+                Some(Run::Plugin(_) | Run::Command(_) | Run::EditFile(..)),
+                Some(other @ Run::Plugin(_)),
+            )
+            | (Some(Run::Plugin(_) | Run::EditFile(..)), Some(other @ Run::Command(_)))
+            | (Some(Run::Plugin(_) | Run::EditFile(..)), Some(other @ Run::EditFile(..)))
+            | (Some(Run::Cwd(_)), Some(other @ Run::Cwd(_))) => Some(other.clone()),
+            (Some(base), None) => Some(base.clone()),
             (None, Some(other)) => Some(other.clone()),
             (None, None) => None,
         }
