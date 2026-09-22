@@ -492,3 +492,65 @@ fn toggle_floating_panes_off_sends_tty_csi_event() {
         .unwrap();
     assert_snapshot!(format!("{:?}", *tty_stdin_bytes.lock().unwrap()));
 }
+
+#[test]
+fn a_resize_tells_only_the_panes_whose_size_changed() {
+    // pane 1 | pane 2 | pane 3, pane 2 focused and grown to the right: pane 2 and pane 3
+    // change size, pane 1 does not - and used to get a pty resize (a SIGWINCH) anyway,
+    // on every step of a held resize key.
+    let (tx, rx) = channels::unbounded();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        ModeInfo::default(),
+        SenderWithContext::new(tx),
+    );
+    let client_id = crate::ClientId::new(1);
+    let pane = |n: u32| PaneId::Terminal(crate::TerminalId::new(n));
+    tab.vertical_split(pane(2), None, client_id, None, None)
+        .unwrap();
+    tab.vertical_split(pane(3), None, client_id, None, None)
+        .unwrap();
+    tab.move_focus_left(client_id).unwrap();
+    assert_eq!(tab.get_active_pane_id(client_id), Some(pane(2)), "precondition");
+    let content_sizes = |tab: &Tab| -> HashMap<PaneId, (usize, usize)> {
+        tab.tiled_panes
+            .panes
+            .iter()
+            .map(|(id, pane)| (*id, (pane.get_content_columns(), pane.get_content_rows())))
+            .collect()
+    };
+    let before = content_sizes(&tab);
+    let _ = rx.try_iter().count();
+
+    tab.resize(
+        client_id,
+        zellij_types::geometry::ResizeStrategy::new(
+            zellij_types::geometry::Resize::Increase,
+            Some(zellij_types::geometry::Direction::Right),
+        ),
+    )
+    .unwrap();
+
+    let after = content_sizes(&tab);
+    let changed: HashSet<PaneId> = after
+        .iter()
+        .filter(|(id, size)| before.get(*id) != Some(*size))
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(
+        changed,
+        HashSet::from([pane(2), pane(3)]),
+        "precondition: the resize moves one boundary"
+    );
+    let resized: HashSet<PaneId> = rx
+        .try_iter()
+        .filter_map(|(msg, _)| match msg {
+            PtyWriteInstruction::ResizePty(id, ..) => Some(PaneId::Terminal(id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(resized, changed);
+}
