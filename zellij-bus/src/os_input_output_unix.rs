@@ -15,7 +15,6 @@ use nix::{
 };
 use tokio::io::unix::AsyncFd;
 
-use libc::{self, ioctl, TIOCSWINSZ};
 
 use std::{
     collections::BTreeMap,
@@ -132,23 +131,26 @@ impl AsyncReader for RawFdAsyncReader {
     }
 }
 
+nix::ioctl_write_ptr_bad!(tiocswinsz, libc::TIOCSWINSZ, Winsize);
+
+/// Set the window size on a pty, which is how its child learns its new size (and gets a
+/// SIGWINCH). A failure is returned rather than dropped: one used to leave the child
+/// and the grid disagreeing about the size until the next resize, silently.
 fn set_terminal_size_using_fd(
     fd: RawFd,
     columns: u16,
     rows: u16,
     width_in_pixels: Option<u16>,
     height_in_pixels: Option<u16>,
-) {
-    // TODO: do this with the nix ioctl
-    let ws_xpixel = width_in_pixels.unwrap_or(0);
-    let ws_ypixel = height_in_pixels.unwrap_or(0);
+) -> nix::Result<()> {
     let winsize = Winsize {
         ws_col: columns,
         ws_row: rows,
-        ws_xpixel,
-        ws_ypixel,
+        ws_xpixel: width_in_pixels.unwrap_or(0),
+        ws_ypixel: height_in_pixels.unwrap_or(0),
     };
-    unsafe { ioctl(fd, TIOCSWINSZ, &winsize) };
+    // SAFETY: `TIOCSWINSZ` reads one `Winsize` through the pointer, which outlives the call.
+    unsafe { tiocswinsz(fd, &winsize) }.map(|_| ())
 }
 
 /// Block until the child exits, reporting every stop and continue on the way.
@@ -737,7 +739,8 @@ impl UnixPtyBackend {
         match transports.get(&terminal_id) {
             Some(PaneTransport::Local(fd)) => {
                 if cols > 0 && rows > 0 {
-                    set_terminal_size_using_fd(*fd, cols, rows, width_in_pixels, height_in_pixels);
+                    set_terminal_size_using_fd(*fd, cols, rows, width_in_pixels, height_in_pixels)
+                        .with_context(err_context)?;
                 }
             },
             Some(PaneTransport::Remote(conn)) => {
@@ -1337,6 +1340,43 @@ mod tests {
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
     use nix::sys::termios;
     use std::io::Read;
+    use std::os::fd::AsRawFd;
+
+    nix::ioctl_read_bad!(tiocgwinsz, libc::TIOCGWINSZ, Winsize);
+
+    #[test]
+    fn a_winsize_set_on_the_pty_master_is_what_the_pty_reports() {
+        let pty = nix::pty::openpty(None, None).unwrap();
+
+        set_terminal_size_using_fd(pty.master.as_raw_fd(), 91, 37, Some(728), Some(666))
+            .unwrap();
+
+        let mut reported = Winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: `TIOCGWINSZ` writes one `Winsize` through the pointer.
+        unsafe { tiocgwinsz(pty.slave.as_raw_fd(), &mut reported) }.unwrap();
+        assert_eq!(
+            (
+                reported.ws_col,
+                reported.ws_row,
+                reported.ws_xpixel,
+                reported.ws_ypixel
+            ),
+            (91, 37, 728, 666)
+        );
+    }
+
+    #[test]
+    fn a_failed_winsize_ioctl_is_reported_rather_than_dropped() {
+        assert_eq!(
+            set_terminal_size_using_fd(-1, 80, 24, None, None),
+            Err(nix::errno::Errno::EBADF)
+        );
+    }
 
     #[test]
     fn failed_in_process_spawns_report_errors_and_close_the_pty() {
