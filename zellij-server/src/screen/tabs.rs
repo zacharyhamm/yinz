@@ -428,12 +428,10 @@ impl Screen {
         Ok(())
     }
 
-    /// Give a closed tab's parked panes to a tab that is still here.
+    /// Give a closed tab's surviving suppressed chains to a tab that is still here.
     ///
-    /// Parked panes (a hidden plugin, a stack-list member) do not care which tab they are
-    /// in; a queued respawn for one of them travels with it. A pane behind a stand-in
-    /// never arrives here: `teardown_tab` closes it with the tab, since only its stand-in
-    /// closing would bring it back and the stand-in is gone with the tab.
+    /// Parked panes and the panes behind them move together, keeping their restoration
+    /// links and queued respawns. Chains whose stand-ins close stay in `teardown_tab`.
     fn move_suppressed_panes_from_closed_tab(
         &mut self,
         suppressed_panes: SuppressedPanes,
@@ -1104,24 +1102,31 @@ impl Screen {
                 }
             }
         }
-        for container in &overlay_panes {
-            for id in container.pane_ids() {
-                pane_ids.retain(|p| *p != id);
+        // Close each chain whose stand-in stays in this tab. A hidden stand-in moves
+        // with every pane behind it, preserving their restoration links. With no
+        // destination left, every pane closes, including parked panes and overlays.
+        let mut suppressed_panes = tab_to_close.extract_suppressed_panes();
+        let mut closing: HashSet<_> = if self.tabs.is_empty() {
+            pane_ids.iter().copied().collect()
+        } else {
+            tab_to_close.get_all_pane_ids().into_iter().collect()
+        };
+        loop {
+            let previous_count = closing.len();
+            for (id, suppressed) in &suppressed_panes {
+                if suppressed
+                    .restored_by
+                    .is_some_and(|stand_in| closing.contains(&stand_in.pane_id))
+                {
+                    closing.insert(*id);
+                }
+            }
+            if closing.len() == previous_count {
+                break;
             }
         }
-
-        // Parked suppressed panes (no stand-in: a hidden plugin, a stack-list member) do
-        // not care which tab they are in and move to another tab if there is one. A pane
-        // behind a stand-in - a scrollback editor, an in-place replacement that kept it -
-        // closes with the tab, as its stand-in does: only that stand-in closing would
-        // bring it back, and moved it would wait forever behind a pane that no longer
-        // exists. Its id stays in `pane_ids`, so the pty thread and the plugins hear of it
-        // like every other pane in the tab.
-        let (behind_stand_ins, suppressed_panes): (SuppressedPanes, SuppressedPanes) = tab_to_close
-            .extract_suppressed_panes()
-            .into_iter()
-            .partition(|(_, suppressed)| suppressed.restored_by.is_some());
-        drop(behind_stand_ins);
+        suppressed_panes.retain(|id, _| !closing.contains(id));
+        pane_ids.retain(|id| closing.contains(id));
         let suppressed_respawns = suppressed_panes
             .keys()
             .filter_map(|pane_id| {
@@ -1130,10 +1135,6 @@ impl Screen {
                     .map(|entry| (*pane_id, entry))
             })
             .collect();
-        for suppressed_pane_id in suppressed_panes.keys() {
-            pane_ids.retain(|p| p != suppressed_pane_id);
-        }
-
         // The plugins going down with the tab take what they had to say about a quit with them,
         // as they do when closed one at a time (`ScreenInstruction::ClosePane`). Left behind, a
         // guard nothing could lift would keep the session from ever ending.

@@ -275,6 +275,152 @@ fn a_suppressed_pane_replacement_closes_with_its_tab() {
 }
 
 #[test]
+fn tab_teardown_preserves_only_surviving_replacement_chains() {
+    let chain = [
+        PaneId::Terminal(TerminalId::new(1)),
+        PaneId::Plugin(zellij_types::internal_ids::PluginId::new(10)),
+        PaneId::Terminal(TerminalId::new(11)),
+        PaneId::Plugin(zellij_types::internal_ids::PluginId::new(12)),
+    ];
+    for depth in [1, 3] {
+        let chain = &chain[..=depth];
+        for (hidden, last_tab) in [(false, false), (true, false), (false, true), (true, true)] {
+            let survives = hidden && !last_tab;
+            let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+            let (to_plugin, plugins): ChannelWithContext<PluginInstruction> = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+            new_tab(&mut screen, 1, TabId::new(0));
+            if !last_tab {
+                new_tab(&mut screen, 2, TabId::new(1));
+            }
+            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            tab.new_pane(
+                PaneId::Terminal(TerminalId::new(4)),
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::default(),
+                Some(ClientId::new(1)),
+                None,
+            )
+            .unwrap();
+            for pair in chain.windows(2) {
+                tab.suppress_pane_and_replace_with_pid(pair[0], pair[1], false, None, None, None)
+                    .unwrap();
+            }
+            for &id in chain {
+                if matches!(id, PaneId::Terminal(_)) {
+                    tab.restore_pending_respawn(id, (step_command("step2", "2"), true));
+                }
+            }
+            let tip = *chain.last().unwrap();
+            if hidden {
+                tab.suppress_pane(tip, None);
+            }
+            let expected_closed: HashSet<_> = tab
+                .get_all_pane_ids()
+                .into_iter()
+                .filter(|id| !survives || !chain.contains(id))
+                .collect();
+            let fake_os = FakeInputOutput::default();
+            let messages = fake_os.server_to_client_messages.clone();
+            screen.bus.os_input = Some(Box::new(fake_os));
+            let subscriber = ClientId::new(100);
+            screen.subscribe_to_pane_renders(subscriber, chain.to_vec(), None, false);
+            messages.lock().unwrap().clear();
+            let (to_pty, pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
+            screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+
+            screen.close_tab_by_id(TabId::new(0)).unwrap();
+
+            let terminated: HashSet<_> = pty
+                .try_iter()
+                .flat_map(|(instruction, _)| match instruction {
+                    PtyInstruction::CloseTab(ids) => ids,
+                    PtyInstruction::ClosePane(id, _) => vec![id],
+                    _ => vec![],
+                })
+                .collect();
+            assert_eq!(
+                terminated, expected_closed,
+                "depth={depth}, hidden={hidden}, last_tab={last_tab}"
+            );
+            let closed_events: HashSet<_> = plugins
+                .try_iter()
+                .flat_map(|(instruction, _)| match instruction {
+                    PluginInstruction::Update(events) => events
+                        .into_iter()
+                        .filter_map(|(_, _, event)| match event {
+                            Event::PaneClosed(id) => Some(id),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => vec![],
+                })
+                .collect();
+            assert_eq!(closed_events, expected_closed);
+            let subscriber_closures: HashSet<_> = messages
+                .lock()
+                .unwrap()
+                .get(&subscriber)
+                .into_iter()
+                .flatten()
+                .filter_map(|message| match message {
+                    ServerToClientMsg::SubscribedPaneClosed { pane_id } => Some(*pane_id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                subscriber_closures,
+                if survives {
+                    HashSet::new()
+                } else {
+                    chain.iter().copied().collect()
+                }
+            );
+            for id in chain {
+                assert_eq!(screen.destroyed_panes.contains(id), !survives);
+            }
+            if survives {
+                assert_eq!(
+                    screen.pane_render_subscribers[&subscriber].pane_ids,
+                    chain.iter().copied().collect()
+                );
+                let destination = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+                for &id in chain {
+                    if let PaneId::Terminal(terminal_id) = id {
+                        assert_eq!(
+                            destination.hold_pane(id, Some(0), false, step_command("step1", "1")),
+                            Some((terminal_id, step_command("step2", "2"), true))
+                        );
+                    }
+                }
+                destination.unsuppress_pane(tip, false);
+                for pair in chain.windows(2).rev() {
+                    assert_eq!(destination.stands_in_for_a_pane(pair[1]), Some(pair[0]));
+                    // Plugin close_self restores its predecessor; explicit user close
+                    // intentionally destroys the entire replacement chain.
+                    destination.close_pane(pair[1], false, None);
+                    assert!(destination
+                        .get_static_and_floating_pane_ids()
+                        .contains(&pair[0]));
+                    assert!(!destination.has_pane_with_pid(&pair[1]));
+                }
+            } else {
+                for tab in screen.tabs.values_mut() {
+                    for &id in chain {
+                        assert!(!tab.has_pane_with_pid(&id));
+                        assert!(tab.take_pending_respawn(id).is_none());
+                    }
+                }
+                assert_eq!(screen.tabs.is_empty(), last_tab);
+            }
+        }
+    }
+}
+
+#[test]
 fn an_overlay_pane_replacement_survives_its_tab_closing() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
