@@ -21,6 +21,38 @@ fn an_id_is_minted_and_persisted_when_the_data_dir_has_none() {
 }
 
 #[test]
+fn a_late_first_start_adopts_the_published_identity() {
+    let dir = TempDir::new().unwrap();
+    // Both startups observed a missing file before either tried to publish its candidate.
+    assert!(read_file(dir.path()).is_none());
+    assert_eq!(persist_id(dir.path(), "first").unwrap(), "first");
+    assert_eq!(persist_id(dir.path(), "late").unwrap(), "first");
+    assert_eq!(read_file(dir.path()).as_deref(), Some("first"));
+}
+
+#[test]
+fn concurrent_first_starts_share_one_identity() {
+    let dir = TempDir::new().unwrap();
+    let barrier = std::sync::Barrier::new(8);
+    let ids = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    resolve_from(None, dir.path(), None)
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let stored = read_file(dir.path()).unwrap();
+    assert!(ids.iter().all(|id| id == &stored), "{ids:?}");
+}
+
+#[test]
 fn two_data_dirs_get_two_ids() {
     let one = TempDir::new().unwrap();
     let two = TempDir::new().unwrap();

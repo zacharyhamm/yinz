@@ -3,6 +3,10 @@ use crate::panes::link_handler::LinkHandler;
 use crate::panes::terminal_character::{Cursor, LinkAnchor};
 use std::collections::VecDeque;
 
+// Bound automatic detection work and storage; explicit OSC 8 links bypass this heuristic.
+const MAX_DETECTED_URL_BYTES: usize = 8 * 1024;
+const URL_SCHEMES: [&str; 4] = ["http://", "https://", "ftp://", "mailto:"];
+
 #[derive(Debug, Clone)]
 struct DetectedLink {
     url: String,
@@ -75,6 +79,13 @@ impl HyperlinkTracker {
             } else {
                 self.buffer.push(ch);
                 self.cursor_positions.push(current_pos);
+                if self.buffer.len() > MAX_DETECTED_URL_BYTES
+                    || !URL_SCHEMES.iter().any(|scheme| {
+                        scheme.starts_with(&self.buffer) || self.buffer.starts_with(scheme)
+                    })
+                {
+                    self.clear();
+                }
             }
         } else {
             if matches!(ch, 'h' | 'f' | 'm') {
@@ -355,6 +366,47 @@ mod tests {
     }
 
     #[test]
+    fn detection_bounds_unbroken_tokens_and_recovers_for_the_next_url() {
+        for (prefix, suffix) in [("h", "x"), ("https://example.com/", "é")] {
+            let mut tracker = HyperlinkTracker::new();
+            let mut viewport = create_test_viewport(4, 80);
+            let mut lines_above = VecDeque::new();
+            let mut link_handler = LinkHandler::new();
+            let token = format!("{prefix}{}", suffix.repeat(MAX_DETECTED_URL_BYTES * 2));
+            for (index, ch) in token.chars().enumerate() {
+                if index > 0 && index % 80 == 0 {
+                    tracker.offset_cursor_lines(1);
+                }
+                tracker.update(
+                    ch,
+                    &create_test_cursor(index % 80, 3),
+                    &mut viewport,
+                    &mut lines_above,
+                    &mut link_handler,
+                );
+                assert!(tracker.buffer.len() <= MAX_DETECTED_URL_BYTES);
+                assert!(tracker.cursor_positions.len() <= MAX_DETECTED_URL_BYTES);
+            }
+            assert!(tracker.buffer.is_empty());
+            assert!(link_handler.links().is_empty());
+
+            let url = "https://next.example";
+            populate_row_with_text(&mut viewport[0], url, 0);
+            for (x, ch) in url.chars().chain(std::iter::once(' ')).enumerate() {
+                tracker.update(
+                    ch,
+                    &create_test_cursor(x, 0),
+                    &mut viewport,
+                    &mut lines_above,
+                    &mut link_handler,
+                );
+            }
+            assert_eq!(link_handler.links().len(), 1);
+            assert_eq!(link_handler.links()[0].uri, url);
+        }
+    }
+
+    #[test]
     fn test_simple_http_url_detection() {
         let mut tracker = HyperlinkTracker::new();
         let mut viewport = create_test_viewport(10, 80);
@@ -407,7 +459,7 @@ mod tests {
 
         if let Some(id) = link_id {
             let links = link_handler.links();
-            let stored_link = links.get(&id);
+            let stored_link = links.get(id as usize);
             assert!(
                 stored_link.is_some(),
                 "Link should be stored in LinkHandler"
@@ -474,7 +526,7 @@ mod tests {
 
         if let Some(id) = link_id {
             let links = link_handler.links();
-            let stored_link = links.get(&id);
+            let stored_link = links.get(id as usize);
             assert!(
                 stored_link.is_some(),
                 "HTTPS link should be stored in LinkHandler"
@@ -619,7 +671,7 @@ mod tests {
         }
         if let Some(id) = link_id {
             let links = link_handler.links();
-            let stored_link = links.get(&id);
+            let stored_link = links.get(id as usize);
             assert!(
                 stored_link.is_some(),
                 "Link should be stored in LinkHandler"
@@ -823,7 +875,7 @@ mod tests {
 
         if let Some(id) = link_id {
             let links = link_handler.links();
-            let stored_link = links.get(&id);
+            let stored_link = links.get(id as usize);
             assert!(
                 stored_link.is_some(),
                 "Multiline link should be stored in LinkHandler"
@@ -1110,7 +1162,7 @@ mod tests {
         let links = link_handler.links();
 
         if let Some(id1) = first_link_id {
-            let stored_link1 = links.get(&id1);
+            let stored_link1 = links.get(id1 as usize);
             assert!(
                 stored_link1.is_some(),
                 "First link should be stored in LinkHandler"
@@ -1123,7 +1175,7 @@ mod tests {
         }
 
         if let Some(id2) = second_link_id {
-            let stored_link2 = links.get(&id2);
+            let stored_link2 = links.get(id2 as usize);
             assert!(
                 stored_link2.is_some(),
                 "Second link should be stored in LinkHandler"
@@ -1247,8 +1299,8 @@ mod tests {
 
         assert_eq!(links.len(), 2, "Should have 2 links stored");
 
-        let link_0 = links.get(&0);
-        let link_1 = links.get(&1);
+        let link_0 = links.first();
+        let link_1 = links.get(1);
 
         assert!(link_0.is_some(), "Should have link with ID 0");
         assert!(link_1.is_some(), "Should have link with ID 1");
@@ -1315,7 +1367,7 @@ mod tests {
                 match anchor {
                     LinkAnchor::Start(id) => {
                         let links = link_handler.links();
-                        let stored_link = links.get(id);
+                        let stored_link = links.get(*id as usize);
                         assert!(
                             stored_link.is_some(),
                             "Link ID {} should exist in LinkHandler",

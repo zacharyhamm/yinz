@@ -79,33 +79,26 @@ fn read_file(data_dir: &Path) -> Option<String> {
     is_valid_host_id(trimmed).then(|| trimmed.to_owned())
 }
 
-/// Write `id` to `<data_dir>/host-id`, atomically.
-///
-/// Through a temporary file and a rename, so a second server starting concurrently reads either
-/// nothing or a whole id, never half of one. Both servers may mint an id and race to install it;
-/// the loser's `read_file` on the next call returns the winner's, which is why the caller re-reads
-/// rather than trusting what it wrote.
-fn write_file(data_dir: &Path, id: &str) -> std::io::Result<()> {
+/// Adopt a concurrently installed id or atomically publish this one while holding the lock.
+fn persist_id(data_dir: &Path, id: &str) -> std::io::Result<String> {
+    use std::io::Write;
+
     std::fs::create_dir_all(data_dir)?;
-    let final_path = host_id_path(data_dir);
-    let tmp_path = data_dir.join(format!(".{}.{}.tmp", HOST_ID_FILE, std::process::id()));
-    std::fs::write(&tmp_path, id)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = std::fs::metadata(&tmp_path) {
-            let mut perms = metadata.permissions();
-            perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(&tmp_path, perms);
-        }
+    // Keep this inode: removing it would let concurrent servers lock different files.
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data_dir.join(".host-id.lock"))?;
+    lock.lock()?;
+    if let Some(stored) = read_file(data_dir) {
+        return Ok(stored);
     }
-    match std::fs::rename(&tmp_path, &final_path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            Err(e)
-        },
-    }
+    let mut temp = tempfile::NamedTempFile::new_in(data_dir)?;
+    temp.write_all(id.as_bytes())?;
+    temp.as_file().sync_all()?;
+    temp.persist(host_id_path(data_dir))?;
+    Ok(id.to_owned())
 }
 
 /// Resolve the id without consulting or filling the cache, and without reading the environment.
@@ -124,17 +117,18 @@ fn resolve_from(env: Option<&str>, data_dir: &Path, configured: Option<&str>) ->
         return id;
     }
     let minted = mint();
-    if write_file(data_dir, &minted).is_err() {
+    persist_id(data_dir, &minted).unwrap_or_else(|error| {
         // An unwritable data dir is not a reason to refuse to run. The id lasts for this process
         // instead of for this installation, which costs the rows written by this server their
         // continuity with the next one — bad, but better than not starting, and the same trade
         // the store makes when it reports a database it cannot open on first use rather than at
         // construction.
-        return minted;
-    }
-    // Re-read rather than returning what was written: another server may have installed its own
-    // id between the check and the rename, and the file is the authority.
-    read_file(data_dir).unwrap_or(minted)
+        log::warn!(
+            "Could not persist host identity in {}: {error}",
+            data_dir.display()
+        );
+        minted
+    })
 }
 
 /// [`resolve_from`] against the real environment.

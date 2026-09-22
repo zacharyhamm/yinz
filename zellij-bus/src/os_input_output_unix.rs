@@ -213,8 +213,11 @@ fn handle_openpty(
     };
 
     // primary side of pty and child fd
-    let pid_primary = open_pty_res.master.into_raw_fd();
-    let pid_secondary = open_pty_res.slave.into_raw_fd();
+    let master = open_pty_res.master;
+    let slave = open_pty_res.slave;
+    crate::pty_host::fdpass::set_cloexec(master.as_raw_fd()).with_context(|| err_context(&cmd))?;
+    crate::pty_host::fdpass::set_cloexec(slave.as_raw_fd()).with_context(|| err_context(&cmd))?;
+    let pid_secondary = slave.as_raw_fd();
 
     if !command_exists(&cmd) {
         return Err(ZellijError::CommandNotFound {
@@ -225,9 +228,8 @@ fn handle_openpty(
     }
 
     let child = unsafe {
-        let cmd = cmd.clone();
-        let command = &mut Command::new(cmd.command);
-        if let Some(current_dir) = cmd.cwd {
+        let command = &mut Command::new(&cmd.command);
+        if let Some(current_dir) = &cmd.cwd {
             if current_dir.exists() && current_dir.is_dir() {
                 command.current_dir(current_dir);
             } else {
@@ -249,13 +251,18 @@ fn handle_openpty(
             .env("ZELLIJ_PANE_ID", format!("{}", terminal_id))
             .pre_exec(move || -> io::Result<()> {
                 if libc::login_tty(pid_secondary) != 0 {
-                    panic!("failed to set controlling terminal");
+                    return Err(io::Error::last_os_error());
                 }
-                close_fds::close_open_fds(3, &[]);
+                // Leave std's exec-error pipe usable until exec succeeds.
+                close_fds::set_fds_cloexec(3, &[]);
                 Ok(())
             })
             .spawn()
-            .expect("failed to spawn")
+            .map_err(|err| ZellijError::PaneStartFailed {
+                terminal_id,
+                message: format!("failed to spawn command '{}': {err}", cmd.command.display()),
+            })
+            .with_context(|| err_context(&cmd))?
     };
 
     let child_id = ProcessId::new(child.id());
@@ -264,11 +271,11 @@ fn handle_openpty(
         // stopped child from a busy one — and a `^Z`'d command pane looks
         // exactly like a hang. This waiter reaps the child and owns its exit status.
         let exit_status = wait_reporting_stops(child_id, terminal_id, child_state_cb.as_ref());
-        let _ = unistd::close(pid_secondary);
+        drop(slave);
         quit_cb(PaneId::Terminal(terminal_id), exit_status, cmd);
     });
 
-    Ok((pid_primary, child_id))
+    Ok((master.into_raw_fd(), child_id))
 }
 
 /// Spawns a new terminal from the parent terminal with [`termios`](termios::Termios)
@@ -1332,6 +1339,71 @@ mod tests {
     use std::io::Read;
 
     #[test]
+    fn failed_in_process_spawns_report_errors_and_close_the_pty() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("broken-command");
+        std::fs::write(&script, b"#!/nonexistent/zellij-test-interpreter\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let non_executable = dir.path().join("non-executable");
+        std::fs::write(&non_executable, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&non_executable, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let terminal_id = TerminalId::new(1);
+        for (command, expected_errno) in [
+            (dir.path().join("missing-command"), None),
+            (script, Some(libc::ENOENT)),
+            (non_executable, Some(libc::EACCES)),
+        ] {
+            let pty = openpty(None, None).unwrap();
+            let mut master = File::from(pty.master.try_clone().unwrap());
+            fcntl(&master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
+            let result = handle_openpty(
+                pty,
+                RunCommand {
+                    command: command.clone(),
+                    ..Default::default()
+                },
+                Box::new(|_, _, _| panic!("a failed spawn cannot produce a child exit")),
+                None,
+                terminal_id,
+            );
+            let error = result.expect_err("an exec failure must reach the caller");
+            match (error.downcast_ref::<ZellijError>(), expected_errno) {
+                (
+                    Some(ZellijError::CommandNotFound {
+                        terminal_id: id, ..
+                    }),
+                    None,
+                ) => {
+                    assert_eq!(*id, terminal_id);
+                },
+                (
+                    Some(ZellijError::PaneStartFailed {
+                        terminal_id: id,
+                        message,
+                    }),
+                    Some(errno),
+                ) => {
+                    assert_eq!(*id, terminal_id);
+                    assert!(message.contains(&command.display().to_string()));
+                    assert!(message.contains(&io::Error::from_raw_os_error(errno).to_string()));
+                },
+                _ => panic!("spawn error must identify the failed pane: {error:#}"),
+            }
+            // The slave must have been closed even when validation or exec failed.
+            // Linux returns EIO and BSDs return EOF once the last slave is gone.
+            let read = master.read(&mut [0u8; 1]);
+            assert!(
+                matches!(&read, Ok(0))
+                    || matches!(&read, Err(e) if e.raw_os_error() == Some(libc::EIO)),
+                "a failed spawn leaked its pty slave: {read:?}"
+            );
+        }
+    }
+
+    #[test]
     fn in_process_pane_exit_reports_status_after_reaping_the_child() {
         for (command, expected_status) in [("exit 7", Some(7)), ("kill -TERM $$", None)] {
             let (exited, exit) = std::sync::mpsc::channel();
@@ -1353,6 +1425,11 @@ mod tests {
             )
             .unwrap();
             let master = unsafe { File::from_raw_fd(master) };
+            assert_ne!(
+                fcntl(&master, FcntlArg::F_GETFD).unwrap() & libc::FD_CLOEXEC,
+                0,
+                "the pty must not leak into unrelated children"
+            );
             let result = exit.recv_timeout(Duration::from_secs(10));
             drop(master);
             assert_eq!(

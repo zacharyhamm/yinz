@@ -463,6 +463,63 @@ fn a_closed_peer_reports_eof_immediately_and_keeps_reporting_it() {
     }
 }
 
+#[test]
+fn a_rejected_length_cannot_turn_its_payload_into_another_message() {
+    use std::io::Write;
+
+    let (_guard, name) = new_ipc();
+    let listener = bind_listener(&name);
+    let mut peer = connect_stream(&name);
+    let stream = listener.incoming().next().unwrap().expect("accept failed");
+    let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
+        IpcReceiverWithContext::new(stream);
+    peer.write_all(&((crate::MAX_IPC_FRAME_LEN + 1) as u32).to_le_bytes())
+        .unwrap();
+    let mut sender: IpcSenderWithContext<ClientToServerMsg> = IpcSenderWithContext::new(peer);
+    sender
+        .send_client_msg(ClientToServerMsg::KillSession)
+        .unwrap();
+
+    assert!(receiver.recv_client_msg().is_eof());
+    assert!(receiver.recv_client_msg().is_eof());
+    assert!(receiver.recv_server_msg().is_eof());
+    assert!(crate::ipc::recv_protobuf_client_to_server(&mut receiver).is_none());
+}
+
+#[test]
+fn a_timeout_inside_a_frame_is_terminal_in_both_directions() {
+    use std::io::Write;
+
+    for server_message in [false, true] {
+        for partial in [&[8u8][..], &[8, 0, 0][..], &[8, 0, 0, 0, 1][..]] {
+            let (_guard, name) = new_ipc();
+            let listener = bind_listener(&name);
+            let mut peer = connect_stream(&name);
+            let stream = listener.incoming().next().unwrap().expect("accept failed");
+            let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
+                IpcReceiverWithContext::new(stream);
+            receiver
+                .set_recv_timeout(Some(std::time::Duration::from_millis(10)))
+                .unwrap();
+            peer.write_all(partial).unwrap();
+            if server_message {
+                assert!(receiver.recv_server_msg().is_eof());
+            } else {
+                assert!(receiver.recv_client_msg().is_eof());
+            }
+            let mut sender: IpcSenderWithContext<ServerToClientMsg> =
+                IpcSenderWithContext::new(peer);
+            sender
+                .send_server_msg(ServerToClientMsg::Connected {
+                    warp_companions: false,
+                })
+                .unwrap();
+            assert!(receiver.recv_client_msg().is_eof());
+            assert!(crate::ipc::recv_protobuf_server_to_client(&mut receiver).is_none());
+        }
+    }
+}
+
 /// The other half of the distinction: a frame that arrives but cannot be
 /// decoded is *not* a hangup. The stream is still open and may well carry good
 /// messages afterwards, so this one is worth retrying.
@@ -484,9 +541,10 @@ fn a_garbage_frame_reports_malformed_not_eof() {
             .expect("write len failed");
         stream.write_all(&payload).expect("write payload failed");
         stream.flush().expect("flush failed");
-        // Hold the connection open so the receiver cannot mistake this for a
-        // hangup.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut sender: IpcSenderWithContext<ClientToServerMsg> = IpcSenderWithContext::new(stream);
+        sender
+            .send_client_msg(ClientToServerMsg::ConnStatus)
+            .unwrap();
     });
 
     let stream = listener.incoming().next().unwrap().expect("accept failed");
@@ -497,6 +555,10 @@ fn a_garbage_frame_reports_malformed_not_eof() {
         matches!(receiver.recv_client_msg(), IpcRecv::Malformed),
         "an undecodable frame on a live socket should be Malformed, not Eof"
     );
+    assert!(matches!(
+        receiver.recv_client_msg(),
+        IpcRecv::Msg(ClientToServerMsg::ConnStatus, _)
+    ));
 
     client.join().expect("client thread panicked");
 }

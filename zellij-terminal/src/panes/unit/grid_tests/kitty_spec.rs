@@ -366,6 +366,10 @@ fn switching_to_the_alternate_screen_hides_the_main_screens_images() {
     session.feed(b"\x1b[?1049h");
     assert_eq!(session.placement_count(), 0);
 
+    // Repeated mode enables must not replace the saved primary screen.
+    session.feed(b"\x1b[?1049h");
+    assert_eq!(session.placement_count(), 0);
+
     session.feed(b"\x1b[?1049l");
     assert_eq!(
         session.placement_count(),

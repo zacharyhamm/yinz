@@ -396,41 +396,22 @@ impl Downloader {
         Ok(stringified)
     }
 
-    /// Download the content of a URL and block for the result.
-    ///
-    /// Wraps the `async` call to [`download_without_cache`] such that it can be used from sync
-    /// code. This is achieved by either:
-    ///
-    /// 1. Reusing an existing async runtime in case one is present in the current thread, or
-    /// 2. Spawning a new async runtime on the current thread
-    ///
-    /// If neither of these works, an error is returned instead.
-    ///
-    /// # Note
-    ///
-    /// At the moment, this function is only here to bridge the gap between the async
-    /// [`Downloader`] impl and the sync [`Layout`] code that ultimately calls this function. This
-    /// is needed since the Layout code can't trivially be turned `async` without a lot of
-    /// refactoring, while the Downloader is used in many other places with async code and can't
-    /// sensibly be sync. Maybe in the future, when more code around here is async, we can drop
-    /// this function.
+    /// Download a layout synchronously, including when called from an async runtime.
+    /// Isahc owns its I/O thread; using its blocking API avoids nesting Tokio runtimes.
     pub fn download_without_cache_blocking(url: &str) -> Result<String, DownloaderError> {
-        let runtime_handle = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle.clone(),
-            Err(e) if e.is_missing_context() => {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .thread_name("ephemeral runtime for downloader implementation")
-                    .build()
-                    .map_err(DownloaderError::Io)?;
-                runtime.handle().clone()
-            },
-            _ => {
-                return Err(DownloaderError::Io(std::io::Error::other(
-                    "failed to spawn runtime for download task",
-                )))
-            },
-        };
-        runtime_handle.block_on(async move { Downloader::download_without_cache(url).await })
+        use std::io::Read;
+
+        let request = Request::get(url)
+            .header("Content-Type", "application/octet-stream")
+            .body(())?;
+        let mut response = build_client(DOWNLOAD_STALL_TIMEOUT)?.send(request)?;
+        ensure_success(url, response.status())?;
+        let mut bytes = Vec::new();
+        response
+            .body_mut()
+            .read_to_end(&mut bytes)
+            .map_err(DownloaderError::Io)?;
+        String::from_utf8(bytes).map_err(|e| DownloaderError::InvalidUrlBody(e.to_string()))
     }
 
     fn parse_name(&self, url: &str) -> Result<String, DownloaderError> {

@@ -46,9 +46,8 @@ pub trait IpcStream: Read + Write + Send + 'static {
     ///
     /// A read that runs out of time fails with `WouldBlock` (Linux) or
     /// `TimedOut` (elsewhere), which `classify_read_error` reports as
-    /// [`IpcRecv::Idle`]. Note that a frame cut short by the deadline leaves
-    /// the stream desynchronised — the bytes already read are gone — so a
-    /// deadline is only safe while nothing is expected mid-frame.
+    /// [`IpcRecv::Idle`] if no frame bytes arrived. A deadline that cuts a frame
+    /// short makes the receiver terminal, since its next boundary is unknown.
     fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()>;
 }
 
@@ -400,7 +399,7 @@ impl<T: Serialize> IpcSenderWithContext<T> {
 /// that retries `Eof` is a busy loop, not a recovery.
 pub enum IpcRecv<T> {
     Msg(T, ErrorContext),
-    /// The peer closed the socket, or the connection was reset. Terminal.
+    /// The peer closed the socket, or framing is irrecoverably lost. Terminal.
     Eof,
     /// A frame arrived but could not be read as a message. Possibly survivable.
     Malformed,
@@ -429,22 +428,11 @@ impl<T> IpcRecv<T> {
 
 /// Decide whether a failed read means "the peer hung up" or "that frame was bad".
 ///
-/// The length prefix is the only place a clean hangup can show up: `read_exact`
-/// on a socket whose peer has closed returns `UnexpectedEof` with nothing
-/// consumed. A reset or a broken pipe is the same situation reached less
-/// politely. Anything else — a decode failure, an over-long frame, a truncated
-/// body — is a bad message on a stream that is still open.
+/// Only a complete frame with an invalid protobuf can be skipped safely.
+/// Transport and framing failures are terminal: the unread bytes are not
+/// necessarily the start of another frame.
 fn classify_read_error<T>(e: anyhow::Error, msg_type: &str) -> IpcRecv<T> {
     if let Some(io_err) = e.downcast_ref::<io::Error>() {
-        if matches!(
-            io_err.kind(),
-            io::ErrorKind::UnexpectedEof
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::ConnectionAborted
-                | io::ErrorKind::BrokenPipe
-        ) {
-            return IpcRecv::Eof;
-        }
         // A receive timeout expiring is not a bad frame: nothing arrived at all,
         // and the stream is still open and still in sync. Linux reports it as
         // `WouldBlock`, other platforms as `TimedOut`.
@@ -454,6 +442,10 @@ fn classify_read_error<T>(e: anyhow::Error, msg_type: &str) -> IpcRecv<T> {
         ) {
             return IpcRecv::Idle;
         }
+        if io_err.kind() != io::ErrorKind::UnexpectedEof {
+            warn!("Error reading {}: {:?}", msg_type, e);
+        }
+        return IpcRecv::Eof;
     }
     // Previously discarded outright, which is what made a desynchronised stream
     // impossible to tell apart from a hangup after the fact.
@@ -464,6 +456,7 @@ fn classify_read_error<T>(e: anyhow::Error, msg_type: &str) -> IpcRecv<T> {
 /// Receives messages on a stream socket, along with an [`ErrorContext`].
 pub struct IpcReceiverWithContext<T> {
     receiver: io::BufReader<Box<dyn IpcStream>>,
+    closed: bool,
     _phantom: PhantomData<T>,
 }
 
@@ -475,6 +468,7 @@ where
     pub fn new(receiver: LocalSocketStream) -> Self {
         Self {
             receiver: io::BufReader::new(Box::new(receiver)),
+            closed: false,
             _phantom: PhantomData,
         }
     }
@@ -482,20 +476,23 @@ where
     fn from_boxed(receiver: Box<dyn IpcStream>) -> Self {
         Self {
             receiver: io::BufReader::new(receiver),
+            closed: false,
             _phantom: PhantomData,
         }
     }
 
     /// Bound every following read with `timeout`, or lift the bound with `None`.
     ///
-    /// See [`IpcStream::set_read_timeout`] for what a read that runs out of
-    /// time returns, and for why this must not be set while a frame may be
-    /// in flight.
+    /// See [`IpcStream::set_read_timeout`] for what a read that runs out of time
+    /// returns, including when the deadline interrupts a frame.
     pub fn set_recv_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
         self.receiver.get_ref().set_read_timeout(timeout)
     }
 
     pub fn recv_client_msg(&mut self) -> IpcRecv<ClientToServerMsg> {
+        if self.closed {
+            return IpcRecv::Eof;
+        }
         match read_protobuf_message::<ProtoClientToServerMsg>(&mut self.receiver) {
             Ok(proto_msg) => match proto_msg.try_into() {
                 Ok(rust_msg) => IpcRecv::Msg(rust_msg, ErrorContext::default()),
@@ -504,11 +501,18 @@ where
                     IpcRecv::Malformed
                 },
             },
-            Err(e) => classify_read_error(e, "ClientToServerMsg"),
+            Err(e) => {
+                let received = classify_read_error(e, "ClientToServerMsg");
+                self.closed = received.is_eof();
+                received
+            },
         }
     }
 
     pub fn recv_server_msg(&mut self) -> IpcRecv<ServerToClientMsg> {
+        if self.closed {
+            return IpcRecv::Eof;
+        }
         match read_protobuf_message::<ProtoServerToClientMsg>(&mut self.receiver) {
             Ok(proto_msg) => match proto_msg.try_into() {
                 Ok(rust_msg) => IpcRecv::Msg(rust_msg, ErrorContext::default()),
@@ -517,7 +521,11 @@ where
                     IpcRecv::Malformed
                 },
             },
-            Err(e) => classify_read_error(e, "ServerToClientMsg"),
+            Err(e) => {
+                let received = classify_read_error(e, "ServerToClientMsg");
+                self.closed = received.is_eof();
+                received
+            },
         }
     }
 
@@ -551,16 +559,25 @@ pub(crate) fn read_protobuf_message_for_test(
 fn read_protobuf_message<T: Message + Default>(reader: &mut impl Read) -> Result<T> {
     // Read length-prefixed protobuf message
     let mut len_bytes = [0u8; 4];
-    reader.read_exact(&mut len_bytes)?;
+    // An idle read is retryable only before the first byte of a frame. Once
+    // that byte arrives, a failed read must never restart inside its payload.
+    reader.read_exact(&mut len_bytes[..1])?;
+    reader
+        .read_exact(&mut len_bytes[1..])
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let len = u32::from_le_bytes(len_bytes) as usize;
     if len > MAX_IPC_FRAME_LEN {
-        return Err(anyhow!(
-            "refusing a {len} byte IPC frame, over the {MAX_IPC_FRAME_LEN} byte limit"
-        ));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("refusing a {len} byte IPC frame, over the {MAX_IPC_FRAME_LEN} byte limit"),
+        )
+        .into());
     }
 
     let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf)?;
+    reader
+        .read_exact(&mut buf)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     T::decode(&buf[..]).map_err(Into::into)
 }
@@ -602,31 +619,13 @@ pub fn send_protobuf_server_to_client(
 pub fn recv_protobuf_client_to_server(
     receiver: &mut IpcReceiverWithContext<ClientToServerMsg>,
 ) -> Option<(ClientToServerMsg, ErrorContext)> {
-    match read_protobuf_message::<ProtoClientToServerMsg>(&mut receiver.receiver) {
-        Ok(proto_msg) => match proto_msg.try_into() {
-            Ok(rust_msg) => Some((rust_msg, ErrorContext::default())),
-            Err(e) => {
-                warn!("Error converting protobuf message: {:?}", e);
-                None
-            },
-        },
-        Err(_e) => None,
-    }
+    receiver.recv_client_msg().msg()
 }
 
 pub fn recv_protobuf_server_to_client(
     receiver: &mut IpcReceiverWithContext<ServerToClientMsg>,
 ) -> Option<(ServerToClientMsg, ErrorContext)> {
-    match read_protobuf_message::<ProtoServerToClientMsg>(&mut receiver.receiver) {
-        Ok(proto_msg) => match proto_msg.try_into() {
-            Ok(rust_msg) => Some((rust_msg, ErrorContext::default())),
-            Err(e) => {
-                warn!("Error converting protobuf message: {:?}", e);
-                None
-            },
-        },
-        Err(_e) => None,
-    }
+    receiver.recv_server_msg().msg()
 }
 
 /// Asynchronously send `ClientToServerMsg::KillSession` to the peer at `path`

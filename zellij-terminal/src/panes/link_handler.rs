@@ -1,13 +1,13 @@
-use std::collections::HashMap;
-
 use super::LinkAnchor;
 
 const TERMINATOR: &str = "\u{1b}\\";
+const MAX_LINKS: usize = 64 * 1024;
+const MAX_LINK_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct LinkHandler {
-    links: HashMap<u16, Link>,
-    link_index: u16,
+    links: Vec<Link>,
+    link_bytes: usize,
 }
 #[derive(Debug, Clone)]
 pub struct Link {
@@ -18,8 +18,8 @@ pub struct Link {
 impl LinkHandler {
     pub fn new() -> Self {
         Self {
-            links: HashMap::new(),
-            link_index: 0,
+            links: Vec::new(),
+            link_bytes: 0,
         }
     }
 
@@ -34,16 +34,13 @@ impl LinkHandler {
         );
 
         if !uri.is_empty() {
-            // save the link, and the id if present to hashmap
+            // Retain a stable index while any scrollback cell can reference the link.
             String::from_utf8(uri.to_vec()).ok().map(|uri| {
                 let id = link_params
                     .split(|&b| b == b':')
                     .find(|kv| kv.starts_with(b"id="))
                     .and_then(|kv| String::from_utf8(kv[3..].to_vec()).ok());
-                let anchor = LinkAnchor::Start(self.link_index);
-                self.links.insert(self.link_index, Link { id, uri });
-                self.link_index += 1;
-                anchor
+                self.insert_link(Link { id, uri })
             })
         } else {
             // there is no link, so consider it a link end
@@ -52,22 +49,29 @@ impl LinkHandler {
     }
 
     pub fn new_link_from_url(&mut self, url: String) -> LinkAnchor {
-        let anchor = LinkAnchor::Start(self.link_index);
-        self.links.insert(
-            self.link_index,
-            Link {
-                id: Some(self.link_index.to_string()),
-                uri: url,
-            },
-        );
-        self.link_index += 1;
-        anchor
+        self.insert_link(Link {
+            id: Some(self.links.len().to_string()),
+            uri: url,
+        })
+    }
+
+    fn insert_link(&mut self, link: Link) -> LinkAnchor {
+        let link_bytes = link.uri.capacity() + link.id.as_ref().map_or(0, String::capacity);
+        // ponytail: stop adding links at either cap; reclaim through cell ownership if needed.
+        // Never reuse an index: another pane or a scrollback cell may still reference it.
+        if self.links.len() >= MAX_LINKS || link_bytes > MAX_LINK_BYTES - self.link_bytes {
+            return LinkAnchor::End;
+        }
+        let index = self.links.len() as u32;
+        self.link_bytes += link_bytes;
+        self.links.push(link);
+        LinkAnchor::Start(index)
     }
 
     pub fn output_osc8(&self, link_anchor: Option<LinkAnchor>) -> Option<String> {
         link_anchor.and_then(|link| match link {
             LinkAnchor::Start(index) => {
-                let link = self.links.get(&index);
+                let link = self.links.get(index as usize);
 
                 let output = link.map(|link| {
                     let id = link
@@ -91,8 +95,8 @@ impl LinkHandler {
     }
 
     #[cfg(test)]
-    pub fn links(&self) -> HashMap<u16, Link> {
-        self.links.clone()
+    pub fn links(&self) -> &[Link] {
+        &self.links
     }
 }
 
@@ -117,7 +121,10 @@ mod tests {
 
         match anchor {
             Some(LinkAnchor::Start(link_id)) => {
-                let link = link_handler.links.get(&link_id).expect("link was not some");
+                let link = link_handler
+                    .links
+                    .get(link_id as usize)
+                    .expect("link was not some");
                 assert_eq!(link.id, Some("test".to_string()));
                 assert_eq!(link.uri, uri);
             },
@@ -146,6 +153,57 @@ mod tests {
         let link_handler = LinkHandler::default();
         let anchor = LinkAnchor::Start(100);
         assert_eq!(link_handler.output_osc8(Some(anchor)), None);
+    }
+
+    #[test]
+    fn link_count_is_bounded_without_replacing_existing_targets() {
+        let mut handler = LinkHandler::new();
+        let first = handler.new_link_from_url("https://first.example".into());
+        let expected = handler.output_osc8(Some(first));
+
+        for index in 1..=MAX_LINKS + 1 {
+            let anchor = if index % 2 == 0 {
+                handler
+                    .dispatch_osc8(&[b"8", b"", b"https://explicit.example"])
+                    .unwrap()
+            } else {
+                handler.new_link_from_url("https://detected.example".into())
+            };
+            let expected_anchor = if index < MAX_LINKS {
+                LinkAnchor::Start(index as u32)
+            } else {
+                LinkAnchor::End
+            };
+            assert_eq!(anchor, expected_anchor);
+        }
+
+        assert_eq!(handler.output_osc8(Some(first)), expected);
+        assert_eq!(handler.links.len(), MAX_LINKS);
+    }
+
+    #[test]
+    fn link_bytes_are_bounded_without_replacing_existing_targets() {
+        // Both the OSC id and URI consume the same budget.
+        for (params, uri) in [
+            ("id=".to_owned(), "x".repeat(1024)),
+            (format!("id={}", "x".repeat(1024)), "x".to_owned()),
+        ] {
+            let mut handler = LinkHandler::new();
+            let first = handler.new_link_from_url("https://first.example".into());
+            let expected = handler.output_osc8(Some(first));
+            for _ in 0..100_000 {
+                handler.dispatch_osc8(&[b"8", params.as_bytes(), uri.as_bytes()]);
+            }
+            let stored = handler.links.len();
+            assert!(
+                stored < MAX_LINKS,
+                "the byte budget must apply before the count cap"
+            );
+            assert!(handler.link_bytes <= MAX_LINK_BYTES);
+            assert_eq!(handler.new_link_from_url("x".repeat(1024)), LinkAnchor::End);
+            assert_eq!(handler.links.len(), stored);
+            assert_eq!(handler.output_osc8(Some(first)), expected);
+        }
     }
 
     mod props {
@@ -181,7 +239,10 @@ mod tests {
                     uri, anchor
                 );
             };
-            let stored = link_handler.links.get(&index).expect("link was not stored");
+            let stored = link_handler
+                .links
+                .get(index as usize)
+                .expect("link was not stored");
             assert_eq!(
                 stored.uri, uri,
                 "stored uri differs from the dispatched one"

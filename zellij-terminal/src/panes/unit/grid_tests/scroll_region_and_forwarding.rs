@@ -1,6 +1,27 @@
 use super::*;
 
 #[test]
+fn repeated_alternate_screen_entry_preserves_primary_screen_and_scrollback() {
+    let mut grid = create_grid_with_size_and_raw(3, 8, b"one\r\ntwo\r\nthree\r\nfour");
+    let primary_viewport = viewport_texts(&grid);
+    let primary_scrollback = scrollback_texts(&grid);
+    let primary_cursor = (grid.cursor.x, grid.cursor.y);
+    assert!(!primary_scrollback.is_empty());
+
+    feed_bytes(&mut grid, b"\x1b[?1049halt\x1b[?25l");
+    let alternate_viewport = viewport_texts(&grid);
+    feed_bytes(&mut grid, b"\x1b[?1049;25h");
+    assert_eq!(viewport_texts(&grid), alternate_viewport);
+    assert!(!grid.cursor_is_hidden);
+
+    feed_bytes(&mut grid, b"\x1b[?1049l");
+    assert_eq!(viewport_texts(&grid), primary_viewport);
+    assert_eq!(scrollback_texts(&grid), primary_scrollback);
+    assert_eq!((grid.cursor.x, grid.cursor.y), primary_cursor);
+    assert!(!grid.is_alternate_mode_active());
+}
+
+#[test]
 fn reverse_index_moves_outside_scroll_margins_without_scrolling() {
     for (row, expected_y) in [(1, 0), (2, 0), (4, 2), (6, 4), (7, 5)] {
         let mut grid =
