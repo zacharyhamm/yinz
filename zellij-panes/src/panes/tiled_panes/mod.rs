@@ -198,6 +198,26 @@ impl TiledPanes {
     /// Tell every pty in `pane_id`'s stack its current size. Making room for a new member
     /// resizes the others through `StackedPanes`, which changes their geometry without
     /// reaching the pty; a relayout would send the sizes, but the stack paths run none.
+    /// Every pane's content size, taken before a resize so that afterwards only the
+    /// panes it changed hear about it. Telling every pane made each step of a held
+    /// resize key a SIGWINCH to every process in the tab.
+    fn content_sizes(&self) -> std::collections::HashMap<PaneId, (usize, usize)> {
+        self.panes
+            .iter()
+            .map(|(id, pane)| (*id, (pane.get_content_columns(), pane.get_content_rows())))
+            .collect()
+    }
+    fn resize_ptys_of_panes_changed_since(
+        &mut self,
+        sizes_before: &std::collections::HashMap<PaneId, (usize, usize)>,
+    ) {
+        for (pane_id, pane) in self.panes.iter_mut() {
+            let size = (pane.get_content_columns(), pane.get_content_rows());
+            if sizes_before.get(pane_id) != Some(&size) {
+                resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+            }
+        }
+    }
     fn resize_ptys_in_stack_of(&mut self, pane_id: &PaneId) {
         for id in self.pane_ids_in_stack_of_pane_id(pane_id) {
             if let Some(pane) = self.panes.get_mut(&id) {
@@ -2038,6 +2058,7 @@ impl TiledPanes {
         resize_percent: Option<(f64, f64)>,
     ) -> Result<bool> {
         let err_context = || format!("failed to resize pand with id: {:?}", pane_id);
+        let sizes_before = self.content_sizes();
 
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
@@ -2084,10 +2105,7 @@ impl TiledPanes {
             },
         }
 
-        for pane in self.panes.values_mut() {
-            // TODO: only for the panes whose width/height actually changed
-            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
-        }
+        self.resize_ptys_of_panes_changed_since(&sizes_before);
         self.reset_boundaries();
         Ok(pane_size_changed)
     }
@@ -2099,6 +2117,7 @@ impl TiledPanes {
         change_by: (f64, f64),
     ) -> Result<()> {
         let err_context = || format!("failed to resize pane {:?} with strategies", pane_id);
+        let sizes_before = self.content_sizes();
 
         let mut pane_grid = TiledPaneGrid::new(
             &mut self.panes,
@@ -2113,9 +2132,7 @@ impl TiledPanes {
                 .with_context(err_context);
         }
 
-        for pane in self.panes.values_mut() {
-            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
-        }
+        self.resize_ptys_of_panes_changed_since(&sizes_before);
         self.reset_boundaries();
         Ok(())
     }
