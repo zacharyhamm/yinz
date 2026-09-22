@@ -1017,3 +1017,30 @@ fn a_line_wrapped_past_the_viewport_takes_the_pending_background() {
     assert_eq!(grid.viewport[1].bg_color, Some(AnsiCode::ColorIndex(4)));
     assert_eq!(viewport_texts(&grid), ["ABC", "D"]);
 }
+
+#[test]
+fn scroll_region_operations_redraw_only_the_rows_they_touch() {
+    // SU, SD, DL and IL used to mark the whole pane dirty, so a pager scrolling inside
+    // its status-line region repainted every row on every step.
+    let content = b"A\r\nB\r\nC\r\nD\r\nE\r\nF\r\nG\r\nH";
+    for (sequence, cursor_row, expected_lines) in [
+        (&b"\x1b[S"[..], 1, vec![2, 3, 4, 5]),
+        (&b"\x1b[T"[..], 1, vec![2, 3, 4, 5]),
+        (&b"\x1b[M"[..], 4, vec![3, 4, 5]),
+        (&b"\x1b[L"[..], 4, vec![3, 4, 5]),
+    ] {
+        let mut grid = create_grid_with_size_and_raw(8, 5, content);
+        feed_bytes(&mut grid, format!("\x1b[3;6r\x1b[{cursor_row};1H").as_bytes());
+        grid.read_changes(0, 0);
+
+        feed_bytes(&mut grid, sequence);
+
+        assert!(
+            !grid.output_buffer.should_update_all_lines,
+            "{sequence:?} dirtied the whole pane"
+        );
+        let mut changed: Vec<usize> = grid.output_buffer.changed_lines.iter().collect();
+        changed.sort_unstable();
+        assert_eq!(changed, expected_lines, "{sequence:?}");
+    }
+}
