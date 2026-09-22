@@ -55,6 +55,9 @@ pub fn parse_rgb_color(color: &[u8]) -> Option<AnsiCode> {
 
 /// Parse colors in `#r(rrr)g(ggg)b(bbb)` format.
 pub fn parse_legacy_color(color: &[u8]) -> Option<AnsiCode> {
+    if !matches!(color.len(), 3 | 6 | 9 | 12) {
+        return None;
+    }
     let item_len = color.len() / 3;
 
     // Truncate/Fill to two byte precision.

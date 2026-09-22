@@ -653,9 +653,19 @@ pub fn parse_control_data(control: &[u8]) -> Result<KittyCommand, KittyError> {
 /// distinguishes a file the client created for this transfer from any other file it happened to
 /// name, so both conditions have to hold before deleting somebody's data.
 fn should_delete_temp_file(path: &Path) -> bool {
-    let in_a_temporary_directory = path.starts_with(std::env::temp_dir())
-        || path.starts_with("/tmp")
-        || path.starts_with("/dev/shm");
+    // Resolve `..` and directory symlinks, but keep the final entry: remove_file unlinks
+    // that entry, whereas reading the image follows a final symlink to its target.
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return false;
+    };
+    let Ok(parent) = parent.join(".").canonicalize() else {
+        return false;
+    };
+    let path = parent.join(name);
+    let in_a_temporary_directory = [std::env::temp_dir(), "/tmp".into(), "/dev/shm".into()]
+        .iter()
+        .filter_map(|directory| directory.canonicalize().ok())
+        .any(|directory| path.starts_with(directory));
     in_a_temporary_directory && path.to_string_lossy().contains("tty-graphics-protocol")
 }
 

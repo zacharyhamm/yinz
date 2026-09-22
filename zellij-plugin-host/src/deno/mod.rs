@@ -663,6 +663,7 @@ impl DenoPlugin {
         if self.disposed {
             return;
         }
+        self.env_mut().filesystem_watcher.take();
         testing::cancel_instance(self.env());
         self.disposed = true;
         if let Some(workers) = &self.env().deno_workers {

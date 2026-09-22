@@ -579,6 +579,90 @@ fn a_temp_file_carrying_the_marker_inside_a_temp_directory_is_deleted() {
 }
 
 #[test]
+fn a_temp_file_marker_in_a_discarded_path_component_does_not_allow_deletion() {
+    // The spec requires the file's path to contain `tty-graphics-protocol`; a directory removed
+    // by `..` must not grant permission to delete an otherwise unmarked file.
+    let raster = rgb_block(2, 2);
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("tty-graphics-protocol");
+    std::fs::create_dir(&marker).unwrap();
+    let file = dir.path().join("keep.bin");
+    std::fs::write(&file, &raster).unwrap();
+    let path = marker.join("../keep.bin");
+
+    let command = parse_ok("a=T,f=24,s=2,v=2,i=1,t=t", &path_payload(&path));
+    assert_eq!(command.image.unwrap().bytes, raster);
+    assert!(
+        file.exists(),
+        "a discarded marker must not authorize deletion"
+    );
+}
+
+#[test]
+fn a_temp_directory_symlink_cannot_authorize_deletion_outside_temp() {
+    // The spec permits following symlinks for reads, but only permits deletion in a known
+    // temporary directory. Resolve the directory before deciding whether deletion is allowed.
+    let raster = rgb_block(2, 2);
+    let file = marked_non_temp_file(&raster);
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("tty-graphics-protocol");
+    std::os::unix::fs::symlink(file.path.parent().unwrap(), &link).unwrap();
+    let path = link.join(file.path.file_name().unwrap());
+
+    let command = parse_ok("a=T,f=24,s=2,v=2,i=1,t=t", &path_payload(&path));
+    assert_eq!(command.image.unwrap().bytes, raster);
+    assert!(file.exists(), "the non-temporary target must survive");
+}
+
+#[test]
+fn a_temp_file_symlink_outside_temp_survives_even_if_its_target_is_eligible() {
+    // Spec: "should only delete the file if it is in a known temporary directory" and
+    // "the terminal emulator must follow symlinks". Deletion also requires the path marker.
+    // https://sw.kovidgoyal.net/kitty/graphics-protocol/#the-transmission-medium
+    // Reading follows the link; cleanup must check the entry that will actually be removed.
+    let raster = rgb_block(2, 2);
+    let target = marked_temp_file(&raster);
+    let dir = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let link = dir.path().join("tty-graphics-protocol-link");
+    std::os::unix::fs::symlink(&target.path, &link).unwrap();
+
+    let command = parse_ok("a=T,f=24,s=2,v=2,i=1,t=t", &path_payload(&link));
+    assert_eq!(command.image.unwrap().bytes, raster);
+    assert_eq!(std::fs::read(&target.path).unwrap(), raster);
+    assert!(link.is_symlink(), "the non-temporary entry must survive");
+}
+
+#[test]
+fn a_temp_file_symlink_without_a_marker_survives_even_if_its_target_is_eligible() {
+    // The same deletion rule applies to the entry's marker, not the target's marker.
+    let raster = rgb_block(2, 2);
+    let target = marked_temp_file(&raster);
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("unmarked-link");
+    std::os::unix::fs::symlink(&target.path, &link).unwrap();
+
+    let command = parse_ok("a=T,f=24,s=2,v=2,i=1,t=t", &path_payload(&link));
+    assert_eq!(command.image.unwrap().bytes, raster);
+    assert_eq!(std::fs::read(&target.path).unwrap(), raster);
+    assert!(link.is_symlink(), "the unmarked entry must survive");
+}
+
+#[test]
+fn a_temp_file_symlink_with_a_marker_is_deleted_without_deleting_its_target() {
+    // Both deletion conditions hold for this entry, even though neither holds for its target.
+    let raster = rgb_block(2, 2);
+    let target = regular_file(&raster);
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("tty-graphics-protocol-link");
+    std::os::unix::fs::symlink(&target.path, &link).unwrap();
+
+    let command = parse_ok("a=T,f=24,s=2,v=2,i=1,t=t", &path_payload(&link));
+    assert_eq!(command.image.unwrap().bytes, raster);
+    assert_eq!(std::fs::read(&target.path).unwrap(), raster);
+    assert!(!link.is_symlink(), "the eligible entry must be removed");
+}
+
+#[test]
 fn a_temp_file_without_the_marker_survives_even_inside_a_temp_directory() {
     // The other half of the same rule: the marker is what distinguishes a file the client created
     // for this transfer from any other file the client happened to name, so deleting without it

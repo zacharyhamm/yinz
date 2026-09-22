@@ -10,13 +10,22 @@ pub struct Coordinates {
 
 impl Coordinates {
     pub fn stringify_with_y_offset(&self, y_offset: usize) -> String {
-        format!("\u{1b}[{};{}H", self.y + y_offset + 1, self.x + 1)
+        format!(
+            "\u{1b}[{};{}H",
+            self.y.saturating_add(y_offset).saturating_add(1),
+            self.x.saturating_add(1)
+        )
     }
 }
 
 impl Display for Coordinates {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "\u{1b}[{};{}H", self.y + 1, self.x + 1)
+        write!(
+            f,
+            "\u{1b}[{};{}H",
+            self.y.saturating_add(1),
+            self.x.saturating_add(1)
+        )
     }
 }
 

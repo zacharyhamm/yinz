@@ -568,6 +568,9 @@ pub struct PluginEnv {
     /// plugins, which are not reloadable by authoring and have their own lookup.
     pub resolved_source_path: Option<PathBuf>,
     pub plugin_cwd: PathBuf,
+    // Own the watch with this instance: its root, recipient, and lifetime must agree.
+    // ponytail: one watcher per instance; share by canonical root if watcher counts become costly.
+    pub(crate) filesystem_watcher: Option<crate::watch_filesystem::FilesystemWatcher>,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
     /// The `plugins { }` alias table, shared with `WasmBridge` so it stays current across
     /// config reloads. Read only by `GetPluginAliasConfiguration`.
@@ -732,6 +735,7 @@ impl RunningPlugin {
 
     /// Release thread-bound runtime state while still on the assigned executor.
     pub fn dispose(&mut self) {
+        self.env_mut().filesystem_watcher.take();
         crate::deno::testing::cancel_instance(self.env());
         if let PluginBackend::Deno(deno) = &mut self.backend {
             deno.dispose();

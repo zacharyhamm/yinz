@@ -4,6 +4,7 @@
 
 use super::*;
 
+use notify_debouncer_full::notify::RecommendedWatcher;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 use zellij_runtime::channels::{self, SenderWithContext};

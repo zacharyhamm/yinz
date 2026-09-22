@@ -117,34 +117,36 @@ fn a_passwd_entry_with_nothing_in_it_still_yields_a_path() {
     );
 }
 
-/// Order is precedence: `compose` puts the carried values after the passwd ones
-/// so that if the two ever name the same variable, the asking side's answer is
-/// the one the child ends up with.
+/// A sender that bypasses the sampling helper still cannot replace the remote
+/// login environment or reintroduce an unrelated SSH connection.
 #[test]
-fn the_asking_sides_terminal_outranks_the_login_environment() {
+fn the_receiver_rejects_carried_values_outside_the_allowlist() {
     let composed = compose(
         &a_test_login(),
         vec![
             ("TERM".to_owned(), "xterm-256color".to_owned()),
+            ("LANG".to_owned(), "en_US.UTF-8".to_owned()),
+            ("LC_TIME".to_owned(), "C".to_owned()),
+            ("PATH".to_owned(), "/a/local/bin".to_owned()),
+            ("HOME".to_owned(), "/a/local/home".to_owned()),
             (
                 "SHELL".to_owned(),
                 "/a/shell/on/the/wrong/machine".to_owned(),
             ),
+            (
+                "SSH_CONNECTION".to_owned(),
+                "unrelated connection".to_owned(),
+            ),
         ],
     );
 
-    let last_shell = composed
-        .iter()
-        .rev()
-        .find(|(name, _)| name == "SHELL")
-        .expect("a SHELL");
-    assert_eq!(
-        last_shell.1, "/a/shell/on/the/wrong/machine",
-        "later entries win, which is what makes this a precedence order"
-    );
-    assert!(composed
-        .iter()
-        .any(|(name, value)| name == "TERM" && value == "xterm-256color"));
+    let mut expected = login_env(&a_test_login());
+    expected.extend([
+        ("TERM".to_owned(), "xterm-256color".to_owned()),
+        ("LANG".to_owned(), "en_US.UTF-8".to_owned()),
+        ("LC_TIME".to_owned(), "C".to_owned()),
+    ]);
+    assert_eq!(composed, expected);
 }
 
 /// Nothing the broker composes claims a connection the pane does not have. See

@@ -873,7 +873,7 @@ impl ServerOsInputOutput {
         // The stream is already this far in. Left at zero, a later reconnect
         // would ask the broker to replay from the beginning, on top of a grid
         // that already shows it.
-        conn.restore_received(handoff.received);
+        conn.restore_received(handoff.received, resumed.dropped);
 
         let reader = self
             .pty_backend

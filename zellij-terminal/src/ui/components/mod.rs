@@ -133,7 +133,7 @@ impl<'a> UiComponentParser<'a> {
     }
     fn parse_coordinates(&self, coordinates: &str) -> Result<Option<Coordinates>> {
         lazy_static! {
-            static ref RE: Regex = Regex::new(r"(\d*)/(\d*)/(\d*)/(\d*)").unwrap();
+            static ref RE: Regex = Regex::new(r"^(\d*)/(\d*)/(\d*)/(\d*)$").unwrap();
         }
         if let Some(captures) = RE.captures_iter(coordinates).next() {
             let x = captures[1].parse::<usize>().with_context(|| {
@@ -202,10 +202,7 @@ fn parse_disabled(stringified: &mut String) -> bool {
 
 fn parse_indices(stringified: &mut String) -> Vec<Vec<usize>> {
     stringified
-        .chars()
-        .collect::<Vec<_>>()
-        .iter()
-        .rposition(|c| c == &'$')
+        .rfind('$')
         .map(|last_position| stringified.drain(0..=last_position).collect::<String>())
         .map(|indices_string| {
             let mut all_indices = vec![];

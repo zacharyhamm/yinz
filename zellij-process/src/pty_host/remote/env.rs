@@ -185,17 +185,16 @@ pub(crate) fn login_env(source: &LoginSource) -> Vec<(String, String)> {
 
 /// The pane's environment, in application order — later entries win.
 ///
-/// The passwd-derived values come first because they describe the machine the
-/// pane runs on; the carried ones win over them because `TERM` and the locale
-/// describe the client, and nothing on this machine knows those. A login shell's
-/// profile then runs after all of it and may override anything, which is correct:
-/// under real ssh it has exactly that power.
+/// The passwd-derived values describe the machine the pane runs on. Only terminal
+/// and locale variables may be supplied by the client, so check the allowlist
+/// again at the receiving end. A login shell's profile runs after all of it and
+/// may override anything, just as it can under ssh.
 pub(crate) fn compose(
     source: &LoginSource,
     carried: Vec<(String, String)>,
 ) -> Vec<(String, String)> {
     let mut env = login_env(source);
-    env.extend(carried);
+    env.extend(carried.into_iter().filter(|(name, _)| is_carried(name)));
     env
 }
 

@@ -6,17 +6,28 @@
 # Writing our own sshd_config is the only way to *state* that requirement
 # instead of hoping some image's defaults happen to satisfy it.
 #
-# Alpine because the binary under test is the musl build — the same one
-# `cargo x remote-test --build` produces and the same one the e2e container
-# runs.
-FROM alpine:3.21
+# Runs the default static musl binary and the native Linux debug binary selected
+# by `cargo x remote-test --build --native`. Ubuntu 24.04 supplies glibc 2.39.
+FROM ubuntu:24.04
 
-RUN apk add --no-cache \
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     openssh-server \
     git \
     procps \
     coreutils \
-    bash
+    bash \
+    passwd \
+    ncurses-bin \
+    ncurses-base \
+    locales \
+    zlib1g \
+    libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The locale-forwarding test sends this distinct locale. Ubuntu's login profile
+# replaces unavailable locales with C.UTF-8, hiding whether it crossed the wire.
+RUN localedef -i en_US -f UTF-8 en_US.UTF-8
 
 # Host keys, once, at build time. The tests disable host-key checking anyway,
 # but sshd will not start without them.
@@ -25,20 +36,17 @@ RUN ssh-keygen -A
 # uid 1000 to match the usual host user, so the bind-mounted `target/` is
 # readable without any chown dance.
 #
-# The `sed` unlocks the account. `adduser -D` leaves a `!` in the shadow file,
-# and sshd refuses a locked account outright — before it ever looks at
-# authorized_keys, so the failure reads as "Permission denied (publickey)" and
-# sends you hunting for a key problem that isn't there. `*` means "no password
-# will ever match", which is what is wanted: key auth only.
+# Replace Ubuntu's default account to make uid 1000 available. `*` is an unlocked
+# password hash that cannot match a password, leaving only key authentication.
 #
 # The login shell is deliberately *not* `/bin/sh`. A pane opened with no command
 # resolves its shell from this passwd entry, and `/bin/sh` is also the
 # last-resort fallback when that lookup finds nothing — so asserting on `-sh`
 # would pass even if the passwd entry were never read. `bash` is a shell only a
 # real lookup can produce.
-RUN adduser -D -u 1000 -s /bin/bash test \
-    && sed -i 's/^test:!/test:*/' /etc/shadow \
-    && mkdir -p /home/test/.ssh \
+RUN if id ubuntu >/dev/null 2>&1; then userdel ubuntu; fi \
+    && useradd --create-home --user-group --uid 1000 --shell /bin/bash --password '*' test \
+    && mkdir -p /home/test/.ssh /run/sshd \
     && chown -R test:test /home/test/.ssh \
     && chmod 700 /home/test/.ssh
 

@@ -508,7 +508,9 @@ pub fn can_subscribe_to_hd_events() {
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
     let plugin_host_folder = PathBuf::from(temp_folder.path());
-    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    // The permission cache belongs to the harness, outside the folder being observed.
+    let cache_folder = tempdir().unwrap();
+    let cache_path = cache_folder.path().join("permissions_test.kdl");
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
     let plugin_should_float = Some(false);
@@ -554,7 +556,7 @@ pub fn can_subscribe_to_hd_events() {
         None,
         None,
     ));
-    // Registration is queued during load, before this post-load state request.
+    // The watcher starts during load, before this post-load state request.
     wait_for_permissions(&received_screen_instructions);
     received_screen_instructions.wait_until("post-load state request", default_timeout(), |log| {
         log.iter()

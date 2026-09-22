@@ -437,7 +437,6 @@ pub enum PluginContext {
     CachePluginEvents,
     MessageFromPlugin,
     UnblockCliPipes,
-    WatchFilesystem,
     KeybindPipe,
     DumpLayoutToPlugin,
     ListClientsMetadata,

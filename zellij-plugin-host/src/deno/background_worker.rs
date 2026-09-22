@@ -130,7 +130,7 @@ impl Workers {
                                 {
                                     plugin.env_mut().client_id = client;
                                     if let Event::HostFolderChanged(path) = &event {
-                                        plugin.env_mut().plugin_cwd = path.clone();
+                                        plugin.env_mut().set_host_folder(path.clone());
                                     }
                                     plugin.update(&event)?;
                                 }

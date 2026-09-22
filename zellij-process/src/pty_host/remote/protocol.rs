@@ -53,7 +53,9 @@ use crate::pty_host::protocol::{SpawnFailureKind, WireWinsize};
 /// v6 requests an explicit Git probe directory, independently of the process cwd.
 /// v7 correlates explicit refresh requests and completed probes, including unchanged results.
 /// Both machines must run this protocol; there is no process-cwd fallback.
-pub const REMOTE_PROTOCOL_VERSION: u32 = 7;
+/// v8 reports additional replay-buffer losses during catch-up with `OutputGap`, so later
+/// resumes include every lost byte in their stream offset.
+pub const REMOTE_PROTOCOL_VERSION: u32 = 8;
 
 /// Frame kind tags. The tag is what lets pty bytes stay raw while everything
 /// else stays JSON.
@@ -176,8 +178,8 @@ pub enum ServerToBrokerMsg {
     Terminate,
     /// Pick a pane back up on a fresh connection after the transport dropped.
     ///
-    /// `received` is how many output bytes this side has actually taken
-    /// delivery of. The broker replays from exactly there, so a reconnect is a
+    /// `received` counts delivered output bytes plus reported gaps. The broker replays
+    /// from exactly there, so a reconnect is a
     /// continuation of the stream rather than a guess at one — the local grid is
     /// a byte-stream consumer that already holds the pre-outage state.
     Resume {
@@ -233,6 +235,9 @@ pub enum BrokerToServerMsg {
     /// them — non-zero means the replay has a hole in it, and the stream cannot
     /// simply be continued.
     Resumed { dropped: u64 },
+    /// Additional output lost while the initial replay was in flight. Sent before the
+    /// surviving bytes; these missing bytes still advance the peer's resume offset.
+    OutputGap { dropped: u64 },
     /// The named pane is not one this broker still holds: it was never known, or
     /// it was reclaimed while nobody was connected.
     ///

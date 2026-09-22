@@ -86,6 +86,7 @@ fn broker_messages() -> Vec<BrokerToServerMsg> {
         },
         BrokerToServerMsg::Resumed { dropped: 0 },
         BrokerToServerMsg::Resumed { dropped: 4096 },
+        BrokerToServerMsg::OutputGap { dropped: 4096 },
         BrokerToServerMsg::ResumeRefused {
             kind: ResumeRefusal::Unknown,
             reason: "no such pane".to_owned(),
@@ -339,8 +340,9 @@ fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
     // v5: `AgentReport`, a hook's event relayed on the pane's channel.
     // v6: `GetGitProbe` selects a directory independently of the process cwd.
     // v7: refresh tokens correlate requests with completed probes.
+    // v8: OutputGap reports losses incurred during catch-up.
     assert_eq!(
-        REMOTE_PROTOCOL_VERSION, 7,
+        REMOTE_PROTOCOL_VERSION, 8,
         "bumping this is cheap; make sure it is deliberate"
     );
     assert_eq!(

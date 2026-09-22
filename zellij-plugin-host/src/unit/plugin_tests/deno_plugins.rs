@@ -4858,8 +4858,8 @@ export default {
     harness.rendered("update:watched.txt");
     std::fs::remove_file(&watched).unwrap();
     harness.rendered("delete:watched.txt");
-    // The replacement watches afresh; the watcher's events name no generation, so they reach
-    // whichever instance is live.
+    // The replacement owns a fresh watcher; old callbacks retain the old generation and
+    // cannot deliver their events to it.
     std::fs::write(&harness.path, source.replace("'first'", "'second'")).unwrap();
     harness.reload();
     harness.rendered("second ");

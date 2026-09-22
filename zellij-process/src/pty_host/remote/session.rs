@@ -58,7 +58,7 @@ pub struct OutputRing {
 }
 
 impl OutputRing {
-    fn new(capacity: usize) -> Self {
+    pub(super) fn new(capacity: usize) -> Self {
         Self {
             buf: VecDeque::new(),
             capacity,
@@ -213,10 +213,13 @@ impl PaneSession {
         self.master_fd
     }
 
-    pub fn append_output(&self, bytes: &[u8]) {
-        if let Ok(mut ring) = self.ring.lock() {
-            ring.append(bytes);
-        }
+    /// Buffer output and choose its live recipient under the same lock used by
+    /// `resume_step`. Otherwise a reconnect can replay this chunk and attach
+    /// before the pump selects its wire, delivering the chunk twice.
+    pub fn append_output(&self, bytes: &[u8]) -> Option<(super::broker::Wire, u64)> {
+        let mut ring = self.ring.lock().ok()?;
+        ring.append(bytes);
+        self.wire_and_generation()
     }
 
     /// The wire to send on right now, if one is ready to be written to.

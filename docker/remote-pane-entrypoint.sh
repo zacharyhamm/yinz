@@ -21,7 +21,7 @@ install -o test -g test -m 600 "$KEY_FILE" /home/test/.ssh/authorized_keys
 # command and does not pass the container's along, so this is the only place
 # they can be set: `ensure` inherits them here, and the detached `serve` it
 # spawns inherits them in turn.
-ZELLIJ_BIN="/usr/src/zellij/$(uname -m)-unknown-linux-musl/release/zellij"
+ZELLIJ_BIN="/usr/src/zellij/remote-test/zellij"
 {
     echo "#!/bin/sh"
     # Only when set: an empty value is not "unset", it is a value the seam has
@@ -37,8 +37,9 @@ ZELLIJ_BIN="/usr/src/zellij/$(uname -m)-unknown-linux-musl/release/zellij"
 chmod +x /usr/local/bin/zellij
 
 if [ ! -x "$ZELLIJ_BIN" ]; then
-    echo "warning: $ZELLIJ_BIN is missing or not executable." >&2
-    echo "         Is ./target bind-mounted, and has the musl build run?" >&2
+    echo "error: $ZELLIJ_BIN is missing or not executable." >&2
+    echo "Run 'cargo x remote-test --build' (or '--build --native' on Linux)." >&2
+    exit 1
 fi
 
 exec /usr/sbin/sshd -D -e

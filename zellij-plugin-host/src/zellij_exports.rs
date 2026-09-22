@@ -797,7 +797,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::FsRemove { path, recursive } => fs_remove(env, path, recursive),
             PluginCommand::FsCreateDir { path, all } => fs_create_dir(env, path, all),
             PluginCommand::FsRename { from, to } => fs_rename(env, from, to),
-            PluginCommand::WatchFilesystem => watch_filesystem(env),
+            PluginCommand::WatchFilesystem => env.watch_filesystem(),
             PluginCommand::GetSessionList => get_session_list(env),
             PluginCommand::DumpSessionLayout { tab_index } => dump_session_layout(env, tab_index),
             PluginCommand::CloseSelf => close_self(env),
@@ -5661,14 +5661,6 @@ fn delete_all_dead_sessions_and_reply(env: &mut PluginEnv) {
         .non_fatal();
 }
 
-fn watch_filesystem(env: &PluginEnv) {
-    let _ = env
-        .senders
-        .to_plugin
-        .as_ref()
-        .map(|sender| sender.send(PluginInstruction::WatchFilesystem));
-}
-
 // note this removes the requesting plugin
 fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
     use crate::DumpSessionLayoutResponse;
@@ -6216,8 +6208,6 @@ struct ResolvedPath {
     /// True when the path named no virtual root and so points somewhere in the wider filesystem.
     /// Reaching one of these needs `FullHdAccess` on top of the read/write permission.
     escaped_roots: bool,
-    /// The virtual root the path was under, `None` for a path outside every root.
-    root: Option<&'static str>,
 }
 
 /// Resolve a plugin-visible path to a real one, refusing to leave the root it named.
@@ -6259,56 +6249,25 @@ enum FsPathResolution {
     PreserveEntry,
 }
 
-fn resolve_plugin_fs_path(
-    env: &PluginEnv,
-    path: &Path,
-    resolution: FsPathResolution,
-) -> Result<ResolvedPath> {
-    let roots = fs_roots(env);
-
-    let (prefix, root, relative) = match roots.iter().find_map(|(prefix, root)| {
-        path.strip_prefix(prefix)
-            .ok()
-            .map(|rest| (*prefix, root, rest))
-    }) {
-        Some((prefix, root, rest)) => (Some(prefix), root.clone(), rest.to_path_buf()),
-        // A relative path is the plugin's cwd, the same reading `translate_plugin_path` gives it.
-        None if path.is_relative() => (Some("/host"), env.plugin_cwd.clone(), path.to_path_buf()),
-        // FullHdAccess paths still resolve links before O_NOFOLLOW opens their final entry.
-        // They use the real filesystem root, with the permission check applied below.
-        None => (None, PathBuf::from("/"), path.to_path_buf()),
-    };
-
-    let canonical_root = root.canonicalize().unwrap_or(root);
-    let joined: PathBuf = canonical_root.join(&relative).components().collect();
-
-    // A write names a file that does not exist yet, so canonicalizing the whole path would fail.
-    // Canonicalize the deepest ancestor that does exist and re-attach the rest: the containment
-    // check then still sees through every symlink on the part of the path that is real.
-    let mut existing = joined.as_path();
+/// Resolve existing ancestors, retaining missing components for paths that may be created later.
+/// Roots need the same resolution as requested paths when a symlink precedes a missing folder.
+fn resolve_fs_ancestors(path: &Path) -> Result<PathBuf> {
+    let mut existing = path;
     // Collected outermost-last, then re-attached in order. Joining onto an empty `PathBuf` as we
     // go would leave a trailing separator, which asks the OS for a directory.
     let mut tail = vec![];
-    if resolution == FsPathResolution::PreserveEntry {
-        // Remove, rename and symlink metadata operate on the entry, not its target. Resolve
-        // its parent as usual. A virtual root (no relative file name) still resolves in full.
-        if let (Some(name), Some(parent)) = (relative.file_name(), joined.parent()) {
-            tail.push(name.to_os_string());
-            existing = parent;
-        }
-    }
-    let resolved = loop {
+    loop {
         match existing.canonicalize() {
             Ok(canonical) => {
-                break tail
+                return Ok(tail
                     .iter()
                     .rev()
-                    .fold(canonical, |path: PathBuf, name| path.join(name))
+                    .fold(canonical, |path: PathBuf, name| path.join(name)));
             },
             Err(error) => {
                 // A dangling link is an existing entry, not a missing path component.
                 // Reattaching it unchecked would let a subsequent create follow it outside
-                // the root. Entry operations above still preserve the final link itself.
+                // the root. Entry operations resolve only the parent to preserve the link.
                 ensure!(
                     !existing
                         .symlink_metadata()
@@ -6334,6 +6293,39 @@ fn resolve_plugin_fs_path(
                 }
             },
         }
+    }
+}
+
+fn resolve_plugin_fs_path(
+    env: &PluginEnv,
+    path: &Path,
+    resolution: FsPathResolution,
+) -> Result<ResolvedPath> {
+    let roots = fs_roots(env);
+
+    let (prefix, root, relative) = match roots.iter().find_map(|(prefix, root)| {
+        path.strip_prefix(prefix)
+            .ok()
+            .map(|rest| (*prefix, root, rest))
+    }) {
+        Some((prefix, root, rest)) => (Some(prefix), root.clone(), rest.to_path_buf()),
+        // A relative path is the plugin's cwd, the same reading `translate_plugin_path` gives it.
+        None if path.is_relative() => (Some("/host"), env.plugin_cwd.clone(), path.to_path_buf()),
+        // FullHdAccess paths still resolve links before O_NOFOLLOW opens their final entry.
+        // They use the real filesystem root, with the permission check applied below.
+        None => (None, PathBuf::from("/"), path.to_path_buf()),
+    };
+
+    let canonical_root = resolve_fs_ancestors(&root)?;
+    let joined: PathBuf = canonical_root.join(&relative).components().collect();
+
+    let resolved = match (resolution, relative.file_name(), joined.parent()) {
+        // Remove, rename and symlink metadata operate on the entry, not its target. Resolve
+        // its parent as usual. A virtual root (no relative file name) still resolves in full.
+        (FsPathResolution::PreserveEntry, Some(name), Some(parent)) => {
+            resolve_fs_ancestors(parent)?.join(name)
+        },
+        _ => resolve_fs_ancestors(&joined)?,
     };
 
     if !resolved.starts_with(&canonical_root) {
@@ -6362,7 +6354,6 @@ fn resolve_plugin_fs_path(
     Ok(ResolvedPath {
         real: resolved,
         escaped_roots: prefix.is_none(),
-        root: prefix,
     })
 }
 
@@ -6394,14 +6385,27 @@ fn resolve_fs_path_with_permission(
             path.display()
         ));
     }
-    if resolved.root == Some(PLUGINS_FS_ROOT)
-        && intent == FsIntent::Write
+    if intent == FsIntent::Write
+        && env.user_plugin_dir.is_some()
         && !has_permission(env, PermissionType::AuthorPlugins)
     {
-        return Err(anyhow!(
-            "'{}' is in the plugin folder, and writing there needs the 'AuthorPlugins' permission",
-            path.display()
-        ));
+        let plugin_dir = resolve_plugin_fs_path(
+            env,
+            Path::new(PLUGINS_FS_ROOT),
+            FsPathResolution::FollowSymlink,
+        )?
+        .real;
+        // Authority follows the physical directory, including aliases through /host and
+        // absolute paths. Removing or renaming an ancestor also changes the plugin folder.
+        if resolved.real.starts_with(&plugin_dir)
+            || (resolution == FsPathResolution::PreserveEntry
+                && plugin_dir.starts_with(&resolved.real))
+        {
+            return Err(anyhow!(
+                "'{}' changes the plugin folder, which needs the 'AuthorPlugins' permission",
+                path.display()
+            ));
+        }
     }
     Ok(resolved.real)
 }
@@ -8464,6 +8468,216 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
 mod permission_tests {
     use super::*;
     use zellij_types::input::layout::RunPluginOrAlias;
+
+    #[test]
+    fn a_missing_plugin_root_under_a_symlink_does_not_block_data_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config");
+        fs::create_dir(&config).unwrap();
+        let alias = temp.path().join("config-link");
+        std::os::unix::fs::symlink(&config, &alias).unwrap();
+        let plugin_dir = alias.join("plugins");
+        let mut env = crate::test_env::test_env();
+        env.plugin_own_data_dir = temp.path().to_owned();
+        env.user_plugin_dir = Some(plugin_dir.clone());
+        *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::WriteFiles]));
+        env.response_sink = ResponseSink::Capture(None);
+
+        run_plugin_command(
+            &mut env,
+            PluginCommand::FsWrite {
+                path: "/data/output.txt".into(),
+                contents: b"output".to_vec(),
+                append: false,
+                create_dirs: false,
+            },
+        )
+        .unwrap();
+        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        assert_eq!(
+            ProtobufFsMutateResponse::decode(bytes.as_slice())
+                .unwrap()
+                .result,
+            Some(fs_mutate_response::Result::Success(true))
+        );
+        assert_eq!(fs::read(temp.path().join("output.txt")).unwrap(), b"output");
+        assert!(
+            !plugin_dir.exists(),
+            "an unrelated write must not create /plugins"
+        );
+    }
+
+    #[test]
+    fn a_missing_plugin_root_under_a_symlink_still_requires_authoring_permission() {
+        for suffix in ["plugins", "missing/nested/plugins"] {
+            for prefix in [
+                "/plugins".to_owned(),
+                format!("/host/config-link/{suffix}"),
+                format!("/host/config/{suffix}"),
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let config = temp.path().join("config");
+                fs::create_dir(&config).unwrap();
+                let alias = temp.path().join("config-link");
+                std::os::unix::fs::symlink(&config, &alias).unwrap();
+                let plugin_dir = alias.join(suffix);
+                let mut env = crate::test_env::test_env();
+                env.plugin_cwd = temp.path().to_owned();
+                env.user_plugin_dir = Some(plugin_dir.clone());
+                *env.permissions.lock().unwrap() =
+                    Some(HashSet::from([PermissionType::WriteFiles]));
+                env.response_sink = ResponseSink::Capture(None);
+                let path = PathBuf::from(prefix).join("new/nested/plugin.ts");
+
+                for resolution in [
+                    FsPathResolution::FollowSymlink,
+                    FsPathResolution::PreserveEntry,
+                ] {
+                    let error =
+                        resolve_fs_path_with_permission(&env, &path, FsIntent::Write, resolution)
+                            .unwrap_err();
+                    assert!(
+                        error.to_string().contains("AuthorPlugins"),
+                        "{path:?}: {error:#}"
+                    );
+                }
+                for authorized in [false, true] {
+                    if authorized {
+                        env.permissions
+                            .lock()
+                            .unwrap()
+                            .as_mut()
+                            .unwrap()
+                            .insert(PermissionType::AuthorPlugins);
+                    }
+                    run_plugin_command(
+                        &mut env,
+                        PluginCommand::FsWrite {
+                            path: path.clone(),
+                            contents: b"export {};".to_vec(),
+                            append: false,
+                            create_dirs: true,
+                        },
+                    )
+                    .unwrap();
+                    let bytes: Vec<u8> =
+                        serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+                    let result = ProtobufFsMutateResponse::decode(bytes.as_slice())
+                        .unwrap()
+                        .result;
+                    if authorized {
+                        assert_eq!(
+                            result,
+                            Some(fs_mutate_response::Result::Success(true)),
+                            "{path:?}"
+                        );
+                        assert_eq!(
+                            fs::read(config.join(suffix).join("new/nested/plugin.ts")).unwrap(),
+                            b"export {};"
+                        );
+                    } else {
+                        assert!(
+                            matches!(result, Some(fs_mutate_response::Result::Error(error)) if error.contains("AuthorPlugins")),
+                            "{path:?}"
+                        );
+                        assert!(
+                            !plugin_dir.exists(),
+                            "a denied write must not create /plugins"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn authoring_permission_follows_plugin_directory_aliases_and_ancestors() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_dir = temp.path().join("plugins");
+        fs::create_dir(&plugin_dir).unwrap();
+        std::os::unix::fs::symlink(&plugin_dir, temp.path().join("alias")).unwrap();
+        let mut env = crate::test_env::test_env();
+        env.plugin_cwd = temp.path().to_owned();
+        env.user_plugin_dir = Some(plugin_dir);
+        for path in [
+            "/plugins/new.ts",
+            "/host/plugins/new.ts",
+            "/host/alias/new.ts",
+            "plugins/new.ts",
+            "/host/plugins",
+        ] {
+            for resolution in [
+                FsPathResolution::FollowSymlink,
+                FsPathResolution::PreserveEntry,
+            ] {
+                assert!(
+                    resolve_fs_path_with_permission(
+                        &env,
+                        Path::new(path),
+                        FsIntent::Write,
+                        resolution
+                    )
+                    .unwrap_err()
+                    .to_string()
+                    .contains("AuthorPlugins"),
+                    "{path}"
+                );
+                assert!(
+                    resolve_fs_path_with_permission(
+                        &env,
+                        Path::new(path),
+                        FsIntent::Read,
+                        resolution
+                    )
+                    .is_ok(),
+                    "{path}"
+                );
+            }
+        }
+        assert!(resolve_fs_path_with_permission(
+            &env,
+            Path::new("/host/unrelated"),
+            FsIntent::Write,
+            FsPathResolution::FollowSymlink
+        )
+        .is_ok());
+        assert!(resolve_fs_path_with_permission(
+            &env,
+            Path::new("/host"),
+            FsIntent::Write,
+            FsPathResolution::PreserveEntry
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("AuthorPlugins"));
+        // Ensuring an existing ancestor directory is harmless; only removing or renaming
+        // that entry changes the plugin folder below it.
+        *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::WriteFiles]));
+        env.response_sink = ResponseSink::Capture(None);
+        run_plugin_command(
+            &mut env,
+            PluginCommand::FsCreateDir {
+                path: PathBuf::from("/host"),
+                all: true,
+            },
+        )
+        .unwrap();
+        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        assert!(matches!(
+            ProtobufFsMutateResponse::decode(bytes.as_slice())
+                .unwrap()
+                .result,
+            Some(fs_mutate_response::Result::Success(true))
+        ));
+        *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::AuthorPlugins]));
+        assert!(resolve_fs_path_with_permission(
+            &env,
+            Path::new("/host/plugins/new.ts"),
+            FsIntent::Write,
+            FsPathResolution::FollowSymlink
+        )
+        .is_ok());
+    }
 
     #[test]
     fn denied_session_commands_reply_with_permission_errors() {

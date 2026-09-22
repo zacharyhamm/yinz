@@ -8,6 +8,7 @@
 //! Three phases, mirroring `ci e2e`:
 //!
 //!   * `--build` — musl binary, generated keypair and ssh config, containers up
+//!     (`--build --native` uses a native debug binary on Linux)
 //!   * `--test`  — the `#[ignore]`d tests in `zellij-server/tests/`
 //!   * `--clean` — containers down, generated credentials removed
 //!
@@ -44,6 +45,21 @@ const SSHD_READY_TIMEOUT: Duration = Duration::from_secs(60);
 pub fn main(sh: &Shell, flags: flags::RemoteTest) -> anyhow::Result<()> {
     let err_context = "failed to run the remote-pane tests";
 
+    if flags.native {
+        if !flags.build || flags.test || flags.clean {
+            anyhow::bail!(
+                "'--native' is only valid with '--build': run \
+                 'cargo x remote-test --build --native', then 'cargo x remote-test --test'"
+            );
+        }
+        if !cfg!(target_os = "linux") {
+            anyhow::bail!(
+                "'--native' requires a Linux host; use 'cargo x remote-test --build' \
+                 for the musl cross-build"
+            );
+        }
+    }
+
     match (flags.build, flags.test, flags.clean) {
         (false, false, false) => Err(anyhow::anyhow!(
             "one of '--build', '--test' or '--clean' must be provided!"
@@ -55,7 +71,7 @@ pub fn main(sh: &Shell, flags: flags::RemoteTest) -> anyhow::Result<()> {
             "flags '--build' and '--test' are mutually exclusive!"
         )),
         (_, _, true) => clean(sh),
-        (true, _, _) => build(sh),
+        (true, _, _) => build(sh, flags.native),
         (_, true, _) => test(sh, flags.args),
     }
     .context(err_context)
@@ -68,25 +84,45 @@ pub fn remote_test_dir() -> PathBuf {
     crate::target_dir().join("remote-test")
 }
 
-fn build(sh: &Shell) -> anyhow::Result<()> {
+fn build(sh: &Shell, native: bool) -> anyhow::Result<()> {
     let _pd = sh.push_dir(crate::project_root());
 
-    crate::status(">> Building the musl binary for the far machine");
-    println!(">> Building the musl binary for the far machine");
-    crate::ci::build_musl_release(sh).context("failed to build the binary the container runs")?;
-
-    let binary = crate::target_dir()
-        .join(crate::ci::musl_target())
-        .join("release")
-        .join("zellij");
+    let relative_binary = if native {
+        crate::status(">> Building the native debug binary for the far machine");
+        println!(">> Building the native debug binary for the far machine");
+        let cargo = crate::cargo()?;
+        cmd!(sh, "{cargo} build --bin zellij")
+            .run()
+            .context("failed to build the native binary the container runs")?;
+        PathBuf::from("debug/zellij")
+    } else {
+        crate::status(">> Building the musl binary for the far machine");
+        println!(">> Building the musl binary for the far machine");
+        crate::ci::build_musl_release(sh)
+            .context("failed to build the binary the container runs")?;
+        Path::new(crate::ci::musl_target()).join("release/zellij")
+    };
+    let binary = crate::target_dir().join(&relative_binary);
     if !binary.exists() {
         return Err(anyhow::anyhow!(
-            "the musl build reported success but {} is missing",
+            "the build reported success but {} is missing",
             binary.display()
         ));
     }
 
     generate_credentials(sh).context("failed to generate the test's ssh credentials")?;
+
+    // Relative to target/remote-test on both the host and the container's bind mount.
+    // Keep the entrypoint independent of the selected target and build profile.
+    let link = remote_test_dir().join("zellij");
+    match std::fs::remove_file(&link) {
+        Ok(()) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(e) => return Err(e).with_context(|| format!("failed to remove {}", link.display())),
+    }
+    let target = Path::new("..").join(relative_binary);
+    std::os::unix::fs::symlink(&target, &link)
+        .with_context(|| format!("failed to link {} -> {}", link.display(), target.display()))?;
 
     crate::status(">> Bringing the remote-pane containers up");
     println!(">> Bringing the remote-pane containers up");
@@ -104,6 +140,9 @@ fn build(sh: &Shell) -> anyhow::Result<()> {
         .context("failed to restart the far machine")?;
 
     wait_for_sshd().context("the containers came up but sshd never started answering")?;
+    compose(sh, &["exec", "-T", "remote", "/usr/local/bin/zellij", "--version"])
+        .run()
+        .context("the built binary cannot run in the SSH container; native builds need compatible runtime libraries")?;
 
     println!(">> Ready. Run the tests with 'cargo x remote-test --test'.");
     Ok(())

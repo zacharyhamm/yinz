@@ -75,9 +75,9 @@ pub struct RemoteReader {
     ///
     /// They must not count towards `received`, or the broker would replay from
     /// the wrong place and silently skip real output. Injection only happens
-    /// while `decoded` is empty — the read loop hands back buffered output
-    /// before it ever touches the socket — so the synthetic bytes are always a
-    /// contiguous prefix.
+    /// while `decoded` is empty: the read loop hands back buffered output before touching
+    /// the socket, and gap notices wait for preceding output to drain. Synthetic bytes are
+    /// therefore always a contiguous prefix.
     synthetic_prefix: usize,
     /// What to tell the pty thread when the pane ends, and what it needs to
     /// hear: `HoldPane` or `ClosePane`, and `CommandPaneExited` for a plugin
@@ -293,7 +293,6 @@ impl RemoteReader {
                 Some(pair) => pair,
                 None => return Ok(ended),
             };
-            self.inbuf.drain(..consumed);
             match frame {
                 Frame::Output(bytes) => self.decoded.extend(bytes),
                 // Only the broker sends on this connection, and it never sends
@@ -308,17 +307,32 @@ impl RemoteReader {
                     let msg: BrokerToServerMsg = frame.decode_control().map_err(|e| {
                         io::Error::new(io::ErrorKind::InvalidData, format!("{e:#}"))
                     })?;
+                    if matches!(msg, BrokerToServerMsg::OutputGap { .. })
+                        && !self.decoded.is_empty()
+                    {
+                        // Preserve both delivery order and the contiguous synthetic prefix.
+                        // Leave this frame buffered until all preceding bytes are handed out.
+                        return Ok(ended);
+                    }
                     if self.handle_control(msg) {
                         ended = true;
                     }
                 },
             }
+            self.inbuf.drain(..consumed);
         }
     }
 
     /// Returns true if this message ends the pane.
     fn handle_control(&mut self, msg: BrokerToServerMsg) -> bool {
         match msg {
+            BrokerToServerMsg::OutputGap { dropped } => {
+                if dropped > 0 {
+                    self.conn.restore_received(self.conn.received(), dropped);
+                    self.on_reconnected(dropped);
+                }
+                false
+            },
             BrokerToServerMsg::ChildExited { status } => {
                 self.conn.set_child_exit(status);
                 self.cmd.workflow_owner().is_none() || self.conn.status().child_group_terminated
@@ -412,6 +426,12 @@ impl RemoteReader {
             if !self.decoded.is_empty() {
                 return Ok(self.drain_into(buf));
             }
+            if self.consume_frames()? {
+                self.finished = true;
+            }
+            if !self.decoded.is_empty() {
+                continue;
+            }
             // Keep receiving group status and accepting escalation after wrapper exit.
             if let Some(status) = self.conn.child_exit() {
                 self.report_exit(status);
@@ -459,9 +479,6 @@ impl RemoteReader {
             }
 
             self.inbuf.extend_from_slice(&chunk[..n]);
-            if self.consume_frames()? {
-                self.finished = true;
-            }
         }
     }
 }

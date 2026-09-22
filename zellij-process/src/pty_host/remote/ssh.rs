@@ -22,9 +22,11 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zellij_types::internal_ids::TerminalId;
@@ -50,6 +52,7 @@ const FORWARD_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Bootstrapping runs a remote command; a cold ssh handshake plus a broker start
 /// is comfortably under this, and a hang here would otherwise wedge a pane.
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
+const SSH_OUTPUT_CAPACITY: usize = 64 * 1024;
 
 /// How long to keep retrying a resume the broker refuses because someone is
 /// still attached. Deliberately the same as the supervisor's
@@ -210,6 +213,100 @@ struct HostForward {
     host: String,
     local_socket: PathBuf,
     ssh: Child,
+    stderr: Option<SshOutputCapture>,
+}
+
+/// Drain SSH output throughout its lifetime, retaining only the final 64 KiB.
+// ponytail: one polling thread per capture; share readiness polling if host counts grow large.
+struct SshOutputCapture {
+    stop: Arc<AtomicBool>,
+    reader: Option<std::thread::JoinHandle<Vec<u8>>>,
+}
+
+impl SshOutputCapture {
+    fn new(mut pipe: impl Read + AsFd + Send + 'static) -> Result<Self> {
+        use nix::fcntl::{fcntl, FcntlArg, OFlag};
+        let flags =
+            fcntl(pipe.as_fd(), FcntlArg::F_GETFL).context("failed to read SSH output flags")?;
+        fcntl(
+            pipe.as_fd(),
+            FcntlArg::F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK),
+        )
+        .context("failed to make SSH output nonblocking")?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let reader = std::thread::Builder::new()
+            .name("ssh-output".into())
+            .spawn(move || {
+                let mut output = super::session::OutputRing::new(SSH_OUTPUT_CAPACITY);
+                let mut chunk = [0; 8192];
+                let mut final_drain: usize = 1024 * 1024;
+                loop {
+                    let stopping = stopping.load(Ordering::Acquire);
+                    match pipe.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(read) => {
+                            output.append(&chunk[..read]);
+                            // Drain up to 1 MiB queued after exit; descendants still
+                            // writing output cannot keep teardown alive forever.
+                            if stopping {
+                                final_drain = final_drain.saturating_sub(read);
+                                if final_drain == 0 {
+                                    break;
+                                }
+                            }
+                        },
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if stopping {
+                                break;
+                            }
+                            let mut ready = [nix::poll::PollFd::new(
+                                pipe.as_fd(),
+                                nix::poll::PollFlags::POLLIN,
+                            )];
+                            match nix::poll::poll(&mut ready, 50u16) {
+                                Err(error) if error != nix::errno::Errno::EINTR => {
+                                    Err::<(), _>(error)
+                                        .context("failed to poll SSH output")
+                                        .non_fatal();
+                                    break;
+                                },
+                                _ => {},
+                            }
+                        },
+                        Err(error) => {
+                            Err::<(), _>(error)
+                                .context("failed to read SSH output")
+                                .non_fatal();
+                            break;
+                        },
+                    }
+                }
+                output.replay_from(0).0
+            })
+            .context("failed to start the SSH output reader")?;
+        Ok(Self {
+            stop,
+            reader: Some(reader),
+        })
+    }
+
+    fn finish(&mut self) -> Result<Vec<u8>> {
+        self.stop.store(true, Ordering::Release);
+        let Some(reader) = self.reader.take() else {
+            return Ok(Vec::new());
+        };
+        reader
+            .join()
+            .map_err(|_| anyhow!("the SSH output reader panicked"))
+    }
+}
+
+impl Drop for SshOutputCapture {
+    fn drop(&mut self) {
+        self.finish().non_fatal();
+    }
 }
 
 impl Drop for HostForward {
@@ -695,37 +792,17 @@ fn bootstrap_with_options(host: &str, options: &SshOptions) -> Result<BrokerEndp
     // `sun_path` there fails deep inside ssh with a message about multiplexing
     // rather than about the length.
     check_socket_path_length(&control_path(host, options), SSH_CONTROL_PATH_RENAME_MARGIN)?;
-    let mut child = Command::new("ssh")
+    let mut command = Command::new("ssh");
+    command
         .args(ssh_common_args(host, options))
         // End of options: see `validate_ssh_host`.
         .arg("--")
         .arg(host)
         .arg("zellij")
         .arg("--pty-broker")
-        .arg("ensure")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .arg("ensure");
+    let output = bootstrap_output(&mut command, BOOTSTRAP_TIMEOUT)
         .with_context(|| format!("failed to run ssh to bootstrap a broker on {host}"))?;
-
-    let deadline = Instant::now() + BOOTSTRAP_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(FORWARD_POLL_INTERVAL),
-            Ok(None) => {
-                let _ = child.kill();
-                return Err(anyhow!(
-                    "timed out waiting for {host} to report where its zellij broker listens"
-                ));
-            },
-            Err(e) => return Err(e).context("failed waiting for the bootstrap ssh"),
-        }
-    }
-    let output = child
-        .wait_with_output()
-        .context("failed to collect the bootstrap ssh output")?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if !output.status.success() {
         return Err(anyhow!(
@@ -763,6 +840,59 @@ fn bootstrap_with_options(host: &str, options: &SshOptions) -> Result<BrokerEndp
         ));
     }
     Ok(endpoint)
+}
+
+fn bootstrap_output(command: &mut Command, timeout: Duration) -> Result<Output> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn the bootstrap ssh")?;
+    let result = (|| {
+        let mut stdout = SshOutputCapture::new(
+            child
+                .stdout
+                .take()
+                .context("bootstrap stdout was unavailable")?,
+        )?;
+        let mut stderr = SshOutputCapture::new(
+            child
+                .stderr
+                .take()
+                .context("bootstrap stderr was unavailable")?,
+        )?;
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            match child
+                .try_wait()
+                .context("failed waiting for the bootstrap ssh")?
+            {
+                Some(status) => break status,
+                None if Instant::now() < deadline => std::thread::sleep(FORWARD_POLL_INTERVAL),
+                None => {
+                    return Err(anyhow!(
+                        "timed out waiting for the bootstrap ssh after {timeout:?}"
+                    ))
+                },
+            }
+        };
+        Ok(Output {
+            status,
+            stdout: stdout
+                .finish()
+                .context("failed to collect bootstrap stdout")?,
+            stderr: stderr
+                .finish()
+                .context("failed to collect bootstrap stderr")?,
+        })
+    })();
+    if result.is_err() {
+        // Includes capture setup failures: no spawned child can escape an error path.
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
 }
 
 /// Options for the short-lived invocations: bootstrap, and nothing else.
@@ -845,7 +975,14 @@ fn start_forward(instance: &str, host: &str, options: &SshOptions) -> Result<Hos
         host: host.to_owned(),
         local_socket,
         ssh,
+        stderr: None,
     };
+    let stderr = forward
+        .ssh
+        .stderr
+        .take()
+        .context("SSH stderr was unavailable")?;
+    forward.stderr = Some(SshOutputCapture::new(stderr)?);
 
     // Wait for the forward to actually carry a connection. `ssh` returning
     // immediately does not mean the socket is bound yet.
@@ -855,10 +992,13 @@ fn start_forward(instance: &str, host: &str, options: &SshOptions) -> Result<Hos
             return Ok(forward);
         }
         if let Ok(Some(status)) = forward.ssh.try_wait() {
-            let mut stderr = String::new();
-            if let Some(mut pipe) = forward.ssh.stderr.take() {
-                let _ = pipe.read_to_string(&mut stderr);
-            }
+            let stderr = forward
+                .stderr
+                .as_mut()
+                .map(SshOutputCapture::finish)
+                .transpose()?
+                .unwrap_or_default();
+            let stderr = String::from_utf8_lossy(&stderr);
             return Err(anyhow!(
                 "the ssh forward to {} exited ({status}): {}",
                 forward.host,

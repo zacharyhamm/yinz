@@ -11,10 +11,8 @@ use zellij_types::internal_ids::TabId;
 
 use crate::plugin_worker::MessageToWorker;
 use crate::queues::{CancelResult, FinishedJob, QueuedJob, Queues};
-use crate::watch_filesystem::watch_filesystem;
 use highway::{HighwayHash, PortableHash};
 use log::info;
-use notify_debouncer_full::{notify::RecommendedWatcher, Debouncer, RecommendedCache};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
@@ -250,7 +248,6 @@ pub struct WasmBridge {
     /// across `load_plugin` or `unload_plugin`.
     queues: Arc<Mutex<Queues>>,
     path_to_default_shell: PathBuf,
-    watcher: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
     zellij_cwd: PathBuf,
     session_env_vars: std::collections::BTreeMap<String, String>,
     default_shell: Option<TerminalAction>,
@@ -393,7 +390,6 @@ impl WasmBridge {
         let connected_clients: Arc<Mutex<Vec<ClientId>>> = Arc::new(Mutex::new(vec![]));
         let plugin_cache: Arc<Mutex<HashMap<PluginCacheKey, Module>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let watcher = None;
         let downloader = Downloader::new(ZELLIJ_CACHE_DIR.to_path_buf());
         let max_threads = num_cpus::get().clamp(4, 16);
         let plugin_executor = Arc::new(PinnedExecutor::new(
@@ -415,7 +411,6 @@ impl WasmBridge {
             plugin_map,
             plugin_executor,
             path_to_default_shell,
-            watcher,
             next_plugin_id: 0,
             shared_plugin_ids: HashSet::new(),
             cached_events_for_pending_plugins: HashMap::new(),
@@ -2084,7 +2079,7 @@ impl WasmBridge {
                             },
                         }
                     }
-                    env.plugin_cwd = new_host_dir.clone();
+                    env.set_host_folder(new_host_dir.clone());
                     drop(plugin);
                     let _ = senders.send_to_pty(zellij_bus::pty::PtyInstruction::ReportPluginCwd(
                         plugin_id,
@@ -2594,9 +2589,6 @@ impl WasmBridge {
         };
         for plugin_id in &plugin_ids {
             drop(self.unload_plugin_with_deadline(*plugin_id, Some(deadline)));
-        }
-        if let Some(watcher) = self.watcher.take() {
-            watcher.stop_nonblocking();
         }
     }
     /// Drop the host and let all loaders, environments and workers release /data within
@@ -3124,17 +3116,6 @@ impl WasmBridge {
         }
         Ok(())
     }
-    pub fn start_fs_watcher_if_not_started(&mut self) {
-        if self.watcher.is_none() {
-            self.watcher = match watch_filesystem(self.senders.clone(), &self.zellij_cwd) {
-                Ok(watcher) => Some(watcher),
-                Err(e) => {
-                    log::error!("Failed to watch filesystem: {:?}", e);
-                    None
-                },
-            };
-        }
-    }
     /// Grant `permissions` to the plugin at `plugin_url`, on top of whatever it already has.
     ///
     /// The cache is keyed the way `cache_plugin_permissions` keys it - by the location's string
@@ -3154,17 +3135,12 @@ impl WasmBridge {
         let key = location.to_string();
 
         let mut permission_cache = PermissionCache::from_path_or_default(None);
-        let mut granted: Vec<PermissionType> = permission_cache
-            .get_permissions(key.clone())
+        permission_cache.grant(key.clone(), permissions);
+        permission_cache.write_to_file().with_context(err_context)?;
+        let granted = permission_cache
+            .get_permissions(key)
             .cloned()
             .unwrap_or_default();
-        for permission in permissions {
-            if !granted.contains(&permission) {
-                granted.push(permission);
-            }
-        }
-        permission_cache.cache(key, granted.clone());
-        permission_cache.write_to_file().with_context(err_context)?;
 
         let running: Vec<PluginId> = self
             .plugin_map
