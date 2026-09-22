@@ -1788,17 +1788,19 @@ impl ServerOsApi for ServerOsInputOutput {
             for (terminal_id, (cols, rows, width_in_pixels, height_in_pixels)) in
                 cached_resizes.iter()
             {
-                if self
-                    .set_terminal_size_using_terminal_id(
-                        *terminal_id,
-                        *cols,
-                        *rows,
-                        *width_in_pixels,
-                        *height_in_pixels,
-                    )
-                    .is_ok()
-                {
-                    applied.push((*terminal_id, *cols, *rows));
+                // A resize that did not go through is logged and left out of `applied`,
+                // so the recorder does not record a size the pane never got.
+                match self.set_terminal_size_using_terminal_id(
+                    *terminal_id,
+                    *cols,
+                    *rows,
+                    *width_in_pixels,
+                    *height_in_pixels,
+                ) {
+                    Ok(()) => applied.push((*terminal_id, *cols, *rows)),
+                    Err(e) => Err::<(), _>(e)
+                        .context("failed to apply a cached resize")
+                        .non_fatal(),
                 }
             }
         }
