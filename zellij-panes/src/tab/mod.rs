@@ -10164,11 +10164,12 @@ impl Tab {
         self.dissolve_stack_lists_for_classic_mutation();
         self.swap_layouts.set_is_tiled_damaged(); // TODO: verify we can do all the below first
         if self.pane_is_stacked(root_pane_id) {
-            for pane in panes_to_stack.drain(..) {
-                if let Some(pane) = self.tiled_panes.add_pane_to_stack(&root_pane_id, pane) {
-                    log::error!("No room in the stack for pane {:?}, hiding it", pane.pid());
-                    self.park_pane(pane);
-                }
+            for pane in self
+                .tiled_panes
+                .add_panes_to_stack(&root_pane_id, panes_to_stack)
+            {
+                log::error!("No room in the stack for pane {:?}, hiding it", pane.pid());
+                self.park_pane(pane);
             }
         } else {
             // + 1 for the root pane
@@ -10204,6 +10205,14 @@ impl Tab {
                     .expand_pane_in_stack(focused_pane_id_in_stack);
             } else if self.tiled_panes.pane_id_is_focused(&root_pane_id) {
                 self.tiled_panes.expand_pane_in_stack(root_pane_id);
+            } else {
+                // Nothing in the new stack is focused, so nothing expanded it and nothing
+                // reapplied the frames: the root was collapsed to a single row above and
+                // every member kept the offset it arrived with, and no pty heard of
+                // either. `expand_pane_in_stack` reaches `reapply_pane_frames`; this is
+                // the same for a stack nobody is looking at.
+                self.tiled_panes
+                    .reapply_pane_frames_in_stack_of(&root_pane_id);
             }
         }
     }

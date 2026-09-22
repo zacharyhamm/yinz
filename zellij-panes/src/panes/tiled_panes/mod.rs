@@ -367,29 +367,43 @@ impl TiledPanes {
         }
     }
     /// As [`insert_pane`](Self::insert_pane), including handing the pane back.
+    /// Put every pane in `panes` into the stack of `pane_id_in_stack`, in order, and hand
+    /// back the ones that could not be placed, as [`insert_pane`](Self::insert_pane) does.
+    ///
+    /// One pass, then one reframe: making room reshapes every member through
+    /// `StackedPanes`, so reframing per insert would tell the stack `O(n^2)` sizes, all
+    /// but the last stale by the time the next pane went in.
     #[must_use]
-    pub fn add_pane_to_stack(
+    pub fn add_panes_to_stack(
         &mut self,
         pane_id_in_stack: &PaneId,
-        pane: Box<dyn Pane>,
-    ) -> Option<Box<dyn Pane>> {
-        let mut pane_grid = TiledPaneGrid::new(
-            &mut self.panes,
-            &self.panes_to_hide,
-            display_area_viewport(&self.display_area),
-            *self.viewport.borrow(),
-        );
-        match pane_grid.make_room_in_stack_of_pane_id_for_pane(pane_id_in_stack) {
-            Ok(new_pane_geom) => {
-                let pane_id = pane.pid();
-                self.insert_into_stack(pane_id, new_pane_geom, pane);
-                None
-            },
-            Err(_e) => {
-                let should_relayout = false;
-                self.add_pane_without_stacked_resize(pane.pid(), pane, should_relayout)
-            },
+        panes: Vec<Box<dyn Pane>>,
+    ) -> Vec<Box<dyn Pane>> {
+        let mut not_placed = vec![];
+        for mut pane in panes {
+            let mut pane_grid = TiledPaneGrid::new(
+                &mut self.panes,
+                &self.panes_to_hide,
+                display_area_viewport(&self.display_area),
+                *self.viewport.borrow(),
+            );
+            match pane_grid.make_room_in_stack_of_pane_id_for_pane(pane_id_in_stack) {
+                Ok(new_pane_geom) => {
+                    pane.set_geom(new_pane_geom);
+                    self.panes.insert(pane.pid(), pane);
+                },
+                Err(_e) => {
+                    let should_relayout = false;
+                    if let Some(pane) =
+                        self.add_pane_without_stacked_resize(pane.pid(), pane, should_relayout)
+                    {
+                        not_placed.push(pane);
+                    }
+                },
+            }
         }
+        self.reapply_pane_frames_in_stack_of(pane_id_in_stack);
+        not_placed
     }
     fn add_pane(
         &mut self,

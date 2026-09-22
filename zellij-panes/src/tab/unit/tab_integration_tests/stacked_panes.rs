@@ -3444,10 +3444,10 @@ fn resizing_a_hidden_stack_list_member_dissolves_the_lists() {
 
 #[test]
 fn a_pane_stacked_onto_an_existing_stack_is_inset_and_its_pty_resized() {
-    // `add_pane_to_stack` put the pane straight into the map, skipping the frame inset
-    // `add_pane_with_existing_geom` applies and the pty resize a relayout would send, so
-    // a shell stacked through `Screen::stack_panes` kept a pty two columns too wide until
-    // the next resize.
+    // Stacking onto an existing stack (now `add_panes_to_stack`) put the pane straight into
+    // the map, skipping the frame inset `add_pane_with_existing_geom` applies and the pty
+    // resize a relayout would send, so a shell stacked through `Screen::stack_panes` kept a
+    // pty two columns too wide until the next resize.
     let (tx, rx) = channels::unbounded();
     let mut tab = create_new_tab_with_mock_pty_writer(
         Size { cols: 80, rows: 30 },
@@ -3731,4 +3731,90 @@ fn the_member_a_stack_collapses_is_reframed_before_its_pty_hears_the_new_size() 
         })
         .collect();
     assert_eq!(rows_for_root, vec![1], "{rows_for_root:?}");
+}
+
+/// Stacking n panes used to reframe the whole stack once per pane, so the members heard
+/// `O(n^2)` `ResizePty` messages, all but the last carrying a size the next insert
+/// immediately invalidated. One pass, then one reframe.
+#[test]
+fn stacking_several_panes_resizes_each_stack_member_once() {
+    let (tx, rx) = channels::unbounded();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        Size {
+            cols: 121,
+            rows: 40,
+        },
+        ModeInfo::default(),
+        SenderWithContext::new(tx),
+    );
+    let client_id = crate::ClientId::new(1);
+    let root = PaneId::Terminal(crate::TerminalId::new(1));
+    let member = PaneId::Terminal(crate::TerminalId::new(2));
+    let loose: Vec<PaneId> = (3..=5)
+        .map(|id| PaneId::Terminal(crate::TerminalId::new(id)))
+        .collect();
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+
+    // Split sideways so the root keeps all 40 rows: `make_room_for_new_pane_in_stack`
+    // needs the flexible pane above `MIN_TERMINAL_HEIGHT` before each of the inserts.
+    for id in &loose {
+        tab.vertical_split(*id, None, client_id, None, None)
+            .unwrap();
+    }
+    tab.tiled_panes.focus_pane(root, client_id);
+    tab.new_stacked_pane(
+        member,
+        None,
+        None,
+        false,
+        false,
+        Some(root),
+        Some(client_id),
+        None,
+        None,
+    )
+    .unwrap();
+
+    let panes: Vec<_> = loose
+        .iter()
+        .map(|id| {
+            let mut pane = tab.extract_pane(*id, false).expect("a loose pane");
+            // As they would arrive from a tab that draws no frames.
+            pane.set_content_offset(zellij_types::pane_size::Offset::default());
+            pane
+        })
+        .collect();
+    let _ = rx.try_iter().count(); // creation, the splits and the extractions
+
+    tab.stack_panes(root, panes);
+
+    let mut resized: HashMap<PaneId, Vec<(u16, u16)>> = HashMap::new();
+    for (msg, _) in rx.try_iter() {
+        if let PtyWriteInstruction::ResizePty(id, cols, rows, ..) = msg {
+            resized
+                .entry(PaneId::Terminal(id))
+                .or_default()
+                .push((cols, rows));
+        }
+    }
+    let mut members = vec![root, member];
+    members.extend(loose.iter().copied());
+    for id in members {
+        let pane = tab
+            .tiled_panes
+            .get_pane(id)
+            .unwrap_or_else(|| panic!("{id:?} is in the stack"));
+        assert!(pane.position_and_size().is_stacked(), "{id:?}");
+        assert_eq!(
+            resized.get(&id).map(Vec::as_slice),
+            Some(
+                &[(
+                    pane.get_content_columns() as u16,
+                    pane.get_content_rows() as u16
+                )][..]
+            ),
+            "{id:?} heard {:?}, wanted one message at its final size",
+            resized.get(&id),
+        );
+    }
 }
