@@ -240,10 +240,15 @@ impl Pane for TerminalPane {
         self.geom.is_pinned = is_pinned;
         self.reflow_lines();
         self.render_full_viewport();
+        // A pane whose geometry changed is repainted whether or not the caller goes on to
+        // relayout the tab, as `PluginPane::set_geom` already did. The stack paths used
+        // to force-render every pane in the tab to make up for this.
+        self.set_should_render(true);
     }
     fn set_geom_override(&mut self, pane_geom: PaneGeom) {
         self.geom_override = Some(pane_geom);
         self.reflow_lines();
+        self.set_should_render(true);
     }
     fn set_layout(
         &mut self,

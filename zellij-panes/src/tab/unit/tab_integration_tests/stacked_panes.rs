@@ -3441,3 +3441,70 @@ fn resizing_a_hidden_stack_list_member_dissolves_the_lists() {
     assert!(tab.tiled_panes.panes_contain(&hidden_member));
     assert!(!tab.suppressed_panes.contains_key(&hidden_member));
 }
+
+#[test]
+fn a_pane_stacked_onto_an_existing_stack_is_inset_and_its_pty_resized() {
+    // `add_pane_to_stack` put the pane straight into the map, skipping the frame inset
+    // `add_pane_with_existing_geom` applies and the pty resize a relayout would send, so
+    // a shell stacked through `Screen::stack_panes` kept a pty two columns too wide until
+    // the next resize.
+    let (tx, rx) = channels::unbounded();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        Size { cols: 80, rows: 30 },
+        ModeInfo::default(),
+        SenderWithContext::new(tx),
+    );
+    let client_id = crate::ClientId::new(1);
+    let root = PaneId::Terminal(crate::TerminalId::new(1));
+    let member = PaneId::Terminal(crate::TerminalId::new(2));
+    let loose = PaneId::Terminal(crate::TerminalId::new(3));
+    // The loose pane first and unfocused: a tiled pane opened while a stack member is
+    // focused would join that stack.
+    tab.new_tiled_pane(loose, None, None, false, false, Some(client_id), None, None)
+        .unwrap();
+    tab.new_stacked_pane(
+        member,
+        None,
+        None,
+        false,
+        true,
+        Some(root),
+        Some(client_id),
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(
+        !tab.tiled_panes
+            .get_pane(loose)
+            .unwrap()
+            .position_and_size()
+            .is_stacked(),
+        "precondition: the third pane sits beside the stack"
+    );
+    let mut pane = tab.extract_pane(loose, false).expect("the loose pane");
+    // As it would arrive from a tab that draws no frames.
+    pane.set_content_offset(zellij_types::pane_size::Offset::default());
+    let _ = rx.try_iter().count(); // whatever creation and extraction sent
+
+    tab.stack_panes(root, vec![pane]);
+
+    let stacked = tab
+        .tiled_panes
+        .get_pane(loose)
+        .expect("the pane joined the stack");
+    assert!(stacked.position_and_size().is_stacked());
+    assert_eq!(
+        stacked.get_content_columns(),
+        stacked.cols() - 2,
+        "full frames inset the content by a column on each side"
+    );
+    let resized: Vec<PaneId> = rx
+        .try_iter()
+        .filter_map(|(msg, _)| match msg {
+            PtyWriteInstruction::ResizePty(id, ..) => Some(PaneId::Terminal(id)),
+            _ => None,
+        })
+        .collect();
+    assert!(resized.contains(&loose), "{resized:?}");
+}

@@ -1,9 +1,3 @@
-#[cfg(test)]
-const PLUGIN_2: zellij_types::internal_ids::PluginId = zellij_types::internal_ids::PluginId::new(2);
-#[cfg(test)]
-const TERMINAL_2: zellij_types::internal_ids::TerminalId =
-    zellij_types::internal_ids::TerminalId::new(2);
-
 use super::*;
 use zellij_types::input::layout::Run;
 use zellij_types::pane_size::Offset;
@@ -128,17 +122,9 @@ fn pane_creation_characterization() {
                         let pty_messages: Vec<_> = pty_rx.try_iter().map(|(msg, _)| msg).collect();
                         let plugin_messages: Vec<_> =
                             plugin_rx.try_iter().map(|(msg, _)| msg).collect();
-                        // Named-stack insertion only reapplies frames when focused.
-                        if placement == Placement::Stacked && !suppressed && !focus {
-                            assert!(!pty_messages.iter().any(|msg| matches!(
-                                msg,
-                                PtyWriteInstruction::ResizePty(TERMINAL_2, ..)
-                            )));
-                            assert!(!plugin_messages
-                                .iter()
-                                .any(|msg| matches!(msg, PluginInstruction::Resize(PLUGIN_2, ..))));
-                            continue;
-                        }
+                        // Every placement tells the new pane its size, a named-stack
+                        // insertion included: joining a stack used to skip the pty resize
+                        // unless the pane was focused and a relayout followed.
                         match pid {
                             PaneId::Terminal(id) => assert!(pty_messages.iter().any(|msg| matches!(*msg, PtyWriteInstruction::ResizePty(p, c, r, None, None) if p == id && usize::from(c) == cols && usize::from(r) == rows)), "placement={placement:?}, {pid:?}, suppressed={suppressed}, focus={focus}, borderless={borderless}, size={cols}x{rows}, messages={pty_messages:?}"),
                             PaneId::Plugin(id) => assert!(plugin_messages.iter().any(|msg| matches!(*msg, PluginInstruction::Resize(p, c, r) if p == id && c == cols && r == rows)), "placement={placement:?}, {pid:?}, suppressed={suppressed}, focus={focus}, borderless={borderless}, size={cols}x{rows}, messages={plugin_messages:?}"),
