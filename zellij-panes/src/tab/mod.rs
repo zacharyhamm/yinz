@@ -364,8 +364,9 @@ pub struct Tab {
     pane_being_resized_with_mouse: Option<PaneResizeState>,
     link_handler: Rc<RefCell<LinkHandler>>,
     clipboard_provider: ClipboardProvider,
-    // TODO: used only to focus the pane when the layout is loaded
-    // it seems that optimization is possible using `active_panes`
+    /// The pane the layout marked `focus=true`, where a client joining an otherwise
+    /// empty tab lands. A property of the layout, not of any client: it survives
+    /// clients detaching, and is only checked against the panes still in the tab.
     focus_pane_id: Option<PaneId>,
     copy_on_select: bool,
     terminal_emulator_colors: Rc<RefCell<Palette>>,
@@ -3048,11 +3049,15 @@ impl Tab {
             }
         } else {
             let mut pane_ids: Vec<PaneId> = self.tiled_panes.pane_ids().copied().collect();
-            let focus_pane_id = self.focus_pane_id.or_else(|| {
-                pane_ids.sort(); // TODO: make this predictable
-                pane_ids.retain(|p| !self.tiled_panes.panes_to_hide_contains(*p));
-                pane_ids.first().copied()
-            });
+            let focus_pane_id = self
+                .focus_pane_id
+                .filter(|focus_pane_id| pane_ids.contains(focus_pane_id))
+                .or_else(|| {
+                    // Deterministic: `PaneId: Ord`, and the ids came out of a `BTreeMap`.
+                    pane_ids.sort();
+                    pane_ids.retain(|p| !self.tiled_panes.panes_to_hide_contains(*p));
+                    pane_ids.first().copied()
+                });
             if let Some(focus_pane_id) = focus_pane_id {
                 self.tiled_panes
                     .focus_pane_if_client_not_focused(focus_pane_id, client_id);
@@ -3156,10 +3161,9 @@ impl Tab {
         Ok(())
     }
     pub fn remove_client(&mut self, client_id: ClientId) {
-        self.focus_pane_id = None;
-        if let Some(c) = self.mode_info.borrow_mut().get_mut(&client_id) {
-            c.change_to_default_mode();
-        } // TODO: no races?
+        // The entry goes, as `drain_single_client` does: `add_client` supplies a fresh
+        // `ModeInfo` on reattach, and one left behind per detach lived as long as the tab.
+        self.mode_info.borrow_mut().remove(&client_id);
         self.connected_clients.borrow_mut().remove(&client_id);
         self.mouse_help_text_visible.remove(&client_id);
         self.mouse_last_pane_id.remove(&client_id);

@@ -543,6 +543,7 @@ fn drain_pty_writer(
     out
 }
 
+mod clients;
 mod closing;
 mod floating_fullscreen;
 mod focus_movement;
