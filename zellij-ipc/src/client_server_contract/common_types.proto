@@ -1445,7 +1445,8 @@ message Options {
   optional bool support_kitty_keyboard_protocol = 27;
   optional bool report_modifier_keys = 74;
   optional bool stacked_resize = 30;
-  optional bool show_startup_tips = 31;
+  reserved 31;
+  reserved "show_startup_tips";
   optional bool show_release_notes = 32;
   optional bool advanced_mouse_actions = 33;
   optional string post_command_discovery_hook = 39;

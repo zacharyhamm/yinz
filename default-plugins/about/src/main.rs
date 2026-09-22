@@ -1,20 +1,15 @@
 mod active_component;
 mod keybindings;
 mod pages;
-mod tips;
 use zellij_tile::prelude::*;
 
 use pages::Page;
-use rand::prelude::*;
-use rand::rng;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use tips::MAX_TIP_INDEX;
 
-use crate::active_component::ActiveComponent;
 use crate::keybindings::{apply_missing_binds, ApplyStatus, Feature, KeybindingState};
-use crate::pages::{ComponentLine, PageKind, TextOrCustomRender};
+use crate::pages::PageKind;
 
 const UI_ROWS: usize = 20;
 const UI_COLUMNS: usize = 90;
@@ -30,10 +25,6 @@ struct App {
     tab_columns: usize,
     own_plugin_id: Option<zellij_tile::prelude::PluginId>,
     is_release_notes: bool,
-    is_startup_tip: bool,
-    tip_index: usize,
-    waiting_for_config_to_be_written: bool,
-    error: Option<String>,
 }
 
 impl Default for App {
@@ -58,10 +49,6 @@ impl Default for App {
             tab_columns: 0,
             own_plugin_id: None,
             is_release_notes: false,
-            is_startup_tip: false,
-            tip_index: 0,
-            waiting_for_config_to_be_written: false,
-            error: None,
         }
     }
 }
@@ -72,10 +59,6 @@ impl ZellijPlugin for App {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.is_release_notes = configuration
             .get("is_release_notes")
-            .map(|v| v == "true")
-            .unwrap_or(false);
-        self.is_startup_tip = configuration
-            .get("is_startup_tip")
             .map(|v| v == "true")
             .unwrap_or(false);
         subscribe(&[
@@ -92,17 +75,7 @@ impl ZellijPlugin for App {
         *self.zellij_version.borrow_mut() = get_zellij_version();
         self.change_own_title();
         self.query_link_executable();
-        self.active_page = if self.is_startup_tip {
-            let mut rng = rng();
-            self.tip_index = rng.random_range(0..=MAX_TIP_INDEX);
-            Page::new_tip_screen(
-                self.link_executable.clone(),
-                self.base_mode.clone(),
-                self.tip_index,
-            )
-        } else {
-            self.main_screen()
-        };
+        self.active_page = self.main_screen();
     }
     fn update(&mut self, event: Event) -> bool {
         let mut should_render = false;
@@ -114,20 +87,6 @@ impl ZellijPlugin for App {
                         .set_status(ApplyStatus::Failed { file_path, reason });
                     self.refresh_active_page();
                     should_render = true;
-                } else if self.waiting_for_config_to_be_written {
-                    let mut error = match file_path {
-                        Some(file_path) => {
-                            format!("Failed to write config to disk at: {}", file_path)
-                        },
-                        None => "Failed to write config to disk.".to_string(),
-                    };
-                    if let Some(reason) = reason {
-                        error.push(' ');
-                        error.push_str(&reason);
-                    }
-                    eprintln!("{}", error);
-                    self.error = Some(error);
-                    should_render = true;
                 }
             },
             Event::ConfigWasWrittenToDisk => {
@@ -137,8 +96,6 @@ impl ZellijPlugin for App {
                         .set_status(ApplyStatus::Applied);
                     self.refresh_active_page();
                     should_render = true;
-                } else if self.waiting_for_config_to_be_written {
-                    close_self();
                 }
             },
             Event::TabUpdate(tab_info) => {
@@ -176,23 +133,14 @@ impl ZellijPlugin for App {
                 }
             },
             Event::Key(key) => {
-                if let Some(_error) = self.error.take() {
-                    // dismiss error on any key
-                    should_render = true;
-                } else {
-                    should_render = self.handle_key(key);
-                }
+                should_render = self.handle_key(key);
             },
             _ => {},
         }
         should_render
     }
     fn render(&mut self, rows: usize, cols: usize) {
-        if let Some(error) = &self.error {
-            self.render_error(rows, cols, error.to_owned())
-        } else {
-            self.active_page.render(rows, cols, &self.error);
-        }
+        self.active_page.render(rows, cols);
     }
 }
 
@@ -336,27 +284,13 @@ impl App {
     }
     pub fn handle_key(&mut self, key: KeyWithModifier) -> bool {
         let mut should_render = false;
-        if key.bare_key == BareKey::Up && key.has_no_modifiers() && self.is_startup_tip {
-            self.previous_tip();
-            should_render = true;
-        } else if key.bare_key == BareKey::Down && key.has_no_modifiers() && self.is_startup_tip {
-            self.next_tip();
-            should_render = true;
-        } else if key.bare_key == BareKey::Enter && key.has_no_modifiers() {
+        if key.bare_key == BareKey::Enter && key.has_no_modifiers() {
             if let Some(new_page) = self.active_page.handle_selection() {
                 self.active_page = new_page;
                 should_render = true;
             }
-        } else if key.bare_key == BareKey::Char('c')
-            && key.has_modifiers(&[KeyModifier::Ctrl])
-            && self.is_startup_tip
-        {
-            self.waiting_for_config_to_be_written = true;
-            let save_configuration = true;
-            reconfigure("show_startup_tips false".to_owned(), save_configuration);
         } else if key.bare_key == BareKey::Char('u')
             && key.has_no_modifiers()
-            && !self.is_startup_tip
             && self.keybinding_state.borrow().has_missing_binds()
         {
             self.active_page = self.update_keybindings_screen();
@@ -380,41 +314,10 @@ impl App {
                 self.active_page = self.main_screen();
                 should_render = true;
             }
-        } else if key.bare_key == BareKey::Char('?')
-            && !self.is_release_notes
-            && !self.is_startup_tip
-        {
-            self.is_startup_tip = true;
-            self.active_page = Page::new_tip_screen(
-                self.link_executable.clone(),
-                self.base_mode.clone(),
-                self.tip_index,
-            );
-            should_render = true;
         } else {
             should_render = self.active_page.handle_key(key);
         }
         should_render
-    }
-    fn render_error(&self, rows: usize, cols: usize, error: String) {
-        let mut error_page = Page::new()
-            .main_screen()
-            .with_title(Text::new(error.to_string()).color_range(3, ..))
-            .with_paragraph(vec![
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("Unable to permanently dismiss tips."),
-                ))]),
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("You can do so manually by adding the following to your config:"),
-                ))]),
-            ])
-            .with_paragraph(vec![ComponentLine::new(vec![ActiveComponent::new(
-                TextOrCustomRender::Text(Text::new("show_startup_tips false").color_range(0, ..)),
-            )])])
-            .with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
-                Text::new("<ESC> - dismiss").color_range(1, ..=4)
-            }));
-        error_page.render(rows, cols, &None)
     }
     fn center_own_pane(&mut self, tab_info: Vec<TabInfo>) {
         // we only take the size of the first tab because at the time of writing this is
@@ -442,28 +345,7 @@ impl App {
             }
         }
     }
-    fn previous_tip(&mut self) {
-        if self.tip_index == 0 {
-            self.tip_index = MAX_TIP_INDEX;
-        } else {
-            self.tip_index = self.tip_index.saturating_sub(1);
-        }
-        self.active_page = Page::new_tip_screen(
-            self.link_executable.clone(),
-            self.base_mode.clone(),
-            self.tip_index,
-        );
-    }
-    fn next_tip(&mut self) {
-        if self.tip_index == MAX_TIP_INDEX {
-            self.tip_index = 0;
-        } else {
-            self.tip_index += 1;
-        }
-        self.active_page = Page::new_tip_screen(
-            self.link_executable.clone(),
-            self.base_mode.clone(),
-            self.tip_index,
-        );
-    }
 }
+
+#[cfg(test)]
+mod unit;

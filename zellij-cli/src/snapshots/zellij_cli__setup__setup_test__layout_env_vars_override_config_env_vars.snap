@@ -7907,7 +7907,6 @@ Config {
         agent_pane_min_columns: None,
         agent_pane_min_rows: None,
         stacked_pane_list: None,
-        show_startup_tips: None,
         show_release_notes: None,
         advanced_mouse_actions: None,
         mouse_scroll_resize: None,

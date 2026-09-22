@@ -620,3 +620,18 @@ fn pane_animations_round_trip_and_merge() {
     let invalid = "pane_animations 42".parse().unwrap();
     assert!(from_kdl(&invalid).is_err());
 }
+
+#[test]
+fn legacy_startup_tip_option_is_ignored_like_other_unknown_options() {
+    for text in [
+        "show_startup_tips true",
+        "show_startup_tips false",
+        "unknown_option true",
+    ] {
+        let document: KdlDocument = text.parse().unwrap();
+        assert_eq!(
+            crate::kdl::options::from_kdl(&document).unwrap(),
+            Options::default()
+        );
+    }
+}

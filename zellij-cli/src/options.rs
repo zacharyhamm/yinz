@@ -280,12 +280,6 @@ pub struct CliOptions {
     #[serde(default)]
     pub stacked_pane_list: Option<bool>,
 
-    /// Whether to show startup tips when starting a new session
-    /// default is true
-    #[clap(long, value_parser)]
-    #[serde(default)]
-    pub show_startup_tips: Option<bool>,
-
     /// Whether to show release notes on first run of a new version
     /// default is true
     #[clap(long, value_parser)]
@@ -443,7 +437,6 @@ impl From<CliOptions> for Options {
             agent_pane_min_columns: value.agent_pane_min_columns,
             agent_pane_min_rows: value.agent_pane_min_rows,
             stacked_pane_list: value.stacked_pane_list,
-            show_startup_tips: value.show_startup_tips,
             show_release_notes: value.show_release_notes,
             advanced_mouse_actions: value.advanced_mouse_actions,
             mouse_scroll_resize: value.mouse_scroll_resize,
@@ -524,7 +517,6 @@ impl From<Options> for CliOptions {
             agent_pane_min_columns: value.agent_pane_min_columns,
             agent_pane_min_rows: value.agent_pane_min_rows,
             stacked_pane_list: value.stacked_pane_list,
-            show_startup_tips: value.show_startup_tips,
             show_release_notes: value.show_release_notes,
             advanced_mouse_actions: value.advanced_mouse_actions,
             mouse_scroll_resize: value.mouse_scroll_resize,
@@ -638,7 +630,6 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
     let agent_pane_min_columns = other.agent_pane_min_columns.or(base.agent_pane_min_columns);
     let agent_pane_min_rows = other.agent_pane_min_rows.or(base.agent_pane_min_rows);
     let stacked_pane_list = other.stacked_pane_list.or(base.stacked_pane_list);
-    let show_startup_tips = other.show_startup_tips.or(base.show_startup_tips);
     let show_release_notes = other.show_release_notes.or(base.show_release_notes);
     let advanced_mouse_actions = other.advanced_mouse_actions.or(base.advanced_mouse_actions);
     let mouse_scroll_resize = other.mouse_scroll_resize.or(base.mouse_scroll_resize);
@@ -723,7 +714,6 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         agent_pane_min_columns,
         agent_pane_min_rows,
         stacked_pane_list,
-        show_startup_tips,
         show_release_notes,
         advanced_mouse_actions,
         mouse_scroll_resize,

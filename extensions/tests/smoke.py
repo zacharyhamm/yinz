@@ -510,7 +510,7 @@ if args.source_diff_only:
     (topic / 'file').write_text('topic\n')
     print('PASS: exact viewer argv isolates checkout and index, quotes nested repositories, excludes its own TMPDIR, and fails for a missing checkout', flush=True)
 (root / 'config/zellij').mkdir(exist_ok=True)
-(root / 'config/zellij/config.kdl').write_text('show_release_notes false\nshow_startup_tips false\nbuiltin_plugins_dir ' + json.dumps(str(builtins)) + '\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/zellij-firecracker')) + '\n')
+(root / 'config/zellij/config.kdl').write_text('show_release_notes false\nbuiltin_plugins_dir ' + json.dumps(str(builtins)) + '\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/zellij-firecracker')) + '\n')
 observer = root / 'snapshot.ts'
 observer.write_text('''import z, {definePlugin} from 'zellij:plugin';
 export default definePlugin({

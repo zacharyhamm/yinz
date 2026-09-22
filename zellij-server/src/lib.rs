@@ -1224,12 +1224,6 @@ pub fn start_server_impl(
                     ) {
                         let about = about_floating_pane();
                         floating_panes.push(about);
-                    } else if should_show_startup_tip(
-                        runtime_config_options.show_startup_tips,
-                        layout_is_welcome_screen,
-                    ) {
-                        let tip = tip_floating_pane();
-                        floating_panes.push(tip);
                     }
                     spawn_tabs(
                         None,
@@ -2614,17 +2608,6 @@ fn about_floating_pane() -> FloatingPaneLayout {
     about_pane
 }
 
-fn tip_floating_pane() -> FloatingPaneLayout {
-    let mut about_pane = FloatingPaneLayout::new();
-    let configuration = BTreeMap::from_iter([("is_startup_tip".to_owned(), "true".to_owned())]);
-    about_pane.run = Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias::new(
-        "about",
-        &Some(configuration),
-        None,
-    ))));
-    about_pane
-}
-
 fn should_show_release_notes(
     should_show_release_notes_config: Option<bool>,
     layout_is_welcome_screen: bool,
@@ -2654,17 +2637,6 @@ fn should_show_release_notes(
             return false;
         }
         true
-    }
-}
-
-fn should_show_startup_tip(
-    should_show_startup_tip_config: Option<bool>,
-    layout_is_welcome_screen: bool,
-) -> bool {
-    if layout_is_welcome_screen {
-        false
-    } else {
-        should_show_startup_tip_config.unwrap_or(true)
     }
 }
 
