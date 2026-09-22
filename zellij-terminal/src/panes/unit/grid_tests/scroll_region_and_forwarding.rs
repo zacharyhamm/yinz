@@ -973,3 +973,47 @@ fn ui_component_flag_prefixes_parse_order_independently() {
         );
     }
 }
+
+#[test]
+fn newline_past_the_viewport_takes_the_pending_background() {
+    // A fresh pane's viewport is shorter than the screen, so each newline creates a row.
+    // Those rows used to ignore the pending background (BCE), unlike the rows the
+    // scroll-region branch of `add_canonical_line` creates.
+    let mut grid = create_grid_with_size_and_raw(5, 4, b"");
+    grid.read_changes(0, 0);
+
+    feed_bytes(&mut grid, b"\x1b[48;5;4m\n\n\n");
+
+    for y in 1..=3 {
+        assert_eq!(
+            grid.viewport[y].bg_color,
+            Some(AnsiCode::ColorIndex(4)),
+            "row {y}"
+        );
+    }
+    let (chunks, _, _) = grid.read_changes(0, 0);
+    for y in 1..=3 {
+        let chunk = chunks
+            .iter()
+            .find(|chunk| chunk.y == y)
+            .unwrap_or_else(|| panic!("row {y} was not rendered"));
+        assert!(
+            chunk.terminal_characters.iter().all(|character| {
+                character.character == ' '
+                    && character.styles.background == Some(AnsiCode::ColorIndex(4))
+            }),
+            "row {y}"
+        );
+    }
+}
+
+#[test]
+fn a_line_wrapped_past_the_viewport_takes_the_pending_background() {
+    let mut grid = create_grid_with_size_and_raw(5, 3, b"");
+
+    feed_bytes(&mut grid, b"\x1b[48;5;4mABCD");
+
+    assert_eq!(grid.viewport.len(), 2);
+    assert_eq!(grid.viewport[1].bg_color, Some(AnsiCode::ColorIndex(4)));
+    assert_eq!(viewport_texts(&grid), ["ABC", "D"]);
+}
