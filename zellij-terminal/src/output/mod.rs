@@ -842,14 +842,22 @@ impl Output {
     }
     pub fn add_character_chunks_to_multiple_clients(
         &mut self,
-        character_chunks: Vec<CharacterChunk>,
+        mut character_chunks: Vec<CharacterChunk>,
         client_ids: impl Iterator<Item = ClientId>,
         z_index: Option<usize>,
     ) -> Result<()> {
-        for client_id in client_ids {
-            self.add_character_chunks_to_client(client_id, character_chunks.clone(), z_index)
+        // This runs for every visible pane on every frame. Only the clients before the
+        // last get a copy; the last one takes the chunks themselves, so a single-client
+        // session never clones a frame.
+        let mut client_ids = client_ids.peekable();
+        while let Some(client_id) = client_ids.next() {
+            let chunks = if client_ids.peek().is_some() {
+                character_chunks.clone()
+            } else {
+                std::mem::take(&mut character_chunks)
+            };
+            self.add_character_chunks_to_client(client_id, chunks, z_index)
                 .context("failed to add character chunks for multiple clients")?;
-            // TODO: forgo clone by adding an all_clients thing?
         }
         Ok(())
     }
@@ -939,9 +947,16 @@ impl Output {
             } else {
                 sixel_image_chunks
             };
-            for client_id in client_ids {
+            let mut sixel_chunks = sixel_chunks;
+            let mut client_ids = client_ids.peekable();
+            while let Some(client_id) = client_ids.next() {
+                let mut chunks = if client_ids.peek().is_some() {
+                    sixel_chunks.clone()
+                } else {
+                    std::mem::take(&mut sixel_chunks)
+                };
                 let entry = self.sixel_chunks.entry(client_id).or_default();
-                entry.append(&mut sixel_chunks.clone());
+                entry.append(&mut chunks);
             }
         }
     }
@@ -986,7 +1001,14 @@ impl Output {
                 .visible_kitty_image_chunks(kitty_image_chunks, z_index, &character_cell_size),
             _ => kitty_image_chunks,
         };
-        for client_id in client_ids {
+        let mut kitty_chunks = kitty_chunks;
+        let mut client_ids = client_ids.peekable();
+        while let Some(client_id) = client_ids.next() {
+            let mut chunks = if client_ids.peek().is_some() {
+                kitty_chunks.clone()
+            } else {
+                std::mem::take(&mut kitty_chunks)
+            };
             self.client_rendered_kitty_panes
                 .entry(client_id)
                 .or_default()
@@ -996,7 +1018,7 @@ impl Output {
                 .or_default()
                 .entry(pane_id)
                 .or_default()
-                .append(&mut kitty_chunks.clone());
+                .append(&mut chunks);
         }
     }
     pub fn set_kitty_visible_panes(&mut self, client_id: ClientId, pane_ids: HashSet<PaneId>) {

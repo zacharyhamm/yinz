@@ -330,6 +330,36 @@ fn test_serialize_multiple_clients() {
 }
 
 #[test]
+fn every_client_gets_the_chunks_added_for_multiple_clients() {
+    // The last client takes the chunks rather than a clone, which must not change what
+    // any client receives - including when there is only one.
+    for client_count in [1, 3] {
+        let mut output = create_test_output();
+        let client_ids = create_test_clients(client_count);
+        let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
+        output.add_clients(&client_ids, link_handler, None);
+
+        let chunk = create_character_chunk_from_str("Shared", 0, 0);
+        output
+            .add_character_chunks_to_multiple_clients(
+                vec![chunk],
+                client_ids.iter().copied(),
+                None,
+            )
+            .unwrap();
+
+        let result = output.serialize().unwrap();
+        assert_eq!(result.len(), client_count);
+        for client_id in &client_ids {
+            assert!(
+                result.get(client_id).unwrap().contains("Shared"),
+                "client {client_id:?} of {client_count}"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_serialize_with_pre_and_post_vte_instructions() {
     let mut output = create_test_output();
     let client_ids = create_test_clients(1);
