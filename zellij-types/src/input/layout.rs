@@ -127,7 +127,15 @@ impl RunPluginOrAlias {
         self.overlay_placement().is_some_and(|p| p.is_modal())
     }
     pub fn get_initial_cwd(&self) -> Option<PathBuf> {
-        self.get_run_plugin().and_then(|r| r.initial_cwd.clone())
+        match self {
+            RunPluginOrAlias::RunPlugin(plugin) => plugin.initial_cwd.clone(),
+            RunPluginOrAlias::Alias(alias) => alias.initial_cwd.clone().or_else(|| {
+                alias
+                    .run_plugin
+                    .as_ref()
+                    .and_then(|plugin| plugin.initial_cwd.clone())
+            }),
+        }
     }
 
     pub fn is_equivalent_to_run(&self, run: &Option<Run>) -> bool {
