@@ -467,7 +467,6 @@ pub(crate) fn screen_thread_main(
                         | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
                             active_tab!(screen, client_id, |tab: &mut Tab| tab
                             .replace_active_pane_with_editor_pane(pid, client_id), ?);
-                            screen.log_and_report_session_state()?;
                         },
                         ClientTabIndexOrPaneId::TabIndex(_tab_index)
                         | ClientTabIndexOrPaneId::TabIndexNoFocus(_tab_index) => {
@@ -495,6 +494,7 @@ pub(crate) fn screen_thread_main(
                         }
                     }
 
+                    screen.log_and_report_session_state()?;
                     screen.render(None)?;
                 },
                 ScreenInstruction::TogglePaneEmbedOrFloating(client_id, _completion_tx) => {

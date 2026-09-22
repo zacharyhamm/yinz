@@ -227,14 +227,8 @@ pub const TOAST_CLICK: &str = "hocus_toast_click";
 pub struct PollRequest {
     pub manual_kinds: BTreeMap<u32, String>,
     pub activity: agents::Activity,
-    /// The tab-to-project assignments the user made by hand, for the daemon to
-    /// pass on to whoever names the tabs.
-    ///
-    /// hocus makes these and hocus-store publishes them, and the two never meet:
-    /// hocus is a pane the user opens, the store is a background plugin, and a
-    /// plugin cannot address another by name without launching one. The daemon
-    /// is already between them, already holds `manual_kinds` for exactly this
-    /// reason, and already echoes what it holds to every subscriber.
+    /// Manual project assignments relayed to subscribers as project metadata.
+    /// Automatic tab names are derived independently from current pane locations.
     #[serde(default)]
     pub tab_projects: BTreeMap<TabId, String>,
 }
@@ -243,6 +237,10 @@ pub struct PollRequest {
 pub struct PollReply {
     /// `None` means no current session — a quiet reply, not a dead poller.
     pub panes: Option<Vec<agents::AgentPane>>,
+    /// Hidden terminals omitted from `panes`, excluding stack members already listed there.
+    /// They still contribute to tab names until they close or move.
+    #[serde(default)]
+    pub suppressed_panes: Vec<agents::AgentPane>,
     pub activity: agents::Activity,
     /// The overrides the poller classified with, so a subscriber deciding which
     /// panes are agents reaches the same answer it did. Without this a manually
@@ -267,8 +265,7 @@ pub struct PollReply {
     pub repositories: BTreeMap<Location, projects::Repository>,
     /// The hand-made tab assignments, as the last [`PollRequest`] carried them.
     ///
-    /// Relayed rather than derived: only hocus knows what the user assigned, and
-    /// only the store publishes tab names, so this is the leg between them.
+    /// These remain available to project features without overriding automatic names.
     #[serde(default)]
     pub tab_projects: BTreeMap<TabId, String>,
     /// The terminal pane the user is looking at, if it is one.

@@ -273,14 +273,14 @@ impl Screen {
 
     /// The name each tab shows a plugin, which is not always the name it holds.
     ///
-    /// Three things can name a tab, and they are asked in this order:
+    /// Names are chosen in this order:
     ///
-    /// 1. A lone pane that lends its own title (see [`Tab::lent_pane_title`]).
+    /// 1. An explicit tab name.
     /// 2. The project the tab is working on, when a plugin has told us of one.
-    /// 3. The tab's own name — what the user typed, or whatever it was born with: "Tab #N",
-    ///    a layout's name, a resurrected session's, the one a warp carried in.
+    /// 3. A lone pane that lends its own title (see [`Tab::lent_pane_title`]).
+    /// 4. The default or layout name the tab was born with.
     ///
-    /// Only the third is stored on the tab. The other two are worked out afresh
+    /// Explicit and default names are stored on the tab. The other two are worked out afresh
     /// each time, so a tab the user renames in this session keeps that name, and a
     /// tab goes back to its own the moment the thing that was lending it one is
     /// gone. A name the tab was born with does not hold the other two off: nobody
@@ -289,8 +289,8 @@ impl Screen {
     /// reaches session serialization, which wants the name the user would
     /// recognise as theirs.
     ///
-    /// Whichever of the three wins then carries the exit marker of a lone pane
-    /// that has stopped ([`Tab::exit_marker`]). That is not a fourth name and does
+    /// Whichever name wins then carries the exit marker of a lone pane
+    /// that has stopped ([`Tab::exit_marker`]). That is not a name and does
     /// not compete with the others: it says the pane is finished, which is worth
     /// saying about a tab called "hocus" as much as about one called "vim README".
     ///
@@ -360,19 +360,9 @@ impl Screen {
 
     /// The project name a tab shows, before any `#1`/`#2` is worked out.
     ///
-    /// `None` for a tab that has something better to show. A name the user gave it
-    /// this session is never spoken over, and neither is a title a lone pane is
-    /// lending: the pane's title is the more specific answer to "what is in this
-    /// tab", and it changes as the work does, where the project is the same all
-    /// session.
+    /// An explicit tab name is authoritative; a pane title is only a fallback.
     fn tab_project_name(&self, tab: &Tab) -> Option<&str> {
         if !tab.tab_name_is_automatic() {
-            return None;
-        }
-        // Only an actual loan outranks the project. A lone pane that set no title
-        // of its own lends nothing, and the exit marker it may still be carrying
-        // is not a name — it goes on whatever name wins, in `plugin_tab_names`.
-        if tab.lent_pane_title().is_some() {
             return None;
         }
         self.tab_projects.get(&tab.id).map(String::as_str)

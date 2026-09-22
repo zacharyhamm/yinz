@@ -5,8 +5,6 @@
 //! and are shared. These stay local because sharing them would mean pulling all
 //! of hocus's tool dispatch into a daemon that never runs a tool.
 
-use hocus_proto::agents;
-use hocus_proto::panes::{focused_pane, terminal_panes};
 use hocus_proto::projects::{Repository, WorktreeStatus};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::SessionName;
@@ -124,35 +122,36 @@ pub fn read_pane(pane_id: u32) -> PaneSample {
     }
 }
 
-/// One startup snapshot for panes that existed before this plugin loaded, and the
-/// terminal pane focused at that moment.
+/// One startup snapshot for panes that existed before this plugin loaded.
 ///
 /// Later changes come from `PaneUpdate`, `CommandChanged`, and `CwdChanged`; this
-/// is deliberately not a repeating poll. The focused pane is taken here as well as
-/// there because a session nobody touches sends no `PaneUpdate` at all, and until
-/// one arrives the focus would be nothing.
+/// is deliberately not a repeating poll. The manifest includes hidden panes and tab
+/// membership, so a quiet session is complete even before its first update.
 pub struct StartupSnapshot {
     pub session_name: SessionName,
-    pub panes: Vec<agents::AgentPane>,
-    pub focused: Option<u32>,
+    pub manifest: PaneManifest,
+    pub tabs: Vec<TabInfo>,
 }
 
 pub fn gather() -> Option<StartupSnapshot> {
-    let session = current_session()?;
-    let focused = focused_pane(&session.panes, &session.tabs);
-    let mut panes = terminal_panes(&session.panes, &session.tabs);
+    let mut session = current_session()?;
     // ponytail: one blocking host round-trip per terminal pane at plugin startup.
     // Events keep this fresh afterwards; batch only if startup ever feels slow.
-    for pane in &mut panes {
-        if let Some(command) = pane_running_command(pane.pane_id) {
-            pane.command = Some(command);
+    for pane in session.panes.panes.values_mut().flatten() {
+        let PaneId::Terminal(id) = pane.id else {
+            continue;
+        };
+        if let Some(command) = pane_running_command(id.get()) {
+            pane.terminal_command = Some(command);
         }
-        pane.cwd = pane_cwd(pane.pane_id);
+        if let Some(cwd) = pane_cwd(id.get()) {
+            pane.cwd = Some(cwd);
+        }
     }
     Some(StartupSnapshot {
         session_name: session.name,
-        panes,
-        focused,
+        manifest: session.panes,
+        tabs: session.tabs,
     })
 }
 

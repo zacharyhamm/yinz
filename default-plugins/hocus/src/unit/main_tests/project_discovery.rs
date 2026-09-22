@@ -79,7 +79,7 @@ fn a_tab_with_two_projects_is_labelled_with_both() {
 }
 
 #[test]
-fn a_tab_the_user_assigned_is_labelled_with_that_project() {
+fn a_tab_assignment_does_not_override_its_panes_label() {
     let mut state = state_with_tab(TabId::new(9));
     state.run_local(&agent_call(
         "project_assign",
@@ -87,7 +87,44 @@ fn a_tab_the_user_assigned_is_labelled_with_that_project() {
     ));
     poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
 
-    assert_eq!(state.tab_project_labels[&TabId::new(9)], "named");
+    assert_eq!(state.tab_project_labels[&TabId::new(9)], "hocus");
+    assert_eq!(state.tab_project(TabId::new(9)), Some("named"));
+}
+
+#[test]
+fn suppressed_snapshots_update_labels_without_adding_agents_to_the_list() {
+    let mut state = state_with_tab(TabId::new(9));
+    for (name, root) in [("A", "/work/a"), ("B", "/work/b")] {
+        state
+            .projects
+            .insert(name.into(), projects::validate(name, root).unwrap());
+    }
+    let visible = shell_in(3, "/work/a", TabId::new(9));
+    let mut hidden = agent_in(4, "/work/b", TabId::new(9));
+    hidden.status = agents::AgentStatus::Exited;
+    let cases = [
+        (vec![visible.clone()], vec![hidden.clone()], Some("A + B")),
+        (vec![], vec![hidden.clone()], Some("B")),
+        (vec![hidden], vec![], Some("B")),
+        (vec![shell_in(3, "/unknown", TabId::new(9))], vec![], None),
+    ];
+    for (seq, (panes, suppressed, label)) in cases.into_iter().enumerate() {
+        let expected = panes.clone();
+        let mut message = agent_snapshot_with(seq as u64 + 1, panes);
+        let mut reply: PollReply =
+            serde_json::from_str(message.payload.as_deref().unwrap()).unwrap();
+        reply.suppressed_panes = suppressed;
+        message.payload = Some(serde_json::to_string(&reply).unwrap());
+        state.pipe(message);
+        assert_eq!(state.panes, expected);
+        assert_eq!(
+            state
+                .tab_project_labels
+                .get(&TabId::new(9))
+                .map(String::as_str),
+            label
+        );
+    }
 }
 
 #[test]
@@ -373,6 +410,7 @@ fn poll_reply_round_trips_through_json() {
     let mut activity = agents::Activity::new();
     activity.insert(7, (0xdead_beef, 3));
     let reply = PollReply {
+        suppressed_panes: Vec::new(),
         panes: Some(vec![agents::AgentPane {
             pane_id: 7,
             title: "claude".to_owned(),

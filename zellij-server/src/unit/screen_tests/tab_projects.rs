@@ -15,6 +15,50 @@ fn name_of(screen: &Screen, tab_id: TabId) -> String {
 }
 
 #[test]
+fn opening_a_scrollback_editor_by_pane_id_publishes_its_membership() {
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    let screen_thread = mock.run(None, vec![]);
+    let instructions = Watched::new(vec![]);
+    let receiver = mock.plugin_receiver.take().unwrap();
+    let plugin_thread = log_actions_in_thread!(instructions, PluginInstruction::Exit, receiver);
+    mock.to_screen
+        .send(ScreenInstruction::SetCliEventSubscribersPresent(true))
+        .unwrap();
+    mock.to_screen
+        .send(ScreenInstruction::OpenInPlaceEditor(
+            PaneId::Terminal(TerminalId::new(9)),
+            ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(TerminalId::new(0))),
+        ))
+        .unwrap();
+    instructions.wait_until(
+        "the editor and hidden source are published",
+        zellij_test_support::default_timeout(),
+        |log| {
+            log.iter()
+                .any(|instruction| {
+                    let PluginInstruction::Update(events) = instruction else {
+                        return false;
+                    };
+                    events.iter().any(|(_, _, event)| {
+                        let Event::PaneUpdate(manifest) = event else {
+                            return false;
+                        };
+                        let has_pane = |id, suppressed| {
+                            manifest.panes.values().flatten().any(|pane| {
+                                pane.id == PaneId::Terminal(TerminalId::new(id))
+                                    && pane.is_suppressed == suppressed
+                            })
+                        };
+                        has_pane(9, false) && has_pane(0, true)
+                    })
+                })
+                .then_some(())
+        },
+    );
+    mock.teardown(vec![plugin_thread, screen_thread]);
+}
+
+#[test]
 fn a_project_names_a_tab_that_still_has_its_default_name() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
@@ -335,9 +379,9 @@ fn the_last_tab_on_a_project_goes_back_to_the_plain_name() {
     assert_eq!(name_of(&screen, TabId::new(1)), "hocus");
 }
 
-/// The tab's own title is the more specific answer, and it moves with the work.
+/// A lone-pane title is the fallback when no current project names the tab.
 #[test]
-fn a_lone_pane_lending_its_title_outranks_the_project() {
+fn a_project_outranks_a_lone_pane_title() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
     // Only a tab that draws pane titles has one to lend.
@@ -351,6 +395,8 @@ fn a_lone_pane_lending_its_title_outranks_the_project() {
 
     set_projects(&mut screen, &[(0, "hocus")]);
 
+    assert_eq!(name_of(&screen, TabId::new(0)), "[1] hocus");
+    set_projects(&mut screen, &[]);
     assert_eq!(name_of(&screen, TabId::new(0)), "[1] vim README");
 }
 
@@ -414,9 +460,9 @@ fn a_pane_that_exits_without_a_title_keeps_the_projects_name() {
     );
 }
 
-/// And a pane that *did* set a title keeps lending it, marker and all.
+/// A titled, retained exited pane keeps the project name and exit marker.
 #[test]
-fn a_pane_that_exits_with_a_title_still_lends_it() {
+fn a_pane_that_exits_with_a_title_keeps_the_project_name() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
     let tab = screen.get_tab_by_id_mut(TabId::new(0)).unwrap();
@@ -435,6 +481,8 @@ fn a_pane_that_exits_with_a_title_still_lends_it() {
 
     set_projects(&mut screen, &[(0, "hocus")]);
 
+    assert_eq!(name_of(&screen, TabId::new(0)), "[1] hocus [ EXITED ] ");
+    set_projects(&mut screen, &[]);
     assert_eq!(
         name_of(&screen, TabId::new(0)),
         "[1] cargo test [ EXITED ] "

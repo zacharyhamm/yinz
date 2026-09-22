@@ -52,7 +52,10 @@ fn project_slash_commands_persist_then_retarget_assignments() {
     assert_eq!(state.projects.len(), 1);
     assert!(!state.projects["kept"].discovered);
     assert_eq!(state.sent_tab_projects, state.tab_projects);
-    assert_eq!(state.tab_project_labels[&TabId::new(9)], "kept");
+    assert!(
+        state.tab_project_labels.is_empty(),
+        "assignments alone do not name tabs"
+    );
     let rows = state
         .store()
         .fetch(&FetchRequest::entity("project"))

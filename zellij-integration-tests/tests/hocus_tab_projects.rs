@@ -7,8 +7,9 @@
 //! processes with a protobuf between them, and neither test can say the name
 //! made it onto the bar. Only a real session with a real grid says that.
 
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::test_env::write_git_repository;
-use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TERMINAL_SIZE};
+use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
 
 /// hocus, the daemon that finds the agents, and the store that turns the
 /// checkouts they are in into projects. All three are needed: without the store
@@ -28,6 +29,34 @@ load_plugins clear-defaults=true {
   "hocus-store"
 }
 "#;
+
+fn mutate_store(zellij: &TestSession, op: &str, args: serde_json::Value) {
+    assert_eq!(
+        zellij.run_cli_action(CliAction::Pipe {
+            name: Some("store_mutate".into()),
+            payload: Some(serde_json::json!({"op": op, "args": args}).to_string()),
+            args: None,
+            plugin: None,
+            plugin_configuration: None,
+            force_launch_plugin: false,
+            skip_plugin_cache: false,
+            floating_plugin: None,
+            in_place_plugin: None,
+            plugin_cwd: None,
+            plugin_title: None,
+        }),
+        0
+    );
+}
+
+fn wait_for_tab(zellij: &TestSession, name: &str, absent: &[&str]) {
+    zellij.wait_until(&format!("the tab shows {name}"), |screen| {
+        screen
+            .lines()
+            .first()
+            .is_some_and(|bar| bar.contains(name) && absent.iter().all(|old| !bar.contains(old)))
+    });
+}
 
 #[test]
 fn a_tab_is_named_after_the_project_its_agent_is_in() {
@@ -110,25 +139,20 @@ fn a_lone_shell_gets_a_project_name_after_tab_creation() {
             .is_some_and(|bar| bar.contains("Tab #1"))
     });
 
-    let payload = serde_json::json!({
-        "op": "project_remember",
-        "args": {"name": "quiet-shell-project", "root": folder.path()},
-    });
     assert_eq!(
-        zellij.run_cli_action(zellij_cli::args::CliAction::Pipe {
-            name: Some("store_mutate".to_owned()),
-            payload: Some(payload.to_string()),
-            args: None,
-            plugin: None,
-            plugin_configuration: None,
-            force_launch_plugin: false,
-            skip_plugin_cache: false,
-            floating_plugin: None,
-            in_place_plugin: None,
-            plugin_cwd: None,
-            plugin_title: None,
+        zellij.run_cli_action(CliAction::RenamePane {
+            name: "quiet-command".into(),
+            pane_id: Some(shell.terminal_id().to_string()),
         }),
         0
+    );
+    wait_for_tab(&zellij, "quiet-command", &["Tab #1"]);
+    mutate_store(
+        &zellij,
+        "project_remember",
+        serde_json::json!({
+            "name": "quiet-shell-project", "root": folder.path(),
+        }),
     );
     // No focus change or further shell output: the background plugins must publish it.
     zellij.wait_until(
@@ -140,6 +164,138 @@ fn a_lone_shell_gets_a_project_name_after_tab_creation() {
                 .is_some_and(|bar| bar.contains("quiet-shell-project"))
         },
     );
+    assert_eq!(
+        zellij.run_cli_action(CliAction::RenameTab {
+            name: "my-explicit-name".into(),
+            tab_id: None,
+        }),
+        0
+    );
+    wait_for_tab(&zellij, "my-explicit-name", &["quiet-shell-project"]);
+    mutate_store(
+        &zellij,
+        "project_forget",
+        serde_json::json!({"name": "quiet-shell-project"}),
+    );
+    mutate_store(
+        &zellij,
+        "project_remember",
+        serde_json::json!({
+            "name": "renamed-project", "root": folder.path(),
+        }),
+    );
+    assert_eq!(
+        zellij.run_cli_action(CliAction::UndoRenameTab { tab_id: None }),
+        0
+    );
+    wait_for_tab(
+        &zellij,
+        "renamed-project",
+        &["my-explicit-name", "quiet-command"],
+    );
+    assert_eq!(
+        zellij.run_cli_action(CliAction::RenameTab {
+            name: "another-name".into(),
+            tab_id: None,
+        }),
+        0
+    );
+    wait_for_tab(&zellij, "another-name", &["renamed-project"]);
+    assert_eq!(
+        zellij.run_cli_action(CliAction::RenameTab {
+            name: String::new(),
+            tab_id: None,
+        }),
+        0
+    );
+    wait_for_tab(&zellij, "renamed-project", &["another-name"]);
+    mutate_store(
+        &zellij,
+        "project_forget",
+        serde_json::json!({"name": "renamed-project"}),
+    );
+    wait_for_tab(&zellij, "quiet-command", &["renamed-project"]);
+}
+
+#[test]
+fn tab_projects_follow_cwd_changes_and_pane_closure_without_hocus() {
+    let a = write_git_repository("project-alpha", "main");
+    let b = write_git_repository("project-beta", "main");
+    let unknown = tempfile::tempdir().unwrap();
+    let layout = format!(
+        r#"layout {{
+        pane size=1 borderless=true {{ plugin location="zellij:tab-bar"; }}
+        pane cwd="{}"
+        pane cwd="{}"
+    }}"#,
+        a.display(),
+        unknown.path().display()
+    );
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_PROJECT_CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    let first = zellij.expect_pty_spawn();
+    let second = zellij.expect_pty_spawn();
+    wait_for_tab(&zellij, "project-alpha", &["project-beta"]);
+
+    // Only the CWD notification, with no prompt output or focus change to trigger a redraw.
+    second.output(format!("\x1b]7;file://localhost{}\x07", b.display()).as_bytes());
+    wait_for_tab(&zellij, "project-alpha + project-beta", &[]);
+    assert_eq!(
+        zellij.run_cli_action(CliAction::ClosePane {
+            pane_id: Some(first.terminal_id().to_string()),
+        }),
+        0
+    );
+    wait_for_tab(&zellij, "project-beta", &["project-alpha"]);
+    second.output(format!("\x1b]7;file://localhost{}\x07", unknown.path().display()).as_bytes());
+    wait_for_tab(&zellij, "Tab #1", &["project-beta"]);
+}
+
+#[test]
+fn hidden_panes_keep_naming_the_tab_and_follow_cwd_changes() {
+    let a = write_git_repository("hidden-alpha", "main");
+    let b = write_git_repository("editor-beta", "main");
+    let unknown = tempfile::tempdir().unwrap();
+    let layout = format!(
+        r#"layout {{
+        pane size=1 borderless=true {{ plugin location="zellij:tab-bar"; }}
+        pane cwd="{}"
+    }}"#,
+        a.display()
+    );
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!(
+            "{HOCUS_PROJECT_CONFIG}\nscrollback_editor \"/usr/bin/true\""
+        ))
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"SCROLLBACK_SOURCE");
+    zellij.wait_until("scrollback source is available", |screen| {
+        screen.contains("SCROLLBACK_SOURCE")
+    });
+    wait_for_tab(&zellij, "hidden-alpha", &[]);
+    assert_eq!(
+        zellij.run_cli_action(CliAction::EditScrollback {
+            pane_id: Some(shell.terminal_id().to_string()),
+            ansi: false,
+        }),
+        0
+    );
+    let editor = zellij.expect_pty_spawn();
+    wait_for_tab(
+        &zellij,
+        &format!("[{}] hidden-alpha", editor.terminal_id()),
+        &[],
+    );
+    editor.output(format!("\x1b]7;file://localhost{}\x07", b.display()).as_bytes());
+    wait_for_tab(&zellij, "editor-beta + hidden-alpha", &[]);
+    shell.output(format!("\x1b]7;file://localhost{}\x07", unknown.path().display()).as_bytes());
+    wait_for_tab(&zellij, "editor-beta", &["hidden-alpha"]);
+    editor.exit(Some(0));
+    wait_for_tab(&zellij, "Tab #1", &["editor-beta", "hidden-alpha"]);
 }
 
 #[test]

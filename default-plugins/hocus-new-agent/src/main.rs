@@ -2275,6 +2275,7 @@ mod tests {
         assert!(source_pane(&reply, 7, |_| None).is_none());
         let visible = agent_pane("codex");
         let reply = PollReply {
+            suppressed_panes: Vec::new(),
             panes: Some(vec![visible.clone()]),
             ..reply
         };

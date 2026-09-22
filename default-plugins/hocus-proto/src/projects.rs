@@ -763,11 +763,16 @@ pub fn project_for_cwd<'a>(
 /// this is a *label*, and discovery still refuses to remember a folder a shell
 /// merely sat in.
 ///
-/// A folder Git does not claim gets no label. That is the line: without it every
-/// `cd` into a home directory would put a folder name on the tab bar, and a name
-/// that means nothing is worse than `Tab #3`, which at least means "the third
-/// one".
+/// An explicitly registered local root names its folders immediately, even without Git.
+/// Otherwise repository matching and the checkout's own name supply the label.
 pub fn label_for_cwd(probed: &Probed, projects: &Registry, cwd: &Location) -> Option<String> {
+    if let Some(project) = projects
+        .values()
+        .filter(|project| !project.discovered && contains(project, cwd))
+        .max_by_key(|project| Path::new(&project.root).components().count())
+    {
+        return Some(project.name.clone());
+    }
     if let Some(project) = project_for_cwd(probed, projects, cwd) {
         return Some(project.name.clone());
     }
@@ -2306,10 +2311,9 @@ mod tests {
         );
     }
 
-    /// And a folder Git does not claim labels nothing, however deep in a
-    /// project's root it sits — the same rule `project_for_cwd` keeps.
+    /// A registered folder needs no Git confirmation to name a tab.
     #[test]
-    fn a_plain_folder_labels_nothing_even_under_a_project() {
+    fn a_plain_folder_uses_its_explicit_project_label() {
         let probed = Probed::from([(
             here("/work/hocus/notes"),
             Repository::folder("/work/hocus/notes"),
@@ -2319,7 +2323,47 @@ mod tests {
 
         assert_eq!(
             label_for_cwd(&probed, &projects, &here("/work/hocus/notes")),
-            None,
+            Some("hocus".to_owned()),
+        );
+    }
+
+    #[test]
+    fn the_most_specific_explicit_root_names_a_folder_before_git_answers() {
+        let mut projects = Registry::from([
+            ("workspace".into(), validated("workspace", "/work")),
+            ("notes".into(), validated("notes", "/work/notes")),
+            ("found".into(), validated("found", "/work/notes/deep")),
+        ]);
+        projects.get_mut("found").unwrap().discovered = true;
+        let cwd = here("/work/notes/deep/src");
+        assert_eq!(
+            label_for_cwd(&Probed::new(), &projects, &cwd).as_deref(),
+            Some("notes")
+        );
+
+        // Even a different Git identity loses to the explicit local folder.
+        let mut other = validated("other", "/elsewhere");
+        other.common_dir = Some("/elsewhere/.git".into());
+        projects.insert("other".into(), other);
+        let probed = Probed::from([(
+            cwd.clone(),
+            repository(&cwd.path, "/elsewhere/.git", Some("main")),
+        )]);
+        assert_eq!(
+            label_for_cwd(&probed, &projects, &cwd).as_deref(),
+            Some("notes")
+        );
+        assert_eq!(
+            label_for_cwd(&Probed::new(), &projects, &here("/work/notes-old")).as_deref(),
+            Some("workspace")
+        );
+        assert_eq!(
+            label_for_cwd(
+                &Probed::new(),
+                &projects,
+                &Location::new(Some("remote"), &cwd.path)
+            ),
+            None
         );
     }
 

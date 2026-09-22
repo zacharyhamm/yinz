@@ -13,7 +13,9 @@ use hocus_proto::completion;
 use hocus_proto::envelope;
 use hocus_proto::llm::Endpoint;
 use hocus_proto::location::Location;
-use hocus_proto::panes::{focused_pane, manifest_pane_ids, terminal_panes};
+use hocus_proto::panes::{
+    focused_pane, manifest_pane_ids, suppressed_terminal_panes, terminal_panes,
+};
 use hocus_proto::store::{self, Backend};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
@@ -137,13 +139,13 @@ struct State {
     /// Overrides from hocus's `agent_register`, refreshed by every subscribe.
     /// hocus stays authoritative; this is only an input to `classify`.
     manual_kinds: BTreeMap<u32, String>,
-    /// The tab-to-project assignments the user made in hocus, held only to pass
-    /// on. Nothing here reads them: the store names the tabs, and this is the
-    /// only route from the pane that makes them to the plugin that uses them.
+    /// Manual project assignments from hocus, relayed as metadata to subscribers.
     tab_projects: BTreeMap<TabId, String>,
     /// The event-fed terminal-pane snapshot. `None` means nothing has told us
     /// about a pane yet.
     panes: Option<Vec<agents::AgentPane>>,
+    /// Hidden terminals still count toward tab names, but not the visible agent list.
+    suppressed_panes: Vec<agents::AgentPane>,
     /// Whether the startup scan has found the current session and run. Kept
     /// apart from `panes` because a manifest fills those without answering the
     /// one question the scan exists for — see `needs_bootstrap`.
@@ -738,8 +740,8 @@ impl State {
     fn bootstrap(&mut self) {
         let Some(poll::StartupSnapshot {
             session_name,
-            panes,
-            focused,
+            manifest,
+            tabs,
         }) = poll::gather()
         else {
             return;
@@ -770,28 +772,27 @@ impl State {
                 self.run_lookups.insert(pane_id);
             }
         }
-        self.focused = focused;
         self.bootstrapped = true;
-        for pane in &panes {
-            if let Some(command) = &pane.command {
-                self.commands.insert(pane.pane_id, command.clone());
+        for pane in manifest.panes.values().flatten() {
+            let PaneId::Terminal(id) = pane.id else {
+                continue;
+            };
+            if let Some(command) = &pane.terminal_command {
+                self.commands.insert(id.get(), command.clone());
             }
             if let Some(cwd) = pane.cwd.clone() {
-                self.record_cwd(pane.pane_id, &cwd);
+                self.record_cwd(id.get(), &cwd);
             }
         }
         // Now that the retry really happens, this can run after a manifest has
         // already arrived — and the manifest, not this scan, is the live answer
         // to which panes exist. What the scan alone can see is the running
         // command and the folder, and those are already folded in above.
-        if self.panes.is_some() {
-            self.rebuild_panes();
-            return;
+        if self.panes.is_none() {
+            self.manifest = manifest;
+            self.tabs = tabs;
         }
-        self.panes = Some(panes);
-        self.rejoin_cwds();
-        self.settle_latches();
-        self.resolve_repositories();
+        self.rebuild_panes();
     }
 
     /// Who this daemon writes rows as: its machine, and the session it is in.
@@ -837,7 +838,12 @@ impl State {
     /// Put the folders we know onto the panes we hold.
     fn rejoin_cwds(&mut self) {
         let cwds = self.cwds.clone();
-        for pane in self.panes.iter_mut().flatten() {
+        for pane in self
+            .panes
+            .iter_mut()
+            .flatten()
+            .chain(&mut self.suppressed_panes)
+        {
             // Only ever set, never cleared: a snapshot that does not mention a
             // folder has not said the pane left it.
             if let Some(cwd) = cwds.get(&pane.pane_id) {
@@ -1721,7 +1727,12 @@ impl State {
     /// does for folders.
     fn rejoin_commands(&mut self) {
         let commands = self.commands.clone();
-        for pane in self.panes.iter_mut().flatten() {
+        for pane in self
+            .panes
+            .iter_mut()
+            .flatten()
+            .chain(&mut self.suppressed_panes)
+        {
             // Only ever set, never cleared — a pane we were told nothing about
             // keeps whatever the manifest said it was launched with.
             if let Some(command) = commands.get(&pane.pane_id) {
@@ -1807,10 +1818,15 @@ impl State {
             }
         }
         let mut panes = terminal_panes(&self.manifest, &self.tabs);
-        for pane in &mut panes {
+        let mut suppressed_panes = suppressed_terminal_panes(&self.manifest, &self.tabs);
+        for pane in panes.iter_mut().chain(&mut suppressed_panes) {
             if let Some(command) = self.commands.get(&pane.pane_id) {
                 pane.command = Some(command.clone());
             }
+            pane.firecracker_worktree = self
+                .firecracker_worktrees
+                .get(&pane.pane_id)
+                .map(|checkout| checkout.worktree.clone());
         }
         // Pruned against every pane the manifest carries, not against the ones
         // worth showing. A suppressed pane is hidden behind something — the
@@ -1909,9 +1925,11 @@ impl State {
         // the rejoin below writes what we already knew back over it.
         let reported: Vec<(u32, String)> = panes
             .iter()
+            .chain(&suppressed_panes)
             .filter_map(|pane| Some((pane.pane_id, pane.cwd.clone()?)))
             .collect();
         self.panes = Some(panes);
+        self.suppressed_panes = suppressed_panes;
         let exited_runs: Vec<u32> = self
             .panes
             .iter()
@@ -2132,6 +2150,7 @@ impl State {
             .panes
             .iter()
             .flatten()
+            .chain(&self.suppressed_panes)
             .filter(|pane| pane.cwd.is_none())
             .filter(|pane| pane.status == agents::AgentStatus::Running)
             .map(|pane| pane.pane_id)
@@ -2169,8 +2188,10 @@ impl State {
     fn update_pane(&mut self, id: u32, update: impl FnOnce(&mut agents::AgentPane)) {
         if let Some(pane) = self
             .panes
-            .as_mut()
-            .and_then(|panes| panes.iter_mut().find(|pane| pane.pane_id == id))
+            .iter_mut()
+            .flatten()
+            .chain(&mut self.suppressed_panes)
+            .find(|pane| pane.pane_id == id)
         {
             update(pane);
         }
@@ -2284,6 +2305,7 @@ impl State {
             self.panes
                 .iter()
                 .flatten()
+                .chain(&self.suppressed_panes)
                 .find(|pane| pane.pane_id == pane_id)
                 .and_then(|pane| pane.agent.as_ref())
                 .and_then(|agent| agent.cwd.as_deref())
@@ -2307,6 +2329,7 @@ impl State {
             .keys()
             .chain(self.firecracker_worktrees.keys())
             .chain(self.panes.iter().flatten().map(|pane| &pane.pane_id))
+            .chain(self.suppressed_panes.iter().map(|pane| &pane.pane_id))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .filter_map(|pane_id| self.location_of(*pane_id))
@@ -2385,6 +2408,7 @@ impl State {
         self.panes
             .iter()
             .flatten()
+            .chain(&self.suppressed_panes)
             .filter(|pane| pane.host.is_some())
             // A Firecracker pane that mirrors a host worktree is identified by that
             // worktree, which is on *this* machine and probed with the local pass. The
@@ -2396,10 +2420,6 @@ impl State {
             // Filtered here rather than further down so the emptiness check and the
             // cursor arithmetic below both see the real set.
             .filter(|pane| pane.firecracker_worktree.is_none())
-            .filter(|pane| {
-                pane.status == agents::AgentStatus::Running
-                    || !self.arrangement_subscribers.is_empty()
-            })
             .map(|pane| pane.pane_id)
             .collect()
     }
@@ -3646,6 +3666,7 @@ impl State {
         self.refresh_related_agents();
         let reply = PollReply {
             panes: self.panes.clone(),
+            suppressed_panes: self.suppressed_panes.clone(),
             activity: self.activity.clone(),
             manual_kinds: self.manual_kinds.clone(),
             zellij_session_name: self.zellij_session_name.clone().unwrap_or_default(),
@@ -4723,6 +4744,10 @@ mod tests {
             "a suppressed pane is not one of the panes on show",
         );
         assert_eq!(state.location_of(7), Some(local("/work/hocus")));
+        assert_eq!(
+            state.suppressed_panes[0].checkout_location(),
+            Some(local("/work/hocus"))
+        );
 
         state
             .manifest
@@ -5771,6 +5796,7 @@ mod tests {
         state.rebuild_panes();
 
         assert_eq!(state.cwds.get(&7).map(String::as_str), Some("/work"));
+        assert_eq!(state.suppressed_panes[0].cwd.as_deref(), Some("/work"));
         assert_eq!(state.latched.get(&7).map(String::as_str), Some("codex"));
         assert!(
             state.repositories.contains_key(&local("/work")),
@@ -5789,10 +5815,12 @@ mod tests {
         );
         state.rebuild_panes();
         assert_eq!(state.latched.get(&7).map(String::as_str), Some("codex"));
+        assert!(state.suppressed_panes.is_empty());
 
         // A pane that really closes still takes all of it with it.
         state.manifest = PaneManifest::default();
         state.rebuild_panes();
+        assert!(state.suppressed_panes.is_empty());
         assert!(state.cwds.is_empty());
         assert!(state.latched.is_empty());
         assert!(!state.repositories.contains_key(&local("/work")));
@@ -6764,6 +6792,120 @@ mod tests {
     }
 
     #[test]
+    fn hidden_pane_locations_membership_and_closure_are_published() {
+        let mut state = State::default();
+        state.update(Event::TabUpdate(vec![
+            TabInfo {
+                tab_id: TabId::new(9),
+                position: TabPosition::new(0),
+                ..Default::default()
+            },
+            TabInfo {
+                tab_id: TabId::new(10),
+                position: TabPosition::new(1),
+                ..Default::default()
+            },
+        ]));
+        let hidden = PaneInfo {
+            id: PaneId::Terminal(TerminalId::new(7)),
+            cwd: Some("/work/a".into()),
+            is_suppressed: true,
+            ..Default::default()
+        };
+        let mut manifest = PaneManifest::default();
+        manifest
+            .panes
+            .insert(TabPosition::new(0), vec![hidden.clone()]);
+        state.update(Event::PaneUpdate(manifest.clone()));
+        let snapshot = |state: &State| -> PollReply {
+            serde_json::from_str(state.last_published.as_deref().unwrap()).unwrap()
+        };
+        let first = snapshot(&state);
+        assert!(first.panes.unwrap().is_empty());
+        assert_eq!(
+            first.suppressed_panes[0].tab.as_ref().unwrap().0,
+            TabId::new(9)
+        );
+        assert_eq!(
+            first.suppressed_panes[0].checkout_location(),
+            Some(local("/work/a"))
+        );
+
+        state.update(Event::CwdChanged(hidden.id, "/work/b".into(), vec![]));
+        assert_eq!(
+            snapshot(&state).suppressed_panes[0].checkout_location(),
+            Some(local("/work/b"))
+        );
+
+        // Agent-reported work takes precedence over the shell's directory, even hidden.
+        let mut moved = hidden;
+        moved.cwd = Some("/work/b".into());
+        moved.agent = Some(agents::registered_agent("codex", Some("/work/c".into())));
+        moved.exited = true;
+        manifest.panes.clear();
+        manifest.panes.insert(TabPosition::new(1), vec![moved]);
+        state.update(Event::PaneUpdate(manifest.clone()));
+        let reply = snapshot(&state);
+        assert_eq!(
+            reply.suppressed_panes[0].tab.as_ref().unwrap().0,
+            TabId::new(10)
+        );
+        assert_eq!(
+            reply.suppressed_panes[0].status,
+            agents::AgentStatus::Exited
+        );
+        assert_eq!(
+            reply.suppressed_panes[0].checkout_location(),
+            Some(local("/work/c"))
+        );
+        assert!(state.git_probes.contains_key(&local("/work/c")));
+        let seq = state.seq;
+        state.update(Event::PaneUpdate(manifest));
+        assert_eq!(state.seq, seq, "unchanged hidden metadata is deduplicated");
+
+        state.update(Event::PaneUpdate(PaneManifest::default()));
+        assert!(snapshot(&state).suppressed_panes.is_empty());
+        assert!(state.pane_locations().is_empty());
+        assert!(state.git_probes.is_empty());
+    }
+
+    #[test]
+    fn a_hidden_exited_remote_pane_keeps_its_own_repository_probe() {
+        let mut state = State::default();
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(
+            TabPosition::new(0),
+            vec![PaneInfo {
+                id: PaneId::Terminal(TerminalId::new(7)),
+                host: Some("build-box".into()),
+                cwd: Some("/work/hocus".into()),
+                is_suppressed: true,
+                exited: true,
+                ..Default::default()
+            }],
+        );
+        state.update(Event::PaneUpdate(manifest));
+        assert!(state.repository_cwds(false).is_empty());
+        state.refresh_remote_repositories_with(|id, cwd, _| {
+            assert_eq!(id, 7);
+            assert_eq!(cwd, "/work/hocus");
+            Ok(Some(far_probe("build-box", cwd, "topic")))
+        });
+        assert!(state
+            .repositories
+            .contains_key(&remote("build-box", "/work/hocus")));
+        let reply: PollReply =
+            serde_json::from_str(state.last_published.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            reply.suppressed_panes[0].checkout_location(),
+            Some(remote("build-box", "/work/hocus"))
+        );
+        assert!(reply
+            .repositories
+            .contains_key(&remote("build-box", "/work/hocus")));
+    }
+
+    #[test]
     fn a_new_subscriber_gets_the_unchanged_snapshot_anyway() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
@@ -6793,8 +6935,7 @@ mod tests {
         assert_eq!(state.seq, seq + 1);
     }
 
-    /// The daemon has no opinion about tabs; it is only the road between the
-    /// plugin that makes these assignments and the one that names the tabs.
+    /// Manual assignments still travel as metadata, independently of tab names.
     #[test]
     fn a_hand_made_tab_assignment_is_carried_through_to_the_snapshot() {
         let mut state = State {

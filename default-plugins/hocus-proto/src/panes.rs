@@ -17,6 +17,22 @@ use zellij_tile::prelude::{PaneInfo, PaneManifest, TabInfo};
 /// prompt, and Hocus itself is a plugin pane. Hidden stack-list terminals remain
 /// discoverable through their list entries. Other suppressed panes are excluded.
 pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::AgentPane> {
+    terminal_panes_by_visibility(manifest, tabs, false)
+}
+
+/// Hidden terminals omitted from the normal agent list. Stack members are already in it.
+pub fn suppressed_terminal_panes(
+    manifest: &PaneManifest,
+    tabs: &[TabInfo],
+) -> Vec<agents::AgentPane> {
+    terminal_panes_by_visibility(manifest, tabs, true)
+}
+
+fn terminal_panes_by_visibility(
+    manifest: &PaneManifest,
+    tabs: &[TabInfo],
+    suppressed: bool,
+) -> Vec<agents::AgentPane> {
     // The manifest is keyed by tab *position*, not tab id — same join as
     // tools::list_session.
     let by_position: BTreeMap<TabPosition, (TabId, &str)> = tabs
@@ -27,7 +43,9 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
         .panes
         .iter()
         .flat_map(|(position, panes)| panes.iter().map(move |pane| (Some(*position), pane)))
-        .filter(|(_, pane)| !pane.is_plugin() && (!pane.is_suppressed || pane.is_stack_list_member))
+        .filter(|(_, pane)| {
+            !pane.is_plugin() && (pane.is_suppressed && !pane.is_stack_list_member) == suppressed
+        })
         .map(|(position, pane)| {
             agent_pane(
                 pane,
@@ -136,6 +154,13 @@ mod tests {
                 PaneInfo {
                     id: zellij_tile::prelude::PaneId::from_legacy(2, false),
                     is_suppressed: true,
+                    cwd: Some("/work/hidden".to_owned()),
+                    exited: true,
+                    ..Default::default()
+                },
+                PaneInfo {
+                    id: zellij_tile::prelude::PaneId::from_legacy(3, true),
+                    is_suppressed: true,
                     ..Default::default()
                 },
             ],
@@ -145,6 +170,19 @@ mod tests {
             panes.iter().map(|pane| pane.pane_id).collect::<Vec<_>>(),
             vec![1]
         );
+        let suppressed = suppressed_terminal_panes(&manifest, &[tab(0, true, false)]);
+        assert_eq!(suppressed.len(), 1, "no plugins or duplicate stack members");
+        assert_eq!(suppressed[0].pane_id, 2);
+        assert_eq!(suppressed[0].cwd.as_deref(), Some("/work/hidden"));
+        assert_eq!(suppressed[0].status, agents::AgentStatus::Exited);
+        assert_eq!(suppressed[0].tab.as_ref().unwrap().0, TabId::new(100));
+    }
+
+    #[test]
+    fn older_snapshots_default_to_no_suppressed_panes() {
+        let reply: crate::wire::PollReply =
+            serde_json::from_str(r#"{"panes":[],"activity":{}}"#).unwrap();
+        assert!(reply.suppressed_panes.is_empty());
     }
 
     #[test]
