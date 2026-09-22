@@ -1308,7 +1308,10 @@ mod tests {
         let many_rows: String = (0..30).map(|i| format!("row {i}\r\n")).collect();
         pane.handle_plugin_bytes(client_id, many_rows.into_bytes());
         let scrollback = pane.grids[&client_id].scrollback_position_and_length().1;
-        assert!(scrollback > 0, "precondition: the host grid holds scrollback");
+        assert!(
+            scrollback > 0,
+            "precondition: the host grid holds scrollback"
+        );
 
         let (frame, _) = pane
             .render_frame(client_id, frame_params(), InputMode::Normal)

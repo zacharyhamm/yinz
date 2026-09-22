@@ -341,11 +341,7 @@ fn every_client_gets_the_chunks_added_for_multiple_clients() {
 
         let chunk = create_character_chunk_from_str("Shared", 0, 0);
         output
-            .add_character_chunks_to_multiple_clients(
-                vec![chunk],
-                client_ids.iter().copied(),
-                None,
-            )
+            .add_character_chunks_to_multiple_clients(vec![chunk], client_ids.iter().copied(), None)
             .unwrap();
 
         let result = output.serialize().unwrap();

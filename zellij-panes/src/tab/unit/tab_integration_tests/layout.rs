@@ -514,7 +514,11 @@ fn a_resize_tells_only_the_panes_whose_size_changed() {
     tab.vertical_split(pane(3), None, client_id, None, None)
         .unwrap();
     tab.move_focus_left(client_id).unwrap();
-    assert_eq!(tab.get_active_pane_id(client_id), Some(pane(2)), "precondition");
+    assert_eq!(
+        tab.get_active_pane_id(client_id),
+        Some(pane(2)),
+        "precondition"
+    );
     let content_sizes = |tab: &Tab| -> HashMap<PaneId, (usize, usize)> {
         tab.tiled_panes
             .panes

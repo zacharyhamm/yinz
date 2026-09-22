@@ -1953,20 +1953,31 @@ fn dragging_a_selection_past_the_edge_scrolls_further_the_further_it_goes() {
     }
     terminal_pane.handle_pty_bytes(text.into_bytes());
     let client_id = crate::ClientId::new(1);
-    let interval_elapsed =
-        || std::time::Instant::now() - std::time::Duration::from_millis(50);
+    let interval_elapsed = || std::time::Instant::now() - std::time::Duration::from_millis(50);
     let lines_scrolled_up = |pane: &TerminalPane| pane.grid.scrollback_position_and_length().0;
     terminal_pane.start_selection(&zellij_types::position::Position::new(5, 0), client_id);
 
     terminal_pane.selection_scrolled_at = interval_elapsed();
     terminal_pane.update_selection(&zellij_types::position::Position::new(-8, 0), client_id);
-    assert_eq!(lines_scrolled_up(&terminal_pane), 8, "eight lines above the pane: eight up");
+    assert_eq!(
+        lines_scrolled_up(&terminal_pane),
+        8,
+        "eight lines above the pane: eight up"
+    );
 
     terminal_pane.selection_scrolled_at = interval_elapsed();
     terminal_pane.update_selection(&zellij_types::position::Position::new(-50, 0), client_id);
-    assert_eq!(lines_scrolled_up(&terminal_pane), 18, "capped at ten per step");
+    assert_eq!(
+        lines_scrolled_up(&terminal_pane),
+        18,
+        "capped at ten per step"
+    );
 
     terminal_pane.selection_scrolled_at = interval_elapsed();
     terminal_pane.update_selection(&zellij_types::position::Position::new(22, 0), client_id);
-    assert_eq!(lines_scrolled_up(&terminal_pane), 15, "three lines below the pane: three down");
+    assert_eq!(
+        lines_scrolled_up(&terminal_pane),
+        15,
+        "three lines below the pane: three down"
+    );
 }

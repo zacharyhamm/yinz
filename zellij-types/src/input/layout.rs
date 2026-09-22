@@ -270,14 +270,13 @@ impl Run {
                 }
                 Some(Run::Plugin(merged))
             },
-            (
-                Some(Run::EditFile(file_to_edit, line_number, _)),
-                Some(Run::Cwd(other_cwd)),
-            ) => Some(Run::EditFile(
-                other_cwd.join(file_to_edit),
-                *line_number,
-                Some(other_cwd.clone()),
-            )),
+            (Some(Run::EditFile(file_to_edit, line_number, _)), Some(Run::Cwd(other_cwd))) => {
+                Some(Run::EditFile(
+                    other_cwd.join(file_to_edit),
+                    *line_number,
+                    Some(other_cwd.clone()),
+                ))
+            },
             // The consumer names a run of its own, so it replaces the template's.
             (
                 Some(Run::Plugin(_) | Run::Command(_) | Run::EditFile(..)),

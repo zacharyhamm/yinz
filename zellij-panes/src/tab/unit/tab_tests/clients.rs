@@ -11,7 +11,10 @@ fn removing_a_client_forgets_its_mode_info() {
     );
     let joining = crate::ClientId::new(2);
     tab.add_client(joining, None).unwrap();
-    assert!(tab.mode_info.borrow().contains_key(&joining), "precondition");
+    assert!(
+        tab.mode_info.borrow().contains_key(&joining),
+        "precondition"
+    );
 
     tab.remove_client(joining);
 
@@ -42,7 +45,9 @@ fn a_client_detaching_does_not_forget_which_pane_the_layout_focused() {
         layout,
     );
     let first = crate::ClientId::new(1);
-    let focused = tab.get_active_pane_id(first).expect("the layout focused a pane");
+    let focused = tab
+        .get_active_pane_id(first)
+        .expect("the layout focused a pane");
     assert_ne!(
         focused,
         PaneId::Terminal(TerminalId::new(0)),
@@ -84,7 +89,9 @@ fn a_closed_focus_pane_is_not_offered_to_a_joining_client() {
         layout,
     );
     let first = crate::ClientId::new(1);
-    let focused = tab.get_active_pane_id(first).expect("the layout focused a pane");
+    let focused = tab
+        .get_active_pane_id(first)
+        .expect("the layout focused a pane");
     tab.close_pane(focused, false, None);
     tab.remove_client(first);
     let joining = crate::ClientId::new(2);

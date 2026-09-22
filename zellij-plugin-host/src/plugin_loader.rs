@@ -753,10 +753,10 @@ impl<'a> PluginLoader<'a> {
 mod tests {
     use super::{cached_module, plugin_cache_key, PluginLoader};
     use std::collections::HashMap;
-    use wasmi::{Engine, Module};
     use std::collections::VecDeque;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
+    use wasmi::{Engine, Module};
     use zellij_config::plugins::PluginConfig;
     use zellij_types::data::PluginTag;
     use {zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation};
