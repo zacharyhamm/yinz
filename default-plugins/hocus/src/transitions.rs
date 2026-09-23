@@ -1,5 +1,5 @@
 use crate::message::{
-    Ask, Job, Message, Reasoning, ReasoningKey, Retry, Role, ScheduledRun, Status,
+    Ask, Job, Message, Reasoning, ReasoningKey, Retry, Role, ScheduledRun, Status, UserOrigin,
 };
 use crate::*;
 use hocus_proto::jobs;
@@ -286,6 +286,11 @@ impl State {
     /// carries. `None` means the foreground's — including when it is nobody's,
     /// which the handlers already turn away on their own.
     pub(crate) fn owner_of(&self, context: &BTreeMap<String, String>) -> Option<usize> {
+        if let Some(id) = context.get(crate::decisions::REVIEW_CONTEXT) {
+            return self.parked.iter().position(|chat| {
+                matches!(&chat.status, Status::ReviewingTool { request_id, .. } if request_id == id)
+            });
+        }
         if let Some(stream_id) = context.get(STREAM_CONTEXT) {
             return self.parked_with_stream(stream_id);
         }
@@ -391,12 +396,18 @@ impl State {
             });
         }
         match self.status {
-            Status::ConfirmingTool => self.pending.front().map(|call| Confirmation {
-                kind: PromptKind::Tool,
-                title: call.name.clone(),
-                detail: self.confirmation_body(call),
-                keys: vec![("y", "run"), ("n", "skip"), ("Esc", "hide")],
-            }),
+            Status::ConfirmingTool | Status::ReviewingTool { .. } => {
+                self.pending.front().map(|call| Confirmation {
+                    kind: PromptKind::Tool,
+                    title: if matches!(self.status, Status::ReviewingTool { .. }) {
+                        format!("{} — checking with Jev", call.name)
+                    } else {
+                        call.name.clone()
+                    },
+                    detail: self.confirmation_body(call),
+                    keys: vec![("y", "run"), ("n", "skip"), ("Esc", "hide")],
+                })
+            },
             _ => None,
         }
     }
@@ -436,7 +447,10 @@ impl State {
     /// Whether a `y`/`n` is outstanding, for the callers that only need to know
     /// that much and shouldn't pay to build the block to find out.
     pub(crate) fn is_confirming(&self) -> bool {
-        matches!(self.status, Status::ConfirmingTool)
+        matches!(
+            self.status,
+            Status::ConfirmingTool | Status::ReviewingTool { .. }
+        )
     }
 
     /// Whether we are waiting on something — the one predicate the whole waiting
@@ -446,6 +460,7 @@ impl State {
             Status::AwaitingCommand
             | Status::AwaitingSearch
             | Status::AwaitingDecisions
+            | Status::ReviewingTool { .. }
             | Status::AwaitingExtension
             | Status::AwaitingPluginLoad
             | Status::AwaitingPluginTest
@@ -492,6 +507,8 @@ impl State {
             if let Some(call) = head {
                 return Some(format!("{spinner} running: {}", call.name));
             }
+        } else if matches!(self.status, Status::ReviewingTool { .. }) {
+            return Some(format!("{spinner} checking tool safety with Jev"));
         } else if matches!(self.status, Status::AwaitingSearch) {
             let args = head.and_then(|call| tools::Args::parse(&call.arguments).ok());
             if let Some(query) = args.and_then(|args| args.query) {
@@ -1126,6 +1143,7 @@ impl State {
         }
         let fired = self.poll_plugin_loads() || fired;
         let fired = self.poll_extension_calls() || fired;
+        let fired = self.poll_tool_reviews() || fired;
         let fired = self.poll_extension_scan() || fired;
         let frames = self.wants_frames();
         if frames {
@@ -1137,7 +1155,9 @@ impl State {
         // screen wants frames: nothing else will wake us, and the report is due in 750ms.
         // A parked chat's extension call likewise: its timeout is the only thing that will
         // answer a call nobody else does.
-        let loads = self.plugin_load_pending() || self.extension_call_pending();
+        let loads = self.plugin_load_pending()
+            || self.extension_call_pending()
+            || self.tool_review_pending();
         let extension_scan = self.extension_scan_due_ms.is_some();
         // A retry wants frames, not job-rate ticks: the countdown beside the spinner is drawn
         // every frame, and a parked chat's retry has nothing else to wake it.
@@ -1486,18 +1506,7 @@ impl State {
         self.persist_job(row);
         // Mentions resolve at fire time, so "check @codex every minute" reads the
         // agent as it is now, not as it was when the job was armed.
-        let mut fired = format!("[scheduled] {prompt}");
-        if let Some(context) = agents::mention_context(
-            &fired,
-            &self.panes,
-            &self.manual_kinds,
-            &self.activity,
-            &self.hooks,
-        ) {
-            fired.push_str("\n\n");
-            fired.push_str(&context);
-        }
-        self.messages.push(Message::user(fired));
+        self.push_user_message(format!("[scheduled] {prompt}"), None, UserOrigin::Scheduled);
         self.log(
             "job_fire",
             serde_json::json!({
@@ -1566,7 +1575,7 @@ impl State {
             return false;
         }
 
-        self.asks.push_back(Ask::text(text));
+        self.asks.push_back(Ask::text(text, UserOrigin::Pipe));
         let started = self.drain_asks();
         self.ack_ask(
             reply_to,
@@ -1626,21 +1635,14 @@ impl State {
         self.start_queued_question(&cfg)
     }
 
-    /// Send the oldest accepted question. The timer calls this after a plain
-    /// reply; the tool loop calls it after every call in a batch has a result.
-    pub(crate) fn start_queued_question(&mut self, cfg: &Config) -> bool {
-        let Some(Ask {
-            content: mut text,
-            display,
-        }) = self.asks.pop_front()
-        else {
-            return false;
-        };
-
-        // Mentions resolve here rather than where the question was typed, the
-        // same as a scheduled job's do: "@codex is stuck" should read the agent
-        // as it is when the question goes out. The popup holds no snapshot of
-        // its own to resolve them against anyway.
+    /// Enrich at dispatch time while keeping the original text and its provenance.
+    pub(crate) fn push_user_message(
+        &mut self,
+        mut text: String,
+        display: Option<String>,
+        user_origin: UserOrigin,
+    ) -> String {
+        let user_content = text.clone();
         if let Some(context) = agents::mention_context(
             &text,
             &self.panes,
@@ -1651,15 +1653,32 @@ impl State {
             text.push_str("\n\n");
             text.push_str(&context);
         }
+        let mut message = Message::user_shown(text.clone(), display);
+        message.user_origin = user_origin;
+        message.user_content = Some(user_content);
+        self.messages.push(message);
+        text
+    }
 
-        let content = text.clone();
+    /// Send the oldest accepted question after a reply or complete tool batch.
+    pub(crate) fn start_queued_question(&mut self, cfg: &Config) -> bool {
+        let Some(Ask {
+            content: text,
+            display,
+            user_origin,
+        }) = self.asks.pop_front()
+        else {
+            return false;
+        };
+
+        // Mentions resolve here rather than where the question was typed, the
+        // same as a scheduled job's do: "@codex is stuck" should read the agent
+        // as it is when the question goes out. The popup holds no snapshot of
+        // its own to resolve them against anyway.
         self.scheduled_run = None;
-        // No `[scheduled]`-style prefix, deliberately. A job's prefix exists
-        // because the model is being handed words nobody typed; an ask *is* the
-        // user's words, and marking them up would change what the model reads.
-        // The provenance lives in the log line instead.
+        // Preserve provider text; provenance travels separately on the message.
         let typed = display.clone();
-        self.messages.push(Message::user_shown(text, display));
+        let content = self.push_user_message(text, display, user_origin);
         self.log(
             "user_input",
             serde_json::json!({

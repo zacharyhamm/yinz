@@ -373,6 +373,7 @@ fn execute_leaves_the_mode_and_carries_the_plan_out() {
         .iter()
         .rfind(|message| message.role == Role::User)
         .expect("the approval is a user turn");
+    assert_eq!(last_user.user_origin, UserOrigin::Human);
     assert_eq!(
         last_user.content,
         "Approved. Carry out the plan you just wrote."
@@ -450,6 +451,11 @@ fn execute_clear_carries_the_plan_into_a_new_tab() {
         vec!["Approved. Carry out this plan:\n\nThe plan."],
         "the fresh transcript is the plan and nothing else"
     );
+    assert!(state
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .all(|m| m.user_origin == UserOrigin::Human));
     assert!(
         !state.messages.iter().any(|m| m.content == "hi"),
         "the planning prompt did not come along"

@@ -1707,6 +1707,9 @@ fn help_line(state: &State) -> &'static str {
     // and a stream are both outstanding it takes the tool first.
     match state.status {
         Status::ConfirmingTool => "<y> yes  <n> no  <PgUp/PgDn> scroll  <Ctrl c> abort  <Esc> hide",
+        Status::ReviewingTool { .. } => {
+            "checking safety…  <y> yes  <n> no  <Ctrl c> abort  <Esc> hide"
+        },
         Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingDecisions => "evaluating…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",

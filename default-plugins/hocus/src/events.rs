@@ -1,4 +1,4 @@
-use crate::message::{Ask, Message, Status, StreamState};
+use crate::message::{Ask, Message, Status, StreamState, UserOrigin};
 use crate::*;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
@@ -1118,7 +1118,7 @@ impl State {
     /// `display` as the `/name args` line that was typed: the typed line is
     /// what the transcript, the queue notice and a refusal's put-back show,
     /// and the prompt is what the model reads.
-    pub(crate) fn send_user_message(&mut self, mut text: String, display: Option<String>) -> bool {
+    pub(crate) fn send_user_message(&mut self, text: String, display: Option<String>) -> bool {
         // Cloned rather than borrowed so the transcript can be mutated below.
         let Ok(cfg) = self.cfg.clone() else {
             self.input.set_text(display.unwrap_or(text));
@@ -1143,6 +1143,7 @@ impl State {
             let ask = Ask {
                 content: text,
                 display,
+                user_origin: UserOrigin::Human,
             };
             let notice = format!("queued: {}", ask.shown());
             self.messages.push(Message::notice(notice.clone()));
@@ -1162,21 +1163,9 @@ impl State {
         }
         // An @-mention earns the model a context line naming the agent pane, so
         // "ask @codex to run the tests" needs no agent_list round first.
-        if let Some(context) = agents::mention_context(
-            &text,
-            &self.panes,
-            &self.manual_kinds,
-            &self.activity,
-            &self.hooks,
-        ) {
-            text.push_str("\n\n");
-            text.push_str(&context);
-        }
-
-        let content = text.clone();
         self.scheduled_run = None;
         let typed = display.clone();
-        self.messages.push(Message::user_shown(text, display));
+        let content = self.push_user_message(text, display, UserOrigin::Human);
         self.log(
             "user_input",
             serde_json::json!({"content": log::truncate(&content), "display": typed}),
@@ -1335,6 +1324,9 @@ impl State {
         body: &[u8],
         context: &BTreeMap<String, String>,
     ) -> bool {
+        if self.finish_tool_review(status, body, context) {
+            return true;
+        }
         if self.finish_search(status, body, context) {
             return true;
         }

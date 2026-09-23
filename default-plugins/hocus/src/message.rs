@@ -1,5 +1,6 @@
 use crate::tools::{self, ToolCall};
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 // ---------------------------------------------------------------------------
 // Transcript
@@ -20,6 +21,18 @@ pub enum Role {
     /// Default only so `Message` can derive it; every constructor sets a role.
     #[default]
     Notice,
+}
+
+/// Who supplied a user-role turn. The role alone never proves human authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserOrigin {
+    Human,
+    Pipe,
+    Scheduled,
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 /// A model's chain-of-thought, kept only so it can be handed straight back.
@@ -85,6 +98,11 @@ pub struct ReasoningItem {
 pub struct Message {
     pub role: Role,
     pub content: String,
+    #[serde(default)]
+    pub user_origin: UserOrigin,
+    /// User text before Hocus appends resolved mention metadata. Absent in old chats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_content: Option<String>,
     /// Assistant only: the tool calls this message requested. `content` is the
     /// prose the model emitted alongside them and `display` includes the
     /// human-readable call summary.
@@ -138,8 +156,14 @@ impl Message {
             ..Message::default()
         }
     }
+    /// A verified human turn. Synthetic inputs must carry their own origin.
     pub fn user<S: Into<String>>(content: S) -> Self {
-        Message::new(Role::User, content)
+        let content = content.into();
+        Message {
+            user_origin: UserOrigin::Human,
+            user_content: Some(content.clone()),
+            ..Message::new(Role::User, content)
+        }
     }
     /// A user turn shown as something other than what is sent: a skill, whose
     /// `content` is the expanded prompt and whose `display` is the line that
@@ -244,6 +268,20 @@ pub enum Status {
     Idle,
     /// The head of `pending` is destructive and is waiting on `y`/`n`.
     ConfirmingTool,
+    /// A confirmation-gated call being checked against the conversation by Jev.
+    /// Keeping the request here makes it travel with its chat and disappear on cancel.
+    ReviewingTool {
+        request_id: String,
+        url: String,
+        // A restored review has no live deadline and requires manual confirmation.
+        #[serde(skip)]
+        deadline: Option<Instant>,
+        // Execution settings can contain credentials: compare locally, never persist or send.
+        #[serde(skip)]
+        execution_config: Option<crate::decisions::ExecutionConfig>,
+        call: ToolCall,
+        body: Vec<u8>,
+    },
     /// The head of `pending` is a Slack tool waiting on `RunCommandResult`.
     AwaitingCommand,
     /// The head of `pending` is a `web_search` waiting on `WebRequestResult`.
@@ -316,13 +354,15 @@ pub enum Plan {
 pub struct Ask {
     pub content: String,
     pub display: Option<String>,
+    pub user_origin: UserOrigin,
 }
 
 impl Ask {
-    pub fn text<S: Into<String>>(content: S) -> Self {
+    pub fn text<S: Into<String>>(content: S, user_origin: UserOrigin) -> Self {
         Ask {
             content: content.into(),
             display: None,
+            user_origin,
         }
     }
 

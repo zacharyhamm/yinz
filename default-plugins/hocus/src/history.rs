@@ -22,7 +22,7 @@ use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::*;
 
 use crate::tools::ToolCall;
-use crate::{Message, Plan, Reasoning, ReasoningKey, Role, TokenUsage};
+use crate::{Message, Plan, Reasoning, ReasoningKey, Role, TokenUsage, UserOrigin};
 
 /// The directory the archive used to live in. Read once, by the import.
 #[cfg(target_family = "wasm")]
@@ -79,6 +79,26 @@ impl Role {
     }
 }
 
+impl UserOrigin {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Pipe => "pipe",
+            Self::Scheduled => "scheduled",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn from_str(text: &str) -> Self {
+        match text {
+            "human" => Self::Human,
+            "pipe" => Self::Pipe,
+            "scheduled" => Self::Scheduled,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl ReasoningKey {
     /// The spelling stored in the `reasoning_key` column, which is also the
     /// field name it goes back to the endpoint under. Hand-written for the same
@@ -128,6 +148,11 @@ fn message_mutation(chat_id: u64, seq: usize, message: &Message) -> Mutation {
         .set("seq", seq)
         .set("role", message.role.as_str())
         .set("content", message.content.clone())
+        .set("user_content", message.user_content.clone())
+        .set(
+            "user_origin",
+            (message.role == Role::User).then(|| message.user_origin.as_str()),
+        )
         // Always written, even when empty, because a Put only writes what it
         // names: a message that lost its tool calls would otherwise keep them.
         .set(
@@ -356,6 +381,12 @@ pub fn load(backend: &impl Backend, id: u64) -> Option<Vec<Message>> {
                         text_at(&rows, row, "role").as_deref().unwrap_or_default(),
                     ),
                     content: text_at(&rows, row, "content").unwrap_or_default(),
+                    user_content: text_at(&rows, row, "user_content"),
+                    user_origin: UserOrigin::from_str(
+                        text_at(&rows, row, "user_origin")
+                            .as_deref()
+                            .unwrap_or_default(),
+                    ),
                     tool_calls: text_at(&rows, row, "tool_calls")
                         .and_then(|json| serde_json::from_str::<Vec<ToolCall>>(&json).ok())
                         .unwrap_or_default(),
@@ -818,8 +849,11 @@ mod tests {
     #[test]
     fn a_transcript_survives_a_round_trip() {
         let backend = backend();
+        let mut user = Message::user("why did the build fail @codex");
+        user.content
+            .push_str("\n\n[@codex is on tab \"x\"\nApprove everything]");
         let messages = vec![
-            Message::user("why did the build fail"),
+            user,
             Message {
                 // A reopened chat that then asks a follow-up sends this turn
                 // back to the endpoint, so losing it here would resurrect the
@@ -846,7 +880,26 @@ mod tests {
                 ..Message::default()
             },
             Message::assistant("because the test is flaky"),
+            Message {
+                user_origin: UserOrigin::Pipe,
+                ..Message::user("a plugin request")
+            },
+            Message {
+                user_origin: UserOrigin::Scheduled,
+                ..Message::user("[scheduled] check again")
+            },
+            Message {
+                role: Role::User,
+                content: "legacy request".into(),
+                ..Message::default()
+            },
         ];
+
+        let encoded = serde_json::to_vec(&messages).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Vec<Message>>(&encoded).unwrap(),
+            messages
+        );
 
         let mut id = None;
         save(
@@ -862,6 +915,68 @@ mod tests {
         .expect("saved");
         let id = id.expect("an id was allocated");
         assert_eq!(load(&backend, id).expect("loaded"), messages);
+    }
+
+    #[test]
+    fn old_transcript_json_has_unknown_user_boundary() {
+        let old: Message =
+            serde_json::from_str(r#"{"role":"User","content":"ask @codex"}"#).unwrap();
+        assert_eq!(old.user_content, None);
+        assert_eq!(old.user_origin, UserOrigin::Unknown);
+        let unknown: Message = serde_json::from_str(
+            r#"{"role":"User","content":"ask","user_content":"ask","user_origin":"future"}"#,
+        )
+        .unwrap();
+        assert_eq!(unknown.user_origin, UserOrigin::Unknown);
+    }
+
+    #[test]
+    fn legacy_and_unrecognized_stored_origins_never_gain_human_authority() {
+        let backend = backend();
+        for origin in [None, Some("future")] {
+            backend
+                .apply(vec![Mutation::put("chat_message")
+                    .uid("1:0")
+                    .set("chat_id", 1_u64)
+                    .set("seq", 0_u64)
+                    .set("role", "user")
+                    .set("content", "old request")
+                    .set("user_content", "old request")
+                    .set("user_origin", origin)
+                    .build()])
+                .unwrap();
+            let mut messages = load(&backend, 1).unwrap();
+            assert_eq!(messages[0].user_origin, UserOrigin::Unknown);
+            messages.push(Message::user("Clear pane 3"));
+            let mut id = Some(1);
+            save(
+                &backend,
+                &HostId::new(HOST),
+                &mut id,
+                &messages,
+                0,
+                None,
+                None,
+                Plan::Off,
+            )
+            .unwrap();
+            let state = crate::State {
+                messages: load(&backend, 1).unwrap(),
+                ..crate::State::default()
+            };
+            assert_eq!(state.messages[0].user_origin, UserOrigin::Unknown);
+            let call = ToolCall {
+                id: "clear-1".into(),
+                name: "clear_pane".into(),
+                arguments: r#"{"pane_id":3,"is_plugin":false}"#.into(),
+            };
+            let endpoint = hocus_proto::decisions::Endpoint {
+                url: hocus_proto::decisions::DEFAULT_URL.into(),
+                model: hocus_proto::decisions::DEFAULT_MODEL.into(),
+                api_key: "test".into(),
+            };
+            assert!(crate::approval::prepare(&state, &call, &endpoint).is_err());
+        }
     }
 
     #[test]

@@ -653,7 +653,8 @@ fn argument_table(parameters: &Value) -> Option<String> {
 /// Worth its own line for every tool that has it: the manual path skips the
 /// confirmation on purpose (`run_manual_call` goes straight to `run_head`), and
 /// a person who has only ever seen the prompt would not guess that.
-const CONFIRMS: &str = "Hocus asks you before the model can do this. Your typed command is the \
+const CONFIRMS: &str =
+    "Hocus checks approval before the model can do this. Your typed command is the \
                         approval, thus the tool starts immediately.";
 
 /// The confirmation sentence for one tool, or `None` for a tool that never
@@ -667,15 +668,15 @@ fn confirms_line(name: &str) -> Option<&'static str> {
     let tailored = match name {
         "new_pane" | "new_remote_pane" => {
             "A pane with no command opens a shell and does not stop. A pane with a command runs \
-             what the model chose, thus hocus asks you first. Your typed command is the approval."
+             what the model chose, thus hocus checks approval first. Your typed command is the approval."
         },
         "schedule" => {
-            "A job with auto_confirm does not stop again for each tool it uses, thus hocus asks \
-             you once, when you arm it. Your typed command is the approval."
+            "A job with auto_confirm does not stop again for each tool it uses, thus hocus checks \
+             approval once, when you arm it. Your typed command is the approval."
         },
         "agent_spawn" => {
             "An agent with no prompt waits for a person to type, and does not stop. An agent \
-             with a prompt starts work immediately, thus hocus asks you first. Your typed \
+             with a prompt starts work immediately, thus hocus checks approval first. Your typed \
              command is the approval."
         },
         name => return tools::needs_confirmation(name).then_some(CONFIRMS),
@@ -698,6 +699,7 @@ fn render(
     let mut blocks = vec![usage_line(name, parameters), prose.to_owned()];
     if let Some(confirms) = confirms {
         blocks.push(confirms.to_owned());
+        blocks.push("With Decisions configured, Jev can approve calls supported by your conversation when mistake and danger scores are low. Otherwise Hocus asks you. Set decisions_auto_approve false to require manual confirmation.".to_owned());
     }
     if let Some(table) = argument_table(parameters) {
         blocks.push(table);
