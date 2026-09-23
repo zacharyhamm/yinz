@@ -559,7 +559,9 @@ fn a_hidden_held_members_exit_code_shows_on_its_entry() {
 
     let grid_snapshot =
         zellij.wait_until("exit code rendered on the hidden entry", |grid_snapshot| {
-            grid_snapshot.contains("EXIT CODE: 2") && has_selected_entry(grid_snapshot, "Pane #1")
+            grid_snapshot.contains("EXIT CODE: 2")
+                && grid_snapshot.contains("[0] Tab #1")
+                && has_selected_entry(grid_snapshot, "Pane #1")
         });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
