@@ -1977,7 +1977,8 @@ impl Grid {
                 for (index, character) in line.columns.iter().enumerate() {
                     let is_trimmable_space = character.character
                         == EMPTY_TERMINAL_CHARACTER.character
-                        && matches!(character.styles.background, Some(AnsiCode::Reset) | None);
+                        && matches!(character.styles.background, Some(AnsiCode::Reset) | None)
+                        && matches!(line.bg_color, Some(AnsiCode::Reset) | None);
 
                     if !is_trimmable_space {
                         // we can't trim this character, meaning that if we had a previous
