@@ -404,7 +404,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_docs",
-        "Read the guide for zellij TypeScript plugins. Without a section, the tool lists the sections with their sizes. Give a query, which is a regular expression, to find the section that holds a subject. Then read that section, or a part of it.",
+        "Read the SDK declarations and examples for zellij TypeScript plugins. Without a section, the tool lists the sections with their sizes. Give a query, which is a regular expression, to find the section that holds a subject. Then read that section, or a part of it.",
     ),
     (
         "plugin_list",
@@ -430,7 +430,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_test",
-        "Run adjacent TypeScript unit and integration tests by plugin name. Use kind, filter, and timeout_ms to select cases and their deadline. Returns per-case JSON. Test before plugin_reload; use plugin_docs section=testing to author tests.",
+        "Run adjacent TypeScript unit and integration tests by plugin name. Use kind, filter, and timeout_ms to select cases and their deadline. Returns per-case JSON. Test before plugin_reload; use plugin_docs section=sdk_testing to author tests.",
     ),
     (
         "plugin_check",

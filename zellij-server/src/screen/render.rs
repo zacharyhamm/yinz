@@ -278,16 +278,36 @@ impl Screen {
                 );
             }
 
+            let mut has_osc7_update = false;
             for (client_id, tab_index) in &self.active_tab_ids {
                 if self.watcher_clients.contains_key(client_id) {
                     continue;
                 }
                 if let Some(tab) = self.tabs.get(tab_index) {
                     output.set_kitty_visible_panes(*client_id, tab.kitty_visible_pane_ids());
+
+                    let current_osc7 = tab
+                        .get_active_pane(*client_id)
+                        .and_then(|pane| pane.osc7_payload());
+                    let last = self
+                        .last_forwarded_osc7
+                        .get(client_id)
+                        .and_then(|uri| uri.as_deref());
+                    if current_osc7 != last {
+                        if let Some(uri) = current_osc7 {
+                            output.add_post_vte_instruction_to_client(
+                                *client_id,
+                                &format!("\x1b]7;{}\x1b\\", uri),
+                            );
+                            has_osc7_update = true;
+                        }
+                        self.last_forwarded_osc7
+                            .insert(*client_id, current_osc7.map(str::to_owned));
+                    }
                 }
             }
 
-            if non_watcher_output_was_dirty || has_bell {
+            if non_watcher_output_was_dirty || has_bell || has_osc7_update {
                 if trace_attach {
                     log::info!("attach trace: render output serialization begin");
                 }
