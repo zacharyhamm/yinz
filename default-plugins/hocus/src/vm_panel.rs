@@ -1,3 +1,4 @@
+use crate::archive::AGENT_LIST_LOCATION;
 use crate::{api, tools, State, MAX_TOOL_OUTPUT};
 use hocus_proto::vms::{self, Operation, Request, ResultMessage, Snapshot};
 use std::collections::BTreeMap;
@@ -14,7 +15,7 @@ impl State {
         self.agents_plugin.filter(|id| {
             self.plugin_instances
                 .get(id)
-                .is_some_and(|plugin| plugin.location == "zellij:hocus-agents" && plugin.has_pane)
+                .is_some_and(|plugin| plugin.location == AGENT_LIST_LOCATION && plugin.has_pane)
         })
     }
 

@@ -1,7 +1,11 @@
 use crate::message::{Ask, Message, Picker, PickerKind, PickerRow};
 use crate::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::*;
+
+/// Where the session lists a hocus-agents instance. Session plugin locations are always the
+/// resolved form, never the bare alias a pane's `plugin_url` can carry.
+pub(crate) const AGENT_LIST_LOCATION: &str = "zellij:hocus-agents";
 
 // ---------------------------------------------------------------------------
 // The archive
@@ -319,7 +323,7 @@ impl State {
         }
     }
 
-    /// Send the agent strip to the hocus-agents pane, unless nothing changed
+    /// Send the agent strip to the hocus-agents panes, unless nothing changed
     /// since the last push. `force` sends regardless: the pane asking with
     /// `AGENT_STRIP_HELLO` starts empty whatever was last sent.
     pub(crate) fn push_strip(&mut self, force: bool) {
@@ -329,10 +333,114 @@ impl State {
         if !force && strip == self.last_strip {
             return;
         }
-        if let Ok(payload) = serde_json::to_string(&strip) {
-            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP).with_payload(payload));
+        let messages = self.strip_messages(&strip, self.strip_recipients());
+        if messages.is_empty() {
+            return;
+        }
+        for message in messages {
+            pipe_message_to_plugin(message);
         }
         self.last_strip = strip;
+    }
+
+    /// Every plugin the strip is owed to: each agent list the session names - the panel's,
+    /// one another client opened, one the user opened by hand - and the panel's own list,
+    /// which a `PaneUpdate` can name before the `SessionUpdate` does.
+    ///
+    /// Empty while hocus knows of no list at all, which `strip_messages` answers with a
+    /// broadcast: a hocus reloaded under an open list has no id yet and must still feed it.
+    pub(crate) fn strip_recipients(&self) -> BTreeSet<PluginId> {
+        self.agent_lists().chain(self.agents_plugin).collect()
+    }
+
+    /// `AGENT_STRIP` addressed to each of `recipients`, or broadcast when there are none.
+    ///
+    /// An unaddressed pipe reaches every plugin in the session, and every one of them -
+    /// each tab bar and status bar, the store, the daemon - decoded a JSON strip it had
+    /// no use for, on every focus change. Never sent by url, which would launch a list.
+    /// Nothing at all when the strip cannot be encoded, which is logged.
+    pub(crate) fn strip_messages(
+        &mut self,
+        strip: &agents::Strip,
+        recipients: BTreeSet<PluginId>,
+    ) -> Vec<MessageToPlugin> {
+        let payload = match serde_json::to_string(strip) {
+            Ok(payload) => payload,
+            Err(err) => {
+                self.log_global(
+                    "error",
+                    serde_json::json!({
+                        "error": format!("could not encode the agent strip: {err}"),
+                    }),
+                );
+                return Vec::new();
+            },
+        };
+        let message = MessageToPlugin::new(wire::AGENT_STRIP).with_payload(payload);
+        if recipients.is_empty() {
+            return vec![message];
+        }
+        recipients
+            .into_iter()
+            .map(|id| message.clone().with_destination_plugin_id(id))
+            .collect()
+    }
+
+    /// The answer to `AGENT_STRIP_HELLO`, as the messages to send.
+    ///
+    /// Whoever greets gets the rows, along with every list already fed: a list that reloaded
+    /// under a new id can greet before the `SessionUpdate` that names it, and while every
+    /// strip was broadcast it heard the answer regardless. The greeting does not make its
+    /// sender the panel's list - `on_selection`, which the list also sends on load, is what
+    /// does that, together with the placement that has to follow.
+    pub(crate) fn answer_strip_hello(&mut self, source: &PipeSource) -> Vec<MessageToPlugin> {
+        let mut recipients = self.strip_recipients();
+        if let (PipeSource::Plugin(sender), false) = (source, recipients.is_empty()) {
+            recipients.insert(*sender);
+        }
+        let strip = self.current_strip();
+        let messages = self.strip_messages(&strip, recipients);
+        if !messages.is_empty() {
+            self.last_strip = strip;
+        }
+        messages
+    }
+
+    /// The last strip, for the lists the session names now and did not in `before`.
+    ///
+    /// Everything else was sent it when it was pushed; a list the session had not yet listed
+    /// then, and that hocus did not know as the panel's, would otherwise wait for the next
+    /// change. Empty when no list is new.
+    pub(crate) fn strip_for_new_lists(
+        &mut self,
+        before: &BTreeSet<PluginId>,
+    ) -> Vec<MessageToPlugin> {
+        let new: BTreeSet<_> = self
+            .agent_lists()
+            .filter(|id| !before.contains(id) && self.agents_plugin != Some(*id))
+            .collect();
+        if new.is_empty() {
+            return Vec::new();
+        }
+        let strip = self.last_strip.clone();
+        self.strip_messages(&strip, new)
+    }
+
+    /// What the session says `id` is: `Some(true)` for a hocus-agents instance, `Some(false)`
+    /// for any other plugin, and `None` while it has not listed `id` at all - a list that has
+    /// just loaded speaks before the `SessionUpdate` that names it.
+    pub(crate) fn listed_as_agent_list(&self, id: PluginId) -> Option<bool> {
+        self.plugin_instances
+            .get(&id)
+            .map(|plugin| plugin.location == AGENT_LIST_LOCATION)
+    }
+
+    /// Every hocus-agents instance the session lists.
+    pub(crate) fn agent_lists(&self) -> impl Iterator<Item = PluginId> + '_ {
+        self.plugin_instances
+            .iter()
+            .filter(|(_, plugin)| plugin.location == AGENT_LIST_LOCATION)
+            .map(|(id, _)| *id)
     }
 
     /// The deferred half of `show_models`. Returns whether this response was one:

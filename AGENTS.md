@@ -108,7 +108,7 @@ each command forwards to a different place:
 |---|---|
 | `x test` | `cargo nextest run` — nextest flags, not libtest ones |
 | `x integration-test` | `cargo nextest run` — nextest flags, not libtest ones |
-| `x build`, `x install` | the native `cargo build`, repeated per crate (never the wasm plugin build); `x install` also takes `--profile <name>` (default `release`; `--profile dev` for a fast install), `--builtins-dir <dir>` / `--no-builtins` |
+| `x build`, `x install` | the native `cargo build`, repeated per crate (never the wasm plugin build); `x install` also takes `--profile <name>` (default `release`; `--profile dev` for a fast install - its wasm plugins are still built at opt-level 2, because opt-level 0 wasm under the interpreter costs seconds per event, but the host binary's own code is unoptimized; the same goes for any build into `target/wasm32-wasip1/debug`, `test` included, unless you export `CARGO_PROFILE_DEV_OPT_LEVEL` or `CARGO_PROFILE_DEV_DEBUG` yourself), `--builtins-dir <dir>` / `--no-builtins` |
 | `x run` | zellij itself (after `cargo run --`) |
 | `x bench` | criterion (after `cargo bench --`) — criterion flags, not libtest ones |
 | `x ci e2e` | the e2e test runner |

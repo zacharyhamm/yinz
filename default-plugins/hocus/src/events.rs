@@ -422,6 +422,7 @@ impl State {
 
     pub(crate) fn on_sessions(&mut self, sessions: Vec<SessionInfo>) -> bool {
         let previous_companion = self.verified_vm_companion();
+        let previous_lists: BTreeSet<_> = self.agent_lists().collect();
         let current = sessions
             .into_iter()
             .find(|session| session.is_current_session);
@@ -468,6 +469,9 @@ impl State {
         }
         if previous_companion != self.verified_vm_companion() {
             self.send_vm_panel_visibility(!self.hidden);
+        }
+        for message in self.strip_for_new_lists(&previous_lists) {
+            pipe_message_to_plugin(message);
         }
         let instances = plugins
             .into_iter()
