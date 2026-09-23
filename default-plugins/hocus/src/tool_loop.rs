@@ -2957,31 +2957,10 @@ impl State {
     /// folder is the repository to cut it in; without, it is where the pane runs, with no
     /// git work at all (`command=zsh cwd=/tmp` keeps working).
     pub(crate) fn agent_spawn(&mut self, args: &tools::Args) -> String {
-        let mut spec = args.launch_spec();
-        let selected_project = args.project.as_deref().or(self.active_project.as_deref());
-        let project = match selected_project {
-            Some(name) => match self.projects.get(name) {
-                Some(project) => Some(project),
-                None => return format!("unknown project {name}; call project_list"),
-            },
-            None => None,
+        let spec = match self.agent_spawn_spec(args, launch::unique_firecracker_vm) {
+            Ok((spec, _)) => spec,
+            Err(error) => return error,
         };
-        if spec.worktree_dir.is_none()
-            && spec
-                .branch
-                .as_deref()
-                .is_some_and(|branch| !branch.trim().is_empty())
-            && spec.worktree != Some(false)
-        {
-            spec.worktree_dir = project.and_then(|project| project.worktree_dir.clone());
-        }
-        if args.firecracker {
-            spec.firecracker = Some(launch::unique_firecracker_vm());
-        }
-        apply_project_firecracker_image(
-            &mut spec,
-            project.and_then(|project| project.firecracker_image.clone()),
-        );
         let firecracker = spec
             .firecracker
             .as_deref()
@@ -3027,6 +3006,46 @@ impl State {
         let automatic_vm = firecracker && (!no_checkout || project_firecracker);
         let result = tools::spawn_agent(args, &spec, cwd, run_in, automatic_vm);
         self.register_spawned(args.kind.as_deref(), &result)
+    }
+
+    /// The spec `agent_spawn` hands the planner: the call's own reading, with the
+    /// selected project's `worktree_dir` and Firecracker image filled in, and an
+    /// automatic VM named by `automatic_vm` when `firecracker` asks for one.
+    ///
+    /// The Jev review reads the launch off this same function, so what it scores is
+    /// the worktree and VM dispatch makes; it passes a fixed name, because dispatch's
+    /// is unique per call and would make every review look changed.
+    pub(crate) fn agent_spawn_spec(
+        &self,
+        args: &tools::Args,
+        automatic_vm: impl FnOnce() -> String,
+    ) -> Result<(launch::Spec, Option<&projects::Project>), String> {
+        let mut spec = args.launch_spec();
+        let selected_project = args.project.as_deref().or(self.active_project.as_deref());
+        let project = match selected_project {
+            Some(name) => match self.projects.get(name) {
+                Some(project) => Some(project),
+                None => return Err(format!("unknown project {name}; call project_list")),
+            },
+            None => None,
+        };
+        if spec.worktree_dir.is_none()
+            && spec
+                .branch
+                .as_deref()
+                .is_some_and(|branch| !branch.trim().is_empty())
+            && spec.worktree != Some(false)
+        {
+            spec.worktree_dir = project.and_then(|project| project.worktree_dir.clone());
+        }
+        if args.firecracker {
+            spec.firecracker = Some(automatic_vm());
+        }
+        apply_project_firecracker_image(
+            &mut spec,
+            project.and_then(|project| project.firecracker_image.clone()),
+        );
+        Ok((spec, project))
     }
 
     pub(crate) fn agent_cwd(&self, args: &tools::Args) -> Result<Option<String>, String> {

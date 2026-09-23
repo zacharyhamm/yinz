@@ -10,7 +10,25 @@ fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
 
 fn extension_state(safety: &str, consequence: Option<&str>) -> State {
     let mut state = State::default();
-    let path = "/plugins/hocus/weather.ts";
+    register_weather(
+        &mut state,
+        "/plugins/hocus/weather.ts",
+        safety,
+        consequence,
+        serde_json::json!({ "type": "object", "properties": {} }),
+    );
+    state
+}
+
+/// Register the `weather` extension's `forecast` tool on `state`, owned by
+/// plugin 7 and loaded from `path`. Registering again replaces it.
+pub(super) fn register_weather(
+    state: &mut State,
+    path: &str,
+    safety: &str,
+    consequence: Option<&str>,
+    parameters: serde_json::Value,
+) {
     state.user_plugin_dir = "/plugins".to_owned();
     state
         .extension_files
@@ -22,7 +40,7 @@ fn extension_state(safety: &str, consequence: Option<&str>) -> State {
     let mut tool = serde_json::json!({
         "name": "forecast",
         "description": "Read the forecast.",
-        "parameters": { "type": "object", "properties": {} },
+        "parameters": parameters,
         "safety": safety,
     });
     if let Some(consequence) = consequence {
@@ -36,7 +54,10 @@ fn extension_state(safety: &str, consequence: Option<&str>) -> State {
     })
     .to_string();
     state.on_extension_registration(zellij_tile::prelude::PluginId::new(7), Some(&payload));
-    state
+    assert!(
+        state.extensions.tool("weather_forecast").is_some(),
+        "the weather extension registered"
+    );
 }
 
 #[test]

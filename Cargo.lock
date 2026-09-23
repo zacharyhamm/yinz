@@ -2030,6 +2030,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "hocus-proto",
+ "isahc",
  "regex",
  "serde",
  "serde_json",

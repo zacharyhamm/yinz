@@ -12,7 +12,7 @@ fn review_state() -> State {
     )
 }
 
-fn review_state_for(name: &str, arguments: &str, request: &str) -> State {
+pub(super) fn review_state_for(name: &str, arguments: &str, request: &str) -> State {
     let mut state = idle_state();
     state
         .env
@@ -37,7 +37,7 @@ fn plugin_review_state() -> State {
     )
 }
 
-fn set_review_session(state: &mut State) {
+pub(super) fn set_review_session(state: &mut State) {
     tools::test_seams::reset();
     let mut session = SessionInfo {
         name: state.zellij_session_name.clone(),
@@ -72,26 +72,46 @@ fn set_review_session(state: &mut State) {
     tools::test_seams::CURRENT_SESSION.with_borrow_mut(|current| *current = Some(session));
 }
 
-fn review_context(state: &State) -> BTreeMap<String, String> {
+pub(super) fn review_context(state: &State) -> BTreeMap<String, String> {
     let Status::ReviewingTool { request_id, .. } = &state.status else {
         panic!("expected a tool review");
     };
     BTreeMap::from([(REVIEW_CONTEXT.into(), request_id.clone())])
 }
 
-fn answer(mistaken: f64, dangerous: f64) -> Vec<u8> {
+/// Jev's answers: `requested`, and one value for every hazard.
+pub(super) fn answer(requested: f64, hazard: f64) -> Vec<u8> {
+    let mut answers = serde_json::Map::new();
+    answers.insert(
+        crate::approval::REQUESTED.into(),
+        json!({"type": "noul", "noul": requested}),
+    );
+    for name in crate::approval::HAZARDS {
+        answers.insert(name.into(), json!({"type": "noul", "noul": hazard}));
+    }
     serde_json::to_vec(&json!({
         "model": hocus_proto::decisions::DEFAULT_MODEL,
-        "answers": {
-            "mistaken_call": {"type": "noul", "noul": mistaken},
-            "dangerous_call": {"type": "noul", "noul": dangerous}
-        },
+        "answers": answers,
         "usage": {"input_tokens": 100, "output_tokens": 2}
     }))
     .unwrap()
 }
 
-fn respond(state: &mut State, context: BTreeMap<String, String>, body: Vec<u8>) -> bool {
+/// An answer that clears the gate: clearly requested, no hazard.
+pub(super) fn pass() -> Vec<u8> {
+    answer(1.0, 0.0)
+}
+
+fn notices(state: &State) -> Vec<String> {
+    state
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::Notice)
+        .map(|message| message.content.clone())
+        .collect()
+}
+
+pub(super) fn respond(state: &mut State, context: BTreeMap<String, String>, body: Vec<u8>) -> bool {
     state.handle(Event::WebRequestResult(200, BTreeMap::new(), body, context))
 }
 
@@ -139,7 +159,7 @@ fn direct_and_queued_human_mentions_keep_review_authority() {
         assert!(user.content.contains("agent pane 3"));
         reply_with_gated_call(&mut state);
         let context = review_context(&state);
-        assert!(respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(respond(&mut state, context, pass()));
         assert_eq!(tool_results(&state).len(), 1);
     }
 }
@@ -206,16 +226,10 @@ fn a_human_request_after_a_scheduled_prompt_can_receive_automatic_review() {
         unreachable!()
     };
     let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-    assert_eq!(
-        body["state"]["latest_user_request"]["content"],
-        "Clear pane 3"
-    );
-    assert_eq!(body["state"]["conversation"][0]["user_origin"], "scheduled");
-    assert_eq!(
-        body["state"]["conversation"][0]["untrusted_context"],
-        "[scheduled] check pane 3"
-    );
-    assert!(respond(&mut state, context, answer(0.0, 0.0)));
+    assert_eq!(body["state"]["human_request"], "Clear pane 3");
+    // The scheduled prompt is untrusted, so it is not sent at all.
+    assert!(!body.to_string().contains("check pane 3"));
+    assert!(respond(&mut state, context, pass()));
     assert_eq!(tool_results(&state).len(), 1);
 }
 
@@ -225,10 +239,10 @@ fn a_safe_review_runs_the_matching_call_only_once() {
     state.pump_tools();
     let context = review_context(&state);
     assert!(tool_results(&state).is_empty());
-    assert!(respond(&mut state, context.clone(), answer(0.05, 0.01)));
+    assert!(respond(&mut state, context.clone(), answer(0.75, 0.25)));
     assert!(state.pending.is_empty());
     assert_eq!(tool_results(&state).len(), 1);
-    assert!(!respond(&mut state, context, answer(0.0, 0.0)));
+    assert!(!respond(&mut state, context, pass()));
     assert_eq!(tool_results(&state).len(), 1);
 }
 
@@ -243,7 +257,7 @@ fn plugin_reviews_use_the_exact_target_and_ignore_terminal_and_geometry_changes(
         };
         let body: serde_json::Value = serde_json::from_slice(body).unwrap();
         assert_eq!(
-            body["state"]["runtime"]["target_panes"],
+            body["state"]["pending_call"]["target"]["panes"],
             json!([{
                 "pane_id": 3,
                 "is_plugin": true,
@@ -266,7 +280,7 @@ fn plugin_reviews_use_the_exact_target_and_ignore_terminal_and_geometry_changes(
                 session.tabs[0].viewport_rows = RowCount::new(50);
             });
         }
-        assert!(respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(respond(&mut state, context, pass()));
         assert!(state.pending.is_empty());
         assert_eq!(tool_results(&state).len(), 1);
     }
@@ -290,7 +304,7 @@ fn changed_plugin_metadata_keeps_manual_confirmation() {
                 _ => unreachable!(),
             }
         });
-        assert!(respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(respond(&mut state, context, pass()));
         assert!(matches!(state.status, Status::ConfirmingTool), "{change}");
         assert!(state.confirmation_prompt().is_some());
         assert_eq!(state.pending.len(), 1);
@@ -323,7 +337,7 @@ fn missing_plugin_metadata_before_or_during_review_keeps_manual_confirmation() {
                 }
             });
             if let Some(context) = context {
-                assert!(respond(&mut state, context, answer(0.0, 0.0)));
+                assert!(respond(&mut state, context, pass()));
             } else {
                 state.pump_tools();
             }
@@ -355,7 +369,9 @@ fn terminal_reviews_include_suppressed_targets_and_ignore_plugins_and_geometry()
             unreachable!();
         };
         let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-        let panes = body["state"]["runtime"]["target_panes"].as_array().unwrap();
+        let panes = body["state"]["pending_call"]["target"]["panes"]
+            .as_array()
+            .unwrap();
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0]["pane_id"], 3);
         assert_eq!(panes[0]["is_plugin"], false);
@@ -374,7 +390,7 @@ fn terminal_reviews_include_suppressed_targets_and_ignore_plugins_and_geometry()
             session.tabs[0].active = true;
         });
         state.panes.clear(); // The daemon's filtered snapshot is not the authority.
-        assert!(respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(respond(&mut state, context, pass()));
         assert!(state.pending.is_empty());
         assert_eq!(tool_results(&state).len(), 1);
     }
@@ -410,7 +426,7 @@ fn changed_terminal_metadata_keeps_manual_confirmation() {
                 _ => unreachable!(),
             }
         });
-        assert!(respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(respond(&mut state, context, pass()));
         assert!(matches!(state.status, Status::ConfirmingTool), "{change}");
         assert_eq!(state.pending.len(), 1);
         assert!(tool_results(&state).is_empty());
@@ -445,7 +461,7 @@ fn missing_terminal_records_before_or_during_review_keep_manual_confirmation() {
                 }
             });
             if let Some(context) = context {
-                assert!(respond(&mut state, context, answer(0.0, 0.0)));
+                assert!(respond(&mut state, context, pass()));
             } else {
                 state.pump_tools();
             }
@@ -486,7 +502,10 @@ fn skill_reviews_follow_the_resolved_directory_in_foreground_and_parked_chats() 
                         unreachable!();
                     };
                     let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-                    assert_eq!(body["state"]["runtime"]["skills_dir"], resolved);
+                    assert_eq!(
+                        body["state"]["pending_call"]["target"]["skills_dir"],
+                        resolved
+                    );
                     if park {
                         state.new_chat();
                     }
@@ -496,7 +515,7 @@ fn skill_reviews_follow_the_resolved_directory_in_foreground_and_parked_chats() 
                         if changed { "/other/skills" } else { resolved }.into(),
                     );
                     state.handle(Event::PluginConfigurationChanged(configuration));
-                    assert!(respond(&mut state, context, answer(0.0, 0.0)));
+                    assert!(respond(&mut state, context, pass()));
                     let check = |reviewed: &mut State| {
                         assert_eq!(reviewed.pending.len(), 1);
                         assert!(tool_results(reviewed).is_empty());
@@ -539,7 +558,7 @@ fn a_response_from_before_reload_cannot_approve_a_new_call() {
     });
     after.pump_tools();
     assert_ne!(context, review_context(&after));
-    assert!(!respond(&mut after, context, answer(0.0, 0.0)));
+    assert!(!respond(&mut after, context, pass()));
     assert!(tool_results(&after).is_empty());
     assert_eq!(after.pending.len(), 1);
 }
@@ -566,13 +585,17 @@ fn an_authorized_codex_launch_includes_the_prompt_and_cwd_then_dispatches() {
         unreachable!();
     };
     let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-    assert_eq!(body["state"]["latest_user_request"]["content"], request);
-    let arguments = &body["state"]["pending_tool_call"]["arguments"];
+    assert_eq!(body["state"]["human_request"], request);
+    let launch = &body["state"]["pending_call"]["launch"];
+    assert_eq!(launch["program"], "codex");
+    assert_eq!(launch["directory"], "/work/hocus");
+    assert_eq!(launch["prompt"], prompt);
+    let arguments = &body["state"]["pending_call"]["arguments"];
     assert_eq!(arguments["agent"], "codex");
     assert_eq!(arguments["prompt"], prompt);
     assert_eq!(arguments["cwd"], "/work/hocus");
     tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| assert!(calls.is_empty()));
-    assert!(respond(&mut state, context, answer(0.0, 0.0)));
+    assert!(respond(&mut state, context, pass()));
     assert!(state.pending.is_empty());
     assert_eq!(
         tool_results(&state)[0].tool_call_id.as_deref(),
@@ -603,7 +626,7 @@ fn launches_need_a_resolved_directory_despite_focus_changes() {
                 session.tabs[0].active = true;
             });
             if let Some(context) = context {
-                assert!(respond(&mut state, context, answer(0.0, 0.0)));
+                assert!(respond(&mut state, context, pass()));
                 assert!(state.pending.is_empty());
                 assert_eq!(tool_results(&state).len(), 1);
             } else {
@@ -644,7 +667,7 @@ fn agent_launch_reviews_bind_the_selected_project_root() {
             if changed {
                 state.projects.get_mut("hocus").unwrap().root = "/work/elsewhere".into();
             }
-            assert!(respond(&mut state, context, answer(0.0, 0.0)));
+            assert!(respond(&mut state, context, pass()));
             assert_eq!(matches!(state.status, Status::ConfirmingTool), changed);
             assert_eq!(tool_results(&state).len(), usize::from(!changed));
             tools::test_seams::SPAWN_AGENT_CALLS
@@ -759,7 +782,7 @@ fn slack_reviews_bind_effective_configuration_without_serializing_credentials() 
                 },
             }
             state.handle(Event::PluginConfigurationChanged(configuration));
-            assert!(respond(&mut state, context, answer(0.0, 0.0)));
+            assert!(respond(&mut state, context, pass()));
             let check = |reviewed: &mut State| {
                 assert_eq!(reviewed.pending.len(), 1);
                 assert!(tool_results(reviewed).is_empty());
@@ -782,7 +805,7 @@ fn slack_reviews_bind_effective_configuration_without_serializing_credentials() 
     }
 }
 
-fn project_review_state(tool: &str, padded: bool) -> State {
+pub(super) fn project_review_state(tool: &str, padded: bool) -> State {
     let name = if padded { " \tsource\n " } else { "source" };
     let target = if padded { " \ttarget\n " } else { "target" };
     let arguments = if tool == "project_forget" {
@@ -846,7 +869,7 @@ fn project_reviews_bind_named_targets_even_before_the_cache_updates() {
                 if cached {
                     state.projects = projects::from_rows(&rows);
                 }
-                assert!(respond(&mut state, context.clone(), answer(0.0, 0.0)));
+                assert!(respond(&mut state, context.clone(), pass()));
                 assert!(
                     matches!(state.status, Status::ConfirmingTool),
                     "{tool}, {name}, {change}, cached={cached}"
@@ -860,7 +883,7 @@ fn project_reviews_bind_named_targets_even_before_the_cache_updates() {
                         .unwrap(),
                     rows
                 );
-                assert!(!respond(&mut state, context, answer(0.0, 0.0)));
+                assert!(!respond(&mut state, context, pass()));
             }
         }
     }
@@ -877,7 +900,7 @@ fn forgetting_also_binds_the_cached_project() {
         } else {
             state.projects.get_mut("source").unwrap().root = "/changed".into();
         }
-        assert!(respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(respond(&mut state, context, pass()));
         assert!(matches!(state.status, Status::ConfirmingTool));
         assert!(tool_results(&state).is_empty());
     }
@@ -907,7 +930,7 @@ fn project_reviews_require_present_targets_and_successful_store_reads() {
                         .unwrap();
                 }
                 if let Some(context) = context {
-                    assert!(respond(&mut state, context, answer(0.0, 0.0)));
+                    assert!(respond(&mut state, context, pass()));
                 } else {
                     state.pump_tools();
                 }
@@ -930,7 +953,7 @@ fn unchanged_project_targets_are_reviewed_in_full_and_execute_once() {
                 unreachable!()
             };
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            let targets = &body["state"]["runtime"]["target_projects"];
+            let targets = &body["state"]["pending_call"]["target"]["projects"];
             let fields = if tool == "project_forget" {
                 vec![("name", "source")]
             } else {
@@ -941,7 +964,7 @@ fn unchanged_project_targets_are_reviewed_in_full_and_execute_once() {
                 assert!(targets[field]["id"]["Int"].as_i64().unwrap() > 0);
                 assert!(targets[field]["rev"]["Int"].as_i64().unwrap() > 0);
             }
-            assert!(respond(&mut state, context.clone(), answer(0.0, 0.0)));
+            assert!(respond(&mut state, context.clone(), pass()));
             assert!(state.pending.is_empty());
             assert_eq!(tool_results(&state).len(), 1);
             assert!(tool_results(&state)[0]
@@ -957,7 +980,7 @@ fn unchanged_project_targets_are_reviewed_in_full_and_execute_once() {
                 .unwrap();
             assert!(!projects::from_rows(&rows).contains_key("source"));
             assert!(projects::from_rows(&rows).contains_key("target"));
-            assert!(!respond(&mut state, context, answer(0.0, 0.0)));
+            assert!(!respond(&mut state, context, pass()));
             assert_eq!(
                 state
                     .store()
@@ -1061,8 +1084,8 @@ fn vm_reviews_bind_effective_execution_settings_privately_in_every_chat() {
                     },
                 }
                 state.handle(Event::PluginConfigurationChanged(configuration));
-                assert!(respond(&mut state, context.clone(), answer(0.0, 0.0)));
-                assert!(!respond(&mut state, context, answer(0.0, 0.0)));
+                assert!(respond(&mut state, context.clone(), pass()));
+                assert!(!respond(&mut state, context, pass()));
                 let check = |reviewed: &mut State| {
                     assert_eq!(reviewed.pending.len(), 1);
                     assert!(tool_results(reviewed).is_empty());
@@ -1118,32 +1141,32 @@ fn y_and_n_can_answer_while_jev_is_reviewing() {
             tool_results(&state)[0].content.contains("declined"),
             key == 'n'
         );
-        assert!(!respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(!respond(&mut state, context, pass()));
     }
 }
 
 #[test]
 fn uncertain_dangerous_or_invalid_reviews_keep_manual_confirmation() {
-    let mut wrong_type: serde_json::Value = serde_json::from_slice(&answer(0.0, 0.0)).unwrap();
-    wrong_type["answers"]["mistaken_call"] = json!({"type": "score", "score": 0.0});
-    let mut missing: serde_json::Value = serde_json::from_slice(&answer(0.0, 0.0)).unwrap();
+    let mut wrong_type: serde_json::Value = serde_json::from_slice(&pass()).unwrap();
+    wrong_type["answers"]["requested"] = json!({"type": "score", "score": 0.0});
+    let mut missing: serde_json::Value = serde_json::from_slice(&pass()).unwrap();
     missing["answers"]
         .as_object_mut()
         .unwrap()
-        .remove("dangerous_call");
+        .remove("destructive");
     for (status, body) in [
-        (200, answer(0.051, 0.0)),
-        (200, answer(0.0, 0.011)),
+        (200, answer(0.749, 0.0)),
+        (200, answer(1.0, 0.251)),
         (200, answer(-0.1, 0.0)),
-        (200, answer(0.0, 1.1)),
+        (200, answer(1.0, 1.1)),
         (200, answer(f64::NAN, 0.0)),
-        (200, answer(0.0, f64::INFINITY)),
+        (200, answer(1.0, f64::INFINITY)),
         (200, wrong_type.to_string().into_bytes()),
         (200, missing.to_string().into_bytes()),
         (200, b"not json".to_vec()),
         (200, b"{}".to_vec()),
-        (401, answer(0.0, 0.0)),
-        (503, answer(0.0, 0.0)),
+        (401, pass()),
+        (503, pass()),
     ] {
         let mut state = review_state();
         state.pump_tools();
@@ -1153,7 +1176,7 @@ fn uncertain_dangerous_or_invalid_reviews_keep_manual_confirmation() {
         assert!(state.confirmation_prompt().is_some());
         assert_eq!(state.pending.len(), 1);
         assert!(tool_results(&state).is_empty());
-        assert!(!respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(!respond(&mut state, context, pass()));
     }
 }
 
@@ -1170,12 +1193,12 @@ fn review_responses_cannot_override_a_manual_answer_or_interrupt() {
         assert!(!respond(
             &mut state,
             BTreeMap::from([(REVIEW_CONTEXT.into(), "wrong-review".into())]),
-            answer(0.0, 0.0),
+            pass(),
         ));
         assert!(tool_results(&state).is_empty());
         resolve(&mut state);
         let messages = state.messages.clone();
-        assert!(!respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(!respond(&mut state, context, pass()));
         assert_eq!(state.messages, messages);
         assert!(state.pending.is_empty());
     }
@@ -1205,7 +1228,7 @@ fn a_changed_call_conversation_or_project_cannot_use_an_older_review() {
                 state.active_project = Some("other".into());
             },
         }
-        assert!(respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(respond(&mut state, context, pass()));
         assert!(matches!(state.status, Status::ConfirmingTool));
         assert!(tool_results(&state).is_empty());
     }
@@ -1225,13 +1248,13 @@ fn each_call_in_a_batch_needs_its_own_review() {
     state.pending.push_back(second);
     state.pump_tools();
     let first = review_context(&state);
-    assert!(respond(&mut state, first.clone(), answer(0.0, 0.0)));
+    assert!(respond(&mut state, first.clone(), pass()));
     let second = review_context(&state);
     assert_ne!(first, second);
     assert_eq!(tool_results(&state).len(), 1);
-    assert!(!respond(&mut state, first, answer(0.0, 0.0)));
+    assert!(!respond(&mut state, first, pass()));
     assert_eq!(state.pending.len(), 1);
-    assert!(respond(&mut state, second, answer(0.0, 0.0)));
+    assert!(respond(&mut state, second, pass()));
     assert_eq!(tool_results(&state).len(), 2);
 }
 
@@ -1248,11 +1271,11 @@ fn a_review_follows_its_chat_even_when_tool_call_ids_collide() {
     state.pump_tools();
     let foreground_context = review_context(&state);
     assert_ne!(parked_context, foreground_context);
-    assert!(respond(&mut state, parked_context, answer(0.0, 0.0)));
+    assert!(respond(&mut state, parked_context, pass()));
     assert!(state.parked[0].pending.is_empty());
     assert_eq!(state.pending.len(), 1);
     assert!(tool_results(&state).is_empty());
-    assert!(respond(&mut state, foreground_context, answer(0.0, 0.0)));
+    assert!(respond(&mut state, foreground_context, pass()));
     assert!(state.pending.is_empty());
 }
 
@@ -1282,10 +1305,7 @@ fn expired_or_restored_reviews_require_confirmation_with_or_without_a_timer() {
                     // A delayed event still carries only its requested interval.
                     state.on_timer(FRAME_SECONDS);
                 }
-                assert_eq!(
-                    respond(&mut state, context.clone(), answer(0.0, 0.0)),
-                    !poll
-                );
+                assert_eq!(respond(&mut state, context.clone(), pass()), !poll);
                 let check = |reviewed: &mut State| {
                     assert!(matches!(reviewed.status, Status::ConfirmingTool));
                     assert_eq!(reviewed.pending.len(), 1);
@@ -1296,7 +1316,7 @@ fn expired_or_restored_reviews_require_confirmation_with_or_without_a_timer() {
                 } else {
                     check(&mut state);
                 }
-                assert!(!respond(&mut state, context, answer(0.0, 0.0)));
+                assert!(!respond(&mut state, context, pass()));
             }
         }
     }
@@ -1316,7 +1336,7 @@ fn timer_intervals_do_not_determine_review_expiry() {
             state.new_chat();
         }
         state.on_timer(300.0);
-        assert!(respond(&mut state, context, answer(0.0, 0.0)));
+        assert!(respond(&mut state, context, pass()));
         if park {
             state.with_parked(0, |reviewed| assert_eq!(tool_results(reviewed).len(), 1));
         } else {
@@ -1334,7 +1354,7 @@ fn disabling_auto_approval_during_review_keeps_manual_confirmation() {
     configuration.insert("decisions_auto_approve".into(), "false".into());
     state.handle(Event::PluginConfigurationChanged(configuration));
 
-    respond(&mut state, context, answer(0.0, 0.0));
+    respond(&mut state, context, pass());
 
     assert!(matches!(state.status, Status::ConfirmingTool));
     assert_eq!(state.pending.len(), 1);
@@ -1372,7 +1392,7 @@ fn review_does_not_change_planning_or_scheduled_authority() {
     state.start_plan("");
     assert!(state.pending.is_empty());
     assert!(state.is_planning());
-    assert!(!respond(&mut state, context, answer(0.0, 0.0)));
+    assert!(!respond(&mut state, context, pass()));
 
     for auto_confirm in [false, true] {
         let mut state = review_state();
@@ -1385,6 +1405,222 @@ fn review_does_not_change_planning_or_scheduled_authority() {
         assert_eq!(
             tool_results(&state)[0].content.contains("declined"),
             !auto_confirm
+        );
+    }
+}
+
+#[test]
+fn a_declined_review_says_what_jev_answered() {
+    let mut state = review_state();
+    state.pump_tools();
+    let context = review_context(&state);
+    assert!(respond(&mut state, context, answer(0.62, 0.03)));
+    assert!(matches!(state.status, Status::ConfirmingTool));
+    let notice = notices(&state).pop().unwrap();
+    assert!(
+        notice.contains("requested 0.62 (needs at least 0.75)"),
+        "{notice}"
+    );
+    assert!(notice.contains("destructive 0.03"), "{notice}");
+    assert!(notice.ends_with("asking you"), "{notice}");
+    assert!(state.pending.len() == 1);
+    assert!(tool_results(&state).is_empty());
+
+    let mut state = review_state();
+    state.pump_tools();
+    let context = review_context(&state);
+    assert!(respond(&mut state, context, pass()));
+    assert!(notices(&state).is_empty());
+    assert_eq!(tool_results(&state).len(), 1);
+
+    let mut state = review_state();
+    state.pump_tools();
+    let context = review_context(&state);
+    assert!(state.on_response(503, b"down", &context));
+    assert!(notices(&state)
+        .pop()
+        .unwrap()
+        .starts_with("Jev review failed"));
+
+    let mut state = review_state();
+    state.pump_tools();
+    let context = review_context(&state);
+    state.messages.push(Message::user("Leave that pane alone."));
+    assert!(respond(&mut state, context, pass()));
+    assert!(notices(&state).pop().unwrap().contains("no longer applies"));
+}
+
+#[test]
+fn an_unavailable_review_says_so_except_when_never_configured() {
+    let mut state = review_state_for(
+        "agent_spawn",
+        r#"{"agent":"codex","cwd":"/work/hocus","prompt":"Fix","permission_mode":"skip"}"#,
+        "Run Codex on the parser with permission checks off.",
+    );
+    state.pump_tools();
+    assert!(matches!(state.status, Status::ConfirmingTool));
+    let notice = notices(&state).pop().unwrap();
+    assert!(
+        notice.starts_with("Jev cannot review this call"),
+        "{notice}"
+    );
+    assert!(notice.contains("permission checks off"), "{notice}");
+    assert!(tool_results(&state).is_empty());
+
+    let mut state = review_state();
+    state.pump_tools();
+    if let Status::ReviewingTool { deadline, .. } = &mut state.status {
+        *deadline = Some(Instant::now() - Duration::from_secs(1));
+    }
+    state.on_timer(FRAME_SECONDS);
+    assert!(matches!(state.status, Status::ConfirmingTool));
+    assert!(notices(&state)
+        .pop()
+        .unwrap()
+        .contains("did not answer in time"));
+
+    let mut state = review_state();
+    state.env.clear();
+    state.pump_tools();
+    assert!(matches!(state.status, Status::ConfirmingTool));
+    assert!(notices(&state).is_empty());
+}
+
+#[test]
+fn kdl_thresholds_can_only_tighten_the_gate() {
+    // (min_requested, max_hazard) as configured, and whether an answer of
+    // requested 0.8 with every hazard at 0.2 - which clears the default - runs.
+    for (configured, runs) in [
+        (None, true),
+        (Some(("0.9", "0.1")), false),
+        (Some(("0.5", "0.5")), true),
+    ] {
+        let mut state = review_state();
+        if let Some((min_requested, max_hazard)) = configured {
+            state
+                .kdl
+                .insert("decisions_min_requested".into(), min_requested.into());
+            state
+                .kdl
+                .insert("decisions_max_hazard".into(), max_hazard.into());
+        }
+        state.pump_tools();
+        let context = review_context(&state);
+        assert!(respond(&mut state, context, answer(0.8, 0.2)));
+        assert_eq!(state.pending.is_empty(), runs, "{configured:?}");
+        assert_eq!(tool_results(&state).len(), usize::from(runs));
+        if !runs {
+            assert!(notices(&state)
+                .pop()
+                .unwrap()
+                .contains("needs at least 0.90"));
+        }
+    }
+}
+
+#[test]
+fn a_gate_tightened_during_review_keeps_manual_confirmation() {
+    let mut state = review_state();
+    state.pump_tools();
+    let context = review_context(&state);
+    state
+        .kdl
+        .insert("decisions_min_requested".into(), "0.9".into());
+    // Clears the new gate too: the review was started under another one.
+    assert!(respond(&mut state, context, answer(0.95, 0.0)));
+    assert!(matches!(state.status, Status::ConfirmingTool));
+    assert!(tool_results(&state).is_empty());
+    assert!(notices(&state).pop().unwrap().contains("no longer applies"));
+}
+
+#[test]
+fn agent_launch_reviews_bind_the_project_launch_defaults() {
+    for change in ["none", "worktree_dir", "firecracker_image"] {
+        let mut state = review_state_for(
+            "agent_spawn",
+            &json!({"agent": "codex", "project": "hocus", "prompt": "Fix the parser"}).to_string(),
+            "Fix the parser in Hocus.",
+        );
+        state.projects.insert(
+            "hocus".into(),
+            projects::validate("hocus", "/work/hocus").unwrap(),
+        );
+        state.pump_tools();
+        let context = review_context(&state);
+        let project = state.projects.get_mut("hocus").unwrap();
+        match change {
+            "worktree_dir" => project.worktree_dir = Some("/scratch".into()),
+            "firecracker_image" => project.firecracker_image = Some("alpine".into()),
+            _ => {},
+        }
+        let changed = change != "none";
+        assert!(respond(&mut state, context, pass()));
+        assert_eq!(
+            matches!(state.status, Status::ConfirmingTool),
+            changed,
+            "{change}"
+        );
+        tools::test_seams::SPAWN_AGENT_CALLS
+            .with_borrow(|calls| assert_eq!(calls.len(), usize::from(!changed), "{change}"));
+    }
+}
+
+#[test]
+fn extension_reviews_label_the_extension_and_bind_its_whole_registration() {
+    const PATH: &str = "/plugins/hocus/weather.ts";
+    let parameters = json!({"type": "object", "properties": {"id": {"type": "string"}}});
+    for change in ["none", "path", "parameters"] {
+        // Arguments no built-in tool could parse (`id` is a number there, `text`
+        // a string, `seconds` a number): an extension's are its own.
+        let mut state = review_state_for(
+            "weather_forecast",
+            r#"{"id":"abc","text":{"a":1},"seconds":"5"}"#,
+            "Get the Chicago forecast.",
+        );
+        super::extensions::register_weather(
+            &mut state,
+            PATH,
+            "confirm",
+            Some("contacts the weather service"),
+            parameters.clone(),
+        );
+        state.pump_tools();
+        let context = review_context(&state);
+        let Status::ReviewingTool { body, .. } = &state.status else {
+            unreachable!();
+        };
+        let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+        let pending = &body["state"]["pending_call"];
+        assert!(pending.get("purpose").is_none());
+        assert!(pending.get("effect").is_none());
+        assert_eq!(pending["extension"]["description"], "Read the forecast.");
+        assert_eq!(
+            pending["extension"]["claimed_effect"],
+            "contacts the weather service"
+        );
+        assert!(!body.to_string().contains(PATH));
+        match change {
+            "path" => super::extensions::register_weather(
+                &mut state,
+                "/plugins/hocus/weather-2.ts",
+                "confirm",
+                Some("contacts the weather service"),
+                parameters.clone(),
+            ),
+            "parameters" => super::extensions::register_weather(
+                &mut state,
+                PATH,
+                "confirm",
+                Some("contacts the weather service"),
+                json!({"type": "object", "properties": {"id": {"type": "integer"}}}),
+            ),
+            _ => {},
+        }
+        assert!(respond(&mut state, context, pass()));
+        assert_eq!(
+            matches!(state.status, Status::ConfirmingTool),
+            change != "none",
+            "{change}"
         );
     }
 }
