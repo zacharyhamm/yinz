@@ -1,7 +1,9 @@
 use super::*;
+use crate::archive::AGENT_LIST_LOCATION;
 use hocus_proto::store::Backend;
 use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
+use zellij_tile::prelude::TabPosition;
 
 /// The strip rows hocus pushes to the agents pane: agents grouped under the
 /// project and branch headers, computed from the snapshot it holds.
@@ -630,4 +632,140 @@ fn predecessors_load_beyond_archive_pages_and_resolve_the_active_anchor() {
     let reply = state.agent_predecessors(request);
     assert!(reply.anchor.is_none());
     assert!(reply.diagnostic.contains("No recorded active run"));
+}
+
+fn hello_from(plugin_id: PluginId) -> PipeMessage {
+    PipeMessage {
+        source: PipeSource::Plugin(plugin_id),
+        name: wire::AGENT_STRIP_HELLO.to_owned(),
+        payload: None,
+        args: BTreeMap::new(),
+        is_private: true,
+        pane_id: None,
+    }
+}
+
+/// Registers `id` as a running plugin at `location`, as a `SessionUpdate` would.
+fn list_plugin(state: &mut State, id: PluginId, location: &str) {
+    state.plugin_instances.insert(
+        id,
+        PluginInstance {
+            location: location.to_owned(),
+            has_pane: true,
+        },
+    );
+}
+
+/// Where each message goes, having checked that every one is the strip and none carries a
+/// url, which would launch a list.
+fn destinations(messages: Vec<MessageToPlugin>) -> Vec<Option<PluginId>> {
+    messages
+        .iter()
+        .inspect(|message| {
+            assert_eq!(message.message_name, wire::AGENT_STRIP);
+            assert!(message.plugin_url.is_none(), "a url would launch a list");
+        })
+        .map(|message| message.destination_plugin_id)
+        .collect()
+}
+
+/// The strip goes to the agent lists, not to every plugin in the session: each tab bar,
+/// status bar and daemon used to decode it too, on every focus change. Every list gets it -
+/// the panel's, one another client opened, one opened by hand - since while it was
+/// broadcast every one of them stayed live. With no list known it is still broadcast: a
+/// hocus reloaded under an open list must reach it.
+#[test]
+fn the_strip_goes_to_every_agent_list_and_nothing_else() {
+    let mut state = state_with_summary(2);
+    list_plugin(&mut state, PluginId::new(12), AGENT_LIST_LOCATION);
+    list_plugin(&mut state, PluginId::new(13), AGENT_LIST_LOCATION);
+    list_plugin(&mut state, PluginId::new(14), "zellij:tab-bar");
+
+    let strip = state.current_strip();
+    let recipients = state.strip_recipients();
+    assert_eq!(
+        destinations(state.strip_messages(&strip, recipients)),
+        [
+            Some(AGENTS_PANE),
+            Some(PluginId::new(12)),
+            Some(PluginId::new(13))
+        ]
+    );
+
+    state.agents_plugin = None;
+    state.plugin_instances.clear();
+    let recipients = state.strip_recipients();
+    assert_eq!(
+        destinations(state.strip_messages(&strip, recipients)),
+        [None]
+    );
+}
+
+/// The greeting feeds its sender and nothing more. Which list is the panel's is settled by
+/// `on_selection` and the pane manifest, which place the list as they adopt it; a greeting
+/// that swapped the id alone would leave the panel placing another tab's list.
+#[test]
+fn a_greeting_leaves_the_panels_list_alone() {
+    let mut state = state_with_summary(2);
+    state.agents_tab_index = Some(TabPosition::new(0));
+    let other = PluginId::new(12);
+    list_plugin(&mut state, other, AGENT_LIST_LOCATION);
+
+    assert!(!state.pipe(hello_from(other)));
+    assert_eq!(state.agents_plugin, Some(AGENTS_PANE));
+    assert_eq!(state.agents_tab_index, Some(TabPosition::new(0)));
+
+    let answered = destinations(state.answer_strip_hello(&PipeSource::Plugin(other)));
+    assert!(answered.contains(&Some(other)), "{answered:?}");
+}
+
+/// Whoever greets gets the rows, listed or not: a list that reloaded under a new id
+/// greets before the session lists it, and must not be left empty while the strip goes
+/// to the ids it knew before.
+#[test]
+fn a_greeting_is_always_answered_to_its_sender() {
+    let mut state = state_with_summary(2);
+    let reloaded = PluginId::new(13);
+
+    assert_eq!(
+        destinations(state.answer_strip_hello(&PipeSource::Plugin(reloaded))),
+        [Some(AGENTS_PANE), Some(reloaded)]
+    );
+
+    list_plugin(&mut state, reloaded, AGENT_LIST_LOCATION);
+    assert_eq!(
+        destinations(state.answer_strip_hello(&PipeSource::Plugin(reloaded))),
+        [Some(AGENTS_PANE), Some(reloaded)],
+        "and once listed, only once"
+    );
+
+    // With no list known, the one broadcast already reaches the greeter.
+    state.agents_plugin = None;
+    state.plugin_instances.clear();
+    assert_eq!(
+        destinations(state.answer_strip_hello(&PipeSource::Plugin(PluginId::new(14)))),
+        [None]
+    );
+}
+
+/// A list the session names only after the last push was not sent it, and the strip
+/// deduplicates, so without a catch-up it would sit empty until something changed.
+#[test]
+fn a_list_the_session_names_later_is_caught_up() {
+    let mut state = state_with_summary(2);
+    state.push_strip(true);
+    let known = PluginId::new(12);
+    list_plugin(&mut state, known, AGENT_LIST_LOCATION);
+    let before = state.agent_lists().collect();
+
+    assert!(state.strip_for_new_lists(&before).is_empty(), "nothing new");
+
+    let late = PluginId::new(13);
+    list_plugin(&mut state, late, AGENT_LIST_LOCATION);
+    // and the panel's own list was fed all along, whenever the session gets round to it
+    list_plugin(&mut state, AGENTS_PANE, AGENT_LIST_LOCATION);
+    assert_eq!(
+        destinations(state.strip_for_new_lists(&before)),
+        [Some(late)]
+    );
 }

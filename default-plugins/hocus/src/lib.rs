@@ -1163,8 +1163,11 @@ impl ZellijPlugin for State {
                 // here is only that a list already exists, so the first manifest does not go
                 // asking for a second one. Nothing but that launch can reach us before our own
                 // first `PaneUpdate`, so `own_tab_index` being unset is the test.
-
-                self.push_strip(true);
+                //
+                // The answer goes to every list, the greeter among them; see `answer_strip_hello`.
+                for message in self.answer_strip_hello(&pipe_message.source) {
+                    pipe_message_to_plugin(message);
+                }
                 return false;
             },
             wire::AGENT_SELECTION => return self.on_selection(&pipe_message),

@@ -831,8 +831,6 @@ impl SessionState {
 }
 
 pub fn start_server(os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
-    info!("Starting Zellij server!");
-
     use nix::sys::stat::{umask, Mode};
     // preserve the current umask: read current value by setting to another mode, and then restoring it
     let current_umask = umask(Mode::all());
@@ -852,6 +850,18 @@ pub fn start_server_impl(
     install_panic_hook: bool,
 ) {
     envs::set_zellij("0".to_string());
+    // Here rather than in `start_server`, so every way in - daemonized or not - says it once,
+    // and a debug install, whose own code runs unoptimized, is one grep away when a session
+    // feels wrong.
+    log::info!(
+        "Starting Zellij server {} ({} build)",
+        zellij_runtime::consts::VERSION,
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
 
     let shutdown = Shutdown::default();
     let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::bounded(50);

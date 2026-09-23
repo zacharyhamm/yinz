@@ -3147,10 +3147,7 @@ impl State {
             return false;
         };
         if message.source != PipeSource::Plugin(selection.plugin_id)
-            || self
-                .plugin_instances
-                .get(&selection.plugin_id)
-                .is_some_and(|plugin| plugin.location != "zellij:hocus-agents")
+            || self.listed_as_agent_list(selection.plugin_id) == Some(false)
         {
             return false;
         }
@@ -3179,11 +3176,7 @@ impl State {
         let PipeSource::Plugin(plugin_id) = message.source else {
             return false;
         };
-        if self
-            .plugin_instances
-            .get(&plugin_id)
-            .is_none_or(|plugin| plugin.location != "zellij:hocus-agents")
-        {
+        if self.listed_as_agent_list(plugin_id) != Some(true) {
             return false;
         }
         let Some(request) = message
@@ -3240,11 +3233,7 @@ impl State {
         }) else {
             return false;
         };
-        if self
-            .plugin_instances
-            .get(&plugin_id)
-            .is_none_or(|plugin| plugin.location != "zellij:hocus-agents")
-        {
+        if self.listed_as_agent_list(plugin_id) != Some(true) {
             return false;
         }
         let Some(request) = message

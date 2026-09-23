@@ -153,7 +153,7 @@ pub fn debug_plugin_path(plugin_name: &str) -> PathBuf {
 
 /// Hashes the inputs which can change plugin wasm, so checkout and worktree mtime changes do not
 /// cause rebuilds while dependency, toolchain and build-flag changes still do.
-fn hash_plugin_inputs() -> Option<String> {
+fn hash_plugin_inputs(profile: &str) -> Option<String> {
     let root = crate::project_root();
     let mut hasher = hash_plugin_files(&root)?;
     hash_cargo_configs(&root, cargo_home(&root).as_deref(), &mut hasher)?;
@@ -177,6 +177,14 @@ fn hash_plugin_inputs() -> Option<String> {
         hasher.update(value.to_string_lossy().as_bytes());
         hasher.update([0]);
     }
+    // What `build_plugins` sets on the wasm build itself, which the process environment
+    // above cannot see: a change to these must rebuild the plugins too.
+    for (key, value) in plugin_profile_overrides(profile) {
+        hasher.update(key.as_bytes());
+        hasher.update([0]);
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
 
     Some(
         hasher
@@ -185,6 +193,42 @@ fn hash_plugin_inputs() -> Option<String> {
             .map(|byte| format!("{byte:02x}"))
             .collect(),
     )
+}
+
+/// The dev profile's opt-level, which `plugin_profile_overrides` raises for the wasm build.
+pub(crate) const DEV_OPT_LEVEL: &str = "CARGO_PROFILE_DEV_OPT_LEVEL";
+
+/// Profile settings the wasm plugin build gets on top of the workspace `Cargo.toml`.
+///
+/// `[profile.dev.package."*"] opt-level = 3` keeps `wasmi` and the host's dependencies fast in
+/// a dev build, but it deliberately excludes workspace members - and the plugins, `zellij-tile`,
+/// `zellij-plugin-api` and `hocus-proto` all are. Left at opt-level 0 with DWARF they are
+/// 20-100× slower under the interpreter on exactly the per-event decode path (a `--profile dev`
+/// install once cost hocus 74 s of keystroke latency), and a plugin test loads the same wasm.
+/// Setting these on the plugin build alone reaches only `target/wasm32-wasip1/debug`: the host
+/// build is untouched, and the `package."*"` override still wins for dependencies. Overflow
+/// checks and debug assertions stay on, so dev semantics do not change.
+///
+/// Keyed on the output directory rather than the profile name: `test` inherits `dev` and
+/// builds into the same `debug` tree under the same stamp, so anything but the same settings
+/// would leave the two rebuilding each other's wasm. A setting the user exported is theirs -
+/// to step through a plugin with DWARF, say - and is left alone; the stamp already hashes it
+/// as a `CARGO_PROFILE_` variable.
+pub(crate) fn plugin_profile_overrides(profile: &str) -> Vec<(&'static str, &'static str)> {
+    plugin_profile_overrides_given(profile, |key| std::env::var_os(key).is_some())
+}
+
+fn plugin_profile_overrides_given(
+    profile: &str,
+    user_set: impl Fn(&str) -> bool,
+) -> Vec<(&'static str, &'static str)> {
+    if profile_dir(profile) != "debug" {
+        return Vec::new();
+    }
+    [(DEV_OPT_LEVEL, "2"), ("CARGO_PROFILE_DEV_DEBUG", "false")]
+        .into_iter()
+        .filter(|(key, _)| !user_set(key))
+        .collect()
 }
 
 fn cargo_home(root: &Path) -> Option<PathBuf> {
@@ -361,6 +405,9 @@ fn build_plugins(
         let plugin_name = plugin_name_of(member)?;
         base_cmd = base_cmd.args(["-p", plugin_name]);
     }
+    for (key, value) in plugin_profile_overrides(profile) {
+        base_cmd = base_cmd.env(key, value);
+    }
     base_cmd
         .run()
         .with_context(|| format!("failed to build plugins ({profile})"))?;
@@ -388,21 +435,21 @@ fn plugin_stamp_path(profile: &str) -> PathBuf {
 }
 
 fn write_plugin_stamp(sh: &Shell, profile: &str) {
-    if let Some(hash) = hash_plugin_inputs() {
+    if let Some(hash) = hash_plugin_inputs(profile) {
         let _ = sh.write_file(plugin_stamp_path(profile), hash);
     }
 }
 
 fn plugin_sources_changed(profile: &str) -> bool {
-    sources_changed_since(&plugin_stamp_path(profile))
+    sources_changed_since(&plugin_stamp_path(profile), profile)
 }
 
-fn sources_changed_since(stamp_path: &Path) -> bool {
+fn sources_changed_since(stamp_path: &Path, profile: &str) -> bool {
     let stamp_hash = match std::fs::read_to_string(stamp_path) {
         Ok(contents) => contents,
         Err(_) => return true,
     };
-    match hash_plugin_inputs() {
+    match hash_plugin_inputs(profile) {
         Some(current_hash) => stamp_hash != current_hash,
         None => true,
     }
@@ -674,6 +721,49 @@ mod tests {
         }
         for key in ["RUST_BACKTRACE", "RUST_LOG"] {
             assert!(!plugin_build_environment_variable(OsStr::new(key)), "{key}");
+        }
+    }
+
+    /// `dev` and `test` share `target/wasm32-wasip1/debug` and its stamp, so they must get the
+    /// same wasm settings; a profile with a tree of its own gets none.
+    #[test]
+    fn debug_dir_profiles_share_plugin_overrides() {
+        let nobody_set = |_: &str| false;
+        let dev = plugin_profile_overrides_given("dev", nobody_set);
+        assert!(dev.iter().any(|(key, _)| *key == DEV_OPT_LEVEL), "{dev:?}");
+        assert_eq!(plugin_profile_overrides_given("test", nobody_set), dev);
+        for profile in ["release", "bench", "release-fast"] {
+            assert!(
+                plugin_profile_overrides_given(profile, nobody_set).is_empty(),
+                "{profile}"
+            );
+        }
+    }
+
+    /// A profile setting the user exported wins, and is still what the stamp hashes.
+    #[test]
+    fn a_profile_setting_the_user_exported_is_left_to_them() {
+        let overrides = plugin_profile_overrides_given("dev", |key| key == DEV_OPT_LEVEL);
+        assert!(
+            overrides.iter().all(|(key, _)| *key != DEV_OPT_LEVEL),
+            "{overrides:?}"
+        );
+        assert!(!overrides.is_empty(), "the others still apply");
+        for (key, _) in plugin_profile_overrides_given("dev", |_| false) {
+            assert!(plugin_build_environment_variable(OsStr::new(key)), "{key}");
+        }
+    }
+
+    /// The stamp is what decides whether the wasm is rebuilt: `dev` and `test` write the same
+    /// one, so they must agree on it, and it must move with the settings a build applies.
+    #[test]
+    fn dev_and_test_agree_on_the_plugin_stamp() {
+        let Some(dev) = hash_plugin_inputs("dev") else {
+            return;
+        };
+        assert_eq!(hash_plugin_inputs("test").as_deref(), Some(dev.as_str()));
+        if !plugin_profile_overrides("dev").is_empty() {
+            assert_ne!(hash_plugin_inputs("release").as_deref(), Some(dev.as_str()));
         }
     }
 }

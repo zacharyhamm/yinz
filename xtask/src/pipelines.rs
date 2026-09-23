@@ -83,6 +83,20 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
         )
     })
     .with_context(err_context)?;
+    if profile_dir == "debug" {
+        let plugins = if build::plugin_profile_overrides(profile)
+            .iter()
+            .any(|(key, _)| *key == build::DEV_OPT_LEVEL)
+        {
+            " (its wasm plugins are still optimized)"
+        } else {
+            ""
+        };
+        println!(
+            "Note: installing a '{profile}' build: the zellij binary's own code is \
+             unoptimized{plugins}. 'cargo x install' installs a release build."
+        );
+    }
 
     // Copy binary to destination
     let destination = if flags.destination.is_absolute() {
