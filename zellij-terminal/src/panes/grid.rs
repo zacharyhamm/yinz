@@ -2524,8 +2524,14 @@ impl Grid {
 
         for _ in 0..self.height {
             let columns = VecDeque::from(vec![character.clone(); self.width]);
-            self.viewport
-                .push_back(Row::from_columns(columns).canonical());
+            self.viewport.push_back(
+                Row::from_columns(columns).canonical().with_bg_color(
+                    character
+                        .styles
+                        .background
+                        .filter(|bg| *bg != AnsiCode::Reset),
+                ),
+            );
         }
         self.output_buffer.update_all_lines();
     }
@@ -2858,12 +2864,23 @@ impl Grid {
     }
     pub fn replace_characters_in_line_after_cursor(&mut self, replace_with: TerminalCharacter) {
         if let Some(row) = self.viewport.get_mut(self.cursor.y) {
+            row.bg_color = replace_with
+                .styles
+                .background
+                .filter(|bg| *bg != AnsiCode::Reset);
             row.replace_and_pad_end(self.cursor.x, self.width, replace_with);
         }
         self.output_buffer.update_line(self.cursor.y);
     }
     pub fn replace_characters_in_line_before_cursor(&mut self, replace_with: TerminalCharacter) {
         let row = self.viewport.get_mut(self.cursor.y).unwrap();
+        // A prefix erase leaves the tail's padding colour intact unless it reaches the edge.
+        if self.cursor.x >= self.width.saturating_sub(1) {
+            row.bg_color = replace_with
+                .styles
+                .background
+                .filter(|bg| *bg != AnsiCode::Reset);
+        }
         row.replace_and_pad_beginning(self.cursor.x, replace_with);
         self.output_buffer.update_line(self.cursor.y);
     }
@@ -2878,7 +2895,6 @@ impl Grid {
             // now on, and a colourless erase takes an earlier one away: the rows are
             // filled to `width` here, but a widening or a DCH reopens the padding, and
             // `replace_columns` leaves `bg_color` alone.
-            cursor_row.bg_color = erase_bg;
             let replace_with_columns = VecDeque::from(vec![replace_with.clone(); self.width]);
             self.replace_characters_in_line_after_cursor(replace_with);
             for row in self.viewport.iter_mut().skip(self.cursor.y + 1) {
@@ -2901,10 +2917,15 @@ impl Grid {
     }
     pub fn clear_all_before_cursor(&mut self, replace_with: TerminalCharacter) {
         if self.viewport.get(self.cursor.y).is_some() {
+            let erase_bg = replace_with
+                .styles
+                .background
+                .filter(|bg| *bg != AnsiCode::Reset);
             let replace_with_columns = VecDeque::from(vec![replace_with.clone(); self.width]);
             self.replace_characters_in_line_before_cursor(replace_with);
             for row in self.viewport.iter_mut().take(self.cursor.y) {
                 row.replace_columns(replace_with_columns.clone());
+                row.bg_color = erase_bg;
             }
             self.output_buffer.update_lines(0, self.cursor.y);
         }
@@ -2912,14 +2933,24 @@ impl Grid {
     pub fn clear_cursor_line(&mut self) {
         if let Some(viewport_line) = self.viewport.get_mut(self.cursor.y) {
             viewport_line.replace_columns(VecDeque::new());
+            viewport_line.bg_color = self
+                .cursor
+                .pending_styles
+                .background
+                .filter(|bg| *bg != AnsiCode::Reset);
             self.output_buffer.update_line(self.cursor.y);
         }
     }
     pub fn clear_all(&mut self, replace_with: TerminalCharacter) {
+        let erase_bg = replace_with
+            .styles
+            .background
+            .filter(|bg| *bg != AnsiCode::Reset);
         let replace_with_columns = VecDeque::from(vec![replace_with.clone(); self.width]);
         self.replace_characters_in_line_after_cursor(replace_with);
         for row in &mut self.viewport {
             row.replace_columns(replace_with_columns.clone());
+            row.bg_color = erase_bg;
         }
         self.output_buffer.update_all_lines();
     }

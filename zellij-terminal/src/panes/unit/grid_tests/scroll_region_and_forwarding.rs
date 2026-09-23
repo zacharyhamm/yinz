@@ -1,4 +1,5 @@
 use super::*;
+use crate::panes::terminal_character::NamedColor;
 
 #[test]
 fn repeated_alternate_screen_entry_preserves_primary_screen_and_scrollback() {
@@ -1214,5 +1215,104 @@ fn a_colourless_erase_below_takes_an_earlier_background_away() {
             "row {} still pads in the erased colour",
             chunk.y
         );
+    }
+}
+
+#[test]
+fn full_line_erases_replace_the_padding_background_even_after_widening() {
+    for erase in ["\x1b[K", "\x1b[2K", "\x1b[4G\x1b[1K", "\x1b[2J"] {
+        for (style, background) in [
+            ("\x1b[0m", None),
+            ("\x1b[49m", None),
+            ("\x1b[42m", Some(AnsiCode::NamedColor(NamedColor::Green))),
+            ("\x1b[48;5;2m", Some(AnsiCode::ColorIndex(2))),
+        ] {
+            // Includes the reported blue ED, reset, EL2 sequence.
+            let mut grid = create_grid_with_size_and_raw(5, 4, b"\x1b[44m\x1b[J");
+            feed_bytes(&mut grid, format!("{style}{erase}").as_bytes());
+
+            assert_eq!(grid.viewport[0].bg_color, background, "{style:?}{erase:?}");
+            for width in [4, 8] {
+                grid.change_size(5, width);
+                let (chunks, _, _) = grid.read_changes(0, 0);
+                let row = chunks.iter().find(|chunk| chunk.y == 0).unwrap();
+                assert!(
+                    row.terminal_characters.iter().all(|character| {
+                        character.character == ' '
+                            && character
+                                .styles
+                                .background
+                                .filter(|bg| *bg != AnsiCode::Reset)
+                                == background
+                    }),
+                    "{style:?}{erase:?}, width={width}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn prefix_erases_preserve_the_tail_background_but_replace_whole_rows_above() {
+    for erase in ["\x1b[1K", "\x1b[1J"] {
+        for (style, background) in [
+            ("\x1b[0m", None),
+            ("\x1b[42m", Some(AnsiCode::NamedColor(NamedColor::Green))),
+        ] {
+            let blue = Some(AnsiCode::NamedColor(NamedColor::Blue));
+            let mut grid =
+                create_grid_with_size_and_raw(5, 4, b"\x1b[44m\x1b[J\x1b[2;3Hxy\x1b[2;2H");
+            feed_bytes(&mut grid, format!("{style}{erase}").as_bytes());
+
+            assert_eq!(
+                grid.viewport[0].bg_color,
+                if erase == "\x1b[1J" { background } else { blue }
+            );
+            assert_eq!(grid.viewport[1].bg_color, blue);
+            for width in [4, 8] {
+                grid.change_size(5, width);
+                let (chunks, _, _) = grid.read_changes(0, 0);
+                let row = chunks.iter().find(|chunk| chunk.y == 1).unwrap();
+                for (x, character) in row.terminal_characters.iter().enumerate() {
+                    assert_eq!(
+                        character
+                            .styles
+                            .background
+                            .filter(|bg| *bg != AnsiCode::Reset),
+                        if x < 2 { background } else { blue },
+                        "{style:?}{erase:?}, x={x}"
+                    );
+                }
+                assert_eq!(row.terminal_characters[2].character, 'x');
+                assert_eq!(row.terminal_characters[3].character, 'y');
+                let row_above = chunks.iter().find(|chunk| chunk.y == 0).unwrap();
+                assert!(row_above.terminal_characters.iter().all(|character| {
+                    character
+                        .styles
+                        .background
+                        .filter(|bg| *bg != AnsiCode::Reset)
+                        == if erase == "\x1b[1J" { background } else { blue }
+                }));
+            }
+        }
+    }
+}
+
+#[test]
+fn internal_full_clears_reset_the_padding_background() {
+    for sequence in [b"\x1b[?3h", b"\x1b[?3l"] {
+        let mut grid = create_grid_with_size_and_raw(5, 4, b"\x1b[44m\x1b[J");
+        feed_bytes(&mut grid, sequence);
+
+        assert!(grid.viewport.iter().all(|row| row.bg_color.is_none()));
+        grid.change_size(5, 8);
+        let (chunks, _, _) = grid.read_changes(0, 0);
+        assert!(chunks
+            .iter()
+            .flat_map(|chunk| &chunk.terminal_characters)
+            .all(|character| {
+                character.character == ' '
+                    && matches!(character.styles.background, None | Some(AnsiCode::Reset))
+            }));
     }
 }
