@@ -312,7 +312,10 @@ fn partial_scroll_region_repaints_moved_command_output_flash_rows() {
 
 #[test]
 fn partial_scroll_region_without_highlights_repaints_only_the_region() {
-    for sequence in [b"\x1b[1S", b"\x1b[1M", b"\x1b[2S", b"\x1b[2M"] {
+    for sequence in [
+        b"\x1b[1S", b"\x1b[1T", b"\x1b[1L", b"\x1b[1M", b"\x1b[2S", b"\x1b[2T", b"\x1b[2L",
+        b"\x1b[2M",
+    ] {
         let mut grid = create_grid_with_size_and_raw(10, 40, FILL_8_LINES);
         feed_bytes(&mut grid, b"\x1b[1;3r");
         // An empty selection below the region must not add damage when it moves.

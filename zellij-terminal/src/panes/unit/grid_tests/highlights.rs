@@ -237,6 +237,75 @@ fn plugin_highlight_at_wrapped_line() {
 }
 
 #[test]
+fn scrolling_repaints_wrapped_highlights_across_both_boundaries() {
+    for command in ['S', 'T', 'L', 'M'] {
+        let scrolls_up = matches!(command, 'S' | 'M');
+        for (content, pattern, outside_rows, initially_highlighted) in [
+            (
+                "AAABBB\r\nCCCDDDEEE\r\nZZZ",
+                "AAABBB|DDDEEE",
+                vec![0, 4],
+                true,
+            ),
+            (
+                "AAA\r\nBBBCCC\r\nDDDEEE\r\nZZZ",
+                if scrolls_up {
+                    "AAACCC|   EEE"
+                } else {
+                    "CCCEEE"
+                },
+                if scrolls_up { vec![0, 4] } else { vec![4] },
+                false,
+            ),
+        ] {
+            let mut grid = create_grid_with_size_and_raw(6, 3, content.as_bytes());
+            // IL/DL begin at the cursor, not necessarily the scroll region's top.
+            let top = if matches!(command, 'L' | 'M') { 1 } else { 2 };
+            feed_bytes(&mut grid, format!("\x1b[{top};4r\x1b[2;1H").as_bytes());
+            grid.set_plugin_regex_highlights(
+                PluginId::new(1),
+                vec![create_highlight(
+                    pattern,
+                    false,
+                    true,
+                    false,
+                    false,
+                    HighlightLayer::Hint,
+                )],
+                &Style::default(),
+            );
+            let (initial, _, _, _) = grid.render(0, 0, &Style::default()).unwrap().unwrap();
+            for &y in &outside_rows {
+                let row = initial.iter().find(|chunk| chunk.y == y).unwrap();
+                assert_eq!(
+                    row.selection_and_colors().iter().any(|hs| hs.bold),
+                    initially_highlighted
+                );
+            }
+            assert!(grid.read_changes(0, 0).0.is_empty());
+
+            feed_bytes(&mut grid, format!("\x1b[{command}").as_bytes());
+
+            let (chunks, _, _, _) = grid.render(0, 0, &Style::default()).unwrap().unwrap();
+            assert!(
+                !chunks.iter().any(|chunk| chunk.y == 5),
+                "unrelated row was repainted"
+            );
+            for y in outside_rows {
+                let row = chunks.iter().find(|chunk| chunk.y == y).unwrap_or_else(|| {
+                    panic!("CSI {command}, {pattern:?}: row {y} was not repainted")
+                });
+                assert_eq!(
+                    row.selection_and_colors().iter().any(|hs| hs.bold),
+                    !initially_highlighted,
+                    "CSI {command}, {pattern:?}: row {y}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn hover_position_triggers_on_hover_highlight() {
     let mut grid = create_grid_with_content("hello link_text bar\n");
     let highlights = vec![create_highlight(
