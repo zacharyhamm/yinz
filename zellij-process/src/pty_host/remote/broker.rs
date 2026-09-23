@@ -1029,16 +1029,11 @@ fn signal_child(child_pid: ProcessId, signal: ChildSignal) {
         // Aimed at the process group, like the local `send_sigcont` — see there
         // for why the leader alone is not enough. Unreachable today: no remote
         // pane ever reports a suspend, so nothing asks for this.
-        ChildSignal::Cont => {
-            let group = nix::unistd::Pid::from_raw(-pid.as_raw());
-            if nix::sys::signal::kill(group, Some(nix::sys::signal::Signal::SIGCONT)).is_err() {
-                let _ = nix::sys::signal::kill(pid, Some(nix::sys::signal::Signal::SIGCONT));
-            }
-            return;
-        },
+        ChildSignal::Cont => nix::sys::signal::Signal::SIGCONT,
     };
-    let group = nix::unistd::Pid::from_raw(-pid.as_raw());
-    if nix::sys::signal::kill(group, Some(sig)).is_err() {
+    let group_signalled = super::super::process_group(pid)
+        .is_ok_and(|group| nix::sys::signal::kill(group, Some(sig)).is_ok());
+    if !group_signalled {
         let _ = nix::sys::signal::kill(pid, Some(sig));
     }
 }

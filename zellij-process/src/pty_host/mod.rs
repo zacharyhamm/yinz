@@ -25,27 +25,48 @@ pub use host::{run_pty_host, serve, ServeConfig};
 use zellij_types::internal_ids::ProcessId;
 
 /// A process identity must not become a kernel process-group selector.
+///
+/// PID 1 is refused along with 0: it is init, never a pane's child or a supervisor, and the
+/// group paths negate what this returns — `kill(-1, …)` is every process the caller may signal.
 pub fn process_pid(pid: ProcessId) -> zellij_runtime::errors::prelude::Result<nix::unistd::Pid> {
     use zellij_runtime::errors::prelude::*;
     let raw = i32::try_from(pid).context("process ID exceeds the kernel PID range")?;
-    if raw == 0 {
-        return Err(anyhow!("process ID zero does not identify a process"));
+    if raw <= 1 {
+        return Err(anyhow!(
+            "process ID {raw} does not identify a pane or supervisor process"
+        ));
     }
     Ok(nix::unistd::Pid::from_raw(raw))
 }
 
-/// Locally spawned kernel PIDs are positive signed integers. Never use this for
+/// Locally spawned kernel PIDs are signed integers above 1 (init). Never use this for
 /// IPC-derived IDs; those must pass through `process_pid`.
 pub(crate) fn kernel_pid(pid: ProcessId) -> nix::unistd::Pid {
     let raw = pid.get();
-    assert!(raw > 0 && raw <= i32::MAX as u32, "invalid kernel PID");
+    assert!(raw > 1 && raw <= i32::MAX as u32, "invalid kernel PID");
     nix::unistd::Pid::from_raw(raw as i32)
+}
+
+/// The `kill(2)` selector for the process group led by `pid`. Every group signal goes through
+/// here: negating 1 gives -1, which signals every process the caller may signal (the server,
+/// every pty host, the user's ssh sessions), and negating 0 gives 0, the caller's own group.
+pub fn process_group(
+    pid: nix::unistd::Pid,
+) -> zellij_runtime::errors::prelude::Result<nix::unistd::Pid> {
+    use zellij_runtime::errors::prelude::*;
+    let raw = pid.as_raw();
+    if raw <= 1 {
+        return Err(anyhow!(
+            "process ID {raw} does not lead a process group we may signal"
+        ));
+    }
+    Ok(nix::unistd::Pid::from_raw(-raw))
 }
 
 /// Only ESRCH proves the owned group is gone. Permission and probe errors do not.
 pub(crate) fn process_group_terminated(child_pid: ProcessId) -> bool {
-    let group = nix::unistd::Pid::from_raw(-kernel_pid(child_pid).as_raw());
-    nix::sys::signal::kill(group, None) == Err(nix::errno::Errno::ESRCH)
+    process_group(kernel_pid(child_pid))
+        .is_ok_and(|group| nix::sys::signal::kill(group, None) == Err(nix::errno::Errno::ESRCH))
 }
 
 pub(crate) fn ensure_secure_dir(
@@ -126,10 +147,10 @@ mod tests {
     #[test]
     fn process_ids_cannot_signal_a_process_group_by_wrapping() {
         use zellij_types::internal_ids::ProcessId;
-        for raw in [0, 2147483648, u32::MAX] {
+        for raw in [0, 1, 2147483648, u32::MAX] {
             assert!(process_pid(ProcessId::new(raw)).is_err());
         }
-        assert_eq!(process_pid(ProcessId::new(1)).unwrap().as_raw(), 1);
+        assert_eq!(process_pid(ProcessId::new(2)).unwrap().as_raw(), 2);
         assert_eq!(
             process_pid(ProcessId::new(2147483647)).unwrap().as_raw(),
             i32::MAX
@@ -138,8 +159,38 @@ mod tests {
 
     #[test]
     fn kernel_process_ids_preserve_the_positive_signed_range() {
-        for raw in [1, std::process::id(), i32::MAX as u32] {
+        for raw in [2, std::process::id(), i32::MAX as u32] {
             assert_eq!(kernel_pid(ProcessId::new(raw)).as_raw() as u32, raw);
+        }
+    }
+
+    /// Pure: nothing here reaches `kill(2)`. A test that sent a real signal to the group of pid 1
+    /// would, the day this guard regressed, SIGKILL every process of whoever ran the suite.
+    #[test]
+    fn a_process_group_selector_is_never_every_process_or_our_own_group() {
+        use nix::unistd::Pid;
+        for raw in [i32::MIN, -2, -1, 0, 1] {
+            assert!(
+                process_group(Pid::from_raw(raw)).is_err(),
+                "{raw} became a group selector"
+            );
+        }
+        assert_eq!(process_group(Pid::from_raw(2)).unwrap().as_raw(), -2);
+        assert_eq!(
+            process_group(Pid::from_raw(i32::MAX)).unwrap().as_raw(),
+            -i32::MAX
+        );
+    }
+
+    #[hegel::test]
+    fn no_process_id_off_the_wire_selects_every_process(tc: hegel::TestCase) {
+        let raw = tc.draw(generators::integers::<u32>());
+        let selector = process_pid(ProcessId::new(raw)).and_then(process_group);
+        if let Ok(group) = selector {
+            assert!(
+                group.as_raw() < -1,
+                "process ID {raw} became selector {group}"
+            );
         }
     }
 

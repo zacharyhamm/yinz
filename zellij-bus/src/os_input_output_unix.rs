@@ -850,7 +850,7 @@ impl UnixPtyBackend {
 
     pub fn force_kill(&self, pid: ProcessId) -> Result<()> {
         let pid = crate::pty_host::process_pid(pid)?;
-        if kill(unistd::Pid::from_raw(-pid.as_raw()), Some(Signal::SIGKILL)).is_err() {
+        if kill(crate::pty_host::process_group(pid)?, Some(Signal::SIGKILL)).is_err() {
             let _ = kill(pid, Some(Signal::SIGKILL));
         }
         Ok(())
@@ -858,7 +858,7 @@ impl UnixPtyBackend {
 
     pub fn send_sigint(&self, pid: ProcessId) -> Result<()> {
         let pid = crate::pty_host::process_pid(pid)?;
-        if kill(unistd::Pid::from_raw(-pid.as_raw()), Some(Signal::SIGINT)).is_err() {
+        if kill(crate::pty_host::process_group(pid)?, Some(Signal::SIGINT)).is_err() {
             let _ = kill(pid, Some(Signal::SIGINT));
         }
         Ok(())
@@ -873,7 +873,7 @@ impl UnixPtyBackend {
     /// case where the child never got a group of its own.
     pub fn send_sigcont(&self, pid: ProcessId) -> Result<()> {
         let pid = crate::pty_host::process_pid(pid)?;
-        let group = unistd::Pid::from_raw(-pid.as_raw());
+        let group = crate::pty_host::process_group(pid)?;
         if kill(group, Some(Signal::SIGCONT)).is_err() {
             let _ = kill(pid, Some(Signal::SIGCONT));
         }
