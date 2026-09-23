@@ -1253,6 +1253,35 @@ fn full_line_erases_replace_the_padding_background_even_after_widening() {
 }
 
 #[test]
+fn reflow_preserves_a_default_background_at_the_end_of_a_coloured_row() {
+    for reset in ["\x1b[0m", "\x1b[49m"] {
+        let mut grid = create_grid_with_size_and_raw(5, 4, b"\x1b[44m\x1b[2J");
+        feed_bytes(&mut grid, format!("{reset}\x1b[4G\x1b[X").as_bytes());
+
+        for width in [4, 8, 4] {
+            grid.change_size(5, width);
+            let (chunks, _, _) = grid.read_changes(0, 0);
+            let row = chunks.iter().find(|chunk| chunk.y == 0).unwrap();
+            assert_eq!(row.terminal_characters.len(), width);
+            for (x, character) in row.terminal_characters.iter().enumerate() {
+                assert_eq!(
+                    character
+                        .styles
+                        .background
+                        .filter(|bg| *bg != AnsiCode::Reset),
+                    if x == 3 {
+                        None
+                    } else {
+                        Some(AnsiCode::NamedColor(NamedColor::Blue))
+                    },
+                    "{reset:?}, width={width}, x={x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn prefix_erases_preserve_the_tail_background_but_replace_whole_rows_above() {
     for erase in ["\x1b[1K", "\x1b[1J"] {
         for (style, background) in [
