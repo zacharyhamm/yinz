@@ -534,12 +534,14 @@ impl Pane for PluginPane {
     fn render_frame(
         &mut self,
         client_id: ClientId,
-        frame_params: FrameParams,
+        mut frame_params: FrameParams,
         input_mode: InputMode,
     ) -> Result<Option<(Vec<CharacterChunk>, Option<String>)>> {
         if self.borderless {
             return Ok(None);
         }
+        // Plugin output replaces its viewport; its grid's discarded rows are not scrollback.
+        frame_params.show_scroll_indication = false;
         let subtitle = (self.subtitle_rows() > 0)
             .then(|| self.subtitle.clone())
             .flatten()

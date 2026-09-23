@@ -57,6 +57,144 @@ fn create_grid_with_content(content: &str) -> Grid {
     grid
 }
 
+#[test]
+fn a_non_scrolling_newline_does_not_paint_or_materialize_padding() {
+    let mut grid = create_grid_with_content("\u{1b}[1;31;44m\r\n");
+    let row = &grid.viewport[1];
+    assert!(
+        row.columns.is_empty(),
+        "implicit blanks must not become text"
+    );
+    let background = None;
+    assert_eq!(row.bg_color, background);
+    let (chunks, _, _) = grid.read_changes(0, 0);
+    let new_line = chunks.iter().find(|chunk| chunk.y == 1).unwrap();
+    assert!(new_line
+        .terminal_characters
+        .iter()
+        .all(|c| c.character == ' '
+            && c.styles.background.filter(|bg| *bg != AnsiCode::Reset) == background
+            && c.styles.bold != Some(AnsiCode::On)));
+}
+
+#[test]
+fn scroll_region_edits_only_damage_the_rows_they_move() {
+    use crate::panes::terminal_character::EMPTY_TERMINAL_CHARACTER;
+
+    for operation in 0..4 {
+        let mut grid = create_grid_with_content(&"line\r\n".repeat(19));
+        grid.set_scroll_region(3, Some(8));
+        grid.move_cursor_to(0, 5, EMPTY_TERMINAL_CHARACTER);
+        grid.read_changes(0, 0);
+        let first_changed = match operation {
+            0 => {
+                grid.rotate_scroll_region_up(1);
+                3
+            },
+            1 => {
+                grid.rotate_scroll_region_down(1);
+                3
+            },
+            2 => {
+                grid.delete_lines_in_scroll_region(1, EMPTY_TERMINAL_CHARACTER);
+                5
+            },
+            _ => {
+                grid.add_empty_lines_in_scroll_region(1, EMPTY_TERMINAL_CHARACTER);
+                5
+            },
+        };
+        let (chunks, _, _) = grid.read_changes(0, 0);
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+            (first_changed..=8).collect::<Vec<_>>(),
+            "operation {operation}",
+        );
+    }
+
+    // Moving rows into scrollback also moves selection feedback, even below the region.
+    for flash in [false, true] {
+        let mut grid = create_grid_with_content(&"line\r\n".repeat(19));
+        grid.set_scroll_region(0, Some(2));
+        let start = Position::new(10, 0);
+        let end = Position::new(11, 3);
+        if flash {
+            grid.set_command_output_flash(start, end);
+        } else {
+            grid.selection.set_start_and_end_positions(start, end);
+        }
+        grid.read_changes(0, 0);
+        grid.rotate_scroll_region_down(1);
+        let (chunks, _, _) = grid.read_changes(0, 0);
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+            vec![0, 1, 2, 9, 10, 11],
+        );
+    }
+}
+
+#[test]
+fn scrolling_repaints_an_empty_active_selection_that_becomes_nonempty() {
+    let mut grid = create_grid_with_content(&"line\r\n".repeat(19));
+    grid.set_scroll_region(0, Some(2));
+    grid.selection.start(Position::new(10, 0));
+    assert!(grid.selection.is_empty());
+    grid.read_changes(0, 0);
+    grid.rotate_scroll_region_down(1);
+    assert!(!grid.selection.is_empty());
+    let (chunks, _, _) = grid.read_changes(0, 0);
+    assert_eq!(
+        chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+        vec![0, 1, 2, 9, 10]
+    );
+}
+
+#[test]
+fn scroll_region_edits_repaint_wrapped_highlights_across_both_boundaries() {
+    use crate::panes::terminal_character::EMPTY_TERMINAL_CHARACTER;
+    use zellij_types::data::{HighlightLayer, HighlightStyle, RegexHighlight};
+    use zellij_types::internal_ids::PluginId;
+
+    for operation in 0..4 {
+        // One logical line spans rows 0–5, crossing both boundaries of rows 2–3.
+        let mut grid = create_grid_with_content(&"a".repeat(480));
+        grid.set_plugin_regex_highlights(
+            PluginId::new(1),
+            vec![RegexHighlight {
+                pattern: "^a{480}$".into(),
+                style: HighlightStyle::Emphasis0,
+                layer: HighlightLayer::Hint,
+                context: Default::default(),
+                on_hover: false,
+                bold: false,
+                italic: false,
+                underline: true,
+                tooltip_text: None,
+            }],
+            &Style::default(),
+        );
+        assert!(grid.plugin_highlight_at(&Position::new(0, 0)).is_some());
+        assert!(grid.plugin_highlight_at(&Position::new(5, 0)).is_some());
+        grid.set_scroll_region(2, Some(3));
+        grid.move_cursor_to(0, 2, EMPTY_TERMINAL_CHARACTER);
+        grid.read_changes(0, 0);
+        match operation {
+            0 => grid.rotate_scroll_region_up(1),
+            1 => grid.rotate_scroll_region_down(1),
+            2 => grid.delete_lines_in_scroll_region(1, EMPTY_TERMINAL_CHARACTER),
+            _ => grid.add_empty_lines_in_scroll_region(1, EMPTY_TERMINAL_CHARACTER),
+        }
+        assert!(grid.plugin_highlight_at(&Position::new(0, 0)).is_none());
+        assert!(grid.plugin_highlight_at(&Position::new(5, 0)).is_none());
+        let (chunks, _, _) = grid.read_changes(0, 0);
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+            (0..6).collect::<Vec<_>>(),
+            "operation {operation}"
+        );
+    }
+}
+
 fn select_with_click_count(grid: &mut Grid, position: Position, click_count: usize) -> String {
     for _ in 0..click_count {
         grid.start_selection(&position);

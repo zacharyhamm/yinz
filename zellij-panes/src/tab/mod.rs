@@ -3048,7 +3048,7 @@ impl Tab {
                     .focus_pane_if_client_not_focused(first_active_tiled_pane_id, client_id);
             }
         } else {
-            let mut pane_ids: Vec<PaneId> = self.tiled_panes.pane_ids().copied().collect();
+            let pane_ids: Vec<PaneId> = self.tiled_panes.pane_ids().copied().collect();
             let focus_pane_id = self
                 .focus_pane_id
                 .filter(|focus_pane_id| {
@@ -3056,10 +3056,16 @@ impl Tab {
                         && !self.tiled_panes.panes_to_hide_contains(*focus_pane_id)
                 })
                 .or_else(|| {
-                    // Deterministic: `PaneId: Ord`, and the ids came out of a `BTreeMap`.
-                    pane_ids.sort();
-                    pane_ids.retain(|p| !self.tiled_panes.panes_to_hide_contains(*p));
-                    pane_ids.first().copied()
+                    self.tiled_panes
+                        .get_panes()
+                        .filter(|(id, pane)| {
+                            pane.selectable() && !self.tiled_panes.panes_to_hide_contains(**id)
+                        })
+                        .min_by_key(|(id, pane)| {
+                            let geom = pane.current_geom();
+                            (geom.y, geom.x, **id)
+                        })
+                        .map(|(id, _)| *id)
                 });
             if let Some(focus_pane_id) = focus_pane_id {
                 self.tiled_panes
@@ -7792,8 +7798,8 @@ impl Tab {
                 closed_pane.reset_logical_position();
             }
             closed_pane
-        } else if let Some(suppressed) = self.suppressed_panes.remove(&id) {
-            // TODO: test this (from the path in screen.rs focus_plugin_pane ~line 2519
+        } else if let Some(mut suppressed) = self.suppressed_panes.remove(&id) {
+            suppressed.pane.reset_logical_position();
             Some(suppressed.pane)
         } else {
             None

@@ -454,9 +454,8 @@ impl<'a> TiledPaneGrid<'a> {
                         ..strategy
                     };
 
-                    // TODO: instead of unwrap_or(false) here we need to do the same with the fixed
-                    // panes error above, only make sure that we only error if we cannot resize in
-                    // any directions and have blocking fixed panes
+                    // Try compound resizes first. The single-direction attempts below collect
+                    // blockers only if no direction succeeds.
                     if self
                         .can_change_pane_size(pane_id, &main_strategy, change_by)
                         .unwrap_or(false)
@@ -495,13 +494,26 @@ impl<'a> TiledPaneGrid<'a> {
                         invert_on_boundaries: false,
                         ..strategy
                     };
-                    if self
-                        .change_pane_size(pane_id, &new_strategy, change_by)
-                        .unwrap_or(false)
-                    {
-                        return Ok(true);
+                    match self.change_pane_size(pane_id, &new_strategy, change_by) {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {},
+                        Err(err) => match err.downcast_ref::<ZellijError>() {
+                            Some(ZellijError::CantResizeFixedPanes { pane_ids }) => {
+                                fixed_panes_blocking_resize.extend_from_slice(pane_ids);
+                            },
+                            Some(ZellijError::PaneSizeUnchanged) => {},
+                            _ => return Err(err).with_context(err_context),
+                        },
                     }
                 }
+            }
+            if !fixed_panes_blocking_resize.is_empty() {
+                fixed_panes_blocking_resize.sort_unstable();
+                fixed_panes_blocking_resize.dedup();
+                return Err(ZellijError::CantResizeFixedPanes {
+                    pane_ids: fixed_panes_blocking_resize,
+                })
+                .with_context(err_context);
             }
             return Ok(false);
         }

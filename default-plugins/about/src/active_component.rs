@@ -90,15 +90,12 @@ impl ActiveComponent {
         }
     }
     pub fn handle_hover_at_position(&mut self, x: usize, y: usize) -> bool {
-        let Some(last_rendered_coordinates) = &self.last_rendered_coordinates else {
-            return false;
-        };
-        if last_rendered_coordinates.contains(x, y) && self.text_hover.is_some() {
-            self.is_active = true;
-            true
-        } else {
-            false
-        }
+        self.is_active = self.text_hover.is_some()
+            && self
+                .last_rendered_coordinates
+                .as_ref()
+                .is_some_and(|coordinates| coordinates.contains(x, y));
+        self.is_active
     }
     pub fn handle_selection(&mut self) -> Option<Page> {
         if self.is_active {
@@ -112,9 +109,6 @@ impl ActiveComponent {
             Some(text) if self.is_active => text.len(),
             _ => self.text_no_hover.len(),
         }
-    }
-    pub fn clear_hover(&mut self) {
-        self.is_active = false;
     }
 }
 

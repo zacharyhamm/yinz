@@ -1,5 +1,36 @@
 use super::*;
 
+#[test]
+fn plugin_messages_preserve_optional_in_place_placement() {
+    for message in ["MessagePlugin \"test-plugin\"", "MessagePluginId 3"] {
+        for in_place in [None, Some(false), Some(true)] {
+            let flag = in_place
+                .map(|value| format!("in_place {value};"))
+                .unwrap_or_default();
+            let config = Config::from_kdl(
+                &format!(
+                    "keybinds clear-defaults=true {{ normal {{ bind \"a\" {{ {message} {{ name \"test\"; {flag} }}; }}; }}; }}"
+                ),
+                None,
+            )
+            .unwrap();
+            let action = &config.keybinds.0[&InputMode::Normal]
+                [&KeyWithModifier::new(BareKey::Char('a'))][0];
+            assert!(
+                matches!(action, Action::KeybindPipe { in_place: actual, .. } if *actual == in_place)
+            );
+            let serialized = crate::kdl::keybinds::to_kdl(&config.keybinds, true).unwrap();
+            let reread = crate::kdl::keybinds::from_kdl(
+                &serialized,
+                Default::default(),
+                &Default::default(),
+            )
+            .unwrap();
+            assert_eq!(config.keybinds, reread);
+        }
+    }
+}
+
 const NEW_TAB_LAYOUT: &str = r#"
 layout {
     pane command="printf" { args "tiled"; }

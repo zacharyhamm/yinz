@@ -2809,6 +2809,67 @@ mod tests {
     use super::*;
     use zellij_runtime::channels::SenderWithContext;
 
+    #[test]
+    fn keybind_pipe_forwards_in_place_intent_and_explicit_targets() {
+        use zellij_types::internal_ids::TerminalId;
+
+        let explicit = PaneId::Terminal(TerminalId::new(7));
+        for (in_place, pane_id, expected) in [
+            (true, None, None),
+            (true, Some(explicit), Some(explicit)),
+            (false, Some(explicit), None),
+            (false, None, None),
+        ] {
+            let (screen_tx, screen_rx) = zellij_runtime::channels::unbounded();
+            let (plugin_tx, plugin_rx) = zellij_runtime::channels::unbounded();
+            let senders = ThreadSenders {
+                to_screen: Some(SenderWithContext::new(screen_tx)),
+                to_plugin: Some(SenderWithContext::new(plugin_tx)),
+                ..Default::default()
+            };
+            let result = route_action(
+                Action::KeybindPipe {
+                    name: Some("message".into()),
+                    payload: None,
+                    args: None,
+                    plugin: None,
+                    plugin_id: None,
+                    configuration: None,
+                    launch_new: false,
+                    skip_cache: false,
+                    floating: None,
+                    in_place: Some(in_place),
+                    cwd: None,
+                    pane_title: None,
+                },
+                ClientId::new(1),
+                None,
+                pane_id,
+                senders,
+                None,
+                None,
+                InputMode::Normal,
+                None,
+                true,
+            );
+            result.unwrap();
+            assert!(screen_rx.try_recv().is_err());
+            let (instruction, _) = plugin_rx.try_recv().unwrap();
+            let PluginInstruction::KeybindPipe {
+                should_open_in_place,
+                pane_id_to_replace,
+                ..
+            } = instruction
+            else {
+                panic!("unexpected plugin instruction");
+            };
+            assert_eq!(
+                (should_open_in_place, pane_id_to_replace),
+                (in_place, expected)
+            );
+        }
+    }
+
     /// The bug this guards: bound keys become their own screen instructions and never reach
     /// `WriteCharacter`, so without a dismissal here a tab switch leaves a stale menu on screen,
     /// still offering to act on the pane it was opened over.

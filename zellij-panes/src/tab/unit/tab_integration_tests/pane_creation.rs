@@ -2,6 +2,61 @@ use super::*;
 use zellij_types::input::layout::Run;
 use zellij_types::pane_size::Offset;
 
+#[test]
+fn tiled_resize_only_notifies_panes_whose_content_size_changed() {
+    let client = ClientId::new(1);
+    let first = PaneId::Terminal(TerminalId::new(1));
+    for use_strategies in [false, true] {
+        let (sender, receiver) = channels::unbounded();
+        let mut tab = create_new_tab_with_mock_pty_writer(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            ModeInfo::default(),
+            SenderWithContext::new(sender),
+        );
+        for id in [2, 3] {
+            tab.vertical_split(
+                PaneId::Terminal(TerminalId::new(id)),
+                None,
+                client,
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        while receiver.try_recv().is_ok() {}
+        let strategy = ResizeStrategy::new(Resize::Increase, Some(Direction::Right));
+        if use_strategies {
+            tab.tiled_panes
+                .resize_pane_with_strategies(first, &[strategy], (5.0, 5.0))
+                .unwrap();
+        } else {
+            assert!(tab
+                .tiled_panes
+                .resize_pane_with_id(strategy, first, None)
+                .unwrap());
+        }
+        let mut resized = Vec::new();
+        while let Ok((instruction, _)) = receiver.try_recv() {
+            if let PtyWriteInstruction::ResizePty(id, ..) = instruction {
+                resized.push(id);
+            }
+        }
+        resized.sort_unstable();
+        assert_eq!(resized, vec![TerminalId::new(1), TerminalId::new(2)]);
+
+        tab.tiled_panes
+            .resize_pane_with_strategies(first, &[], (5.0, 5.0))
+            .unwrap();
+        assert!(
+            receiver.try_recv().is_err(),
+            "an empty resize must not notify panes"
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Placement {
     NoPreference,
