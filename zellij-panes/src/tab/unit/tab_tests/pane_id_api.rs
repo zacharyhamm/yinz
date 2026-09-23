@@ -1,6 +1,153 @@
 use super::*;
 
 #[test]
+fn undirected_resize_reports_fixed_blockers_only_when_no_direction_succeeds() {
+    for can_grow_down in [false, true] {
+        let top = TiledPaneLayout {
+            children_split_direction: SplitDirection::Vertical,
+            children: vec![
+                TiledPaneLayout {
+                    split_size: Some(SplitSize::Fixed(30)),
+                    ..Default::default()
+                },
+                TiledPaneLayout::default(),
+                TiledPaneLayout {
+                    split_size: Some(SplitSize::Fixed(30)),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let layout = if can_grow_down {
+            TiledPaneLayout {
+                children: vec![top, TiledPaneLayout::default()],
+                ..Default::default()
+            }
+        } else {
+            top
+        };
+        let mut tab = create_new_tab_with_layout(
+            Size {
+                cols: 100,
+                rows: if can_grow_down { 40 } else { 20 },
+            },
+            layout,
+        );
+        let active = PaneId::Terminal(TerminalId::new(1));
+        let result = tab.tiled_panes.resize_pane_with_id(
+            ResizeStrategy::new(Resize::Increase, None),
+            active,
+            None,
+        );
+        if can_grow_down {
+            assert!(result.unwrap());
+            assert!(
+                tab.get_pane_with_id(active)
+                    .unwrap()
+                    .current_geom()
+                    .rows
+                    .as_usize()
+                    > 20
+            );
+        } else {
+            let error = result.unwrap_err();
+            match error.downcast_ref::<ZellijError>() {
+                Some(ZellijError::CantResizeFixedPanes { pane_ids }) => assert_eq!(
+                    pane_ids,
+                    &vec![
+                        PaneId::Terminal(TerminalId::new(0)),
+                        PaneId::Terminal(TerminalId::new(2)),
+                    ]
+                ),
+                _ => panic!("unexpected resize error: {error:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn extracting_a_suppressed_pane_discards_its_old_layout_position() {
+    let client = ClientId::new(1);
+    for id in [
+        PaneId::Terminal(TerminalId::new(2)),
+        PaneId::Plugin(crate::PluginId::new(2)),
+    ] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            false,
+        );
+        let (sender, _receiver) = unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        tab.new_pane(
+            id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        let pane = tab.get_pane_with_id_mut(id).unwrap();
+        let mut geom = pane.position_and_size();
+        geom.logical_position = Some(7);
+        pane.set_geom(geom);
+        tab.suppress_pane(id, Some(client));
+
+        let pane = tab.extract_pane(id, true).unwrap();
+        assert_eq!(pane.pid(), id);
+        assert_eq!(pane.position_and_size().logical_position, None);
+        assert!(!tab.has_pane_with_pid(&id));
+        assert!(tab.extract_pane(id, true).is_none());
+    }
+}
+
+#[test]
+fn first_client_focus_follows_visible_pane_positions() {
+    let client = ClientId::new(1);
+    let first = PaneId::Terminal(TerminalId::new(1));
+    let second = PaneId::Terminal(TerminalId::new(2));
+    for (explicit_focus, unselectable, fullscreen, expected) in [
+        (None, false, false, second),
+        (Some(first), false, false, first),
+        (None, true, false, first),
+        (None, false, true, first),
+    ] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            false,
+        );
+        tab.horizontal_split(second, None, client, None, None)
+            .unwrap();
+        for (id, y) in [(first, 10), (second, 0)] {
+            let pane = tab.get_pane_with_id_mut(id).unwrap();
+            let mut geom = pane.position_and_size();
+            geom.y = y;
+            pane.set_geom(geom);
+        }
+        if unselectable {
+            tab.set_pane_selectable(second, false);
+        }
+        if fullscreen {
+            tab.tiled_panes.toggle_pane_fullscreen(first);
+        }
+        tab.remove_client(client);
+        tab.focus_pane_id = explicit_focus;
+        let joining = ClientId::new(7);
+        tab.add_client(joining, None).unwrap();
+        assert_eq!(tab.get_active_pane_id(joining), Some(expected));
+    }
+}
+
+#[test]
 fn revealing_a_suppressed_pane_in_place_replaces_the_focused_overlay() {
     let client = ClientId::new(1);
     let tiled = PaneId::Terminal(TerminalId::new(1));

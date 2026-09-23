@@ -439,16 +439,16 @@ impl SpanStyle {
 }
 
 fn truncate_to_width(text: &str, max_width: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
+    // ponytail: complete-prefix measurement is quadratic in the inspected prefix,
+    // but never scans discarded suffixes. Use a Unicode-aware incremental width
+    // calculation if long fitting prefixes become a bottleneck.
     let mut result = String::new();
-    let mut current_width = 0;
-    for ch in text.chars() {
-        let ch_width = ch.width().unwrap_or(0);
-        if current_width + ch_width > max_width {
+    for character in text.chars() {
+        result.push(character);
+        if result.width() > max_width {
+            result.pop();
             break;
         }
-        result.push(ch);
-        current_width += ch_width;
     }
     result
 }
@@ -473,26 +473,33 @@ impl TruncatableUiSpan {
         let truncated = if *remaining_cols >= self.text.width() {
             self.text.clone()
         } else {
-            let mut truncated = String::new();
-            for character in self.text.chars() {
-                if truncated.width() + character.width().unwrap_or(0) <= *remaining_cols {
-                    truncated.push(character);
-                } else {
-                    break;
-                }
-            }
-            truncated
+            truncate_to_width(&self.text, *remaining_cols)
         };
         match indices {
-            Some((index_style, indices)) => {
-                for (i, character) in truncated.chars().enumerate() {
-                    // TODO: optimize this by splitting the string up by its indices and only pushing those
-                    // chu8nks
-                    if indices.contains(&i) {
-                        rendered.push_str(&index_style.style_string(&character.to_string()));
-                    } else {
-                        rendered.push_str(&self.style.style_string(&character.to_string()));
+            Some((index_style, mut indices)) => {
+                indices.sort_unstable();
+                indices.dedup();
+                let mut indices = indices.into_iter().peekable();
+                let mut run_start = 0;
+                let mut highlighted = false;
+                let mut style = &self.style;
+                for (i, (byte, _)) in truncated.char_indices().enumerate() {
+                    let next_highlighted = indices.next_if_eq(&i).is_some();
+                    if next_highlighted != highlighted {
+                        if run_start < byte {
+                            rendered.push_str(&style.style_string(&truncated[run_start..byte]));
+                        }
+                        run_start = byte;
+                        highlighted = next_highlighted;
+                        style = if highlighted {
+                            &index_style
+                        } else {
+                            &self.style
+                        };
                     }
+                }
+                if run_start < truncated.len() {
+                    rendered.push_str(&style.style_string(&truncated[run_start..]));
                 }
             },
             None => {
@@ -1863,6 +1870,56 @@ fn truncate_path(path: PathBuf, mut char_count_to_remove: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncation_measures_complete_unicode_prefixes() {
+        for (text, width, expected) in [
+            ("abc", 3, "abc"),
+            ("👩‍💻", 2, "👩‍💻"),
+            ("e\u{301}", 1, "e\u{301}"),
+            ("👩‍💻abcdef", 4, "👩‍💻ab"),
+            ("e\u{301}abc", 2, "e\u{301}a"),
+            ("界abc", 3, "界a"),
+            ("界abc", 0, ""),
+            ("", 0, ""),
+        ] {
+            assert_eq!(truncate_to_width(text, width), expected);
+        }
+        let span = TruncatableUiSpan::new("👩‍💻abcdef".into(), SpanStyle::None);
+        let mut line = LineToRender::new(Colors::default());
+        let mut columns = 4;
+        span.render(
+            Some((SpanStyle::Bold, vec![0, 1, 2])),
+            &mut line,
+            &mut columns,
+        );
+        assert_eq!(line.line, "\u{1b}[1m👩‍💻\u{1b}[22mab");
+        assert_eq!(columns, 0);
+    }
+
+    #[test]
+    fn truncation_of_long_ascii_text_keeps_only_fitting_prefix() {
+        assert_eq!(truncate_to_width(&"a".repeat(100_000), 80), "a".repeat(80));
+    }
+
+    #[test]
+    fn highlighted_spans_group_runs_and_keep_unicode_character_indices() {
+        let span = TruncatableUiSpan::new("aé界bcdef".into(), SpanStyle::None);
+        let mut line = LineToRender::new(Colors::default());
+        let mut columns = 6;
+        span.render(
+            Some((SpanStyle::Bold, vec![3, 1, 2, 2, 99])),
+            &mut line,
+            &mut columns,
+        );
+        assert_eq!(line.line, "a\u{1b}[1mé界b\u{1b}[22mc");
+        assert_eq!(columns, 0);
+
+        let mut line = LineToRender::new(Colors::default());
+        let mut columns = 0;
+        span.render(Some((SpanStyle::Bold, vec![0])), &mut line, &mut columns);
+        assert!(line.line.is_empty());
+    }
 
     #[test]
     fn screen_toggle_labels_only_render_when_they_fit() {

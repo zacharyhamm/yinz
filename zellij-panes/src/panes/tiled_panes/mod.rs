@@ -2032,7 +2032,7 @@ impl TiledPanes {
         pane_id: PaneId,
         resize_percent: Option<(f64, f64)>,
     ) -> Result<bool> {
-        let err_context = || format!("failed to resize pand with id: {:?}", pane_id);
+        let err_context = || format!("failed to resize pane with id: {:?}", pane_id);
         let sizes_before = self.content_sizes();
 
         let mut pane_grid = TiledPaneGrid::new(
@@ -2065,7 +2065,7 @@ impl TiledPanes {
                         )
                         .with_context(err_context)
                     {
-                        Ok(_) => {},
+                        Ok(changed) => pane_size_changed = changed,
                         Err(err) => match err.downcast_ref::<ZellijError>() {
                             Some(ZellijError::PaneSizeUnchanged) => Err::<(), _>(err).non_fatal(),
                             _ => {

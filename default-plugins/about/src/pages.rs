@@ -824,37 +824,41 @@ impl Page {
         None
     }
     pub fn handle_mouse_hover(&mut self, x: usize, y: usize) -> bool {
-        let hover_cleared = self.clear_hover(); // TODO: do the right thing if the same component was hovered from
-                                                // previous motion
+        let previous_help = (self.hovering_over_link, self.menu_item_is_selected);
+        self.has_hover = false;
+        self.hovering_over_link = false;
+        self.menu_item_is_selected = false;
+        let mut changed = false;
+        let mut hover = |component: &mut ActiveComponent, selectable: bool| {
+            let was_active = component.is_active;
+            if self.has_hover {
+                component.is_active = false;
+            } else if component.handle_hover_at_position(x, y) {
+                self.has_hover = true;
+                self.menu_item_is_selected = selectable;
+                self.hovering_over_link = !self.menu_item_is_selected;
+            }
+            changed |= was_active != component.is_active;
+        };
         for rendered_component in &mut self.components_to_render {
             match rendered_component {
                 RenderedComponent::BulletinList(bulletin_list) => {
-                    let should_render = bulletin_list.handle_hover_at_position(x, y);
-                    if should_render {
-                        self.has_hover = true;
-                        self.menu_item_is_selected = true;
-                        return should_render;
+                    for component in &mut bulletin_list.items {
+                        hover(component, true);
                     }
                 },
                 RenderedComponent::Paragraph(paragraph) => {
                     for component_line in paragraph {
-                        if let Some(hovered_component_is_selectable) =
-                            component_line.handle_hover_at_position(x, y)
-                        {
-                            self.has_hover = true;
-                            if hovered_component_is_selectable {
-                                self.menu_item_is_selected = true;
-                            } else {
-                                self.hovering_over_link = true;
-                            }
-                            return true;
+                        for component in &mut component_line.components {
+                            let selectable = component.is_keyboard_selectable();
+                            hover(component, selectable);
                         }
                     }
                 },
                 _ => {},
             }
         }
-        hover_cleared
+        changed || previous_help != (self.hovering_over_link, self.menu_item_is_selected)
     }
     fn move_selection_up(&mut self) {
         match self.position_of_active_selectable() {
@@ -919,26 +923,6 @@ impl Page {
         if let Some(component) = self.selectable_components().last_mut() {
             component.is_active = true;
         }
-    }
-    fn clear_hover(&mut self) -> bool {
-        let had_hover = self.has_hover;
-        self.menu_item_is_selected = false;
-        self.hovering_over_link = false;
-        for rendered_component in &mut self.components_to_render {
-            match rendered_component {
-                RenderedComponent::BulletinList(bulletin_list) => {
-                    bulletin_list.clear_hover();
-                },
-                RenderedComponent::Paragraph(paragraph) => {
-                    for active_component in paragraph {
-                        active_component.clear_hover();
-                    }
-                },
-                _ => {},
-            }
-        }
-        self.has_hover = false;
-        had_hover
     }
     pub fn ui_column_count(&mut self) -> usize {
         let mut column_count = 0;
@@ -1271,20 +1255,6 @@ impl BulletinList {
     pub fn items_mut(&mut self) -> Vec<&mut ActiveComponent> {
         self.items.iter_mut().collect()
     }
-    pub fn handle_hover_at_position(&mut self, x: usize, y: usize) -> bool {
-        for component in &mut self.items {
-            let should_render = component.handle_hover_at_position(x, y);
-            if should_render {
-                return should_render;
-            }
-        }
-        false
-    }
-    pub fn clear_hover(&mut self) {
-        for component in &mut self.items {
-            component.clear_hover();
-        }
-    }
     pub fn render(&mut self, x: usize, y: usize, rows: usize, columns: usize) {
         print_text_with_coordinates(self.title.clone(), x, y, Some(columns), Some(rows));
         for (item_index, item) in self.items.iter_mut().enumerate() {
@@ -1328,24 +1298,11 @@ impl ComponentLine {
         }
         None
     }
-    pub fn handle_hover_at_position(&mut self, x: usize, y: usize) -> Option<bool> {
-        for active_component in &mut self.components {
-            if active_component.handle_hover_at_position(x, y) {
-                return Some(active_component.is_keyboard_selectable());
-            }
-        }
-        None
-    }
     pub fn keyboard_selectable_components_mut(&mut self) -> Vec<&mut ActiveComponent> {
         self.components
             .iter_mut()
             .filter(|component| component.is_keyboard_selectable())
             .collect()
-    }
-    pub fn clear_hover(&mut self) {
-        for active_component in &mut self.components {
-            active_component.clear_hover();
-        }
     }
     pub fn column_count(&self) -> usize {
         let mut column_count = 0;
@@ -1376,5 +1333,49 @@ impl ComponentLine {
 impl ComponentLine {
     pub fn new(components: Vec<ActiveComponent>) -> Self {
         ComponentLine { components }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_hover_only_renders_when_selection_or_help_changes() {
+        let component = |y, selectable| {
+            let mut component = ActiveComponent::new(TextOrCustomRender::CustomRender(
+                Box::new(|_, _| 10),
+                Box::new(|| 10),
+            ))
+            .with_hover(TextOrCustomRender::Text(Text::new("hover")));
+            if selectable {
+                component = component.keyboard_selectable();
+            }
+            component.render(0, y, 1, 10, false);
+            component
+        };
+        let mut page = Page::new()
+            .with_bulletin_list(
+                BulletinList::new(Text::new("menu")).with_items(vec![component(0, false)]),
+            )
+            .with_paragraph(vec![ComponentLine::new(vec![component(1, false)])]);
+
+        assert!(page.handle_mouse_hover(1, 0));
+        assert!(page.menu_item_is_selected);
+        assert!(!page.handle_mouse_hover(2, 0));
+        assert!(page.handle_mouse_hover(1, 1));
+        assert!(page.hovering_over_link);
+        assert!(!page.menu_item_is_selected);
+        assert!(!page.handle_mouse_hover(2, 1));
+        assert!(page.handle_mouse_hover(20, 1));
+        assert!(!page.has_hover);
+        assert!(!page.handle_mouse_hover(20, 1));
+
+        page.set_active_selectable(0);
+        assert!(
+            page.handle_mouse_hover(20, 1),
+            "clear a keyboard selection too"
+        );
+        assert_eq!(page.position_of_active_selectable(), None);
     }
 }

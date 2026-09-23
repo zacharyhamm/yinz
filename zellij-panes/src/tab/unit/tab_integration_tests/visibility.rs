@@ -49,6 +49,31 @@ fn tab_with_floating_plugin_pane(
 }
 
 #[test]
+fn overflowing_plugin_output_does_not_advertise_terminal_scrollback() {
+    for frame_style in [PaneFrameStyle::Full, PaneFrameStyle::Titles] {
+        let (mut tab, _receiver) = tab_with_floating_plugin_pane(1);
+        tab.set_pane_frames(frame_style);
+        tab.handle_plugin_bytes(
+            crate::PluginId::new(1),
+            ClientId::new(1),
+            "plugin output\r\n".repeat(100).into_bytes(),
+        )
+        .unwrap();
+        let mut output = Output::default();
+        tab.render(&mut output, None).unwrap();
+        let snapshot = take_snapshot(
+            &output.serialize().unwrap()[&ClientId::new(1)],
+            20,
+            121,
+            Palette::default(),
+        );
+        assert!(snapshot.contains("plugin output"), "{snapshot}");
+        assert!(!snapshot.contains("SCROLL"), "{snapshot}");
+        assert!(!snapshot.contains("0/"), "{snapshot}");
+    }
+}
+
+#[test]
 fn floating_plugin_panes_are_notified_when_the_floating_surface_is_hidden() {
     let (mut tab, plugin_receiver) = tab_with_floating_plugin_pane(1);
     drain_visible_events(&plugin_receiver);

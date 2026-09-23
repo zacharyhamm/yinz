@@ -990,7 +990,7 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
             launch_new: false,
             skip_cache: false,
             floating: None,
-            in_place: None,
+            in_place,
             cwd: None,
             pane_title: None,
         } => {
@@ -1001,13 +1001,16 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
             if let Some(payload) = payload {
                 children.nodes_mut().push(child("payload", payload.clone()));
             }
+            if let Some(in_place) = in_place {
+                children.nodes_mut().push(child("in_place", *in_place));
+            }
             Ok(with_children(node, children))
         },
         Action::KeybindPipe {
             plugin_id: Some(_), ..
         } => Err(shape(
             value,
-            "`MessagePluginId` carries a name and a payload and nothing else",
+            "`MessagePluginId` carries only a name, payload and in_place flag",
         )),
         Action::KeybindPipe {
             plugin_id: None,
@@ -1983,8 +1986,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             let title = command_metadata
                 .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "title"))
                 .map(|t| t.to_owned());
-            let in_place =
-                command_metadata.and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "in_place"));
+            let in_place = kdl_get_bool_property_or_child_value!(kdl_action, "in_place");
             let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
             let configuration = if configuration.inner().is_empty() {
                 None
@@ -2063,7 +2065,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 launch_new,
                 skip_cache,
                 floating: None,
-                in_place: None,
+                in_place: kdl_get_bool_property_or_child_value!(kdl_action, "in_place"),
                 cwd: None,
                 pane_title: None,
                 plugin_id,
