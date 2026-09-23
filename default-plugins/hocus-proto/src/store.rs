@@ -270,6 +270,8 @@ pub fn chat_message_def() -> EntityDef {
         .attr(AttrDef::int("seq").required())
         .attr(AttrDef::text("role").required())
         .attr(AttrDef::text("content").full_text().required())
+        .attr(AttrDef::text("user_content"))
+        .attr(AttrDef::text("user_origin"))
         .attr(AttrDef::json("tool_calls"))
         .attr(AttrDef::text("tool_call_id"))
         .attr(AttrDef::boolean("full_output").required().default(false))

@@ -7,6 +7,7 @@
 //! (`benches/transcript.rs`) can both see it; a bin crate has nothing to import.
 
 mod api;
+mod approval;
 mod archive;
 mod decisions;
 mod events;
@@ -37,7 +38,7 @@ mod workflows;
 
 pub use message::{
     Ask, Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningItem, ReasoningKey,
-    Retry, Role, RowKind, ScheduledRun, Status, StreamState, TokenUsage,
+    Retry, Role, RowKind, ScheduledRun, Status, StreamState, TokenUsage, UserOrigin,
 };
 use worker::post_log;
 

@@ -85,27 +85,9 @@ impl State {
                 }
             }
             if needs_confirmation && self.scheduled_run.is_none() {
-                self.status = Status::ConfirmingTool;
-                self.pin_to_bottom();
-                // The prompt renders into hocus's own pane, which is very
-                // often not the thing being looked at: Esc hides it, a parked
-                // chat can be confirming while another is in the foreground, and
-                // a scheduled run with `show: false` never opens it at all. A
-                // toast is drawn over whatever pane you are actually in, so the
-                // ask cannot stall unseen with every other job queued behind it.
-                //
-                // And clicking it comes back here: the pane brings hocus up, the
-                // chat id opens the conversation that asked - which for a parked
-                // one is behind a tab the click would otherwise leave shut.
-                tools::toast_for_chat(
-                    &self.confirmation_toast(&call),
-                    PaneId::Plugin(self.own_plugin_id),
-                    self.chat_id,
-                );
-                // And for the calls that name a pane, the pane itself: the toast
-                // says "types into pane 7", this is what puts pane 7 in front of
-                // you, wearing a label, before you agree to it.
-                self.raise_spotlight(&call);
+                if !self.start_tool_review(&call) {
+                    self.show_tool_confirmation(&call);
+                }
                 return;
             }
             if needs_confirmation {
@@ -325,7 +307,7 @@ impl State {
         lines.join("\n")
     }
 
-    fn confirmation_consequence(&self, call: &ToolCall) -> Option<String> {
+    pub(crate) fn confirmation_consequence(&self, call: &ToolCall) -> Option<String> {
         let mut consequence = tools::consequence(call)?;
         if call.name != "plugin_edit" {
             return Some(consequence);
@@ -3699,6 +3681,18 @@ impl State {
         self.messages.push(Message::notice(notice));
         self.log("notice", serde_json::json!({"content": notice}));
         true
+    }
+
+    pub(crate) fn show_tool_confirmation(&mut self, call: &ToolCall) {
+        self.status = Status::ConfirmingTool;
+        self.pin_to_bottom();
+        // Reach the person even when this chat is parked or Hocus is hidden.
+        tools::toast_for_chat(
+            &self.confirmation_toast(call),
+            PaneId::Plugin(self.own_plugin_id),
+            self.chat_id,
+        );
+        self.raise_spotlight(call);
     }
 
     pub(crate) fn confirm_tool(&mut self) -> bool {

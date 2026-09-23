@@ -803,6 +803,7 @@ fn user_messages(state: &State) -> Vec<&str> {
 mod agent_history_tools;
 mod agent_snapshots;
 mod agent_tools;
+mod auto_approval;
 mod chat_tabs;
 mod chats;
 mod commands;
