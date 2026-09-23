@@ -2530,11 +2530,21 @@ impl Grid {
         self.output_buffer.update_all_lines();
     }
     fn scroll_region_content_down(&mut self, at: usize, region_bottom: usize, new_row: Row) {
+        // Wrapped matches can change on either side of the moved rows, in both the old
+        // and new logical lines. Ordinary scrolling still invalidates only its range.
+        if !self.plugin_highlights.is_empty() {
+            self.mark_logical_line_dirty(at);
+            self.mark_logical_line_dirty(region_bottom);
+        }
         let before = self.kitty_row_snapshot();
         if region_bottom < self.viewport.len() {
             self.viewport.remove(region_bottom);
         }
         self.viewport.insert(at, new_row);
+        if !self.plugin_highlights.is_empty() {
+            self.mark_logical_line_dirty(at);
+            self.mark_logical_line_dirty(region_bottom);
+        }
         self.kitty_region_scroll(at, region_bottom, -1, before, false);
     }
     fn scroll_region_content_up(
@@ -2544,6 +2554,10 @@ impl Grid {
         region_bottom: usize,
         new_row: Row,
     ) -> RegionRowsScrolled {
+        if !self.plugin_highlights.is_empty() {
+            self.mark_logical_line_dirty(at);
+            self.mark_logical_line_dirty(region_bottom);
+        }
         let before = self.kitty_row_snapshot();
         let outcome = if at == 0
             && region_top == 0
@@ -2579,6 +2593,10 @@ impl Grid {
             self.viewport.insert(region_bottom, new_row);
         } else {
             self.viewport.push_back(new_row);
+        }
+        if !self.plugin_highlights.is_empty() {
+            self.mark_logical_line_dirty(at);
+            self.mark_logical_line_dirty(region_bottom);
         }
         self.kitty_region_scroll(
             at,
