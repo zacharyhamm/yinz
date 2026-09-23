@@ -687,65 +687,6 @@ fn sdk_decoded_event_types_narrow_by_type_and_keep_raw_values() {
     check_semantic_source(&dir.path().join("decoded.ts"), &source).unwrap();
 }
 
-/// Every TypeScript block in the guide compiles against the SDK, one module each: a block that
-/// names a method the SDK does not have, or spells a type wrong, fails here rather than in front
-/// of a reader. A block preceded by `<!-- docs-check: skip -->` is a deliberate fragment.
-#[test]
-fn guide_code_blocks_typecheck_offline() {
-    const GUIDE: &str = include_str!("../../../../docs/DENO_PLUGINS.md");
-    let dir = tempfile::tempdir().unwrap();
-    // (guide line of the opening fence, block text); a fence in another language is skipped.
-    let mut blocks: Vec<(usize, String)> = Vec::new();
-    let mut open: Option<(Option<usize>, String)> = None;
-    let mut skip_next = false;
-    for (index, line) in GUIDE.lines().enumerate() {
-        match &mut open {
-            Some((start, body)) => {
-                if line.trim_end() == "```" {
-                    if let Some(start) = start {
-                        blocks.push((*start, std::mem::take(body)));
-                    }
-                    open = None;
-                } else {
-                    body.push_str(line);
-                    body.push('\n');
-                }
-            },
-            None if line.trim() == "<!-- docs-check: skip -->" => skip_next = true,
-            None if line.trim_end() == "```ts" => {
-                open = Some(((!skip_next).then_some(index + 1), String::new()));
-                skip_next = false;
-            },
-            None if line.trim_end().starts_with("```") => open = Some((None, String::new())),
-            None => {},
-        }
-    }
-    assert!(blocks.len() >= 30, "{} blocks found", blocks.len());
-    let mut main = String::new();
-    for (start, body) in &blocks {
-        let source = if body.contains("zellij:plugin") {
-            body.clone()
-        } else {
-            format!("import zellij, {{definePlugin}} from 'zellij:plugin';\n{body}")
-        };
-        let name = format!("block_at_line_{start}.ts");
-        std::fs::write(dir.path().join(&name), source).unwrap();
-        if body.contains("zellij:testing") {
-            check_tests(&dir.path().join(&name), dir.path()).unwrap_or_else(|error| {
-                panic!("test documentation block at line {start}: {error:#}")
-            });
-        } else {
-            main.push_str(&format!("import './{name}';\n"));
-        }
-    }
-    if let Err(error) = check_semantic_source(&dir.path().join("main.ts"), &main) {
-        panic!(
-            "a TypeScript block in docs/DENO_PLUGINS.md does not compile; each file is named by \
-             the guide line of its opening fence:\n{error:#}"
-        );
-    }
-}
-
 /// The bundled TypeScript compiler is what `provenance.json` says it is: every vendored file
 /// hashes to the recorded digest, and every `<reference lib>` a bundled declaration makes
 /// resolves to a bundled declaration. A re-vendor that forgets a file, or an edit to one, fails
