@@ -108,6 +108,16 @@ fn has_prompt(call: &ToolCall) -> bool {
         .unwrap_or(true)
 }
 
+/// True when `permission_mode` names one of the modes that stop an agent asking
+/// before it acts. The confirmation prompt says so, and the Jev review refuses
+/// to score such a launch at all: unchecked authority is granted by a person.
+pub fn permission_checks_off(mode: Option<&str>) -> bool {
+    matches!(
+        mode.map(str::trim),
+        Some("skip" | "bypassPermissions" | "force" | "full-auto" | "never")
+    )
+}
+
 /// Tools that need explicit confirmation before dispatch whatever they are
 /// given. `call_needs_confirmation` is the question the tool loop actually asks;
 /// this is the part of the answer that does not depend on the arguments.
@@ -257,10 +267,7 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
             };
             let mut sentence = format!("opens a new pane running `{}`", command.path.display());
             // The one flag worth a sentence of its own: an agent that never asks.
-            if matches!(
-                args.permission_mode.as_deref().map(str::trim),
-                Some("skip" | "bypassPermissions" | "force" | "full-auto" | "never")
-            ) {
+            if permission_checks_off(args.permission_mode.as_deref()) {
                 sentence.push_str(" with its permission checks off");
             }
             // Named in full, because this is the half that writes to the user's

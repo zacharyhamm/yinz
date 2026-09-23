@@ -281,6 +281,10 @@ pub enum Status {
         execution_config: Option<crate::decisions::ExecutionConfig>,
         call: ToolCall,
         body: Vec<u8>,
+        // What the approval is bound to beyond what Jev reads (`approval::Prepared`).
+        // A restored review is confirmed by hand anyway, so it is not persisted.
+        #[serde(skip)]
+        binding: serde_json::Value,
     },
     /// The head of `pending` is a Slack tool waiting on `RunCommandResult`.
     AwaitingCommand,

@@ -812,6 +812,7 @@ mod data_store;
 mod decisions;
 mod extensions;
 mod file_tools;
+mod jev_calibration;
 mod jobs;
 mod keys;
 mod note_tools;

@@ -32,6 +32,8 @@ unicode-width = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 zellij-plugin-host = { path = "../../zellij-plugin-host" }
 tempfile = { workspace = true }
+# The Jev calibration harness posts real Decisions requests; see unit/main_tests/jev_calibration.rs.
+isahc = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

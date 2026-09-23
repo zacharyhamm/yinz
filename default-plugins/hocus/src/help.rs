@@ -699,7 +699,7 @@ fn render(
     let mut blocks = vec![usage_line(name, parameters), prose.to_owned()];
     if let Some(confirms) = confirms {
         blocks.push(confirms.to_owned());
-        blocks.push("With Decisions configured, Jev can approve calls supported by your conversation when mistake and danger scores are low. Otherwise Hocus asks you. Set decisions_auto_approve false to require manual confirmation.".to_owned());
+        blocks.push("With Decisions configured, Jev checks the call against your own words and approves it when it is clearly what you asked for and scores low on destruction, secret exposure, and bypassed controls. Otherwise Hocus asks you, and says what Jev answered. Set decisions_auto_approve false to require manual confirmation; decisions_min_requested and decisions_max_hazard can raise the bar above the defaults of 0.75 and 0.25, never lower it.".to_owned());
     }
     if let Some(table) = argument_table(parameters) {
         blocks.push(table);

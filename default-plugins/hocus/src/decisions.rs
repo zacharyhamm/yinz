@@ -1,6 +1,6 @@
 //! The buffered Decisions tool; request validation and decoding live in hocus-proto.
 
-use crate::{approval, State, Status, ToolCall, FRAME_SECONDS};
+use crate::{approval, Message, State, Status, ToolCall, FRAME_SECONDS};
 use hocus_proto::decisions::{self, Endpoint, Request};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -131,10 +131,13 @@ impl State {
         let Ok(execution_config) = self.review_execution_config(call) else {
             return false;
         };
-        let body = match approval::prepare(self, call, &endpoint) {
-            Ok(body) => body,
+        let approval::Prepared { body, binding } = match approval::prepare(self, call, &endpoint) {
+            Ok(prepared) => prepared,
             Err(error) => {
                 self.log("tool_review_unavailable", json!({"error": error}));
+                self.messages.push(Message::notice(format!(
+                    "Jev cannot review this call ({error}); asking you"
+                )));
                 return false;
             },
         };
@@ -166,6 +169,7 @@ impl State {
             execution_config,
             call: call.clone(),
             body,
+            binding,
         };
         self.pin_to_bottom();
         self.arm_timer(FRAME_SECONDS);
@@ -185,6 +189,7 @@ impl State {
             execution_config,
             call,
             body: sent,
+            binding,
         } = &self.status
         else {
             return false;
@@ -192,8 +197,11 @@ impl State {
         if context.get(REVIEW_CONTEXT) != Some(request_id) {
             return false;
         }
-        // An approval applies only to the exact call and context Jev saw. New
-        // steering, changed project defaults/targets, or a late answer needs a human.
+        // An approval applies only to the exact call and context Jev saw, and to
+        // what it is bound to beyond that: the projects, the extension, the gate.
+        // New steering, changed project defaults/targets, or a late answer needs a
+        // human. A gate that moved mid-review is part of the binding, so the gate
+        // resolved below is the one the review was started under.
         let unchanged = self.tool_review_enabled()
             && deadline.is_some_and(|deadline| Instant::now() < deadline)
             && self.pending.front() == Some(call)
@@ -207,9 +215,17 @@ impl State {
                 .flatten()
                 .filter(|endpoint| endpoint.url == *url)
                 .and_then(|endpoint| approval::prepare(self, call, &endpoint).ok())
-                .is_some_and(|current| current == *sent);
+                .is_some_and(|current| current.body == *sent && current.binding == *binding);
         let response = decisions::parse_response(status, body);
-        let approved = unchanged && response.as_ref().is_ok_and(approval::approved);
+        let gate = approval::Gate::resolve(&self.kdl);
+        let approved = unchanged
+            && response
+                .as_ref()
+                .is_ok_and(|answers| approval::approved(answers, gate));
+        // The state Jev saw travels with its verdict, so a log line explains itself.
+        let reviewed = serde_json::from_slice::<Value>(sent)
+            .ok()
+            .map(|mut request| request["state"].take());
         self.log(
             "tool_review",
             json!({
@@ -218,6 +234,8 @@ impl State {
                 "tool_name": call.name,
                 "decision": if approved { "automatic_jev" } else { "confirmation_required" },
                 "context_unchanged": unchanged,
+                "gate": {"min_requested": gate.min_requested, "max_hazard": gate.max_hazard},
+                "state": reviewed,
                 "response": response.as_ref().ok(),
                 "error": response.as_ref().err(),
             }),
@@ -230,6 +248,19 @@ impl State {
                     self.pump_tools();
                 }
             } else {
+                // Say why the prompt is up, so the next "why did Jev not approve
+                // that" is answered on screen rather than from the log.
+                let notice = if !unchanged {
+                    "Jev's answer no longer applies: the context changed or reviews were \
+                     turned off; asking you"
+                        .to_owned()
+                } else {
+                    match &response {
+                        Ok(answers) => format!("{}; asking you", approval::verdict(answers, gate)),
+                        Err(error) => format!("Jev review failed: {error}; asking you"),
+                    }
+                };
+                self.messages.push(Message::notice(notice));
                 self.show_tool_confirmation(&call);
             }
         }
@@ -260,6 +291,9 @@ impl State {
         );
         self.status = Status::Idle;
         if let Some(call) = self.pending.front().cloned() {
+            self.messages.push(Message::notice(
+                "Jev did not answer in time, or something changed; asking you",
+            ));
             self.show_tool_confirmation(&call);
         }
         true
