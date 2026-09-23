@@ -916,6 +916,79 @@ pub fn has_bell_reflects_grid_ring_bell() {
 }
 
 #[test]
+pub fn osc7_payload_survives_the_decoded_cwd_update() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    assert_eq!(terminal_pane.osc7_payload(), None);
+
+    terminal_pane.handle_pty_bytes(b"\x1b]7;file://localhost/path%20with%20spaces\x1b\\".to_vec());
+
+    assert_eq!(
+        terminal_pane.drain_osc7_cwd(),
+        Some(PathBuf::from("/path with spaces")),
+    );
+    assert_eq!(terminal_pane.drain_osc7_cwd(), None);
+    assert_eq!(
+        terminal_pane.osc7_payload(),
+        Some("file://localhost/path%20with%20spaces"),
+    );
+}
+
+#[test]
+pub fn osc7_payload_updates_and_preserves_semicolons_with_either_terminator() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.handle_pty_bytes(b"\x1b]7;file://localhost/first\x1b\\".to_vec());
+    assert_eq!(terminal_pane.osc7_payload(), Some("file://localhost/first"));
+
+    terminal_pane.handle_pty_bytes(b"\x1b]7;file://localhost/a;b;c\x07".to_vec());
+    assert_eq!(terminal_pane.osc7_payload(), Some("file://localhost/a;b;c"));
+}
+
+#[test]
+pub fn osc7_payload_rejects_empty_non_utf8_and_control_character_payloads() {
+    use vte::Perform;
+
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.handle_pty_bytes(b"\x1b]7;file://localhost/tmp\x1b\\".to_vec());
+
+    // Dispatch directly because VTE strips some controls before OSC dispatch.
+    let rejected: &[&[u8]] = &[
+        b"",
+        b"file://host/path\x01bad",
+        b"file://host/path\x7fbad",
+        "file://host/path\u{9c}bad".as_bytes(),
+        b"file://host/\xff\xfe",
+    ];
+    for payload in rejected {
+        terminal_pane.grid.osc_dispatch(&[b"7", payload], false);
+        assert_eq!(
+            terminal_pane.osc7_payload(),
+            Some("file://localhost/tmp"),
+            "rejected payload {payload:?} must retain the previous URI",
+        );
+    }
+    terminal_pane
+        .grid
+        .osc_dispatch(&[b"7", b"file://host/valid", b"\xff"], false);
+    assert_eq!(terminal_pane.osc7_payload(), Some("file://localhost/tmp"));
+}
+
+#[test]
+pub fn osc7_payload_is_cleared_by_terminal_resets() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    let report = b"\x1b]7;file://localhost/tmp\x1b\\";
+
+    terminal_pane.handle_pty_bytes(report.to_vec());
+    terminal_pane.handle_pty_bytes(b"\x1bc".to_vec());
+    assert_eq!(terminal_pane.osc7_payload(), None);
+
+    terminal_pane.handle_pty_bytes(report.to_vec());
+    terminal_pane
+        .grid
+        .reset_terminal_state_preserving_scrollback();
+    assert_eq!(terminal_pane.osc7_payload(), None);
+}
+
+#[test]
 pub fn frameless_pane_position_is_on_frame() {
     let mut fake_win_size = PaneGeom {
         x: 10,

@@ -4,7 +4,7 @@
 //!
 //! It is sectioned for cost rather than for size. Every section fits inside `MAX_TOOL_OUTPUT`
 //! several times over, but a tool result stays in the transcript and is re-sent on every later
-//! turn of the conversation — so handing a guide over whole would tax every message that
+//! turn of the conversation — so handing the reference over whole would tax every message that
 //! followed it. Asking for a section is how the model pays only for what it needs.
 //!
 use crate::plugin_source::{self, Search};
@@ -13,7 +13,7 @@ use crate::tools;
 /// How much of a `plugin_docs` answer reaches the model.
 ///
 /// Well above every section as they stand - the largest is an SDK part at ~13 KB - and that is
-/// the point: this is not the mechanism, `SECTIONS` is. It is the backstop that keeps a guide
+/// the point: this is not the mechanism, `SECTIONS` is. It is the backstop that keeps a reference
 /// section which grows past what a tool call should cost from silently landing whole in a
 /// transcript that then re-sends it on every later turn.
 pub const MAX_DOCS_OUTPUT: usize = 16_000;
@@ -95,11 +95,10 @@ pub const SECTIONS: [&str; 25] = [
     "example_hocus_notes",
 ];
 
-/// The default section: what the rest hold, plus the complete minimal plugin, which is the one
-/// piece of the guide worth having without asking.
+/// The available declarations and examples, with their sizes.
 fn index() -> String {
     let mut out = String::from(
-        "Zellij TypeScript plugin reference, reference. Never ask another agent to write a plugin. \
+        "Zellij TypeScript plugin reference. Never ask another agent to write a plugin. \
          `plugin_write` formats and checks strict types and lint, asks approval, keeps a backup, writes the prepared source, then grants its literal permissions. \
          `plugin_check` checks saved files or drafts without writing. `plugin_format` formats drafts or confirms a saved-file change. Fix diagnostics and create dependencies first. To edit, use `plugin_outline` or \
          `plugin_search`, then `plugin_read` and `plugin_edit`. `plugin_reload` reports the first render \
@@ -267,7 +266,7 @@ mod tests {
         let index = docs(None);
         assert!(!index.contains("## A plugin"), "{index}");
         assert!(index.contains("quickstart"), "but it still points at it");
-        // The budget grew with the TypeScript guide's sections and the declaration parts; the
+        // The budget includes the declaration parts and worked examples.
         assert!(
             index.len() < 5_400,
             "the index is {} bytes and is paid for on every later turn",

@@ -838,6 +838,7 @@ pub(crate) struct Screen {
     host_notification_protocol: HostNotificationProtocol,
     /// Each client's whitelisted host terminal environment, kept so a reconfigure can re-resolve.
     client_host_terminal_env: HashMap<ClientId, BTreeMap<String, String>>,
+    last_forwarded_osc7: HashMap<ClientId, Option<String>>,
     /// Pins what `frame_now` answers, so a test can step an animation frame by frame instead of
     /// sleeping. Never set outside tests.
     #[cfg(test)]
@@ -1429,6 +1430,7 @@ impl Screen {
             client_notification_protocols: HashMap::new(),
             host_notification_protocol,
             client_host_terminal_env: HashMap::new(),
+            last_forwarded_osc7: HashMap::new(),
             #[cfg(test)]
             pinned_now: None,
         }
@@ -2240,6 +2242,7 @@ impl Screen {
         self.client_host_focused.remove(&client_id);
         self.client_notification_protocols.remove(&client_id);
         self.client_host_terminal_env.remove(&client_id);
+        self.last_forwarded_osc7.remove(&client_id);
         // Client ids are recycled, and this entry describes the terminal on the other end, not the
         // id: its probed `capabilities.kitty_graphics`, its theme, its keybinds. Left behind, the
         // next holder of the id inherits them - `change_mode` clones whatever is here, and the
