@@ -1,7 +1,6 @@
 //! The plugin reference, served to the model as a tool.
 //!
-//! The Deno guide, SDK declarations, and worked examples are compiled into this tool.
-//! Each section names its source heading, so changes to the guide cannot leave stale references.
+//! SDK declarations and worked examples are compiled into this tool.
 //!
 //! It is sectioned for cost rather than for size. Every section fits inside `MAX_TOOL_OUTPUT`
 //! several times over, but a tool result stays in the transcript and is re-sent on every later
@@ -19,8 +18,6 @@ use crate::tools;
 /// transcript that then re-sends it on every later turn.
 pub const MAX_DOCS_OUTPUT: usize = 16_000;
 
-/// The TypeScript guide, verbatim.
-const TS_GUIDE: &str = include_str!("../../../docs/DENO_PLUGINS.md");
 const EXAMPLE_CLOCK: &str = include_str!("../../../example-plugins/clock.ts");
 const EXAMPLE_PLAYGROUND: &str = include_str!("../../../example-plugins/playground.ts");
 const EXAMPLE_AGENT_COMMIT: &str = include_str!("../../../example-plugins/agent-commit.ts");
@@ -70,45 +67,10 @@ fn sdk_part(name: &str) -> Option<&'static str> {
 }
 
 /// The section names the schema advertises, and the only ones `section` accepts.
-///
-/// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
-/// editing a guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 58] = [
+pub const SECTIONS: [&str; 25] = [
     "index",
     "quickstart",
-    "overview",
-    "lifecycle",
-    "events",
-    "commands",
-    "permissions",
-    "helpers",
-    "limits",
-    "async",
-    "async_panes",
-    "async_waits",
-    "async_timers",
-    "files",
-    "data",
-    "queues",
-    "rpc",
-    "builtins",
-    "agents",
-    "hocus_completions",
-    "hocus_extensions",
-    "rendering",
-    "ui",
-    "hooks",
-    "hooks_workflow",
-    "hooks_headless",
-    "hooks_context_menu",
-    "modules",
-    "errors",
-    "restrictions",
-    "porting",
-    "authoring",
-    "testing",
     "sdk_testing",
-    "build",
     "sdk_core",
     "sdk_commands",
     "sdk_replies",
@@ -131,146 +93,7 @@ pub const SECTIONS: [&str; 58] = [
     "example_todo_pane",
     "example_hocus_todos",
     "example_hocus_notes",
-    "hocus_data",
 ];
-
-/// The `##` heading each guide section is cut at. Examples and declarations are separate.
-fn heading(section: &str) -> Option<&'static str> {
-    match section {
-        "lifecycle" => Some("Lifecycle"),
-        "events" => Some("Events"),
-        "commands" | "permissions" => Some("Host commands and permissions"),
-        "helpers" => Some("Host command helpers"),
-        "limits" => Some("Numbers and allocation limits"),
-        "async" | "async_panes" | "async_waits" | "async_timers" => Some("Async helpers"),
-        "files" => Some("Files and project configuration"),
-        "data" => Some("Persistent data"),
-        "hocus_data" => Some("Hocus data"),
-        "queues" => Some("Work queues"),
-        "rpc" => Some("Plugin RPC"),
-        "builtins" => Some("Embedded builtins and server identity"),
-        "agents" => Some("Agent helpers"),
-        "hocus_completions" => Some("Hocus completions"),
-        "hocus_extensions" => Some("Hocus extensions"),
-        "rendering" | "ui" => Some("Rendering"),
-        "hooks" | "hooks_workflow" | "hooks_headless" | "hooks_context_menu" => Some("Hooks"),
-        "modules" => Some("Modules and checking"),
-        "errors" => Some("Errors"),
-        "restrictions" => Some("What TypeScript plugins may not do"),
-        "porting" => Some("Porting a Lua plugin"),
-        "authoring" => Some("Authoring loop"),
-        "testing" => Some("Plugin tests"),
-        "build" => Some("Build inputs"),
-        _ => None,
-    }
-}
-
-/// How much of its `##` section a name resolves to.
-///
-/// Large sections are served through their named subheadings.
-#[derive(Clone, Copy)]
-enum Cut {
-    /// The whole `##` section, `###` children and all. What every other section is.
-    Whole,
-    /// The section down to, but not including, the named `###` child.
-    Until(&'static str),
-    /// One named `###` child, on its own.
-    Only(&'static str),
-}
-
-/// The `###` child a name is cut at, and whether it is the head or the child that is kept.
-fn cut(section: &str) -> Cut {
-    match section {
-        "commands" => Cut::Until("Permissions"),
-        "permissions" => Cut::Only("Permissions"),
-        "rendering" => Cut::Until("Shared UI and terminal text"),
-        "ui" => Cut::Only("Shared UI and terminal text"),
-        "hooks" => Cut::Until("Project-owned Swamp workflows"),
-        "hooks_workflow" => Cut::Only("Project-owned Swamp workflows"),
-        "hooks_headless" => Cut::Only("Headless hooks"),
-        "hooks_context_menu" => Cut::Only("The `context_menu` hook"),
-        "async" => Cut::Until("Commands in one pane"),
-        "async_panes" => Cut::Only("Commands in one pane"),
-        "async_waits" => Cut::Only("Waits and cancellation"),
-        "async_timers" => Cut::Only("Timers"),
-        // The preamble, the keybinding rules and the short "commands that answer" - what a
-        // plugin that runs a command needs, and nothing about workflows or permissions.
-        _ => Cut::Whole,
-    }
-}
-
-/// One `## `-delimited section of a guide, heading included, cut down to `cut`.
-///
-/// Split at read time rather than kept as offsets: ten splits of a 10 KB string costs nothing,
-/// and it means the guide is the single source of truth for where a section begins and ends.
-/// The `###` split is the same trick one level down, which is why renaming a subheading fails a
-/// test rather than silently returning the wrong text.
-fn guide_section(heading: &str, cut: Cut) -> Option<String> {
-    let chunk = TS_GUIDE
-        .split("\n## ")
-        .skip(1)
-        .find(|chunk| chunk.starts_with(heading))?;
-    let text = match cut {
-        Cut::Whole => format!("## {}", chunk.trim_end()),
-        Cut::Until(sub) => {
-            let at = chunk.find(&format!("\n### {sub}"))?;
-            // The children left behind have to be nameable, or the model has no reason to
-            // guess that `async_panes` exists and simply does without what is in it.
-            let rest: Vec<String> = subheadings(chunk)
-                .iter()
-                .filter_map(|name| section_for_sub(heading, name).map(|s| (s, *name)))
-                .map(|(name, sub)| format!("- {name}: \"{sub}\""))
-                .collect();
-            format!(
-                "## {}\n\nThe rest of \"{heading}\" is served separately, so it is not paid for \
-                 unless it is asked for. Call plugin_docs with:\n{}",
-                chunk[..at].trim_end(),
-                rest.join("\n")
-            )
-        },
-        Cut::Only(sub) => {
-            let child = chunk
-                .split("\n### ")
-                .skip(1)
-                .find(|child| child.starts_with(sub))?;
-            // The parent heading rides along: a child on its own reads as a fragment without
-            // it, and it is one line.
-            format!("## {heading}\n\n### {}", child.trim_end())
-        },
-    };
-    Some(text)
-}
-
-/// The `### ` headings inside one `##` chunk, in order.
-fn subheadings(chunk: &str) -> Vec<&str> {
-    chunk
-        .split("\n### ")
-        .skip(1)
-        .filter_map(|child| child.lines().next())
-        .collect()
-}
-
-/// The section name that serves one `###` child, if any does on its own.
-fn section_for_sub(parent: &str, sub: &str) -> Option<&'static str> {
-    SECTIONS
-        .iter()
-        .copied()
-        .find(|name| heading(name) == Some(parent) && matches!(cut(name), Cut::Only(s) if s == sub))
-}
-
-/// The TypeScript guide's preamble: what a plugin is, how it is named and loaded, before any
-/// `##` section. The one piece worth having first.
-fn overview() -> String {
-    let preamble = TS_GUIDE
-        .split("\n## ")
-        .next()
-        .unwrap_or_default()
-        .trim_end();
-    format!(
-        "{preamble}\n\nRead `lifecycle` next, then `commands` and `helpers`. The declarations \
-         are `sdk_core` onward; every worked example is `example_*`."
-    )
-}
 
 /// The default section: what the rest hold, plus the complete minimal plugin, which is the one
 /// piece of the guide worth having without asking.
@@ -287,39 +110,7 @@ fn index() -> String {
         let description = match section {
             "index" => continue,
             "quickstart" => "a complete minimal TypeScript plugin",
-            "overview" => "what a plugin is, and how it is named and loaded",
-            "lifecycle" => "definePlugin, load/update/render/pipe",
-            "events" => "raw shapes, zellij.event/onEvent, delivery order",
-            "commands" => "zellij.command and raw shapes",
-            "permissions" => "every permission a plugin can request, and what each allows",
-            "helpers" => "zellij.host helpers, default keybindings",
-            "limits" => "numbers, BigInt, allocation budgets",
-            "async" => "async helpers: runCommand, webRequest, the rest below",
-            "async_panes" => "runInPane, paneSequence: commands in one pane",
-            "async_waits" => "waitForEvent/Pipe/Permissions, cancellation",
-            "async_timers" => "sleep, after, every",
-            "files" => "zellij.fs and projectConfig",
-            "data" => "zellij.data: the store, revisions, shared namespaces, hocus data",
-            "queues" => "work queues: other plugin code, one slot at a time",
-            "rpc" => "zellij.rpc: a call with an answer, between plugins",
-            "builtins" => "embedded builtins and server identity",
-            "agents" => "zellij.agent: spawning, observing and steering agents",
-            "hocus_completions" => "zellij.hocus.complete: a plugin's own model turn",
-            "hocus_extensions" => "zellij.hocus.tools: JS/TS Hocus tools",
-            "rendering" => "the render contract and themed components",
-            "ui" => "widgets, forms, Markdown, terminal text",
-            "hooks" => "hook points, and the agent_exit one",
-            "hooks_workflow" => "project-owned Swamp launch, questions, evidence and recovery",
-            "hooks_headless" => "hooks that run with no pane",
-            "hooks_context_menu" => "the context_menu hook",
-            "modules" => "imports, the checker, tracing",
-            "errors" => "exceptions, the log, console",
-            "restrictions" => "what a TypeScript plugin may not do",
-            "porting" => "migration from the removed Lua runtime",
-            "authoring" => "the write/check/test/reload loop and inferred grants",
-            "testing" => "installed unit and integration tests",
             "sdk_testing" => "declarations: assertions, harness, disposable sessions",
-            "build" => "build inputs and binary size",
             "sdk_core" => "declarations: events, Plugin, the Zellij interface",
             "sdk_commands" => "declarations: every command's arguments",
             "sdk_replies" => "declarations: replies, zellij.host, keybindings",
@@ -344,7 +135,6 @@ fn index() -> String {
                 "example: reading hocus's own todo rows out of the shared store"
             },
             "example_hocus_notes" => "example: hocus's notes, tags and todo links",
-            "hocus_data" => "hocus's shared entities and attributes, for any runtime",
             _ => continue,
         };
         // The size, so the choice can be made on what it costs. Every one of these lands in the
@@ -365,8 +155,7 @@ pub fn section(name: &str) -> Option<String> {
     match name {
         "index" => Some(index()),
         "sdk_testing" => Some(fenced(include_str!("../../../zellij-plugin-host/src/deno/testing/testing.d.ts"))),
-        "quickstart" => Some(format!("Write `clock.ts` with `plugin_write`, then call `plugin_reload name=clock.ts`. Use explicit `.ts` filenames. Extensionless names select TypeScript.\n\n```ts\n{EXAMPLE_CLOCK}\n```\n\nRead `overview` and `lifecycle` for the SDK and module rules.")),
-        "overview" => Some(overview()),
+        "quickstart" => Some(format!("Write `clock.ts` with `plugin_write`, then call `plugin_reload name=clock.ts`. Use explicit `.ts` filenames. Extensionless names select TypeScript.\n\n```ts\n{EXAMPLE_CLOCK}\n```\n\nRead `sdk_core` and `sdk_helpers` for the API declarations.")),
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),
         "example_capabilities" => Some(fenced(EXAMPLE_CAPABILITIES)),
         "example_forms" => Some(fenced(EXAMPLE_FORMS)),
@@ -383,7 +172,7 @@ pub fn section(name: &str) -> Option<String> {
         "example_hocus_todos" => Some(fenced(EXAMPLE_HOCUS_TODOS)),
         "example_hocus_notes" => Some(fenced(EXAMPLE_HOCUS_NOTES)),
         sdk if SDK_SECTIONS.contains(&sdk) => sdk_part(sdk).map(fenced),
-        other => heading(other).and_then(|heading| guide_section(heading, cut(other))),
+        _ => None,
     }
 }
 
@@ -460,125 +249,12 @@ pub fn page(section: Option<&str>, start: usize, end: usize) -> String {
 mod tests {
     use super::*;
 
-    /// Every `## ` heading in a guide, in order. Only the tests need this: it is how they
-    /// check the section table against the file it names headings in.
-    fn headings() -> Vec<&'static str> {
-        TS_GUIDE
-            .split("\n## ")
-            .skip(1)
-            .filter_map(|chunk| chunk.lines().next())
-            .collect()
-    }
-
     #[test]
     fn every_advertised_section_resolves_to_something() {
         for name in SECTIONS {
             let text = section(name)
                 .unwrap_or_else(|| panic!("'{name}' is advertised but resolves to nothing"));
             assert!(!text.trim().is_empty(), "'{name}' is empty");
-        }
-    }
-
-    /// The coupling this file cannot enforce by construction: a section names a heading in a
-    /// file it does not own, so renaming that heading must fail here rather than quietly turn
-    /// `plugin_docs section=lifecycle` into "no such section".
-    #[test]
-    fn every_section_heading_still_exists_in_its_guide() {
-        for name in SECTIONS {
-            let Some(heading) = heading(name) else {
-                continue; // an example or declaration part, which is not in the guide
-            };
-            let headings = headings();
-            assert!(
-                headings.contains(&heading),
-                "the guide has no '## {heading}' for section '{name}'; its headings are {headings:?}"
-            );
-        }
-    }
-
-    /// The other half of the same coupling: a section of a guide nothing can ask for is a
-    /// section the model will never see. This is what makes a new `##` heading in the guide
-    /// a test failure until it is named here.
-    #[test]
-    fn every_guide_heading_is_reachable_as_a_section() {
-        for heading in headings() {
-            assert!(
-                SECTIONS
-                    .iter()
-                    .any(|name| super::heading(name) == Some(heading)),
-                "the guide's '## {heading}' is not reachable through any section name"
-            );
-        }
-    }
-
-    #[test]
-    fn a_section_is_cut_at_the_next_heading() {
-        let lifecycle = section("lifecycle").unwrap();
-        assert!(lifecycle.starts_with("## Lifecycle"), "{lifecycle}");
-        assert!(!lifecycle.contains("\n## Events"), "{lifecycle}");
-        let events = section("events").unwrap();
-        assert!(
-            events.starts_with("## Events") && events.contains("onEvent"),
-            "{events}"
-        );
-        assert!(!section("commands").unwrap().contains("### Permissions"));
-        assert!(section("permissions").unwrap().contains("| `ReadFiles` |"));
-        // The `###` subsections belong to the `##` they sit under and travel with it, unless
-        // the `##` was too big to send whole - see `cut`.
-        let helpers = section("helpers").unwrap();
-        assert!(helpers.contains("### Default keybindings"), "{helpers}");
-    }
-
-    /// The `###` half of the coupling `every_guide_heading_is_reachable_as_a_section` checks for
-    /// `##`: a child of a section that is served in parts must be reachable, or it is a piece of
-    /// the guide the model can never see. Children of a `Whole` section travel with their
-    /// parent and need no name of their own.
-    #[test]
-    fn every_subheading_of_a_split_section_is_reachable() {
-        let split: Vec<&str> = SECTIONS
-            .iter()
-            .filter(|name| matches!(cut(name), Cut::Until(_)))
-            .filter_map(|name| heading(name))
-            .collect();
-        assert!(split.len() >= 3, "{split:?}");
-        for parent in split {
-            let chunk = TS_GUIDE
-                .split("\n## ")
-                .skip(1)
-                .find(|chunk| chunk.starts_with(parent))
-                .unwrap_or_else(|| panic!("the guide has no '## {parent}'"));
-            let served = SECTIONS
-                .iter()
-                .filter(|name| heading(name) == Some(parent))
-                .filter_map(|name| section(name))
-                .collect::<Vec<_>>()
-                .join("\n");
-            for sub in subheadings(chunk) {
-                assert!(
-                    served.contains(&format!("### {sub}")),
-                    "'### {sub}' is in the guide's '## {parent}' but no section serves it"
-                );
-            }
-        }
-    }
-
-    /// A part left out of the section that used to hold it is a part the model has no reason to
-    /// know exists. The head has to name what it no longer carries.
-    #[test]
-    fn a_split_section_names_the_parts_it_no_longer_carries() {
-        for (head, parts) in [
-            ("async", &["async_panes", "async_waits", "async_timers"][..]),
-            ("commands", &["permissions"][..]),
-            ("rendering", &["ui"][..]),
-            (
-                "hooks",
-                &["hooks_workflow", "hooks_headless", "hooks_context_menu"][..],
-            ),
-        ] {
-            let text = section(head).unwrap();
-            for name in parts {
-                assert!(text.contains(name), "{head} does not name {name}: {text}");
-            }
         }
     }
 
@@ -660,19 +336,6 @@ mod tests {
         }
     }
 
-    /// The sections that were split are the reason this file exists in its current shape.
-    /// If any grows back past a few kilobytes the split has stopped working.
-    #[test]
-    fn the_split_sections_are_a_fraction_of_what_they_were() {
-        for name in ["async", "commands", "hooks", "rendering"] {
-            let len = section(name).unwrap().len();
-            assert!(
-                len < 6_000,
-                "'{name}' is back to {len} bytes; it is served in parts for a reason"
-            );
-        }
-    }
-
     #[test]
     fn an_unknown_section_lists_the_real_ones() {
         let answer = docs(Some("nonsense"));
@@ -711,118 +374,6 @@ mod tests {
         }
     }
 
-    /// The guide's "Hocus data" is the schema a plugin author writes fetches against, and the
-    /// failure it exists to prevent is exactly a guess at a name that does not exist. So it is
-    /// checked against the definitions themselves rather than trusted to be kept up by hand: an
-    /// entity or an attribute added to `store::shared_defs()` has to be written down here too.
-    ///
-    /// `import_marker` is the one exception, and is named as such below: it is bookkeeping for
-    /// hocus's own migration off the old JSON files, and means nothing to a reader.
-    #[test]
-    fn the_hocus_data_section_names_every_shared_entity_and_attribute() {
-        let text = section("hocus_data").expect("the section resolves");
-        for def in hocus_proto::store::shared_defs() {
-            if def.name == "import_marker" {
-                continue;
-            }
-            assert!(
-                text.contains(&format!("`{}`", def.name)),
-                "the guide does not name the `{}` entity",
-                def.name
-            );
-            for attr in &def.attrs {
-                assert!(
-                    text.contains(&format!("`{}`", attr.name)),
-                    "the guide does not name `{}`.`{}`",
-                    def.name,
-                    attr.name
-                );
-            }
-        }
-    }
-
-    /// And the other way: a name in the guide that no definition carries is a reader sent to
-    /// fetch a column that is not there.
-    #[test]
-    fn the_hocus_data_section_invents_no_entity_names() {
-        let text = section("hocus_data").expect("the section resolves");
-        let declared: Vec<String> = hocus_proto::store::shared_defs()
-            .into_iter()
-            .map(|def| def.name)
-            .collect();
-        for line in text.lines().filter(|line| line.starts_with("**`")) {
-            let name = line
-                .trim_start_matches("**`")
-                .split('`')
-                .next()
-                .unwrap()
-                .to_owned();
-            assert!(
-                declared.contains(&name),
-                "the guide describes `{name}`, which no shared definition declares"
-            );
-        }
-    }
-
-    /// The guide is the only place a plugin author meets these names, and hocus pre-grants what
-    /// it finds in a source: a permission spelled wrong is granted to nobody and raises nothing
-    /// until the plugin runs. So every permission zellij has must be nameable from the guide,
-    /// and a permission added later must fail here rather than be undocumented.
-    #[test]
-    fn the_guides_name_every_permission_a_plugin_can_ask_for() {
-        let ts = section("permissions").expect("the TypeScript permission table's own section");
-        for name in zellij_tile::plugin_authoring::all_permission_names() {
-            // The TypeScript spelling is the Rust one: PascalCase.
-            let pascal: String = name
-                .split('_')
-                .map(|word| {
-                    let mut chars = word.chars();
-                    chars
-                        .next()
-                        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
-                        .unwrap_or_default()
-                })
-                .collect();
-            assert!(
-                ts.contains(&format!("`{pascal}`")),
-                "the TypeScript guide's permission table has no `{pascal}`"
-            );
-        }
-    }
-
-    /// The keybinding pipe prefix is matched by name on the host and consumed by name in the SDK;
-    /// the section that teaches `registerDefaultKeybindings` must state it.
-    #[test]
-    fn the_helpers_section_names_the_keybinding_pipe_prefix() {
-        let helpers = section("helpers").expect("the helpers section");
-        assert!(
-            helpers.contains("__zellij_default_keybinding:"),
-            "{helpers}"
-        );
-        assert!(helpers.contains("registerDefaultKeybindings"), "{helpers}");
-        assert!(helpers.contains("zellij.host"), "{helpers}");
-    }
-
-    /// The two store rules that cost the most to learn at run time: a namespace that is not
-    /// `shared:`-prefixed is refused, and a declared `created_at` fails the whole define. Both
-    /// are enforced in `zellij_types::plugin_data`, and both have to be sayable from the guide.
-    #[test]
-    fn the_guides_state_the_data_store_rules_they_cannot_enforce() {
-        for name in ["data"] {
-            let data = section(name).expect("the data section");
-            assert!(
-                data.contains(zellij_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX),
-                "{name} does not mention the shared namespace prefix"
-            );
-            for reserved in zellij_tile::plugin_authoring::RESERVED_ATTR_NAMES {
-                assert!(
-                    data.contains(reserved),
-                    "{name} does not say `{reserved}` is reserved"
-                );
-            }
-        }
-    }
-
     fn query(text: &str) -> Search<'_> {
         Search {
             query: text,
@@ -838,7 +389,7 @@ mod tests {
     #[test]
     fn a_docs_query_answers_section_line_hits_and_stays_far_under_the_cap() {
         let hits = search(None, &query("RunCommandResult"));
-        assert!(hits.contains("events:"), "{hits}");
+        assert!(hits.contains("sdk_core:"), "{hits}");
         // Keep repeated matches well below the output cap.
         assert!(
             hits.len() < MAX_DOCS_OUTPUT / 3,
@@ -867,9 +418,9 @@ mod tests {
 
     #[test]
     fn a_docs_query_confined_to_a_section_searches_only_it() {
-        let hits = search(Some("events"), &query("event"));
+        let hits = search(Some("sdk_core"), &query("Event"));
         assert!(
-            hits.lines().all(|line| line.starts_with("events:")
+            hits.lines().all(|line| line.starts_with("sdk_core:")
                 || line.is_empty()
                 || line.starts_with('…')),
             "{hits}"

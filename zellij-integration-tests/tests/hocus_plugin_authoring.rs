@@ -94,12 +94,12 @@ fn hocus_writes_a_typescript_plugin_and_loads_it() {
     submit(&zellij, r#"/plugin_docs {"section": "quickstart"}"#);
     // The tail of the section rather than its head: the transcript is pinned to the bottom, so
     // the last lines of a long result are the ones on screen.
-    zellij.wait_until("the guide reaches the model", |grid_snapshot| {
-        grid_snapshot.contains("Read `overview` and `lifecycle` for the SDK and module rules.")
+    zellij.wait_until("the quickstart reaches the model", |grid_snapshot| {
+        grid_snapshot.contains("Read `sdk_core` and `sdk_helpers` for the API declarations.")
     });
     clear(
         &zellij,
-        "Read `overview` and `lifecycle` for the SDK and module rules.",
+        "Read `sdk_core` and `sdk_helpers` for the API declarations.",
     );
 
     // Nothing there yet, and the folder does not even exist.
