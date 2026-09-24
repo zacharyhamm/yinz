@@ -1713,6 +1713,7 @@ fn help_line(state: &State) -> &'static str {
         Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingDecisions => "evaluating…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
+        Status::AwaitingSwamp { .. } => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingExtension => "running extension…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingPluginTest => "testing plugin…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingPluginLoad => "loading plugin…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",

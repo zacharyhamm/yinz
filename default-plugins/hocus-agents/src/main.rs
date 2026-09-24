@@ -429,6 +429,7 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::SessionUpdate,
             EventType::RunCommandResult,
+            EventType::WebRequestResult,
             EventType::Visible,
             EventType::PaneUpdate,
         ]);
@@ -453,6 +454,9 @@ impl ZellijPlugin for State {
         let rendered = match event {
             Event::RunCommandResult(code, stdout, stderr, context) => {
                 self.swamp_result(code, &stdout, &stderr, &context)
+            },
+            Event::WebRequestResult(status, headers, body, context) => {
+                self.swamp_web_result(status, &headers, &body, &context)
             },
             Event::PermissionRequestResult(status) => self.swamp_permission(status),
             Event::Visible(visible) => self.swamp_visibility(visible),

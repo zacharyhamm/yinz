@@ -14,3 +14,7 @@ hocus-proto = { path = "../hocus-proto" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }
+
+[dev-dependencies]
+# The ignored live check calls swamp-club from a native test.
+isahc = { workspace = true }

@@ -128,6 +128,8 @@ pub fn needs_confirmation(name: &str) -> bool {
             "rerun_pane"
             | "clear_pane"
             | "send_input"
+            | "swamp_issue_create"
+            | "swamp_issue_comment"
             | "agent_send"
             | "agent_control"
             // These remove a project the user meant to keep.
@@ -221,6 +223,9 @@ pub fn summarize(call: &ToolCall) -> String {
 /// a call whose arguments are malformed is exactly when the user most needs to
 /// see something, so this must not go quiet.
 pub fn consequence(call: &ToolCall) -> Option<String> {
+    if let Some(sentence) = crate::lab::consequence(call) {
+        return Some(sentence);
+    }
     if crate::workflows::mutates(&call.name) {
         return Some(match call.name.as_str() {
             "workflow_create" => "creates a Swamp workflow scaffold",
@@ -479,6 +484,19 @@ const SOURCE_PREVIEW_LINES: usize = 20;
 /// not parse as an object are handed back verbatim, for the same reason
 /// `consequence` does not go quiet on them.
 fn argument_lines_with_source_limit(call: &ToolCall, source_limit: Option<usize>) -> Vec<String> {
+    // What will be posted, not what the model wrote: the two differ by the redactions.
+    if let Some(fields) = crate::lab::confirmation_fields(call) {
+        return fields
+            .into_iter()
+            .flat_map(|(key, text)| {
+                if text.contains('\n') {
+                    block_lines(&key, &text, source_limit)
+                } else {
+                    vec![format!("{key}: {text}")]
+                }
+            })
+            .collect();
+    }
     let arguments = call.arguments.trim();
     if arguments.is_empty() || arguments == "{}" {
         return Vec::new();
@@ -1180,14 +1198,26 @@ pub fn specs() -> Value {
             "Evaluate named questions against state through OpenRouter Decisions: choice, score, or noul (boolean likelihood, 0–1). Returns typed answers, model and usage/cost. Does not act on the answers.",
             crate::decisions::parameters(),
         ),
-        tool("swamp_issue_search", "Search swamp-club Lab issues through the host's Swamp login. All statuses by default; up to 100 results. No active project required.", json!({"type":"object","properties":{
-            "query":{"type":"string"},
+        tool("swamp_issue_search", "Search swamp-club Lab issues as the host's swamp login (anonymous: public issues only). All statuses by default, newest first; total counts every match, page with offset. No active project required.", json!({"type":"object","properties":{
+            "query":{"type":"string","description":"Substring of the title or body"},
             "type":{"type":"string","enum":["bug","feature","security"]},
             "status":{"type":"string","enum":["open","triaged","in_progress","shipped","closed"]},
-            "source":{"type":"string"},
-            "limit":{"type":"integer","minimum":1,"maximum":100,"default":100}
+            "source":{"type":"string","description":"Product tag, e.g. swamp, swamp-club, extensions"},
+            "author":{"type":"string","description":"Exact username"},
+            "limit":{"type":"integer","minimum":1,"maximum":100,"default":100},
+            "offset":{"type":"integer","minimum":0,"default":0}
         }})),
-        tool("swamp_issue_get", "Read a swamp-club Lab issue, including body, assignees, URL and comments, through the host's Swamp login. No active project required.", json!({"type":"object","properties":{"number":{"type":"integer","minimum":1}},"required":["number"]})),
+        tool("swamp_issue_get", "Read a swamp-club Lab issue, including body, assignees, URL, comments and relationships, as the host's swamp login. No active project required.", json!({"type":"object","properties":{"number":{"type":"integer","minimum":1}},"required":["number"]})),
+        tool("swamp_issue_create", "File a swamp-club Lab issue under the host's swamp login, after the user confirms. Secrets, emails, hostnames, IPs and home paths are redacted first, as the swamp CLI does. security issues are visible to the author and admins only; the rest are public. Search first to avoid duplicates.", json!({"type":"object","properties":{
+            "type":{"type":"string","enum":["bug","feature","security"]},
+            "title":{"type":"string","maxLength":256},
+            "body":{"type":"string","description":"Markdown"},
+            "source":{"type":"string","description":"Product tag, e.g. swamp, swamp-club, extensions; the server defaults to swamp-club"}
+        },"required":["type","title","body"]})),
+        tool("swamp_issue_comment", "Comment on a swamp-club Lab issue under the host's swamp login, after the user confirms. Redacted first, as the swamp CLI does.", json!({"type":"object","properties":{
+            "number":{"type":"integer","minimum":1},
+            "body":{"type":"string","description":"Markdown"}
+        },"required":["number","body"]})),
         tool(
             "schedule",
             "Repeat a prompt until cancelled; unschedule it when done. Runs decline gated tools \
@@ -2378,7 +2408,7 @@ pub const FAMILIES: &[Family] = &[
     },
     Family {
         name: "swamp",
-        summary: "search and read swamp-club Lab issues",
+        summary: "search, read, file and comment on swamp-club Lab issues",
         deferred: true,
         tools: &SWAMP_TOOLS,
     },
@@ -3236,82 +3266,14 @@ impl Args {
     }
 }
 
-/// Fixed CLI vectors, independent of the active project and workflow server.
-pub const SWAMP_TOOLS: [&str; 2] = ["swamp_issue_search", "swamp_issue_get"];
-
-pub fn swamp_argv(name: &str, arguments: &str) -> Result<Vec<String>, String> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct IssueArgs {
-        query: Option<String>,
-        r#type: Option<String>,
-        status: Option<String>,
-        source: Option<String>,
-        limit: Option<u64>,
-        number: Option<u64>,
-    }
-    let args: IssueArgs = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
-    if name == "swamp_issue_get" {
-        let number = args
-            .number
-            .filter(|n| *n > 0)
-            .ok_or("number must be a positive integer")?;
-        return Ok(vec![
-            "swamp".into(),
-            "issue".into(),
-            "get".into(),
-            number.to_string(),
-            "--json".into(),
-        ]);
-    }
-    if name != "swamp_issue_search" {
-        return Err(format!("unknown Swamp tool: {name}"));
-    }
-    let limit = args.limit.unwrap_or(100);
-    if !(1..=100).contains(&limit) {
-        return Err("limit must be between 1 and 100".into());
-    }
-    let mut argv: Vec<String> = ["swamp", "issue", "search", "--json", "--limit"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    argv.push(limit.to_string());
-    for (flag, value, allowed) in [
-        (
-            "--type",
-            args.r#type.as_deref(),
-            &["bug", "feature", "security"][..],
-        ),
-        (
-            "--status",
-            args.status.as_deref(),
-            &["open", "triaged", "in_progress", "shipped", "closed"][..],
-        ),
-    ] {
-        if let Some(value) = value {
-            if !allowed.contains(&value) {
-                return Err(format!("invalid {flag}: {value}"));
-            }
-            argv.extend([flag.into(), value.into()]);
-        }
-    }
-    // The installed CLI ignores positionals after `--`, as in the issues panel.
-    for (field, value) in [("source", args.source), ("query", args.query)] {
-        if let Some(value) = value {
-            let value = value.trim();
-            if value.starts_with('-') || value.contains('\0') {
-                return Err(format!("{field} must not start with '-' or contain NUL"));
-            }
-            if !value.is_empty() {
-                if field == "source" {
-                    argv.push("--source".into());
-                }
-                argv.push(value.into());
-            }
-        }
-    }
-    Ok(argv)
-}
+/// The swamp-club Lab tools (`crate::lab`), independent of the active project
+/// and workflow server.
+pub const SWAMP_TOOLS: [&str; 4] = [
+    "swamp_issue_search",
+    "swamp_issue_get",
+    "swamp_issue_create",
+    "swamp_issue_comment",
+];
 
 /// The tools backed by the `dobbs` CLI. Intercepted in `run_head` rather than
 /// dispatched here, because the binary to run comes from the resolved config.

@@ -1,12 +1,15 @@
-//! Read-only issue browsing through the host's authenticated Swamp CLI.
+//! Read-only issue browsing through the swamp-club Lab API, as whoever the
+//! host's `swamp auth login` (or `SWAMP_API_KEY`) says; anonymous callers see
+//! public issues only.
 use super::*;
 use chrono::{DateTime, FixedOffset};
-use serde::Deserialize;
+use hocus_proto::swamp::swamp_lab::{self, api::SearchQuery, types as lab, Client, Credentials};
 use zellij_tile::ui_components::forms::{Combo, Form, FormEvent, Rect, RenderBuffer, Select};
 
 const REFRESH_MS: i64 = 60_000;
 const REQUEST_ID: &str = "swamp_issue_request";
 const ISSUE_NUMBER: &str = "swamp_issue_number";
+const PAGE: u32 = 100;
 const TYPES: [&str; 4] = ["", "bug", "feature", "security"];
 const STATUSES: [&str; 6] = ["", "open", "triaged", "in_progress", "shipped", "closed"];
 const SORTS: [&str; 4] = [
@@ -16,50 +19,93 @@ const SORTS: [&str; 4] = [
     "Created oldest first",
 ];
 
-#[derive(Debug, Deserialize)]
+/// What the panel draws of an issue, read from the Lab's own shape.
+#[derive(Debug)]
 struct Issue {
     number: u64,
     title: String,
     status: String,
-    #[serde(rename = "type")]
     kind: String,
     author: String,
     url: String,
-    #[serde(rename = "createdAt", default, deserialize_with = "timestamp")]
     created_at: Option<DateTime<FixedOffset>>,
-    #[serde(rename = "updatedAt", default, deserialize_with = "timestamp")]
     updated_at: Option<DateTime<FixedOffset>>,
 }
 
-fn timestamp<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<DateTime<FixedOffset>>, D::Error> {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(value
-        .as_str()
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok()))
+impl Issue {
+    fn from_lab(issue: &lab::Issue, credentials: &Credentials) -> Self {
+        Issue {
+            number: issue.number,
+            title: issue.title.clone(),
+            status: issue.status.to_string(),
+            kind: issue.kind.to_string(),
+            author: issue.author_username.clone(),
+            url: credentials.issue_url(issue.number),
+            created_at: timestamp(issue.created_at.as_deref()),
+            updated_at: timestamp(issue.updated_at.as_deref()),
+        }
+    }
 }
 
-#[derive(Debug, Deserialize)]
+fn timestamp(value: Option<&str>) -> Option<DateTime<FixedOffset>> {
+    value.and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+}
+
+#[derive(Debug)]
 struct Search {
     issues: Vec<Issue>,
     total: usize,
 }
 
-#[derive(Debug, Deserialize)]
+impl Search {
+    fn from_lab(search: &lab::SearchResponse, credentials: &Credentials) -> Self {
+        Search {
+            issues: search
+                .issues
+                .iter()
+                .map(|issue| Issue::from_lab(issue, credentials))
+                .collect(),
+            total: usize::try_from(search.total).unwrap_or(usize::MAX),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Detail {
-    #[serde(flatten)]
     issue: Issue,
     body: String,
     assignees: Vec<String>,
     comments: Vec<Comment>,
 }
 
-#[derive(Debug, Deserialize)]
+impl Detail {
+    fn from_lab(detail: &lab::IssueDetail, credentials: &Credentials) -> Self {
+        Detail {
+            issue: Issue::from_lab(&detail.issue, credentials),
+            body: detail.issue.body.clone(),
+            assignees: detail
+                .issue
+                .assignees
+                .iter()
+                .map(|assignee| assignee.username.clone())
+                .collect(),
+            comments: detail
+                .comments
+                .iter()
+                .map(|comment| Comment {
+                    author: comment.author_username.clone(),
+                    body: comment.body.clone(),
+                    created_at: comment.created_at.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Comment {
     author: String,
     body: String,
-    #[serde(rename = "createdAt")]
     created_at: String,
 }
 
@@ -74,6 +120,8 @@ enum Permission {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Target {
+    /// Reading `auth.json`, before anything can be asked of the Lab.
+    Credentials,
     Search(u64),
     Triage(u64),
     Detail(u64, u64), // issue number, opening generation
@@ -114,7 +162,13 @@ pub(super) struct View {
     detail: Option<Detail>,
     detail_scroll: usize,
     detail_error: Option<String>,
-    // Only one CLI process at a time. Changes made while it runs coalesce here;
+    // Read again at the start of every refresh cycle and after a 401, so a login, logout or key
+    // switch made since is picked up; requests within a cycle reuse it.
+    credentials: Option<Credentials>,
+    credentials_error: Option<String>,
+    // A 401 reloads the credentials once per cycle; a second in a row is shown.
+    reloaded_after_401: bool,
+    // Only one request at a time. Changes made while it runs coalesce here;
     // generations keep a superseded search or a closed reader from taking its reply.
     pending: Option<Request>,
     search_wanted: bool,
@@ -133,8 +187,13 @@ pub(super) struct View {
     window: usize,
     max_scroll: usize,
     detail_cache: Option<(usize, Vec<markdown::MdLine>)>,
+    // Keeps the login a test set across refreshes, for tests about anything but its lifetime.
+    #[cfg(test)]
+    keep_credentials: bool,
     #[cfg(test)]
     commands: Vec<(Vec<String>, BTreeMap<String, String>)>,
+    #[cfg(test)]
+    requests: Vec<(swamp_lab::Request, BTreeMap<String, String>)>,
 }
 
 impl View {
@@ -215,6 +274,7 @@ impl View {
     pub(super) fn has_error(&self) -> bool {
         self.list_error.is_some()
             || self.detail_error.is_some()
+            || self.credentials_error.is_some()
             || self.permission == Permission::Denied
     }
 
@@ -266,15 +326,18 @@ impl View {
     fn note(&self) -> Option<String> {
         match self.permission {
             Permission::Unrequested | Permission::Waiting => {
-                return Some("Waiting for permission to run Swamp commands".into());
+                return Some("Waiting for permission to reach swamp-club".into());
             },
             Permission::Denied => {
-                return Some("Permission denied: r to request command permission again".into());
+                return Some("Permission denied: r to request permission again".into());
             },
             Permission::Granted => {},
         }
         if let Some(note) = &self.triage_note {
             return Some(note.clone());
+        }
+        if let Some(error) = &self.credentials_error {
+            return Some(format!("Error: {error} · r retry"));
         }
         let error = if self.opened.is_some() {
             self.detail_error.as_ref().or(self.list_error.as_ref())
@@ -376,6 +439,15 @@ impl State {
             return false;
         }
         self.swamp.last_refresh = Some(now);
+        // A failed read waits for `r`, which clears the error first.
+        #[cfg(test)]
+        let keep = self.swamp.keep_credentials;
+        #[cfg(not(test))]
+        let keep = false;
+        if self.swamp.credentials_error.is_none() && !keep {
+            self.swamp.credentials = None;
+            self.swamp.reloaded_after_401 = false;
+        }
         self.swamp.search_wanted = true;
         self.swamp.detail_wanted = self.swamp.opened.is_some();
         self.dispatch_swamp();
@@ -392,71 +464,118 @@ impl State {
         match self.swamp.permission {
             Permission::Unrequested => {
                 self.swamp.permission = Permission::Waiting;
-                request_permission(&[PermissionType::RunCommands]);
+                // Commands only to read `auth.json`; the environment for
+                // SWAMP_API_KEY and SWAMP_CLUB_URL; the web for the Lab itself.
+                request_permission(&[
+                    PermissionType::RunCommands,
+                    PermissionType::ReadSessionEnvironmentVariables,
+                    PermissionType::WebAccess,
+                ]);
                 return;
             },
             Permission::Granted => {},
             _ => return,
         }
-        let (target, args) = if let Some(number) = self.swamp.triage_wanted.take() {
-            (
-                Target::Triage(number),
-                vec![
-                    "swamp".into(),
-                    "issue".into(),
-                    "get".into(),
-                    number.to_string(),
-                    "--json".into(),
-                ],
-            )
+        if self.swamp.credentials_error.is_some() {
+            return;
+        }
+        let Some(credentials) = self.swamp.credentials.clone() else {
+            if !(self.swamp.triage_wanted.is_some()
+                || self.swamp.search_wanted
+                || self.swamp.detail_wanted)
+            {
+                return;
+            }
+            let id = self.next_swamp_request_id();
+            let context = BTreeMap::from([(REQUEST_ID.into(), id.clone())]);
+            let argv = swamp_lab::auth::auth_json_argv();
+            #[cfg(test)]
+            self.swamp.commands.push((argv.clone(), context.clone()));
+            run_command(
+                &argv.iter().map(String::as_str).collect::<Vec<_>>(),
+                context,
+            );
+            self.swamp.pending = Some(Request {
+                id,
+                target: Target::Credentials,
+            });
+            return;
+        };
+        let client = Client::new(&credentials);
+        let (target, request) = if let Some(number) = self.swamp.triage_wanted.take() {
+            match client.get(number) {
+                Ok(request) => (Target::Triage(number), request),
+                Err(error) => {
+                    self.swamp.triage_waiting = false;
+                    self.swamp.triage_note = Some(format!("Triage #{number}: {error} · a retry"));
+                    return;
+                },
+            }
         } else if self.swamp.search_wanted {
             self.swamp.search_wanted = false;
-            let args = match search_args(
+            let request = search_query(
                 &self.swamp.query,
                 STATUSES[self.swamp.status],
                 TYPES[self.swamp.kind],
                 &self.swamp.source,
-            ) {
-                Ok(args) => args,
+            )
+            .and_then(|query| client.search(&query).map_err(|error| error.to_string()));
+            match request {
+                Ok(request) => (Target::Search(self.swamp.search_generation), request),
                 Err(error) => {
                     self.swamp.list_error = Some(error);
                     return;
                 },
-            };
-            (Target::Search(self.swamp.search_generation), args)
+            }
         } else if self.swamp.detail_wanted {
             self.swamp.detail_wanted = false;
             let Some(number) = self.swamp.opened else {
                 return;
             };
-            (
-                Target::Detail(number, self.swamp.detail_generation),
-                vec![
-                    "swamp".into(),
-                    "issue".into(),
-                    "get".into(),
-                    number.to_string(),
-                    "--json".into(),
-                ],
-            )
+            match client.get(number) {
+                Ok(request) => (
+                    Target::Detail(number, self.swamp.detail_generation),
+                    request,
+                ),
+                Err(error) => {
+                    self.swamp.detail_error = Some(error.to_string());
+                    return;
+                },
+            }
         } else {
             return;
         };
-        self.swamp.sequence = self.swamp.sequence.max(now_ms().max(0) as u64) + 1;
-        let id = self.swamp.sequence.to_string();
+        let id = self.next_swamp_request_id();
         let mut context = BTreeMap::from([(REQUEST_ID.into(), id.clone())]);
         if let Target::Detail(number, _) | Target::Triage(number) = target {
             context.insert(ISSUE_NUMBER.into(), number.to_string());
         }
         #[cfg(test)]
-        self.swamp.commands.push((args.clone(), context.clone()));
-        run_command(
-            &args.iter().map(String::as_str).collect::<Vec<_>>(),
-            context,
-        );
+        self.swamp.requests.push((request.clone(), context.clone()));
+        hocus_proto::swamp::send(request, context);
         self.swamp.pending = Some(Request { id, target });
     }
 
+    fn next_swamp_request_id(&mut self) -> String {
+        self.swamp.sequence = self.swamp.sequence.max(now_ms().max(0) as u64) + 1;
+        self.swamp.sequence.to_string()
+    }
+
+    /// The pending request `context` answers, which is then no longer pending.
+    fn take_swamp_reply(&mut self, context: &BTreeMap<String, String>) -> Option<Target> {
+        let request = self.swamp.pending.as_ref()?;
+        if context.get(REQUEST_ID) != Some(&request.id) {
+            return None;
+        }
+        if let Target::Detail(number, _) | Target::Triage(number) = request.target {
+            if context.get(ISSUE_NUMBER) != Some(&number.to_string()) {
+                return None;
+            }
+        }
+        self.swamp.pending.take().map(|request| request.target)
+    }
+
+    /// The `auth.json` read, which is the only command this panel runs.
     pub(super) fn swamp_result(
         &mut self,
         code: Option<i32>,
@@ -464,21 +583,84 @@ impl State {
         stderr: &[u8],
         context: &BTreeMap<String, String>,
     ) -> bool {
-        let Some(request) = self.swamp.pending.as_ref() else {
+        if !matches!(
+            self.swamp.pending.as_ref().map(|r| &r.target),
+            Some(Target::Credentials)
+        ) {
+            return false;
+        }
+        if self.take_swamp_reply(context).is_none() {
+            return false;
+        }
+        let resolved =
+            swamp_lab::auth::auth_json_from_output(code, stdout, stderr).and_then(|file| {
+                Credentials::resolve(&get_session_environment_variables(), file.as_deref())
+            });
+        match resolved {
+            Ok(credentials) => self.swamp.credentials = Some(credentials),
+            Err(error) => {
+                if self.swamp.triage_wanted.take().is_some() {
+                    self.swamp.triage_waiting = false;
+                    self.swamp.triage_note = None;
+                }
+                self.swamp.credentials_error = Some(error);
+            },
+        }
+        self.dispatch_swamp();
+        self.surface == Surface::Swamp && self.swamp.visible()
+    }
+
+    pub(super) fn swamp_web_result(
+        &mut self,
+        status: u16,
+        headers: &BTreeMap<String, String>,
+        body: &[u8],
+        context: &BTreeMap<String, String>,
+    ) -> bool {
+        if matches!(
+            self.swamp.pending.as_ref().map(|r| &r.target),
+            Some(Target::Credentials) | None
+        ) {
+            return false;
+        }
+        let Some(target) = self.take_swamp_reply(context) else {
             return false;
         };
-        if context.get(REQUEST_ID) != Some(&request.id) {
+        let Some(credentials) = self.swamp.credentials.clone() else {
             return false;
-        }
-        if let Target::Detail(number, _) | Target::Triage(number) = request.target {
-            if context.get(ISSUE_NUMBER) != Some(&number.to_string()) {
-                return false;
+        };
+        // A key revoked or expired since it was read: read it again once, in
+        // case `swamp auth login` has replaced it, before saying so.
+        if status == 401 && !self.swamp.reloaded_after_401 {
+            self.swamp.reloaded_after_401 = true;
+            self.swamp.credentials = None;
+            match target {
+                Target::Triage(number) => self.swamp.triage_wanted = Some(number),
+                Target::Search(generation) if generation == self.swamp.search_generation => {
+                    self.swamp.search_wanted = true
+                },
+                Target::Detail(number, generation)
+                    if self.swamp.opened == Some(number)
+                        && generation == self.swamp.detail_generation =>
+                {
+                    self.swamp.detail_wanted = true
+                },
+                _ => {},
             }
+            self.dispatch_swamp();
+            return self.surface == Surface::Swamp && self.swamp.visible();
         }
-        let target = request.target.clone();
-        self.swamp.pending = None;
+        if status != 401 {
+            self.swamp.reloaded_after_401 = false;
+        }
+        let detail = || {
+            swamp_lab::parse::<lab::IssueDetail>(status, headers, body)
+                .map(|detail| Detail::from_lab(&detail, &credentials))
+                .map_err(|error| error.to_string())
+        };
         match target {
-            Target::Triage(number) => match decode::<Detail>(code, stdout, stderr) {
+            Target::Credentials => {},
+            Target::Triage(number) => match detail() {
                 Ok(detail) if detail.issue.number == number => self.send_swamp_triage(&detail),
                 result => {
                     self.swamp.triage_waiting = false;
@@ -489,21 +671,21 @@ impl State {
                 },
             },
             Target::Search(generation) if generation == self.swamp.search_generation => {
-                match decode::<Search>(code, stdout, stderr) {
+                match swamp_lab::parse::<lab::SearchResponse>(status, headers, body) {
                     Ok(search) => {
                         let selected = self.swamp.selected_number();
-                        self.swamp.search = Some(search);
+                        self.swamp.search = Some(Search::from_lab(&search, &credentials));
                         self.swamp.sort_issues(selected);
                         self.swamp.list_error = None;
                     },
-                    Err(error) => self.swamp.list_error = Some(error),
+                    Err(error) => self.swamp.list_error = Some(error.to_string()),
                 }
             },
             Target::Detail(number, generation)
                 if self.swamp.opened == Some(number)
                     && generation == self.swamp.detail_generation =>
             {
-                match decode::<Detail>(code, stdout, stderr) {
+                match detail() {
                     Ok(detail) if detail.issue.number == number => {
                         self.swamp.detail = Some(detail);
                         self.swamp.detail_error = None;
@@ -639,7 +821,7 @@ impl State {
             match key.bare_key {
                 BareKey::Esc => self.swamp.editing = None,
                 BareKey::Enter => {
-                    if let Err(error) = search_args(
+                    if let Err(error) = search_query(
                         query.trim(),
                         STATUSES[self.swamp.status],
                         TYPES[self.swamp.kind],
@@ -693,6 +875,10 @@ impl State {
                 }
                 if self.swamp.permission == Permission::Denied {
                     self.swamp.permission = Permission::Unrequested;
+                }
+                // A retry after a failed read of the credentials reads them again.
+                if self.swamp.credentials_error.take().is_some() {
+                    self.swamp.credentials = None;
                 }
                 self.poll_swamp(now_ms(), true);
             },
@@ -769,7 +955,7 @@ impl State {
             changed
         } else {
             let source = editor.form.text("value").trim().to_owned();
-            if let Err(error) = search_args(
+            if let Err(error) = search_query(
                 &self.swamp.query,
                 STATUSES[self.swamp.status],
                 TYPES[self.swamp.kind],
@@ -1085,56 +1271,30 @@ impl State {
     }
 }
 
-fn search_args(query: &str, status: &str, kind: &str, source: &str) -> Result<Vec<String>, String> {
-    // The installed CLI ignores positionals after `--`. Reject an option-shaped
-    // keyword rather than silently changing the meaning of the search.
-    if query.starts_with('-') {
-        return Err("Search must start with a keyword, not '-'".into());
+/// The search the filters describe, or why the server would refuse it.
+fn search_query(
+    query: &str,
+    status: &str,
+    kind: &str,
+    source: &str,
+) -> Result<SearchQuery, String> {
+    if query.encode_utf16().count() > swamp_lab::api::MAX_QUERY_CHARS {
+        return Err(format!(
+            "Search is longer than {} characters",
+            swamp_lab::api::MAX_QUERY_CHARS
+        ));
     }
-    if source.starts_with('-') {
-        return Err("Source must start with a tag, not '-'".into());
+    if !source.is_empty() {
+        swamp_lab::api::valid_source(source).map_err(|error| error.to_string())?;
     }
-    let mut args: Vec<String> = ["swamp", "issue", "search", "--json", "--limit", "100"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    for (flag, value) in [("--status", status), ("--type", kind), ("--source", source)] {
-        if !value.is_empty() {
-            args.extend([flag.into(), value.into()]);
-        }
-    }
-    if !query.is_empty() {
-        args.push(query.into());
-    }
-    Ok(args)
-}
-
-fn decode<T: serde::de::DeserializeOwned>(
-    code: Option<i32>,
-    stdout: &[u8],
-    stderr: &[u8],
-) -> Result<T, String> {
-    let value = serde_json::from_slice::<serde_json::Value>(stdout);
-    if let Ok(value) = &value {
-        if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
-            return Err(error.into());
-        }
-    }
-    if code != Some(0) {
-        let stderr = String::from_utf8_lossy(stderr);
-        if code == Some(127) || (stdout.is_empty() && stderr.contains("No such file or directory"))
-        {
-            return Err("Swamp command not found on the server PATH".into());
-        }
-        return Err(if stderr.trim().is_empty() {
-            format!("Swamp command failed (exit {code:?})")
-        } else {
-            stderr.trim().into()
-        });
-    }
-    value
-        .and_then(serde_json::from_value)
-        .map_err(|error| format!("Malformed Swamp response: {error}"))
+    Ok(SearchQuery {
+        text: (!query.is_empty()).then(|| query.to_owned()),
+        status: lab::IssueStatus::parse(status),
+        kind: lab::IssueType::parse(kind),
+        source: (!source.is_empty()).then(|| source.to_owned()),
+        limit: PAGE,
+        ..SearchQuery::default()
+    })
 }
 
 fn status_label(status: &str) -> &str {
@@ -1355,19 +1515,57 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // CLI shapes verified with `swamp issue search/get --json`, including a
+    // Lab API shapes (`GET /api/v1/lab/issues` and `/issues/{n}`), including a
     // shipped issue with a comment (#2180). Bodies are shortened for the fixture.
     const SEARCH: &str = r#"{"issues":[
-        {"number":2254,"title":"Invite output","type":"bug","status":"triaged","author":"skunk-ape","url":"https://swamp-club.com/lab/2254"},
-        {"number":2180,"title":"CLI referral link","type":"platform","status":"shipped","author":"skunk-ape","url":"https://swamp-club.com/lab/2180"}
-    ],"total":2219}"#;
+        {"id":"i-2254","number":2254,"title":"Invite output","type":"bug","status":"triaged","authorId":"u1","authorUsername":"skunk-ape","source":"swamp"},
+        {"id":"i-2180","number":2180,"title":"CLI referral link","type":"platform","status":"shipped","authorId":"u1","authorUsername":"skunk-ape","source":"swamp-club"}
+    ],"total":2219,"tierByUsername":{},"relationshipSummaries":{}}"#;
     const DETAIL: &str = r###"{
-        "number":2180,"title":"CLI referral link","type":"platform","status":"shipped",
-        "author":"skunk-ape","body":"## Referral link\n\nPrint **one URL**.",
-        "assignees":["skunk-ape"],"commentCount":1,
-        "comments":[{"author":"hammz","body":"Depends on **#2179**.","createdAt":"2026-09-16T16:20:51.953Z"}],
-        "url":"https://swamp-club.com/lab/2180"
+        "issue":{"id":"i-2180","number":2180,"title":"CLI referral link","type":"platform","status":"shipped",
+            "authorId":"u1","authorUsername":"skunk-ape","source":"swamp-club","body":"## Referral link\n\nPrint **one URL**.",
+            "assignees":[{"userId":"u1","username":"skunk-ape"}]},
+        "audience":{"visibility":"author_and_admins","reasons":[]},
+        "comments":[{"id":"c1","issueId":"i-2180","authorId":"u2","authorUsername":"hammz","body":"Depends on **#2179**.","createdAt":"2026-09-16T16:20:51.953Z"}],
+        "events":[],"lifecycleEntries":[],"relationships":[],"isAdmin":false,"canEdit":false,"currentUserId":""
     }"###;
+    const EMPTY: &str = r#"{"issues":[],"total":0}"#;
+
+    trait FromLab: Sized {
+        fn from_reply(status: u16, body: &[u8]) -> Result<Self, String>;
+    }
+
+    impl FromLab for Search {
+        fn from_reply(status: u16, body: &[u8]) -> Result<Self, String> {
+            swamp_lab::parse::<lab::SearchResponse>(status, &server(), body)
+                .map(|search| Search::from_lab(&search, &Credentials::anonymous()))
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    impl FromLab for Detail {
+        fn from_reply(status: u16, body: &[u8]) -> Result<Self, String> {
+            swamp_lab::parse::<lab::IssueDetail>(status, &server(), body)
+                .map(|detail| Detail::from_lab(&detail, &Credentials::anonymous()))
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    fn decode<T: FromLab>(body: &[u8]) -> Result<T, String> {
+        T::from_reply(200, body)
+    }
+
+    /// The headers any real server reply has; none at all means no reply.
+    fn server() -> BTreeMap<String, String> {
+        BTreeMap::from([("content-type".into(), "application/json".into())])
+    }
+
+    fn search_url(query: &str, status: &str, kind: &str, source: &str) -> String {
+        Client::new(&Credentials::anonymous())
+            .search(&search_query(query, status, kind, source).unwrap())
+            .unwrap()
+            .url
+    }
 
     fn ready() -> State {
         let mut state = State {
@@ -1376,16 +1574,22 @@ mod tests {
         };
         state.swamp.pane_visible = true;
         state.swamp.permission = Permission::Granted;
+        state.swamp.credentials = Some(Credentials::anonymous());
+        state.swamp.keep_credentials = true;
         state
     }
 
     fn context(state: &State) -> BTreeMap<String, String> {
-        state.swamp.commands.last().expect("a command").1.clone()
+        state.swamp.requests.last().expect("a request").1.clone()
     }
 
     fn reply(state: &mut State, json: &str) {
+        reply_status(state, 200, json);
+    }
+
+    fn reply_status(state: &mut State, status: u16, json: &str) {
         let context = context(state);
-        state.swamp_result(Some(0), json.as_bytes(), &[], &context);
+        state.swamp_web_result(status, &server(), json.as_bytes(), &context);
     }
 
     fn pane_update(plugin_id: PluginId, suppressed: bool) -> Event {
@@ -1443,10 +1647,10 @@ mod tests {
         let mut state = loaded();
         key(&mut state, BareKey::Char('j'));
         key(&mut state, BareKey::Char('a'));
-        let count = state.swamp.commands.len();
+        let count = state.swamp.requests.len();
         key(&mut state, BareKey::Char('k'));
         key(&mut state, BareKey::Char('a'));
-        assert_eq!(state.swamp.commands.len(), count);
+        assert_eq!(state.swamp.requests.len(), count);
         assert!(
             !ack(&mut state, wire::AskOutcome::Sent),
             "fetch is not a handoff"
@@ -1475,7 +1679,7 @@ mod tests {
             assert!(text.contains(expected), "missing {expected}: {text}");
         }
         key(&mut state, BareKey::Char('a'));
-        assert_eq!(state.swamp.commands.len(), count);
+        assert_eq!(state.swamp.requests.len(), count);
         assert!(ack(&mut state, wire::AskOutcome::Queued));
         assert!(state.swamp.note().unwrap().contains("queued"));
         assert!(!ack(&mut state, wire::AskOutcome::Sent));
@@ -1484,7 +1688,7 @@ mod tests {
     #[test]
     fn triage_in_reader_uses_detail_and_reports_each_acknowledgement() {
         let mut state = reader();
-        let count = state.swamp.commands.len();
+        let count = state.swamp.requests.len();
         assert!(state.swamp.header().contains("a triage"));
         for (outcome, note) in [
             (wire::AskOutcome::Sent, "sent"),
@@ -1493,7 +1697,7 @@ mod tests {
         ] {
             key(&mut state, BareKey::Char('a'));
             assert!(state.swamp.triage_waiting);
-            assert_eq!(state.swamp.commands.len(), count);
+            assert_eq!(state.swamp.requests.len(), count);
             assert!(ack(&mut state, outcome));
             assert!(state.swamp.note().unwrap().contains(note));
             assert!(!state.swamp.triage_waiting);
@@ -1513,7 +1717,8 @@ mod tests {
             Target::Triage(2180)
         ));
         let context = context(&state);
-        state.swamp_result(Some(1), &[], b"offline", &context);
+        // No headers: the request never reached a server.
+        state.swamp_web_result(400, &BTreeMap::new(), b"offline", &context);
         assert!(!state.swamp.triage_waiting);
         assert!(state.swamp.note().unwrap().contains("offline"));
         key(&mut state, BareKey::Char('a'));
@@ -1560,9 +1765,9 @@ mod tests {
 
     #[test]
     fn cli_shapes_include_comments_empty_results_and_unknown_statuses() {
-        let search = decode::<Search>(Some(0), SEARCH.as_bytes(), &[]).unwrap();
+        let search = decode::<Search>(SEARCH.as_bytes()).unwrap();
         assert_eq!((search.issues.len(), search.total), (2, 2219));
-        let detail = decode::<Detail>(Some(0), DETAIL.as_bytes(), &[]).unwrap();
+        let detail = decode::<Detail>(DETAIL.as_bytes()).unwrap();
         let lines = detail_lines(&detail, 100);
         let text = lines
             .iter()
@@ -1585,26 +1790,26 @@ mod tests {
             .iter()
             .flat_map(|line| &line.styles)
             .any(|style| style.bold));
-        let empty = decode::<Search>(Some(0), br#"{"issues":[],"total":0}"#, &[]).unwrap();
+        let empty = decode::<Search>(EMPTY.as_bytes()).unwrap();
         assert!(empty.issues.is_empty());
         let unknown = SEARCH.replace("triaged", "reviewing");
-        let search = decode::<Search>(Some(0), unknown.as_bytes(), &[]).unwrap();
+        let search = decode::<Search>(unknown.as_bytes()).unwrap();
         assert!(issue_lines(&search.issues[0], true, 100, now_ms())[0]
             .text
             .contains("reviewing"));
-        let empty = DETAIL.replace(r#"["skunk-ape"]"#, "[]");
-        let mut value: serde_json::Value = serde_json::from_str(&empty).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(DETAIL).unwrap();
+        value["issue"]["assignees"] = json!([]);
         value["comments"] = json!([]);
-        let detail = decode::<Detail>(Some(0), value.to_string().as_bytes(), &[]).unwrap();
+        let detail = decode::<Detail>(value.to_string().as_bytes()).unwrap();
         assert!(detail.assignees.is_empty() && detail.comments.is_empty());
     }
 
     #[test]
     fn timestamps_decode_and_render_relative_ages_and_precise_offsets() {
         let mut value: serde_json::Value = serde_json::from_str(DETAIL).unwrap();
-        value["createdAt"] = json!("2026-09-18T05:00:00-05:00");
-        value["updatedAt"] = json!("2026-09-18T13:55:00.123+02:00");
-        let detail = decode::<Detail>(Some(0), value.to_string().as_bytes(), &[]).unwrap();
+        value["issue"]["createdAt"] = json!("2026-09-18T05:00:00-05:00");
+        value["issue"]["updatedAt"] = json!("2026-09-18T13:55:00.123+02:00");
+        let detail = decode::<Detail>(value.to_string().as_bytes()).unwrap();
         let now = DateTime::parse_from_rfc3339("2026-09-18T12:00:00.123Z")
             .unwrap()
             .timestamp_millis();
@@ -1654,10 +1859,10 @@ mod tests {
             Some(json!([])),
         ] {
             if let Some(invalid) = invalid {
-                value["createdAt"] = invalid.clone();
-                value["updatedAt"] = invalid;
+                value["issue"]["createdAt"] = invalid.clone();
+                value["issue"]["updatedAt"] = invalid;
             }
-            let detail = decode::<Detail>(Some(0), value.to_string().as_bytes(), &[]).unwrap();
+            let detail = decode::<Detail>(value.to_string().as_bytes()).unwrap();
             assert!(detail.issue.created_at.is_none() && detail.issue.updated_at.is_none());
             assert_eq!(
                 issue_lines(&detail.issue, false, 100, now_ms())
@@ -1715,7 +1920,7 @@ mod tests {
         reply(&mut state, &timestamped_search());
         assert_eq!(state.swamp.sort, 0);
         assert_eq!(state.swamp.selected_number(), Some(3));
-        let count = state.swamp.commands.len();
+        let count = state.swamp.requests.len();
         for (sort, expected) in [
             [3, 2, 1, 6, 5, 4],
             [1, 3, 2, 6, 5, 4],
@@ -1738,7 +1943,7 @@ mod tests {
                 expected
             );
             assert_eq!(state.swamp.selected_number(), Some(3));
-            assert_eq!(state.swamp.commands.len(), count, "sorting stays local");
+            assert_eq!(state.swamp.requests.len(), count, "sorting stays local");
             assert!(state.swamp.header().contains("6 of 2219"));
         }
         key(&mut state, BareKey::Char('o'));
@@ -1749,7 +1954,7 @@ mod tests {
         key(&mut state, BareKey::Up);
         key(&mut state, BareKey::Enter);
         assert_eq!(state.swamp.sort, 2);
-        assert_eq!(state.swamp.commands.len(), count);
+        assert_eq!(state.swamp.requests.len(), count);
     }
 
     #[test]
@@ -1795,10 +2000,10 @@ mod tests {
         state.render(12, 80);
         assert!(state.shows_an_age());
         state.poll_swamp(2 * REFRESH_MS, true);
-        let count = state.swamp.commands.len();
+        let count = state.swamp.requests.len();
         state.age_minute = now_ms() / REFRESH_MS - 1;
         assert!(state.update(Event::Timer(FractionalSeconds::new(0.0))));
-        assert_eq!(state.swamp.commands.len(), count);
+        assert_eq!(state.swamp.requests.len(), count);
         assert!(!state.update(Event::Timer(FractionalSeconds::new(0.0))));
         key(&mut state, BareKey::Enter);
         assert!(!state.shows_an_age(), "details use precise timestamps");
@@ -1833,49 +2038,35 @@ mod tests {
         choose(&mut state, 's', "open");
         let stale = context(&state);
         choose(&mut state, 't', "bug");
-        choose(&mut state, 'f', "  cli tag  ");
-        assert_eq!(state.swamp.source, "cli tag");
+        choose(&mut state, 'f', "  cli-tag  ");
+        assert_eq!(state.swamp.source, "cli-tag");
         choose(&mut state, '/', "two words");
-        assert_eq!(state.swamp.commands.len(), 2);
-        state.swamp_result(Some(0), br#"{"issues":[],"total":0}"#, &[], &stale);
+        assert_eq!(state.swamp.requests.len(), 2);
+        state.swamp_web_result(200, &server(), EMPTY.as_bytes(), &stale);
         assert_eq!(state.swamp.issues().len(), 2, "superseded result discarded");
         assert_eq!(
-            state.swamp.commands.last().unwrap().0,
-            [
-                "swamp",
-                "issue",
-                "search",
-                "--json",
-                "--limit",
-                "100",
-                "--status",
-                "open",
-                "--type",
-                "bug",
-                "--source",
-                "cli tag",
-                "two words"
-            ]
+            state.swamp.requests.last().unwrap().0.url,
+            "https://swamp-club.com/api/v1/lab/issues?q=two+words&type=bug&status=open&source=cli-tag&limit=100"
         );
         reply(&mut state, SEARCH);
         key(&mut state, BareKey::Char('f'));
         key(&mut state, BareKey::Backspace);
         key(&mut state, BareKey::Esc);
-        assert_eq!(state.swamp.source, "cli tag");
+        assert_eq!(state.swamp.source, "cli-tag");
         key(&mut state, BareKey::Char('f'));
         clear_source(&mut state);
-        type_text(&mut state, "--help");
-        let count = state.swamp.commands.len();
+        type_text(&mut state, "cli tag");
+        let count = state.swamp.requests.len();
         key(&mut state, BareKey::Enter);
         assert!(state.swamp.is_editing());
-        assert_eq!(state.swamp.commands.len(), count);
-        assert_eq!(state.swamp.source, "cli tag");
+        assert_eq!(state.swamp.requests.len(), count);
+        assert_eq!(state.swamp.source, "cli-tag");
         assert!(state
             .swamp
             .list_error
             .as_ref()
             .unwrap()
-            .contains("Source must"));
+            .contains("must be 1-64 letters"));
         clear_source(&mut state);
         key(&mut state, BareKey::Enter);
         assert!(state.swamp.source.is_empty());
@@ -1885,27 +2076,27 @@ mod tests {
         assert_eq!((state.swamp.status, state.swamp.kind), (0, 0));
         reply(&mut state, SEARCH);
         assert_eq!(
-            state.swamp.commands.last().unwrap().0,
-            search_args("two words", "", "", "").unwrap()
+            state.swamp.requests.last().unwrap().0.url,
+            search_url("two words", "", "", "")
         );
     }
 
     #[test]
     fn select_typeahead_is_provisional_and_unmatched_input_cannot_commit() {
         let mut state = loaded();
-        let count = state.swamp.commands.len();
+        let count = state.swamp.requests.len();
         key(&mut state, BareKey::Char('s'));
         type_text(&mut state, "iprg");
         assert_eq!(state.swamp.status, 0);
-        assert_eq!(state.swamp.commands.len(), count);
+        assert_eq!(state.swamp.requests.len(), count);
         key(&mut state, BareKey::Enter);
         assert_eq!(STATUSES[state.swamp.status], "in_progress");
         assert!(!state.swamp.is_editing());
         reply(&mut state, SEARCH);
-        let count = state.swamp.commands.len();
+        let count = state.swamp.requests.len();
         choose(&mut state, 's', "iprg");
         assert_eq!(
-            state.swamp.commands.len(),
+            state.swamp.requests.len(),
             count,
             "unchanged commit does not search"
         );
@@ -1914,13 +2105,13 @@ mod tests {
         key(&mut state, BareKey::Enter);
         assert!(state.swamp.is_editing());
         assert_eq!(state.swamp.kind, 0);
-        assert_eq!(state.swamp.commands.len(), count);
+        assert_eq!(state.swamp.requests.len(), count);
         key(&mut state, BareKey::Esc);
         key(&mut state, BareKey::Char('t'));
         key(&mut state, BareKey::Down);
         key(&mut state, BareKey::Esc);
         assert_eq!(state.swamp.kind, 0);
-        assert_eq!(state.swamp.commands.len(), count);
+        assert_eq!(state.swamp.requests.len(), count);
         key(&mut state, BareKey::Char('t'));
         key(&mut state, BareKey::Down);
         key(&mut state, BareKey::Enter);
@@ -1934,7 +2125,7 @@ mod tests {
         reply(&mut state, SEARCH);
         choose(&mut state, 'f', "");
         assert_eq!(
-            state.swamp.commands.len(),
+            state.swamp.requests.len(),
             2,
             "unchanged source does not search"
         );
@@ -1993,10 +2184,10 @@ mod tests {
                 .overlay_rect()
                 .unwrap();
             let y = rect.y as isize + if shortcut == 'f' { 0 } else { 1 };
-            let count = state.swamp.commands.len();
+            let count = state.swamp.requests.len();
             state.on_mouse(Mouse::LeftClick(y, rect.x));
             state.render(14, 80);
-            assert_eq!(state.swamp.commands.len(), count);
+            assert_eq!(state.swamp.requests.len(), count);
             assert!(state.swamp.opened.is_none());
             state.on_mouse(Mouse::Release(y + 1, rect.x));
             assert!(
@@ -2008,7 +2199,7 @@ mod tests {
             assert!(!state.swamp.is_editing());
             assert!(state.swamp.opened.is_none());
             let expected_count = count + usize::from(shortcut != 'o');
-            assert_eq!(state.swamp.commands.len(), expected_count);
+            assert_eq!(state.swamp.requests.len(), expected_count);
             match shortcut {
                 's' => assert_eq!(STATUSES[state.swamp.status], "open"),
                 't' => assert_eq!(TYPES[state.swamp.kind], "bug"),
@@ -2021,7 +2212,7 @@ mod tests {
             state.on_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize + 1, 79));
             assert!(!state.swamp.is_editing());
             assert!(state.swamp.opened.is_none());
-            assert_eq!(state.swamp.commands.len(), expected_count);
+            assert_eq!(state.swamp.requests.len(), expected_count);
         }
     }
 
@@ -2089,7 +2280,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_output_and_command_errors_are_explained() {
+    fn malformed_replies_and_http_errors_are_explained() {
         for bytes in [
             &b""[..],
             b"not JSON",
@@ -2098,80 +2289,64 @@ mod tests {
             br#"{"issues":[],"total":"1"}"#,
             b"\xff",
         ] {
-            assert!(decode::<Search>(Some(0), bytes, &[])
+            assert!(decode::<Search>(bytes)
                 .unwrap_err()
-                .contains("Malformed Swamp response"));
+                .contains("unexpected reply from swamp-club"));
         }
         let bad = DETAIL.replace(
             r#""createdAt":"2026-09-16T16:20:51.953Z""#,
             r#""createdAt":42"#,
         );
-        assert!(decode::<Detail>(Some(0), bad.as_bytes(), &[]).is_err());
+        assert!(decode::<Detail>(bad.as_bytes()).is_err());
         assert_eq!(
-            decode::<Search>(
-                Some(1),
-                br#"{"error":"Could not connect: fetch failed"}"#,
-                &[]
-            )
-            .unwrap_err(),
-            "Could not connect: fetch failed"
+            Search::from_reply(400, br#"{"error":"Invalid status filter"}"#).unwrap_err(),
+            "HTTP 400: Invalid status filter"
         );
-        assert!(
-            decode::<Search>(Some(2), &[], b"No such file or directory (os error 2)")
-                .unwrap_err()
-                .contains("command not found")
-        );
-        assert!(decode::<Search>(Some(127), &[], &[])
+        assert!(Detail::from_reply(404, br#"{"error":"Issue not found"}"#)
             .unwrap_err()
-            .contains("command not found"));
-        assert_eq!(
-            decode::<Search>(Some(2), &[], b"Permission denied (os error 13)").unwrap_err(),
-            "Permission denied (os error 13)"
-        );
-        assert!(decode::<Search>(None, &[], &[])
+            .contains("Issue not found"));
+        assert!(Search::from_reply(401, br#"{"error":"Unauthorized"}"#)
             .unwrap_err()
-            .contains("command failed"));
+            .contains("swamp auth login"));
+        let limited = swamp_lab::parse::<lab::SearchResponse>(
+            429,
+            &BTreeMap::from([("retry-after".into(), "30".into())]),
+            br#"{"error":"Rate limit exceeded"}"#,
+        )
+        .unwrap_err();
+        assert!(limited.to_string().contains("retry in 30s"));
     }
 
     #[test]
-    fn keywords_are_single_arguments_and_statuses_use_the_cli_spelling() {
+    fn search_text_is_one_encoded_parameter_and_statuses_use_the_api_spelling() {
         assert_eq!(
-            search_args("", "", "", "").unwrap(),
-            ["swamp", "issue", "search", "--json", "--limit", "100"]
+            search_url("", "", "", ""),
+            "https://swamp-club.com/api/v1/lab/issues?limit=100"
         );
-        let query = "two words; $(touch /tmp/no) `echo no`";
+        let query = "two words; $(touch /tmp/no) `echo no` --help";
         assert_eq!(
-            search_args(query, "in_progress", "", "").unwrap(),
-            [
-                "swamp",
-                "issue",
-                "search",
-                "--json",
-                "--limit",
-                "100",
-                "--status",
-                "in_progress",
-                query
-            ]
+            search_url(query, "in_progress", "", ""),
+            "https://swamp-club.com/api/v1/lab/issues?q=two+words%3B+%24%28touch+%2Ftmp%2Fno%29+%60echo+no%60+--help\
+             &status=in_progress&limit=100"
         );
-        assert!(search_args("--help", "", "", "").is_err());
+        assert!(search_query(&"q".repeat(201), "", "", "").is_err());
         let mut state = loaded();
         for status in STATUSES.iter().skip(1).chain([&STATUSES[0]]) {
             choose(&mut state, 's', status_label(status));
-            let args = &state.swamp.commands.last().unwrap().0;
-            assert_eq!(*args, search_args("", status, "", "").unwrap());
+            let url = &state.swamp.requests.last().unwrap().0.url;
+            assert_eq!(*url, search_url("", status, "", ""));
             reply(&mut state, SEARCH);
         }
         assert_eq!(state.swamp.status, 0);
         key(&mut state, BareKey::Char('/'));
-        for ch in "--help".chars() {
+        for ch in "q".repeat(201).chars() {
             key(&mut state, BareKey::Char(ch));
         }
-        let commands = state.swamp.commands.len();
+        let commands = state.swamp.requests.len();
         key(&mut state, BareKey::Enter);
         assert!(state.swamp.is_editing());
         assert_eq!(state.swamp.query, "");
-        assert_eq!(state.swamp.commands.len(), commands);
+        assert_eq!(state.swamp.requests.len(), commands);
     }
 
     #[test]
@@ -2183,7 +2358,7 @@ mod tests {
         }
         key(&mut state, BareKey::Esc);
         assert_eq!(state.swamp.query, "");
-        assert_eq!(state.swamp.commands.len(), 1);
+        assert_eq!(state.swamp.requests.len(), 1);
         key(&mut state, BareKey::Char('/'));
         key(&mut state, BareKey::Char('a'));
         key(&mut state, BareKey::Enter);
@@ -2192,27 +2367,27 @@ mod tests {
         key(&mut state, BareKey::Backspace);
         key(&mut state, BareKey::Char('b'));
         key(&mut state, BareKey::Enter);
-        assert_eq!(state.swamp.commands.len(), 2, "wait for the first process");
+        assert_eq!(state.swamp.requests.len(), 2, "wait for the first process");
         assert_eq!(state.swamp.query, "b");
-        reply(&mut state, r#"{"issues":[],"total":0}"#);
+        reply(&mut state, EMPTY);
         assert_eq!(
             state.swamp.issues().len(),
             2,
             "ignore old query's empty results"
         );
-        assert_eq!(state.swamp.commands.len(), 3);
-        assert_eq!(state.swamp.commands.last().unwrap().0.last().unwrap(), "b");
-        assert!(!state.swamp_result(Some(0), SEARCH.as_bytes(), &[], &old));
+        assert_eq!(state.swamp.requests.len(), 3);
+        assert!(state.swamp.requests.last().unwrap().0.url.contains("?q=b&"));
+        assert!(!state.swamp_web_result(200, &server(), SEARCH.as_bytes(), &old));
         assert!(state.swamp.pending.is_some());
-        reply(&mut state, r#"{"issues":[],"total":0}"#);
+        reply(&mut state, EMPTY);
         assert!(state.swamp.issues().is_empty());
         assert!(state.swamp.pending.is_none());
         key(&mut state, BareKey::Char('/'));
         key(&mut state, BareKey::Backspace);
         key(&mut state, BareKey::Enter);
         assert_eq!(
-            state.swamp.commands.last().unwrap().0,
-            search_args("", "", "", "").unwrap()
+            state.swamp.requests.last().unwrap().0.url,
+            search_url("", "", "", "")
         );
     }
 
@@ -2228,7 +2403,7 @@ mod tests {
         assert_eq!(state.swamp.selected, 1);
         assert_eq!(state.swamp.list_scroll, None);
         state.poll_swamp(2 * REFRESH_MS, false);
-        reply(&mut state, r#"{"error":"Network unavailable"}"#);
+        reply_status(&mut state, 503, r#"{"error":"Network unavailable"}"#);
         assert_eq!(state.swamp.issues()[state.swamp.selected].number, 2180);
         assert!(state.swamp.note().unwrap().contains("Network unavailable"));
         state.poll_swamp(3 * REFRESH_MS, false);
@@ -2236,7 +2411,7 @@ mod tests {
         assert_eq!(state.swamp.selected, 1);
         assert!(!state.swamp.has_error());
         state.poll_swamp(4 * REFRESH_MS, false);
-        reply(&mut state, r#"{"issues":[],"total":0}"#);
+        reply(&mut state, EMPTY);
         assert_eq!(state.swamp.selected, 0);
         key(&mut state, BareKey::Enter);
         assert_eq!(state.swamp.opened, None);
@@ -2245,35 +2420,35 @@ mod tests {
     #[test]
     fn refreshes_only_when_visible_and_never_overlap() {
         let mut state = reader();
-        let count = state.swamp.commands.len();
+        let count = state.swamp.requests.len();
         state.swamp.last_refresh = Some(0);
         assert!(!state.poll_swamp(REFRESH_MS - 1, false));
         assert!(state.poll_swamp(REFRESH_MS, false));
-        assert_eq!(state.swamp.commands.len(), count + 1);
+        assert_eq!(state.swamp.requests.len(), count + 1);
         assert!(!state.poll_swamp(REFRESH_MS * 2, true));
         assert!(!state.poll_swamp(REFRESH_MS * 2, false));
         state.switch_surface(Surface::Agents);
         reply(&mut state, SEARCH);
         assert!(state.swamp.detail_wanted);
         assert!(!state.poll_swamp(REFRESH_MS * 3, true));
-        assert_eq!(state.swamp.commands.len(), count + 1);
+        assert_eq!(state.swamp.requests.len(), count + 1);
         state.switch_surface(Surface::Swamp);
         reply(&mut state, SEARCH);
         assert_eq!(
-            state.swamp.commands.last().unwrap().0,
-            ["swamp", "issue", "get", "2180", "--json"]
+            state.swamp.requests.last().unwrap().0.url,
+            "https://swamp-club.com/api/v1/lab/issues/2180"
         );
         reply(&mut state, DETAIL);
-        let count = state.swamp.commands.len();
+        let count = state.swamp.requests.len();
         state.swamp_visibility(false);
         assert!(!state.poll_swamp(i64::MAX, true));
-        assert_eq!(state.swamp.commands.len(), count);
+        assert_eq!(state.swamp.requests.len(), count);
         state.swamp_visibility(true);
-        assert_eq!(state.swamp.commands.len(), count + 1);
+        assert_eq!(state.swamp.requests.len(), count + 1);
         reply(&mut state, SEARCH);
         reply(&mut state, DETAIL);
         assert_eq!(
-            state.swamp.commands.len(),
+            state.swamp.requests.len(),
             count + 2,
             "reopening refreshes both list and reader"
         );
@@ -2287,15 +2462,17 @@ mod tests {
                 ..Default::default()
             };
             state.swamp.permission = Permission::Granted;
+            state.swamp.credentials = Some(Credentials::anonymous());
+            state.swamp.keep_credentials = true;
             assert!(!state.poll_swamp(0, true));
             if surface_event {
                 assert!(!state.update(Event::Visible(true)));
             }
             assert!(!state.update(Event::PaneUpdate(PaneManifest::default())));
             assert!(!state.poll_swamp(REFRESH_MS, true));
-            assert!(state.swamp.commands.is_empty());
+            assert!(state.swamp.requests.is_empty());
             assert!(state.update(pane_update(state.own_plugin_id, false)));
-            assert_eq!(state.swamp.commands.len(), 1);
+            assert_eq!(state.swamp.requests.len(), 1);
         }
     }
 
@@ -2317,18 +2494,18 @@ mod tests {
             assert!(!state.update(Event::PaneUpdate(PaneManifest::default())));
             assert!(!state.swamp.visible());
             assert!(!state.poll_swamp(i64::MAX, true));
-            assert!(state.swamp.commands.is_empty());
+            assert!(state.swamp.requests.is_empty());
 
             assert!(state.update(restore[1].clone()));
             assert!(state.swamp.visible());
-            assert_eq!(state.swamp.commands.len(), 1);
+            assert_eq!(state.swamp.requests.len(), 1);
             reply(&mut state, SEARCH);
             for event in restore {
                 assert!(!state.update(event));
             }
             assert!(!state.update(Event::PaneUpdate(PaneManifest::default())));
             assert!(state.swamp.visible());
-            assert_eq!(state.swamp.commands.len(), 1, "refresh only on reopening");
+            assert_eq!(state.swamp.requests.len(), 1, "refresh only on reopening");
         }
     }
 
@@ -2337,7 +2514,7 @@ mod tests {
         for surface_hidden in [false, true] {
             let mut state = reader();
             state.poll_swamp(REFRESH_MS, true);
-            let count = state.swamp.commands.len();
+            let count = state.swamp.requests.len();
             let pending = context(&state);
             if surface_hidden {
                 state.update(Event::Visible(false));
@@ -2355,27 +2532,27 @@ mod tests {
                 assert!(!state.update(Event::Visible(true)));
             }
             assert!(!state.poll_swamp(i64::MAX, true));
-            assert!(!state.update(Event::RunCommandResult(
-                Some(0),
+            assert!(!state.update(Event::WebRequestResult(
+                200,
+                server(),
                 SEARCH.as_bytes().to_vec(),
-                vec![],
                 pending,
             )));
             assert!(state.swamp.pending.is_none());
             assert!(state.swamp.detail_wanted);
-            assert_eq!(state.swamp.commands.len(), count);
+            assert_eq!(state.swamp.requests.len(), count);
 
             if surface_hidden {
                 assert!(state.update(Event::Visible(true)));
             } else {
                 assert!(state.update(pane_update(state.own_plugin_id, false)));
             }
-            assert_eq!(state.swamp.commands.len(), count + 1);
+            assert_eq!(state.swamp.requests.len(), count + 1);
             reply(&mut state, SEARCH);
             reply(&mut state, DETAIL);
             assert!(!state.update(pane_update(state.own_plugin_id, false)));
             assert!(!state.update(Event::Visible(true)));
-            assert_eq!(state.swamp.commands.len(), count + 2);
+            assert_eq!(state.swamp.requests.len(), count + 2);
         }
     }
 
@@ -2385,7 +2562,7 @@ mod tests {
             let mut state = ready();
             state.swamp.permission = Permission::Unrequested;
             state.poll_swamp(0, true);
-            assert!(state.swamp.commands.is_empty());
+            assert!(state.swamp.requests.is_empty());
             assert!(state
                 .swamp
                 .note()
@@ -2405,13 +2582,13 @@ mod tests {
                 state.update(Event::Visible(true));
             }
             assert!(!state.update(Event::PermissionRequestResult(PermissionStatus::Granted)));
-            assert!(state.swamp.commands.is_empty());
+            assert!(state.swamp.requests.is_empty());
             if surface_hidden {
                 state.update(Event::Visible(true));
             } else {
                 state.update(pane_update(state.own_plugin_id, false));
             }
-            assert_eq!(state.swamp.commands.len(), 1);
+            assert_eq!(state.swamp.requests.len(), 1);
         }
     }
 
@@ -2423,7 +2600,7 @@ mod tests {
         reply(&mut state, SEARCH);
         let mut wrong_context = context(&state);
         wrong_context.insert(ISSUE_NUMBER.into(), "2254".into());
-        assert!(!state.swamp_result(Some(0), DETAIL.as_bytes(), &[], &wrong_context));
+        assert!(!state.swamp_web_result(200, &server(), DETAIL.as_bytes(), &wrong_context));
         assert!(state.swamp.pending.is_some());
         reply(&mut state, &DETAIL.replace("2180", "2254"));
         assert!(state
@@ -2447,10 +2624,10 @@ mod tests {
         key(&mut state, BareKey::Up);
         key(&mut state, BareKey::Enter);
         assert_eq!(state.swamp.opened, Some(2254));
-        state.swamp_result(Some(0), DETAIL.as_bytes(), &[], &old);
+        state.swamp_web_result(200, &server(), DETAIL.as_bytes(), &old);
         assert!(state.swamp.detail.is_none());
         assert_eq!(context(&state).get(ISSUE_NUMBER).unwrap(), "2254");
-        assert!(!state.swamp_result(Some(0), DETAIL.as_bytes(), &[], &old));
+        assert!(!state.swamp_web_result(200, &server(), DETAIL.as_bytes(), &old));
         reply(&mut state, &DETAIL.replace("2180", "2254"));
         assert_eq!(state.swamp.detail.as_ref().unwrap().issue.number, 2254);
     }
@@ -2530,7 +2707,7 @@ mod tests {
                 assert!(state.swamp.last_body_rows <= rows.saturating_sub(1));
             }
             if cols > 0 {
-                let detail = decode::<Detail>(Some(0), DETAIL.as_bytes(), &[]).unwrap();
+                let detail = decode::<Detail>(DETAIL.as_bytes()).unwrap();
                 assert!(detail_lines(&detail, cols)
                     .iter()
                     .all(|line| line.text.width() <= cols));
@@ -2594,7 +2771,7 @@ mod tests {
 
     #[test]
     fn issue_colors_survive_selection_wrapping_and_clipping() {
-        let mut detail = decode::<Detail>(Some(0), DETAIL.as_bytes(), &[]).unwrap();
+        let mut detail = decode::<Detail>(DETAIL.as_bytes()).unwrap();
         detail.issue.title = "界面 é title".into();
         detail.issue.kind = "種類".into();
         for (status, color) in [
@@ -2688,7 +2865,7 @@ mod tests {
         let mut state = loaded();
         let issues = (0..20)
             .map(|_| {
-                decode::<Search>(Some(0), SEARCH.as_bytes(), &[])
+                decode::<Search>(SEARCH.as_bytes())
                     .unwrap()
                     .issues
                     .remove(0)
@@ -2763,23 +2940,168 @@ mod tests {
         assert_eq!(state.swamp.opened, Some(2180));
     }
 
+    /// Answers the pending `auth.json` read with `file` as its output.
+    fn answer_login(state: &mut State, file: &[u8]) {
+        let context = state.swamp.commands.last().unwrap().1.clone();
+        state.swamp_result(Some(0), file, &[], &context);
+    }
+
+    fn login(key: &str) -> Vec<u8> {
+        format!(
+            r#"{{"serverUrl":"https://lab.example.test","apiKey":"{key}","username":"keeper"}}"#
+        )
+        .into_bytes()
+    }
+
+    fn sent_key(state: &State) -> Option<String> {
+        let (request, _) = state.swamp.requests.last().unwrap();
+        request.headers.get("x-api-key").cloned()
+    }
+
     #[test]
-    #[ignore = "manual check: requires the installed authenticated Swamp CLI and network"]
-    fn installed_swamp_cli() {
-        let output = std::process::Command::new("swamp")
-            .args(&search_args("", "", "", "").unwrap()[1..])
+    fn credentials_are_read_at_the_start_of_every_refresh() {
+        let mut state = ready();
+        state.swamp.keep_credentials = false;
+        state.poll_swamp(0, true);
+        assert!(state.swamp.requests.is_empty());
+        let (argv, context) = state.swamp.commands.last().unwrap().clone();
+        assert_eq!(argv, swamp_lab::auth::auth_json_argv());
+        // A reply that is not the pending read is ignored, a web reply included.
+        assert!(!state.swamp_web_result(200, &server(), SEARCH.as_bytes(), &context));
+        answer_login(&mut state, &login("swamp_k"));
+        let (request, _) = state.swamp.requests.last().unwrap();
+        assert_eq!(
+            request.url,
+            "https://lab.example.test/api/v1/lab/issues?limit=100"
+        );
+        assert_eq!(sent_key(&state).as_deref(), Some("swamp_k"));
+        reply(&mut state, SEARCH);
+        assert_eq!(
+            state.swamp.issues()[0].url,
+            "https://lab.example.test/lab/2254"
+        );
+        // Opening an issue within the cycle reuses the login.
+        state.render(10, 80);
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.requests.len(), 2);
+        assert_eq!(state.swamp.commands.len(), 1);
+        assert_eq!(sent_key(&state).as_deref(), Some("swamp_k"));
+        reply(&mut state, DETAIL);
+        // The next refresh reads it again, and so picks up a key switched since.
+        state.poll_swamp(REFRESH_MS, false);
+        assert_eq!(state.swamp.commands.len(), 2);
+        answer_login(&mut state, &login("swamp_k2"));
+        assert_eq!(sent_key(&state).as_deref(), Some("swamp_k2"));
+    }
+
+    #[test]
+    fn a_login_after_an_anonymous_start_is_picked_up_on_refresh() {
+        let mut state = ready();
+        state.swamp.keep_credentials = false;
+        state.poll_swamp(0, true);
+        answer_login(&mut state, b"");
+        assert_eq!(sent_key(&state), None);
+        reply(&mut state, SEARCH);
+        state.poll_swamp(REFRESH_MS, false);
+        answer_login(&mut state, &login("swamp_k"));
+        assert_eq!(sent_key(&state).as_deref(), Some("swamp_k"));
+    }
+
+    #[test]
+    fn no_login_is_anonymous_and_an_unreadable_login_waits_for_a_retry() {
+        let mut state = ready();
+        state.swamp.keep_credentials = false;
+        state.poll_swamp(0, true);
+        answer_login(&mut state, b"");
+        assert_eq!(sent_key(&state), None);
+
+        let mut state = ready();
+        state.swamp.keep_credentials = false;
+        state.poll_swamp(0, true);
+        let context = state.swamp.commands.last().unwrap().1.clone();
+        state.swamp_result(Some(1), b"", b"Permission denied", &context);
+        assert!(state.swamp.requests.is_empty());
+        assert!(state.swamp.has_error());
+        assert!(state.swamp.note().unwrap().contains("Permission denied"));
+        state.poll_swamp(REFRESH_MS, true);
+        assert_eq!(state.swamp.commands.len(), 1, "no retry loop");
+        key(&mut state, BareKey::Char('r'));
+        assert_eq!(state.swamp.commands.len(), 2);
+        answer_login(&mut state, b"{not json");
+        assert!(state.swamp.note().unwrap().contains("auth.json"));
+    }
+
+    #[test]
+    fn a_rejected_key_is_reread_once_per_refresh_then_reported() {
+        let mut state = loaded();
+        state.swamp.keep_credentials = false;
+        state.poll_swamp(REFRESH_MS, true);
+        answer_login(&mut state, &login("swamp_old"));
+        reply_status(&mut state, 401, r#"{"error":"Unauthorized"}"#);
+        assert!(state.swamp.credentials.is_none());
+        answer_login(&mut state, &login("swamp_old"));
+        assert_eq!(state.swamp.requests.len(), 3, "the search went again");
+        reply_status(&mut state, 401, r#"{"error":"Unauthorized"}"#);
+        assert_eq!(state.swamp.commands.len(), 2, "only one reread");
+        assert!(state.swamp.note().unwrap().contains("swamp auth login"));
+        assert_eq!(state.swamp.issues().len(), 2, "the last good list stays");
+        // After `swamp auth login` again, the next refresh reads the new key and succeeds.
+        state.poll_swamp(2 * REFRESH_MS, false);
+        assert_eq!(state.swamp.commands.len(), 3);
+        answer_login(&mut state, &login("swamp_new"));
+        assert_eq!(sent_key(&state).as_deref(), Some("swamp_new"));
+        reply(&mut state, SEARCH);
+        assert!(!state.swamp.has_error());
+        assert!(!state.swamp.reloaded_after_401);
+    }
+
+    #[test]
+    #[ignore = "manual check: reads the host's swamp login and calls swamp-club over the network"]
+    fn live_swamp_club() {
+        let argv = swamp_lab::auth::auth_json_argv();
+        let output = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
             .output()
             .unwrap();
-        let search =
-            decode::<Search>(output.status.code(), &output.stdout, &output.stderr).unwrap();
-        assert!(search.issues.len() <= 100);
+        let file = swamp_lab::auth::auth_json_from_output(
+            output.status.code(),
+            &output.stdout,
+            &output.stderr,
+        )
+        .unwrap();
+        let credentials =
+            Credentials::resolve(&std::env::vars().collect(), file.as_deref()).unwrap();
+        let send = |request: swamp_lab::Request| {
+            use isahc::{ReadResponseExt, RequestExt};
+            let mut builder = isahc::Request::get(&request.url);
+            for (name, value) in &request.headers {
+                builder = builder.header(name, value);
+            }
+            let mut response = builder.body(()).unwrap().send().unwrap();
+            let headers = response
+                .headers()
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_owned()))
+                .collect::<BTreeMap<_, _>>();
+            (
+                response.status().as_u16(),
+                headers,
+                response.bytes().unwrap(),
+            )
+        };
+        let client = Client::new(&credentials);
+        let (status, headers, body) = send(
+            client
+                .search(&search_query("", "", "", "").unwrap())
+                .unwrap(),
+        );
+        let search = swamp_lab::parse::<lab::SearchResponse>(status, &headers, &body).unwrap();
+        let search = Search::from_lab(&search, &credentials);
+        assert!(search.issues.len() <= PAGE as usize);
         if let Some(issue) = search.issues.first() {
-            let output = std::process::Command::new("swamp")
-                .args(["issue", "get", &issue.number.to_string(), "--json"])
-                .output()
-                .unwrap();
-            let detail =
-                decode::<Detail>(output.status.code(), &output.stdout, &output.stderr).unwrap();
+            let (status, headers, body) = send(client.get(issue.number).unwrap());
+            let detail = swamp_lab::parse::<lab::IssueDetail>(status, &headers, &body).unwrap();
+            let detail = Detail::from_lab(&detail, &credentials);
             assert_eq!(detail.issue.number, issue.number);
             assert!(!detail_lines(&detail, 80).is_empty());
         }

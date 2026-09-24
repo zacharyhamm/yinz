@@ -12,6 +12,7 @@ zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }
 zellij-tile-markdown = { path = "../../zellij-tile-markdown" }
+swamp-lab = { path = "../swamp-lab" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }

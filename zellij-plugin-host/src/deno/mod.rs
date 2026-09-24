@@ -1647,7 +1647,7 @@ mod sdk_tests {
             globalThis.done = false;
             bind({load() {
                 const bytes = new Uint8Array([42, 0, 255, 128, 42]);
-                for (const verb of ['Post', 'Put', 'Delete']) {
+                for (const verb of ['Post', 'Put', 'Delete', 'Patch']) {
                     const request = zellij.webRequest({url: 'https://example.com', verb,
                         headers: {'content-type': 'application/octet-stream'}, body: bytes.subarray(1, 4),
                         context: {verb}, proxy: 'socks5://localhost:1080'});
@@ -1717,7 +1717,7 @@ mod sdk_tests {
                 () => zellij.runCommand({command: ['true'], maxBytesReturned: -1}),
                 () => zellij.runCommand({command: ['true'], maxBytesReturned: 1.5}),
                 () => zellij.runCommand({command: ['true'], context: {__zellij_async: 'collision'}}),
-                () => zellij.webRequest({url: ''}), () => zellij.webRequest({url: 'x', verb: 'Patch'}),
+                () => zellij.webRequest({url: ''}), () => zellij.webRequest({url: 'x', verb: 'Head'}),
                 () => zellij.webRequest({url: 'x', body: [1]}), () => zellij.webRequest({url: 'x', headers: []}),
                 () => zellij.webRequest({url: 'x', proxy: 1}),
                 ...[null, 1, true, [], {}].map(streamId => () => zellij.webRequest({url: 'x', streamId})),

@@ -2123,6 +2123,7 @@ pub enum HttpVerb {
     Post,
     Put,
     Delete,
+    Patch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

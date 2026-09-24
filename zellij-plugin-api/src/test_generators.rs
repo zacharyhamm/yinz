@@ -1455,6 +1455,7 @@ pub(crate) fn http_verbs(tc: &hegel::TestCase) -> HttpVerb {
         HttpVerb::Post,
         HttpVerb::Put,
         HttpVerb::Delete,
+        HttpVerb::Patch,
     ]))
 }
 

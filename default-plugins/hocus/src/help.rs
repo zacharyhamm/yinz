@@ -372,11 +372,19 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "swamp_issue_search",
-        "Search swamp-club Lab issues using the swamp program on the server PATH and its existing login. No active project or workflow server is needed. Optional query, type, status and source filters narrow the search. All statuses are searched by default. limit defaults to 100 and must be 1 to 100. Queries and source tags cannot start with '-'.",
+        "Search swamp-club Lab issues through the Lab API, as the login `swamp auth login` saved on this machine, or SWAMP_API_KEY. Without a login only public issues are found. No active project or workflow server is needed. Optional query, type, status, source and author filters narrow the search. All statuses are searched by default. limit defaults to 100 and must be 1 to 100; offset pages through the rest.",
     ),
     (
         "swamp_issue_get",
-        "Read a swamp-club Lab issue by its positive integer number, including its body, assignees, URL and comments. Uses the server's swamp program and existing login. No active project or workflow server is needed. This tool changes nothing.",
+        "Read a swamp-club Lab issue by its positive integer number, including its body, assignees, URL, comments and related issues. Uses the same login as swamp_issue_search. No active project or workflow server is needed. This tool changes nothing.",
+    ),
+    (
+        "swamp_issue_create",
+        "File a bug, feature or security issue on the swamp-club Lab under your swamp login. Secrets, emails, hostnames, IP addresses and home paths are redacted first, the way the swamp CLI redacts them, and the confirmation shows the redacted text that will be posted. Security issues are seen only by you and the admins; the rest are public. It asks first, every time.",
+    ),
+    (
+        "swamp_issue_comment",
+        "Comment on a swamp-club Lab issue under your swamp login. The comment is redacted first, like swamp_issue_create, and it asks first, every time.",
     ),
     (
         "github_read",

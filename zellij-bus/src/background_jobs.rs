@@ -1231,11 +1231,21 @@ fn web_url(url: &str) -> Result<url::Url> {
     Ok(url)
 }
 
+/// An allowlist, not a denylist: a plugin's custom header (`x-api-key`, `private-token`, …) may be
+/// a key, and the host cannot tell which, so only headers that cannot carry one cross origins.
 fn scrub_redirect_headers(headers: &mut BTreeMap<String, String>) {
     headers.retain(|name, _| {
-        !matches!(
+        matches!(
             name.to_ascii_lowercase().as_str(),
-            "authorization" | "cookie" | "cookie2" | "proxy-authorization" | "www-authenticate"
+            "accept"
+                | "accept-encoding"
+                | "accept-language"
+                | "content-language"
+                | "content-type"
+                | "user-agent"
+                | "range"
+                | "cache-control"
+                | "pragma"
         )
     });
 }
@@ -1256,6 +1266,7 @@ async fn send_web_request(
             HttpVerb::Post => Request::post(url.as_str()),
             HttpVerb::Put => Request::put(url.as_str()),
             HttpVerb::Delete => Request::delete(url.as_str()),
+            HttpVerb::Patch => Request::patch(url.as_str()),
         };
         for (header, value) in &headers {
             request = request.header(header.as_str(), value);
@@ -2398,18 +2409,20 @@ mod web_request_stream_tests {
         }
     }
 
-    /// Every credential-bearing header is dropped, in whatever case it was written; the rest
-    /// are kept.
+    /// Only the safelisted headers are kept, in whatever case they were written: a credential
+    /// header and a custom one alike are dropped, since a custom header may be a key.
     #[test]
-    fn scrub_redirect_headers_drops_every_credential_header() {
+    fn scrub_redirect_headers_keeps_only_safelisted_headers() {
         let mut headers = BTreeMap::from([
             ("Authorization".to_owned(), "secret".to_owned()),
             ("cookie".to_owned(), "secret".to_owned()),
             ("Cookie2".to_owned(), "secret".to_owned()),
             ("PROXY-AUTHORIZATION".to_owned(), "secret".to_owned()),
             ("Www-Authenticate".to_owned(), "secret".to_owned()),
-            ("X-Request-Id".to_owned(), "safe".to_owned()),
+            ("X-Api-Key".to_owned(), "secret".to_owned()),
+            ("X-Request-Id".to_owned(), "custom".to_owned()),
             ("Content-Type".to_owned(), "safe".to_owned()),
+            ("USER-AGENT".to_owned(), "safe".to_owned()),
         ]);
 
         scrub_redirect_headers(&mut headers);
@@ -2417,8 +2430,8 @@ mod web_request_stream_tests {
         assert_eq!(
             headers,
             BTreeMap::from([
-                ("X-Request-Id".to_owned(), "safe".to_owned()),
                 ("Content-Type".to_owned(), "safe".to_owned()),
+                ("USER-AGENT".to_owned(), "safe".to_owned()),
             ])
         );
     }
@@ -2427,12 +2440,14 @@ mod web_request_stream_tests {
         BTreeMap::from([
             ("Authorization".to_owned(), "Bearer secret".to_owned()),
             ("Cookie".to_owned(), "session=secret".to_owned()),
-            ("X-Request-Id".to_owned(), "safe".to_owned()),
+            ("X-Api-Key".to_owned(), "swamp_secret".to_owned()),
+            ("Accept".to_owned(), "application/json".to_owned()),
         ])
     }
 
     /// A redirect to another origin is followed without the credentials: the second request
-    /// carries neither the bearer token nor the cookie, but does keep the harmless header.
+    /// carries neither the bearer token, the cookie nor the API key, but does keep the harmless
+    /// header.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_cross_origin_redirect_drops_credentials() {
         let (target, redirected_request) = serve_capture().await;
@@ -2458,7 +2473,15 @@ mod web_request_stream_tests {
             header_line(&request, "cookie").is_none(),
             "the cookie followed a cross-origin redirect:\n{request}"
         );
-        assert!(header_line(&request, "x-request-id").is_some(), "{request}");
+        assert!(
+            header_line(&request, "x-api-key").is_none(),
+            "the API key followed a cross-origin redirect:\n{request}"
+        );
+        assert_eq!(
+            header_line(&request, "accept"),
+            Some("accept: application/json"),
+            "{request}"
+        );
     }
 
     /// Within one origin the credentials stay: an authenticated API that redirects must keep
@@ -2487,6 +2510,11 @@ mod web_request_stream_tests {
         assert_eq!(
             header_line(&request, "cookie"),
             Some("cookie: session=secret"),
+            "{request}"
+        );
+        assert_eq!(
+            header_line(&request, "x-api-key"),
+            Some("x-api-key: swamp_secret"),
             "{request}"
         );
     }
@@ -2533,8 +2561,9 @@ mod web_request_stream_tests {
     }
 
     /// The status and the verb together decide whether the redirected request is rewritten to a
-    /// bodiless GET: 303 rewrites any verb, 301 and 302 rewrite only POST, and 307 rewrites
-    /// nothing. Rewriting drops the payload too, so a POST body is never replayed as a GET.
+    /// bodiless GET: 303 rewrites any verb, 301 and 302 rewrite only POST, and 307 and 308
+    /// rewrite nothing - so PUT and PATCH keep their verb and body on everything but a 303.
+    /// Rewriting drops the payload too, so a POST body is never replayed as a GET.
     #[tokio::test(flavor = "multi_thread")]
     async fn redirect_status_and_verb_decide_the_rewrite() {
         for (status, verb, expected_method) in [
@@ -2542,6 +2571,11 @@ mod web_request_stream_tests {
             ("302 Found", HttpVerb::Post, "GET"),
             ("302 Found", HttpVerb::Put, "PUT"),
             ("303 See Other", HttpVerb::Put, "GET"),
+            ("301 Moved Permanently", HttpVerb::Patch, "PATCH"),
+            ("302 Found", HttpVerb::Patch, "PATCH"),
+            ("303 See Other", HttpVerb::Patch, "GET"),
+            ("307 Temporary Redirect", HttpVerb::Patch, "PATCH"),
+            ("308 Permanent Redirect", HttpVerb::Patch, "PATCH"),
             ("307 Temporary Redirect", HttpVerb::Post, "POST"),
         ] {
             let (url, redirected_request) = serve_redirect(status, "/final".to_owned()).await;

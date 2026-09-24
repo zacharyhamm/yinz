@@ -104,7 +104,7 @@ export interface RunCommandOptions {
 }
 export interface WebRequestOptions {
   url: string;
-  verb?: "Get" | "Post" | "Put" | "Delete";
+  verb?: "Get" | "Post" | "Put" | "Delete" | "Patch";
   headers?: Record<string, string>;
   body?: string | Uint8Array;
   context?: Record<string, string>;
@@ -439,7 +439,7 @@ export type KeyModifier = 'Ctrl' | 'Alt' | 'Shift' | 'Super';
 export type BareKey = 'PageDown' | 'PageUp' | 'Left' | 'Down' | 'Up' | 'Right' | 'Home' | 'End' | 'Backspace' | 'Delete' | 'Insert' | 'Tab' | 'Esc' | 'Enter' | 'CapsLock' | 'ScrollLock' | 'NumLock' | 'PrintScreen' | 'Pause' | 'Menu' | {F: number} | {Char: string};
 export interface KeyWithModifier {bare_key: BareKey; key_modifiers: KeyModifier[];}
 export type Mouse = Tagged<{ScrollUp: Integer; ScrollDown: Integer; ScrollLeft: Integer; ScrollRight: Integer; LeftClick: [Integer, Integer]; RightClick: [Integer, Integer]; Hold: [Integer, Integer]; Release: [Integer, Integer]; Hover: [Integer, Integer]}>;
-export type HttpVerb = 'Get' | 'Post' | 'Put' | 'Delete';
+export type HttpVerb = 'Get' | 'Post' | 'Put' | 'Delete' | 'Patch';
 export type PercentOrFixed = {Percent: Integer} | {Fixed: Integer};
 export interface FloatingPaneCoordinates {x: PercentOrFixed | null; y: PercentOrFixed | null; width: PercentOrFixed | null; height: PercentOrFixed | null; pinned: boolean | null; borderless: boolean | null;}
 export interface OverlayPlacement {kind: 'Dismissible' | 'Modal'; coordinates?: FloatingPaneCoordinates | null;}

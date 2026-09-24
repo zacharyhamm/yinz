@@ -14,6 +14,7 @@ mod events;
 mod extensions;
 mod help;
 mod history;
+mod lab;
 mod log;
 mod message;
 mod overlay;
@@ -1287,12 +1288,15 @@ impl State {
             // The three events a *parked* chat can still be owed. Each carries
             // the id of what it answers, which is what says whose it is; the
             // handlers themselves never learn a chat was off-screen.
-            Event::WebRequestResult(status, _headers, body, context) => {
+            Event::WebRequestResult(status, headers, body, context) => {
+                // The Lab tools read the headers (a 429's `Retry-After`); nothing else does.
+                let answer = |state: &mut Self| {
+                    state.finish_swamp(status, &headers, &body, &context)
+                        || state.on_response(status, &body, &context)
+                };
                 match self.owner_of(&context) {
-                    Some(index) => {
-                        self.with_parked(index, |state| state.on_response(status, &body, &context))
-                    },
-                    None => self.on_response(status, &body, &context),
+                    Some(index) => self.with_parked(index, answer),
+                    None => answer(self),
                 }
             },
             Event::WebRequestStreamChunk {

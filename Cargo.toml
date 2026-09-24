@@ -87,6 +87,7 @@ members = [
     "default-plugins/hocus-proto",
     "default-plugins/hocus-agentd",
     "default-plugins/hocus-store",
+    "default-plugins/swamp-lab",
     "zellij-client",
     "zellij-integration-tests",
     "zellij-bus",

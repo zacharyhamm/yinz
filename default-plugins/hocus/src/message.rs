@@ -292,6 +292,11 @@ pub enum Status {
     AwaitingSearch,
     /// The head is `openrouter_decisions`, waiting on its buffered `WebRequestResult`.
     AwaitingDecisions,
+    /// The head is a `swamp_issue_*` call, its login read, waiting on the Lab's
+    /// `WebRequestResult`. The server is kept to write issue URLs into the result.
+    AwaitingSwamp {
+        server_url: String,
+    },
     /// The head is owned by a registered TypeScript extension and is waiting on its private pipe reply.
     AwaitingExtension,
     /// The head of `pending` is a `plugin_reload` whose plugin has been asked to load, waiting
