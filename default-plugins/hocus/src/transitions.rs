@@ -460,6 +460,7 @@ impl State {
             Status::AwaitingCommand
             | Status::AwaitingSearch
             | Status::AwaitingDecisions
+            | Status::AwaitingSwamp { .. }
             | Status::ReviewingTool { .. }
             | Status::AwaitingExtension
             | Status::AwaitingPluginLoad
@@ -502,7 +503,7 @@ impl State {
         let head = self.pending.front();
         if matches!(
             self.status,
-            Status::AwaitingCommand | Status::AwaitingDecisions
+            Status::AwaitingCommand | Status::AwaitingDecisions | Status::AwaitingSwamp { .. }
         ) {
             if let Some(call) = head {
                 return Some(format!("{spinner} running: {}", call.name));

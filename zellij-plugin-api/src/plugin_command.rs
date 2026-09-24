@@ -361,6 +361,7 @@ impl From<ProtobufHttpVerb> for HttpVerb {
             ProtobufHttpVerb::Post => HttpVerb::Post,
             ProtobufHttpVerb::Put => HttpVerb::Put,
             ProtobufHttpVerb::Delete => HttpVerb::Delete,
+            ProtobufHttpVerb::Patch => HttpVerb::Patch,
         }
     }
 }
@@ -372,6 +373,7 @@ impl From<HttpVerb> for ProtobufHttpVerb {
             HttpVerb::Post => ProtobufHttpVerb::Post,
             HttpVerb::Put => ProtobufHttpVerb::Put,
             HttpVerb::Delete => ProtobufHttpVerb::Delete,
+            HttpVerb::Patch => ProtobufHttpVerb::Patch,
         }
     }
 }

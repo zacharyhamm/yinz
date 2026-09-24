@@ -590,7 +590,7 @@ fn sdk_async_helpers_have_precise_options_results_and_cancellation_types() {
             // @ts-expect-error context values must be strings
             zellij.runCommand({command: ['true'], context: {tag: 1}});
             // @ts-expect-error only host verbs are supported
-            zellij.webRequest({url: 'x', verb: 'Patch'});
+            zellij.webRequest({url: 'x', verb: 'Head'});
             // @ts-expect-error only strings or Uint8Array bodies
             zellij.webRequest({url: 'x', body: [1]});
             // @ts-expect-error stream IDs must be strings

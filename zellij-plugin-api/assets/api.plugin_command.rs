@@ -4065,6 +4065,7 @@ pub enum HttpVerb {
     Post = 1,
     Put = 2,
     Delete = 3,
+    Patch = 4,
 }
 impl HttpVerb {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -4077,6 +4078,7 @@ impl HttpVerb {
             HttpVerb::Post => "Post",
             HttpVerb::Put => "Put",
             HttpVerb::Delete => "Delete",
+            HttpVerb::Patch => "Patch",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -4086,6 +4088,7 @@ impl HttpVerb {
             "Post" => Some(Self::Post),
             "Put" => Some(Self::Put),
             "Delete" => Some(Self::Delete),
+            "Patch" => Some(Self::Patch),
             _ => None,
         }
     }

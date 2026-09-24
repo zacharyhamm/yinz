@@ -142,6 +142,11 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 crate_name: "default-plugins/hocus-store",
                 build: true,
             },
+            // The swamp-club Lab client. A library, like hocus-proto.
+            WorkspaceMember {
+                crate_name: "default-plugins/swamp-lab",
+                build: false,
+            },
             WorkspaceMember {
                 crate_name: "zellij-types",
                 build: false,

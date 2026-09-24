@@ -734,28 +734,6 @@ impl State {
         false
     }
 
-    pub(crate) fn start_swamp_issue(&mut self, call: &ToolCall) -> bool {
-        let argv = match tools::swamp_argv(&call.name, &call.arguments) {
-            Ok(argv) => argv,
-            Err(error) => {
-                self.finish_head(error);
-                return true;
-            },
-        };
-        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
-        run_command_with_output_limit(
-            &borrowed,
-            BTreeMap::new(),
-            std::path::PathBuf::from("."),
-            BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
-            MAX_TOOL_OUTPUT,
-        );
-        self.status = Status::AwaitingCommand;
-        self.pin_to_bottom();
-        self.arm_timer(FRAME_SECONDS);
-        false
-    }
-
     /// Run one of the Slack tools by shelling out to dobbs. The result comes back
     /// as `RunCommandResult` carrying this call's id, which is the only deferred
     /// path left through `on_command_result`.

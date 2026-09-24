@@ -9,6 +9,7 @@
 //! session with a real grid to read says the split happened and the rows went
 //! to the right pane.
 
+use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 use zellij_integration_tests::test_env::{write_git_repository, write_git_worktree};
 use zellij_integration_tests::{
@@ -748,22 +749,48 @@ fn vm_tab_focuses_a_pane_in_another_session_and_dismisses_the_panel() {
 
 #[test]
 fn swamp_issue_details_load_after_moving_the_panel_to_another_tab() {
-    let root = zellij_integration_tests::test_env::init();
-    let bin = root.join("swamp-bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    zellij_test_support::write_warm_script(
-        &bin.join("swamp"),
-        r#"case "$2" in
-search) echo '{"issues":[{"number":42,"title":"List proof","type":"bug","status":"open","author":"tester","url":"https://example.test/42"}],"total":1}' ;;
-get) echo '{"number":42,"title":"List proof","type":"bug","status":"open","author":"tester","url":"https://example.test/42","body":"Issue detail proof","assignees":[],"comments":[]}' ;;
-*) exit 1 ;;
-esac"#,
-    );
-    let path = std::env::var_os("PATH").unwrap_or_default();
+    let _root = zellij_integration_tests::test_env::init();
+    // The Lab API, served for as long as the test runs. No `auth.json` exists in the
+    // test's own HOME, so the panel calls it anonymously.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     std::env::set_var(
-        "PATH",
-        std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).unwrap(),
+        "SWAMP_CLUB_URL",
+        format!("http://{}", listener.local_addr().unwrap()),
     );
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let Ok(mut socket) = socket else { continue };
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") && socket.read_exact(&mut byte).is_ok() {
+                request.push(byte[0]);
+            }
+            let request = String::from_utf8_lossy(&request);
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let issue = r#"{"id":"i-42","number":42,"title":"List proof","type":"bug","status":"open","authorId":"u","authorUsername":"tester","source":"swamp","body":"Issue detail proof"}"#;
+            let body = if path.starts_with("/api/v1/lab/issues?") {
+                format!(r#"{{"issues":[{issue}],"total":1}}"#)
+            } else if path == "/api/v1/lab/issues/42" {
+                format!(
+                    r#"{{"issue":{issue},"audience":{{"visibility":"public","reasons":[]}},"comments":[]}}"#
+                )
+            } else {
+                r#"{"error":"not found"}"#.to_owned()
+            };
+            let status = if body.starts_with(r#"{"error""#) {
+                "404 Not Found"
+            } else {
+                "200 OK"
+            };
+            let _ = socket.write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(HOCUS_CONFIG)
         .start();
@@ -773,9 +800,7 @@ esac"#,
     for _ in 0..3 {
         zellij.send_stdin(b"\x1b[C");
     }
-    zellij.wait_until("command permission requested", |grid| {
-        grid.contains("Allow?")
-    });
+    zellij.wait_until("permission requested", |grid| grid.contains("Allow?"));
     zellij.send_stdin(&keys::key('y'));
     zellij.wait_until("issue list loaded", |grid| grid.contains("List proof"));
     zellij.send_stdin(&keys::ctrl('t'));
