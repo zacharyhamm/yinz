@@ -138,7 +138,7 @@ impl Screen {
                 self.sync_scroll_mode_if_scroll_changed(client_id, active_pane_was_scrolled)
                     .non_fatal();
                 if should_render {
-                    self.render(None).non_fatal();
+                    self.render().non_fatal();
                 }
             },
             Err(e) => {

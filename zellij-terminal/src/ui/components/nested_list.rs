@@ -1,6 +1,6 @@
 use super::{
-    is_too_high, parse_disabled, parse_indices, parse_opaque, parse_selected, parse_text,
-    stringify_text, Coordinates, Text,
+    is_too_high, is_too_wide, parse_disabled, parse_indices, parse_opaque, parse_selected,
+    parse_text, stringify_text, Coordinates, Text,
 };
 use crate::panes::terminal_character::{AnsiCode, CharacterStyles, RESET_STYLES};
 use zellij_types::style::Style;
@@ -38,6 +38,9 @@ pub fn nested_list(
         } else {
             "- "
         };
+        if is_too_wide(padding + bulletin.len(), 0, &coordinates) {
+            continue;
+        }
         let text_style = if line_item.text.disabled {
             let disabled_style = CharacterStyles::from(style_declaration)
                 .bold(Some(AnsiCode::Reset))
@@ -113,18 +116,8 @@ pub fn parse_nested_list_items<'a>(
 }
 
 fn parse_indentation_level(stringified: &mut String) -> usize {
-    let mut indentation_level = 0;
-    loop {
-        if stringified.is_empty() {
-            break;
-        }
-        if stringified.starts_with('|') {
-            stringified.remove(0);
-            indentation_level += 1;
-        } else {
-            break;
-        }
-    }
+    let indentation_level = stringified.bytes().take_while(|byte| *byte == b'|').count();
+    stringified.drain(..indentation_level);
     indentation_level
 }
 

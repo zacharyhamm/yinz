@@ -62,7 +62,6 @@ fn plugin_cursor_show_move_and_hide_render_without_session_reports() {
             plugin_id: PLUGIN_2,
             client_id,
             bytes: b"workflow".to_vec(),
-            ..Default::default()
         }]))
         .unwrap();
 
@@ -137,15 +136,11 @@ fn replayed_plugin_cursor_renders_without_session_reports() {
         )
         .unwrap();
     screen
-        .handle_plugin_render_assets(
-            vec![PluginRenderAsset {
-                plugin_id: PLUGIN_2,
-                client_id,
-                bytes: b"workflow".to_vec(),
-                ..Default::default()
-            }],
-            false,
-        )
+        .handle_plugin_render_assets(vec![PluginRenderAsset {
+            plugin_id: PLUGIN_2,
+            client_id,
+            bytes: b"workflow".to_vec(),
+        }])
         .unwrap();
     let server_rx = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(size);

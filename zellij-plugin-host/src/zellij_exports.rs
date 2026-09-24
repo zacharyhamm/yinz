@@ -7409,19 +7409,59 @@ fn try_rename_layout(
         return Err(format!("Layout '{}' not found", safe_old_name));
     }
 
-    // Step 5: Check if target file already exists (fail if it does - no overwrite)
-    if new_file_path.exists() {
-        return Err(format!(
-            "Layout '{}' already exists. Cannot rename '{}' to existing layout name.",
-            safe_new_name, safe_old_name
-        ));
-    }
-
-    // Step 6: Rename the file
-    std::fs::rename(&old_file_path, &new_file_path)
-        .map_err(|e| format!("Failed to rename layout file: {}", e))?;
-
+    rename_layout_file(&old_file_path, &new_file_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            format!(
+                "Layout '{}' already exists. Cannot rename '{}' to existing layout name.",
+                safe_new_name, safe_old_name
+            )
+        } else {
+            format!("Failed to rename layout file: {error}")
+        }
+    })?;
     Ok(())
+}
+
+fn rename_layout_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        use nix::fcntl::{renameat2, RenameFlags, AT_FDCWD};
+        renameat2(AT_FDCWD, from, AT_FDCWD, to, RenameFlags::RENAME_NOREPLACE)
+            .map_err(std::io::Error::from)
+    }
+    #[cfg(any(target_os = "macos", all(target_os = "linux", not(target_env = "gnu"))))]
+    {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        let from = CString::new(from.as_os_str().as_bytes())?;
+        let to = CString::new(to.as_os_str().as_bytes())?;
+        // Both paths are valid NUL-terminated strings and remain alive for the syscall.
+        #[cfg(target_os = "macos")]
+        let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (from, to);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "atomic layout rename without replacement is unavailable on this platform",
+        ))
+    }
 }
 
 fn edit_layout(env: &mut PluginEnv, layout_name: String, context: BTreeMap<String, String>) {
@@ -8042,6 +8082,7 @@ fn report_panic(env: &PluginEnv, msg: &str) {
     handle_plugin_crash(
         env.plugin_id,
         env.deno_generation,
+        Some(env.instance_id),
         msg.to_owned(),
         env.senders.clone(),
     );
@@ -9058,6 +9099,36 @@ mod permission_tests {
         try_save_layout(&env, "saved", "layout { pane; }", true).unwrap();
         assert!(std::fs::read_to_string(path).unwrap().contains("pane"));
         assert_eq!(std::fs::read_dir(layout_dir).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renaming_layouts_preserves_occupied_destinations_including_dangling_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = crate::test_env::test_env();
+        env.layout_dir = Some(temp.path().to_path_buf());
+        let source = temp.path().join("source.kdl");
+        let destination = temp.path().join("destination.kdl");
+        std::fs::write(&source, "layout {}").unwrap();
+        std::os::unix::fs::symlink(temp.path().join("missing"), &destination).unwrap();
+        assert!(try_rename_layout(&env, "source", "destination")
+            .unwrap_err()
+            .contains("already exists"));
+        assert!(destination.is_symlink());
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "layout {}");
+
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::write(&destination, "layout { pane; }").unwrap();
+        assert!(try_rename_layout(&env, "source", "destination").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "layout { pane; }"
+        );
+
+        std::fs::remove_file(&destination).unwrap();
+        try_rename_layout(&env, "source", "destination").unwrap();
+        assert!(!source.exists());
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "layout {}");
     }
 
     #[cfg(unix)]

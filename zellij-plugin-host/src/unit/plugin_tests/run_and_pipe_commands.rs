@@ -259,8 +259,8 @@ pub fn unblock_input_plugin_command() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let cache_folder = tempdir().unwrap();
     let cache_path = cache_folder.path().join("permissions_test.kdl");
-    let (plugin_thread_sender, screen_receiver, teardown) =
-        create_plugin_thread(Some(plugin_host_folder), None);
+    let (plugin_thread_sender, server_receiver, screen_receiver, teardown) =
+        create_plugin_thread_with_server_receiver(Some(plugin_host_folder), None);
     let plugin_should_float = Some(false);
     let plugin_title = Some("test_plugin".to_owned());
     let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
@@ -305,8 +305,11 @@ pub fn unblock_input_plugin_command() {
         None,
     ));
     wait_for_permissions(&received_screen_instructions);
+    let server_log = Watched::new(vec![]);
+    let server_thread = log_until_disconnect(&server_log, server_receiver);
 
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "message_name".to_owned(),
         payload: Some("message_payload".to_owned()),
@@ -321,22 +324,16 @@ pub fn unblock_input_plugin_command() {
         cli_client_id: client_id,
         source_pane_id: None,
     });
-    let plugin_bytes_events = Some(received_screen_instructions.wait_until_described(
-        "the plugin to unblock input_pipe_id",
-        default_timeout(),
-        |instructions| {
-            instructions.iter().find(|instruction| matches!(
-            instruction,
-            ScreenInstruction::PluginBytes(assets) if assets.iter().any(|asset| matches!(
-                asset.cli_pipes.get("input_pipe_id"), Some(crate::PipeStateChange::Unblock)
-            ))
-        )).cloned()
-        },
-        |log| describe_renders(log),
-    ));
+    server_log.wait_until("pipe success without screen acknowledgement", default_timeout(), |log| {
+        log.iter().any(|i| matches!(i, ServerInstruction::UnblockCliPipeInput(pipe) if pipe == "input_pipe_id")).then_some(())
+    });
     teardown();
     screen_thread.join().unwrap();
-    assert_snapshot!(format!("{:#?}", plugin_bytes_events));
+    server_thread.join().unwrap();
+    assert!(!server_log
+        .lock()
+        .iter()
+        .any(|i| matches!(i, ServerInstruction::CliPipeError(..))));
 }
 
 #[test]
@@ -348,8 +345,8 @@ pub fn block_input_plugin_command() {
     let plugin_host_folder = temp_folder.path().join("host");
     std::fs::create_dir(&plugin_host_folder).unwrap();
     let cache_path = temp_folder.path().join("permissions_test.kdl");
-    let (plugin_thread_sender, screen_receiver, teardown) =
-        create_plugin_thread(Some(plugin_host_folder), None);
+    let (plugin_thread_sender, server_receiver, screen_receiver, teardown) =
+        create_plugin_thread_with_server_receiver(Some(plugin_host_folder), None);
     let plugin_should_float = Some(false);
     let plugin_title = Some("test_plugin".to_owned());
     let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
@@ -394,8 +391,11 @@ pub fn block_input_plugin_command() {
         None,
     ));
     wait_for_permissions(&received_screen_instructions);
+    let server_log = Watched::new(vec![]);
+    let server_thread = log_until_disconnect(&server_log, server_receiver);
 
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "message_name_block".to_owned(),
         payload: Some("message_payload".to_owned()),
@@ -410,24 +410,32 @@ pub fn block_input_plugin_command() {
         cli_client_id: client_id,
         source_pane_id: None,
     });
-    let plugin_bytes_events = Some(received_screen_instructions.wait_until_described(
-        "the plugin to block its CLI input pipe",
+    received_screen_instructions.wait_until(
+        "pipe callback's requested render",
         default_timeout(),
-        |instructions| {
-            instructions
+        |log| {
+            rendered_assets(log)
                 .iter()
-                .find(|instruction| {
-                    matches!(instruction, ScreenInstruction::PluginBytes(assets) if assets.iter().any(|asset| {
-                        matches!(asset.cli_pipes.get("input_pipe_id"), Some(zellij_bus::plugins::PipeStateChange::Block))
-                    }))
-                })
-                .cloned()
+                .any(|(_, frame)| frame.contains("input_pipe_id blocked"))
+                .then_some(())
         },
-        |log| describe_renders(log),
+    );
+    assert!(!server_log.lock().iter().any(
+        |i| matches!(i, ServerInstruction::UnblockCliPipeInput(pipe) if pipe == "input_pipe_id")
     ));
+    plugin_thread_sender
+        .send(PluginInstruction::Unload(crate::PluginId::new(0)))
+        .unwrap();
+    server_log.wait_until("retirement fails an explicit hold", default_timeout(), |log| {
+        log.iter().any(|i| matches!(i, ServerInstruction::CliPipeError(pipe, _) if pipe == "input_pipe_id")).then_some(())
+    });
     teardown();
     screen_thread.join().unwrap();
-    assert_snapshot!(format!("{:#?}", plugin_bytes_events));
+    server_thread.join().unwrap();
+    assert!(server_log
+        .lock()
+        .iter()
+        .any(|i| matches!(i, ServerInstruction::CliPipeError(pipe, _) if pipe == "input_pipe_id")));
 }
 
 #[test]
@@ -494,6 +502,7 @@ pub fn pipe_output_plugin_command() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "pipe_output".to_owned(),
         payload: Some("message_payload".to_owned()),
@@ -580,6 +589,7 @@ pub fn pipe_message_to_plugin_plugin_command() {
     ));
     wait_for_permissions(&received_screen_instructions);
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "pipe_message_to_plugin".to_owned(),
         payload: Some("payload_sent_to_self".to_owned()),
@@ -1182,7 +1192,7 @@ pub fn cli_pipe_is_released_when_plugin_panics_while_handling_it() {
     let received_server_instructions = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
         received_server_instructions,
-        ServerInstruction::UnblockCliPipeInput,
+        ServerInstruction::CliPipeError,
         server_receiver,
         1
     );
@@ -1218,6 +1228,7 @@ pub fn cli_pipe_is_released_when_plugin_panics_while_handling_it() {
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "panic_while_handling_pipe".to_owned(),
         payload: None,
@@ -1239,7 +1250,7 @@ pub fn cli_pipe_is_released_when_plugin_panics_while_handling_it() {
         |log| {
             log.iter()
                 .any(|i| {
-                    matches!(i, ServerInstruction::UnblockCliPipeInput(pipe_name) if pipe_name == "input_pipe_id")
+                    matches!(i, ServerInstruction::CliPipeError(pipe_name, _) if pipe_name == "input_pipe_id")
                 })
                 .then_some(())
         },

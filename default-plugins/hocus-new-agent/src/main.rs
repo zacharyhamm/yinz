@@ -501,7 +501,7 @@ fn default_fork_kind(current: &str) -> Option<&'static str> {
 /// and the half that would survive the clip is the half that says nothing. A host is named
 /// because a fork onto another machine is the case worth being sure about.
 fn fork_note(pane: &AgentPane, kind: &str) -> String {
-    let cwd = pane.cwd.as_deref().unwrap_or_default();
+    let cwd = agent_cwd(pane).unwrap_or_default();
     let folder = Path::new(cwd)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -841,6 +841,14 @@ fn duplicate_command(
     Some(command_in_context(pane, kind))
 }
 
+fn agent_cwd(pane: &AgentPane) -> Option<&str> {
+    pane.agent
+        .as_ref()
+        .and_then(|agent| agent.cwd.as_deref())
+        .filter(|cwd| !cwd.is_empty())
+        .or(pane.cwd.as_deref())
+}
+
 /// The command that starts `kind` where `pane` is running: same machine, same VM, same
 /// folder, and nothing of the old argv - a duplicate and a fork both start a fresh
 /// conversation, they only differ over which agent has it.
@@ -855,16 +863,9 @@ fn command_in_context(pane: &AgentPane, kind: &str) -> CommandToRun {
         image.clone_from(&pane.firecracker_image);
         *worktree = pane.firecracker_worktree.clone().map(Into::into);
     }
-    let cwd = pane
-        .agent
-        .as_ref()
-        .and_then(|agent| agent.cwd.as_ref())
-        .filter(|cwd| !cwd.is_empty())
-        .or(pane.cwd.as_ref())
-        .cloned();
     CommandToRun {
         path: launch::binary_for(kind).into(),
-        cwd: cwd.map(Into::into),
+        cwd: agent_cwd(pane).map(Into::into),
         target,
         ..Default::default()
     }
@@ -2330,6 +2331,7 @@ mod tests {
             duplicate_command(&exited, &BTreeMap::new()).unwrap().cwd,
             Some("/tmp/repo".into())
         );
+        assert_eq!(fork_note(&exited, "cursor"), "forking cursor in repo");
 
         let firecracker_pane = AgentPane {
             host: Some("firecracker:review".to_owned()),

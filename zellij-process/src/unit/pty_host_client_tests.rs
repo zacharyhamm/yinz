@@ -708,6 +708,48 @@ fn a_listener_that_never_accepts_is_not_treated_as_dead() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_supervisor_backlog_is_bounded_and_not_dead() {
+    use nix::sys::socket::{
+        bind, connect, listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("full.sock");
+    let address = UnixAddr::new(&path).unwrap();
+    let listener = socket(
+        AddressFamily::Unix,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    )
+    .unwrap();
+    bind(listener.as_raw_fd(), &address).unwrap();
+    listen(&listener, Backlog::new(1).unwrap()).unwrap();
+    let mut pending = Vec::new();
+    loop {
+        let client = socket(
+            AddressFamily::Unix,
+            SockType::Stream,
+            SockFlag::SOCK_NONBLOCK | SockFlag::SOCK_CLOEXEC,
+            None,
+        )
+        .unwrap();
+        match connect(client.as_raw_fd(), &address) {
+            Ok(()) => pending.push(client),
+            Err(nix::errno::Errno::EAGAIN) => break,
+            Err(error) => panic!("failed to fill the supervisor backlog: {error}"),
+        }
+        assert!(pending.len() < 64, "backlog did not fill");
+    }
+    let (sent, received) = std::sync::mpsc::channel();
+    let probe = std::thread::spawn(move || sent.send(socket_is_dead(&path)).unwrap());
+    assert!(!received
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("socket probe blocked on a full backlog"));
+    probe.join().unwrap();
+}
+
 #[test]
 fn query_returns_the_status_the_supervisor_reports() {
     let dir = tempfile::tempdir().expect("failed to create a temp dir");

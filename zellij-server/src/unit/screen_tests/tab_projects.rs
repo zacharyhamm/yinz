@@ -216,6 +216,24 @@ fn a_name_typed_in_rename_mode_holds_off_the_project() {
 }
 
 #[test]
+fn an_empty_cli_tab_rename_restores_automatic_naming() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    set_projects(&mut screen, &[(0, "hocus")]);
+
+    type_in_rename_mode(&mut screen, &["\0", "notes"]);
+    assert_eq!(name_of(&screen, TabId::new(0)), "notes");
+    type_in_rename_mode(&mut screen, &["\0", ""]);
+    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+
+    enter_mode(&mut screen, InputMode::RenameTab);
+    type_in_rename_mode(&mut screen, &["\0", ""]);
+    assert_eq!(name_of(&screen, TabId::new(0)), "");
+    type_in_rename_mode(&mut screen, &["draft", ""]);
+    assert_eq!(name_of(&screen, TabId::new(0)), "draft");
+}
+
+#[test]
 fn clearing_the_name_hands_the_tab_back_to_its_project() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
@@ -1271,7 +1289,7 @@ fn arrangement_splits_original_lists_by_project_and_preserves_separate_stacks() 
             .arrange_project_panes(groups.clone(), ClientId::new(1))
             .unwrap();
         apply_arrangement_loads(&mut screen, &receiver);
-        screen.render(None).unwrap();
+        screen.render().unwrap();
         assert_eq!(screen.tabs.len(), 3);
         assert_eq!(screen.get_active_pane_id(&ClientId::new(1)), Some(pane(2)));
         let destination = |id| {
@@ -1393,7 +1411,7 @@ fn arrangement_render_keeps_unknown_floats_and_floating_only_destinations_alive(
     screen
         .arrange_project_panes(vec![arrangement_group("known", &[1, 3])], ClientId::new(1))
         .unwrap();
-    screen.render(None).unwrap();
+    screen.render().unwrap();
     assert!(
         screen.tabs[&TabId::new(0)]
             .get_pane_info(pane(2))
@@ -1403,7 +1421,7 @@ fn arrangement_render_keeps_unknown_floats_and_floating_only_destinations_alive(
     screen
         .arrange_project_panes(vec![arrangement_group("float", &[2])], ClientId::new(1))
         .unwrap();
-    screen.render(None).unwrap();
+    screen.render().unwrap();
     assert_eq!(screen.tabs.len(), 2);
     assert!(
         screen.tabs[&TabId::new(0)]

@@ -17,6 +17,7 @@ use wasmi_wasi::WasiCtx;
 use zellij_types::internal_ids::TabId;
 
 use crate::ClientId;
+use zellij_bus::plugins::{PluginInstanceId, PluginInstruction};
 use zellij_bus::thread_bus::ThreadSenders;
 
 use prost::Message;
@@ -50,6 +51,8 @@ pub struct PluginMap {
     // Value-only retry state survives failed instances without retaining their resources.
     plugin_metadata: BTreeMap<PluginId, PluginMetadata>,
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
+    instance_ids: HashMap<(PluginId, ClientId), PluginInstanceId>,
+    availability: HashMap<(PluginId, ClientId), Arc<AtomicBool>>,
     deno_client_cancellations: HashMap<(PluginId, ClientId), (Option<u64>, Arc<AtomicBool>)>,
     deno_workers: HashMap<(PluginId, ClientId), Arc<crate::deno::background_worker::Workers>>,
 }
@@ -96,6 +99,7 @@ pub type PluginAssets = (
 
 /// A running plugin instance and the events it subscribes to, each behind its own lock so
 /// that updating one instance never blocks rendering another.
+#[cfg(test)]
 pub type RunningPluginAndSubscriptions = (Arc<Mutex<RunningPlugin>>, Arc<Mutex<Subscriptions>>);
 
 /// A `RunningPluginAndSubscriptions` together with the plugin and client it was loaded for.
@@ -134,10 +138,61 @@ fn configuration_matches_for_reload(
 }
 
 impl PluginMap {
+    pub fn pipe_instances(&mut self) -> Vec<(RunningPluginEntry, PluginInstanceId)> {
+        self.running_plugins_and_subscriptions()
+            .into_iter()
+            .filter_map(|entry| {
+                let key = (entry.0, entry.1);
+                let id = *self.instance_ids.get(&key)?;
+                (self.contains(key.0, key.1) && !self.availability[&key].load(Ordering::Acquire))
+                    .then_some((entry, id))
+            })
+            .collect()
+    }
+
+    pub fn pipe_failure_instances(
+        &mut self,
+        plugin: PluginId,
+        instance: Option<PluginInstanceId>,
+        generation: Option<u64>,
+    ) -> Vec<(PluginInstanceId, Arc<Mutex<RunningPlugin>>)> {
+        self.instance_ids
+            .iter()
+            .filter_map(|(key, id)| {
+                if key.0 != plugin || instance.is_some_and(|expected| expected != *id) {
+                    return None;
+                }
+                if let Some(generation) = generation {
+                    if !self
+                        .deno_client_cancellations
+                        .get(key)
+                        .is_some_and(|(current, cancel)| {
+                            *current == Some(generation) && !cancel.load(Ordering::Acquire)
+                        })
+                    {
+                        return None;
+                    }
+                }
+                self.availability[key].store(true, Ordering::Release);
+                Some((*id, self.plugin_assets[key].0.clone()))
+            })
+            .collect()
+    }
+
     pub(crate) fn remember_plugin(&mut self, id: PluginId, metadata: PluginMetadata) {
         self.plugin_metadata.insert(id, metadata);
     }
+    pub fn retire_instances(&mut self, plugin: PluginId) {
+        for ((id, _), unavailable) in &self.availability {
+            if *id == plugin {
+                unavailable.store(true, Ordering::Release);
+            }
+        }
+        self.instance_ids.retain(|(id, _), _| *id != plugin);
+    }
     pub fn remove_plugins(&mut self, pid: PluginId) -> HashMap<(PluginId, ClientId), PluginAssets> {
+        self.retire_instances(pid);
+        self.availability.retain(|(id, _), _| *id != pid);
         self.plugin_metadata.remove(&pid);
         self.deno_workers.retain(|(id, _), _| *id != pid);
         self.deno_client_cancellations
@@ -159,6 +214,10 @@ impl PluginMap {
         plugin_id: PluginId,
         client_id: ClientId,
     ) -> Option<PluginAssets> {
+        self.instance_ids.remove(&(plugin_id, client_id));
+        if let Some(unavailable) = self.availability.remove(&(plugin_id, client_id)) {
+            unavailable.store(true, Ordering::Release);
+        }
         self.deno_workers.remove(&(plugin_id, client_id));
         self.deno_client_cancellations
             .remove(&(plugin_id, client_id));
@@ -230,6 +289,7 @@ impl PluginMap {
             )
             .collect()
     }
+    #[cfg(test)]
     pub fn get_running_plugin_and_subscriptions(
         &self,
         plugin_id: PluginId,
@@ -330,6 +390,7 @@ impl PluginMap {
         }
         cloned_plugin_assets
     }
+    #[cfg(test)]
     pub fn all_plugin_ids(&self) -> Vec<(PluginId, ClientId)> {
         self.plugin_assets
             .iter()
@@ -383,6 +444,14 @@ impl PluginMap {
         subscriptions: Arc<Mutex<Subscriptions>>,
         running_workers: HashMap<String, UnboundedSender<MessageToWorker>>,
     ) {
+        self.availability.insert(
+            (plugin_id, client_id),
+            running_plugin.lock().unwrap().env().unavailable.clone(),
+        );
+        self.instance_ids.insert(
+            (plugin_id, client_id),
+            running_plugin.lock().unwrap().instance_id,
+        );
         let metadata = PluginMetadata::from_running(&running_plugin.lock().unwrap());
         self.plugin_metadata.insert(plugin_id, metadata);
         if let PluginBackend::Deno(deno) = &running_plugin.lock().unwrap().backend {
@@ -416,6 +485,12 @@ impl PluginMap {
         }
         match self.plugin_assets.remove(&(plugin_id, from)) {
             Some(plugin_asset) => {
+                if let Some(unavailable) = self.availability.remove(&(plugin_id, from)) {
+                    self.availability.insert((plugin_id, to), unavailable);
+                }
+                if let Some(id) = self.instance_ids.remove(&(plugin_id, from)) {
+                    self.instance_ids.insert((plugin_id, to), id);
+                }
                 if let Some(workers) = self.deno_workers.remove(&(plugin_id, from)) {
                     self.deno_workers.insert((plugin_id, to), workers);
                 }
@@ -505,6 +580,8 @@ pub type DenoWatchGenerations = Arc<Mutex<HashMap<zellij_types::internal_ids::Da
 
 pub struct PluginEnv {
     pub plugin_id: PluginId,
+    pub instance_id: PluginInstanceId,
+    pub unavailable: Arc<AtomicBool>,
     /// Set by the host to stop this instance: an unload, or session shutdown. Wasm checks it at
     /// every crossing of the host boundary (`Store::call_hook`); Deno uses V8 termination. Shared by
     /// every instance of the plugin (one per client); see `WasmBridge::cancel_tokens` for why
@@ -691,6 +768,10 @@ pub enum PluginBackend {
 }
 
 pub struct RunningPlugin {
+    pub instance_id: PluginInstanceId,
+    pipes_released: bool,
+    pub failed: bool,
+    pub pipe_requests: HashMap<String, zellij_bus::plugins::PipeRequestId>,
     backend: PluginBackend,
     pub rows: usize,
     pub columns: usize,
@@ -706,6 +787,10 @@ pub struct RunningPlugin {
 impl RunningPlugin {
     pub fn new_deno(deno: DenoPlugin, rows: usize, columns: usize) -> Self {
         Self {
+            instance_id: deno.env().instance_id,
+            pipes_released: false,
+            failed: false,
+            pipe_requests: HashMap::new(),
             backend: PluginBackend::Deno(deno),
             rows,
             columns,
@@ -722,8 +807,18 @@ impl RunningPlugin {
         }
     }
 
+    pub fn mark_failed(&mut self) {
+        self.failed = true;
+        self.env().unavailable.store(true, Ordering::Release);
+    }
+
+    pub fn is_unavailable(&self) -> bool {
+        self.is_disposed() || self.env().unavailable.load(Ordering::Acquire)
+    }
+
     pub fn is_disposed(&self) -> bool {
-        matches!(&self.backend, PluginBackend::Deno(deno) if deno.is_disposed())
+        self.pipes_released
+            || matches!(&self.backend, PluginBackend::Deno(deno) if deno.is_disposed())
     }
 
     pub fn deno_tick(&mut self) -> Result<bool> {
@@ -735,15 +830,31 @@ impl RunningPlugin {
 
     /// Release thread-bound runtime state while still on the assigned executor.
     pub fn dispose(&mut self) {
+        self.env().unavailable.store(true, Ordering::Release);
         self.env_mut().filesystem_watcher.take();
         crate::deno::testing::cancel_instance(self.env());
         if let PluginBackend::Deno(deno) = &mut self.backend {
             deno.dispose();
         }
+        if !self.pipes_released {
+            self.pipes_released = true;
+            self.env()
+                .senders
+                .send_to_plugin(PluginInstruction::ReleasePluginInstancePipes(
+                    self.env().plugin_id,
+                    self.instance_id,
+                ))
+                .context("failed to release disposed instance's pipes")
+                .non_fatal();
+        }
     }
 
     pub fn new(store: Store<PluginEnv>, instance: Instance, rows: usize, columns: usize) -> Self {
         RunningPlugin {
+            instance_id: store.data().instance_id,
+            pipes_released: false,
+            failed: false,
+            pipe_requests: HashMap::new(),
             backend: PluginBackend::Wasm { store, instance },
             rows,
             columns,

@@ -3134,10 +3134,10 @@ impl State {
     /// The body of [`Self::on_complete`], with the host calls injected for the tests — the
     /// same shape `summarize_pane_now_with` and `finish_summary_with` take.
     ///
-    /// Every path answers, refusals included, for the reason hocus's `on_ask` acknowledges
+    /// Every request answers, refusals included, for the reason hocus's `on_ask` acknowledges
     /// even the questions it will not take: a caller cannot tell a daemon that heard and
     /// said nothing from a session with no daemon in it. Answering is also what releases a
-    /// blocked `zellij pipe`, so a silent path would hang a terminal.
+    /// blocked `zellij pipe`, so a silent path would hang a terminal. CLI EOF is not a request.
     ///
     /// Returns whether the request went out, for the tests.
     fn on_complete_with(
@@ -3151,6 +3151,9 @@ impl State {
         answer: impl FnOnce(&PipeSource, &wire::CompletionReply),
         block: impl FnOnce(&str),
     ) -> bool {
+        if matches!(source, PipeSource::Cli(_)) && payload.is_none() {
+            return false;
+        }
         // Before anything that can answer, so the block and its release are always paired.
         if let PipeSource::Cli(pipe_id) = source {
             block(pipe_id);
@@ -9989,7 +9992,7 @@ mod tests {
         complete_raw(
             state,
             source,
-            &serde_json::to_string(request).expect("encoded"),
+            Some(&serde_json::to_string(request).expect("encoded")),
             endpoint,
             allowed,
             pinned,
@@ -10000,7 +10003,7 @@ mod tests {
     fn complete_raw(
         state: &mut State,
         source: &PipeSource,
-        payload: &str,
+        payload: Option<&str>,
         endpoint: Option<&Endpoint>,
         allowed: bool,
         pinned: Option<&str>,
@@ -10010,7 +10013,7 @@ mod tests {
         let mut blocked = Vec::new();
         let sent = state.on_complete_with(
             source,
-            Some(payload),
+            payload,
             endpoint,
             allowed,
             pinned,
@@ -10339,7 +10342,7 @@ mod tests {
             let out = complete_raw(
                 &mut state,
                 &PipeSource::Plugin(PluginId::new(9)),
-                payload,
+                Some(payload),
                 Some(&endpoint()),
                 true,
                 None,
@@ -10384,7 +10387,7 @@ mod tests {
                 let out = complete_raw(
                     &mut state,
                     &PipeSource::Cli("oversized".to_owned()),
-                    &payload,
+                    Some(&payload),
                     Some(&endpoint()),
                     allowed,
                     None,
@@ -10590,6 +10593,32 @@ mod tests {
         assert!(complete(&mut state, &caller, &asking("why?")).sent);
     }
 
+    #[test]
+    fn completion_ignores_cli_eof_but_rejects_empty_requests() {
+        for source in [
+            PipeSource::Cli("pipe-1".to_owned()),
+            PipeSource::Plugin(PluginId::new(9)),
+        ] {
+            for payload in [None, Some("")] {
+                let mut state = State::default();
+                let out = complete_raw(&mut state, &source, payload, Some(&endpoint()), true, None);
+                assert!(!out.sent);
+                assert!(out.requests.is_empty());
+                assert!(state.completions.is_empty());
+                assert_eq!(state.completion_seq, 0);
+                let cli = matches!(source, PipeSource::Cli(_));
+                if cli && payload.is_none() {
+                    assert!(out.replies.is_empty());
+                    assert!(out.blocked.is_empty());
+                } else {
+                    assert_eq!(out.replies.len(), 1);
+                    assert!(out.replies[0].error.contains("not a completion request"));
+                    assert_eq!(out.blocked, if cli { vec!["pipe-1"] } else { vec![] });
+                }
+            }
+        }
+    }
+
     /// Blocked before anything that can answer, so the block and its release are paired on
     /// every path — including the refusals, which answer immediately.
     #[test]
@@ -10620,7 +10649,7 @@ mod tests {
         let out = complete_raw(
             &mut state,
             &PipeSource::Cli("pipe-1".to_owned()),
-            r#"{"messages":[{"role":"user","content":"why?"}]}"#,
+            Some(r#"{"messages":[{"role":"user","content":"why?"}]}"#),
             Some(&endpoint()),
             true,
             None,

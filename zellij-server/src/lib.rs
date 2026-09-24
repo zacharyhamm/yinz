@@ -1466,6 +1466,18 @@ pub fn start_server_impl(
                     );
                 }
             },
+            ServerInstruction::CliPipeError(pipe_name, error) => {
+                let pipe = session_state.read().unwrap().get_pipe(&pipe_name);
+                if let Some(client_id) = pipe {
+                    send_to_client!(
+                        client_id,
+                        os_input,
+                        ServerToClientMsg::LogError { lines: vec![error] },
+                        session_state,
+                        session_data
+                    );
+                }
+            },
             ServerInstruction::EventUpdateToClient(client_id, event_type, event_json) => {
                 send_to_client!(
                     client_id,

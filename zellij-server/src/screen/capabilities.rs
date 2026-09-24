@@ -160,7 +160,7 @@ impl Screen {
             for watcher_state in self.watcher_clients.values_mut() {
                 watcher_state.set_force_render();
             }
-            self.render(None)
+            self.render()
                 .context("failed to repaint the watchers after a synchronized-output answer")?;
         }
         Ok(())

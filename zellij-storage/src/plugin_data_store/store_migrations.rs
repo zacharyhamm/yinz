@@ -21,7 +21,11 @@ use super::sql::{quote_ident, StoreContext};
 /// One step forward. Applied in order, from the recorded version to [`current_version`].
 type Step = fn(&mut dyn Executor) -> Result<(), DataError>;
 
-const MIGRATIONS: &[Step] = &[create_registry, add_rev_to_every_entity];
+const MIGRATIONS: &[Step] = &[
+    create_registry,
+    add_rev_to_every_entity,
+    separate_private_namespaces,
+];
 
 /// The key `store_meta` holds the schema version under.
 pub(super) const VERSION_KEY: &str = "schema_version";
@@ -76,6 +80,51 @@ fn add_rev_to_every_entity(exec: &mut dyn Executor) -> Result<(), DataError> {
         let table = quote_ident(&format!("e_{}", row_id));
         exec.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN \"rev\" {column};"))
             .with_context(|| format!("failed to add `rev` to entity table {}", table))?;
+    }
+    Ok(())
+}
+
+/// 3: separate private namespaces. Before this release migrates the database, stop every
+/// server using it, including remote servers sharing Postgres. Mixed-version live operation
+/// is intentionally unsupported; this release adds no coordination mechanism.
+fn separate_private_namespaces(exec: &mut dyn Executor) -> Result<(), DataError> {
+    let rows = query_all(
+        exec,
+        "SELECT id, namespace, owner_plugin FROM store_entities",
+        &[],
+        &[AttrKind::Int, AttrKind::Text, AttrKind::Text],
+    )?;
+    for row in rows {
+        let [DataValue::Int(id), DataValue::Text(namespace), DataValue::Text(owner)] =
+            row.as_slice()
+        else {
+            return Err(DataError::Storage(
+                "invalid entity ownership in registry".to_owned(),
+            ));
+        };
+        let legacy: String = owner
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        if namespace != &format!("plugin:{legacy}") {
+            continue;
+        }
+        // A collided namespace belongs to the recorded declarer. Never copy its rows to
+        // another plugin that happened to address the same legacy namespace.
+        let mut params = super::dialect::Params::new(exec.dialect());
+        let namespace = params.bind(DataValue::Text(super::private_namespace(owner)));
+        let id = params.bind(DataValue::Int(*id));
+        exec.execute(
+            &format!("UPDATE store_entities SET namespace = {namespace} WHERE id = {id}"),
+            &params.into_values(),
+        )
+        .context("failed to separate a private plugin namespace")?;
     }
     Ok(())
 }

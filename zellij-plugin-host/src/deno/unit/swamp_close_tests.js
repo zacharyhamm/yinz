@@ -210,7 +210,7 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
   for(const action of ['duplicate','fork'])for(const cancelFirst of [true,false])for(const terminalRemoved of [false,true]){
     seed();panemap.p6={plugin_url:'zellij:hocus-new-agent'};
     check((await call({method:'pane_action',work:'work',key:action,action})).outcome==='pending');
-    const terminal=action==='fork'?1:7;panemap['t'+terminal]={target:'Local',exited:false};
+    const terminal=action==='fork'?1:7;panemap['t'+terminal]={...panemap['t'+terminal],target:'Local',exited:false};
     if(cancelFirst)mock.command('CloseTerminalPane',1);
     if(terminalRemoved)mock.command('CloseTerminalPane',terminal);
     const interrupted=cancelFirst||(action==='fork'&&terminalRemoved);
@@ -220,6 +220,7 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     else {
       check(!read('work','view').closed&&read('work','view').transition==='fork'&&acks===2&&!panemap.p2&&panemap.p6);
       check(!!panemap['t'+terminal]===!terminalRemoved);
+      if(action==='fork')check(!panemap.t1.is_suppressed);
       mock.command('ClosePluginPane',6);await M.pipe(reply);check(acks===2);
     }
     await flush();

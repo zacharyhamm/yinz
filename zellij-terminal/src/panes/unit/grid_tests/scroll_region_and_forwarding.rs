@@ -2,6 +2,29 @@ use super::*;
 use crate::panes::terminal_character::NamedColor;
 
 #[test]
+fn cursor_down_materializes_rows_before_erasing_or_inserting() {
+    for movement in ["B", "e", "E"] {
+        for edit in ["1K", "1L"] {
+            let mut grid = create_grid_with_size_and_raw(5, 8, b"top");
+
+            feed_bytes(
+                &mut grid,
+                format!("\x1b[2{movement}\x1b[{edit}X").as_bytes(),
+            );
+
+            assert_eq!(grid.cursor.y, 2);
+            assert_eq!(grid.viewport[0].columns[0].character, 't');
+            assert_eq!(
+                grid.get_character_at(grid.cursor.x - 1, 2)
+                    .unwrap()
+                    .character,
+                'X'
+            );
+        }
+    }
+}
+
+#[test]
 fn repeated_alternate_screen_entry_preserves_primary_screen_and_scrollback() {
     let mut grid = create_grid_with_size_and_raw(3, 8, b"one\r\ntwo\r\nthree\r\nfour");
     let primary_viewport = viewport_texts(&grid);

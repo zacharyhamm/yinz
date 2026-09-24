@@ -171,7 +171,7 @@ impl Screen {
                     client_id,
                     &mut completion_tx,
                 )? {
-                    self.render(None)?;
+                    self.render()?;
                     self.log_and_report_session_state()?;
                 } else {
                     self.fill_plugin_cwd(

@@ -136,6 +136,7 @@ pub enum PluginInstruction {
         Option<NotificationEnd>,
     ),
     ApplyCachedEvents {
+        load_id: u64,
         plugin_ids: Vec<PluginId>,
         done_receiving_permissions: bool,
     },
@@ -192,6 +193,8 @@ pub enum PluginInstruction {
         pipe_id: String,
         name: String,
         payload: Option<String>,
+        /// A payload-less message on a pipe already used by this CLI connection.
+        is_eof: bool,
         plugin: Option<String>,
         args: Option<BTreeMap<String, String>>,
         configuration: Option<BTreeMap<String, String>>,
@@ -230,7 +233,8 @@ pub enum PluginInstruction {
         source_plugin_id: PluginId,
         message: MessageToPlugin,
     },
-    UnblockCliPipes(Vec<PluginRenderAsset>),
+    PipeCompleted(PipeCompletion),
+    ReleasePluginInstancePipes(PluginId, PluginInstanceId),
     Reconfigure {
         client_id: ClientId,
         keybinds: Option<Keybinds>,
@@ -298,9 +302,12 @@ pub enum PluginInstruction {
     /// A plugin failed to load or trapped. Deno reports are validated against their instance
     /// generation before painting errors or disposing it. Failed jobs also release their slot.
     PluginFailed {
+        load_id: Option<u64>,
         plugin_id: PluginId,
         /// None for legacy runtimes and load failures that precede instance creation.
         deno_generation: Option<u64>,
+        instance_id: Option<PluginInstanceId>,
+        loading_client: Option<ClientId>,
         error: String,
         /// True when the load itself failed, so the loader has already run and given up; false
         /// when a plugin that was loaded trapped. The two need different cleanup - see
@@ -342,6 +349,8 @@ impl From<&PluginInstruction> for PluginContext {
             PluginInstruction::DenoTick(..) => PluginContext::Update,
             PluginInstruction::DenoEvent(..) => PluginContext::Update,
             PluginInstruction::DenoDispose(..) => PluginContext::Unload,
+            PluginInstruction::PipeCompleted(..) => PluginContext::UnblockCliPipes,
+            PluginInstruction::ReleasePluginInstancePipes(..) => PluginContext::UnblockCliPipes,
             PluginInstruction::PostMessagesToPluginWorker(..) => {
                 PluginContext::PostMessageToPluginWorker
             },
@@ -365,13 +374,24 @@ pub enum HookFiring {
     Headless(HookPayload),
 }
 
+/// Runtime identity, independent of the client an instance is currently keyed under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PluginInstanceId(u64);
+
+impl Default for PluginInstanceId {
+    fn default() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PluginRenderAsset {
     // TODO: naming
     pub client_id: ClientId,
     pub plugin_id: PluginId,
     pub bytes: Vec<u8>,
-    pub cli_pipes: HashMap<String, PipeStateChange>,
 }
 
 impl Default for PluginRenderAsset {
@@ -380,7 +400,6 @@ impl Default for PluginRenderAsset {
             client_id: ClientId::new(0),
             plugin_id: PluginId::new(0),
             bytes: Vec::new(),
-            cli_pipes: HashMap::new(),
         }
     }
 }
@@ -391,13 +410,19 @@ impl PluginRenderAsset {
             client_id,
             plugin_id,
             bytes,
-            ..Default::default()
         }
     }
-    pub fn with_pipes(mut self, cli_pipes: HashMap<String, PipeStateChange>) -> Self {
-        self.cli_pipes = cli_pipes;
-        self
-    }
+}
+
+/// One input message, independent of the CLI stream it arrived on.
+pub type PipeRequestId = u64;
+
+#[derive(Debug, Clone)]
+pub struct PipeCompletion {
+    pub plugin_id: PluginId,
+    pub instance_id: PluginInstanceId,
+    pub changes: HashMap<PipeRequestId, PipeStateChange>,
+    pub callback: Option<(PipeRequestId, Result<(), String>)>,
 }
 
 #[derive(Debug, Clone)]

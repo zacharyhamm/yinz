@@ -114,6 +114,16 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        // CLI EOF has no payload; an explicitly empty request still needs a parse error.
+        if matches!(pipe_message.source, PipeSource::Cli(_))
+            && matches!(
+                pipe_message.name.as_str(),
+                wire::STORE_MUTATE | wire::STORE_QUERY
+            )
+            && pipe_message.payload.is_none()
+        {
+            return false;
+        }
         let payload = pipe_message.payload.unwrap_or_default();
         match pipe_message.name.as_str() {
             "arrange_panes_by_project" if !self.arrangement_pending => {

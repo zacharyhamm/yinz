@@ -328,7 +328,7 @@ impl Screen {
                 Direction::Down
             };
             if self.move_notification_selection(direction, client_id) {
-                self.render(None).non_fatal();
+                self.render().non_fatal();
             }
             return true;
         }

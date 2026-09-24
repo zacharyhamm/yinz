@@ -57,7 +57,7 @@ impl Screen {
         // question about a moment that has passed, so it gets out of the way. This is the
         // same discipline `defocus_dismissible_panes` applies to dismissible overlays.
         if self.close_context_menu(client_id) {
-            self.render(None)?;
+            self.render()?;
         }
         let mut state_changed = false;
         let client_input_mode = self.get_client_input_mode(client_id);

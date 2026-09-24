@@ -30,37 +30,21 @@ impl<'a> SearchSource<'a> {
         tailit: &mut std::slice::Iter<&'a Row>,
         start: &Option<Position>,
     ) -> bool {
-        match self {
-            SearchSource::Main(row) => {
-                // If we are at the end of the main row, we need to start looking into the tail
-                if hidx >= &mut row.columns.len() {
-                    let curr_tail = tailit.next();
-                    // If we are at the end and found a partial hit, we have to extend the search into the next line
-                    if let Some(curr_tail) = start.and(curr_tail) {
-                        *ridx += 1; // Go one line down
-                        *hidx = 0; // and start from the beginning of the new line
-                        *self = SearchSource::Tail(curr_tail);
-                    } else {
-                        return false; // We reached the end of the tail
-                    }
-                }
-            },
-            SearchSource::Tail(tail) => {
-                if hidx >= &mut tail.columns.len() {
-                    // If we are still searching (didn't hit a mismatch yet) and there is still more tail to go
-                    // just continue with the next line
-                    if let Some(curr_tail) = tailit.next() {
-                        *ridx += 1; // Go one line down
-                        *hidx = 0; // and start from the beginning of the new line
-                        *self = SearchSource::Tail(curr_tail);
-                    } else {
-                        return false; // We reached the end of the tail
-                    }
-                }
-            },
+        loop {
+            let (SearchSource::Main(row) | SearchSource::Tail(row)) = self;
+            if *hidx < row.columns.len() {
+                return true;
+            }
+            if matches!(self, SearchSource::Main(_)) && start.is_none() {
+                return false;
+            }
+            let Some(next_row) = tailit.next() else {
+                return false;
+            };
+            *ridx += 1;
+            *hidx = 0;
+            *self = SearchSource::Tail(next_row);
         }
-        // We have found a new source, or we are in the middle of a line, so no need to change anything
-        true
     }
 
     // Get the char at hidx and, if existing, the following char as well

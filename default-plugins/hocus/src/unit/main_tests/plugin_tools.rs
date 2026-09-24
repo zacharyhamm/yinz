@@ -270,13 +270,13 @@ fn a_named_section_of_the_docs_is_served() {
     assert!(run_file_tool(
         &mut state,
         "plugin_docs",
-        r#"{"section":"sdk_core"}"#
+        r#"{"section":"events"}"#
     ));
     let results = tool_results(&state);
     assert!(
         results[0]
             .content
-            .starts_with("```ts\n// ---- section: sdk_core"),
+            .contains("export interface EventPayloads"),
         "{:?}",
         results[0].content
     );
@@ -782,18 +782,18 @@ fn a_docs_query_and_a_docs_page_need_no_plugin_folder() {
         r#"{"query":"RunCommandResult"}"#
     ));
     let hits = &tool_results(&state)[0].content;
-    assert!(hits.contains("sdk_core:"), "{hits}");
+    assert!(hits.contains("events:"), "{hits}");
 
     let mut state = ready_state();
     assert!(run_file_tool(
         &mut state,
         "plugin_docs",
-        r#"{"section":"sdk_core","start_line":1,"line_count":3}"#
+        r#"{"section":"events","start_line":1,"line_count":3}"#
     ));
     let page = &tool_results(&state)[0].content;
     assert!(page.starts_with("lines 1-3 of "), "{page}");
     assert!(
-        page.contains("(plugin_docs section=sdk_core start_line=4)"),
+        page.contains("(plugin_docs section=events start_line=4)"),
         "{page}"
     );
 }

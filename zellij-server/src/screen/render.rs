@@ -5,13 +5,13 @@ use super::Screen;
 use crate::background_jobs::BackgroundJob;
 use crate::output::Output;
 use crate::panes::PaneId;
-use crate::plugins::{PluginInstruction, PluginRenderAsset};
+use crate::plugins::PluginInstruction;
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
 use zellij_types::pane_size::Viewport;
 
 impl Screen {
-    pub fn render(&mut self, plugin_render_assets: Option<Vec<PluginRenderAsset>>) -> Result<()> {
+    pub fn render(&mut self) -> Result<()> {
         // here we schedule the RenderToClients background job which debounces renders every 10ms
         // rather than actually rendering
         //
@@ -24,13 +24,6 @@ impl Screen {
             .bus
             .senders
             .send_to_background_jobs(BackgroundJob::RenderToClients);
-        if let Some(plugin_render_assets) = plugin_render_assets {
-            let _ = self
-                .bus
-                .senders
-                .send_to_plugin(PluginInstruction::UnblockCliPipes(plugin_render_assets))
-                .context("failed to unblock input pipe");
-        }
         Ok(())
     }
 

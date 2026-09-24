@@ -43,7 +43,7 @@ impl Screen {
         };
         if let Some(client_id) = client_id {
             if let Ok(tab_exists) = self.go_to_tab_name(tab_name.clone(), client_id) {
-                self.render(None)?;
+                self.render()?;
                 if tab_exists {
                     // Tab already exists - find its ID and set in completion
                     if let Some(existing_tab) = self.tabs.values().find(|t| t.name == tab_name) {
@@ -720,7 +720,7 @@ impl Screen {
                         self.sync_scroll_mode_on_focus(affected_client_id)
                             .non_fatal();
                     }
-                    return self.render(None).with_context(err_context);
+                    return self.render().with_context(err_context);
                 },
                 Err(err) => Err::<(), _>(err).with_context(err_context).non_fatal(),
             }
@@ -1224,7 +1224,7 @@ impl Screen {
             }
             self.log_and_report_session_state()
                 .with_context(err_context)?;
-            self.render(None).with_context(err_context)
+            self.render().with_context(err_context)
         }
     }
 

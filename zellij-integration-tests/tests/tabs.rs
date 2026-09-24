@@ -282,6 +282,8 @@ fn break_pane_to_the_right() {
             && grid_snapshot.contains("beta")
             && grid_snapshot.contains("gamma")
             && !grid_snapshot.contains("alpha")
+            && grid_snapshot.contains("[0] Tab #1")
+            && !grid_snapshot.contains("[2] Tab #2")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();

@@ -61,7 +61,7 @@ impl Screen {
                                 ),
                             );
                         }
-                        let _ = self.render(None);
+                        let _ = self.render();
                     },
                     Some(direction) => {
                         for client_id in clients_focused_on_pane {
@@ -83,7 +83,7 @@ impl Screen {
                                         new_pane_id,
                                         Some(direction),
                                     );
-                                    let _ = self.render(None);
+                                    let _ = self.render();
                                     let _ = self.log_and_report_session_state();
                                 },
                                 None => {
@@ -122,7 +122,7 @@ impl Screen {
                         ServerInstruction::EmitNestedSessionFrameToClient(client_id, payload),
                     );
                 }
-                let _ = self.render(None);
+                let _ = self.render();
                 let _ = self.log_and_report_session_state();
             },
             other => {
@@ -194,7 +194,7 @@ impl Screen {
         } else {
             self.revive_nested_guest(pane_id);
         }
-        let _ = self.render(None);
+        let _ = self.render();
         log::info!(
             "nested session handshake ({:?}): guest session {:?} announced in pane {:?}, sent announce_ack",
             announce_kind,
@@ -258,7 +258,7 @@ impl Screen {
                 if self.get_active_pane_id(&client_id) == Some(pane_id) {
                     self.report_key_passthrough_state(client_id, pane_id, pane_id);
                 }
-                let _ = self.render(None);
+                let _ = self.render();
                 let _ = self.log_and_report_session_state();
             },
             GuestModalOutcome::Zoom => {
@@ -278,7 +278,7 @@ impl Screen {
                         ServerInstruction::EmitNestedSessionFrameToClient(via_client_id, payload),
                     );
                 }
-                let _ = self.render(None);
+                let _ = self.render();
                 let _ = self.log_and_report_session_state();
             },
         }
@@ -354,7 +354,7 @@ impl Screen {
         }
         self.sync_guest_choice_indicator(client_id, focused_pane_id);
         self.report_key_passthrough_state(client_id, focused_pane_id, focused_pane_id);
-        let _ = self.render(None);
+        let _ = self.render();
         let _ = self.log_and_report_session_state();
     }
 
@@ -563,7 +563,7 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             let _ = tab.update_input_modes();
         }
-        let _ = self.render(None);
+        let _ = self.render();
     }
 
     pub(super) fn base_input_mode(&self) -> InputMode {
@@ -635,7 +635,7 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             let _ = tab.update_input_modes();
         }
-        let _ = self.render(None);
+        let _ = self.render();
     }
 
     fn set_host_descended(&mut self, host_descended: bool) {
@@ -710,7 +710,7 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             let _ = tab.update_input_modes();
         }
-        let _ = self.render(None);
+        let _ = self.render();
     }
 
     fn nested_guest_terminal_ids(&self) -> Vec<TerminalId> {
@@ -927,18 +927,18 @@ impl Screen {
                         Some(direction),
                     );
                 }
-                let _ = self.render(None);
+                let _ = self.render();
                 let _ = self.log_and_report_session_state();
             },
             NestedSessionMessage::FocusGained {
                 from_direction: None,
             } => {
                 self.set_host_descended(true);
-                let _ = self.render(None);
+                let _ = self.render();
             },
             NestedSessionMessage::FocusLost => {
                 self.set_host_descended(false);
-                let _ = self.render(None);
+                let _ = self.render();
             },
             other => {
                 log::debug!(

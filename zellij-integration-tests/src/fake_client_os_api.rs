@@ -49,6 +49,7 @@ pub struct FakeClientOsApi {
     client_screen: ClientScreen,
     size: Arc<Mutex<Size>>,
     stdin_rx: crossbeam::channel::Receiver<Vec<u8>>,
+    cli_stdin: Option<String>,
     signal_rx: crossbeam::channel::Receiver<SignalEvent>,
     send_instructions_to_server: Arc<Mutex<Option<IpcSenderWithContext<ClientToServerMsg>>>>,
     receive_instructions_from_server: Arc<Mutex<Option<IpcReceiverWithContext<ServerToClientMsg>>>>,
@@ -64,6 +65,7 @@ impl Clone for FakeClientOsApi {
             client_screen: self.client_screen.clone(),
             size: self.size.clone(),
             stdin_rx: self.stdin_rx.clone(),
+            cli_stdin: self.cli_stdin.clone(),
             signal_rx: self.signal_rx.clone(),
             send_instructions_to_server: self.send_instructions_to_server.clone(),
             receive_instructions_from_server: self.receive_instructions_from_server.clone(),
@@ -140,6 +142,7 @@ impl FakeClientOsApi {
             client_screen: client_screen.clone(),
             size: size.clone(),
             stdin_rx,
+            cli_stdin: None,
             signal_rx,
             send_instructions_to_server: Arc::new(Mutex::new(None)),
             receive_instructions_from_server: Arc::new(Mutex::new(None)),
@@ -157,6 +160,11 @@ impl FakeClientOsApi {
             send_instructions_to_server: fake_client_os_api.send_instructions_to_server.clone(),
         };
         (fake_client_os_api, fake_client_handle)
+    }
+
+    pub fn with_cli_stdin(mut self, stdin: Option<&str>) -> Self {
+        self.cli_stdin = stdin.map(str::to_owned);
+        self
     }
 }
 
@@ -190,7 +198,12 @@ impl StdioAccess for FakeClientOsApi {
         self.client_screen.writer()
     }
     fn get_stdin_reader(&self) -> Box<dyn std::io::BufRead> {
-        Box::new(std::io::BufReader::new(std::io::empty()))
+        Box::new(std::io::Cursor::new(
+            self.cli_stdin.clone().unwrap_or_default(),
+        ))
+    }
+    fn stdin_is_terminal(&self) -> bool {
+        self.cli_stdin.is_none()
     }
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
         self.stdin_rx.recv().map_err(|_| "fake client stdin closed")
@@ -229,6 +242,9 @@ impl ServerConnection for FakeClientOsApi {
             let recorded = match msg {
                 ServerToClientMsg::Log { lines } | ServerToClientMsg::LogError { lines } => {
                     format!("{}: {}", server_message_name(msg), lines.join("\n"))
+                },
+                ServerToClientMsg::CliPipeOutput { output, .. } => {
+                    format!("CliPipeOutput: {output}")
                 },
                 // The type and then the JSON, one space apart: `streamed_event_types` reads
                 // the first word, `streamed_events` the rest, and a test that wants to know

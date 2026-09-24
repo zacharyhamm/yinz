@@ -359,8 +359,8 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["PostMessagesToPluginWorker", "DenoTick", "DenoEvent", "DenoDispose"];
-    only_special: ["PostMessageToPluginWorker"];
+    special: ["PostMessagesToPluginWorker", "DenoTick", "DenoEvent", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted"];
+    only_special: ["PostMessageToPluginWorker", "UnblockCliPipes"];
     targets: [(
         "PostMessagesToPluginWorker",
         PluginInstruction::PostMessagesToPluginWorker(
@@ -382,6 +382,16 @@ pin_context_to_instruction! {
         "DenoDispose",
         PluginInstruction::DenoDispose(PluginId::new(1), 1),
         "Unload"
+    ), (
+        "PipeCompleted",
+        PluginInstruction::PipeCompleted(crate::plugins::PipeCompletion {
+            plugin_id: PluginId::new(1), instance_id: Default::default(), changes: Default::default(), callback: None,
+        }),
+        "UnblockCliPipes"
+    ), (
+        "ReleasePluginInstancePipes",
+        PluginInstruction::ReleasePluginInstancePipes(PluginId::new(1), Default::default()),
+        "UnblockCliPipes"
     )];
 }
 
@@ -398,7 +408,7 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "KillSessionWithCompletion"];
+    special: ["FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "KillSessionWithCompletion", "CliPipeError"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
         (
@@ -420,6 +430,11 @@ pin_context_to_instruction! {
             "ResolveLockedEscape",
             ServerInstruction::ResolveLockedEscape(ClientId::new(1), uuid::Uuid::nil()),
             "ChangeMode"
+        ),
+        (
+            "CliPipeError",
+            ServerInstruction::CliPipeError("pipe".into(), "load failed".into()),
+            "LogError"
         ),
     ];
 }

@@ -13,6 +13,8 @@ pub(crate) fn test_env() -> PluginEnv {
     PluginEnv {
         response_sink: ResponseSink::WasiStdin,
         plugin_id: crate::PluginId::new(1),
+        instance_id: Default::default(),
+        unavailable: Default::default(),
         cancel: Default::default(),
         client_id: crate::ClientId::new(1),
         owner_client_id: crate::ClientId::new(1),

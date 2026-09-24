@@ -25,6 +25,8 @@ use {
 pub struct FakeClientOsApi {
     terminal_size: Size,
     stdout: Option<Arc<Mutex<Vec<u8>>>>,
+    stdout_error: Option<io::ErrorKind>,
+    stdin: Option<Vec<u8>>,
     sent_to_server: Arc<Mutex<Vec<ClientToServerMsg>>>,
     from_server: Arc<Mutex<VecDeque<IpcRecv<ServerToClientMsg>>>>,
     stdin_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>>,
@@ -36,6 +38,8 @@ impl Default for FakeClientOsApi {
         Self {
             terminal_size: Size { rows: 24, cols: 80 },
             stdout: None,
+            stdout_error: None,
+            stdin: None,
             sent_to_server: Arc::new(Mutex::new(Vec::new())),
             from_server: Arc::new(Mutex::new(VecDeque::new())),
             stdin_rx: None,
@@ -62,6 +66,16 @@ impl FakeClientOsApi {
     /// sequences the client emitted.
     pub fn capturing_stdout(mut self) -> Self {
         self.stdout = Some(Arc::new(Mutex::new(Vec::new())));
+        self
+    }
+
+    pub fn with_stdin(mut self, bytes: Vec<u8>) -> Self {
+        self.stdin = Some(bytes);
+        self
+    }
+
+    pub fn with_stdout_error(mut self, error: io::ErrorKind) -> Self {
+        self.stdout_error = Some(error);
         self
     }
 
@@ -115,10 +129,13 @@ impl FakeClientOsApi {
 }
 
 /// Writes into the fake's stdout buffer, or discards when not capturing.
-struct FakeStdout(Option<Arc<Mutex<Vec<u8>>>>);
+struct FakeStdout(Option<Arc<Mutex<Vec<u8>>>>, Option<io::ErrorKind>);
 
 impl Write for FakeStdout {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if let Some(error) = self.1 {
+            return Err(error.into());
+        }
         if let Some(sink) = &self.0 {
             sink.lock().unwrap().extend_from_slice(buf);
         }
@@ -181,10 +198,13 @@ impl TtyControl for FakeClientOsApi {
 
 impl StdioAccess for FakeClientOsApi {
     fn get_stdout_writer(&self) -> Box<dyn Write> {
-        Box::new(FakeStdout(self.stdout.clone()))
+        Box::new(FakeStdout(self.stdout.clone(), self.stdout_error))
     }
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
-        Box::new(io::Cursor::new(Vec::new()))
+        Box::new(io::Cursor::new(self.stdin.clone().unwrap_or_default()))
+    }
+    fn stdin_is_terminal(&self) -> bool {
+        self.stdin.is_none()
     }
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
         Ok(Vec::new())

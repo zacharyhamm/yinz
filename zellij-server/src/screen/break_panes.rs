@@ -371,7 +371,7 @@ impl Screen {
                 ))
                 .with_context(err_context)?;
         }
-        self.render(None)?;
+        self.render()?;
         Ok(())
     }
     /// Tear down a pane that belongs to no tab.

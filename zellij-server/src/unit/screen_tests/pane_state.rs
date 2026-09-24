@@ -168,54 +168,16 @@ fn recorder_pane_metadata() {
 }
 
 #[test]
-fn plugin_bytes_with_no_pane_still_unblock_cli_pipes() {
-    // regression: unblocking used to be gated on finding a pane to draw the bytes into, so a
-    // plugin that rendered without one (a background plugin, or one whose pane was closed
-    // mid-render) never unblocked and anything piping to it hung forever
+fn plugin_bytes_with_no_pane_are_cached_without_pipe_acknowledgements() {
     let size = Size { cols: 60, rows: 10 };
-    let mut mock_screen = MockScreen::new(size);
-    mock_screen.drop_all_pty_messages();
-    let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let received_server_instructions = Watched::new(vec![]);
-    let server_thread = log_actions_in_thread!(
-        received_server_instructions,
-        ServerInstruction::KillSession,
-        server_receiver
-    );
-    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
-    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
-    std::thread::sleep(std::time::Duration::from_millis(450));
-
-    // no pane exists for plugin 99, and none is ever created for it
-    mock_screen
-        .to_screen
-        .send(ScreenInstruction::PluginBytes(vec![
-            PluginRenderAsset::new(
-                crate::PluginId::new(99),
-                crate::ClientId::new(1),
-                b"ORPHAN_BYTES".to_vec(),
-            ),
-        ]))
+    let mut screen = create_non_mirrored_screen(size);
+    let unhandled = screen
+        .handle_plugin_render_assets(vec![PluginRenderAsset::new(
+            PluginId::new(99),
+            crate::ClientId::new(1),
+            b"ORPHAN_BYTES".to_vec(),
+        )])
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let unblocked_plugin_ids: Vec<_> = plugin_receiver
-        .try_iter()
-        .filter_map(|(instruction, _)| match instruction {
-            PluginInstruction::UnblockCliPipes(assets) => Some(
-                assets
-                    .into_iter()
-                    .map(|asset| asset.plugin_id)
-                    .collect::<Vec<_>>(),
-            ),
-            _ => None,
-        })
-        .flatten()
-        .collect();
-    mock_screen.teardown(vec![server_thread, screen_thread]);
-
-    assert!(
-        unblocked_plugin_ids.contains(&PluginId::new(99)),
-        "a plugin that rendered without a pane must still unblock, got {unblocked_plugin_ids:?}"
-    );
+    assert_eq!(unhandled.len(), 1);
+    assert_eq!(unhandled[0].bytes, b"ORPHAN_BYTES");
 }

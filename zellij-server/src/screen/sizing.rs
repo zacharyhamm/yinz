@@ -56,7 +56,7 @@ impl Screen {
         self.reflow_all_tabs().with_context(err_context)?;
         self.log_and_report_session_state()
             .with_context(err_context)?;
-        self.render(None).with_context(err_context)
+        self.render().with_context(err_context)
     }
 
     pub(super) fn size_for_client(&self, client_id: Option<ClientId>) -> Size {

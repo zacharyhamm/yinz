@@ -9,10 +9,9 @@ use zellij_types::internal_ids::SessionName;
 
 use crate::os_input_output::CliClientOs;
 use uuid::Uuid;
-use zellij_runtime::errors::prelude::*;
 use {
     zellij_cli::args::EventsCli, zellij_cli::args::SubscribeCli, zellij_cli::args::SubscribeFormat,
-    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason, zellij_ipc::ipc::IpcRecv,
     zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::EventType, zellij_types::data::PaneId,
     zellij_types::input::actions::Action,
 };
@@ -25,7 +24,7 @@ pub fn start_cli_client(
     let zellij_ipc_pipe = crate::ipc_pipe_for_session(session_name, None);
     if let Err(e) = os_input.connect_to_server(&zellij_ipc_pipe) {
         eprintln!("{e}");
-        std::process::exit(1);
+        return 1;
     }
     let pane_id = os_input
         .env_variable("ZELLIJ_PANE_ID")
@@ -47,7 +46,7 @@ pub fn start_cli_client(
                 cwd,
                 pane_title,
             } => {
-                pipe_client(
+                if let Some(exit_status) = pipe_client(
                     &mut os_input,
                     pipe_id,
                     name,
@@ -62,7 +61,9 @@ pub fn start_cli_client(
                     pane_id,
                     cwd,
                     pane_title,
-                );
+                ) {
+                    return exit_status;
+                }
             },
             action => {
                 if let Some(exit_status) =
@@ -93,7 +94,7 @@ fn pipe_client(
     pane_id: Option<zellij_types::internal_ids::TerminalId>,
     cwd: Option<PathBuf>,
     pane_title: Option<String>,
-) {
+) -> Option<i32> {
     let mut stdin = os_input.get_stdin_reader();
     let name = name
         // first we try to take the explicitly supplied message name
@@ -133,6 +134,7 @@ fn pipe_client(
     };
     let is_piped = !os_input.stdin_is_terminal();
     loop {
+        let mut input_finished = false;
         if let Some(payload) = payload.take() {
             let msg = create_msg(Some(payload));
             os_input.send_to_server(msg);
@@ -145,11 +147,14 @@ fn pipe_client(
             // we didn't get payload from the command line, meaning we listen on STDIN because this
             // signifies the user is about to pipe more (eg. cat my-large-file | zellij pipe ...)
             let mut buffer = String::new();
-            let _ = stdin.read_line(&mut buffer);
+            if let Err(error) = stdin.read_line(&mut buffer) {
+                eprintln!("Failed to read pipe input: {error}");
+                return Some(2);
+            }
             if buffer.is_empty() {
                 let msg = create_msg(None);
                 os_input.send_to_server(msg);
-                break;
+                input_finished = true;
             } else {
                 // we've got data! send it down the pipe (most common)
                 let msg = create_msg(Some(buffer));
@@ -158,51 +163,58 @@ fn pipe_client(
         }
         loop {
             // wait for a response and act accordingly
-            match os_input.recv_from_server().msg() {
-                Some((ServerToClientMsg::UnblockCliPipeInput { pipe_name }, _)) => {
+            match os_input.recv_from_server() {
+                IpcRecv::Msg(ServerToClientMsg::UnblockCliPipeInput { pipe_name }, _) => {
                     // unblock this pipe, meaning we need to stop waiting for a response and read
                     // once more from STDIN
                     if pipe_name == pipe_id {
-                        if !is_piped {
+                        if input_finished {
+                            return None;
+                        } else if !is_piped {
                             // if this client is not piped, we need to exit the process completely
                             // rather than wait for more data
-                            process::exit(0);
+                            return Some(0);
                         } else {
                             break;
                         }
                     }
                 },
-                Some((ServerToClientMsg::CliPipeOutput { pipe_name, output }, _)) => {
+                IpcRecv::Msg(ServerToClientMsg::CliPipeOutput { pipe_name, output }, _) => {
                     // send data to STDOUT, this *does not* mean we need to unblock the input
-                    let err_context = "Failed to write to stdout";
                     if pipe_name == pipe_id {
                         let mut stdout = os_input.get_stdout_writer();
-                        stdout
+                        if let Err(error) = stdout
                             .write_all(output.as_bytes())
-                            .context(err_context)
-                            .non_fatal();
-                        stdout.flush().context(err_context).non_fatal();
+                            .and_then(|_| stdout.flush())
+                        {
+                            eprintln!("Failed to write pipe output: {error}");
+                            return Some(2);
+                        }
                     }
                 },
-                Some((ServerToClientMsg::Log { lines: log_lines }, _)) => {
+                IpcRecv::Msg(ServerToClientMsg::Log { lines: log_lines }, _) => {
                     log_lines.iter().for_each(|line| println!("{line}"));
-                    process::exit(0);
+                    return Some(0);
                 },
-                Some((ServerToClientMsg::LogError { lines: log_lines }, _)) => {
+                IpcRecv::Msg(ServerToClientMsg::LogError { lines: log_lines }, _) => {
                     log_lines.iter().for_each(|line| eprintln!("{line}"));
-                    process::exit(2);
+                    return Some(2);
                 },
-                Some((ServerToClientMsg::Exit { exit_reason }, _)) => match exit_reason {
+                IpcRecv::Msg(ServerToClientMsg::Exit { exit_reason }, _) => match exit_reason {
                     ExitReason::Error(e) => {
                         eprintln!("{}", e);
-                        process::exit(2);
+                        return Some(2);
                     },
                     ExitReason::CustomExitStatus(exit_status) => {
-                        process::exit(exit_status);
+                        return Some(exit_status);
                     },
                     _ => {
-                        process::exit(0);
+                        return Some(0);
                     },
+                },
+                IpcRecv::Eof => {
+                    eprintln!("Server disconnected before completing the pipe request");
+                    return Some(2);
                 },
                 _ => {},
             }
@@ -238,11 +250,11 @@ fn individual_messages_client(
     };
     os_input.send_to_server(msg);
     loop {
-        match os_input.recv_from_server().msg() {
-            Some((ServerToClientMsg::UnblockInputThread, _)) if !wait_for_result => {
+        match os_input.recv_from_server() {
+            IpcRecv::Msg(ServerToClientMsg::UnblockInputThread, _) if !wait_for_result => {
                 return None;
             },
-            Some((ServerToClientMsg::Log { lines: log_lines }, _)) => {
+            IpcRecv::Msg(ServerToClientMsg::Log { lines: log_lines }, _) => {
                 log_lines.iter().for_each(|line| println!("{line}"));
                 // A blocking pane's ids arrive ahead of its exit status; the status is the
                 // answer, so keep reading for it.
@@ -250,11 +262,11 @@ fn individual_messages_client(
                     return None;
                 }
             },
-            Some((ServerToClientMsg::LogError { lines: log_lines }, _)) => {
+            IpcRecv::Msg(ServerToClientMsg::LogError { lines: log_lines }, _) => {
                 log_lines.iter().for_each(|line| eprintln!("{line}"));
                 return Some(2);
             },
-            Some((ServerToClientMsg::Exit { exit_reason }, _)) => match exit_reason {
+            IpcRecv::Msg(ServerToClientMsg::Exit { exit_reason }, _) => match exit_reason {
                 ExitReason::Error(e) => {
                     eprintln!("{}", e);
                     return Some(2);
@@ -265,6 +277,10 @@ fn individual_messages_client(
                 _ => {
                     return None;
                 },
+            },
+            IpcRecv::Eof => {
+                eprintln!("Server disconnected before completing the action");
+                return Some(2);
             },
             _ => {},
         }
@@ -309,8 +325,8 @@ pub fn start_subscribe_client(
     let mut stdout = stdout.lock();
 
     loop {
-        match os_input.recv_from_server().msg() {
-            Some((
+        match os_input.recv_from_server() {
+            IpcRecv::Msg(
                 ServerToClientMsg::PaneRenderUpdate {
                     pane_id,
                     viewport,
@@ -318,7 +334,7 @@ pub fn start_subscribe_client(
                     is_initial,
                 },
                 _,
-            )) => match subscribe_cli.format {
+            ) => match subscribe_cli.format {
                 SubscribeFormat::Raw => {
                     if let Some(ref scrollback_lines) = scrollback {
                         for line in scrollback_lines {
@@ -342,7 +358,7 @@ pub fn start_subscribe_client(
                     let _ = stdout.flush();
                 },
             },
-            Some((ServerToClientMsg::SubscribedPaneClosed { pane_id }, _)) => {
+            IpcRecv::Msg(ServerToClientMsg::SubscribedPaneClosed { pane_id }, _) => {
                 remaining_panes.remove(&pane_id);
                 match subscribe_cli.format {
                     SubscribeFormat::Raw => {},
@@ -359,14 +375,13 @@ pub fn start_subscribe_client(
                     break;
                 }
             },
-            Some((ServerToClientMsg::Exit { .. }, _)) => break,
-            Some((ServerToClientMsg::LogError { lines }, _)) => {
+            IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) | IpcRecv::Eof => break,
+            IpcRecv::Msg(ServerToClientMsg::LogError { lines }, _) => {
                 for line in lines {
                     eprintln!("{}", line);
                 }
                 process::exit(2);
             },
-            None => break,
             _ => {},
         }
     }
@@ -410,14 +425,14 @@ pub fn start_events_client(
     // stop anything else in the process printing, which is one client too many in a test.
     let mut stdout = io::stdout();
     loop {
-        match os_input.recv_from_server().msg() {
-            Some((
+        match os_input.recv_from_server() {
+            IpcRecv::Msg(
                 ServerToClientMsg::EventUpdate {
                     event_type,
                     event_json,
                 },
                 _,
-            )) => {
+            ) => {
                 // The payload is already JSON, so the line is assembled around it rather than
                 // parsed and re-serialized. A write that fails is a reader that went away
                 // (`zellij events | head`), which is how this stream ends.
@@ -432,13 +447,13 @@ pub fn start_events_client(
                     break;
                 }
             },
-            Some((ServerToClientMsg::LogError { lines }, _)) => {
+            IpcRecv::Msg(ServerToClientMsg::LogError { lines }, _) => {
                 for line in lines {
                     eprintln!("{}", line);
                 }
                 process::exit(2);
             },
-            Some((ServerToClientMsg::Exit { .. }, _)) | None => break,
+            IpcRecv::Msg(ServerToClientMsg::Exit { .. }, _) | IpcRecv::Eof => break,
             _ => {},
         }
     }
