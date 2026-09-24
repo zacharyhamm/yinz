@@ -1779,9 +1779,9 @@ pub fn route_action(
         } => {
             drop(completion_tx); // releasing pipes is handled by the plugins, so we don't want
                                  // this to block additionallu
-            if let Some(seen_cli_pipes) = seen_cli_pipes.as_mut() {
-                if !seen_cli_pipes.contains(&pipe_id) {
-                    seen_cli_pipes.insert(pipe_id.clone());
+            let is_eof = if let Some(seen_cli_pipes) = seen_cli_pipes.as_mut() {
+                let is_new = seen_cli_pipes.insert(pipe_id.clone());
+                if is_new {
                     senders
                         .send_to_server(ServerInstruction::AssociatePipeWithClient {
                             pipe_id: pipe_id.clone(),
@@ -1789,7 +1789,10 @@ pub fn route_action(
                         })
                         .with_context(err_context)?;
                 }
-            }
+                !is_new && payload.is_none()
+            } else {
+                false
+            };
             if let Some(name) = name.take() {
                 let should_open_in_place = in_place.unwrap_or(false);
                 if should_open_in_place && pane_id.is_none() {
@@ -1801,6 +1804,7 @@ pub fn route_action(
                         pipe_id,
                         name,
                         payload,
+                        is_eof,
                         plugin,
                         args,
                         configuration,
@@ -2867,6 +2871,61 @@ mod tests {
                 (should_open_in_place, pane_id_to_replace),
                 (in_place, expected)
             );
+        }
+    }
+
+    #[test]
+    fn cli_pipe_eof_requires_a_previous_message_on_the_same_connection() {
+        let (to_plugin, plugins) = zellij_runtime::channels::unbounded();
+        let (to_server, server) = zellij_runtime::channels::unbounded();
+        let senders = ThreadSenders {
+            to_plugin: Some(SenderWithContext::new(to_plugin)),
+            to_server: Some(SenderWithContext::new(to_server)),
+            should_silently_fail: true,
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            let mut seen = HashSet::new();
+            for (pipe_id, payload, expected_eof) in [
+                ("empty", None, false),
+                ("stream", Some("input".to_owned()), false),
+                ("stream", Some(String::new()), false),
+                ("stream", None, true),
+                ("empty", None, true),
+            ] {
+                route_action(
+                    Action::CliPipe {
+                        pipe_id: pipe_id.into(),
+                        name: Some("test".into()),
+                        payload,
+                        plugin: None,
+                        args: None,
+                        configuration: None,
+                        floating: None,
+                        in_place: None,
+                        launch_new: false,
+                        skip_cache: false,
+                        cwd: None,
+                        pane_title: None,
+                    },
+                    ClientId::new(1),
+                    Some(ClientId::new(2)),
+                    None,
+                    senders.clone(),
+                    None,
+                    Some(&mut seen),
+                    InputMode::Normal,
+                    None,
+                    true,
+                )
+                .unwrap();
+                let (PluginInstruction::CliPipe { is_eof, .. }, _) = plugins.try_recv().unwrap()
+                else {
+                    panic!("expected a CLI pipe instruction");
+                };
+                assert_eq!(is_eof, expected_eof);
+            }
+            assert_eq!(server.try_iter().count(), 2, "associate each pipe once");
         }
     }
 

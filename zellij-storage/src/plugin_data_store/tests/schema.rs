@@ -339,7 +339,7 @@ fn namespaces_are_separate_stores() {
 
 #[test]
 fn a_private_namespace_is_derived_from_the_plugin_url() {
-    assert_eq!(private_namespace("zellij:hocus"), "plugin:zellij_hocus");
+    assert_eq!(private_namespace("zellij:hocus"), "plugin:zellij:hocus");
     // a debug and a release build of the same plugin are different plugins here, exactly as
     // they are for permissions
     assert_ne!(
@@ -348,6 +348,117 @@ fn a_private_namespace_is_derived_from_the_plugin_url() {
     );
     assert!(!is_shared_namespace(&private_namespace("zellij:hocus")));
     assert!(is_shared_namespace("shared:agents"));
+}
+
+#[test]
+fn private_namespaces_do_not_alias_plugin_urls() {
+    let (store, _guard) = store();
+    let owner = "file:/tmp/a/b.wasm";
+    let other = "file:/tmp/a_b.wasm";
+    for url in [owner, other] {
+        store
+            .define_entity(&private_namespace(url), url, &agent_def(), false)
+            .unwrap();
+    }
+    store
+        .apply(
+            &private_namespace(owner),
+            &[Mutation::put("agent").set("project", "private").build()],
+        )
+        .unwrap();
+    assert!(store
+        .fetch(&private_namespace(other), &FetchRequest::entity("agent"))
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store.catalog(Some(&private_namespace(other))).unwrap()[0].owner_plugin,
+        other
+    );
+}
+
+#[test]
+fn legacy_private_namespaces_migrate_to_their_recorded_owner() {
+    let (store, guard) = store();
+    let owner = "file:/tmp/a/b.wasm";
+    let other = "file:/tmp/a_b.wasm";
+    let legacy = "plugin:file__tmp_a_b.wasm";
+    for namespace in [legacy, "shared:quality"] {
+        store
+            .define_entity(namespace, owner, &agent_def(), false)
+            .unwrap();
+        store
+            .apply(
+                namespace,
+                &[Mutation::put("agent").set("project", "preserved").build()],
+            )
+            .unwrap();
+    }
+    let before = store.fetch(legacy, &FetchRequest::entity("agent")).unwrap();
+    let mut other_def = agent_def();
+    other_def.name = "other_agent".to_owned();
+    store
+        .define_entity(legacy, other, &other_def, false)
+        .unwrap();
+    store
+        .apply(
+            legacy,
+            &[Mutation::put("other_agent")
+                .set("project", "other-owner")
+                .build()],
+        )
+        .unwrap();
+    drop(store);
+    set_store_version(&guard, 2);
+    let store = reopen(&guard);
+    assert_eq!(
+        store
+            .fetch(&private_namespace(owner), &FetchRequest::entity("agent"))
+            .unwrap(),
+        before
+    );
+    assert!(matches!(
+        store.fetch(&private_namespace(other), &FetchRequest::entity("agent")),
+        Err(DataError::UnknownEntity(_))
+    ));
+    assert!(matches!(
+        store.fetch(legacy, &FetchRequest::entity("agent")),
+        Err(DataError::UnknownEntity(_))
+    ));
+    assert_eq!(
+        texts(
+            &store
+                .fetch(
+                    &private_namespace(other),
+                    &FetchRequest::entity("other_agent")
+                )
+                .unwrap(),
+            "project"
+        ),
+        ["other-owner"]
+    );
+    assert!(matches!(
+        store.fetch(
+            &private_namespace(owner),
+            &FetchRequest::entity("other_agent")
+        ),
+        Err(DataError::UnknownEntity(_))
+    ));
+    assert_eq!(
+        texts(
+            &store
+                .fetch("shared:quality", &FetchRequest::entity("agent"))
+                .unwrap(),
+            "project"
+        ),
+        ["preserved"]
+    );
+    drop(store);
+    assert_eq!(
+        reopen(&guard)
+            .fetch(&private_namespace(owner), &FetchRequest::entity("agent"))
+            .unwrap(),
+        before
+    );
 }
 
 #[test]

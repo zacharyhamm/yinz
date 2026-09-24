@@ -94,21 +94,10 @@ pub struct ApplyOutcome {
 
 /// The namespace a plugin gets when it doesn't name one.
 ///
-/// Derived from the plugin's URL the same way `plugin_own_cache_dir` is, so it is stable across
-/// instances, across clients and across sessions — and so a debug and a release build of the same
-/// plugin get different namespaces, exactly as they get different permission entries.
+/// Keep the complete URL: replacing punctuation with underscores aliases distinct plugins.
+/// This is a database value, not a filename, and SQL parameters need no path sanitization.
 pub fn private_namespace(plugin_url: &str) -> String {
-    let sanitized: String = plugin_url
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("plugin:{}", sanitized)
+    format!("plugin:{}", plugin_url)
 }
 
 /// Whether a resolved namespace is one shared between plugins.

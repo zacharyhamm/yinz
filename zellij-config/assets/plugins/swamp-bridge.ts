@@ -3021,7 +3021,12 @@ export default definePlugin({
         transition(reply.work, "fork");
         if (parsedObject(current.request)["cancel_active"] === true)
           cancelAfterTransition(reply.work);
-        closeView(reply.work);
+        closeView(
+          reply.work,
+          parsedObject(current.request)["action"] === "fork"
+            ? required(reply.pane_id).Terminal
+            : undefined,
+        );
       }
       message({ destination_plugin_id: from, message_name: "swamp-pane-ack" });
       return;

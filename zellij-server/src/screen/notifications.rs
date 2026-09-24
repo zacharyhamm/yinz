@@ -510,7 +510,7 @@ impl Screen {
                 .non_fatal();
         }
         self.notify_plugins_of_input(client_id);
-        self.render(None).non_fatal();
+        self.render().non_fatal();
     }
 
     /// Drop any toast that has finished sliding out, gliding the survivors into the gap it leaves.

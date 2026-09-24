@@ -305,7 +305,9 @@ impl GridSnapshot {
         self.text.contains("Ctrl +") && self.text.contains("LOCK")
     }
     pub fn tab_bar_appears(&self) -> bool {
-        self.text.contains("Tab #1")
+        self.text
+            .lines()
+            .any(|line| line.trim_start().starts_with("Zellij ") && line.contains(''))
     }
     pub fn lines(&self) -> Vec<String> {
         self.text.lines().map(|l| l.to_owned()).collect()
@@ -422,3 +424,7 @@ fn build_terminal_pane(win_size: Size) -> TerminalPane {
         notification_end,
     )
 }
+
+#[cfg(test)]
+#[path = "unit/client_screen_tests.rs"]
+mod tests;

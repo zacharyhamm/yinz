@@ -634,7 +634,16 @@ impl TestSession {
     /// says why, and the wording is the whole of what the user gets — so a test
     /// that only saw the exit code could not tell one refusal from another.
     pub fn run_cli_action_reporting(&self, cli_action: CliAction) -> (i32, String) {
-        let (handle, client_screen) = self.spawn_cli_client(cli_action);
+        self.run_cli_action_reporting_with_stdin(cli_action, None)
+    }
+
+    /// `Some` supplies nonterminal stdin, including an empty stream that immediately reaches EOF.
+    pub fn run_cli_action_reporting_with_stdin(
+        &self,
+        cli_action: CliAction,
+        stdin: Option<&str>,
+    ) -> (i32, String) {
+        let (handle, client_screen) = self.spawn_cli_client_with_stdin(cli_action, stdin);
         let exit_code = handle.join().expect("cli client thread panicked");
         let reported = client_screen
             .server_messages()
@@ -642,10 +651,12 @@ impl TestSession {
             .unwrap()
             .iter()
             .filter_map(|message| message.split_once(": "))
-            .filter(|(name, _)| *name == "Log" || *name == "LogError")
-            .map(|(_, lines)| lines.to_owned())
-            .collect::<Vec<_>>()
-            .join("\n");
+            .filter_map(|(name, output)| match name {
+                "Log" | "LogError" => Some(format!("{output}\n")),
+                "CliPipeOutput" => Some(output.to_owned()),
+                _ => None,
+            })
+            .collect::<String>();
         (exit_code, reported)
     }
 
@@ -653,7 +664,7 @@ impl TestSession {
     /// inputs, for the one CLI action a test cannot drive through `CliAction`: `agent-report
     /// --hook-json` reads the event off stdin, which an in-process client has no way to fake.
     pub fn run_actions_reporting(&self, actions: Vec<Action>) -> (i32, String) {
-        let (handle, client_screen) = self.spawn_cli_client_with_actions(actions);
+        let (handle, client_screen) = self.spawn_cli_client_with_actions(actions, None);
         let exit_code = handle.join().expect("cli client thread panicked");
         let reported = client_screen
             .server_messages()
@@ -661,28 +672,40 @@ impl TestSession {
             .unwrap()
             .iter()
             .filter_map(|message| message.split_once(": "))
-            .filter(|(name, _)| *name == "Log" || *name == "LogError")
-            .map(|(_, lines)| lines.to_owned())
-            .collect::<Vec<_>>()
-            .join("\n");
+            .filter_map(|(name, output)| match name {
+                "Log" | "LogError" => Some(format!("{output}\n")),
+                "CliPipeOutput" => Some(output.to_owned()),
+                _ => None,
+            })
+            .collect::<String>();
         (exit_code, reported)
     }
 
     fn spawn_cli_client(&self, cli_action: CliAction) -> (JoinHandle<i32>, ClientScreen) {
+        self.spawn_cli_client_with_stdin(cli_action, None)
+    }
+
+    fn spawn_cli_client_with_stdin(
+        &self,
+        cli_action: CliAction,
+        stdin: Option<&str>,
+    ) -> (JoinHandle<i32>, ClientScreen) {
         let actions = zellij_cli::actions::actions_from_cli(
             cli_action,
             Box::new(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
             Some(self.config.clone()),
         )
         .expect("failed to build cli actions");
-        self.spawn_cli_client_with_actions(actions)
+        self.spawn_cli_client_with_actions(actions, stdin)
     }
 
     fn spawn_cli_client_with_actions(
         &self,
         actions: Vec<Action>,
+        stdin: Option<&str>,
     ) -> (JoinHandle<i32>, ClientScreen) {
         let (fake_client_os_api, fake_client_handle) = FakeClientOsApi::new(self.size, None);
+        let fake_client_os_api = fake_client_os_api.with_cli_stdin(stdin);
         let client_screen = fake_client_handle.client_screen.clone();
         let session_name = self.session_name.clone();
         let handle = std::thread::Builder::new()

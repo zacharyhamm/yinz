@@ -1,12 +1,4 @@
-//! The plugin reference, served to the model as a tool.
-//!
-//! SDK declarations and worked examples are compiled into this tool.
-//!
-//! It is sectioned for cost rather than for size. Every section fits inside `MAX_TOOL_OUTPUT`
-//! several times over, but a tool result stays in the transcript and is re-sent on every later
-//! turn of the conversation — so handing the reference over whole would tax every message that
-//! followed it. Asking for a section is how the model pays only for what it needs.
-//!
+//! Plugin references from the bundled SDK, executable examples, and runtime inventories.
 use crate::plugin_source::{self, Search};
 use crate::tools;
 
@@ -67,10 +59,42 @@ fn sdk_part(name: &str) -> Option<&'static str> {
 }
 
 /// The section names the schema advertises, and the only ones `section` accepts.
-pub const SECTIONS: [&str; 25] = [
+pub const SECTIONS: [&str; 58] = [
     "index",
     "quickstart",
+    "overview",
+    "lifecycle",
+    "events",
+    "commands",
+    "permissions",
+    "helpers",
+    "limits",
+    "async",
+    "async_panes",
+    "async_waits",
+    "async_timers",
+    "files",
+    "data",
+    "queues",
+    "rpc",
+    "builtins",
+    "agents",
+    "hocus_completions",
+    "hocus_extensions",
+    "rendering",
+    "ui",
+    "hooks",
+    "hooks_workflow",
+    "hooks_headless",
+    "hooks_context_menu",
+    "modules",
+    "errors",
+    "restrictions",
+    "porting",
+    "authoring",
+    "testing",
     "sdk_testing",
+    "build",
     "sdk_core",
     "sdk_commands",
     "sdk_replies",
@@ -93,12 +117,92 @@ pub const SECTIONS: [&str; 25] = [
     "example_todo_pane",
     "example_hocus_todos",
     "example_hocus_notes",
+    "hocus_data",
 ];
 
-/// The available declarations and examples, with their sizes.
+fn source_section(name: &str) -> Option<String> {
+    let sdk = match name {
+        "events" | "limits" | "async" | "async_waits" | "async_timers" | "errors"
+        | "restrictions" | "porting" | "modules" => "sdk_core",
+        "commands" => "sdk_commands",
+        "helpers" => "sdk_replies",
+        "files" | "rpc" | "agents" | "hocus_completions" | "hocus_extensions" | "ui"
+        | "async_panes" => "sdk_helpers",
+        "queues" | "hooks" | "hooks_context_menu" => "sdk_types_data",
+        "overview" | "lifecycle" | "rendering" | "authoring" => return Some(fenced(EXAMPLE_CLOCK)),
+        "builtins" => return Some(fenced(EXAMPLE_CAPABILITIES)),
+        "hooks_workflow" => return Some(fenced(EXAMPLE_WORKFLOW)),
+        "hooks_headless" => return Some(fenced(EXAMPLE_AGENT_COMMIT)),
+        "testing" => return section("sdk_testing"),
+        "build" => {
+            return Some(format!(
+                "```toml\n{}\n```",
+                include_str!("../../../zellij-plugin-host/Cargo.toml").trim_end()
+            ))
+        },
+        "permissions" => {
+            let names = zellij_tile::plugin_authoring::all_permission_names()
+                .into_iter()
+                .map(|name| {
+                    let pascal: String = name
+                        .split('_')
+                        .map(|word| {
+                            let mut chars = word.chars();
+                            chars
+                                .next()
+                                .map(|first| {
+                                    first.to_uppercase().collect::<String>() + chars.as_str()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect();
+                    format!("- `{pascal}`")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Some(format!(
+                "Permission names from the host API:\n{names}\n\n{}",
+                fenced(EXAMPLE_CLOCK)
+            ));
+        },
+        "hocus_data" => {
+            let mut text = format!("Namespace: `{}`\n", hocus_proto::store::SHARED);
+            for entity in hocus_proto::store::shared_defs() {
+                text.push_str(&format!(
+                    "\n**`{}`** (version {})\n",
+                    entity.name, entity.version
+                ));
+                for attr in entity.attrs {
+                    text.push_str(&format!(
+                        "- `{}`: {:?}; required={}, unique={}, indexed={}\n",
+                        attr.name, attr.kind, attr.required, attr.unique, attr.indexed
+                    ));
+                }
+            }
+            return Some(text);
+        },
+        "data" => {
+            return Some(format!(
+                "Shared namespace prefix: `{}`. Reserved attributes: {}.\n\n{}",
+                zellij_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX,
+                zellij_tile::plugin_authoring::RESERVED_ATTR_NAMES
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                fenced(EXAMPLE_HOCUS_TODOS),
+            ))
+        },
+        _ => return None,
+    };
+    sdk_part(sdk).map(fenced)
+}
+
+/// The default section: what the rest hold, plus the complete minimal plugin, which is the one
+/// piece of the guide worth having without asking.
 fn index() -> String {
     let mut out = String::from(
-        "Zellij TypeScript plugin reference. Never ask another agent to write a plugin. \
+        "Zellij TypeScript plugin reference from bundled declarations and executable examples. Never ask another agent to write a plugin. \
          `plugin_write` formats and checks strict types and lint, asks approval, keeps a backup, writes the prepared source, then grants its literal permissions. \
          `plugin_check` checks saved files or drafts without writing. `plugin_format` formats drafts or confirms a saved-file change. Fix diagnostics and create dependencies first. To edit, use `plugin_outline` or \
          `plugin_search`, then `plugin_read` and `plugin_edit`. `plugin_reload` reports the first render \
@@ -109,7 +213,39 @@ fn index() -> String {
         let description = match section {
             "index" => continue,
             "quickstart" => "a complete minimal TypeScript plugin",
+            "overview" => "what a plugin is, and how it is named and loaded",
+            "lifecycle" => "definePlugin, load/update/render/pipe",
+            "events" => "raw shapes, zellij.event/onEvent, delivery order",
+            "commands" => "zellij.command and raw shapes",
+            "permissions" => "permission names from the host API",
+            "helpers" => "zellij.host helpers, default keybindings",
+            "limits" => "numbers, BigInt, allocation budgets",
+            "async" => "async helpers: runCommand, webRequest, the rest below",
+            "async_panes" => "runInPane, paneSequence: commands in one pane",
+            "async_waits" => "waitForEvent/Pipe/Permissions, cancellation",
+            "async_timers" => "sleep, after, every",
+            "files" => "zellij.fs and projectConfig",
+            "data" => "zellij.data: the store, revisions, shared namespaces, hocus data",
+            "queues" => "work queues: other plugin code, one slot at a time",
+            "rpc" => "zellij.rpc: a call with an answer, between plugins",
+            "builtins" => "embedded builtins and server identity",
+            "agents" => "zellij.agent: spawning, observing and steering agents",
+            "hocus_completions" => "zellij.hocus.complete: a plugin's own model turn",
+            "hocus_extensions" => "zellij.hocus.tools: JS/TS Hocus tools",
+            "rendering" => "the render contract and themed components",
+            "ui" => "widgets, forms, Markdown, terminal text",
+            "hooks" => "hook points, and the agent_exit one",
+            "hooks_workflow" => "project-owned Swamp launch, questions, evidence and recovery",
+            "hooks_headless" => "hooks that run with no pane",
+            "hooks_context_menu" => "the context_menu hook",
+            "modules" => "imports, the checker, tracing",
+            "errors" => "exceptions, the log, console",
+            "restrictions" => "what a TypeScript plugin may not do",
+            "porting" => "migration from the removed Lua runtime",
+            "authoring" => "the write/check/test/reload loop and inferred grants",
+            "testing" => "installed unit and integration tests",
             "sdk_testing" => "declarations: assertions, harness, disposable sessions",
+            "build" => "build inputs and binary size",
             "sdk_core" => "declarations: events, Plugin, the Zellij interface",
             "sdk_commands" => "declarations: every command's arguments",
             "sdk_replies" => "declarations: replies, zellij.host, keybindings",
@@ -134,6 +270,7 @@ fn index() -> String {
                 "example: reading hocus's own todo rows out of the shared store"
             },
             "example_hocus_notes" => "example: hocus's notes, tags and todo links",
+            "hocus_data" => "hocus's shared entities and attributes, for any runtime",
             _ => continue,
         };
         // The size, so the choice can be made on what it costs. Every one of these lands in the
@@ -171,7 +308,7 @@ pub fn section(name: &str) -> Option<String> {
         "example_hocus_todos" => Some(fenced(EXAMPLE_HOCUS_TODOS)),
         "example_hocus_notes" => Some(fenced(EXAMPLE_HOCUS_NOTES)),
         sdk if SDK_SECTIONS.contains(&sdk) => sdk_part(sdk).map(fenced),
-        _ => None,
+        other => source_section(other),
     }
 }
 
@@ -199,12 +336,14 @@ pub fn docs(requested: Option<&str>) -> String {
 /// Each is the text a `section=` fetch answers with, so a hit's line number is the line a page
 /// read reads.
 fn corpus(only: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut seen = std::collections::HashSet::new();
     SECTIONS
         .iter()
         .copied()
         .filter(|name| *name != "index")
         .filter(|name| only.is_none_or(|only| only == *name))
         .filter_map(|name| section(name).map(|text| (name, text)))
+        .filter(|(_, text)| seen.insert(text.clone()))
         .collect()
 }
 
@@ -257,6 +396,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn topic_sections_serve_the_bundled_api_and_executable_examples() {
+        for (topic, sdk) in [
+            ("events", "sdk_core"),
+            ("commands", "sdk_commands"),
+            ("helpers", "sdk_replies"),
+            ("agents", "sdk_helpers"),
+            ("hooks", "sdk_types_data"),
+            ("testing", "sdk_testing"),
+        ] {
+            assert_eq!(section(topic), section(sdk), "{topic}");
+        }
+        assert_eq!(section("lifecycle"), section("example_clock"));
+        assert!(section("data")
+            .unwrap()
+            .contains(EXAMPLE_HOCUS_TODOS.trim_end()));
+    }
+
     /// 3.8 KB of quickstart used to be appended to the index unasked, on the first `plugin_docs`
     /// call of every plugin conversation - and, being a tool result, on every round after it.
     /// The bound sits just above the index as it stands and well under what the quickstart
@@ -266,7 +423,7 @@ mod tests {
         let index = docs(None);
         assert!(!index.contains("## A plugin"), "{index}");
         assert!(index.contains("quickstart"), "but it still points at it");
-        // The budget includes the declaration parts and worked examples.
+        // The budget grew with the TypeScript guide's sections and the declaration parts; the
         assert!(
             index.len() < 5_400,
             "the index is {} bytes and is paid for on every later turn",
@@ -373,6 +530,105 @@ mod tests {
         }
     }
 
+    /// The guide's "Hocus data" is the schema a plugin author writes fetches against, and the
+    /// failure it exists to prevent is exactly a guess at a name that does not exist. So it is
+    /// checked against the definitions themselves rather than trusted to be kept up by hand: an
+    /// entity or an attribute added to `store::shared_defs()` has to be written down here too.
+    ///
+    /// `import_marker` is the one exception, and is named as such below: it is bookkeeping for
+    /// hocus's own migration off the old JSON files, and means nothing to a reader.
+    #[test]
+    fn the_hocus_data_section_names_every_shared_entity_and_attribute() {
+        let text = section("hocus_data").expect("the section resolves");
+        for def in hocus_proto::store::shared_defs() {
+            if def.name == "import_marker" {
+                continue;
+            }
+            assert!(
+                text.contains(&format!("`{}`", def.name)),
+                "the guide does not name the `{}` entity",
+                def.name
+            );
+            for attr in &def.attrs {
+                assert!(
+                    text.contains(&format!("`{}`", attr.name)),
+                    "the guide does not name `{}`.`{}`",
+                    def.name,
+                    attr.name
+                );
+            }
+        }
+    }
+
+    /// And the other way: a name in the guide that no definition carries is a reader sent to
+    /// fetch a column that is not there.
+    #[test]
+    fn the_hocus_data_section_invents_no_entity_names() {
+        let text = section("hocus_data").expect("the section resolves");
+        let declared: Vec<String> = hocus_proto::store::shared_defs()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+        for line in text.lines().filter(|line| line.starts_with("**`")) {
+            let name = line
+                .trim_start_matches("**`")
+                .split('`')
+                .next()
+                .unwrap()
+                .to_owned();
+            assert!(
+                declared.contains(&name),
+                "the guide describes `{name}`, which no shared definition declares"
+            );
+        }
+    }
+
+    /// The guide is the only place a plugin author meets these names, and hocus pre-grants what
+    /// it finds in a source: a permission spelled wrong is granted to nobody and raises nothing
+    /// until the plugin runs. So every permission zellij has must be nameable from the guide,
+    /// and a permission added later must fail here rather than be undocumented.
+    #[test]
+    fn the_guides_name_every_permission_a_plugin_can_ask_for() {
+        let ts = section("permissions").expect("the TypeScript permission table's own section");
+        for name in zellij_tile::plugin_authoring::all_permission_names() {
+            // The TypeScript spelling is the Rust one: PascalCase.
+            let pascal: String = name
+                .split('_')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    chars
+                        .next()
+                        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                        .unwrap_or_default()
+                })
+                .collect();
+            assert!(
+                ts.contains(&format!("`{pascal}`")),
+                "the TypeScript guide's permission table has no `{pascal}`"
+            );
+        }
+    }
+
+    /// The two store rules that cost the most to learn at run time: a namespace that is not
+    /// `shared:`-prefixed is refused, and a declared `created_at` fails the whole define. Both
+    /// are enforced in `zellij_types::plugin_data`, and both have to be sayable from the guide.
+    #[test]
+    fn the_guides_state_the_data_store_rules_they_cannot_enforce() {
+        for name in ["data"] {
+            let data = section(name).expect("the data section");
+            assert!(
+                data.contains(zellij_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX),
+                "{name} does not mention the shared namespace prefix"
+            );
+            for reserved in zellij_tile::plugin_authoring::RESERVED_ATTR_NAMES {
+                assert!(
+                    data.contains(reserved),
+                    "{name} does not say `{reserved}` is reserved"
+                );
+            }
+        }
+    }
+
     fn query(text: &str) -> Search<'_> {
         Search {
             query: text,
@@ -388,7 +644,7 @@ mod tests {
     #[test]
     fn a_docs_query_answers_section_line_hits_and_stays_far_under_the_cap() {
         let hits = search(None, &query("RunCommandResult"));
-        assert!(hits.contains("sdk_core:"), "{hits}");
+        assert!(hits.contains("events:"), "{hits}");
         // Keep repeated matches well below the output cap.
         assert!(
             hits.len() < MAX_DOCS_OUTPUT / 3,
@@ -417,9 +673,9 @@ mod tests {
 
     #[test]
     fn a_docs_query_confined_to_a_section_searches_only_it() {
-        let hits = search(Some("sdk_core"), &query("Event"));
+        let hits = search(Some("events"), &query("event"));
         assert!(
-            hits.lines().all(|line| line.starts_with("sdk_core:")
+            hits.lines().all(|line| line.starts_with("events:")
                 || line.is_empty()
                 || line.starts_with('…')),
             "{hits}"

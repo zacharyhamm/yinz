@@ -377,6 +377,8 @@ impl<'a> PluginLoader<'a> {
         // Workers share the plugin's permission cell so grants (which can land
         // after worker creation) apply to them too.
         let plugin_permissions = store.data().permissions.clone();
+        let parent_instance = store.data().instance_id;
+        let parent_unavailable = store.data().unavailable.clone();
         for function_name in instance
             .exports(&mut store)
             .filter_map(|export| export.clone().into_func().map(|_| export.name()))
@@ -385,6 +387,8 @@ impl<'a> PluginLoader<'a> {
                 let (mut store, instance) =
                     self.create_plugin_instance_and_wasi_env_for_worker()?;
                 store.data_mut().permissions = plugin_permissions.clone();
+                store.data_mut().instance_id = parent_instance;
+                store.data_mut().unavailable = parent_unavailable.clone();
                 let start_function_for_worker = instance
                     .get_typed_func::<(), ()>(&mut store, "_start")
                     .with_context(err_context)?;
@@ -441,6 +445,8 @@ impl<'a> PluginLoader<'a> {
         PluginEnv {
             response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
+            instance_id: Default::default(),
+            unavailable: Default::default(),
             cancel: self.cancel.clone(),
             cancel_tripped: Arc::new(AtomicBool::new(false)),
             deno_generation: None,
@@ -608,6 +614,8 @@ impl<'a> PluginLoader<'a> {
         let plugin_env = PluginEnv {
             response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
+            instance_id: Default::default(),
+            unavailable: Default::default(),
             cancel: self.cancel.clone(),
             cancel_tripped: Arc::new(AtomicBool::new(false)),
             deno_generation: None,

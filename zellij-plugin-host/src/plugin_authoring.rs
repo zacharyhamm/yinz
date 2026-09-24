@@ -3,7 +3,12 @@
 //! a folder of its own, and in this crate rather than the binary's so the integration tests can
 //! run the same code the CLI does.
 
-use std::path::{Path, PathBuf};
+use anyhow::Context;
+use std::{
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
+};
 use zellij_plugin_api::authoring::is_deno_plugin;
 
 /// Check a file with Deno's semantic module checker.
@@ -153,12 +158,11 @@ pub fn write(
     // Before the write, and a refusal when it cannot be made: the write is the only thing that
     // destroys the old version, so a backup that silently did not happen would be worse than no
     // backup at all - the file it was meant to hold would already be gone.
-    let replaced = match path.is_file() {
+    let replaced = match overwrite && path.is_file() {
         true => keep_backup(&path, &contents)?,
         false => None,
     };
-    std::fs::write(&path, contents)
-        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
+    publish_file(&path, contents.as_bytes(), overwrite, None)?;
     Ok(Written { path, replaced })
 }
 
@@ -186,7 +190,68 @@ pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
         anyhow::bail!("{} needs formatting", path.display());
     }
     keep_backup(path, &formatted)?;
-    std::fs::write(path, formatted)?;
+    publish_file(path, formatted.as_bytes(), true, None)?;
+    Ok(())
+}
+
+fn publish_file(
+    path: &Path,
+    contents: &[u8],
+    overwrite: bool,
+    permissions: Option<std::fs::Permissions>,
+) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let metadata = match std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => Some(
+            file.metadata()
+                .with_context(|| format!("failed to inspect {}", path.display()))?,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to open {} for replacement", path.display()))
+        },
+    };
+    let mut staged = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("failed to stage {}", path.display()))?;
+    if let Some(metadata) = &metadata {
+        anyhow::ensure!(
+            metadata.is_file(),
+            "{} is not a regular file",
+            path.display()
+        );
+    }
+    if let Some(permissions) =
+        permissions.or_else(|| metadata.map(|metadata| metadata.permissions()))
+    {
+        staged
+            .as_file()
+            .set_permissions(permissions)
+            .with_context(|| format!("failed to preserve permissions for {}", path.display()))?;
+    }
+    staged
+        .write_all(contents)
+        .and_then(|_| staged.as_file().sync_all())
+        .with_context(|| format!("failed to stage contents for {}", path.display()))?;
+    let published = if overwrite {
+        staged.persist(path)
+    } else {
+        staged.persist_noclobber(path)
+    };
+    published.map_err(|error| {
+        if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::anyhow!("{} exists; pass --overwrite to replace it", path.display())
+        } else {
+            anyhow::anyhow!("failed to publish {}: {error}", path.display())
+        }
+    })?;
     Ok(())
 }
 
@@ -198,9 +263,19 @@ pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
 /// folder - is an error rather than a shrug, because the caller is about to overwrite the only
 /// copy of the file.
 fn keep_backup(path: &Path, contents: &str) -> anyhow::Result<Option<PathBuf>> {
-    if std::fs::read_to_string(path).is_ok_and(|previous| previous == contents) {
+    let previous = std::fs::read(path)
+        .map_err(|e| anyhow::anyhow!("failed to read {} for backup: {e}", path.display()))?;
+    if previous == contents.as_bytes() {
         return Ok(None);
     }
+    let permissions = std::fs::metadata(path)
+        .with_context(|| {
+            format!(
+                "failed to read permissions of {} for backup",
+                path.display()
+            )
+        })?
+        .permissions();
     let mut name = path
         .file_stem()
         .ok_or_else(|| anyhow::anyhow!("missing filename"))?
@@ -217,7 +292,7 @@ fn keep_backup(path: &Path, contents: &str) -> anyhow::Result<Option<PathBuf>> {
             backup.display()
         );
     }
-    std::fs::copy(path, &backup).map_err(|e| {
+    publish_file(&backup, &previous, true, Some(permissions)).map_err(|e| {
         anyhow::anyhow!(
             "failed to keep a backup of {} as {}: {e}",
             path.display(),
@@ -265,6 +340,116 @@ pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn unchecked_overwrite_backs_up_source_permissions() {
+        for (existing_backup, mode) in [(true, 0o600), (false, 0o754)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("keys.ts");
+            let backup = dir.path().join("keys.bak.ts");
+            let original = "export default { before: true };\n";
+            let replacement = "export default { after: true };\n";
+            std::fs::write(&path, original).unwrap();
+            let permissions = std::fs::Permissions::from_mode(mode);
+            std::fs::set_permissions(&path, permissions).unwrap();
+            let permissions = std::fs::metadata(&path).unwrap().permissions();
+            if existing_backup {
+                std::fs::write(&backup, "older backup").unwrap();
+                std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+
+            let written = write(dir.path(), "keys", replacement, true, false).unwrap();
+
+            assert_eq!(written.replaced.as_ref(), Some(&backup));
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+            assert_eq!(
+                std::fs::metadata(&backup).unwrap().permissions(),
+                permissions
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), replacement);
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions(), permissions);
+        }
+    }
+
+    #[test]
+    fn formatting_backs_up_source_permissions() {
+        for (existing_backup, mode) in [(true, 0o600), (false, 0o754)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("keys.ts");
+            let backup = dir.path().join("keys.bak.ts");
+            let original = "export default {before:true};";
+            std::fs::write(&path, original).unwrap();
+            let permissions = std::fs::Permissions::from_mode(mode);
+            std::fs::set_permissions(&path, permissions).unwrap();
+            let permissions = std::fs::metadata(&path).unwrap().permissions();
+            if existing_backup {
+                std::fs::write(&backup, "older backup").unwrap();
+                std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+
+            format_file(&path, false).unwrap();
+
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+            assert_eq!(
+                std::fs::metadata(&backup).unwrap().permissions(),
+                permissions
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "export default { before: true };\n"
+            );
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions(), permissions);
+        }
+    }
+
+    #[test]
+    fn plugin_replacement_preserves_hard_linked_sources_and_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = "export default { before: true };\n";
+        let replacement = "export default { after: true };\n";
+        let written = write(dir.path(), "keys", original, false, false).unwrap();
+        let alias = dir.path().join("alias.ts");
+        let backup = dir.path().join("keys.bak.ts");
+        std::fs::hard_link(&written.path, &alias).unwrap();
+        std::fs::hard_link(&written.path, &backup).unwrap();
+
+        write(dir.path(), "keys", replacement, true, false).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&written.path).unwrap(), replacement);
+        assert_eq!(std::fs::read_to_string(&alias).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+    }
+
+    #[test]
+    fn concurrent_plugin_creators_never_replace_the_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            let writers: Vec<_> = (0..16)
+                .map(|index| {
+                    let gate = &gate;
+                    let dir = dir.path();
+                    scope.spawn(move || {
+                        let source = format!("export default {{ value: {index} }};\n");
+                        gate.wait();
+                        write(dir, "keys", &source, false, false).map(|_| source)
+                    })
+                })
+                .collect();
+            let successful: Vec<_> = writers
+                .into_iter()
+                .filter_map(|writer| writer.join().unwrap().ok())
+                .collect();
+            assert_eq!(successful.len(), 1);
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("keys.ts")).unwrap(),
+                successful[0]
+            );
+            assert!(!dir.path().join("keys.bak.ts").exists());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        });
+    }
 
     #[test]
     fn check_plugin_report_carries_deno_warnings() {
@@ -287,91 +472,113 @@ mod tests {
     }
 
     #[test]
-    fn deno_writes_check_syntax_and_preserve_previous_versions() {
+    fn deno_js_writes_check_syntax_and_preserve_previous_versions() {
+        assert_deno_writes_preserve_previous_versions("js");
+    }
+
+    #[test]
+    fn deno_mjs_writes_check_syntax_and_preserve_previous_versions() {
+        assert_deno_writes_preserve_previous_versions("mjs");
+    }
+
+    #[test]
+    fn deno_ts_writes_check_syntax_and_preserve_previous_versions() {
+        assert_deno_writes_preserve_previous_versions("ts");
+    }
+
+    #[test]
+    fn deno_mts_writes_check_syntax_and_preserve_previous_versions() {
+        assert_deno_writes_preserve_previous_versions("mts");
+    }
+
+    fn assert_deno_writes_preserve_previous_versions(extension: &str) {
         let dir = tempfile::tempdir().unwrap();
-        for extension in ["js", "mjs", "ts", "mts"] {
-            let name = format!("app/keys.{extension}");
-            // Dependencies must exist before authoring their importer.
-            assert!(write(dir.path(), &name, "import './missing.js';", false, true).is_err());
-            assert!(!dir.path().join(&name).exists());
-            std::fs::create_dir_all(dir.path().join("app")).unwrap();
-            std::fs::write(
-                dir.path().join("app/dep.js"),
-                "export const dependency = 1;\n",
+        let name = format!("app/keys.{extension}");
+        // Dependencies must exist before authoring their importer.
+        assert!(write(dir.path(), &name, "import './missing.js';", false, true).is_err());
+        assert!(!dir.path().join(&name).exists());
+        std::fs::create_dir_all(dir.path().join("app")).unwrap();
+        std::fs::write(
+            dir.path().join("app/dep.js"),
+            "export const dependency = 1;\n",
+        )
+        .unwrap();
+        let source = "import \"./dep.js\";\nexport default { before: true };";
+        let written = write(dir.path(), &name, source, false, true).unwrap();
+        assert_eq!(written.path, dir.path().join(&name));
+        assert!(
+            check_plugin(&written.path).is_ok(),
+            "semantic check resolves existing imports"
+        );
+        assert!(write(dir.path(), &name, "export default {};", false, true).is_err());
+        assert!(write(dir.path(), &name, "export default {", true, true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&written.path).unwrap(),
+            format!("{source}\n")
+        );
+        let replaced = write(dir.path(), &name, "export default {};", true, true).unwrap();
+        let backup = dir.path().join(format!("app/keys.bak.{extension}"));
+        assert_eq!(replaced.replaced, Some(backup.clone()));
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            format!("{source}\n")
+        );
+        assert!(
+            write(dir.path(), &name, "export default {};\n\n", true, true)
+                .unwrap()
+                .replaced
+                .is_none()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            format!("{source}\n")
+        );
+        let recursive = format!(
+            "export default {}0{};",
+            "[".repeat(10_000),
+            "]".repeat(10_000)
+        );
+        assert!(write(dir.path(), &name, &recursive, true, true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&written.path).unwrap(),
+            "export default {};\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            format!("{source}\n")
+        );
+        #[cfg(unix)]
+        {
+            let linked = format!("linked.{extension}");
+            std::os::unix::fs::symlink(&written.path, dir.path().join(&linked)).unwrap();
+            assert!(write(dir.path(), &linked, "export default {};", true, true)
+                .unwrap_err()
+                .to_string()
+                .contains("symlink"));
+            let protected = format!("protected.{extension}");
+            std::fs::copy(dir.path().join("app/dep.js"), dir.path().join("dep.js")).unwrap();
+            let original = write(dir.path(), &protected, source, false, true).unwrap();
+            std::os::unix::fs::symlink(
+                &written.path,
+                dir.path().join(format!("protected.bak.{extension}")),
             )
             .unwrap();
-            let source = "import \"./dep.js\";\nexport default { before: true };";
-            let written = write(dir.path(), &name, source, false, true).unwrap();
-            assert_eq!(written.path, dir.path().join(&name));
             assert!(
-                check_plugin(&written.path).is_ok(),
-                "semantic check resolves existing imports"
-            );
-            assert!(write(dir.path(), &name, "export default {};", false, true).is_err());
-            assert!(write(dir.path(), &name, "export default {", true, true).is_err());
-            assert_eq!(
-                std::fs::read_to_string(&written.path).unwrap(),
-                format!("{source}\n")
-            );
-            let replaced = write(dir.path(), &name, "export default {};", true, true).unwrap();
-            let backup = dir.path().join(format!("app/keys.bak.{extension}"));
-            assert_eq!(replaced.replaced, Some(backup.clone()));
-            assert_eq!(
-                std::fs::read_to_string(&backup).unwrap(),
-                format!("{source}\n")
-            );
-            assert!(
-                write(dir.path(), &name, "export default {};\n\n", true, true)
-                    .unwrap()
-                    .replaced
-                    .is_none()
-            );
-            assert_eq!(
-                std::fs::read_to_string(&backup).unwrap(),
-                format!("{source}\n")
-            );
-            let recursive = format!(
-                "export default {}0{};",
-                "[".repeat(10_000),
-                "]".repeat(10_000)
-            );
-            assert!(write(dir.path(), &name, &recursive, true, true).is_err());
-            assert_eq!(
-                std::fs::read_to_string(&written.path).unwrap(),
-                "export default {};\n"
-            );
-            assert_eq!(
-                std::fs::read_to_string(&backup).unwrap(),
-                format!("{source}\n")
-            );
-            #[cfg(unix)]
-            {
-                let linked = format!("linked.{extension}");
-                std::os::unix::fs::symlink(&written.path, dir.path().join(&linked)).unwrap();
-                assert!(write(dir.path(), &linked, "export default {};", true, true)
+                write(dir.path(), &protected, "export default {};", true, true)
                     .unwrap_err()
                     .to_string()
-                    .contains("symlink"));
-                let protected = format!("protected.{extension}");
-                std::fs::copy(dir.path().join("app/dep.js"), dir.path().join("dep.js")).unwrap();
-                let original = write(dir.path(), &protected, source, false, true).unwrap();
-                std::os::unix::fs::symlink(
-                    &written.path,
-                    dir.path().join(format!("protected.bak.{extension}")),
-                )
-                .unwrap();
-                assert!(
-                    write(dir.path(), &protected, "export default {};", true, true)
-                        .unwrap_err()
-                        .to_string()
-                        .contains("backup")
-                );
-                assert_eq!(
-                    std::fs::read_to_string(original.path).unwrap(),
-                    format!("{source}\n")
-                );
-            }
+                    .contains("backup")
+            );
+            assert_eq!(
+                std::fs::read_to_string(original.path).unwrap(),
+                format!("{source}\n")
+            );
         }
+    }
+
+    #[test]
+    fn deno_write_validation_respects_the_selected_language_and_check_option() {
+        let dir = tempfile::tempdir().unwrap();
         let typed = write(
             dir.path(),
             "typed.mts",

@@ -957,7 +957,7 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             tab.expire_pending_agent_escapes(now);
         }
-        self.render(None)?;
+        self.render()?;
         self.sync_animation_clock(now)
     }
 
@@ -2057,7 +2057,7 @@ impl Screen {
         // Populate chrome-only destinations before rendering can reap empty tabs.
         self.resume_pending_arrangement()?;
         self.log_and_report_session_state()
-            .and_then(|_| self.render(None))
+            .and_then(|_| self.render())
             .with_context(err_context)
     }
 
@@ -2289,7 +2289,7 @@ impl Screen {
 
         // Force a full render for the new watcher
         // This ensures they get complete state, not just delta
-        self.render(None)?;
+        self.render()?;
 
         Ok(())
     }
@@ -2309,7 +2309,7 @@ impl Screen {
             watcher.set_force_render();
         }
         // Trigger re-render with new followed client
-        self.render(None)?;
+        self.render()?;
         Ok(())
     }
 
@@ -2336,6 +2336,13 @@ impl Screen {
                 let s = str::from_utf8(&buf)
                     .with_context(|| format!("failed to construct tab name from buf: {buf:?}"))
                     .with_context(err_context)?;
+                let finish_empty_rename = s.is_empty()
+                    && self
+                        .mode_info
+                        .get(&client_id)
+                        .unwrap_or(&self.default_mode_info)
+                        .mode
+                        != InputMode::RenameTab;
                 match self.get_active_tab_mut(client_id) {
                     Ok(active_tab) => {
                         active_tab.edit_name_by_user(|name| match s {
@@ -2350,6 +2357,9 @@ impl Screen {
                                 name.push_str(&clean_string_from_control_and_linebreak(c));
                             },
                         });
+                        if finish_empty_rename {
+                            active_tab.finish_rename();
+                        }
                         self.log_and_report_session_state()
                             .with_context(err_context)
                     },
@@ -2597,7 +2607,7 @@ impl Screen {
         self.clear_bell_for_focused_pane(client_id);
         self.add_active_pane_to_group_if_marking(&client_id);
         self.sync_scroll_mode_on_focus(client_id)?;
-        self.render(None)?;
+        self.render()?;
         self.log_and_report_session_state()
     }
     pub fn move_focus_left_or_previous_tab(&mut self, client_id: ClientId) -> Result<()> {
@@ -2705,7 +2715,7 @@ impl Screen {
 
         self.log_and_report_session_state()
             .context("failed to toggle tabs")?;
-        self.render(None)
+        self.render()
     }
 
     pub fn focus_plugin_pane(
@@ -2963,7 +2973,7 @@ impl Screen {
         // Deliberately not a focus operation: a pane in another tab is only revealed once the
         // client is looking at that tab, and nothing here moves the keyboard.
         if self.active_tab_ids.get(&client_id) != Some(&tab_id) {
-            self.render(None)?;
+            self.render()?;
             self.log_and_report_session_state()?;
             return Ok(());
         }
@@ -2975,7 +2985,7 @@ impl Screen {
             // so nothing about where the keyboard goes changes.
             tab.unsuppress_or_expand_pane(pane_id, true);
         }
-        self.render(None)?;
+        self.render()?;
         self.log_and_report_session_state()?;
         Ok(())
     }
@@ -3932,7 +3942,7 @@ impl Screen {
                 .send_to_pty_writer(PtyWriteInstruction::Write(bytes, terminal_id, None));
         }
 
-        self.render(None)?;
+        self.render()?;
         Ok(())
     }
     /// Swap the active palette to the `theme_dark` / `theme_light` styling for `mode` and
@@ -4058,7 +4068,7 @@ impl Screen {
         };
         if self.host_terminal_theme_mode == Some(mode) {
             self.repaint_theme_mode(mode)?;
-            self.render(None)?;
+            self.render()?;
         } else {
             self.apply_theme_mode(mode)?;
         }
@@ -4310,7 +4320,7 @@ impl Screen {
                 .is_some(),
         };
         if changed {
-            self.render(None)?;
+            self.render()?;
             self.log_and_report_session_state()?;
         }
         Ok(())
@@ -4555,7 +4565,6 @@ impl Screen {
     fn handle_plugin_render_assets(
         &mut self,
         plugin_render_assets: Vec<PluginRenderAsset>,
-        unblock_cli_pipes: bool,
     ) -> Result<Vec<PluginRenderAsset>> {
         let mut handled_render_assets = vec![];
         let mut unhandled_render_assets = vec![];
@@ -4583,18 +4592,8 @@ impl Screen {
             }
             self.render_blocker.remove_blocking_plugin(plugin_id);
         }
-        if unblock_cli_pipes {
-            // CLI pipes must be unblocked for all assets - including orphans whose bytes stay
-            // pending for a future pane - otherwise whatever is piping into them hangs until (or
-            // forever if) their pane shows up. Replays of such pending events pass false here,
-            // since their pipes were already unblocked when the bytes first arrived.
-            let mut all_render_assets = handled_render_assets;
-            all_render_assets.extend(unhandled_render_assets.iter().cloned());
-            self.render((!all_render_assets.is_empty()).then_some(all_render_assets))?;
-        } else if !handled_render_assets.is_empty() {
-            // schedule a render without unblocking - passing the assets to render would
-            // unblock pipes that were already unblocked when the bytes first arrived
-            self.render(None)?;
+        if !handled_render_assets.is_empty() {
+            self.render()?;
         }
         Ok(unhandled_render_assets)
     }
@@ -5150,11 +5149,11 @@ fn replay_pending_plugin_events(
                 for client_id in client_ids {
                     screen.sync_scroll_mode_on_focus(client_id)?;
                 }
-                screen.render(None)?;
+                screen.render()?;
             },
             ScreenInstruction::PluginBytes(plugin_render_assets) => {
                 // pipes were already unblocked when these bytes first arrived
-                for unhandled in screen.handle_plugin_render_assets(plugin_render_assets, false)? {
+                for unhandled in screen.handle_plugin_render_assets(plugin_render_assets)? {
                     log::error!(
                         "Could not replay pending plugin bytes for missing plugin {}",
                         unhandled.plugin_id
@@ -5167,7 +5166,7 @@ fn replay_pending_plugin_events(
                         "Could not replay pending plugin cursor for missing plugin {plugin_id}"
                     );
                 }
-                screen.render(None)?;
+                screen.render()?;
             },
             ScreenInstruction::Multipane {
                 operation,
@@ -5185,7 +5184,7 @@ fn replay_pending_plugin_events(
                 _,
             ) => {
                 screen.change_overlay_coordinates(coordinates, override_user_placement);
-                screen.render(None)?;
+                screen.render()?;
             },
             ScreenInstruction::UpdatePluginLoadingStage(plugin_id, loading_indication) => {
                 if !screen.update_plugin_loading_stage(plugin_id, loading_indication) {
@@ -5193,7 +5192,7 @@ fn replay_pending_plugin_events(
                         "Could not replay pending loading stage for missing plugin {plugin_id}"
                     );
                 }
-                screen.render(None)?;
+                screen.render()?;
             },
             ScreenInstruction::StartPluginLoadingIndication(plugin_id, loading_indication) => {
                 if !screen.start_plugin_loading_indication(plugin_id, loading_indication) {
@@ -5201,7 +5200,7 @@ fn replay_pending_plugin_events(
                         "Could not replay pending loading indication for missing plugin {plugin_id}"
                     );
                 }
-                screen.render(None)?;
+                screen.render()?;
             },
             ScreenInstruction::ClosePane(pane_id, client_id, completion_tx, exit_status) => {
                 // Buffered only by the pty's "the child exited" road, which is the one that

@@ -16,6 +16,15 @@ fn reopen(guard: &Guard) -> PluginDataStore {
     PluginDataStore::new(guard.path())
 }
 
+fn set_store_version(guard: &Guard, version: i64) {
+    let conn = rusqlite::Connection::open(guard.path().join("plugin-data.db")).unwrap();
+    conn.execute(
+        "UPDATE store_meta SET value = ?1 WHERE key = 'schema_version'",
+        [version.to_string()],
+    )
+    .unwrap();
+}
+
 fn defined() -> (PluginDataStore, Guard) {
     let (store, dir) = store();
     store.define_entity(NS, OWNER, &agent_def(), false).unwrap();

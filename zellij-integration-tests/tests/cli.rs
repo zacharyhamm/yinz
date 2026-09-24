@@ -9,6 +9,235 @@ use zellij_integration_tests::{
 };
 
 #[test]
+fn a_broadcast_pipe_with_no_plugins_completes() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(zellij_types::data::LayoutInfo::Stringified(
+            "layout { pane; }".into(),
+        ))
+        .start();
+    zellij
+        .expect_pty_spawn()
+        .output(b"READY WITHOUT PLUGINS\r\n");
+    zellij.wait_until("terminal ready without plugins", |grid| {
+        grid.contains("READY WITHOUT PLUGINS")
+    });
+    for stdin in [None, Some(""), Some("input\n")] {
+        let (status, output) =
+            zellij.run_cli_action_reporting_with_stdin(cli_pipe(None, None), stdin);
+        assert_eq!(status, 0);
+        assert!(output.is_empty(), "unexpected pipe output: {output}");
+    }
+    zellij.quit();
+}
+
+fn cli_pipe(plugin: Option<&str>, payload: Option<&str>) -> CliAction {
+    CliAction::Pipe {
+        name: Some("test-pipe".into()),
+        payload: payload.map(str::to_owned),
+        args: None,
+        plugin: plugin.map(str::to_owned),
+        plugin_configuration: None,
+        force_launch_plugin: false,
+        skip_plugin_cache: false,
+        floating_plugin: None,
+        in_place_plugin: None,
+        plugin_cwd: None,
+        plugin_title: None,
+    }
+}
+
+fn pipe_recipient_session() -> (zellij_integration_tests::TestSession, String) {
+    use zellij_types::data::PermissionType;
+
+    let root = zellij_integration_tests::test_env::init().join("pipe-recipient");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("recipient.ts");
+    std::fs::write(
+        &path,
+        r#"
+import z from 'zellij:plugin';
+export default {
+  async load() { await z.waitForPermissions(['ReadCliPipes', 'ChangeApplicationState']); },
+  pipe(message) {
+    const pipe = message.source.Cli;
+    if (message.payload?.trim() === 'close') {
+      // Release the explicit hold before retiring this instance.
+      z.command('BlockCliPipeInput', pipe);
+      z.command('CliPipeOutput', [pipe, 'response\n']);
+      z.command('UnblockCliPipeInput', pipe);
+      z.command('CloseSelf');
+    } else {
+      const output = message.payload === 'identity' ? String(z.getPluginIds().plugin_id)
+        : message.payload == null ? 'eof\n' : 'input\n';
+      z.command('CliPipeOutput', [pipe, output]);
+    }
+  },
+};
+"#,
+    )
+    .unwrap();
+    let url = format!("file:{}", path.display());
+    let cache_path = zellij_runtime::consts::ZELLIJ_PLUGIN_PERMISSIONS_CACHE.clone();
+    std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+    let mut cache =
+        zellij_config::permission::PermissionCache::from_path_or_default(Some(cache_path));
+    cache.cache(
+        zellij_runtime::plugin_location::parse_plugin_location(&url, None)
+            .unwrap()
+            .to_string(),
+        vec![
+            PermissionType::ReadCliPipes,
+            PermissionType::ChangeApplicationState,
+        ],
+    );
+    cache.write_to_file().unwrap();
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!(
+            "plugins {{ recipient location=\"{url}\"; }}\nload_plugins clear-defaults=true {{}}"
+        ))
+        .with_layout(zellij_types::data::LayoutInfo::Stringified(
+            "layout { pane; }".into(),
+        ))
+        .start();
+    zellij.expect_pty_spawn().output(b"PIPE SESSION READY\r\n");
+    zellij.wait_until("pipe session ready", |grid| {
+        grid.contains("PIPE SESSION READY")
+    });
+    (zellij, url)
+}
+
+#[test]
+fn eof_does_not_replace_a_self_closing_pipe_recipient() {
+    let (mut zellij, url) = pipe_recipient_session();
+    for address in ["recipient", url.as_str(), "id"] {
+        for explicit_payload in [false, true] {
+            let (status, id) =
+                zellij.run_cli_action_reporting(cli_pipe(Some("recipient"), Some("identity")));
+            assert_eq!(status, 0, "{id}");
+            let id = id.parse::<u32>().unwrap();
+            let destination = if address == "id" {
+                format!("plugin_{id}")
+            } else {
+                address.to_owned()
+            };
+            let (payload, stdin) = if explicit_payload {
+                (Some("close"), "")
+            } else {
+                (None, "close\n")
+            };
+            let (status, output) = zellij.run_cli_action_reporting_with_stdin(
+                cli_pipe(Some(&destination), payload),
+                Some(stdin),
+            );
+            assert_eq!(
+                (status, output.as_str()),
+                (0, "response\n"),
+                "{destination}"
+            );
+            let (status, panes) = zellij.run_cli_action_reporting(CliAction::ListPanes {
+                tab: false,
+                command: false,
+                state: false,
+                geometry: false,
+                all: true,
+                json: true,
+            });
+            assert_eq!(status, 0, "{panes}");
+            let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
+            assert!(
+                panes
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|pane| pane["is_plugin"] == false),
+                "{panes}"
+            );
+        }
+    }
+    zellij.quit();
+}
+
+#[test]
+fn live_pipe_recipients_receive_eof_and_initial_empty_requests_still_load() {
+    let (mut zellij, _) = pipe_recipient_session();
+    for stdin in [Some(""), None, Some("input\n")] {
+        let (status, output) =
+            zellij.run_cli_action_reporting_with_stdin(cli_pipe(Some("recipient"), None), stdin);
+        let expected = if stdin == Some("input\n") {
+            "input\neof\n"
+        } else {
+            "eof\n"
+        };
+        assert_eq!((status, output.as_str()), (0, expected));
+        // Each iteration starts without a recipient, so both kinds of empty initial
+        // request have to load it. A terminal request has no follow-up EOF.
+        assert_eq!(
+            zellij.run_cli_action_reporting(cli_pipe(Some("recipient"), Some("close"))),
+            (0, "response\n".into())
+        );
+    }
+    for destination in [
+        "plugin_999999",
+        "plugin_invalid",
+        "file:unsupported.lua",
+        "no-such-alias",
+    ] {
+        for stdin in [Some(""), Some("input\n"), None] {
+            let (status, output) = zellij
+                .run_cli_action_reporting_with_stdin(cli_pipe(Some(destination), None), stdin);
+            assert_eq!(status, 2, "{destination}, stdin={stdin:?}: {output}");
+            assert!(
+                !output.is_empty(),
+                "missing destination diagnostic for {destination}"
+            );
+            if destination == "no-such-alias" {
+                assert!(output.contains(destination), "{output}");
+            }
+        }
+    }
+    zellij.quit();
+}
+
+#[test]
+fn lazy_plugin_load_failures_reach_cli_with_an_attached_ui() {
+    let root = zellij_integration_tests::test_env::init().join("failed-pipe-loads");
+    std::fs::create_dir_all(&root).unwrap();
+    let invalid = root.join("invalid.wasm");
+    std::fs::write(&invalid, b"not a wasm module").unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(zellij_types::data::LayoutInfo::Stringified(
+            "layout { pane; }".into(),
+        ))
+        .start();
+    zellij.expect_pty_spawn().output(b"PIPE SESSION READY\r\n");
+    zellij.wait_until("UI attached before lazy plugin load", |grid| {
+        grid.contains("PIPE SESSION READY")
+    });
+    for url in [
+        format!("file:{}", root.join("missing.wasm").display()),
+        format!("file:{}", invalid.display()),
+        "zellij:not-a-builtin".into(),
+    ] {
+        let (status, diagnostic) =
+            zellij.run_cli_action_reporting(cli_pipe(Some(&url), Some("request")));
+        assert_eq!(status, 2, "{url}: {diagnostic}");
+        assert!(
+            !diagnostic.trim().is_empty(),
+            "missing load error for {url}"
+        );
+        if url == "zellij:not-a-builtin" {
+            assert!(
+                diagnostic.contains("Failed to resolve plugin: not-a-builtin"),
+                "{diagnostic}"
+            );
+        }
+    }
+    zellij.quit();
+}
+
+#[test]
 fn override_layout_from_default_to_compact() {
     let mut zellij = start_zellij();
     claim_first_terminal_and_wait_for_prompt(&zellij);

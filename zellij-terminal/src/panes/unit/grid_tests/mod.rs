@@ -1160,6 +1160,22 @@ mod vttest;
 mod wide_chars;
 
 #[test]
+fn searching_erased_wrapped_rows_does_not_index_empty_continuations() {
+    for content in ["abcdx\x1b[2K", "abcdefghx\x1b[2K\x1b[A\x1b[2K"] {
+        let mut grid = create_grid_with_size_and_raw(4, 4, content.as_bytes());
+
+        grid.set_search_string("dx");
+
+        assert!(grid.search_results.selections.is_empty());
+        feed_bytes(&mut grid, b"\rxy");
+        grid.set_search_string("dx");
+        assert_eq!(grid.search_results.selections.len(), 1);
+        assert_eq!(grid.search_results.selections[0].start, Position::new(0, 3));
+        assert_eq!(grid.search_results.selections[0].end, Position::new(1, 1));
+    }
+}
+
+#[test]
 fn unicode_search_uses_character_indexes_and_terminal_columns() {
     for (content, needle, start, end) in [
         ("界 café 東京 🙂 end".to_owned(), "café", (0, 3), (0, 7)),

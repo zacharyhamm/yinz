@@ -666,10 +666,12 @@ pub fn plugin_thread_main(
                 )));
             },
             PluginInstruction::ApplyCachedEvents {
+                load_id,
                 plugin_ids,
                 done_receiving_permissions,
             } => {
-                wasm_bridge.apply_cached_events(
+                wasm_bridge.apply_cached_events_for_load(
+                    load_id,
                     plugin_ids,
                     done_receiving_permissions,
                     shutdown_send.clone(),
@@ -915,6 +917,7 @@ pub fn plugin_thread_main(
                 pipe_id,
                 name,
                 payload,
+                is_eof,
                 plugin,
                 args,
                 configuration,
@@ -928,8 +931,9 @@ pub fn plugin_thread_main(
             } => {
                 let should_float = floating.unwrap_or(true);
                 let mut pipe_messages = vec![];
+                let mut resolution_error = None;
                 let floating_pane_coordinates = None; // TODO: do we want to allow this?
-                match plugin {
+                match plugin.as_deref() {
                     Some(destination) if destination.starts_with("plugin_") => {
                         match destination.parse::<PaneId>() {
                             Ok(PaneId::Plugin(plugin_id))
@@ -950,20 +954,19 @@ pub fn plugin_thread_main(
                                     ),
                                 ));
                             },
+                            Ok(PaneId::Plugin(_)) if is_eof => {},
                             _ => {
-                                bus.senders.send_to_server(ServerInstruction::LogError(
-                                    vec![format!("Plugin destination is invalid or missing: {destination}")],
-                                    cli_client_id,
-                                    None,
-                                )).context("failed to report missing pipe destination").non_fatal();
+                                resolution_error = Some(format!(
+                                    "Plugin destination is invalid or missing: {destination}"
+                                ));
                             },
                         }
                     },
                     Some(plugin_url) => {
                         // send to specific plugin(s)
-                        pipe_to_specific_plugins(
+                        resolution_error = pipe_to_specific_plugins(
                             PipeSource::Cli(pipe_id.clone()),
-                            &plugin_url,
+                            plugin_url,
                             &configuration,
                             &cwd,
                             skip_cache,
@@ -981,7 +984,10 @@ pub fn plugin_thread_main(
                             &plugin_aliases,
                             floating_pane_coordinates,
                             None,
-                        );
+                            !is_eof,
+                        )
+                        .err()
+                        .map(|error| format!("{error:#}"));
                     },
                     None if matches!(name.as_str(), "store_query" | "store_mutate") => {
                         // Store operations use one existing instance, including when a
@@ -1000,15 +1006,8 @@ pub fn plugin_thread_main(
                                     true,
                                 ),
                             ));
-                        } else {
-                            bus.senders
-                                .send_to_server(ServerInstruction::LogError(
-                                    vec!["No running hocus-store instance; load hocus-store before requesting notes or todos".to_owned()],
-                                    cli_client_id,
-                                    None,
-                                ))
-                                .context("failed to report missing store destination")
-                                .non_fatal();
+                        } else if !is_eof {
+                            resolution_error = Some("No running hocus-store instance; load hocus-store before requesting notes or todos".to_owned());
                         }
                     },
                     None => {
@@ -1022,6 +1021,22 @@ pub fn plugin_thread_main(
                             &mut pipe_messages,
                         );
                     },
+                }
+                if pipe_messages.is_empty() {
+                    let result = if let Some(error) = resolution_error {
+                        Err(error)
+                    } else if is_eof
+                        || (plugin.is_none()
+                            && !matches!(name.as_str(), "store_query" | "store_mutate"))
+                    {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "Plugin destination is unavailable: {}",
+                            plugin.as_deref().unwrap_or("hocus-store")
+                        ))
+                    };
+                    wasm_bridge.finish_empty_pipe(&pipe_id, result);
                 }
                 for (_, _, message) in pipe_messages.iter_mut() {
                     message.pane_id = source_pane_id;
@@ -1110,7 +1125,10 @@ pub fn plugin_thread_main(
                                 &plugin_aliases,
                                 floating_pane_coordinates,
                                 None,
-                            );
+                                true,
+                            )
+                            .context("failed to resolve pipe destination")
+                            .non_fatal();
                         },
                         None => {
                             // no specific destination, send to all plugins
@@ -1181,7 +1199,10 @@ pub fn plugin_thread_main(
                             &plugin_aliases,
                             floating_pane_coordinates,
                             message.new_plugin_args.and_then(|n| n.should_focus),
-                        );
+                            true,
+                        )
+                        .context("failed to resolve pipe destination")
+                        .non_fatal();
                     },
                     (None, Some(destination_plugin_id)) => {
                         let is_private = true;
@@ -1226,14 +1247,13 @@ pub fn plugin_thread_main(
                 }
                 wasm_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
             },
-            PluginInstruction::UnblockCliPipes(pipes_to_unblock) => {
-                let pipes_to_unblock = wasm_bridge.update_cli_pipe_state(pipes_to_unblock);
-                for pipe_name in pipes_to_unblock {
-                    let _ = bus
-                        .senders
-                        .send_to_server(ServerInstruction::UnblockCliPipeInput(pipe_name))
-                        .context("failed to unblock input pipe");
-                }
+            PluginInstruction::PipeCompleted(completion) => {
+                let outcomes = wasm_bridge.update_cli_pipe_state(vec![completion]);
+                wasm_bridge.send_pipe_outcomes(outcomes);
+            },
+            PluginInstruction::ReleasePluginInstancePipes(plugin_id, instance_id) => {
+                let outcomes = wasm_bridge.release_plugin_instance_pipes(plugin_id, instance_id);
+                wasm_bridge.send_pipe_outcomes(outcomes);
             },
             PluginInstruction::Reconfigure {
                 client_id,
@@ -1357,13 +1377,36 @@ pub fn plugin_thread_main(
                     .non_fatal();
             },
             PluginInstruction::PluginFailed {
+                load_id,
                 plugin_id,
                 deno_generation,
+                instance_id,
+                loading_client,
                 error,
                 failed_to_load,
             } => {
+                if let Some(client) = loading_client.filter(|_| {
+                    load_id.is_none_or(|id| wasm_bridge.load_is_current(plugin_id, id))
+                        && !wasm_bridge.pipe_has_recipient(plugin_id)
+                }) {
+                    bus.senders
+                        .send_to_server(ServerInstruction::LogError(
+                            vec![error.clone()],
+                            client,
+                            None,
+                        ))
+                        .context("failed to report plugin loading error")
+                        .non_fatal();
+                }
                 wasm_bridge
-                    .queue_plugin_failed(plugin_id, deno_generation, error, failed_to_load)
+                    .queue_plugin_failed(
+                        plugin_id,
+                        load_id,
+                        deno_generation,
+                        instance_id,
+                        error,
+                        failed_to_load,
+                    )
                     .non_fatal();
             },
             PluginInstruction::DetectPluginConfigChanges(new_plugins) => {
@@ -1492,18 +1535,15 @@ fn pipe_to_all_plugins(
     name: &str,
     payload: &Option<String>,
     args: &Option<BTreeMap<String, String>>,
-    wasm_bridge: &mut WasmBridge,
+    _wasm_bridge: &mut WasmBridge,
     pipe_messages: &mut Vec<(Option<PluginId>, Option<ClientId>, PipeMessage)>,
 ) {
     let is_private = false;
-    let all_plugin_ids = wasm_bridge.all_plugin_ids();
-    for (plugin_id, client_id) in all_plugin_ids {
-        pipe_messages.push((
-            Some(plugin_id),
-            Some(client_id),
-            PipeMessage::new(pipe_source.clone(), name, payload, args, is_private),
-        ));
-    }
+    pipe_messages.push((
+        None,
+        None,
+        PipeMessage::new(pipe_source, name, payload, args, is_private),
+    ));
 }
 
 fn pipe_to_specific_plugins(
@@ -1521,12 +1561,13 @@ fn pipe_to_specific_plugins(
     name: &str,
     payload: &Option<String>,
     args: &Option<BTreeMap<String, String>>,
-    bus: &Bus<PluginInstruction>,
+    _bus: &Bus<PluginInstruction>,
     wasm_bridge: &mut WasmBridge,
     plugin_aliases: &PluginAliases,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     should_focus: Option<bool>,
-) {
+    allow_load: bool,
+) -> Result<()> {
     let is_private = true;
     let size = Size::default();
     match zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
@@ -1549,7 +1590,8 @@ fn pipe_to_specific_plugins(
                 cli_client_id,
                 floating_pane_coordinates,
                 should_focus.unwrap_or(false),
-            );
+                allow_load,
+            )?;
             for (plugin_id, client_id) in all_plugin_ids {
                 pipe_messages.push((
                     Some(plugin_id),
@@ -1558,19 +1600,9 @@ fn pipe_to_specific_plugins(
                 ));
             }
         },
-        Err(e) => match cli_client_id {
-            Some(cli_client_id) => {
-                let _ = bus.senders.send_to_server(ServerInstruction::LogError(
-                    vec![format!("Failed to parse plugin url: {}", e)],
-                    cli_client_id,
-                    None,
-                ));
-            },
-            None => {
-                log::error!("Failed to parse plugin url: {}", e);
-            },
-        },
+        Err(error) => return Err(anyhow!("Failed to parse plugin url: {error}")),
     }
+    Ok(())
 }
 
 /// What the `session_start` hook is told: enough to address the session from a plugin that was

@@ -489,6 +489,7 @@ impl PinnedExecutor {
     }
 
     /// Execute job pinned to plugin's assigned thread
+    #[cfg(test)]
     pub fn execute_for_plugin<F>(&self, plugin_id: PluginId, f: F)
     where
         F: FnOnce(
@@ -512,7 +513,8 @@ impl PinnedExecutor {
         label: impl Into<String>,
         is_input: bool,
         f: F,
-    ) where
+    ) -> bool
+    where
         F: FnOnce(
                 ThreadSenders,
                 Arc<Mutex<PluginMap>>,
@@ -529,11 +531,11 @@ impl PinnedExecutor {
         let state = self.state.lock().unwrap();
         let Some(&thread_idx) = state.assignments.get(&plugin_id) else {
             log::error!("Failed to find thread for plugin with id: {}", plugin_id);
-            return;
+            return false;
         };
         let Some(Some(thread)) = state.threads.get(thread_idx) else {
             log::error!("Failed to find thread for plugin with id: {}", plugin_id);
-            return;
+            return false;
         };
 
         // Increment busy counter BEFORE sending work
@@ -553,12 +555,14 @@ impl PinnedExecutor {
             // Thread died unexpectedly - this is a critical error
             thread.jobs_in_flight.fetch_sub(1, Ordering::SeqCst);
             log::error!("Plugin executor thread {} has died", thread_idx);
+            return false;
         }
+        true
     }
 
     /// Load a plugin: register it and execute the load work on its assigned thread
     /// This combines registration + execution for plugin loading
-    pub fn execute_plugin_load<F>(&self, plugin_id: PluginId, f: F)
+    pub fn execute_plugin_load<F>(&self, plugin_id: PluginId, f: F) -> bool
     where
         F: FnOnce(
                 ThreadSenders,
@@ -573,7 +577,7 @@ impl PinnedExecutor {
         self.register_plugin(plugin_id);
 
         // Execute the load work on the assigned thread
-        self.execute_for_plugin(plugin_id, f);
+        self.execute_for_plugin_tagged(plugin_id, "load", false, f)
     }
 
     /// Unload a plugin: execute cleanup work, then unregister and potentially shrink pool
@@ -599,7 +603,7 @@ impl PinnedExecutor {
                 Engine,
             ) + Send
             + 'static,
-    ) {
+    ) -> bool {
         let executor = self.clone();
         self.execute_for_plugin_tagged(
             plugin_id,
@@ -612,7 +616,7 @@ impl PinnedExecutor {
                 // Unregister plugin and potentially shrink the pool
                 executor.unregister_plugin(plugin_id);
             },
-        );
+        )
     }
 
     /// Unregister a plugin and shrink the pool if that left a thread idle.

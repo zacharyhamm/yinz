@@ -71,9 +71,19 @@ fn submit(zellij: &TestSession, line: &str) {
 /// none of the alias' configuration, so it would miss the running instance and
 /// launch a second one. The host resolves one existing store instance.
 fn pipe_to_store(zellij: &mut TestSession, payload: &str) {
-    zellij.run_cli_action(CliAction::Pipe {
-        name: Some("store_mutate".to_owned()),
-        payload: Some(payload.to_owned()),
+    let mut mutation: serde_json::Value = serde_json::from_str(payload).unwrap();
+    mutation["structured_reply"] = true.into();
+    let (status, output) =
+        zellij.run_cli_action_reporting(store_pipe("store_mutate", Some(mutation.to_string())));
+    assert_eq!(status, 0, "{output}");
+    let reply: serde_json::Value = serde_json::from_str(&output).expect("store mutation reply");
+    assert_eq!(reply["ok"], true, "{reply}");
+}
+
+fn store_pipe(name: &str, payload: Option<String>) -> CliAction {
+    CliAction::Pipe {
+        name: Some(name.to_owned()),
+        payload,
         args: None,
         plugin: None,
         plugin_configuration: None,
@@ -85,7 +95,55 @@ fn pipe_to_store(zellij: &mut TestSession, payload: &str) {
         in_place_plugin: None,
         plugin_cwd: None,
         plugin_title: None,
+    }
+}
+
+#[test]
+fn store_pipes_ignore_eof_but_reject_invalid_payloads() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let terminal = zellij.expect_pty_spawn();
+    terminal.output(b"session ready");
+    zellij.wait_until("session ready for store pipes", |grid| {
+        grid.contains("session ready")
     });
+
+    for (name, request, parse_error) in [
+        (
+            "store_mutate",
+            r#"{"op":"project_remember","args":{"name":"p","root":"/work/p"},"structured_reply":true}"#,
+            "could not parse mutation",
+        ),
+        (
+            "store_query",
+            r#"{"op":"project_list","args":{},"structured_reply":true}"#,
+            "could not parse query",
+        ),
+    ] {
+        for explicit_payload in [false, true] {
+            let (payload, stdin) = if explicit_payload {
+                (Some(request.to_owned()), String::new())
+            } else {
+                (None, format!("{request}\n"))
+            };
+            let (status, output) =
+                zellij.run_cli_action_reporting_with_stdin(store_pipe(name, payload), Some(&stdin));
+            assert_eq!(status, 0, "{name}: {output}");
+            assert_eq!(output.lines().count(), 1, "{name}: {output}");
+            let reply: serde_json::Value = serde_json::from_str(&output).unwrap();
+            assert_eq!(reply["ok"], true, "{name}: {reply}");
+        }
+        for payload in ["", "not json"] {
+            let (_, output) = zellij.run_cli_action_reporting_with_stdin(
+                store_pipe(name, Some(payload.to_owned())),
+                Some(""),
+            );
+            assert_eq!(output, format!("{parse_error}\n"));
+        }
+    }
+    zellij.quit();
 }
 
 #[test]
@@ -111,7 +169,7 @@ fn a_write_from_the_cli_is_visible_in_hocus() {
     );
     submit(&zellij, r#"/todo_add {"project": "p", "text": "before"}"#);
     zellij.wait_until("the first todo is written", |grid_snapshot| {
-        grid_snapshot.contains("before")
+        grid_snapshot.contains("Added 1 in p.")
     });
 
     // The reload. A brand new `State` on the other side — which now holds
@@ -183,7 +241,7 @@ fn a_note_written_from_the_cli_is_listed_and_read_in_hocus() {
     // first the store hands out.
     submit(&zellij, r#"/todo_add {"project": "p", "text": "the item"}"#);
     zellij.wait_until("the todo is written", |grid_snapshot| {
-        grid_snapshot.contains("the item")
+        grid_snapshot.contains("Added 1 in p.")
     });
 
     pipe_to_store(

@@ -80,6 +80,22 @@ fn reopen(guard: &Guard) -> PluginDataStore {
     PluginDataStore::from_backend(Arc::new(guard.backend()))
 }
 
+fn set_store_version(guard: &Guard, version: i64) {
+    let mut client = PgConfig::from_str(&guard.url)
+        .unwrap()
+        .connect(NoTls)
+        .unwrap();
+    client
+        .execute(
+            &format!(
+                "UPDATE \"{}\".store_meta SET value = $1 WHERE key = 'schema_version'",
+                guard.schema
+            ),
+            &[&version.to_string()],
+        )
+        .unwrap();
+}
+
 fn defined() -> (PluginDataStore, Guard) {
     let (store, guard) = store();
     store.define_entity(NS, OWNER, &agent_def(), false).unwrap();

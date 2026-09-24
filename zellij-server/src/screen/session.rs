@@ -292,7 +292,7 @@ impl Screen {
             "attach trace: screen client_id={client_id} scheduling first render after {:?}",
             attach_started_at.elapsed()
         );
-        self.render(None)?;
+        self.render()?;
         log::info!(
             "attach trace: screen client_id={client_id} AddClient handler complete after {:?}",
             attach_started_at.elapsed()

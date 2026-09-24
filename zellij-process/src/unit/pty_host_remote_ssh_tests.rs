@@ -215,6 +215,18 @@ fn the_sweep_spares_sockets_that_are_too_young_to_judge() {
     assert!(ours.exists(), "the sweep removed our own socket");
 }
 
+#[test]
+fn the_socket_sweep_preserves_regular_files_even_when_old() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("important.sock");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_modified(std::time::UNIX_EPOCH).unwrap();
+
+    sweep_stale_sockets(dir.path(), &dir.path().join("ours.sock"));
+
+    assert!(path.exists());
+}
+
 /// The handshake must refuse a version gap rather than proceeding to spawn, and
 /// it must name both sides — a mismatched remote build is the likeliest failure
 /// here and the least guessable from a generic connection error.

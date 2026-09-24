@@ -917,7 +917,7 @@ fn reap_host(host_process: HostProcess, host_pid: ProcessId, host_id: &Superviso
 /// full backlog — can happen to a perfectly healthy supervisor, and treating that
 /// as death would unlink the socket of a live pane.
 pub fn socket_is_dead(socket: &Path) -> bool {
-    match UnixStream::connect(socket) {
+    match zellij_ipc::consts::ipc_connect(socket) {
         Ok(_) => false,
         Err(e) => matches!(
             e.kind(),

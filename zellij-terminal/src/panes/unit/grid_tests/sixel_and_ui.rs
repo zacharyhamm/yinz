@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn deeply_indented_list_items_are_clipped_without_scrolling_the_pane() {
+    for indentation in [3, 4, 65_536] {
+        let mut grid = create_grid_with_size_and_raw(5, 8, b"original");
+        let command = format!(
+            "\x1bPznested_list;0/4/8/1;{}65\x1b\\",
+            "|".repeat(indentation)
+        );
+
+        feed_bytes(&mut grid, command.as_bytes());
+
+        assert!(grid.lines_above.is_empty());
+        assert_eq!(viewport_texts(&grid)[0], "original");
+    }
+
+    let mut grid = create_grid_with_size_and_raw(5, 8, b"original");
+    feed_bytes(&mut grid, b"\x1bPznested_list;0/1/8/2;||||65;66\x1b\\");
+    assert_eq!(viewport_texts(&grid)[0], "original");
+    assert_eq!(row_text(&grid.viewport[2]), " > B");
+    assert!(grid.lines_above.is_empty());
+}
+
+#[test]
 fn malformed_unicode_component_indices_do_not_panic() {
     for component in [
         "text;€$65",

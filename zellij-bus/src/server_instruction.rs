@@ -39,6 +39,7 @@ pub enum ServerInstruction {
     SwitchSession(SessionConnection, ClientId, Option<NotificationEnd>),
     UnblockCliPipeInput(String),   // String -> Pipe name
     CliPipeOutput(String, String), // String -> Pipe name, String -> Output
+    CliPipeError(String, String),  // String -> Pipe name, String -> Error
     /// One event for a `zellij events` client: its type by name, and the event as JSON.
     EventUpdateToClient(ClientId, String, String),
     AssociatePipeWithClient {
@@ -103,6 +104,7 @@ impl From<&ServerInstruction> for ServerContext {
             ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
             ServerInstruction::ResolveLockedEscape(..) => ServerContext::ChangeMode,
             ServerInstruction::KillSessionWithCompletion(..) => ServerContext::KillSession,
+            ServerInstruction::CliPipeError(..) => ServerContext::LogError,
             other => {
                 let name: &'static str = other.into();
                 ServerContext::from_str(name).unwrap_or_else(|_| {

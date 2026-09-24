@@ -206,7 +206,7 @@ impl Screen {
         if menu.items.visible().is_empty() {
             self.close_context_menu(client_id);
         }
-        self.render(None).non_fatal();
+        self.render().non_fatal();
     }
 
     /// The plugin did not answer in time. Show what the configuration declared.
@@ -231,7 +231,7 @@ impl Screen {
         if menu.items.visible().is_empty() {
             self.close_context_menu(client_id);
         }
-        self.render(None).non_fatal();
+        self.render().non_fatal();
     }
 
     /// Close this client's menu, if it has one. Returns whether there was one to close.
@@ -385,13 +385,13 @@ impl Screen {
                     })
                     .unwrap_or(false);
                 if changed {
-                    self.render(None).non_fatal();
+                    self.render().non_fatal();
                 }
             },
             MouseEventType::Press => {
                 if !inside {
                     self.close_context_menu(client_id);
-                    self.render(None).non_fatal();
+                    self.render().non_fatal();
                 }
                 // A press on a row does nothing yet; the release is what activates. Dragging onto
                 // an item and off again should leave the menu exactly as it was.
@@ -432,7 +432,7 @@ impl Screen {
         match key.bare_key {
             BareKey::Esc => {
                 self.close_context_menu(client_id);
-                self.render(None).non_fatal();
+                self.render().non_fatal();
                 true
             },
             BareKey::Down | BareKey::Up | BareKey::Char('j') | BareKey::Char('k')
@@ -443,7 +443,7 @@ impl Screen {
                     let items = menu.items.visible().to_vec();
                     menu.selected = next_selectable(&items, menu.selected, forward);
                 }
-                self.render(None).non_fatal();
+                self.render().non_fatal();
                 true
             },
             BareKey::Enter if has_items && key.key_modifiers.is_empty() => {
@@ -457,7 +457,7 @@ impl Screen {
                     // item: the user has not said which one they mean.
                     None => {
                         self.close_context_menu(client_id);
-                        self.render(None).non_fatal();
+                        self.render().non_fatal();
                     },
                 }
                 true
@@ -529,7 +529,7 @@ impl Screen {
                 ),
             }
         }
-        self.render(None).non_fatal();
+        self.render().non_fatal();
     }
 
     /// Run a menu item's actions against the pane its menu was opened over.

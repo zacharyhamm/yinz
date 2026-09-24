@@ -15,15 +15,13 @@
 const PLUGIN_0: zellij_types::internal_ids::PluginId = zellij_types::internal_ids::PluginId::new(0);
 
 use super::*;
-use crate::plugin_map::CANCELLED_BY_HOST;
 use crate::ClientId;
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::TabId;
 
 /// A fake screen thread that grants every permission a plugin asks for and logs everything
-/// else, until `done` is set. Not driven by a count of some instruction: what these tests wait
-/// for is a *content*, the crash report carrying `CANCELLED_BY_HOST`, and `Watched::wait_until`
-/// reads that off the log.
+/// else, until `done` is set. Tests use `Watched::wait_until` to observe the first frame and
+/// the marker sent by the Wasm fixture when it enters its loop.
 fn observe_screen(
     receiver: Receiver<(ScreenInstruction, ErrorContext)>,
     plugin_thread_sender: SenderWithContext<PluginInstruction>,
@@ -171,16 +169,18 @@ impl RunawayHarness {
             )]));
     }
 
-    fn wait_for_cancel_report(&self) {
-        // An unload gives the guest a grace period before cancelling it, so this wait is longer
-        // than the usual one: it covers the grace and then some.
+    fn wait_for_loop_entry(&self) {
         self.log.wait_until(
-            "the crash report saying the host cancelled the plugin",
-            zellij_test_support::default_timeout() * 3,
-            |instructions| {
-                instructions
-                    .iter()
-                    .any(|i| format!("{i:?}").contains(CANCELLED_BY_HOST))
+            "the guest entered its runaway callback",
+            zellij_test_support::default_timeout(),
+            |log| {
+                log.iter()
+                    .any(|instruction| {
+                        matches!(
+                            instruction,
+                            ScreenInstruction::SetSelectable(PaneId::Plugin(PLUGIN_0), false)
+                        )
+                    })
                     .then_some(())
             },
         );
@@ -210,36 +210,32 @@ impl Drop for RunawayHarness {
     }
 }
 
-/// Load `run_plugin`, wait for its first frame, send it the key that starts its loop, unload
-/// it, and wait for the crash report that says the host stopped it. Then tear the thread down,
-/// which is the join a runaway plugin used to hang.
-///
-/// The cancel is reported once. The instance was stopped mid-call, and a wasm instance stopped
-/// that way cannot be called again (the trap leaves `zellij-tile`'s state cell borrowed), so
-/// its `BeforeClose` is skipped rather than reported as a second, `already borrowed`, crash.
+/// Retiring a runtime must let the executing callback return (or cancel it), then finish
+/// shutdown within its budget. Its late failure must not paint an unloaded pane.
 fn a_runaway_plugin_is_stopped_by_its_unload(run_plugin: RunPluginOrAlias) {
     let harness = RunawayHarness::load(run_plugin);
     harness.wait_for_first_frame();
     harness.start_the_loop();
+    harness.wait_for_loop_entry();
     let _ = harness
         .plugin_thread_sender
         .send(PluginInstruction::Unload(crate::PluginId::new(0)));
-    harness.wait_for_cancel_report();
 
-    let (_, seen) = harness.finish();
+    let (elapsed, seen) = harness.finish();
+    assert!(
+        elapsed < zellij_test_support::default_timeout(),
+        "unload did not cancel the callback: {elapsed:?}"
+    );
     let crash_reports: Vec<String> = seen
         .iter()
         .filter(|i| matches!(i, ScreenInstruction::UpdatePluginLoadingStage(PLUGIN_0, _)))
         .map(|i| format!("{i:?}"))
         .filter(|report| report.contains("Panic!") || report.contains("already borrowed"))
         .collect();
-    assert_eq!(
-        crash_reports.len(),
-        1,
-        "the cancel is reported once and BeforeClose is not attempted on the stopped instance: \
-         {crash_reports:#?}"
+    assert!(
+        crash_reports.is_empty(),
+        "retired runtime failures must not paint a pane: {crash_reports:#?}"
     );
-    assert!(crash_reports[0].contains(CANCELLED_BY_HOST));
 }
 
 /// Shutting the session down while the plugin is inside its loop. The plugin thread's exit is

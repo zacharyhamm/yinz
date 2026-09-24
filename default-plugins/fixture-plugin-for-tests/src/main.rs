@@ -130,8 +130,9 @@ impl ZellijPlugin for State {
         if matches!(event, Event::Key(_))
             && self.configuration.get("runaway").map(|v| v == "true") == Some(true)
         {
-            // A guest that never returns. Every iteration crosses the host boundary, which is
-            // where the host's cancel token stops it — see the `runaway` plugin-thread tests.
+            set_selectable(false); // The test observes entry before requesting unload.
+                                   // A guest that never returns. Every iteration crosses the host boundary, which is
+                                   // where the host's cancel token stops it — see the `runaway` plugin-thread tests.
             loop {
                 get_plugin_ids();
             }
@@ -1149,6 +1150,7 @@ impl ZellijPlugin for State {
             unblock_cli_pipe_input(&input_pipe_id);
         } else if name == "message_name_block" {
             block_cli_pipe_input(&input_pipe_id);
+            self.explicit_string_to_render = Some(format!("{input_pipe_id} blocked"));
         } else if name == "pipe_output" {
             cli_pipe_output(&name, "this_is_my_output");
         } else if name == "pipe_message_to_plugin" {

@@ -137,8 +137,12 @@ impl Harness {
     }
 
     fn load_logger(&self, configuration: &[(&str, &str)], permissions: &[&str]) {
+        self.load_source(&logger_source(permissions), configuration, permissions);
+    }
+
+    fn load_source(&self, source: &str, configuration: &[(&str, &str)], permissions: &[&str]) {
         let path = self.dir.path().join("logger.ts");
-        std::fs::write(&path, logger_source(permissions)).unwrap();
+        std::fs::write(&path, source).unwrap();
         let url = format!("file:{}", path.display());
         let mut run_plugin =
             zellij_runtime::plugin_location::run_plugin_or_alias_from_url(&url, &None, None, None)
@@ -188,6 +192,7 @@ impl Harness {
 
     fn cli_pipe(&self, name: &str) {
         let _ = self.to_plugin.send(PluginInstruction::CliPipe {
+            is_eof: false,
             pipe_id: PIPE.to_owned(),
             name: name.to_owned(),
             payload: None,
@@ -971,4 +976,42 @@ pub fn coalescing_hovers_keeps_positions_before_wheel_events() {
         ],
         "each client's last hover survives before each wheel, keyed by plugin too"
     );
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn asynchronous_pipe_hold_releases_after_guest_render_output_without_screen_acknowledgements() {
+    let harness = Harness::new();
+    harness.load_source(r#"
+let stream, ready = false;
+export default {
+  async load() { await zellij.waitForPermissions(['ReadCliPipes']); ready = true; zellij.requestRender(); },
+  pipe(message) { stream = message.source.Cli; zellij.host.blockCliPipeInput(stream); zellij.host.cliPipeOutput(stream, 'callback'); return true; },
+  async render() {
+    if (stream) {
+      const pipe = stream; stream = null;
+      await zellij.sleep(0);
+      zellij.host.cliPipeOutput(pipe, 'async render');
+      zellij.host.unblockCliPipeInput(pipe);
+    }
+    return ready ? 'ready granted' : 'starting';
+  }
+};
+"#, &[], &["ReadCliPipes"]);
+    harness.cli_pipe("async");
+    harness.server.wait_until("asynchronous hold completes", WAIT, |log| {
+        log.iter().any(|instruction| matches!(instruction, ServerInstruction::UnblockCliPipeInput(pipe) if pipe == PIPE)).then_some(())
+    });
+    let outcome: Vec<_> = harness
+        .server
+        .lock()
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ServerInstruction::CliPipeOutput(pipe, output) if pipe == PIPE => Some(output.clone()),
+            ServerInstruction::UnblockCliPipeInput(pipe) if pipe == PIPE => Some("success".into()),
+            ServerInstruction::CliPipeError(pipe, error) if pipe == PIPE => panic!("{error}"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outcome, ["callback", "async render", "success"]);
 }

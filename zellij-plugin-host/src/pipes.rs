@@ -1,262 +1,263 @@
 use super::{PipeStateChange, PluginId, PluginInstruction};
 use crate::plugin_map::RunningPlugin;
 use crate::wasm_bridge::render_plugin_for_clients;
-use crate::PluginRenderAsset;
+use crate::{ClientId, PluginRenderAsset};
 use std::collections::{HashMap, HashSet};
-use {zellij_types::data::PipeMessage, zellij_types::data::PipeSource};
-
-use zellij_runtime::errors::prelude::*;
-
-use crate::ClientId;
+use zellij_bus::plugins::{PipeCompletion, PipeRequestId, PluginInstanceId};
 use zellij_bus::thread_bus::ThreadSenders;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::data::{PipeMessage, PipeSource};
 
-#[derive(Debug, Clone, Default)]
+type Owner = (PluginId, PluginInstanceId);
+pub type PipeOutcomes = Vec<(String, Result<(), String>)>;
+
+/// The host owns completion. Every removal records why the recipient finished.
+#[derive(Debug, Default)]
 pub struct PendingPipes {
-    pipes: HashMap<String, PendingPipeInfo>,
+    next_request: PipeRequestId,
+    requests: HashMap<PipeRequestId, PendingPipe>,
+}
+
+#[derive(Debug, Default)]
+struct PendingPipe {
+    stream: String,
+    queued: HashSet<(PluginId, u64)>,
+    callbacks: HashSet<Owner>,
+    holds: HashSet<Owner>,
+    failure: Option<String>,
 }
 
 impl PendingPipes {
-    pub fn mark_being_processed(
+    pub fn begin(&mut self, stream: &str) -> PipeRequestId {
+        self.next_request += 1;
+        self.requests.insert(
+            self.next_request,
+            PendingPipe {
+                stream: stream.to_owned(),
+                ..Default::default()
+            },
+        );
+        self.next_request
+    }
+
+    pub fn processing(
         &mut self,
-        pipe_id: &str,
-        plugin_id: &PluginId,
-        client_id: &ClientId,
+        request: PipeRequestId,
+        plugin: PluginId,
+        instance: PluginInstanceId,
     ) {
-        if self.pipes.contains_key(pipe_id) {
-            if let Some(pending_pipe_info) = self.pipes.get_mut(pipe_id) {
-                pending_pipe_info.add_processing_plugin(plugin_id, client_id)
-            }
-        } else {
-            self.pipes.insert(
-                pipe_id.to_owned(),
-                PendingPipeInfo::new(plugin_id, client_id),
-            );
+        if let Some(pipe) = self.requests.get_mut(&request) {
+            pipe.callbacks.insert((plugin, instance));
         }
     }
-    // returns a list of pipes that are no longer pending and should be unblocked
-    pub fn update_pipe_state_change(
+
+    pub fn cache(&mut self, request: PipeRequestId, plugin: PluginId, load: u64) {
+        if let Some(pipe) = self.requests.get_mut(&request) {
+            pipe.queued.insert((plugin, load));
+        }
+    }
+
+    pub fn finish_cached(
         &mut self,
-        cli_pipe_name: &str,
-        pipe_state_change: PipeStateChange,
-        plugin_id: &PluginId,
-        client_id: &ClientId,
-    ) -> Vec<String> {
-        let mut pipe_names_to_unblock = vec![];
-        match self.pipes.get_mut(cli_pipe_name) {
-            Some(pending_pipe_info) => {
-                let should_unblock_this_pipe =
-                    pending_pipe_info.update_state_change(pipe_state_change, plugin_id, client_id);
-                if should_unblock_this_pipe {
-                    pipe_names_to_unblock.push(cli_pipe_name.to_owned());
+        request: PipeRequestId,
+        plugin: PluginId,
+        load: u64,
+        result: Result<(), String>,
+    ) {
+        if let Some(pipe) = self.requests.get_mut(&request) {
+            if pipe.queued.remove(&(plugin, load)) {
+                if let Err(error) = result {
+                    pipe.failure.get_or_insert(error);
                 }
-            },
-            None => {
-                // state somehow corrupted, let's recover...
-                pipe_names_to_unblock.push(cli_pipe_name.to_owned());
-            },
-        }
-        for pipe_name in &pipe_names_to_unblock {
-            self.pipes.remove(pipe_name);
-        }
-        pipe_names_to_unblock
-    }
-    // returns a list of pipes that are no longer pending and should be unblocked
-    pub fn unload_plugin(&mut self, plugin_id: &PluginId) -> Vec<String> {
-        let mut pipe_names_to_unblock = vec![];
-        for (pipe_name, pending_pipe_info) in self.pipes.iter_mut() {
-            let should_unblock_this_pipe = pending_pipe_info.unload_plugin(plugin_id);
-            if should_unblock_this_pipe {
-                pipe_names_to_unblock.push(pipe_name.to_owned());
             }
         }
-        for pipe_name in &pipe_names_to_unblock {
-            self.pipes.remove(pipe_name);
-        }
-        pipe_names_to_unblock
     }
-}
 
-#[derive(Debug, Clone, Default)]
-pub struct PendingPipeInfo {
-    is_explicitly_blocked: bool,
-    currently_being_processed_by: HashSet<(PluginId, ClientId)>,
-}
-
-impl PendingPipeInfo {
-    pub fn new(plugin_id: &PluginId, client_id: &ClientId) -> Self {
-        let mut currently_being_processed_by = HashSet::new();
-        currently_being_processed_by.insert((*plugin_id, *client_id));
-        PendingPipeInfo {
-            currently_being_processed_by,
-            ..Default::default()
+    pub fn fail(&mut self, request: PipeRequestId, error: String) {
+        if let Some(pipe) = self.requests.get_mut(&request) {
+            pipe.failure.get_or_insert(error);
         }
     }
-    pub fn add_processing_plugin(&mut self, plugin_id: &PluginId, client_id: &ClientId) {
-        self.currently_being_processed_by
-            .insert((*plugin_id, *client_id));
+
+    pub fn complete(&mut self, completion: PipeCompletion) {
+        let owner = (completion.plugin_id, completion.instance_id);
+        for (request, change) in completion.changes {
+            if let Some(pipe) = self.requests.get_mut(&request) {
+                match change {
+                    PipeStateChange::Block
+                        if pipe.callbacks.contains(&owner) || pipe.holds.contains(&owner) =>
+                    {
+                        pipe.holds.insert(owner);
+                    },
+                    PipeStateChange::Unblock => {
+                        pipe.holds.remove(&owner);
+                    },
+                    _ => {},
+                }
+            }
+        }
+        if let Some((request, result)) = completion.callback {
+            if let Some(pipe) = self.requests.get_mut(&request) {
+                if pipe.callbacks.remove(&owner) {
+                    if let Err(error) = result {
+                        pipe.holds.remove(&owner);
+                        pipe.failure.get_or_insert(error);
+                    }
+                }
+            }
+        }
     }
-    // returns true if this pipe should be unblocked
-    pub fn update_state_change(
-        &mut self,
-        pipe_state_change: PipeStateChange,
-        plugin_id: &PluginId,
-        client_id: &ClientId,
-    ) -> bool {
-        match pipe_state_change {
-            PipeStateChange::Block => {
-                self.is_explicitly_blocked = true;
-            },
-            PipeStateChange::Unblock => {
-                self.is_explicitly_blocked = false;
-            },
-            _ => {},
-        };
-        self.currently_being_processed_by
-            .remove(&(*plugin_id, *client_id));
-        self.currently_being_processed_by.is_empty() && !self.is_explicitly_blocked
+
+    pub fn has_recipient(&self, plugin: PluginId) -> bool {
+        self.requests.values().any(|pipe| {
+            pipe.queued.iter().any(|(id, _)| *id == plugin)
+                || pipe
+                    .callbacks
+                    .iter()
+                    .chain(&pipe.holds)
+                    .any(|(id, _)| *id == plugin)
+        })
     }
-    // returns true if this pipe should be unblocked
-    pub fn unload_plugin(&mut self, plugin_id_to_unload: &PluginId) -> bool {
-        self.currently_being_processed_by
-            .retain(|(plugin_id, _)| plugin_id != plugin_id_to_unload);
-        self.currently_being_processed_by.is_empty() && !self.is_explicitly_blocked
+
+    pub fn reject_cached(&mut self, plugin: PluginId, load: Option<u64>, error: &str) {
+        for pipe in self.requests.values_mut() {
+            let before = pipe.queued.len();
+            pipe.queued
+                .retain(|(id, attempt)| *id != plugin || load.is_some_and(|load| load != *attempt));
+            if pipe.queued.len() != before {
+                pipe.failure.get_or_insert_with(|| error.to_owned());
+            }
+        }
+    }
+
+    /// Handles an executor retirement report after the last callback and guest cleanup return.
+    pub fn retire(&mut self, plugin: PluginId, instance: PluginInstanceId, error: &str) {
+        let owner = (plugin, instance);
+        for pipe in self.requests.values_mut() {
+            let callback = pipe.callbacks.remove(&owner);
+            let hold = pipe.holds.remove(&owner);
+            if callback || hold {
+                pipe.failure.get_or_insert_with(|| error.to_owned());
+            }
+        }
+    }
+
+    pub fn retire_plugin(&mut self, plugin: PluginId, error: &str) {
+        for pipe in self.requests.values_mut() {
+            let before = pipe.callbacks.len() + pipe.holds.len();
+            pipe.callbacks.retain(|(id, _)| *id != plugin);
+            pipe.holds.retain(|(id, _)| *id != plugin);
+            if pipe.callbacks.len() + pipe.holds.len() != before {
+                pipe.failure.get_or_insert_with(|| error.to_owned());
+            }
+        }
+    }
+
+    /// Call only after all recipients in a dispatch/replay batch have been admitted.
+    pub fn take_ready(&mut self) -> PipeOutcomes {
+        let mut ready = vec![];
+        self.requests.retain(|_, pipe| {
+            if pipe.queued.is_empty() && pipe.callbacks.is_empty() && pipe.holds.is_empty() {
+                ready.push((pipe.stream.clone(), pipe.failure.take().map_or(Ok(()), Err)));
+                false
+            } else {
+                true
+            }
+        });
+        ready
     }
 }
 
-/// Hands `pipe_message` to the plugin, and makes sure the CLI pipe it came from (if any) is
-/// released whatever happens: every success path below unblocks it, and a plugin that traps while
-/// handling the message is not unloaded (`handle_plugin_crash` only paints the error), so without
-/// the release here the `zellij pipe` client would stay blocked until the plugin is unloaded or
-/// the session ends.
-pub fn apply_pipe_message_to_plugin(
-    plugin_id: PluginId,
-    client_id: ClientId,
-    pipe_owner_client_id: ClientId,
-    render_clients: &[ClientId],
-    running_plugin: &mut RunningPlugin,
-    pipe_message: &PipeMessage,
-    plugin_render_assets: &mut Vec<PluginRenderAsset>,
-    senders: &ThreadSenders,
-) -> Result<()> {
-    let result = apply_pipe_message_to_plugin_inner(
-        plugin_id,
-        client_id,
-        pipe_owner_client_id,
-        render_clients,
-        running_plugin,
-        pipe_message,
-        plugin_render_assets,
-        senders,
-    );
-    if result.is_err() {
-        release_pipe_of_crashed_plugin(plugin_id, pipe_owner_client_id, pipe_message, senders);
-    }
-    result
-}
-
-fn release_pipe_of_crashed_plugin(
-    plugin_id: PluginId,
-    pipe_owner_client_id: ClientId,
-    pipe_message: &PipeMessage,
+/// Drain guest commands with the request IDs this runtime actually received. A late result
+/// cannot complete another input on the same stream, or work belonging to a replacement.
+pub fn report_pipe_changes(
+    plugin: &mut RunningPlugin,
+    mut changes: HashMap<String, PipeStateChange>,
+    callback: Option<(PipeRequestId, Result<(), String>)>,
     senders: &ThreadSenders,
 ) {
-    if let PipeSource::Cli(pipe_id) = &pipe_message.source {
-        let mut pipe_state_changes = HashMap::new();
-        pipe_state_changes.insert(pipe_id.to_owned(), PipeStateChange::NoChange);
-        let plugin_render_asset = PluginRenderAsset::new(plugin_id, pipe_owner_client_id, vec![])
-            .with_pipes(pipe_state_changes);
+    changes.extend(pipes_to_block_or_unblock(plugin));
+    let mut resolved = HashMap::new();
+    for (stream, change) in changes {
+        if let Some(request) = plugin.pipe_requests.get(&stream).copied() {
+            if matches!(change, PipeStateChange::Unblock) {
+                plugin.pipe_requests.remove(&stream);
+            }
+            resolved.insert(request, change);
+        }
+    }
+    if let Some((request, result)) = &callback {
+        if result.is_err() || !matches!(resolved.get(request), Some(PipeStateChange::Block)) {
+            plugin.pipe_requests.retain(|_, id| id != request);
+        }
+    }
+    if callback.is_some() || !resolved.is_empty() {
         senders
-            .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
-                plugin_render_asset,
-            ]))
-            .context("failed to unblock input pipe of crashed plugin")
+            .send_to_plugin(PluginInstruction::PipeCompleted(PipeCompletion {
+                plugin_id: plugin.env().plugin_id,
+                instance_id: plugin.instance_id,
+                changes: resolved,
+                callback,
+            }))
+            .context("failed to report pipe completion")
             .non_fatal();
     }
 }
 
-fn apply_pipe_message_to_plugin_inner(
+pub fn apply_pipe_message_to_plugin(
     plugin_id: PluginId,
     client_id: ClientId,
-    pipe_owner_client_id: ClientId,
     render_clients: &[ClientId],
     running_plugin: &mut RunningPlugin,
     pipe_message: &PipeMessage,
+    request: Option<PipeRequestId>,
     plugin_render_assets: &mut Vec<PluginRenderAsset>,
     senders: &ThreadSenders,
 ) -> Result<()> {
-    // host commands issued while handling this message act on behalf of the client it was directed
-    // at (this only differs from the instance's owner for shared plugins)
-    running_plugin.env_mut().client_id = client_id;
-    let rows = running_plugin.rows;
-    let columns = running_plugin.columns;
-
-    let err_context = || format!("Failed to apply event to plugin {plugin_id}");
-    match running_plugin
-        .pipe(pipe_message)
-        .with_context(err_context)?
-    {
-        Some(should_render) => {
-            if rows > 0 && columns > 0 && should_render {
-                let mut assets = render_plugin_for_clients(
-                    plugin_id,
-                    running_plugin,
-                    render_clients,
-                    Some(&pipe_message.source),
-                )?;
-                // A queued rekey may have changed the instance's owner since registration.
-                // Keep completion with the registered owner, after the screen consumes the renders.
-                if let Some(owner_asset) = assets.first_mut() {
-                    let pipe_changes = std::mem::take(&mut owner_asset.cli_pipes);
-                    if let Some(pipe_owner_asset) = assets
-                        .iter_mut()
-                        .find(|asset| asset.client_id == pipe_owner_client_id)
-                    {
-                        pipe_owner_asset.cli_pipes = pipe_changes;
-                    } else {
-                        assets.push(
-                            PluginRenderAsset::new(plugin_id, pipe_owner_client_id, vec![])
-                                .with_pipes(pipe_changes),
-                        );
-                    }
-                }
-                plugin_render_assets.append(&mut assets);
-            } else {
-                let pipes_to_block_or_unblock =
-                    pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
-                let plugin_render_asset =
-                    PluginRenderAsset::new(plugin_id, pipe_owner_client_id, vec![])
-                        .with_pipes(pipes_to_block_or_unblock);
-                let _ = senders
-                    .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
-                        plugin_render_asset,
-                    ]))
-                    .context("failed to unblock input pipe");
-            }
-        },
-        None => {
-            // no-op, this is probably an old plugin that does not have this interface
-            // we don't log this error because if we do the logs will be super crowded
-            let pipes_to_block_or_unblock =
-                pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
-            let plugin_render_asset = PluginRenderAsset::new(
-                plugin_id,
-                pipe_owner_client_id,
-                vec![], // nothing to render
-            )
-            .with_pipes(pipes_to_block_or_unblock);
-            let _ = senders
-                .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
-                    plugin_render_asset,
-                ]))
-                .context("failed to unblock input pipe");
-        },
+    if let (Some(request), PipeSource::Cli(stream)) = (request, &pipe_message.source) {
+        running_plugin.pipe_requests.insert(stream.clone(), request);
     }
-    Ok(())
+    let unavailable = running_plugin.is_unavailable();
+    let result = (|| {
+        anyhow::ensure!(
+            !unavailable,
+            "Plugin {plugin_id} is unavailable; explicitly reload it before sending another pipe"
+        );
+        running_plugin.env_mut().client_id = client_id;
+        let render = running_plugin
+            .pipe(pipe_message)
+            .with_context(|| format!("Failed to apply pipe to plugin {plugin_id}"))?;
+        if render == Some(true) && running_plugin.rows > 0 && running_plugin.columns > 0 {
+            plugin_render_assets.extend(render_plugin_for_clients(
+                plugin_id,
+                running_plugin,
+                render_clients,
+            )?);
+        }
+        Ok(())
+    })();
+    if result.is_err() && !unavailable {
+        running_plugin.mark_failed();
+    }
+    report_pipe_changes(
+        running_plugin,
+        HashMap::new(),
+        request.map(|request| {
+            (
+                request,
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }),
+        senders,
+    );
+    result
 }
 
 pub fn pipes_to_block_or_unblock(
     running_plugin: &mut RunningPlugin,
-    current_pipe: Option<&PipeSource>,
 ) -> HashMap<String, PipeStateChange> {
     let mut pipe_state_changes = HashMap::new();
     let mut input_pipes_to_unblock: HashSet<String> = running_plugin
@@ -273,9 +274,6 @@ pub fn pipes_to_block_or_unblock(
         .unwrap()
         .drain()
         .collect();
-    if let Some(PipeSource::Cli(current_pipe)) = current_pipe {
-        pipe_state_changes.insert(current_pipe.to_owned(), PipeStateChange::NoChange);
-    }
     for pipe in input_pipes_to_block.drain() {
         pipe_state_changes.insert(pipe, PipeStateChange::Block);
     }
@@ -284,4 +282,126 @@ pub fn pipes_to_block_or_unblock(
         pipe_state_changes.insert(pipe, PipeStateChange::Unblock);
     }
     pipe_state_changes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn complete(
+        plugin: PluginId,
+        instance: PluginInstanceId,
+        request: PipeRequestId,
+        change: PipeStateChange,
+        result: Result<(), String>,
+    ) -> PipeCompletion {
+        PipeCompletion {
+            plugin_id: plugin,
+            instance_id: instance,
+            changes: HashMap::from([(request, change)]),
+            callback: Some((request, result)),
+        }
+    }
+
+    #[test]
+    fn stale_results_cannot_complete_another_input_on_the_same_stream() {
+        let mut pending = PendingPipes::default();
+        let plugin = PluginId::new(1);
+        let instance = PluginInstanceId::default();
+        let first = pending.begin("stream");
+        pending.processing(first, plugin, instance);
+        let old = complete(plugin, instance, first, PipeStateChange::NoChange, Ok(()));
+        pending.complete(old.clone());
+        assert_eq!(pending.take_ready(), [("stream".into(), Ok(()))]);
+        let second = pending.begin("stream");
+        pending.processing(second, plugin, instance);
+        pending.complete(old);
+        pending.retire(plugin, PluginInstanceId::default(), "stale retirement");
+        assert!(pending.take_ready().is_empty());
+        pending.complete(complete(
+            plugin,
+            instance,
+            second,
+            PipeStateChange::Block,
+            Ok(()),
+        ));
+        assert!(pending.take_ready().is_empty());
+        pending.complete(complete(
+            plugin,
+            instance,
+            first,
+            PipeStateChange::Unblock,
+            Ok(()),
+        ));
+        assert!(pending.take_ready().is_empty());
+        pending.complete(complete(
+            plugin,
+            instance,
+            second,
+            PipeStateChange::Unblock,
+            Ok(()),
+        ));
+        assert_eq!(pending.take_ready(), [("stream".into(), Ok(()))]);
+    }
+
+    #[test]
+    fn failed_fanout_waits_for_callbacks_and_has_no_later_success() {
+        let mut pending = PendingPipes::default();
+        let plugin = PluginId::new(1);
+        let first = PluginInstanceId::default();
+        let peer = PluginInstanceId::default();
+        let request = pending.begin("fanout");
+        for instance in [first, peer] {
+            pending.processing(request, plugin, instance);
+        }
+        pending.complete(complete(
+            plugin,
+            first,
+            request,
+            PipeStateChange::Unblock,
+            Err("callback failed".into()),
+        ));
+        assert!(pending.take_ready().is_empty());
+        pending.retire(plugin, first, "retired");
+        assert!(pending.take_ready().is_empty());
+        pending.complete(complete(
+            plugin,
+            peer,
+            request,
+            PipeStateChange::NoChange,
+            Ok(()),
+        ));
+        assert_eq!(
+            pending.take_ready(),
+            [("fanout".into(), Err("callback failed".into()))]
+        );
+        pending.retire(plugin, peer, "retired");
+        assert!(pending.take_ready().is_empty());
+    }
+
+    #[test]
+    fn replay_and_retirement_must_supply_an_outcome() {
+        let mut pending = PendingPipes::default();
+        let plugin = PluginId::new(1);
+        let instance = PluginInstanceId::default();
+        let request = pending.begin("replay");
+        pending.cache(request, plugin, 2);
+        pending.reject_cached(plugin, Some(1), "old load failed");
+        assert!(pending.take_ready().is_empty());
+        pending.processing(request, plugin, instance);
+        pending.finish_cached(request, plugin, 2, Ok(()));
+        pending.complete(complete(
+            plugin,
+            instance,
+            request,
+            PipeStateChange::Block,
+            Ok(()),
+        ));
+        assert!(pending.take_ready().is_empty());
+        pending.retire(plugin, instance, "hold interrupted");
+        assert_eq!(
+            pending.take_ready(),
+            [("replay".into(), Err("hold interrupted".into()))]
+        );
+    }
 }

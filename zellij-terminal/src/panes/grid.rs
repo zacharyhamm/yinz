@@ -3069,9 +3069,9 @@ impl Grid {
         let (scroll_region_top, scroll_region_bottom) = self.scroll_region;
         if self.cursor.y >= scroll_region_top && self.cursor.y <= scroll_region_bottom {
             self.cursor.y = std::cmp::min(self.cursor.y + count, scroll_region_bottom);
-            return;
+        } else {
+            self.cursor.y = std::cmp::min(self.cursor.y + count, self.height - 1);
         }
-        self.cursor.y = std::cmp::min(self.cursor.y + count, self.height - 1);
         self.pad_lines_until(self.cursor.y, pad_character);
     }
     pub fn move_cursor_back(&mut self, count: usize) {

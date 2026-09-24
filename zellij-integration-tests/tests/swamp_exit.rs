@@ -99,7 +99,7 @@ fn advance(zellij: &TestSession, stage: &str) {
             name: Some("fixture".into()),
             payload: Some(stage.into()),
             args: None,
-            plugin: None,
+            plugin: fixture_plugin(zellij),
             plugin_configuration: None,
             force_launch_plugin: false,
             skip_plugin_cache: false,
@@ -223,9 +223,10 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     }
     let question = zellij.wait_until("all four permitted choices are buttons", |s| {
         s.lines().iter().any(|line| {
-            ["Restart", "Fork", "Begin review", "Leave"]
-                .iter()
-                .all(|label| line.contains(label))
+            line.contains('')
+                && ["Restart", "Fork", "Begin review", "Leave"]
+                    .iter()
+                    .all(|label| line.contains(label))
         })
     });
     assert!(
@@ -240,7 +241,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     let button_row = question
         .lines()
         .iter()
-        .position(|line| line.contains("Leave") && line.contains("Restart"))
+        .position(|line| line.contains('') && line.contains("Leave") && line.contains("Restart"))
         .unwrap();
     assert!(!question.contains("Duplicate"));
     assert!(
@@ -254,10 +255,14 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     });
     assert_eq!(question.lines()[button_row], beginning.lines()[button_row]);
     zellij.send_stdin(b"\x1b[6~");
-    let scrolled = zellij.wait_until("page down returns to the tail with pinned question", |s| {
-        s.contains("LOG 100") && s.lines()[prompt_row].contains("Agent exited. Choose")
+    let scrolled = zellij.wait_until("page down scrolls output with pinned question", |s| {
+        !s.contains("LOG 001")
+            && s.contains("↑")
+            && s.lines()[prompt_row].contains("Agent exited. Choose")
     });
     assert_eq!(question.lines()[button_row], scrolled.lines()[button_row]);
+    zellij.send_stdin(b"\x1b[F");
+    zellij.wait_until("End reaches the log tail", |s| s.contains("LOG 100"));
     zellij.send_stdin(b"\x1b[<64;5;3M");
     zellij.wait_until("wheel scrolls log backward", |s| {
         !s.contains("LOG 100") && s.contains("↓") && s.contains("Agent exited. Choose")
@@ -286,11 +291,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
         s.contains("Agent exited. Choose") && s.contains(panel_title)
     });
     if status_bar {
-        let line = zellij.snapshot().lines()[button_row].clone();
-        let col = line.find("Leave").unwrap();
-        let col = line[..col].chars().count();
-        zellij.send_stdin(format!("\x1b[<0;{};{}M", col + 1, button_row + 1).as_bytes());
-        zellij.send_stdin(format!("\x1b[<0;{};{}m", col + 1, button_row + 1).as_bytes());
+        click(&zellij, "Leave");
     } else {
         zellij.resize(Size { rows: 8, cols: 24 });
         for _ in 0..3 {
@@ -343,7 +344,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
                 panel_titles += 1;
                 assert_eq!(
                     pane["title"].as_str().unwrap(),
-                    format!("[{}] Review topic", pane["id"].as_u64().unwrap()),
+                    format!("[plugin_{}] Review topic", pane["id"].as_u64().unwrap()),
                     "the exit panel names the pane it is, not the one suppressed behind it: {json}"
                 );
             }
@@ -387,9 +388,7 @@ fn closing_during_workflow_launch_cancels_the_late_result() {
     close_workflow("delay");
 }
 
-fn close_workflow(stage: &str) {
-    let root = zellij_integration_tests::test_env::init().join("swamp-close");
-    fs::create_dir_all(&root).unwrap();
+fn separate_workflow_fixture(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let bridge_path = root.join("bridge.ts");
     let exit_path = root.join("exit.ts");
     fs::write(
@@ -424,6 +423,13 @@ export default hook;
         ),
     )
     .unwrap();
+    (bridge_path, exit_path)
+}
+
+fn close_workflow(stage: &str) {
+    let root = zellij_integration_tests::test_env::init().join("swamp-close");
+    fs::create_dir_all(&root).unwrap();
+    let (bridge_path, exit_path) = separate_workflow_fixture(&root);
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!("load_plugins clear-defaults=true {{ \"file:{}\"; }}\nhooks {{ agent_exit \"file:{}\"; }}", bridge_path.display(), exit_path.display()))
         .with_layout(LayoutInfo::Stringified(r#"layout {
@@ -515,12 +521,19 @@ fn fixture_state(zellij: &TestSession) -> serde_json::Value {
     serde_json::from_str(&fixture_reply(zellij, "state")).unwrap()
 }
 
+fn fixture_plugin(zellij: &TestSession) -> Option<String> {
+    panes(zellij)
+        .into_iter()
+        .filter_map(|pane| pane.pane_info.plugin_url)
+        .find(|url| url.ends_with("/bridge.ts"))
+}
+
 fn fixture_reply(zellij: &TestSession, payload: &str) -> String {
     let (code, reply) = zellij.run_cli_action_reporting(CliAction::Pipe {
         name: Some("fixture".into()),
         payload: Some(payload.into()),
         args: None,
-        plugin: None,
+        plugin: fixture_plugin(zellij),
         plugin_configuration: None,
         force_launch_plugin: false,
         skip_plugin_cache: false,
@@ -538,7 +551,7 @@ fn click(zellij: &TestSession, label: &str) {
     let screen = zellij.wait_until("workflow action button", |s| {
         // Installing the workflow subtitle changes the content origin and height.
         // Wait for the subtitle and bottom help to render together before hit-testing.
-        s.contains("fixture · workflow/")
+        s.contains("fixture ·")
             && s.contains("Esc: close pane")
             && s.lines()
                 .iter()
@@ -639,12 +652,11 @@ fn running_exit_view_with_args(
 ) {
     let root = zellij_integration_tests::test_env::init().join("swamp-fork");
     fs::create_dir_all(&root).unwrap();
-    let path = root.join("exit.ts");
-    fs::write(&path, fixture()).unwrap();
+    let (bridge_path, exit_path) = separate_workflow_fixture(&root);
     let zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(
-            "load_plugins clear-defaults=true {{}}\nhooks {{ agent_exit \"file:{}\"; }}",
-            path.display()
+            "load_plugins clear-defaults=true {{ \"file:{}\"; }}\nhooks {{ agent_exit \"file:{}\"; }}",
+            bridge_path.display(), exit_path.display()
         ))
         .with_layout(LayoutInfo::Stringified(
             format!("layout {{ pane command=\"claude\" cwd=\"/tmp/fork-topic\" focus=true {{ args {args}; }}; pane; }}"),
@@ -652,6 +664,9 @@ fn running_exit_view_with_args(
         .start();
     let original = zellij.expect_pty_spawn();
     zellij.expect_pty_spawn().output(b"NEIGHBOR\r\n");
+    zellij.wait_until("bridge permissions", |s| s.contains("Allow? (y/n)"));
+    zellij.send_stdin(b"y");
+    zellij.wait_until("bridge ready", |s| !s.contains("Allow? (y/n)"));
     original.output(b"ORIGINAL SCROLLBACK\r\n");
     zellij.wait_until("original output", |s| s.contains("ORIGINAL SCROLLBACK"));
     assert_eq!(
@@ -667,12 +682,15 @@ fn running_exit_view_with_args(
         }),
         0
     );
-    let before = panes(&zellij);
+    let before = panes(&zellij)
+        .into_iter()
+        .filter(|p| !p.pane_info.is_plugin())
+        .collect();
     original.exit(Some(0));
     zellij.wait_until("hook permissions", |s| s.contains("Allow? (y/n)"));
     zellij.send_stdin(b"y");
     zellij.wait_until("exit view shows the active step", |s| {
-        s.contains("Running: prepare") && s.contains("Cancel run")
+        s.contains("Running: fixture") && s.contains("Cancel run")
     });
     (zellij, original, before)
 }
@@ -684,7 +702,13 @@ fn workflow_fork_reuses_the_source_layout_scrollback_directory_and_focus() {
     zellij.send_stdin(&keys::ENTER);
     zellij.wait_until("fork closes both views and runs in the source", |_| {
         let now = panes(&zellij);
-        now.len() == before.len()
+        now.iter().filter(|p| !p.pane_info.is_plugin()).count() == before.len()
+            && !now.iter().any(|p| {
+                p.pane_info
+                    .plugin_url
+                    .as_deref()
+                    .is_some_and(|url| url == "zellij:hocus-new-agent" || url.ends_with("/exit.ts"))
+            })
             && now.iter().any(|p| {
                 p.pane_info.id == before[0].pane_info.id
                     && !p.pane_info.exited
@@ -793,8 +817,31 @@ fn manual_picker_source_closure_completes_without_a_persisted_view() {
 }
 
 #[test]
-fn workflow_fork_rechecks_a_restarted_source_before_confirmation() {
-    refused_workflow_fork("restart", "source pane is no longer exited");
+fn workflow_fork_cancels_when_the_source_restarts_before_confirmation() {
+    let (mut zellij, original, before) = fork_picker();
+    let expected = original.run_command();
+    advance(&zellij, "restart");
+    zellij.wait_until("source restart records picker cancellation", |_| {
+        let state = fixture_state(&zellij);
+        state["outcome"] == "completed"
+            && state["choice"] == "cancelled"
+            && !original.is_exited()
+            && !panes(&zellij)
+                .iter()
+                .any(|p| p.pane_info.plugin_url.as_deref() == Some("zellij:hocus-new-agent"))
+    });
+    let after = panes(&zellij);
+    assert_eq!(
+        after.iter().filter(|p| !p.pane_info.is_plugin()).count(),
+        before.len()
+    );
+    assert!(!after
+        .iter()
+        .any(|p| p.pane_info.terminal_command.as_deref() == Some("codex")));
+    let mut restarted = expected;
+    assert_eq!(restarted.args.pop().as_deref(), Some("original prompt"));
+    assert_eq!(original.run_command(), restarted);
+    zellij.quit();
 }
 
 #[test]
@@ -808,23 +855,6 @@ fn workflow_fork_rechecks_a_closed_source_before_confirmation() {
                 .iter()
                 .any(|p| p.pane_info.plugin_url.as_deref() == Some("zellij:hocus-new-agent"))
     });
-    zellij.quit();
-}
-
-fn refused_workflow_fork(change: &str, error: &str) {
-    let (mut zellij, _original, before) = fork_picker();
-    advance(&zellij, change);
-    zellij.send_stdin(&keys::TAB);
-    zellij.send_stdin(&keys::ENTER);
-    zellij.wait_until("changed source is refused", |s| s.contains(error));
-    let after = panes(&zellij);
-    assert_eq!(
-        after.iter().filter(|p| !p.pane_info.is_plugin()).count(),
-        before.len() - usize::from(change == "close-source")
-    );
-    assert!(!after
-        .iter()
-        .any(|p| p.pane_info.terminal_command.as_deref() == Some("codex")));
     zellij.quit();
 }
 
@@ -843,7 +873,13 @@ fn workflow_restart_delivers_no_prompt_on_repeated_restarts() {
                 zellij.send_stdin(b"y");
             }
         }
-        zellij.wait_until("workflow restart button", |s| s.contains("Restart agent"));
+        // On a repeated exit the view first attaches to the previous, cancelled run.
+        // As on initial launch, wait for this run before requesting its restart.
+        zellij.wait_until("new workflow is ready to restart", |s| {
+            s.contains("Running: fixture")
+                && s.contains("Restart agent")
+                && s.contains("Cancel run")
+        });
         click(&zellij, "Restart agent");
         zellij.wait_until("source process restarted", |_| !original.is_exited());
         assert_eq!(original.run_command(), expected);

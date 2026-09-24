@@ -189,6 +189,13 @@ fn sweep_stale_sockets(dir: &Path, ours: &Path) {
         if path == ours || path.extension().and_then(|e| e.to_str()) != Some("sock") {
             continue;
         }
+        if !entry
+            .file_type()
+            .map(|file_type| zellij_ipc::consts::is_ipc_socket(&file_type))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let old_enough = entry
             .metadata()
             .and_then(|m| m.modified())
@@ -201,10 +208,9 @@ fn sweep_stale_sockets(dir: &Path, ours: &Path) {
         if !old_enough {
             continue;
         }
-        if UnixStream::connect(&path).is_ok() {
-            continue;
+        if crate::pty_host::client::socket_is_dead(&path) {
+            let _ = std::fs::remove_file(&path);
         }
-        let _ = std::fs::remove_file(&path);
     }
 }
 

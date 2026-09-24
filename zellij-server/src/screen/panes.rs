@@ -205,7 +205,7 @@ impl Screen {
                         }
                     },
                 }
-                self.render(None)?;
+                self.render()?;
                 drop(completion_tx);
             },
             None => {

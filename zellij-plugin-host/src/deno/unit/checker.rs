@@ -423,15 +423,21 @@ fn embedded_module_graphs_keep_types_and_reject_unregistered_dependencies() {
 }
 
 #[test]
-fn shipped_async_example_typechecks_offline() {
+fn shipped_examples_typecheck_offline() {
+    let mut checked = 0;
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins");
     for entry in std::fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();
         assert_ne!(path.extension().and_then(|s| s.to_str()), Some("lua"));
         if path.extension().and_then(|s| s.to_str()) == Some("ts") {
             check_plugin(&path).unwrap();
+            checked += 1;
         }
     }
+    assert!(
+        checked >= 16,
+        "only {checked} shipped examples were checked"
+    );
 }
 
 #[test]
