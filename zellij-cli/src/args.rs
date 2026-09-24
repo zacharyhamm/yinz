@@ -166,6 +166,15 @@ pub enum Recordings {
         #[clap(long)]
         json: bool,
     },
+    /// Compress recorded events and shrink the database file.
+    ///
+    /// Finished sessions are compressed whole; running ones keep their last ten minutes as they
+    /// are. Running sessions compress their own recordings as they go, but only a deleted row's
+    /// space is reused; the file never gets smaller on its own. This rewrites it, which needs
+    /// free disk space about the size of the result and the file to itself while it runs:
+    /// a session recording meanwhile waits, and after a few seconds drops events and marks its
+    /// recording incomplete. Run it when no session is recording.
+    Compact,
 }
 
 /// Authoring JS/TS plugins in the user's plugin folder from a shell.

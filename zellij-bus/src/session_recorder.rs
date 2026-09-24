@@ -9,8 +9,15 @@ use zellij_types::internal_ids::TerminalId;
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 
 use zellij_runtime::errors::prelude::*;
-use zellij_storage::data_access::{DataAccess, RecordingSession};
+use zellij_storage::data_access::{DataAccess, RecordingCompactor, RecordingSession};
 use zellij_storage::session_recording::{PaneMetadata, RecordedEvent};
+
+/// How often cold events are packed into compressed segments, and how much event data one pass
+/// may move. 4 MiB every 30 s keeps up with about 11 GB of output a day; a session ending
+/// mid-pass waits for one segment of it, not the rest. What a pass does not spend on this
+/// session goes to older recordings: ones from before compaction, or whose server went away.
+const COMPACT_EVERY: Duration = Duration::from_secs(30);
+const COMPACT_BUDGET_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum RecorderInstruction {
@@ -251,6 +258,7 @@ pub fn spawn_session_recorder(
             receiver,
             enabled_clone,
             dropped,
+            COMPACT_EVERY,
         );
     });
     Some((handle, thread))
@@ -362,6 +370,93 @@ impl Recording {
     }
 }
 
+/// The thread packing cold events beside the recorder, and the channel whose end stops it.
+///
+/// It is a thread of its own because a pass can wait seconds on the database, and the recorder
+/// thread is all that drains the bounded event channel: while it waits, live events are dropped.
+struct CompactorThread {
+    stop: crossbeam::channel::Sender<()>,
+    /// Cuts a pass in progress short, where closing `stop` only ends the wait between passes.
+    stopping: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl CompactorThread {
+    /// Starts a pass every `every`, or logs why it cannot and leaves the recording without.
+    fn start(store: &dyn RecordingSession, started_at: Instant, every: Duration) -> Option<Self> {
+        let started = store.compactor().and_then(|compactor| {
+            compactor
+                .map(|compactor| Self::spawn(compactor, started_at, every))
+                .transpose()
+        });
+        match started.context("recording without compaction") {
+            Ok(compactor) => compactor,
+            Err(error) => {
+                Err::<(), _>(error).non_fatal();
+                None
+            },
+        }
+    }
+
+    fn spawn(
+        mut compactor: Box<dyn RecordingCompactor>,
+        started_at: Instant,
+        every: Duration,
+    ) -> Result<Self> {
+        let (stop, stopped) = crossbeam::channel::bounded::<()>(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::Builder::new()
+            .name("session-recording-compactor".to_owned())
+            .spawn({
+                let stopping = stopping.clone();
+                move || {
+                    while let Err(crossbeam::channel::RecvTimeoutError::Timeout) =
+                        stopped.recv_timeout(every)
+                    {
+                        compact(compactor.as_mut(), started_at, &stopping);
+                    }
+                }
+            })
+            .context("failed to spawn the session recording compactor")?;
+        Ok(Self {
+            stop,
+            stopping,
+            thread,
+        })
+    }
+
+    /// Cuts a pass in progress short at its next segment and waits for that, so that finishing
+    /// the session stays the store's last call.
+    fn stop(self) {
+        self.stopping.store(true, Ordering::Relaxed);
+        drop(self.stop);
+        if self.thread.join().is_err() {
+            Err::<(), _>(anyhow!("the session recording compactor panicked")).non_fatal();
+        }
+    }
+}
+
+/// Packs cold events into compressed segments, timed on the clock the session stamps its events
+/// with. A failed pass loses nothing, so unlike a failed write it does not mark the recording
+/// incomplete; the next pass tries again.
+fn compact(compactor: &mut dyn RecordingCompactor, started_at: Instant, stop: &AtomicBool) {
+    let elapsed = ElapsedMicros::new(started_at.elapsed().as_micros() as i64);
+    match compactor
+        .compact(elapsed, COMPACT_BUDGET_BYTES, stop)
+        .context("failed to compact session recordings; retrying at the next pass")
+    {
+        Ok(report) if report.events > 0 => log::debug!(
+            "compacted {} recorded events ({} bytes) into {} segments ({} bytes)",
+            report.events,
+            report.raw_bytes,
+            report.segments,
+            report.stored_bytes
+        ),
+        Ok(_) => {},
+        Err(error) => Err::<(), _>(error).non_fatal(),
+    }
+}
+
 fn recorder_thread(
     data_access: Arc<DataAccess>,
     session_name: SessionName,
@@ -371,6 +466,7 @@ fn recorder_thread(
     receiver: crossbeam::channel::Receiver<RecorderInstruction>,
     enabled: Arc<AtomicBool>,
     dropped: Arc<AtomicUsize>,
+    compact_every: Duration,
 ) {
     let store = match data_access.recordings().start_recording(
         session_name.as_str(),
@@ -385,6 +481,7 @@ fn recorder_thread(
             return;
         },
     };
+    let compactor = CompactorThread::start(store.as_ref(), started_at, compact_every);
     let mut recording = Recording {
         store,
         batch: Vec::new(),
@@ -460,6 +557,9 @@ fn recorder_thread(
             }),
     );
     let ended_elapsed_us = ElapsedMicros::new(started_at.elapsed().as_micros() as i64);
+    if let Some(compactor) = compactor {
+        compactor.stop();
+    }
     recording.finish(ended_at_us, ended_elapsed_us);
 }
 
@@ -468,6 +568,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use zellij_storage::data_access::{PluginDataBackend, RecordingBackend, RecordingSession};
+    use zellij_storage::session_recording::CompactionReport;
     use zellij_test_support::{default_timeout, Watched};
     use zellij_types::internal_ids::RecordingId;
     use zellij_types::plugin_data::{
@@ -482,6 +583,9 @@ mod tests {
         errors: Vec<String>,
         fail_once: Option<&'static str>,
         fail_always: Option<&'static str>,
+        /// Holds every compaction pass, once it has logged its call, until this is cleared or
+        /// the pass is told to stop, which it logs as `"compact stopped"`.
+        hold_compaction: bool,
     }
 
     impl RecordingLog {
@@ -495,6 +599,7 @@ mod tests {
 
     struct MemoryRecordingBackend(Watched<RecordingLog>);
     struct MemoryRecordingSession(Watched<RecordingLog>);
+    struct MemoryCompactor(MemoryRecordingSession);
 
     impl MemoryRecordingSession {
         fn call(&self, operation: &'static str) -> anyhow::Result<()> {
@@ -587,6 +692,37 @@ mod tests {
             self.0.lock().errors.push(message.to_owned());
             Ok(())
         }
+
+        fn compactor(&self) -> anyhow::Result<Option<Box<dyn RecordingCompactor>>> {
+            Ok(Some(Box::new(MemoryCompactor(MemoryRecordingSession(
+                self.0.clone(),
+            )))))
+        }
+    }
+
+    impl RecordingCompactor for MemoryCompactor {
+        fn compact(
+            &mut self,
+            _: ElapsedMicros,
+            _: u64,
+            stop: &AtomicBool,
+        ) -> anyhow::Result<CompactionReport> {
+            let result = self.0.call("compact");
+            // Polled: setting `stop` wakes no one waiting on the log.
+            let deadline = Instant::now() + default_timeout();
+            while self.0 .0.lock().hold_compaction {
+                if stop.load(Ordering::Relaxed) {
+                    self.0.call("compact stopped")?;
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the held compaction pass was neither released nor stopped"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            result.map(|()| CompactionReport::default())
+        }
     }
 
     /// Runs the recorder thread body against the in-memory backend until `receiver` yields
@@ -596,6 +732,16 @@ mod tests {
         receiver: crossbeam::channel::Receiver<RecorderInstruction>,
         enabled: bool,
         dropped: usize,
+    ) {
+        run_recorder_compacting_every(log, receiver, enabled, dropped, Duration::MAX);
+    }
+
+    fn run_recorder_compacting_every(
+        log: &Watched<RecordingLog>,
+        receiver: crossbeam::channel::Receiver<RecorderInstruction>,
+        enabled: bool,
+        dropped: usize,
+        compact_every: Duration,
     ) {
         let backend = Arc::new(MemoryRecordingBackend(log.clone()));
         recorder_thread(
@@ -607,7 +753,100 @@ mod tests {
             receiver,
             Arc::new(AtomicBool::new(enabled)),
             Arc::new(AtomicUsize::new(dropped)),
+            compact_every,
         );
+    }
+
+    /// Compaction runs on its own clock while the recorder is otherwise idle, and a pass that
+    /// fails leaves the recording complete: the events it did not move are still there.
+    #[test]
+    fn compaction_runs_periodically_and_its_failures_lose_nothing() {
+        let log = Watched::new(RecordingLog {
+            fail_always: Some("compact"),
+            ..Default::default()
+        });
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        let recorder = {
+            let log = log.clone();
+            std::thread::spawn(move || {
+                run_recorder_compacting_every(&log, receiver, true, 0, Duration::from_millis(1))
+            })
+        };
+        log.wait_until("two compaction passes", default_timeout(), |log| {
+            (log.calls.iter().filter(|call| **call == "compact").count() >= 2).then_some(())
+        });
+        sender.send(RecorderInstruction::Stop).unwrap();
+        recorder.join().unwrap();
+
+        let log = log.lock();
+        assert_eq!(log.marker_writes(), 0, "calls: {:?}", log.calls);
+        assert_eq!(log.calls.last(), Some(&"session"));
+    }
+
+    /// A pass stuck on the database holds up only itself: the recorder goes on draining the
+    /// channel and writing events meanwhile, where a full channel would have dropped them.
+    #[test]
+    fn events_are_recorded_while_a_compaction_pass_is_stuck() {
+        let log = Watched::new(RecordingLog {
+            hold_compaction: true,
+            ..Default::default()
+        });
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        let recorder = {
+            let log = log.clone();
+            std::thread::spawn(move || {
+                run_recorder_compacting_every(&log, receiver, true, 0, Duration::from_millis(1))
+            })
+        };
+        log.wait_until("a compaction pass to start", default_timeout(), |log| {
+            log.calls.contains(&"compact").then_some(())
+        });
+        sender
+            .send(RecorderInstruction::Events(vec![RecordedEvent::output(
+                TerminalId::new(1),
+                ElapsedMicros::new(1),
+                b"x".to_vec(),
+            )]))
+            .unwrap();
+        log.wait_until("the event recorded mid-pass", default_timeout(), |log| {
+            (!log.events.is_empty()).then_some(())
+        });
+        log.lock().hold_compaction = false;
+        sender.send(RecorderInstruction::Stop).unwrap();
+        recorder.join().unwrap();
+
+        let log = log.lock();
+        assert_eq!(log.marker_writes(), 0, "calls: {:?}", log.calls);
+        assert_eq!(log.calls.last(), Some(&"session"));
+    }
+
+    /// Ending the session cuts a pass in progress short instead of waiting it out.
+    #[test]
+    fn stopping_the_recorder_cuts_a_compaction_pass_short() {
+        let log = Watched::new(RecordingLog {
+            hold_compaction: true,
+            ..Default::default()
+        });
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        let recorder = {
+            let log = log.clone();
+            std::thread::spawn(move || {
+                run_recorder_compacting_every(&log, receiver, true, 0, Duration::from_millis(1))
+            })
+        };
+        log.wait_until("a compaction pass to start", default_timeout(), |log| {
+            log.calls.contains(&"compact").then_some(())
+        });
+        sender.send(RecorderInstruction::Stop).unwrap();
+        recorder.join().unwrap();
+
+        let log = log.lock();
+        assert!(
+            log.calls.contains(&"compact stopped"),
+            "calls: {:?}",
+            log.calls
+        );
+        assert_eq!(log.calls.last(), Some(&"session"));
     }
 
     #[test]
@@ -1024,6 +1263,7 @@ mod tests {
             receiver,
             Arc::new(AtomicBool::new(true)),
             Arc::new(AtomicUsize::new(1)),
+            COMPACT_EVERY,
         );
         let conn = rusqlite::Connection::open(dir.path().join("session-recordings.db"))?;
         let error: String =

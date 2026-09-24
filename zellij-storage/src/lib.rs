@@ -19,4 +19,5 @@
 
 pub mod data_access;
 pub mod plugin_data_store;
+mod recording_segment;
 pub mod session_recording;
