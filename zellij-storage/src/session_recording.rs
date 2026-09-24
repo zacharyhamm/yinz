@@ -1,16 +1,30 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use zellij_types::internal_ids::{RecordingId, TerminalId};
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, ensure, Context, Result};
+use rusqlite::TransactionBehavior;
 
-use crate::data_access::{RecordingBackend, RecordingSession};
+use crate::data_access::{RecordingBackend, RecordingCompactor, RecordingSession};
+use crate::recording_segment::{self, StoredEvent};
 
 pub use zellij_types::recording::{EventKind, PaneMetadata, RecordedEvent};
 
 struct SqliteRecordingSession {
     connection: rusqlite::Connection,
+    db_path: PathBuf,
     session_id: i64,
+}
+
+/// Compacts on a connection of its own, so a pass never holds the recorder's.
+struct SqliteRecordingCompactor {
+    connection: rusqlite::Connection,
+    session_id: i64,
+    /// Carried from one pass to the next; see [`compact_store`].
+    short_blocks: HashMap<i64, i64>,
 }
 
 /// SQLite-compatible façade retained for callers that manage one recording directly.
@@ -93,6 +107,7 @@ impl SqliteRecordingSession {
             ON recording_events(pane_id, elapsed_us, id);
             "#,
         )?;
+        ensure_segment_schema(&connection)?;
         connection.execute(
             "INSERT INTO recording_sessions (name, started_at_us, capture_input) VALUES (?1, ?2, ?3)",
             rusqlite::params![session_name, started_at_us.get(), if capture_input { 1 } else { 0 }],
@@ -100,6 +115,7 @@ impl SqliteRecordingSession {
         let session_id = connection.last_insert_rowid();
         Ok(Self {
             connection,
+            db_path,
             session_id,
         })
     }
@@ -108,7 +124,12 @@ impl SqliteRecordingSession {
         if events.is_empty() {
             return Ok(());
         }
-        let tx = self.connection.transaction()?;
+        // IMMEDIATE for the same reason as `index_pending`: this reads before it writes, and the
+        // compactor's connection, or another server's, may hold the write lock meanwhile. A
+        // deferred upgrade would fail at once and lose the batch rather than wait its turn.
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for event in events {
             // ensure pane exists
             let pane_id: i64 = {
@@ -149,7 +170,10 @@ impl SqliteRecordingSession {
         panes: &[PaneMetadata],
         elapsed_us: ElapsedMicros,
     ) -> Result<()> {
-        let tx = self.connection.transaction()?;
+        // IMMEDIATE for the same reason as `record_events`.
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for pane in panes {
             let tab_position = i64::try_from(pane.tab_position.get())
                 .context("Recording tab position exceeds SQLite's signed integer range")?;
@@ -182,13 +206,12 @@ impl SqliteRecordingSession {
                 let size_differs = pane.cols as i64 != ic || pane.rows as i64 != ir;
                 let is_speculative = existing_tab_name.is_empty();
                 if is_default_size && size_differs && is_speculative {
-                    let has_resize: bool = {
-                        let mut stmt = tx.prepare(
-                            "SELECT 1 FROM recording_events WHERE pane_id = ?1 AND code = 'r' LIMIT 1",
-                        )?;
-                        let mut rows = stmt.query(rusqlite::params![pane_id])?;
-                        rows.next()?.is_some()
-                    };
+                    let has_resize: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM recording_events WHERE pane_id = ?1 AND code = 'r')
+                             OR EXISTS(SELECT 1 FROM recording_segments WHERE pane_id = ?1 AND has_resize)",
+                        rusqlite::params![pane_id],
+                        |row| row.get(0),
+                    )?;
                     if !has_resize {
                         tx.execute(
                             "UPDATE recording_panes SET tab_id = ?1, tab_position = ?2, tab_name = ?3, title = ?4, initial_cols = ?5, initial_rows = ?6 WHERE id = ?7",
@@ -300,6 +323,40 @@ impl RecordingSession for SqliteRecordingSession {
     fn mark_incomplete(&mut self, message: &str) -> Result<()> {
         SqliteRecordingSession::mark_incomplete(self, message)
     }
+
+    fn compactor(&self) -> Result<Option<Box<dyn RecordingCompactor>>> {
+        let connection = connect(&self.db_path)?;
+        connection
+            .busy_timeout(COMPACTOR_BUSY_TIMEOUT)
+            .context("failed to set the recording compactor's busy timeout")?;
+        Ok(Some(Box::new(SqliteRecordingCompactor {
+            connection,
+            session_id: self.session_id,
+            short_blocks: HashMap::new(),
+        })))
+    }
+}
+
+impl RecordingCompactor for SqliteRecordingCompactor {
+    fn compact(
+        &mut self,
+        elapsed: ElapsedMicros,
+        budget_bytes: u64,
+        stop: &AtomicBool,
+    ) -> Result<CompactionReport> {
+        let live = LiveSession {
+            id: self.session_id,
+            elapsed_us: elapsed.get(),
+        };
+        compact_store(
+            &mut self.connection,
+            Some(live),
+            budget_bytes,
+            SEGMENT_BYTES,
+            stop,
+            &mut self.short_blocks,
+        )
+    }
 }
 
 impl RecordingStore {
@@ -349,6 +406,19 @@ impl RecordingStore {
     pub fn mark_incomplete(&mut self, message: &str) -> Result<()> {
         self.session.mark_incomplete(message)
     }
+
+    pub fn compact(
+        &mut self,
+        elapsed: ElapsedMicros,
+        budget_bytes: u64,
+    ) -> Result<CompactionReport> {
+        match self.session.compactor()? {
+            Some(mut compactor) => {
+                compactor.compact(elapsed, budget_bytes, &AtomicBool::new(false))
+            },
+            None => Ok(CompactionReport::default()),
+        }
+    }
 }
 
 impl RecordingBackend for SqliteRecordingBackend {
@@ -377,6 +447,10 @@ impl RecordingBackend for SqliteRecordingBackend {
     fn export(&self, recording_id: RecordingId, output: &mut dyn std::io::Write) -> Result<()> {
         sqlite_export_recording(&self.data_dir, recording_id, output)
     }
+
+    fn compact_all(&self) -> Result<StoreCompaction> {
+        sqlite_compact_all(&self.data_dir)
+    }
 }
 
 fn parse_resize(data: &[u8]) -> Option<(usize, usize)> {
@@ -388,6 +462,417 @@ fn parse_resize(data: &[u8]) -> Option<(usize, usize)> {
         return None;
     }
     Some((cols, rows))
+}
+
+/// How long an event stays an uncompressed row. Events reach the store within a flush (100 ms)
+/// of happening, so nothing older than this can still be on its way. That is what lets a
+/// pane's segments hold its earliest events and its rows the rest, with no event of one
+/// belonging among the other.
+///
+/// "Older" is measured on the clock the session stamps its events with, a monotonic one that
+/// stops while the machine sleeps, so the wall clock never enters into it. The recording a pass
+/// runs for knows that clock's reading now. Any other running session is known only by its
+/// newest event, which its clock has reached at least, so its last ten minutes before that stay
+/// rows; a session whose server died keeps them for good. An ended session gets nothing more.
+const COMPACT_AFTER_US: i64 = 10 * 60 * 1_000_000;
+
+/// How long a compactor waits on another connection's write before giving the pass up, which
+/// loses nothing: the next pass tries again. Shorter than a recorder's wait, since a recorder
+/// that gives up drops events, and short so that a session ending mid-pass waits no longer.
+const COMPACTOR_BUSY_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Event bytes per segment. At this size deflate reaches its ratio on terminal output (5.2× on
+/// 1 MiB blocks, 3.5× on 4 KiB ones), and a reader inflates no more than this at a time.
+const SEGMENT_BYTES: usize = 1024 * 1024;
+
+/// What a compaction pass moved out of `recording_events`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompactionReport {
+    pub segments: u64,
+    pub events: u64,
+    /// The events' data, before compression.
+    pub raw_bytes: u64,
+    /// The segments written for them.
+    pub stored_bytes: u64,
+}
+
+impl CompactionReport {
+    fn add(&mut self, other: CompactionReport) {
+        self.segments += other.segments;
+        self.events += other.events;
+        self.raw_bytes += other.raw_bytes;
+        self.stored_bytes += other.stored_bytes;
+    }
+}
+
+/// A whole-store compaction followed by `VACUUM`, as `zellij recordings compact` reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StoreCompaction {
+    pub compaction: CompactionReport,
+    /// The database file and its write-ahead log, before and after.
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+}
+
+/// The recording a compaction pass runs for, and where its clock is now.
+#[derive(Clone, Copy, Debug)]
+struct LiveSession {
+    id: i64,
+    elapsed_us: i64,
+}
+
+/// Opens an existing store the way readers and compactors do, which leaves creating the rest of
+/// the schema to the recorder.
+fn connect(db_path: &Path) -> Result<rusqlite::Connection> {
+    let conn = rusqlite::Connection::open(db_path)
+        .with_context(|| format!("failed to open recording database {}", db_path.display()))?;
+    conn.pragma_update(None, "busy_timeout", 5000)
+        .context("failed to set the recording database's busy timeout")?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .context("failed to enable foreign keys on the recording database")?;
+    ensure_segment_schema(&conn)?;
+    Ok(conn)
+}
+
+/// Created by readers as well as writers, so that a database from before segments existed reads
+/// as one with none.
+fn ensure_segment_schema(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS recording_segments (
+            id INTEGER PRIMARY KEY,
+            pane_id INTEGER NOT NULL REFERENCES recording_panes(id),
+            first_elapsed_us INTEGER NOT NULL,
+            last_elapsed_us INTEGER NOT NULL,
+            min_event_id INTEGER NOT NULL,
+            max_event_id INTEGER NOT NULL,
+            event_count INTEGER NOT NULL,
+            has_resize INTEGER NOT NULL,
+            codec TEXT NOT NULL,
+            raw_len INTEGER NOT NULL,
+            data BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS recording_segments_pane
+        ON recording_segments(pane_id);
+        "#,
+    )?;
+    Ok(())
+}
+
+/// One of a pane's segments, as [`for_each_segment`] reads it.
+struct Segment {
+    /// The highest id among its events, whatever their kind.
+    max_event_id: i64,
+    /// Its events in the `(elapsed_us, id)` order they were packed in, or why the row cannot be
+    /// read: damage is this segment's alone, and each reader decides what it costs.
+    events: Result<Vec<StoredEvent>>,
+}
+
+/// Calls `each` with the pane's segments holding an event whose id is above `after_id`, in the
+/// order they were written. Their events all come before every event the pane still has in
+/// `recording_events`, so a reader visits these first and those rows after.
+fn for_each_segment(
+    conn: &rusqlite::Connection,
+    pane_id: i64,
+    after_id: i64,
+    mut each: impl FnMut(Segment) -> Result<()>,
+) -> Result<()> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, max_event_id, codec, raw_len, data FROM recording_segments
+             WHERE pane_id = ?1 AND max_event_id > ?2 ORDER BY id",
+        )
+        .context("failed to list recording segments")?;
+    let mut rows = stmt
+        .query(rusqlite::params![pane_id, after_id])
+        .context("failed to list recording segments")?;
+    while let Some(row) = rows.next().context("failed to list recording segments")? {
+        let id: i64 = row.get(0)?;
+        let events = (|| {
+            let raw_len = usize::try_from(row.get::<_, i64>(3)?).context("negative length")?;
+            recording_segment::decode(
+                row.get_ref(2)?.as_str()?,
+                row.get_ref(4)?.as_blob()?,
+                raw_len,
+            )
+        })()
+        .with_context(|| format!("failed to read recording segment {id}"));
+        each(Segment {
+            max_event_id: row.get(1)?,
+            events,
+        })?;
+    }
+    Ok(())
+}
+
+/// Packs events older than [`COMPACT_AFTER_US`] into segments, pane by pane and the panes of the
+/// `live` session first, until about `budget` bytes of event data have moved or `stop` is set.
+/// Every segment is its own transaction, so a recorder writing to the same file never waits on
+/// more than one, and a stop on no more than one.
+///
+/// `short_blocks` remembers each pane found short of a block while busy, with the cutoff it was
+/// found at. Until that cutoff moves the pane stays that way — nothing ten minutes old is still
+/// arriving, and nothing at or after the cutoff moves — so it is not read again. That is what
+/// spares a session whose server died, whose cutoff never moves, a scan every pass for good.
+fn compact_store(
+    conn: &mut rusqlite::Connection,
+    live: Option<LiveSession>,
+    budget: u64,
+    segment_bytes: usize,
+    stop: &AtomicBool,
+    short_blocks: &mut HashMap<i64, i64>,
+) -> Result<CompactionReport> {
+    // Each pane with its session, whether that has ended, and the newest event the session has
+    // as a row. Rows alone are enough for that: segments only ever hold a pane's earliest.
+    let panes: Vec<(i64, i64, bool, Option<i64>)> = {
+        let mut stmt = conn
+            .prepare(
+                "WITH latest AS (
+                     SELECT session_id,
+                            MAX((SELECT MAX(elapsed_us) FROM recording_events
+                                 WHERE pane_id = recording_panes.id)) AS elapsed_us
+                     FROM recording_panes GROUP BY session_id
+                 )
+                 SELECT p.id, s.id, s.ended_at_us IS NOT NULL, latest.elapsed_us
+                 FROM recording_panes p
+                 JOIN recording_sessions s ON s.id = p.session_id
+                 JOIN latest ON latest.session_id = s.id
+                 ORDER BY s.id IS ?1 DESC, p.id",
+            )
+            .context("failed to list the panes to compact")?;
+        let rows = stmt.query_map(rusqlite::params![live.map(|live| live.id)], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()
+            .context("failed to list the panes to compact")?
+    };
+    let mut report = CompactionReport::default();
+    for (pane_id, session_id, ended, latest) in panes {
+        let cutoff = match live {
+            Some(live) if live.id == session_id => live.elapsed_us.saturating_sub(COMPACT_AFTER_US),
+            _ if ended => i64::MAX,
+            _ => match latest {
+                Some(latest) => latest.saturating_sub(COMPACT_AFTER_US),
+                None => continue,
+            },
+        };
+        if short_blocks.get(&pane_id) == Some(&cutoff) {
+            continue;
+        }
+        while report.raw_bytes < budget && !stop.load(Ordering::Relaxed) {
+            match compact_segment(conn, pane_id, cutoff, segment_bytes)? {
+                Block::Packed(segment) => report.add(segment),
+                Block::Short => {
+                    short_blocks.insert(pane_id, cutoff);
+                    break;
+                },
+                Block::Nothing => break,
+            }
+        }
+        if report.raw_bytes >= budget || stop.load(Ordering::Relaxed) {
+            break;
+        }
+    }
+    Ok(report)
+}
+
+/// What [`compact_segment`] did with a pane.
+enum Block {
+    Packed(CompactionReport),
+    /// Its cold events come short of a block while the pane is still busy, which at this
+    /// cutoff they go on doing.
+    Short,
+    /// Nothing to move, for any other reason.
+    Nothing,
+}
+
+/// Moves the pane's next block of events older than `cutoff` into a segment, or says why there
+/// is none to move yet.
+///
+/// A block is always the pane's earliest remaining events in `(elapsed_us, id)` order, which is
+/// what keeps segments ahead of rows. It is cut at `segment_bytes`. A shorter one — everything
+/// cold the pane has, up to the table's newest row — is packed only once the pane has had nothing
+/// newer than `cutoff`, so a slow pane is not chopped into small blocks that compress badly every
+/// time compaction runs.
+fn compact_segment(
+    conn: &mut rusqlite::Connection,
+    pane_id: i64,
+    cutoff: i64,
+    segment_bytes: usize,
+) -> Result<Block> {
+    const QUIET: &str =
+        "SELECT NOT EXISTS(SELECT 1 FROM recording_events WHERE pane_id = ?1 AND elapsed_us >= ?2)";
+    // Most panes have nothing cold, and every pass visits every pane: find that out from the
+    // index without taking the write lock.
+    let oldest: Option<i64> = conn
+        .query_row(
+            "SELECT MIN(elapsed_us) FROM recording_events WHERE pane_id = ?1",
+            rusqlite::params![pane_id],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("failed to find pane {pane_id}'s oldest recorded event"))?;
+    if !oldest.is_some_and(|oldest| oldest < cutoff) {
+        return Ok(Block::Nothing);
+    }
+    // A busy pane short of a block is the usual case for a live one, and for good in a session
+    // whose server died: settle that without the write lock too, and without reading any data.
+    let quiet: bool = conn
+        .query_row(QUIET, rusqlite::params![pane_id, cutoff], |row| row.get(0))
+        .with_context(|| format!("failed to find whether pane {pane_id} is quiet"))?;
+    if !quiet {
+        let cold_bytes: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(length(data) + 8), 0) FROM recording_events
+                 WHERE pane_id = ?1 AND elapsed_us < ?2",
+                rusqlite::params![pane_id, cutoff],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("failed to measure pane {pane_id}'s cold events"))?;
+        if usize::try_from(cold_bytes).is_ok_and(|cold_bytes| cold_bytes < segment_bytes) {
+            return Ok(Block::Short);
+        }
+    }
+    // IMMEDIATE for the same reason as `index_pending`: this reads and then writes.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .with_context(|| format!("failed to begin compacting pane {pane_id}"))?;
+    // A new row's id is one past the largest in the table. Moving that row out would let the
+    // next insert reuse an id a segment already holds, and the search indexer, which resumes
+    // after the last id it saw, would skip the new row. So the newest row always stays.
+    let newest: Option<i64> = tx
+        .query_row("SELECT MAX(id) FROM recording_events", [], |row| row.get(0))
+        .context("failed to find the newest recorded event")?;
+    // Again, now that nothing can change it.
+    let quiet: bool = tx
+        .query_row(QUIET, rusqlite::params![pane_id, cutoff], |row| row.get(0))
+        .with_context(|| format!("failed to find whether pane {pane_id} is quiet"))?;
+    let mut events = Vec::new();
+    let mut block_bytes = 0;
+    {
+        let mut stmt = tx.prepare(
+            "SELECT id, elapsed_us, code, data FROM recording_events
+             WHERE pane_id = ?1 AND elapsed_us < ?2 ORDER BY elapsed_us, id",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![pane_id, cutoff])?;
+        while block_bytes < segment_bytes {
+            let Some(row) = rows.next()? else {
+                break;
+            };
+            let id: i64 = row.get(0)?;
+            if Some(id) == newest {
+                break;
+            }
+            let code = match row.get_ref(2)?.as_str()? {
+                "o" => b'o',
+                "i" => b'i',
+                "r" => b'r',
+                other => bail!("recording event {id} has unknown code {other:?}"),
+            };
+            let data: Vec<u8> = row.get(3)?;
+            // Counting a few bytes of framing keeps a pane of empty events from filling one
+            // block without end.
+            block_bytes += data.len() + 8;
+            events.push(StoredEvent {
+                id,
+                elapsed_us: row.get(1)?,
+                code,
+                data,
+            });
+        }
+    }
+    let (Some(first), Some(last)) = (events.first(), events.last()) else {
+        return Ok(Block::Nothing);
+    };
+    // Short of a full block, the loop ran out of events it may take. Not `Short`: this can be
+    // the newest row holding it back, which stops once any pane records something.
+    if block_bytes < segment_bytes && !quiet {
+        return Ok(Block::Nothing);
+    }
+    let (compressed, raw_len) = recording_segment::encode(&events)?;
+    let min_id = events
+        .iter()
+        .map(|event| event.id)
+        .min()
+        .unwrap_or(first.id);
+    let max_id = events.iter().map(|event| event.id).max().unwrap_or(last.id);
+    tx.execute(
+        "INSERT INTO recording_segments (pane_id, first_elapsed_us, last_elapsed_us, min_event_id,
+             max_event_id, event_count, has_resize, codec, raw_len, data)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            pane_id,
+            first.elapsed_us,
+            last.elapsed_us,
+            min_id,
+            max_id,
+            events.len() as i64,
+            events.iter().any(|event| event.code == b'r'),
+            recording_segment::DEFLATE,
+            raw_len as i64,
+            compressed,
+        ],
+    )?;
+    // Exactly the rows just read: they are the pane's prefix up to `last`.
+    let moved = tx.execute(
+        "DELETE FROM recording_events WHERE pane_id = ?1 AND (elapsed_us, id) <= (?2, ?3)",
+        rusqlite::params![pane_id, last.elapsed_us, last.id],
+    )?;
+    ensure!(
+        moved == events.len(),
+        "compacting pane {pane_id} would delete {moved} events but packed {}",
+        events.len()
+    );
+    let report = CompactionReport {
+        segments: 1,
+        events: events.len() as u64,
+        raw_bytes: events.iter().map(|event| event.data.len() as u64).sum(),
+        stored_bytes: compressed.len() as u64,
+    };
+    tx.commit()
+        .with_context(|| format!("failed to commit pane {pane_id}'s new segment"))?;
+    Ok(Block::Packed(report))
+}
+
+/// Compacts every cold event in the store, then rewrites the file so the space the events held
+/// goes back to the file system: deleting rows alone only frees pages for SQLite to reuse.
+pub fn compact_recordings(data_dir: &Path) -> Result<StoreCompaction> {
+    SqliteRecordingBackend::new(data_dir).compact_all()
+}
+
+fn sqlite_compact_all(data_dir: &Path) -> Result<StoreCompaction> {
+    let db_path = data_dir.join("session-recordings.db");
+    if !db_path.exists() {
+        return Ok(StoreCompaction::default());
+    }
+    let wal_path = data_dir.join("session-recordings.db-wal");
+    let size = || {
+        [&db_path, &wal_path]
+            .iter()
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+            .sum::<u64>()
+    };
+    let bytes_before = size();
+    let mut conn = connect(&db_path)?;
+    let compaction = compact_store(
+        &mut conn,
+        None,
+        u64::MAX,
+        SEGMENT_BYTES,
+        &AtomicBool::new(false),
+        &mut HashMap::new(),
+    )?;
+    conn.execute_batch("VACUUM").context(
+        "VACUUM needs the recording database to itself while it runs; \
+         retry when no session is recording",
+    )?;
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    drop(conn);
+    Ok(StoreCompaction {
+        compaction,
+        bytes_before,
+        bytes_after: size(),
+    })
 }
 
 #[cfg(test)]
@@ -761,11 +1246,14 @@ fn sqlite_list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
     if !db_path.exists() {
         return Ok(Vec::new());
     }
-    let conn = rusqlite::Connection::open(&db_path)?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
+    let mut conn = connect(&db_path)?;
+    // One snapshot for every query below, so that a compaction committing meanwhile cannot
+    // show a pane's events in neither table. Read-only: dropping it ends the snapshot.
+    let tx = conn
+        .transaction()
+        .context("failed to begin reading recordings")?;
     // order: newest session first, then tab_position, then terminal_id
-    let mut stmt = conn.prepare(
+    let mut stmt = tx.prepare(
         r#"
         SELECT
             p.id,
@@ -801,18 +1289,20 @@ fn sqlite_list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
             row.get::<_, i64>(11)?,
         ))
     })?;
-    // Fix N+1: fetch MAX(elapsed_us) for all panes in one query
-    let max_by_pane: std::collections::HashMap<i64, i64> = {
-        let mut stmt =
-            conn.prepare("SELECT pane_id, MAX(elapsed_us) FROM recording_events GROUP BY pane_id")?;
+    // Fix N+1: fetch MAX(elapsed_us) for all panes in one query per table
+    let mut max_by_pane: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for query in [
+        "SELECT pane_id, MAX(elapsed_us) FROM recording_events GROUP BY pane_id",
+        "SELECT pane_id, MAX(last_elapsed_us) FROM recording_segments GROUP BY pane_id",
+    ] {
+        let mut stmt = tx.prepare(query)?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
-        let mut map = std::collections::HashMap::new();
         for row in rows {
             let (pane_id, max) = row?;
-            map.insert(pane_id, max);
+            let latest = max_by_pane.entry(pane_id).or_insert(max);
+            *latest = (*latest).max(max);
         }
-        map
-    };
+    }
     let mut results = Vec::new();
     for row in pane_rows {
         let (
@@ -881,12 +1371,16 @@ fn sqlite_export_recording(
     if !db_path.exists() {
         anyhow::bail!("recording {} not found", recording_id);
     }
-    let conn = rusqlite::Connection::open(&db_path)?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
+    let mut conn = connect(&db_path)?;
+    // One snapshot for the segments and the rows both: a compaction committing between reading
+    // one and the other would leave the events it moved in neither. Read-only: dropping it
+    // ends the snapshot.
+    let tx = conn
+        .transaction()
+        .context("failed to begin reading the recording")?;
     // get pane and session
     let pane: Option<RecordedPaneRow> = {
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT p.id, p.session_id, p.initial_cols, p.initial_rows, p.started_elapsed_us, s.name, p.tab_name, s.started_at_us, p.title FROM recording_panes p JOIN recording_sessions s ON p.session_id = s.id WHERE p.id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![recording_id.get()])?;
@@ -940,15 +1434,8 @@ fn sqlite_export_recording(
     });
     writeln!(output, "{}", serde_json::to_string(&header)?)?;
     // events ordered by elapsed_us, id
-    let mut stmt = conn.prepare(
-        "SELECT elapsed_us, code, data FROM recording_events WHERE pane_id = ?1 ORDER BY elapsed_us ASC, id ASC",
-    )?;
-    let mut rows = stmt.query(rusqlite::params![pane_id])?;
     let mut prev_elapsed: Option<i64> = None;
-    while let Some(row) = rows.next()? {
-        let elapsed_us: i64 = row.get(0)?;
-        let code: String = row.get(1)?;
-        let data: Vec<u8> = row.get(2)?;
+    let mut write_event = |elapsed_us: i64, code: &str, data: &[u8]| -> Result<()> {
         let mut interval_us = match prev_elapsed {
             Some(prev) => elapsed_us - prev,
             None => elapsed_us - started_elapsed,
@@ -972,11 +1459,32 @@ fn sqlite_export_recording(
         let secs = interval_us as f64 / 1_000_000.0;
         // format with at most 6 decimal places, trimming trailing zeros
         let secs_str = format_interval(secs);
-        let data_str = String::from_utf8_lossy(&data).to_string();
-        let code_json = serde_json::to_string(&code)?;
+        let data_str = String::from_utf8_lossy(data).to_string();
+        let code_json = serde_json::to_string(code)?;
         let data_json = serde_json::to_string(&data_str)?;
         writeln!(output, "[{}, {}, {}]", secs_str, code_json, data_json)?;
         prev_elapsed = Some(elapsed_us);
+        Ok(())
+    };
+    // A damaged segment fails the export: a recording with a hole in it would play back as if
+    // nothing were missing.
+    for_each_segment(&tx, pane_id, i64::MIN, |segment| {
+        for event in segment.events? {
+            write_event(
+                event.elapsed_us,
+                &char::from(event.code).to_string(),
+                &event.data,
+            )?;
+        }
+        Ok(())
+    })?;
+    let mut stmt = tx.prepare(
+        "SELECT elapsed_us, code, data FROM recording_events WHERE pane_id = ?1 ORDER BY elapsed_us ASC, id ASC",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![pane_id])?;
+    while let Some(row) = rows.next()? {
+        let data: Vec<u8> = row.get(2)?;
+        write_event(row.get(0)?, &row.get::<_, String>(1)?, &data)?;
     }
     Ok(())
 }
@@ -1008,9 +1516,7 @@ fn sqlite_search_recordings(data_dir: &Path, query: &str, limit: usize) -> Resul
     if !db_path.exists() {
         return Ok(Vec::new());
     }
-    let mut conn = rusqlite::Connection::open(&db_path)?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
+    let mut conn = connect(&db_path)?;
     ensure_search_schema(&conn)?;
     index_pending(&mut conn)?;
     match run_search(&conn, query, limit) {
@@ -1108,18 +1614,8 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
         let mut parsed = utf8_safe_len(&buffer);
         parser.advance(&mut sink, &buffer[..parsed]);
         {
-            let mut stmt = tx.prepare(
-                "SELECT id, elapsed_us, data FROM recording_events
-                 WHERE pane_id = ?1 AND code = 'o' AND id > ?2
-                 ORDER BY id ASC",
-            )?;
-            let mut rows = stmt.query(rusqlite::params![pane_id, last_event_id])?;
-            while let Some(row) = rows.next()? {
-                let event_id: i64 = row.get(0)?;
-                let elapsed_us: i64 = row.get(1)?;
-                let data: Vec<u8> = row.get(2)?;
-                last_seen = Some(event_id);
-                buffer.extend_from_slice(&data);
+            let mut index_event = |elapsed_us: i64, data: &[u8]| {
+                buffer.extend_from_slice(data);
                 // Bytes already handed to the parser are never re-parsed, so a redraw-heavy
                 // pane that goes 64KiB without a newline stays linear.
                 while parsed < buffer.len() {
@@ -1147,6 +1643,40 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
                     push_line(&mut lines, &std::mem::take(&mut sink.text), elapsed_us);
                     buffer.clear();
                     parsed = 0;
+                }
+            };
+            // Output comes from one reader per pane, so the order segments keep it in is
+            // also id order, and resuming after `last_event_id` works across both tables. It
+            // resumes after the highest id seen of any kind, not the last output's: a segment
+            // ending in input or a resize would otherwise be inflated again by every search.
+            for_each_segment(&tx, pane_id, last_event_id, |segment| {
+                last_seen = last_seen.max(Some(segment.max_event_id));
+                match segment.events {
+                    Ok(events) => {
+                        for event in events {
+                            if event.code == b'o' && event.id > last_event_id {
+                                index_event(event.elapsed_us, &event.data);
+                            }
+                        }
+                    },
+                    // Moving past it costs search this segment's lines only, and only once.
+                    Err(error) => log::warn!(
+                        "search skips a damaged segment of recording {pane_id}: {error:#}"
+                    ),
+                }
+                Ok(())
+            })?;
+            let mut stmt = tx.prepare(
+                "SELECT id, elapsed_us, code, data FROM recording_events
+                 WHERE pane_id = ?1 AND id > ?2
+                 ORDER BY id ASC",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![pane_id, last_event_id])?;
+            while let Some(row) = rows.next()? {
+                last_seen = Some(row.get(0)?);
+                if row.get_ref(2)?.as_str()? == "o" {
+                    let data: Vec<u8> = row.get(3)?;
+                    index_event(row.get(1)?, &data);
                 }
             }
         }
@@ -1885,6 +2415,667 @@ mod contract_tests {
                 TerminalId::new(value)
             );
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+    use hegel::generators;
+    use tempfile::tempdir;
+
+    /// Long after everything recorded here, so all of it is cold.
+    const LATER: i64 = i64::MAX / 2;
+
+    fn open_store(dir: &Path) -> RecordingStore {
+        let mut store = RecordingStore::open(dir, "session", true, UnixMicros::new(0)).unwrap();
+        let panes = (1..=3)
+            .map(|terminal| PaneMetadata {
+                terminal_id: TerminalId::new(terminal),
+                tab_id: zellij_types::internal_ids::TabId::new(0),
+                tab_position: zellij_types::internal_ids::TabPosition::new(terminal as usize),
+                tab_name: "tab".to_string(),
+                title: format!("pane {terminal}"),
+                cols: 80,
+                rows: 24,
+            })
+            .collect::<Vec<_>>();
+        store.update_panes(&panes, ElapsedMicros::new(0)).unwrap();
+        store
+    }
+
+    fn output(terminal: u32, elapsed_us: i64, data: &[u8]) -> RecordedEvent {
+        RecordedEvent::output(
+            TerminalId::new(terminal),
+            ElapsedMicros::new(elapsed_us),
+            data.to_vec(),
+        )
+    }
+
+    fn connection(dir: &Path) -> rusqlite::Connection {
+        rusqlite::Connection::open(dir.join("session-recordings.db")).unwrap()
+    }
+
+    /// One pass by a compactor that remembers nothing and is never stopped.
+    fn pass(
+        conn: &mut rusqlite::Connection,
+        live: Option<LiveSession>,
+        budget: u64,
+        segment_bytes: usize,
+    ) -> Result<CompactionReport> {
+        compact_store(
+            conn,
+            live,
+            budget,
+            segment_bytes,
+            &AtomicBool::new(false),
+            &mut HashMap::new(),
+        )
+    }
+
+    /// The store's one recording as its own compactor sees it, its clock at `elapsed_us`.
+    fn own_clock(dir: &Path, elapsed_us: i64) -> Option<LiveSession> {
+        let id = connection(dir)
+            .query_row("SELECT id FROM recording_sessions", [], |row| row.get(0))
+            .unwrap();
+        Some(LiveSession { id, elapsed_us })
+    }
+
+    fn export(dir: &Path, terminal: u32) -> String {
+        let summary = list_recordings(dir)
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.terminal_id == TerminalId::new(terminal))
+            .unwrap();
+        let mut out = Vec::new();
+        export_recording(dir, summary.id, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// Every pane's listing and export, which is everything a reader can see of the recording
+    /// apart from search.
+    fn exports(dir: &Path) -> Vec<(RecordingSummary, String)> {
+        list_recordings(dir)
+            .unwrap()
+            .into_iter()
+            .map(|summary| {
+                let mut out = Vec::new();
+                export_recording(dir, summary.id, &mut out).unwrap();
+                (summary, String::from_utf8(out).unwrap())
+            })
+            .collect()
+    }
+
+    /// An indexed line: its text, pane and the elapsed time of the event that completed it.
+    type IndexedLine = (String, i64, i64);
+    /// Where the indexer left a pane: its id, the last event indexed and the unfinished line.
+    type IndexerState = (i64, i64, Vec<u8>);
+
+    /// Indexes whatever is pending, then returns the search index and the indexer's resume
+    /// state: the lines, which event each was attributed to, and where each pane left off.
+    fn search_index(dir: &Path) -> (Vec<IndexedLine>, Vec<IndexerState>) {
+        search_recordings(dir, "anything", 1).unwrap();
+        let conn = connection(dir);
+        let lines = conn
+            .prepare("SELECT text, pane_id, elapsed_us FROM recording_search ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let state = conn
+            .prepare("SELECT pane_id, last_event_id, pending FROM recording_search_state ORDER BY pane_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        (lines, state)
+    }
+
+    fn row_count(dir: &Path, table: &str) -> i64 {
+        connection(dir)
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+
+    /// Two stores fed the same events, searched at the same moments, one of them compacted at
+    /// random moments with random block sizes and budgets, by its own recorder or from another
+    /// process, each remembering the short blocks it found: nothing a reader sees differs.
+    ///
+    /// Output is timed on a clock that only moves forward, as a pane's single reader does;
+    /// input and resizes run up to 100 ms behind it, as events from other threads can.
+    #[hegel::test]
+    fn compaction_changes_nothing_a_reader_sees(tc: hegel::TestCase) {
+        let (packed, plain) = (tempdir().unwrap(), tempdir().unwrap());
+        let mut stores = [open_store(packed.path()), open_store(plain.path())];
+        let segment_bytes = tc.draw(generators::integers::<usize>().min_value(1).max_value(300));
+        // The recorder's own compactor's memory, and another process's.
+        let (mut own_short_blocks, mut other_short_blocks) = (HashMap::new(), HashMap::new());
+        let mut clock = 0i64;
+        let op_count = tc.draw(generators::integers::<usize>().max_value(40));
+        for _ in 0..op_count {
+            let terminal = tc.draw(generators::integers::<u32>().min_value(1).max_value(3));
+            let event = match tc.draw(generators::integers::<u8>().max_value(6)) {
+                0..=2 => {
+                    let mut data = tc.draw(generators::binary().max_size(40));
+                    if tc.draw(generators::booleans()) {
+                        data.extend_from_slice(b"line\r\n");
+                    }
+                    Some(output(terminal, clock, &data))
+                },
+                3 => {
+                    let jitter = tc.draw(
+                        generators::integers::<i64>()
+                            .min_value(0)
+                            .max_value(100_000),
+                    );
+                    let elapsed_us = ElapsedMicros::new((clock - jitter).max(0));
+                    Some(if tc.draw(generators::booleans()) {
+                        RecordedEvent::input(TerminalId::new(terminal), elapsed_us, b"k".to_vec())
+                    } else {
+                        let cols = tc.draw(generators::integers::<u16>());
+                        RecordedEvent::resize(TerminalId::new(terminal), elapsed_us, cols, 30)
+                    })
+                },
+                4 => {
+                    // In whole minutes: drawn in microseconds, the clock rarely gets far
+                    // enough for anything to go cold.
+                    let minutes = tc.draw(generators::integers::<i64>().min_value(0).max_value(20));
+                    clock += minutes * 60_000_000 + 1;
+                    None
+                },
+                5 => {
+                    assert_eq!(search_index(packed.path()), search_index(plain.path()));
+                    None
+                },
+                _ => {
+                    let budget = tc.draw(generators::integers::<u64>().min_value(1).max_value(400));
+                    let (live, short_blocks) = if tc.draw(generators::booleans()) {
+                        (own_clock(packed.path(), clock), &mut own_short_blocks)
+                    } else {
+                        (None, &mut other_short_blocks)
+                    };
+                    compact_store(
+                        &mut connection(packed.path()),
+                        live,
+                        budget,
+                        segment_bytes,
+                        &AtomicBool::new(false),
+                        short_blocks,
+                    )
+                    .unwrap();
+                    None
+                },
+            };
+            if let Some(event) = event {
+                for store in &mut stores {
+                    store.record_events(std::slice::from_ref(&event)).unwrap();
+                }
+            }
+        }
+        assert_eq!(exports(packed.path()), exports(plain.path()));
+        assert_eq!(search_index(packed.path()), search_index(plain.path()));
+    }
+
+    #[test]
+    fn the_newest_row_stays_so_later_events_are_still_indexed() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        store.record_events(&[output(1, 0, b"first\n"), output(1, 1, b"second\n")])?;
+        let live = own_clock(dir.path(), LATER);
+        let report = pass(&mut connection(dir.path()), live, u64::MAX, 1)?;
+        assert_eq!(report.events, 1, "only the older of the two rows moves");
+
+        store.record_events(&[output(1, 2, b"third\n")])?;
+        let conn = connection(dir.path());
+        let (new_id, packed_max): (i64, i64) = conn.query_row(
+            "SELECT (SELECT MAX(id) FROM recording_events),
+                    (SELECT MAX(max_event_id) FROM recording_segments)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert!(
+            new_id > packed_max,
+            "id {new_id} reuses one a segment holds"
+        );
+        let texts: Vec<String> = search_recordings(dir.path(), "first OR second OR third", 10)?
+            .into_iter()
+            .map(|hit| hit.text)
+            .collect();
+        assert_eq!(texts.len(), 3, "{texts:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_resize_packed_into_a_segment_still_keeps_the_first_seen_size() -> Result<()> {
+        let dir = tempdir()?;
+        // A pane whose output arrives before its metadata is created at the default size,
+        // which the metadata may correct only if no resize has been recorded since.
+        let mut store = RecordingStore::open(dir.path(), "session", false, UnixMicros::new(0))?;
+        store.record_events(&[
+            output(1, 0, b"early"),
+            RecordedEvent::resize(TerminalId::new(1), ElapsedMicros::new(1), 120, 40),
+            output(2, 2, b"newest row, left behind"),
+        ])?;
+        let live = own_clock(dir.path(), LATER);
+        pass(&mut connection(dir.path()), live, u64::MAX, 1)?;
+        let rows_left: i64 = connection(dir.path()).query_row(
+            "SELECT COUNT(*) FROM recording_events e JOIN recording_panes p ON p.id = e.pane_id
+             WHERE p.terminal_id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            rows_left, 0,
+            "the resize must be in a segment for this test to mean anything"
+        );
+
+        store.update_panes(
+            &[PaneMetadata {
+                terminal_id: TerminalId::new(1),
+                tab_id: zellij_types::internal_ids::TabId::new(0),
+                tab_position: zellij_types::internal_ids::TabPosition::new(0),
+                tab_name: "tab".to_string(),
+                title: "late metadata".to_string(),
+                cols: 100,
+                rows: 30,
+            }],
+            ElapsedMicros::new(3),
+        )?;
+        let size: (i64, i64) = connection(dir.path()).query_row(
+            "SELECT initial_cols, initial_rows FROM recording_panes WHERE terminal_id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(size, (80, 24));
+        Ok(())
+    }
+
+    #[test]
+    fn a_short_block_waits_until_the_pane_goes_quiet() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        let old = 1_000;
+        let recent = old + COMPACT_AFTER_US + 1_000;
+        store.record_events(&[
+            output(1, old, b"old output"),
+            output(1, recent, b"recent output"),
+            output(2, recent, b"newest row"),
+        ])?;
+        // Only the old event is cold, and it is far short of a block while the pane is busy.
+        let now = ElapsedMicros::new(recent);
+        assert_eq!(store.compact(now, u64::MAX)?, CompactionReport::default());
+        // Once the pane has been quiet for as long, the short block is packed after all.
+        let later = ElapsedMicros::new(recent + COMPACT_AFTER_US + 1);
+        let report = store.compact(later, u64::MAX)?;
+        assert_eq!((report.segments, report.events), (1, 2));
+        Ok(())
+    }
+
+    /// Settling that a busy pane is short of a block reads nothing under the write lock, so the
+    /// recorder's flushes never wait on it.
+    #[test]
+    fn a_short_block_in_a_busy_pane_takes_no_write_lock() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        let old = 1_000;
+        let recent = old + COMPACT_AFTER_US + 1_000;
+        store.record_events(&[
+            output(1, old, b"old output"),
+            output(1, recent, b"recent output"),
+            output(2, recent, b"newest row"),
+        ])?;
+        let live = own_clock(dir.path(), recent);
+        let writer = connection(dir.path());
+        writer.execute_batch("BEGIN IMMEDIATE")?;
+        // With no wait for it, taking the write lock would fail at once.
+        let mut compactor = connection(dir.path());
+        compactor.busy_timeout(Duration::ZERO)?;
+        let report = pass(&mut compactor, live, u64::MAX, SEGMENT_BYTES)?;
+        assert_eq!(report, CompactionReport::default());
+        writer.execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    /// A pane remembered as short of a block is passed over only while its cutoff stays put.
+    #[test]
+    fn a_remembered_short_block_is_revisited_once_its_cutoff_moves() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        let old = 1_000;
+        let recent = old + COMPACT_AFTER_US + 1_000;
+        store.record_events(&[
+            output(1, old, b"old output"),
+            output(1, recent, b"recent output"),
+        ])?;
+        let pane_id: i64 = connection(dir.path()).query_row(
+            "SELECT id FROM recording_panes WHERE terminal_id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        // Compacted from another process, the session known only by its newest event.
+        let (stop, mut short_blocks) = (AtomicBool::new(false), HashMap::new());
+        let report = compact_store(
+            &mut connection(dir.path()),
+            None,
+            u64::MAX,
+            SEGMENT_BYTES,
+            &stop,
+            &mut short_blocks,
+        )?;
+        assert_eq!(report, CompactionReport::default());
+        assert_eq!(
+            short_blocks.get(&pane_id),
+            Some(&(recent - COMPACT_AFTER_US))
+        );
+
+        // The session records again, far enough on that pane 1 has gone quiet.
+        store.record_events(&[output(2, recent + COMPACT_AFTER_US + 1, b"much later")])?;
+        let report = compact_store(
+            &mut connection(dir.path()),
+            None,
+            u64::MAX,
+            SEGMENT_BYTES,
+            &stop,
+            &mut short_blocks,
+        )?;
+        assert_eq!((report.segments, report.events), (1, 2));
+        Ok(())
+    }
+
+    #[test]
+    fn a_stopped_pass_moves_nothing() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        store.record_events(&[
+            output(1, 0, b"one"),
+            output(1, 1, b"two"),
+            output(2, 2, b"newest row"),
+        ])?;
+        let live = own_clock(dir.path(), LATER);
+        let report = compact_store(
+            &mut connection(dir.path()),
+            live,
+            u64::MAX,
+            1,
+            &AtomicBool::new(true),
+            &mut HashMap::new(),
+        )?;
+        assert_eq!(report, CompactionReport::default());
+        assert_eq!(row_count(dir.path(), "recording_events"), 3);
+        Ok(())
+    }
+
+    /// The newest row in the table stays, but the rest of its pane's short tail does not wait
+    /// for some other pane to write something first.
+    #[test]
+    fn a_quiet_pane_holding_the_newest_row_packs_everything_else() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        store.record_events(&[
+            output(1, 0, b"one"),
+            output(1, 1, b"two"),
+            output(1, 2, b"three, the newest row"),
+        ])?;
+        let report = store.compact(ElapsedMicros::new(LATER), u64::MAX)?;
+        assert_eq!((report.segments, report.events), (1, 2));
+        assert_eq!(row_count(dir.path(), "recording_events"), 1);
+        // With only the newest row left, a later pass has nothing to do.
+        assert_eq!(
+            store.compact(ElapsedMicros::new(LATER), u64::MAX)?,
+            CompactionReport::default()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compact_recordings_shrinks_the_file_and_changes_no_reader() -> Result<()> {
+        let dir = tempdir()?;
+        {
+            let mut store = open_store(dir.path());
+            // About 2 MiB of build-log-like output in PTY-sized reads.
+            let events: Vec<RecordedEvent> = (0..800)
+                .map(|read| {
+                    let chunk: String = (0..40)
+                        .map(|line| {
+                            format!(
+                                "\x1b[32m   Compiling\x1b[0m crate-{read}-{line} v0.{line}.0 (/src/crate-{read})\r\n"
+                            )
+                        })
+                        .collect();
+                    output(1, read, chunk.as_bytes())
+                })
+                .chain([output(2, 900, b"newest row")])
+                .collect();
+            store.record_events(&events)?;
+            store.finish_session(UnixMicros::new(1_000), ElapsedMicros::new(1_000))?;
+        }
+        let before = exports(dir.path());
+
+        // The session has finished, so all of it is cold whatever time it is.
+        let result = compact_recordings(dir.path())?;
+        assert_eq!(result.compaction.segments, 2, "{result:?}");
+        assert!(
+            result.bytes_after * 3 < result.bytes_before,
+            "expected the file to shrink well past 3x: {result:?}"
+        );
+        assert_eq!(exports(dir.path()), before);
+        let hits = search_recordings(dir.path(), "\"crate-799-39\"", 10)?;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(row_count(dir.path(), "recording_events"), 1);
+        Ok(())
+    }
+
+    /// Seen from another process, a running session's clock is known only by its newest event,
+    /// so the ten minutes before that stay rows: an event still on its way, stamped a little
+    /// behind, must be able to land among them.
+    #[test]
+    fn a_running_session_compacted_from_elsewhere_keeps_its_last_ten_minutes() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        let newest = COMPACT_AFTER_US + 60_000_000;
+        store.record_events(&[
+            output(1, 0, b"early"),
+            output(1, newest, b"late"),
+            output(2, newest, b"newest row"),
+        ])?;
+        let report = pass(&mut connection(dir.path()), None, u64::MAX, 1)?;
+        assert_eq!(
+            report.events, 1,
+            "only the event ten minutes before the newest moves"
+        );
+
+        store.record_events(&[RecordedEvent::input(
+            TerminalId::new(1),
+            ElapsedMicros::new(newest - 50_000),
+            b"typed".to_vec(),
+        )])?;
+        let events: Vec<String> = export(dir.path(), 1)
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()[2].to_string())
+            .collect();
+        assert_eq!(events, ["\"early\"", "\"typed\"", "\"late\""]);
+        Ok(())
+    }
+
+    /// Writes an export into memory, and runs a compaction pass on a connection of its own as
+    /// the first event goes out: after the export has begun reading segments, before the rows.
+    struct CompactingMidExport<'a> {
+        dir: &'a Path,
+        out: Vec<u8>,
+        compacted: Option<CompactionReport>,
+    }
+
+    impl std::io::Write for CompactingMidExport<'_> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.compacted.is_none() && self.out.ends_with(b"\n") {
+                let live = own_clock(self.dir, LATER);
+                self.compacted =
+                    Some(pass(&mut connection(self.dir), live, u64::MAX, SEGMENT_BYTES).unwrap());
+            }
+            self.out.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_export_sees_every_event_while_compaction_moves_them() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        store.record_events(&[
+            output(1, 0, b"one"),
+            output(1, 1, b"two"),
+            output(1, 2, b"three"),
+            output(1, 3, b"four"),
+            output(2, 4, b"newest row"),
+        ])?;
+        // One event in a segment, so the export has a segment to be reading when the rest move.
+        let live = own_clock(dir.path(), LATER);
+        assert_eq!(pass(&mut connection(dir.path()), live, 1, 1)?.events, 1);
+
+        let pane = list_recordings(dir.path())?
+            .into_iter()
+            .find(|summary| summary.terminal_id == TerminalId::new(1))
+            .context("pane 1 is listed")?;
+        let mut during = CompactingMidExport {
+            dir: dir.path(),
+            out: Vec::new(),
+            compacted: None,
+        };
+        export_recording(dir.path(), pane.id, &mut during)?;
+        assert_eq!(during.compacted.map(|report| report.events), Some(3));
+        let after = export(dir.path(), 1);
+        assert_eq!(String::from_utf8(during.out)?, after);
+        assert_eq!(after.lines().count(), 5, "{after}");
+        Ok(())
+    }
+
+    /// Search resumes after the highest id it has seen of any kind, so a segment that ends in
+    /// input is not inflated again by every later search.
+    #[test]
+    fn search_resumes_after_a_segment_that_ends_in_input() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        store.record_events(&[
+            output(1, 0, b"shown\n"),
+            RecordedEvent::input(TerminalId::new(1), ElapsedMicros::new(1), b"typed".to_vec()),
+            output(2, 2, b"newest row"),
+        ])?;
+        let live = own_clock(dir.path(), LATER);
+        pass(&mut connection(dir.path()), live, u64::MAX, SEGMENT_BYTES)?;
+        let (pane_id, packed_max): (i64, i64) = connection(dir.path()).query_row(
+            "SELECT pane_id, max_event_id FROM recording_segments",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let (_, state) = search_index(dir.path());
+        let resumed_after = state
+            .iter()
+            .find(|(pane, ..)| *pane == pane_id)
+            .map(|(_, last_event_id, _)| *last_event_id);
+        assert_eq!(resumed_after, Some(packed_max));
+        Ok(())
+    }
+
+    /// A segment that no longer decodes costs search only the events it held, and only once:
+    /// the rest of the store, the pane's later rows included, stays searchable. The pane's
+    /// export still fails, rather than hand over a recording with a hole in it.
+    #[test]
+    fn a_damaged_segment_costs_search_only_its_own_events() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        store.record_events(&[
+            output(1, 0, b"damaged\n"),
+            output(2, 1, b"unharmed\n"),
+            output(3, 2, b"newest row\n"),
+        ])?;
+        let live = own_clock(dir.path(), LATER);
+        let report = pass(&mut connection(dir.path()), live, u64::MAX, SEGMENT_BYTES)?;
+        assert_eq!(report.segments, 2);
+        connection(dir.path()).execute(
+            "UPDATE recording_segments SET data = X'00'
+             WHERE pane_id = (SELECT id FROM recording_panes WHERE terminal_id = 1)",
+            [],
+        )?;
+        store.record_events(&[output(1, 3, b"written after\n")])?;
+        for _ in 0..2 {
+            let mut texts: Vec<String> =
+                search_recordings(dir.path(), "damaged OR unharmed OR written", 10)?
+                    .into_iter()
+                    .map(|hit| hit.text)
+                    .collect();
+            texts.sort();
+            assert_eq!(texts, ["unharmed", "written after"]);
+        }
+
+        let panes = list_recordings(dir.path())?;
+        let pane = |terminal| {
+            panes
+                .iter()
+                .find(|summary| summary.terminal_id == TerminalId::new(terminal))
+                .map(|summary| summary.id)
+                .context("the pane is listed")
+        };
+        assert!(export_recording(dir.path(), pane(1)?, &mut Vec::<u8>::new()).is_err());
+        export_recording(dir.path(), pane(2)?, &mut Vec::<u8>::new())?;
+        Ok(())
+    }
+
+    /// A flush that meets another connection's write, the compactor's or another server's,
+    /// waits its turn instead of failing and losing the batch.
+    #[test]
+    fn recording_waits_for_another_connections_write() -> Result<()> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WAITED: AtomicBool = AtomicBool::new(false);
+        fn busy(_attempts: i32) -> bool {
+            WAITED.store(true, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            true
+        }
+
+        let dir = tempdir()?;
+        let mut session =
+            SqliteRecordingSession::open(dir.path(), "busy", false, UnixMicros::new(0))?;
+        session.connection.busy_handler(Some(busy))?;
+        let writer = connection(dir.path());
+        writer.execute_batch("BEGIN IMMEDIATE")?;
+        let recording = std::thread::spawn(move || {
+            session.record_events(&[output(1, 0, b"flushed while another connection writes")])
+        });
+        // Until the recorder is waiting, or has given up.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !WAITED.load(Ordering::SeqCst) && !recording.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the flush neither waited nor ended"
+            );
+            std::thread::yield_now();
+        }
+        writer.execute_batch("COMMIT")?;
+        recording.join().expect("the recording thread panicked")?;
+        assert_eq!(row_count(dir.path(), "recording_events"), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn readers_open_a_database_from_before_segments() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        store.record_events(&[output(1, 0, b"needle\n")])?;
+        drop(store);
+        connection(dir.path()).execute_batch("DROP TABLE recording_segments")?;
+        assert_eq!(list_recordings(dir.path())?.len(), 3);
+        assert_eq!(search_recordings(dir.path(), "needle", 10)?.len(), 1);
+        assert_eq!(exports(dir.path()).len(), 3);
         Ok(())
     }
 }

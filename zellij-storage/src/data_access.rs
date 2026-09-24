@@ -7,6 +7,7 @@
 
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use zellij_types::internal_ids::{RecordingId, TerminalId};
 use zellij_types::units::{ElapsedMicros, UnixMicros};
@@ -17,7 +18,8 @@ use crate::plugin_data_store::{
     PluginDataStore, PostgresPluginDataBackend, SqlitePluginDataBackend,
 };
 use crate::session_recording::{
-    PaneMetadata, RecordedEvent, RecordingSummary, SearchHit, SqliteRecordingBackend,
+    CompactionReport, PaneMetadata, RecordedEvent, RecordingSummary, SearchHit,
+    SqliteRecordingBackend, StoreCompaction,
 };
 use zellij_types::plugin_data::{
     ApplyReport, DataEntityInfo, DataError, DataRows, DataSchemaInfo, EntityDef, FetchRequest,
@@ -51,6 +53,25 @@ pub trait RecordingSession: Send {
         ended_elapsed_us: ElapsedMicros,
     ) -> Result<()>;
     fn mark_incomplete(&mut self, message: &str) -> Result<()>;
+    /// A compactor over this recording's store, with a connection of its own so that it can run
+    /// on another thread than the one recording. Backends without segments have none.
+    fn compactor(&self) -> Result<Option<Box<dyn RecordingCompactor>>> {
+        Ok(None)
+    }
+}
+
+/// Packs a store's cold events into compressed segments, apart from the thread recording.
+pub trait RecordingCompactor: Send {
+    /// Moves about `budget_bytes` of event data at most, the recording's own first. `elapsed` is
+    /// the recording's clock now, the one its events are stamped with. Once `stop` is set it
+    /// returns what it has moved so far, after one segment at most. A failure loses nothing:
+    /// what was not committed stays as it was, to be tried again.
+    fn compact(
+        &mut self,
+        elapsed: ElapsedMicros,
+        budget_bytes: u64,
+        stop: &AtomicBool,
+    ) -> Result<CompactionReport>;
 }
 
 /// Persistence operations for recordings outside an active session.
@@ -64,6 +85,11 @@ pub trait RecordingBackend: Send + Sync {
     fn list(&self) -> Result<Vec<RecordingSummary>>;
     fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
     fn export(&self, recording_id: RecordingId, output: &mut dyn Write) -> Result<()>;
+    /// Compacts every cold event in the store and gives the space it frees back to the file
+    /// system, for `zellij recordings compact`.
+    fn compact_all(&self) -> Result<StoreCompaction> {
+        anyhow::bail!("this recording store cannot be compacted")
+    }
 }
 
 /// The Postgres schema the plugin data store uses when `plugin_data_schema` is unset.

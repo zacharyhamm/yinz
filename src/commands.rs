@@ -1761,7 +1761,49 @@ pub(crate) fn recordings(
             }
             Ok(())
         },
+        RecordingsCli::Compact => {
+            let result = data_access.recordings().compact_all()?;
+            print!("{}", format_compaction(&result));
+            Ok(())
+        },
     }
+}
+
+pub(crate) fn format_compaction(
+    result: &zellij_storage::session_recording::StoreCompaction,
+) -> String {
+    let moved = result.compaction;
+    let mut out = if moved.events == 0 {
+        "Nothing new to compress.\n".to_string()
+    } else {
+        format!(
+            "Compressed {} events ({}) into {} segments ({}).\n",
+            moved.events,
+            format_bytes(moved.raw_bytes),
+            moved.segments,
+            format_bytes(moved.stored_bytes),
+        )
+    };
+    out.push_str(&format!(
+        "Recording database: {} -> {}\n",
+        format_bytes(result.bytes_before),
+        format_bytes(result.bytes_after),
+    ));
+    out
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
 }
 
 pub(crate) fn format_search_results(

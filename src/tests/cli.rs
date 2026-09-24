@@ -125,6 +125,45 @@ fn cli_recordings_search_limit_parses() {
 }
 
 #[test]
+fn cli_recordings_compact_parses() {
+    let args = try_parse_cli(["zellij", "recordings", "compact"]).unwrap();
+    assert!(matches!(
+        args.command,
+        Some(Command::Recordings(zellij_cli::args::Recordings::Compact))
+    ));
+}
+
+#[test]
+fn recordings_compact_output_reports_what_moved_and_the_file_size() {
+    use zellij_storage::session_recording::{CompactionReport, StoreCompaction};
+
+    let output = crate::commands::format_compaction(&StoreCompaction {
+        compaction: CompactionReport {
+            segments: 2,
+            events: 800,
+            raw_bytes: 1_927_200,
+            stored_bytes: 108_519,
+        },
+        bytes_before: 3_330_048,
+        bytes_after: 139_264,
+    });
+    assert_eq!(
+        output,
+        "Compressed 800 events (1.8 MiB) into 2 segments (106.0 KiB).\n\
+         Recording database: 3.2 MiB -> 136.0 KiB\n"
+    );
+    let idle = crate::commands::format_compaction(&StoreCompaction {
+        bytes_before: 512,
+        bytes_after: 512,
+        ..Default::default()
+    });
+    assert_eq!(
+        idle,
+        "Nothing new to compress.\nRecording database: 512 B -> 512 B\n"
+    );
+}
+
+#[test]
 fn cli_recordings_search_missing_query_fails() {
     let res = try_parse_cli(["zellij", "recordings", "search"]);
     assert!(res.is_err(), "missing query should fail");
