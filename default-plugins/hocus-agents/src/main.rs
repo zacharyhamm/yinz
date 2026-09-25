@@ -123,6 +123,7 @@ mod swamp;
 mod todos;
 mod vms;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use hocus_proto::agents::{self, now_ms, Strip, StripRow, Summaries};
 use hocus_proto::envelope;
@@ -151,8 +152,9 @@ struct State {
     /// and asking hocus for the box on every keystroke would put a round trip between the cursor
     /// and what it is pointing at.
     summaries: Summaries,
-    /// Full history for the selected row, fetched on demand by hocus.
-    run: Option<agents::AgentRun>,
+    /// Full history for the selected row, fetched on demand by hocus, held as its parse. See
+    /// [`LoadedRun`].
+    run: Option<LoadedRun>,
     /// Seconds east of UTC where `run` began, for the absolute start time in the history
     /// header. Asked of the host once per run, when the run arrives, rather than in `render`:
     /// a host round trip in the draw path would be paid on every keystroke, and `history_lines`
@@ -187,6 +189,18 @@ struct State {
     /// width is — opening a section or showing the source is a different body, not a different
     /// view of one.
     reader_cache: Option<((u64, u64, usize), envelope::ReaderLines)>,
+    /// The parse behind `reader_cache` for prose or raw source, keyed on the opening it was
+    /// made for. Held apart because it depends on nothing but `Reading::text`, which an opening
+    /// never changes: a resize, a fold or `r` with the reader open re-wraps an event rather
+    /// than parsing it again.
+    ///
+    /// Shared: an event the timeline parsed whole arrives with the timeline's parse
+    /// (`agents::ParsedRun::whole_blocks`), so opening it parses nothing at all.
+    reader_blocks: Option<(u64, Arc<[markdown::MdBlock]>)>,
+    /// The same for the folds, keyed on the opening too: each section's parse, beside the
+    /// `open` it was made under. Opening or shutting a fold is the only thing that changes a
+    /// section, so a resize re-wraps them all and a fold toggled parses that fold alone.
+    reader_folds: Option<(u64, Vec<ParsedFold>)>,
     /// The largest `Reading::scroll` the last reader render could honour - the counterpart of
     /// `last_history_max_scroll`, and kept for the same reason: only `render` knows the width
     /// the body was wrapped to, and so only `render` knows how many lines it came to.
@@ -268,12 +282,20 @@ struct State {
     /// it a wheel against the top of the history would keep counting, and scrolling back down
     /// would cost as many notches as were wasted going up.
     last_history_max_scroll: usize,
-    /// Bumped whenever anything the history half is drawn *from* changes - the loaded run, or
-    /// a strip carrying fresh summaries. Counted rather than compared field by field: what
-    /// `history_lines` reads is spread across four of them, and a counter cannot be half
-    /// updated by someone adding a fifth.
+    /// Bumped whenever anything the history half is drawn *from* changes, other than the
+    /// loaded run - a strip carrying fresh summaries, a search, a list move. Counted rather
+    /// than compared field by field: what `history_lines` reads is spread across several of
+    /// them, and a counter cannot be half updated by someone adding another.
     generation: u64,
+    /// Bumped whenever `run` is loaded with a run that changed, and by nothing else.
+    ///
+    /// Apart from `generation` because a run's timeline is drawn from the run alone, and
+    /// `generation` moves on every strip push that changes anything on any pane. Keyed on
+    /// that, the history half re-compared every entry of a long run and re-assembled its
+    /// timeline each time another agent's summary changed.
+    run_revision: u64,
     /// The last `history_lines`, and what it was computed from. See `cached_history_lines`.
+    /// A miss on a run is rebuilt from `LoadedRun::parsed`, which only re-wraps.
     history_cache: Option<(HistoryKey, agents::HistoryLines)>,
     /// The row an `s` has asked the daemon about and not yet had an answer for, as a
     /// `selection_key`.
@@ -324,13 +346,66 @@ struct HistoryKey {
     selection: Option<String>,
     /// The half's width, which is what its lines are wrapped to.
     width: usize,
-    /// [`State::generation`] - the state behind the selection.
-    generation: u64,
+    /// The state behind the selection.
+    source: HistorySource,
     /// The minute the cache was filled in, `now_ms() / 60_000`. Nothing else in the key
     /// changes with the passage of time alone, so without this the "ago" label on each
     /// history row would freeze at whatever it read on the last selection change - this
     /// bounds the staleness to about a minute on any render that already happens to occur.
     minute: i64,
+}
+
+/// One fold of the reader, parsed (`envelope::section_blocks`), beside whether it was open
+/// then. See `State::reader_folds`.
+type ParsedFold = (bool, Vec<markdown::MdBlock>);
+
+/// The selected run, as the pane keeps it: parsed, and the few facts about it the pane reads.
+///
+/// Not the decoded [`agents::AgentRun`]. A long run is a quarter of a megabyte of text, and
+/// the parse keeps every drawn event's text for the reader already; holding the decoded run
+/// and the JSON it came as beside it put the same run in the heap three times over. The run
+/// is parsed when it arrives and dropped, so what is left is one copy of its text.
+///
+/// The parse goes with the run: a long run's parse is megabytes, kept for redrawing that run,
+/// not for the pane's lifetime. It stays while the cursor merely leaves the run's row - `j`
+/// then `k` would parse the whole run again - and it is handed on when another run replaces
+/// this one, which `ParsedRun::update` turns over itself.
+struct LoadedRun {
+    id: String,
+    pane_id: u32,
+    /// Whether the run has an `ended_at_ms`: a live agent's row only shows its live run.
+    ended: bool,
+    /// The machine the run's folder is on - see `open_target`.
+    host: Option<String>,
+    cwd: Option<String>,
+    /// Whether any entry, or the rolling summary, carries a stamp - `shows_an_age`'s answer
+    /// for a run, worked out once rather than on every tick.
+    stamped: bool,
+    /// The JSON the run came as, as [`agents::run_payload_fingerprint`] reduces it.
+    ///
+    /// hocus sends the selected run again each time it is asked and each time it grows, and a
+    /// long run is a quarter of a megabyte of it. Compared before anything is decoded, so a run
+    /// sent again unchanged costs one hash rather than a decode - without keeping the bytes to
+    /// compare against.
+    fingerprint: (usize, u64),
+    /// The run, parsed and wrapped at the last width asked for - what a `history_cache` miss
+    /// is rebuilt from.
+    ///
+    /// The cache misses on every step of a resize and on every minute, and hocus sends the
+    /// selected run again each time it grows, which is several times a second while its agent
+    /// works. Each of those used to parse the whole run's markdown again; this keeps the parse
+    /// per event, so a miss costs a re-wrap and a grown run costs its new entries.
+    parsed: agents::ParsedRun,
+}
+
+/// What the history half is drawn from, and the counter that moves when it changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistorySource {
+    /// The loaded run, which is all a run's timeline reads: [`State::run_revision`].
+    Run(u64),
+    /// The strip - the summary hocus pushes for the row, and the row itself:
+    /// [`State::generation`].
+    Strip(u64),
 }
 
 /// One event of the timeline, filling the pane so it can be read whole.
@@ -340,12 +415,13 @@ struct HistoryKey {
 /// scroll of its own to spend on it.
 struct Reading {
     /// What the divider calls it - `prompt`, `result`, `summary`.
-    kind: String,
+    kind: &'static str,
     /// When the event was recorded, or `None` for one made before there were stamps. Kept
     /// rather than the formatted age so the divider goes on ticking with the minute timer.
     created_at_ms: Option<i64>,
-    /// The whole of what the event said, unwrapped.
-    text: String,
+    /// The whole of what the event said, unwrapped. The event's own, shared rather than
+    /// copied: a long one is hundreds of kilobytes, and nothing here ever edits it.
+    text: Arc<str>,
     /// Lines scrolled from the top. The reader is anchored to the head rather than the tail:
     /// the history half is a timeline, where the newest end is the interesting one, and an
     /// event is a piece of prose, where the beginning is.
@@ -580,34 +656,25 @@ impl ZellijPlugin for State {
             if revision != self.selected_revision() {
                 return false;
             }
-            let Some(run) = pipe_message
-                .payload
-                .as_deref()
-                .and_then(|json| serde_json::from_str::<agents::AgentRun>(json).ok())
-            else {
+            let Some(payload) = pipe_message.payload else {
                 return false;
             };
-            let changed = self.run.as_ref() != Some(&run);
-            if changed {
-                // Once per run, here rather than in the draw path. The offset is asked for
-                // the instant the run began, not for now, so a run from before a
-                // daylight-saving change is read back with the offset it started under.
-                self.run_offset_secs = get_local_utc_offset(
-                    zellij_tile::prelude::SignedUnixMillis::new(run.started_at_ms),
-                )
-                .unwrap_or(0);
+            let fingerprint = agents::run_payload_fingerprint(&payload);
+            if self
+                .run
+                .as_ref()
+                .is_some_and(|run| run.fingerprint == fingerprint)
+            {
+                return false;
             }
-            self.run = Some(run);
-            if changed {
-                self.generation += 1;
-                // A run that changed is the only answer an `s` ever gets: the summary it
-                // asked for arrives inside one of these, as an entry on the timeline. Cleared
-                // on any change rather than on one that demonstrably carries a summary,
-                // because a run that grew a prompt while the request was out has moved on
-                // from the state the hint was describing either way.
-                self.summarizing = None;
-            }
-            return changed;
+            let Ok(run) = serde_json::from_str::<agents::AgentRun>(&payload) else {
+                return false;
+            };
+            // Before the parse rather than after it: at the peak the heap holds the decoded run
+            // and its parse, not the JSON as well.
+            drop(payload);
+            self.load_run(run, fingerprint);
+            return true;
         }
         if pipe_message.name != wire::AGENT_STRIP {
             return false;
@@ -2150,7 +2217,7 @@ impl State {
         let scroll = reading.scroll.min(max_scroll);
         // The label is built here rather than held in `Reading` so the age goes on ticking with
         // the minute timer, the way every other age on this pane does.
-        let mut label = reading.kind.clone();
+        let mut label = reading.kind.to_owned();
         if let Some(tag) = reading.envelope.as_deref() {
             label.push_str(&format!(" · {tag}"));
         }
@@ -2239,11 +2306,44 @@ impl State {
         let rendered = match reading.sections.is_empty() || reading.raw {
             // Prose, or the source somebody asked for: one document, and no fold to put a
             // cursor on.
-            true => envelope::ReaderLines {
-                lines: markdown::render(&reading.text, inner, markdown::Options::compact()),
-                starts: Vec::new(),
+            true => {
+                if self
+                    .reader_blocks
+                    .as_ref()
+                    .is_none_or(|(id, _)| *id != reading.id)
+                {
+                    self.reader_blocks = Some((reading.id, markdown::parse(&reading.text).into()));
+                }
+                let blocks = self
+                    .reader_blocks
+                    .as_ref()
+                    .map_or(&[][..], |(_, blocks)| blocks);
+                envelope::ReaderLines {
+                    lines: markdown::wrap(blocks, inner, markdown::Options::compact()),
+                    starts: Vec::new(),
+                }
             },
-            false => envelope::reader_lines(&reading.sections, inner),
+            false => {
+                let folds = match self.reader_folds.take() {
+                    Some((id, folds)) if id == reading.id => folds,
+                    _ => Vec::new(),
+                };
+                let mut folds = folds.into_iter();
+                let folds: Vec<ParsedFold> = reading
+                    .sections
+                    .iter()
+                    .map(|section| match folds.next() {
+                        Some((open, blocks)) if open == section.open => (open, blocks),
+                        _ => (section.open, envelope::section_blocks(section)),
+                    })
+                    .collect();
+                let rendered = envelope::wrap_sections(
+                    folds.iter().map(|(_, blocks)| blocks.as_slice()),
+                    inner,
+                );
+                self.reader_folds = Some((reading.id, folds));
+                rendered
+            },
         };
         self.reader_cache = Some((key, rendered));
     }
@@ -2337,14 +2437,45 @@ impl State {
     /// value would have put a deep copy of the whole timeline on the path this exists to make
     /// cheap. The drawing loop clones the rows it actually prints, one at a time.
     fn fill_history_cache(&mut self, width: usize) {
+        // The same question `history_lines` asks first, so the key names what it will draw.
+        let source = if self
+            .run
+            .as_ref()
+            .is_some_and(|run| self.selected_run_matches(run))
+        {
+            HistorySource::Run(self.run_revision)
+        } else {
+            HistorySource::Strip(self.generation)
+        };
+        let now = now_ms();
         let key = HistoryKey {
             selection: self.selection_key(),
             width,
-            generation: self.generation,
-            minute: now_ms() / 60_000,
+            source,
+            minute: now / 60_000,
         };
         if self.history_cache.as_ref().is_some_and(|(c, _)| *c == key) {
             return;
+        }
+        // The same run at the same width a minute on: only the ages moved, so the rows already
+        // here are restamped in place rather than the whole timeline cloned out of the parse
+        // again. The parse is the one that drew them, since it only changes when a run is
+        // loaded, which moves `run_revision` - and that is in the key.
+        if let (Some((previous, mut lines)), HistorySource::Run(_)) =
+            (self.history_cache.take(), source)
+        {
+            let only_the_clock = previous.selection == key.selection
+                && previous.width == key.width
+                && previous.source == key.source;
+            let restamped = only_the_clock
+                && self
+                    .run
+                    .as_mut()
+                    .is_some_and(|run| run.parsed.restamp(&mut lines, now));
+            if restamped {
+                self.history_cache = Some((key, lines));
+                return;
+            }
         }
         let lines = self.history_lines(width);
         self.history_cache = Some((key, lines));
@@ -2376,13 +2507,16 @@ impl State {
     /// reason not to draw: see `render_history`.
     ///
     /// Not called from `render`: `cached_history_lines` is, for what it costs.
-    fn history_lines(&self, width: usize) -> agents::HistoryLines {
-        if let Some(run) = self
+    fn history_lines(&mut self, width: usize) -> agents::HistoryLines {
+        if self
             .run
             .as_ref()
-            .filter(|run| self.selected_run_matches(run))
+            .is_some_and(|run| self.selected_run_matches(run))
         {
-            return agents::run_history(run, width, now_ms(), self.run_offset_secs);
+            let offset = self.run_offset_secs;
+            if let Some(run) = self.run.as_mut() {
+                return run.parsed.lines(width, now_ms(), offset);
+            }
         }
         let Some(pane_id) = self.selection() else {
             return agents::HistoryLines::default();
@@ -2428,14 +2562,7 @@ impl State {
             .as_ref()
             .filter(|run| self.selected_run_matches(run))
         {
-            return run
-                .entries
-                .iter()
-                .any(|entry| entry.created_at_ms.is_some())
-                || run
-                    .summary
-                    .as_ref()
-                    .is_some_and(|summary| summary.created_at_ms.is_some());
+            return run.stamped;
         }
         self.selection()
             .and_then(|pane_id| self.summaries.get(&pane_id))
@@ -2502,9 +2629,14 @@ impl State {
         let Some(event) = self.cursor_event() else {
             return false;
         };
-        let (kind, created_at_ms, text) =
-            (event.kind.clone(), event.created_at_ms, event.text.clone());
-        let sections = event_sections(&kind, &text);
+        let (kind, created_at_ms, text) = (event.kind, event.created_at_ms, event.text.clone());
+        // The timeline's parse, where it parsed the whole event: the reader would only make
+        // the same one again.
+        let blocks = self
+            .run
+            .as_ref()
+            .and_then(|run| run.parsed.whole_blocks(&text));
+        let sections = event_sections(kind, &text);
         // An event with no folds has no envelope to name on the divider either, so the parse
         // is asked for only where the folds were.
         let tag = (!sections.is_empty())
@@ -2516,6 +2648,7 @@ impl State {
             })
             .flatten();
         self.reading_id += 1;
+        self.reader_blocks = blocks.map(|blocks| (self.reading_id, blocks));
         self.reading = Some(Reading {
             kind,
             created_at_ms,
@@ -2534,10 +2667,12 @@ impl State {
 
     /// Put the reader away, and say whether there was one.
     ///
-    /// The cache goes with it: it is keyed on an id that never comes round again, so keeping it
-    /// would only hold a copy of the whole event for as long as the pane is open.
+    /// The caches go with it: they are keyed on an id that never comes round again, so keeping
+    /// them would only hold a copy of the whole event for as long as the pane is open.
     fn close_reader(&mut self) -> bool {
         self.reader_cache = None;
+        self.reader_blocks = None;
+        self.reader_folds = None;
         self.reading.take().is_some()
     }
 
@@ -2672,7 +2807,7 @@ impl State {
                 .and_then(|section| section.path.clone())?,
             None => {
                 let event = self.cursor_event()?;
-                event_sections(&event.kind, &event.text)
+                event_sections(event.kind, &event.text)
                     .into_iter()
                     .find_map(|section| section.path)?
             },
@@ -2698,7 +2833,7 @@ impl State {
             .flatten();
         Some(match fold {
             Some(section) => section.text.clone(),
-            None => reading.text.clone(),
+            None => reading.text.to_string(),
         })
     }
 
@@ -2822,11 +2957,63 @@ impl State {
         self.rows.get(self.selected).and_then(row_key)
     }
 
-    fn selected_run_matches(&self, run: &agents::AgentRun) -> bool {
-        match self.rows.get(self.selected) {
-            Some(StripRow::Agent { pane_id, .. }) => {
-                *pane_id == run.pane_id && run.ended_at_ms.is_none()
+    /// Take `run` as the selected run, reduced to a [`LoadedRun`]: parsed here, on arrival,
+    /// and then dropped, so the parse is the one copy of its text the pane keeps. The parse a
+    /// previous run left is brought up to date rather than started again - a run sent again
+    /// with one more entry costs that entry.
+    fn load_run(&mut self, run: agents::AgentRun, fingerprint: (usize, u64)) {
+        // Once per run, here rather than in the draw path. The offset is asked for the
+        // instant the run began, not for now, so a run from before a daylight-saving change
+        // is read back with the offset it started under.
+        self.run_offset_secs = get_local_utc_offset(zellij_tile::prelude::SignedUnixMillis::new(
+            run.started_at_ms,
+        ))
+        .unwrap_or(0);
+        let parsed = match self.run.take() {
+            Some(LoadedRun { mut parsed, .. }) => {
+                parsed.update(&run);
+                parsed
             },
+            None => agents::ParsedRun::new(&run),
+        };
+        let stamped = run
+            .entries
+            .iter()
+            .any(|entry| entry.created_at_ms.is_some())
+            || run
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.created_at_ms.is_some());
+        self.run = Some(LoadedRun {
+            ended: run.ended_at_ms.is_some(),
+            pane_id: run.pane_id,
+            stamped,
+            fingerprint,
+            parsed,
+            id: run.id,
+            host: run.host,
+            cwd: run.cwd,
+        });
+        self.run_revision += 1;
+        // A run that changed is the only answer an `s` ever gets: the summary it asked for
+        // arrives inside one of these, as an entry on the timeline. Cleared on any change
+        // rather than on one that demonstrably carries a summary, because a run that grew a
+        // prompt while the request was out has moved on from the state the hint was
+        // describing either way.
+        self.summarizing = None;
+    }
+
+    /// [`Self::load_run`] with the fingerprint the run's own encoding gives it, as though
+    /// hocus had sent it.
+    #[cfg(test)]
+    fn set_run(&mut self, run: agents::AgentRun) {
+        let payload = serde_json::to_string(&run).expect("encoded");
+        self.load_run(run, agents::run_payload_fingerprint(&payload));
+    }
+
+    fn selected_run_matches(&self, run: &LoadedRun) -> bool {
+        match self.rows.get(self.selected) {
+            Some(StripRow::Agent { pane_id, .. }) => *pane_id == run.pane_id && !run.ended,
             Some(StripRow::Run { run_id, .. }) => run_id == &run.id,
             _ => false,
         }
@@ -3581,20 +3768,19 @@ mod tests {
         assert!(state.shows_an_age());
 
         // And a run, whose entries wear their ages in a column of their own.
-        state.run = Some(a_run());
+        state.set_run(a_run());
         state.set_rows(unfocused(vec![
             StripRow::Project("hocus".to_owned()),
             run_row("claude:session-1".to_owned(), "hook history"),
         ]));
         assert!(!state.shows_an_age(), "nothing in `a_run` is stamped");
-        state
-            .run
-            .as_mut()
-            .expect("loaded")
+        let mut stamped = a_run();
+        stamped
             .entries
             .first_mut()
             .expect("a timeline")
             .created_at_ms = Some(1);
+        state.set_run(stamped);
         assert!(state.shows_an_age());
 
         // And the archive's own age column, which is drawn in the *list* half: it has to tick
@@ -3918,7 +4104,7 @@ mod tests {
                 created_at_ms: None,
             })
             .collect();
-        state.run = Some(run);
+        state.set_run(run);
 
         let (_, history_rows) = split(19);
         state.render(21, 50);
@@ -3968,7 +4154,7 @@ mod tests {
                 created_at_ms: None,
             })
             .collect();
-        state.run = Some(run);
+        state.set_run(run);
         // What the host would have answered for that instant; a native test build gets `Err`
         // from the shim and falls back to UTC, so it is set here the way `pipe` would.
         state.run_offset_secs = -4 * 3600;
@@ -4516,7 +4702,7 @@ mod tests {
             StripRow::Project("archive".to_owned()),
             run_row("claude:session-1".to_owned(), "hook history"),
         ]));
-        state.run = Some(a_run());
+        state.set_run(a_run());
 
         let history = state.history_lines(48);
         assert_eq!(history.label, "claude:session-1");
@@ -4920,7 +5106,7 @@ mod tests {
             text: "Ship it?".to_owned(),
             created_at_ms: None,
         });
-        state.run = Some(run);
+        state.set_run(run);
         // Four rows below the divider, against five timeline rows including the result.
         state.render(10, 50);
         assert_eq!(state.last_history_rows, 4);
@@ -4956,6 +5142,152 @@ mod tests {
         );
     }
 
+    /// The history half keeps its parse of the run across resizes and across the run growing
+    /// (`LoadedRun::parsed`), and neither may change what it draws: after both, the half is exactly
+    /// what the run drawn from scratch at the new width is.
+    #[test]
+    fn a_resized_half_over_a_grown_run_draws_what_a_fresh_one_does() {
+        let mut state = State::default();
+        state.set_rows(unfocused(vec![
+            StripRow::Project("archive".to_owned()),
+            run_row("claude:session-1".to_owned(), "hook history"),
+        ]));
+        let mut run = a_run();
+        // Unstamped, so the ages cannot tick over between the two draws being compared.
+        for entry in &mut run.entries {
+            entry.created_at_ms = None;
+        }
+        state.set_run(run.clone());
+        state.render(14, 60);
+        state.render(14, 41);
+
+        run.entries.push(agents::RunEntry {
+            revision: 9,
+            event_id: None,
+            kind: agents::RunEntryKind::Question,
+            text: "Shall I **push** it?".to_owned(),
+            created_at_ms: None,
+        });
+        state.set_run(run.clone());
+        state.render(14, 41);
+
+        let fresh = agents::run_history(&run, 41, now_ms(), state.run_offset_secs);
+        assert_eq!(state.cached_history_lines(41), &fresh);
+        assert!(fresh.entries.iter().any(|line| line.text.contains("push")));
+    }
+
+    /// The run's parse is touched only when a run is loaded - a resize step draws what is
+    /// held, and so does a strip push, which moves `generation` on any pane's change and says
+    /// nothing about this run. Read by poisoning the held parse with a shorter copy of the run,
+    /// as `the_reader_is_wrapped_once_per_event_fold_and_width` poisons its cache.
+    #[test]
+    fn the_runs_parse_is_only_brought_up_to_date_by_a_loaded_run() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        let mut run = a_run();
+        for entry in &mut run.entries {
+            entry.created_at_ms = None;
+        }
+        state.set_run(run.clone());
+        state.render(14, 60);
+
+        let mut poison = run.clone();
+        poison.entries.truncate(1);
+        state.run.as_mut().expect("a run").parsed = agents::ParsedRun::new(&poison);
+        let fresh = |run: &agents::AgentRun, offset| agents::run_history(run, 41, now_ms(), offset);
+        let offset = state.run_offset_secs;
+        assert_eq!(
+            state.cached_history_lines(41),
+            &fresh(&poison, offset),
+            "a resize re-wraps what is held"
+        );
+
+        state.generation += 1;
+        assert_eq!(
+            state.cached_history_lines(41),
+            &fresh(&poison, offset),
+            "a strip push leaves the run's timeline alone"
+        );
+
+        state.set_run(run.clone());
+        assert_eq!(
+            state.cached_history_lines(41),
+            &fresh(&run, offset),
+            "a loaded run brings it up to date"
+        );
+    }
+
+    /// A cursor that leaves the run's row and comes back finds the parse where it left it: the
+    /// run has not changed, and parsing a long one again is seconds. Poisoned as above, so a
+    /// parse made again would show.
+    #[test]
+    fn stepping_off_the_run_and_back_keeps_its_parse() {
+        let mut state = State::default();
+        state.set_rows(unfocused(vec![
+            StripRow::Project("archive".to_owned()),
+            run_row("claude:session-1".to_owned(), "hook history"),
+            run_row("claude:session-2".to_owned(), "another run"),
+        ]));
+        state.selected = 1;
+        let mut run = a_run();
+        for entry in &mut run.entries {
+            entry.created_at_ms = None;
+        }
+        state.set_run(run.clone());
+        state.render(14, 60);
+
+        let mut poison = run;
+        poison.entries.truncate(1);
+        state.run.as_mut().expect("a run").parsed = agents::ParsedRun::new(&poison);
+        let offset = state.run_offset_secs;
+
+        state.selected = 2;
+        state.render(14, 41);
+        assert!(state.run.is_some(), "the run is still held");
+        state.selected = 1;
+        assert_eq!(
+            state.cached_history_lines(41),
+            &agents::run_history(&poison, 41, now_ms(), offset),
+            "back on the run, the held parse is drawn"
+        );
+    }
+
+    /// Only a run that says something new moves `run_revision`, and a run arriving does not
+    /// move `generation`: hocus sends the selected run again each time it is asked, and the
+    /// strip's counter is not the run's.
+    #[test]
+    fn only_a_changed_run_moves_the_run_revision() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        let generation = state.generation;
+        let send = |state: &mut State, run: &agents::AgentRun| {
+            state.pipe(PipeMessage::new(
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                wire::AGENT_RUN_DETAIL,
+                &Some(serde_json::to_string(run).expect("encoded")),
+                &None,
+                false,
+            ))
+        };
+        let mut run = a_run();
+        assert!(send(&mut state, &run));
+        assert_eq!(state.run_revision, 1);
+        assert!(!send(&mut state, &run), "the same run says nothing");
+        assert_eq!(state.run_revision, 1);
+
+        run.entries[0].text.push_str(" - and more");
+        assert!(send(&mut state, &run));
+        assert_eq!(state.run_revision, 2);
+        assert_eq!(state.generation, generation);
+
+        // The fingerprint goes with the run, so a cleared one cannot make the same run
+        // arriving again look like one already held.
+        state.run = None;
+        assert!(send(&mut state, &run), "a run cleared is taken again");
+        assert_eq!(state.run_revision, 3);
+    }
+
     /// The summary is a row of the timeline like any other, so a talkative one costs the
     /// events beside it nothing they cannot be scrolled back to: the whole half winds over it.
     #[test]
@@ -4972,7 +5304,7 @@ mod tests {
             text: "word ".repeat(40),
             ..run.summary.take().unwrap()
         });
-        state.run = Some(run);
+        state.set_run(run);
 
         // Three rows below the divider, and every one of them a line of timeline.
         state.render(9, 50);
@@ -5028,7 +5360,7 @@ mod tests {
             text: "Ship it?".to_owned(),
             created_at_ms: None,
         });
-        state.run = Some(run);
+        state.set_run(run);
         // Three rows of timeline, with older events available above them.
         state.render(9, 50);
         assert_eq!(state.selected, 1);
@@ -5110,7 +5442,7 @@ mod tests {
                 created_at_ms: None,
             })
             .collect();
-        state.run = Some(run);
+        state.set_run(run);
         state.focus = Focus::History;
         state.render(21, 50);
         // Thirty one-line events against the six rows the pinned header leaves of the nine:
@@ -5162,7 +5494,7 @@ mod tests {
             text: "word ".repeat(400),
             created_at_ms: Some(1),
         }];
-        state.run = Some(run);
+        state.set_run(run);
         state.render(21, 50);
 
         // Capped in the half, whole in the reader.
@@ -5182,7 +5514,7 @@ mod tests {
         let reading = state.reading.as_ref().expect("the event under the cursor");
         assert_eq!(reading.kind, "prompt");
         assert_eq!(reading.created_at_ms, Some(1));
-        assert_eq!(reading.text, "word ".repeat(400));
+        assert_eq!(&*reading.text, "word ".repeat(400));
 
         state.render(21, 50);
         assert!(
@@ -5217,7 +5549,7 @@ mod tests {
             text: "implement history".to_owned(),
             created_at_ms: None,
         }];
-        state.run = Some(run);
+        state.set_run(run);
         state.render(21, 50);
         state.focus = Focus::History;
         state.on_key(KeyWithModifier::new(BareKey::Enter));
@@ -5265,7 +5597,7 @@ mod tests {
             text: "word ".repeat(50),
             created_at_ms: None,
         }];
-        state.run = Some(run);
+        state.set_run(run);
         state.render(21, 50);
         state.focus = Focus::History;
         state.on_key(KeyWithModifier::new(BareKey::Enter));
@@ -5308,7 +5640,7 @@ mod tests {
                 created_at_ms: None,
             })
             .collect();
-        state.run = Some(run);
+        state.set_run(run);
         state.render(21, 50);
 
         assert_eq!(state.focus, Focus::List, "the page keys did not need it");
@@ -5540,7 +5872,7 @@ mod tests {
             StripRow::Project("archive".to_owned()),
             run_row("claude:session-1".to_owned(), "hook history"),
         ]));
-        state.run = Some(a_run());
+        state.set_run(a_run());
         state.render(21, 50);
 
         let poison = agents::HistoryLines {
@@ -5610,7 +5942,7 @@ mod tests {
             };
             let mut state = State::default();
             state.set_rows(unfocused(vec![row]));
-            state.run = Some(run);
+            state.set_run(run);
             state.render(60, 32);
             let header = &state.history().header;
             assert!(header.iter().all(|row| row.text.chars().count() <= 32));
@@ -5976,7 +6308,7 @@ mod tests {
             text: text.to_owned(),
             created_at_ms: None,
         }];
-        state.run = Some(run);
+        state.set_run(run);
         state.render(21, 50);
         state.focus = Focus::History;
         state.on_key(KeyWithModifier::new(BareKey::Enter));
@@ -6239,6 +6571,88 @@ mod tests {
         let reader = state.reading.as_ref().expect("a reader");
         assert_eq!(reader.cursor, 5);
         assert_eq!(reader.scroll, starts[5], "the fold's name is the top row");
+    }
+
+    /// The reader's parse depends on the event's text alone, which an opening never changes,
+    /// so leaving the source with `r` and coming back re-wraps the parse made the first time
+    /// rather than parsing the whole event again. Read by poisoning that parse.
+    #[test]
+    fn toggling_raw_keeps_the_readers_parse() {
+        let mut state = reading(&task_notification());
+        press(&mut state, BareKey::Char('r'));
+        let id = state.reading.as_ref().expect("a reader").id;
+        assert_eq!(
+            state.reader_blocks.as_ref().map(|(held, _)| *held),
+            Some(id)
+        );
+
+        state.reader_blocks = Some((id, markdown::parse("poison").into()));
+        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Char('r'));
+        let lines: Vec<&str> = state
+            .reader_lines()
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(lines, ["poison"]);
+    }
+
+    /// A fold's parse depends on the section and whether it is open, and nothing else: a
+    /// resize re-wraps what is held, a fold toggled parses that fold alone. Read by poisoning
+    /// one fold's parse, as `toggling_raw_keeps_the_readers_parse` does the prose one.
+    #[test]
+    fn each_fold_is_parsed_once_per_toggle_and_rewrapped_per_width() {
+        let mut state = reading(&task_notification());
+        let folds = &mut state.reader_folds.as_mut().expect("held folds").1;
+        assert_eq!(folds.len(), 6);
+        folds[4].1 = markdown::parse("poison");
+        state.render(21, 44);
+        let has_poison = |state: &State| rows(state).iter().any(|row| row.contains("poison"));
+        assert!(has_poison(&state), "a resize re-wraps what is held");
+
+        for _ in 0..5 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        press(&mut state, BareKey::Enter);
+        assert!(
+            rows(&state)
+                .join("\n")
+                .contains("The review found four issues."),
+            "the fold toggled is parsed open"
+        );
+        assert!(has_poison(&state), "and the one beside it is left alone");
+
+        press(&mut state, BareKey::Char('k'));
+        press(&mut state, BareKey::Enter);
+        assert!(!has_poison(&state), "until it is toggled itself");
+        assert!(rows(&state).join("\n").contains("▾ note"));
+    }
+
+    /// An event the timeline parsed whole is opened on that parse rather than a new one, and
+    /// the reader holds the event's own text rather than a copy. One it parsed only in part,
+    /// or drew from a digest, is parsed when the reader first draws it.
+    #[test]
+    fn a_short_event_opens_on_the_timelines_parse() {
+        let state = reading_entry(agents::RunEntryKind::Message, "Shall I **push** it?");
+        let opened = state.reading.as_ref().expect("a reader");
+        let parsed = &state.run.as_ref().expect("the run").parsed;
+        let shared = parsed.whole_blocks(&opened.text).expect("parsed whole");
+        let (_, held) = state.reader_blocks.as_ref().expect("the reader's parse");
+        assert!(Arc::ptr_eq(held, &shared));
+        assert!(Arc::ptr_eq(
+            &opened.text,
+            &state.cursor_event().expect("an event").text
+        ));
+        assert!(rows(&state).join("\n").contains("Shall I push it?"));
+
+        for state in [
+            reading_entry(agents::RunEntryKind::Message, &"word ".repeat(4_000)),
+            reading(&task_notification()),
+        ] {
+            let opened = state.reading.as_ref().expect("a reader");
+            let parsed = &state.run.as_ref().expect("the run").parsed;
+            assert!(parsed.whole_blocks(&opened.text).is_none());
+        }
     }
 
     /// `r` puts up a different document, so there is no row to hold the place at and the

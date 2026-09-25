@@ -372,7 +372,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "swamp_issue_search",
-        "Search swamp-club Lab issues through the Lab API, as the login `swamp auth login` saved on this machine, or SWAMP_API_KEY. Without a login only public issues are found. No active project or workflow server is needed. Optional query, type, status, source and author filters narrow the search. All statuses are searched by default. limit defaults to 100 and must be 1 to 100; offset pages through the rest.",
+        "Search swamp-club Lab issues through the Lab API, as the login that swamp auth login saved on this machine, or SWAMP_API_KEY. Without a login only public issues are found. No active project or workflow server is needed. Optional query, type, status, source and author filters narrow the search. All statuses are searched by default. limit defaults to 100 and must be 1 to 100; offset pages through the rest.",
     ),
     (
         "swamp_issue_get",
