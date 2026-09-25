@@ -15,6 +15,9 @@ flate2 = { version = "1.1.9", default-features = false, features = ["rust_backen
 tokio-stream = { version = "0.1" }
 anyhow = { workspace = true }
 log = { workspace = true }
+native-tls = "0.2.14"
+percent-encoding = "2"
+postgres-native-tls = "0.5"
 rusqlite = { version = "0.30", default-features = false, features = ["bundled"] }
 tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
 tokio = { workspace = true }

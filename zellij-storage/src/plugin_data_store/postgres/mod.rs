@@ -6,17 +6,17 @@
 //! decide to create them.
 
 pub(super) mod dialect;
+mod tls;
 mod value;
 
 use crate::plugin_data_store::value::SqlValue;
 use std::cell::Cell;
 use std::future::Future;
-use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use tokio_postgres::types::ToSql;
-use tokio_postgres::{Client, Config, NoTls};
+use tokio_postgres::Client;
 use tokio_stream::StreamExt;
 
 use crate::data_access::PluginDataBackend;
@@ -28,7 +28,7 @@ use zellij_types::plugin_data::{
 use super::dialect::Dialect;
 use super::engine;
 use super::executor::Executor;
-use super::sql::{quote_ident, SqlContext, StorageError};
+use super::sql::{quote_ident, SqlContext};
 use super::store_migrations;
 
 use self::dialect::POSTGRES;
@@ -223,12 +223,7 @@ impl PostgresPluginDataBackend {
                 self.schema, e
             ))
         })?;
-        let mut config = Config::from_str(&self.url).map_err(|e| {
-            e.into_data_error(&format!(
-                "the plugin data store's Postgres URL {} does not parse",
-                redact_url(&self.url),
-            ))
-        })?;
+        let (mut config, tls) = tls::configuration(&self.url)?;
         if config.get_application_name().is_none() {
             config.application_name("zellij");
         }
@@ -242,7 +237,7 @@ impl PostgresPluginDataBackend {
         ));
         let what = format!("failed to connect to {}", redact_url(&self.url));
         let (client, connection) =
-            driver.run(&what, async { config.connect(NoTls).await.ctx(&what) })?;
+            driver.run(&what, async { config.connect(tls).await.ctx(&what) })?;
         let task = driver
             .0
             .as_ref()
