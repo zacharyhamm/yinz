@@ -477,16 +477,18 @@ pub fn get_session_environment_variables_plugin_command() {
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder.clone()), Some(test_env_vars));
 
+    let client_id = ClientId::new(1);
+    // Logs until disconnect rather than for a fixed number of renders: the fixture watches its
+    // host folder, where the permission cache is written, so filesystem-event renders race with
+    // the key's and the frame this test is after need not be among the first few.
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ReadSessionEnvironmentVariables,
         cache_path,
-        plugin_thread_sender,
-        crate::ClientId::new(1)
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let plugin_should_float = Some(false);
@@ -498,7 +500,6 @@ pub fn get_session_environment_variables_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -524,7 +525,7 @@ pub fn get_session_environment_variables_plugin_command() {
         None,
     ));
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
 
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
@@ -536,8 +537,9 @@ pub fn get_session_environment_variables_plugin_command() {
         ),
     )]));
 
-    screen_thread.join().unwrap();
+    wait_for_render_containing(&received_screen_instructions, "Got environment variables");
     teardown();
+    screen_thread.join().unwrap();
 
     let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {

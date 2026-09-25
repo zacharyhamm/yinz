@@ -227,7 +227,7 @@ pub fn apply_pipe_message_to_plugin(
         let render = running_plugin
             .pipe(pipe_message)
             .with_context(|| format!("Failed to apply pipe to plugin {plugin_id}"))?;
-        if render == Some(true) && running_plugin.rows > 0 && running_plugin.columns > 0 {
+        if render == Some(true) && running_plugin.has_area() {
             plugin_render_assets.extend(render_plugin_for_clients(
                 plugin_id,
                 running_plugin,
