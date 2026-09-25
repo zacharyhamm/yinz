@@ -1410,7 +1410,7 @@ fn review_does_not_change_planning_or_scheduled_authority() {
 }
 
 #[test]
-fn a_declined_review_says_what_jev_answered() {
+fn a_review_says_what_jev_answered() {
     let mut state = review_state();
     state.pump_tools();
     let context = review_context(&state);
@@ -1430,7 +1430,13 @@ fn a_declined_review_says_what_jev_answered() {
     state.pump_tools();
     let context = review_context(&state);
     assert!(respond(&mut state, context, pass()));
-    assert!(notices(&state).is_empty());
+    let notice = notices(&state).pop().unwrap();
+    assert!(
+        notice.contains("requested 1.00 (needs at least 0.75)"),
+        "{notice}"
+    );
+    assert!(notice.contains("destructive 0.00"), "{notice}");
+    assert!(notice.ends_with("auto-approved clear_pane"), "{notice}");
     assert_eq!(tool_results(&state).len(), 1);
 
     let mut state = review_state();
