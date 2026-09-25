@@ -22,7 +22,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, MutexGuard, TryLockError,
+        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
     },
     time::{Duration, Instant},
 };
@@ -1651,100 +1651,108 @@ impl WasmBridge {
     ) -> Result<()> {
         let err_context = move || format!("failed to resize plugin {pid}");
 
-        let plugins_to_resize: Vec<(PluginId, ClientId, Arc<Mutex<RunningPlugin>>)> = self
-            .plugin_map
-            .lock()
-            .unwrap()
-            .running_plugins()
-            .iter()
-            .filter(|&(plugin_id, _client_id, _running_plugin)| {
-                !self
-                    .cached_resizes_for_pending_plugins
-                    .contains_key(plugin_id)
-            })
-            .cloned()
-            .collect();
-        for (plugin_id, client_id, running_plugin) in plugins_to_resize {
-            if plugin_id == pid {
-                let render_clients = if self.plugin_is_shared(&plugin_id) {
-                    self.connected_clients.lock().unwrap().clone()
-                } else {
-                    vec![client_id]
-                };
-                // Execute directly on pinned thread (no async I/O needed for resize/render)
-                self.plugin_executor
-                    .execute_for_plugin_tagged(plugin_id, "resize", false, {
-                        // let senders = self.senders.clone();
-                        let running_plugin = running_plugin.clone();
-                        let _s = shutdown_sender.clone();
-                        move |senders, _plugin_map, _connected_clients, _plugin_cache, _engine| {
-                            let mut running_plugin = running_plugin.lock().unwrap();
-                            if running_plugin.is_unavailable() {
-                                return;
-                            }
-                            // This executor preserves request order. Allocate the id
-                            // here so the plugin thread can answer synchronous guest
-                            // queries while a previous callback owns the guest lock.
-                            let event_id = running_plugin.next_event_id(AtomicEvent::Resize);
-                            let _s = _s; // guard to allow the task to complete before cleanup/shutdown
-                            if running_plugin.apply_event_id(AtomicEvent::Resize, event_id) {
-                                let old_rows = running_plugin.rows;
-                                let old_columns = running_plugin.columns;
-                                running_plugin.rows = new_rows;
-                                running_plugin.columns = new_columns;
-
-                                // in the below conditional, we check if event_id == 0 so that we'll
-                                // make sure to always render on the first resize event
-                                if old_rows != new_rows
-                                    || old_columns != new_columns
-                                    || event_id == 0
-                                {
-                                    match render_plugin_for_clients(
-                                        plugin_id,
+        let plugins_to_resize = if self.cached_resizes_for_pending_plugins.contains_key(&pid) {
+            vec![]
+        } else {
+            self.plugin_map
+                .lock()
+                .map_err(|_| anyhow!("plugin map lock poisoned"))
+                .with_context(err_context)?
+                .resize_targets(pid)
+        };
+        if let Some(current_size) = self.cached_resizes_for_pending_plugins.get_mut(&pid) {
+            *current_size = (new_rows, new_columns);
+        }
+        for (client_id, running_plugin, slot) in plugins_to_resize {
+            // Asked here, on the plugin thread, before the executor gets to any queued job: it
+            // is how a queued resize learns a newer size is wanted. A job already queued will
+            // draw it, so none is queued behind it. See `ResizeSlot`.
+            if !slot.request(new_rows, new_columns) {
+                continue;
+            }
+            let shared = self.plugin_is_shared(&pid);
+            let queued_slot = slot.clone();
+            // Execute directly on pinned thread (no async I/O needed for resize/render)
+            let accepted = self
+                .plugin_executor
+                .execute_for_plugin_tagged(pid, "resize", false, {
+                    let _s = shutdown_sender.clone();
+                    move |senders, _plugin_map, connected_clients, _plugin_cache, _engine| {
+                        // Before the guest lock: a resize some earlier render already drew
+                        // must not wait for, or cost, another. Begun before any return, so a
+                        // request from here on queues the job that draws it.
+                        if !slot.begin_job() {
+                            return;
+                        }
+                        // A poisoned instance is a guest that panicked: nothing to draw.
+                        let Ok(mut running_plugin) = running_plugin.lock() else {
+                            return;
+                        };
+                        // And again with it: a callback that held it can have drawn the size.
+                        if running_plugin.is_unavailable() || !slot.resize_due() {
+                            return;
+                        }
+                        // This executor preserves request order. Allocate the id
+                        // here so the plugin thread can answer synchronous guest
+                        // queries while a previous callback owns the guest lock.
+                        let event_id = running_plugin.next_event_id(AtomicEvent::Resize);
+                        let _s = _s; // guard to allow the task to complete before cleanup/shutdown
+                        if running_plugin.apply_event_id(AtomicEvent::Resize, event_id) {
+                            slot.note_resize();
+                            // Read now rather than when this job was queued: the job that draws
+                            // is the oldest one queued, and a client can have attached or left
+                            // since. A plain list, so a poisoned lock still holds a usable one.
+                            let render_clients = if shared {
+                                connected_clients
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .clone()
+                            } else {
+                                vec![client_id]
+                            };
+                            match render_plugin_for_clients(
+                                pid,
+                                &mut running_plugin,
+                                &render_clients,
+                            )
+                            .with_context(err_context)
+                            {
+                                Ok(plugin_render_assets) => {
+                                    report_pipe_changes(
                                         &mut running_plugin,
-                                        &render_clients,
-                                    )
-                                    .with_context(err_context)
-                                    {
-                                        Ok(plugin_render_assets) => {
-                                            report_pipe_changes(
-                                                &mut running_plugin,
-                                                HashMap::new(),
-                                                None,
-                                                &senders,
-                                            );
-                                            // The screen may already have exited during shutdown.
-                                            // Release the guest before publishing, as event and
-                                            // pipe renders do, so a send cannot poison its lock.
-                                            drop(running_plugin);
-                                            senders
-                                                .send_to_screen(ScreenInstruction::PluginBytes(
-                                                    plugin_render_assets,
-                                                ))
-                                                .with_context(err_context)
-                                                .non_fatal();
-                                        },
-                                        Err(error) => {
-                                            running_plugin.mark_failed();
-                                            handle_plugin_crash(
-                                                plugin_id,
-                                                running_plugin.env().deno_generation,
-                                                Some(running_plugin.instance_id),
-                                                format!("{error:#}"),
-                                                senders,
-                                            );
-                                        },
-                                    }
-                                }
+                                        HashMap::new(),
+                                        None,
+                                        &senders,
+                                    );
+                                    // The screen may already have exited during shutdown.
+                                    // Release the guest before publishing, as event and
+                                    // pipe renders do, so a send cannot poison its lock.
+                                    drop(running_plugin);
+                                    senders
+                                        .send_to_screen(ScreenInstruction::PluginBytes(
+                                            plugin_render_assets,
+                                        ))
+                                        .with_context(err_context)
+                                        .non_fatal();
+                                },
+                                Err(error) => {
+                                    running_plugin.mark_failed();
+                                    handle_plugin_crash(
+                                        pid,
+                                        running_plugin.env().deno_generation,
+                                        Some(running_plugin.instance_id),
+                                        format!("{error:#}"),
+                                        senders,
+                                    );
+                                },
                             }
                         }
-                    });
-            }
-        }
-        for (plugin_id, current_size) in self.cached_resizes_for_pending_plugins.iter_mut() {
-            if *plugin_id == pid {
-                current_size.0 = new_rows;
-                current_size.1 = new_columns;
+                    }
+                });
+            // A refused job never begins, so it must not stay counted as queued: every later
+            // request would wait on it and the instance would never resize again.
+            if !accepted {
+                queued_slot.cancel_job();
             }
         }
         Ok(())
@@ -2526,7 +2534,7 @@ impl WasmBridge {
                         vec![client_id]
                     };
                     let result = plugin.deno_tick().and_then(|render| {
-                        if render && plugin.rows > 0 && plugin.columns > 0 {
+                        if render && plugin.has_area() {
                             render_plugin_for_clients(plugin_id, &mut plugin, &clients)
                         } else {
                             Ok(vec![])
@@ -3822,8 +3830,9 @@ pub fn render_plugin_for_clients(
         return Ok(vec![]);
     }
     let err_context = || format!("Failed to render plugin {plugin_id}");
-    let rows = running_plugin.rows;
-    let columns = running_plugin.columns;
+    // The newest size the screen asked for, not the last one a resize job applied: a resize
+    // can still be queued behind this render, or have been skipped for a newer one.
+    let (rows, columns) = running_plugin.take_size_for_render();
     let owner_client_id = running_plugin.env().owner_client_id;
     // Guest rendering still runs while detached: it may issue host commands.
     let mut clients_to_render = vec![owner_client_id];
@@ -3861,8 +3870,6 @@ pub fn apply_events_to_plugin(
     if running_plugin.is_unavailable() {
         return Ok(());
     }
-    let rows = running_plugin.rows;
-    let columns = running_plugin.columns;
     let err_context = || format!("Failed to apply event to plugin {plugin_id}");
 
     let mut should_render = false;
@@ -3938,7 +3945,7 @@ pub fn apply_events_to_plugin(
     }
     let mut rendered = None;
     let mut render_failed = false;
-    if failure.is_none() && rows > 0 && columns > 0 && should_render {
+    if failure.is_none() && should_render && running_plugin.has_area() {
         match render_plugin_for_clients(plugin_id, running_plugin, render_clients) {
             Ok(assets) => rendered = Some(assets),
             Err(e) => {

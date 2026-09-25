@@ -1208,7 +1208,7 @@ pub fn specs() -> Value {
             "offset":{"type":"integer","minimum":0,"default":0}
         }})),
         tool("swamp_issue_get", "Read a swamp-club Lab issue, including body, assignees, URL, comments and relationships, as the host's swamp login. No active project required.", json!({"type":"object","properties":{"number":{"type":"integer","minimum":1}},"required":["number"]})),
-        tool("swamp_issue_create", "File a swamp-club Lab issue under the host's swamp login, after the user confirms. Secrets, emails, hostnames, IPs and home paths are redacted first, as the swamp CLI does. security issues are visible to the author and admins only; the rest are public. Search first to avoid duplicates.", json!({"type":"object","properties":{
+        tool("swamp_issue_create", "File a swamp-club Lab issue under the host's swamp login, after the user confirms. Redacted first, as the swamp CLI does. security issues are visible to the author and admins only; the rest are public. Search first to avoid duplicates.", json!({"type":"object","properties":{
             "type":{"type":"string","enum":["bug","feature","security"]},
             "title":{"type":"string","maxLength":256},
             "body":{"type":"string","description":"Markdown"},

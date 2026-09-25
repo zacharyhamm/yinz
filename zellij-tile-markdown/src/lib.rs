@@ -42,7 +42,11 @@
 //! `hocus/benches/transcript.rs`, which calls this by far the most expensive thing a render
 //! does. Callers that redraw on a timer cache the result rather than parsing again.
 
-use pulldown_cmark::{Alignment, Event, Options as ParserOptions, Parser, Tag, TagEnd};
+use std::collections::HashMap;
+
+use pulldown_cmark::{
+    Alignment, BrokenLink, CowStr, Event, Options as ParserOptions, Parser, Tag, TagEnd,
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use zellij_tile::prelude::Text;
@@ -177,19 +181,121 @@ pub fn render(text: &str, cols: usize, options: Options) -> Vec<MdLine> {
 /// it can pick a width - the agents pane's timeline decides where an entry's label goes by
 /// whether that block carries a marker of its own, and parsing is the expensive half.
 pub fn parse(text: &str) -> Vec<MdBlock> {
-    let sanitized = sanitize(text);
+    parse_head(text, usize::MAX, usize::MAX).0
+}
+
+/// The first `max_blocks` of [`parse`]'s blocks, read from no more than the first `max_bytes`
+/// of `text`, and whether that was the whole of it.
+///
+/// For a caller that only ever draws the head of a text - the agents pane's timeline shows a
+/// few rows of each entry and opens the rest on demand. Both limits are needed. Stopping at a
+/// block count saves the inline parse and the styled characters of everything after, but
+/// pulldown-cmark reads the whole input for block structure before it yields a single event,
+/// and one block can be the whole text: a 100KB code fence is one block. Cutting the input is
+/// what bounds that.
+///
+/// Uncut, the blocks returned are exactly [`parse`]'s first ones. Cut, they are what the text
+/// before the cut parses to, which differs from the whole's parse wherever markdown reads
+/// ahead:
+///
+/// - a block the cut lands inside ends where the cut does;
+/// - a table that crosses the cut sizes its columns from the rows before it, and a list that
+///   crosses it is loose or tight by the items before it - which can restyle items that ended
+///   well before the cut;
+/// - a reference link whose definition is past the cut is resolved anyway, from a line scan
+///   of the rest of the text rather than a parse of it: see [`tail_reference_definitions`].
+///
+/// The flag is `false` whenever something was left unread: the input was cut, or another
+/// block had begun after the last one kept. A text of exactly `max_blocks` blocks is complete.
+pub fn parse_head(text: &str, max_blocks: usize, max_bytes: usize) -> (Vec<MdBlock>, bool) {
+    let cut = text.floor_char_boundary(max_bytes);
+    let sanitized = sanitize(&text[..cut]);
     let mut renderer = MarkdownRenderer::default();
     let options = ParserOptions::ENABLE_TABLES
         | ParserOptions::ENABLE_STRIKETHROUGH
         | ParserOptions::ENABLE_TASKLISTS;
-    for event in Parser::new_ext(&sanitized, options) {
+    // Scanned on the first reference the head cannot resolve, so a text with none - most of
+    // them - never reads its tail at all. Uncut, the tail is empty and resolves nothing, as
+    // the plain parser would not.
+    let tail = &text[cut..];
+    let mut definitions: Option<HashMap<String, String>> = None;
+    let resolve = |link: BrokenLink<'_>| {
+        let destination = definitions
+            .get_or_insert_with(|| tail_reference_definitions(tail))
+            .get(&normalize_label(&link.reference))?;
+        Some((CowStr::from(sanitize(destination)), CowStr::from("")))
+    };
+    for event in Parser::new_with_broken_link_callback(&sanitized, options, Some(resolve)) {
         renderer.event(event);
+        let began_another = renderer.current.is_some() || renderer.table.is_some();
+        if renderer.blocks.len() > max_blocks
+            || (renderer.blocks.len() == max_blocks && began_another)
+        {
+            renderer.blocks.truncate(max_blocks);
+            return (renderer.blocks, false);
+        }
     }
     // In case a stream ever ends inside a table - a reply is rendered while it is still
     // arriving, so half a table is the normal case, not the pathological one.
     renderer.finish_table();
     renderer.finish_block();
-    renderer.blocks
+    let complete = cut == text.len() && renderer.blocks.len() <= max_blocks;
+    renderer.blocks.truncate(max_blocks);
+    (renderer.blocks, complete)
+}
+
+/// The link reference definitions in `tail` - the part of a text [`parse_head`] cut off - by
+/// [`normalize_label`]ed label, the first of each label winning as it does in a parse.
+///
+/// A line scan, not a parse: `[label]: destination` at the start of a line, indented at most
+/// three spaces, the destination either on the same line or alone on the next. Only the
+/// destination is kept, since a title is never drawn. A definition written inside a code
+/// fence past the cut is taken too, where a parse would ignore it - a line that shape in a
+/// fence is rare, and the cost of being wrong is a link where the whole would have shown
+/// brackets.
+fn tail_reference_definitions(tail: &str) -> HashMap<String, String> {
+    let mut definitions = HashMap::new();
+    let mut lines = tail.lines().peekable();
+    while let Some(line) = lines.next() {
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let Some(rest) = line[indent..].strip_prefix('[').filter(|_| indent <= 3) else {
+            continue;
+        };
+        let Some((label, after)) = rest.split_once("]:") else {
+            continue;
+        };
+        if label.trim().is_empty() || label.contains(['[', ']']) {
+            continue;
+        }
+        let after = after.trim();
+        let after = match after.is_empty() {
+            true => match lines.peek() {
+                Some(next) => next.trim(),
+                None => continue,
+            },
+            false => after,
+        };
+        let destination = match after.strip_prefix('<') {
+            Some(angled) => angled.split_once('>').map(|(inside, _)| inside),
+            None => after.split_whitespace().next(),
+        };
+        if let Some(destination) = destination.filter(|found| !found.is_empty()) {
+            definitions
+                .entry(normalize_label(label))
+                .or_insert_with(|| destination.to_owned());
+        }
+    }
+    definitions
+}
+
+/// A link label as CommonMark matches it: case-insensitive, with runs of whitespace one space
+/// and none at either end. Lowercasing stands in for full Unicode case folding.
+fn normalize_label(label: &str) -> String {
+    label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// [`parse`]'s blocks, wrapped to `cols` columns.
@@ -831,6 +937,14 @@ pub fn styled_width(chars: &[StyledChar]) -> usize {
 }
 
 pub fn hard_wrap_styled(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
+    hard_wrap_head(chars, width, usize::MAX)
+}
+
+/// [`hard_wrap_styled`]'s first `max_rows` rows, wrapping nothing past them.
+fn hard_wrap_head(chars: &[StyledChar], width: usize, max_rows: usize) -> Vec<Vec<StyledChar>> {
+    if max_rows == 0 {
+        return Vec::new();
+    }
     if width == 0 {
         return vec![Vec::new()];
     }
@@ -841,12 +955,18 @@ pub fn hard_wrap_styled(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledCha
         if styled.ch == '\n' {
             lines.push(std::mem::take(&mut line));
             line_width = 0;
+            if lines.len() == max_rows {
+                return lines;
+            }
             continue;
         }
         let ch_width = styled.ch.width().unwrap_or(0);
         if line_width + ch_width > width && !line.is_empty() {
             lines.push(std::mem::take(&mut line));
             line_width = 0;
+            if lines.len() == max_rows {
+                return lines;
+            }
         }
         line.push(styled.clone());
         line_width += ch_width;
@@ -856,27 +976,28 @@ pub fn hard_wrap_styled(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledCha
 }
 
 pub fn word_wrap_styled(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
+    word_wrap_head(chars, width, usize::MAX)
+}
+
+/// [`word_wrap_styled`]'s first `max_rows` rows, wrapping nothing past them.
+fn word_wrap_head(chars: &[StyledChar], width: usize, max_rows: usize) -> Vec<Vec<StyledChar>> {
+    if max_rows == 0 {
+        return Vec::new();
+    }
     if width == 0 {
         return vec![Vec::new()];
     }
-    let mut source_lines = vec![Vec::new()];
-    for styled in chars {
-        if styled.ch == '\n' {
-            source_lines.push(Vec::new());
-        } else {
-            source_lines
-                .last_mut()
-                .expect("seeded above")
-                .push(styled.clone());
-        }
-    }
-
     let mut lines = Vec::new();
-    for source in source_lines {
+    // Split in place rather than copied out line by line first, so that a head of a long
+    // block never touches the characters after it.
+    for source in chars.split(|styled| styled.ch == '\n') {
+        if lines.len() >= max_rows {
+            break;
+        }
         let mut line = Vec::new();
         let mut pending_spaces = Vec::new();
         let mut index = 0;
-        while index < source.len() {
+        while index < source.len() && lines.len() < max_rows {
             let spaces = source[index].ch == ' ';
             let end = (index + 1..source.len())
                 .find(|next| (source[*next].ch == ' ') != spaces)
@@ -901,13 +1022,20 @@ pub fn word_wrap_styled(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledCha
                     lines.push(std::mem::take(&mut line));
                 }
                 pending_spaces.clear();
-                let mut pieces = hard_wrap_styled(token, width);
+                // One more than the rows still wanted: the last piece is the row the next word
+                // may join, not a finished one.
+                let wanted = max_rows.saturating_sub(lines.len()).saturating_add(1);
+                let mut pieces = hard_wrap_head(token, width, wanted);
                 line = pieces.pop().unwrap_or_default();
                 lines.extend(pieces);
             }
         }
-        lines.push(line);
+        // A row still open when the head filled up is one past it.
+        if lines.len() < max_rows {
+            lines.push(line);
+        }
     }
+    lines.truncate(max_rows);
     lines
 }
 
@@ -996,7 +1124,7 @@ const CELL_GAP: usize = 3;
 /// small a row of headings and the row of values under it share no column boundaries anyway,
 /// and a value nothing names is not worth keeping. One cell per line, wrapped whole, with a
 /// blank line between records; a table with no header is just its cells.
-fn render_records(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
+fn render_records(table: &MdTable, width: usize, max_rows: usize) -> Vec<Vec<StyledChar>> {
     let rows: Vec<&Vec<Vec<StyledChar>>> = if table.rows.is_empty() {
         // Nothing but a header: it is the only content there is, so it is drawn as the record
         // rather than as labels for one.
@@ -1010,10 +1138,17 @@ fn render_records(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
 
     let mut lines: Vec<Vec<StyledChar>> = Vec::new();
     for row in rows {
+        if lines.len() >= max_rows {
+            break;
+        }
         let mut record: Vec<Vec<StyledChar>> = Vec::new();
         for (column, cell) in row.iter().enumerate() {
             if cell.is_empty() {
                 continue;
+            }
+            // Enough for the head whatever the separator above it costs.
+            if lines.len() + record.len() >= max_rows {
+                break;
             }
             let mut line = Vec::new();
             if let Some(label) = labels
@@ -1025,7 +1160,7 @@ fn render_records(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
                 line.extend(run(' ', 1, FURNITURE));
             }
             line.extend_from_slice(cell);
-            record.extend(word_wrap_styled(&line, width));
+            record.extend(word_wrap_head(&line, width, max_rows));
         }
         if record.is_empty() {
             continue;
@@ -1035,6 +1170,7 @@ fn render_records(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
         }
         lines.append(&mut record);
     }
+    lines.truncate(max_rows);
     lines
 }
 
@@ -1042,7 +1178,10 @@ fn render_records(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
 ///
 /// Bodies without prefixes, exactly as the wrappers return, so [`render_block`] puts the
 /// prefix and the continuation on them the same way it does for prose.
-fn render_table(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
+///
+/// Only the first `max_rows` rows are laid out. The column widths still read every cell,
+/// because a row further down can be the one that makes a column wide.
+fn render_table(table: &MdTable, width: usize, max_rows: usize) -> Vec<Vec<StyledChar>> {
     let columns = table.columns();
     if columns == 0 {
         return Vec::new();
@@ -1052,7 +1191,7 @@ fn render_table(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
     // Not enough room for even one column per column: the grid is abandoned rather than
     // overflowed, and the rows are read as records instead.
     if available < columns {
-        return render_records(table, width.max(1));
+        return render_records(table, width.max(1), max_rows);
     }
 
     let natural: Vec<usize> = (0..columns)
@@ -1083,6 +1222,9 @@ fn render_table(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
         .into_iter()
         .chain(table.rows.iter().map(|row| (false, row)))
     {
+        if lines.len() >= max_rows {
+            break;
+        }
         // The header band's padding is bold too, so the row comes out as one style run
         // rather than alternating with the gaps - `style_over` emits a range call per run.
         let fill = MdStyle {
@@ -1091,11 +1233,16 @@ fn render_table(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
         };
         let wrapped: Vec<Vec<Vec<StyledChar>>> = (0..columns)
             .map(|column| match row.get(column) {
-                Some(cell) => word_wrap_styled(cell, widths[column]),
+                Some(cell) => word_wrap_head(cell, widths[column], max_rows - lines.len()),
                 None => vec![Vec::new()],
             })
             .collect();
-        let height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        let height = wrapped
+            .iter()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(1)
+            .clamp(1, max_rows - lines.len());
         for band in 0..height {
             let mut line = Vec::new();
             for column in 0..columns {
@@ -1125,11 +1272,25 @@ fn render_table(table: &MdTable, width: usize) -> Vec<Vec<StyledChar>> {
             lines.push(rule);
         }
     }
+    lines.truncate(max_rows);
     lines
 }
 
 /// Wrap one block to `cols`, giving the first row its prefix and the rest the continuation.
 pub fn render_block(block: &MdBlock, cols: usize) -> Vec<MdLine> {
+    render_block_head(block, cols, usize::MAX)
+}
+
+/// [`render_block`]'s first `max_rows` rows, and the same rows it would give: nothing past
+/// them is wrapped.
+///
+/// For a caller that draws only the head of a block. The agents pane's timeline caps an entry
+/// at a few rows, and one block can be the whole of a 100KB entry, so wrapping all of it only
+/// to keep four rows costs the whole entry on every resize step.
+pub fn render_block_head(block: &MdBlock, cols: usize, max_rows: usize) -> Vec<MdLine> {
+    if max_rows == 0 {
+        return Vec::new();
+    }
     if block.rule {
         let text = "─".repeat(cols);
         let styles = vec![FURNITURE; text.chars().count()];
@@ -1137,9 +1298,9 @@ pub fn render_block(block: &MdBlock, cols: usize) -> Vec<MdLine> {
     }
     let body_width = cols.saturating_sub(block.prefix.width()).max(1);
     let bodies = match &block.table {
-        Some(table) => render_table(table, body_width),
-        None if block.hard_wrap => hard_wrap_styled(&block.chars, body_width),
-        None => word_wrap_styled(&block.chars, body_width),
+        Some(table) => render_table(table, body_width, max_rows),
+        None if block.hard_wrap => hard_wrap_head(&block.chars, body_width, max_rows),
+        None => word_wrap_head(&block.chars, body_width, max_rows),
     };
 
     bodies
@@ -1571,5 +1732,134 @@ mod tests {
     fn a_task_list_draws_its_boxes() {
         let lines = render("- [x] done\n- [ ] todo", 40, Options::default());
         assert_eq!(texts(&lines), ["• ☒ done", "• ☐ todo"]);
+    }
+
+    /// One of each shape a block can take, and several of them long enough that a head is a
+    /// small part of the whole: prose with a word too long for any row, a code block, a table
+    /// wide enough to shrink, the same table too narrow for a grid, a quote, a list and a rule.
+    fn every_shape() -> String {
+        let prose = "word ".repeat(60) + &"x".repeat(90) + " tail";
+        let code = (0..30)
+            .map(|n| format!("line {n} of the fence"))
+            .collect::<Vec<_>>();
+        let rows = (0..20)
+            .map(|n| format!("| {n} | {} |", "cell text ".repeat(n % 4 + 1)))
+            .collect::<Vec<_>>();
+        format!(
+            "# Heading\n\n{prose}\n\n```\n{}\n```\n\n| id | description |\n|---|---|\n{}\n\n> quoted {prose}\n\n- one\n- {prose}\n\n---\n\nend",
+            code.join("\n"),
+            rows.join("\n"),
+        )
+    }
+
+    /// A head is the same rows the whole block starts with, for every shape and at widths from
+    /// one too narrow for a table's grid to wider than any row - so a caller that draws only
+    /// the head draws exactly what it would have cut the whole down to.
+    #[test]
+    fn a_blocks_head_is_the_start_of_the_whole_block() {
+        let blocks = parse(&every_shape());
+        for cols in [1, 3, 7, 20, 41, 200] {
+            for block in &blocks {
+                let whole = render_block(block, cols);
+                for max_rows in [0, 1, 2, 3, 5, 8, whole.len(), whole.len() + 3] {
+                    let head = render_block_head(block, cols, max_rows);
+                    assert_eq!(
+                        head,
+                        whole[..max_rows.min(whole.len())],
+                        "{max_rows} rows of {:?} at {cols}",
+                        whole.first().map(|line| &line.text)
+                    );
+                }
+            }
+        }
+    }
+
+    /// The public wrappers still wrap the whole of what they are given.
+    #[test]
+    fn the_wrappers_still_wrap_everything() {
+        let chars: Vec<StyledChar> = "ab cd\nef gh"
+            .chars()
+            .map(|ch| StyledChar {
+                ch,
+                style: MdStyle::default(),
+            })
+            .collect();
+        let rows = |wrapped: Vec<Vec<StyledChar>>| -> Vec<String> {
+            wrapped
+                .iter()
+                .map(|row| row.iter().map(|styled| styled.ch).collect())
+                .collect()
+        };
+        assert_eq!(rows(word_wrap_styled(&chars, 2)), ["ab", "cd", "ef", "gh"]);
+        assert_eq!(
+            rows(hard_wrap_styled(&chars, 3)),
+            ["ab ", "cd", "ef ", "gh"]
+        );
+    }
+
+    /// A head of a text is the whole parse's first blocks, and says whether there was more.
+    #[test]
+    fn a_parsed_head_is_the_start_of_the_whole_parse() {
+        let text = every_shape();
+        let whole = parse(&text);
+        let drawn = |blocks: &[MdBlock]| -> Vec<Vec<MdLine>> {
+            blocks.iter().map(|block| render_block(block, 30)).collect()
+        };
+        for max_blocks in 0..=whole.len() + 1 {
+            let (head, complete) = parse_head(&text, max_blocks, usize::MAX);
+            let kept = max_blocks.min(whole.len());
+            assert_eq!(drawn(&head), drawn(&whole[..kept]), "{max_blocks} blocks");
+            assert_eq!(complete, max_blocks >= whole.len(), "{max_blocks} blocks");
+        }
+    }
+
+    /// The byte cap bounds the parse of a text that is one enormous block, and a text that was
+    /// cut is never called complete - even though what was kept is a single block, as the
+    /// whole would have been.
+    #[test]
+    fn a_cut_text_is_parsed_only_as_far_as_the_cut() {
+        let fence = format!("```\n{}\n```", "é".repeat(100_000));
+        let (blocks, complete) = parse_head(&fence, 5, 1_001);
+        assert!(!complete);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].hard_wrap, "still a code block");
+        // A cut in the middle of a two-byte character lands before it.
+        assert!(blocks[0].chars.len() < 500);
+
+        let (blocks, complete) = parse_head("short", 5, 1_001);
+        assert!(complete);
+        assert_eq!(blocks.len(), 1);
+        // A cap at exactly the length cuts nothing.
+        assert!(parse_head("short", 5, 5).1);
+    }
+
+    /// A reference link in the head whose definition the cut left behind draws as the whole
+    /// parse draws it - full, collapsed and shortcut references, a label matched regardless of
+    /// case and spacing, and a destination on the line after its label - while one defined
+    /// nowhere still draws as the brackets it was written as.
+    #[test]
+    fn a_head_resolves_references_defined_past_the_cut() {
+        let filler = "filler ".repeat(200);
+        for (reference, definition) in [
+            ("[docs][1]", "[1]: https://example.com/one"),
+            ("[docs][]", "[DOCS]: https://example.com/collapsed"),
+            (
+                "[The  Docs]",
+                "  [the docs]:\n  <https://example.com/shortcut> \"a title\"",
+            ),
+            ("[nope][9]", "[8]: https://example.com/other"),
+        ] {
+            let text = format!("See {reference} here.\n\n{filler}\n\n{definition}\n");
+            let (head, complete) = parse_head(&text, 5, 64);
+            assert!(!complete);
+            let whole = parse(&text);
+            assert_eq!(
+                render_block(&head[0], 80),
+                render_block(&whole[0], 80),
+                "{reference}"
+            );
+        }
+        let (head, _) = parse_head("See [nope][9].\n\nfiller\n\n[8]: https://x", 5, 20);
+        assert!(render_block(&head[0], 80)[0].text.contains("[nope][9]"));
     }
 }

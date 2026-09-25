@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
@@ -2152,11 +2153,13 @@ pub struct HistoryEvent {
     /// How many rows it took - never more than [`MAX_ENTRY_ROWS`].
     pub len: usize,
     /// What a reader's divider calls it: [`RunEntryKind::label`], or `"summary"`.
-    pub kind: String,
+    pub kind: &'static str,
     /// When it was recorded, so a reader's age stays live rather than freezing at open.
     pub created_at_ms: Option<i64>,
-    /// The event's text, uncapped and unwrapped.
-    pub text: String,
+    /// The event's text, uncapped and unwrapped. Shared rather than owned: every history
+    /// render hands out every event's text, and a copy of each would cost a pass over the whole
+    /// run on the path [`ParsedRun`] exists to make cheap.
+    pub text: Arc<str>,
 }
 
 impl HistoryEvent {
@@ -2238,90 +2241,390 @@ pub fn run_history(
     now_ms: i64,
     utc_offset_secs: i32,
 ) -> HistoryLines {
-    let Some(inner) = wrap_width(width) else {
-        return HistoryLines::default();
-    };
-    let mut entries: Vec<MdLine> = Vec::new();
-    let mut events: Vec<HistoryEvent> = Vec::new();
-    // Walked rather than `flat_map`ped: each event's rows have to be counted before the next
-    // one's begin, which is the whole of what a span is.
-    //
-    // `drawn` and `raw` diverge for exactly one kind: a prompt carrying a hook envelope is
-    // *drawn* as `crate::envelope`'s reading of it and *recorded* as what arrived. Everything
-    // else passes the same text twice. Keeping the two apart here is what lets the timeline
-    // read as prose while `HistoryEvent::text` keeps its contract — the whole of what it said,
-    // which is what the reader shows and what `r` shows raw.
-    let mut push = |drawn: &str, raw: &str, kind: &str, created_at_ms, style, revision| {
-        let gutter = age_gutter(now_ms, created_at_ms);
-        let rows = cap_rows(
-            labelled(drawn, kind, &gutter, inner, style).0,
-            gutter.width(),
-        );
-        events.push(HistoryEvent {
+    ParsedRun::new(run).lines(width, now_ms, utc_offset_secs)
+}
+
+/// [`run_history`] with the expensive half kept: every event's markdown parsed once, and its
+/// rows wrapped once per width.
+///
+/// A caller that draws the same run again and again - the agents pane redraws it on every
+/// resize step, every minute, and every time hocus sends the run with one more entry on it -
+/// holds one of these instead of calling `run_history`. The parse depends on nothing but the
+/// text, so a resize only re-wraps; the wrap depends on nothing but the text and the width, so
+/// a new entry or a new minute wraps nothing but what is new. A run near
+/// `rows::RUN_DETAIL_BYTES` is hundreds of kilobytes of markdown, and re-parsing all of it per
+/// resize step is what made dragging the pane's edge stall for seconds.
+///
+/// What an [`ParsedRun::update`] costs is one lookup per entry and the parse of whatever is
+/// new: a recorded entry it already holds is recognised without reading its text (see
+/// [`ParsedEvent::is`]). The caller has paid for decoding the run by then, which is the one
+/// pass over all of it that is left - and [`run_payload_fingerprint`] is how the agents pane
+/// avoids even that for a run sent again unchanged.
+#[derive(Default)]
+pub struct ParsedRun {
+    /// The run's own facts, for the label and the pinned header. Cheap, so refreshed whole on
+    /// every [`ParsedRun::update`].
+    run: RunFacts,
+    /// The timeline's events in order, the rolling summary last when it is drawn at all.
+    events: Vec<ParsedEvent>,
+    /// How many events have been parsed over this one's life.
+    ///
+    /// Test-only: a kept parse and a fresh one draw the same rows, so nothing else can tell a
+    /// cache that works from one that quietly re-parses everything.
+    #[cfg(test)]
+    parses: usize,
+}
+
+/// One event of a [`ParsedRun`]: what it said, parsed, and its rows at the last width asked for.
+struct ParsedEvent {
+    /// The recorded entry's revision, or `None` for the rolling summary.
+    revision: Option<u64>,
+    kind: &'static str,
+    style: MdStyle,
+    created_at_ms: Option<i64>,
+    /// The whole of what the event said, for [`HistoryEvent::text`].
+    raw: Arc<str>,
+    /// The head of what it says, parsed: only as much as the timeline can draw of it. See
+    /// [`ENTRY_HEAD_BLOCKS`] and [`ENTRY_HEAD_BYTES`]. Shared, so a reader opened on a short
+    /// event can draw this parse rather than make its own: see [`ParsedRun::whole_blocks`].
+    blocks: Arc<[crate::markdown::MdBlock]>,
+    /// Whether `blocks` is the whole of what was parsed. An event that was not parsed whole is
+    /// capped however few rows its head came to, so the marker still says there is more.
+    complete: bool,
+    /// Whether `blocks` is the whole of `raw`: complete, and parsed from the text itself rather
+    /// than from a digest of its envelope.
+    whole: bool,
+    /// The capped rows, without the gutter's text on the first of them, and the `(width,
+    /// indent)` they were wrapped for.
+    rows: Option<((usize, usize), Vec<MdLine>)>,
+    /// The gutter the last [`ParsedRun::lines`] put on the first row, which is all
+    /// [`ParsedRun::restamp`] has to change when only the clock moved.
+    gutter: String,
+}
+
+impl ParsedEvent {
+    fn new(
+        revision: Option<u64>,
+        kind: &'static str,
+        style: MdStyle,
+        created_at_ms: Option<i64>,
+        digest: Option<&str>,
+        raw: &str,
+    ) -> Self {
+        let (blocks, complete) =
+            crate::markdown::parse_head(digest.unwrap_or(raw), ENTRY_HEAD_BLOCKS, ENTRY_HEAD_BYTES);
+        Self {
             revision,
-            start: entries.len(),
-            len: rows.len(),
-            kind: kind.to_owned(),
-            created_at_ms,
-            text: raw.to_owned(),
-        });
-        entries.extend(rows);
-    };
-    for entry in run.entries.iter().filter(|entry| {
-        matches!(
-            entry.kind,
-            RunEntryKind::Prompt
-                | RunEntryKind::Plan
-                | RunEntryKind::Question
-                | RunEntryKind::Summary
-                | RunEntryKind::Message
-                | RunEntryKind::Result
-        )
-    }) {
-        let style = match entry.kind {
-            RunEntryKind::Summary => SUMMARY_LABEL_STYLE,
-            _ => LABEL_STYLE,
-        };
-        // A prompt is the one kind a harness writes as well as a person. `digest` is `None` for
-        // everything a person typed, which is the common case and the one that must cost
-        // nothing; the label stays `prompt:` either way, because a prompt is what it is however
-        // it was written.
-        let drawn = matches!(entry.kind, RunEntryKind::Prompt)
-            .then(|| crate::envelope::digest(&entry.text))
-            .flatten();
-        push(
-            drawn.as_deref().unwrap_or(&entry.text),
-            &entry.text,
-            entry.kind.label(),
-            entry.created_at_ms,
+            kind,
             style,
-            Some(entry.revision),
-        );
+            created_at_ms,
+            raw: raw.into(),
+            blocks: blocks.into(),
+            complete,
+            whole: complete && digest.is_none(),
+            rows: None,
+            gutter: String::new(),
+        }
     }
-    if let Some(summary) = run
-        .summary
-        .as_ref()
-        .filter(|summary| !repeats_newest(run, summary))
-    {
-        push(
-            &summary.text,
-            &summary.text,
-            "summary",
-            summary.created_at_ms,
-            SUMMARY_LABEL_STYLE,
-            None,
-        );
+
+    /// Whether the entry held under this one's revision would parse to what this holds, so
+    /// the parse can be kept.
+    ///
+    /// A recorded entry is recognised by its kind and its length, not by reading its text. A
+    /// revision names one entry of one run, and an entry is never rewritten under it: the
+    /// daemon only ever pushes, and `rows::hydrate_newest_entries` drops whole entries to fit
+    /// its budget rather than cutting one. Comparing the text as well would walk every byte
+    /// of a long run on each resend to confirm what the revision already says. The length is
+    /// kept as a cheap tripwire all the same, and the kind because a prompt is parsed from its
+    /// envelope's digest rather than from its text. [`ParsedRun::update`] drops everything
+    /// held when the run itself changes, since revisions are only unique within one.
+    ///
+    /// The rolling summary (`revision` `None`) is compared whole: it is rewritten in place
+    /// every time the run is summarised again, often to a paragraph much like the last, and it
+    /// is one short paragraph. Not the stamp, which only the gutter reads - an entry whose
+    /// stamp was corrected takes the new one and keeps its parse.
+    fn is(&self, kind: &str, raw: &str) -> bool {
+        self.kind == kind
+            && match self.revision {
+                Some(_) => self.raw.len() == raw.len(),
+                None => *self.raw == *raw,
+            }
     }
-    HistoryLines {
-        header: run_header(run, inner, utc_offset_secs),
-        // The run's own id rather than its kind: the id opens with the kind anyway
-        // (`run_id`), so this says everything the kind said and names *which* run of that
-        // agent the half is drawing - the one thing the pane could not tell you before.
-        // Shortened, because the whole id does not fit a divider (`short_run_id`), and
-        // without the run's state, which the selector row above already carries.
-        label: short_run_id(&run.id),
-        entries,
-        events,
+}
+
+impl ParsedRun {
+    pub fn new(run: &AgentRun) -> Self {
+        let mut parsed = Self::default();
+        parsed.update(run);
+        parsed
+    }
+
+    /// How many styled characters the held parse keeps, across every event and table cell.
+    ///
+    /// Test-only, like `parses`: a head that quietly grew back to the whole event draws the
+    /// same rows, so only this can tell.
+    #[cfg(test)]
+    fn parsed_chars(&self) -> usize {
+        self.events
+            .iter()
+            .flat_map(|event| event.blocks.iter())
+            .map(|block| {
+                let cells = block.table.as_ref().map_or(0, |table| {
+                    table
+                        .head
+                        .iter()
+                        .chain(table.rows.iter().flatten())
+                        .map(Vec::len)
+                        .sum()
+                });
+                block.chars.len() + cells
+            })
+            .sum()
+    }
+
+    /// Take `run` as the one this draws, parsing only the events it does not already hold.
+    /// Which events those are, and where the rolling summary goes, is [`run_history`]'s.
+    pub fn update(&mut self, run: &AgentRun) {
+        // Revisions are counted per run, so another run's revision 3 is not this one's.
+        if self.run.id != run.id {
+            self.events.clear();
+        }
+        let mut held: BTreeMap<Option<u64>, ParsedEvent> = std::mem::take(&mut self.events)
+            .into_iter()
+            .map(|event| (event.revision, event))
+            .collect();
+        let mut take = |revision: Option<u64>,
+                        kind: &'static str,
+                        style: MdStyle,
+                        created_at_ms: Option<i64>,
+                        raw: &str,
+                        drawn: &dyn Fn() -> Option<String>| {
+            match held.remove(&revision) {
+                Some(mut event) if event.is(kind, raw) => {
+                    event.style = style;
+                    event.created_at_ms = created_at_ms;
+                    event
+                },
+                _ => {
+                    #[cfg(test)]
+                    {
+                        self.parses += 1;
+                    }
+                    ParsedEvent::new(
+                        revision,
+                        kind,
+                        style,
+                        created_at_ms,
+                        drawn().as_deref(),
+                        raw,
+                    )
+                },
+            }
+        };
+        for entry in run.entries.iter().filter(|entry| {
+            matches!(
+                entry.kind,
+                RunEntryKind::Prompt
+                    | RunEntryKind::Plan
+                    | RunEntryKind::Question
+                    | RunEntryKind::Summary
+                    | RunEntryKind::Message
+                    | RunEntryKind::Result
+            )
+        }) {
+            let style = match entry.kind {
+                RunEntryKind::Summary => SUMMARY_LABEL_STYLE,
+                _ => LABEL_STYLE,
+            };
+            // `drawn` and `raw` diverge for exactly one kind: a prompt carrying a hook envelope
+            // is *drawn* as `crate::envelope`'s reading of it and *recorded* as what arrived.
+            // Everything else passes the same text twice. Keeping the two apart here is what
+            // lets the timeline read as prose while `HistoryEvent::text` keeps its contract -
+            // the whole of what it said, which is what the reader shows and what `r` shows raw.
+            //
+            // `digest` is `None` for everything a person typed, which is the common case and
+            // the one that must cost nothing; the label stays `prompt:` either way, because a
+            // prompt is what it is however it was written. Only asked when the entry is new.
+            let prompt = matches!(entry.kind, RunEntryKind::Prompt);
+            let event = take(
+                Some(entry.revision),
+                entry.kind.label(),
+                style,
+                entry.created_at_ms,
+                &entry.text,
+                &|| {
+                    prompt
+                        .then(|| crate::envelope::digest(&entry.text))
+                        .flatten()
+                },
+            );
+            self.events.push(event);
+        }
+        if let Some(summary) = run
+            .summary
+            .as_ref()
+            .filter(|summary| !repeats_newest(run, summary))
+        {
+            let event = take(
+                None,
+                "summary",
+                SUMMARY_LABEL_STYLE,
+                summary.created_at_ms,
+                &summary.text,
+                &|| None,
+            );
+            self.events.push(event);
+        }
+        self.run = RunFacts::of(run);
+    }
+
+    /// The run as the history half draws it at `width`, its ages read against `now_ms`.
+    pub fn lines(&mut self, width: usize, now_ms: i64, utc_offset_secs: i32) -> HistoryLines {
+        let Some(inner) = wrap_width(width) else {
+            return HistoryLines::default();
+        };
+        let mut entries: Vec<MdLine> = Vec::new();
+        let mut events: Vec<HistoryEvent> = Vec::with_capacity(self.events.len());
+        // Walked rather than `flat_map`ped: each event's rows have to be counted before the next
+        // one's begin, which is the whole of what a span is.
+        for event in &mut self.events {
+            let gutter = age_gutter(now_ms, event.created_at_ms);
+            let key = (inner, gutter.width());
+            let rows = match &event.rows {
+                Some((held, rows)) if *held == key => rows,
+                _ => {
+                    let rows = cap_rows(
+                        labelled_blocks(&event.blocks, event.kind, key.1, inner, event.style).0,
+                        key.1,
+                        event.complete,
+                    );
+                    &event.rows.insert((key, rows)).1
+                },
+            };
+            events.push(HistoryEvent {
+                revision: event.revision,
+                start: entries.len(),
+                len: rows.len(),
+                kind: event.kind,
+                created_at_ms: event.created_at_ms,
+                text: Arc::clone(&event.raw),
+            });
+            let mut rows = rows.iter().cloned();
+            if let Some(first) = rows.next() {
+                entries.push(first.prepend(&gutter, AGE_STYLE));
+            }
+            entries.extend(rows);
+            event.gutter = gutter;
+        }
+        HistoryLines {
+            header: run_header(&self.run, inner, utc_offset_secs),
+            // The run's own id rather than its kind: the id opens with the kind anyway
+            // (`run_id`), so this says everything the kind said and names *which* run of that
+            // agent the half is drawing - the one thing the pane could not tell you before.
+            // Shortened, because the whole id does not fit a divider (`short_run_id`), and
+            // without the run's state, which the selector row above already carries.
+            label: short_run_id(&self.run.id),
+            entries,
+            events,
+        }
+    }
+
+    /// Bring `lines` - what the last [`Self::lines`] returned, with nothing updated since - up
+    /// to `now_ms`, and say whether it could.
+    ///
+    /// The clock moves nothing but the gutters, so this rewrites the first row of each event
+    /// whose age now reads differently and leaves every other row where it is, rather than
+    /// cloning the whole timeline out of the kept rows again as `lines` does. Refuses, touching
+    /// nothing, when `lines` does not have the shape the kept rows would give it, or a gutter
+    /// changed width - rows are wrapped beside the gutter, so that one needs `lines`.
+    pub fn restamp(&mut self, lines: &mut HistoryLines, now_ms: i64) -> bool {
+        if lines.events.len() != self.events.len() {
+            return false;
+        }
+        let mut changed = Vec::new();
+        for (index, (event, drawn)) in self.events.iter().zip(&lines.events).enumerate() {
+            let Some(((_, indent), rows)) = &event.rows else {
+                return false;
+            };
+            if drawn.revision != event.revision
+                || drawn.len != rows.len()
+                || drawn.end() > lines.entries.len()
+            {
+                return false;
+            }
+            let gutter = age_gutter(now_ms, event.created_at_ms);
+            if gutter.width() != *indent {
+                return false;
+            }
+            if gutter != event.gutter {
+                changed.push((index, gutter));
+            }
+        }
+        for (index, gutter) in changed {
+            let event = &mut self.events[index];
+            let first = event
+                .rows
+                .as_ref()
+                .and_then(|(_, rows)| rows.first())
+                .cloned();
+            if let Some(first) = first {
+                lines.entries[lines.events[index].start] = first.prepend(&gutter, AGE_STYLE);
+            }
+            event.gutter = gutter;
+        }
+        true
+    }
+
+    /// The kept parse of the event whose [`HistoryEvent::text`] is `text`, where it is the
+    /// whole of that text - what a reader of the event would otherwise parse again. `None` for
+    /// an event parsed only in part, or drawn from its envelope's digest rather than its text.
+    ///
+    /// Found by the text's allocation rather than by revision: `lines` hands out the one it
+    /// holds, so a match is this very event and not an older one filed under the same revision.
+    pub fn whole_blocks(&self, text: &Arc<str>) -> Option<Arc<[crate::markdown::MdBlock]>> {
+        self.events
+            .iter()
+            .find(|event| event.whole && Arc::ptr_eq(&event.raw, text))
+            .map(|event| Arc::clone(&event.blocks))
+    }
+}
+
+/// A run's JSON reduced to its length and a hash, for telling a run sent again unchanged from
+/// one that moved without holding on to the bytes it came as.
+///
+/// A long run is a quarter of a megabyte of JSON, and keeping it only to compare the next one
+/// against it was a second whole copy of the run beside the parse. `DefaultHasher` rather than
+/// a stable hash: the value is compared within one process and never written anywhere, which
+/// is the opposite of what `envelope`'s FNV key is for.
+pub fn run_payload_fingerprint(payload: &str) -> (usize, u64) {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(payload.as_bytes());
+    (payload.len(), hasher.finish())
+}
+
+/// What [`run_header`] and the divider's label read of a run: its identity, without the
+/// entries a [`ParsedRun`] holds parsed instead.
+#[derive(Default)]
+struct RunFacts {
+    id: String,
+    session_id: String,
+    kind: String,
+    started_at_ms: i64,
+    origin_run_id: Option<String>,
+    previous_run_id: Option<String>,
+}
+
+impl RunFacts {
+    fn of(run: &AgentRun) -> Self {
+        Self {
+            id: run.id.clone(),
+            session_id: run.session_id.clone(),
+            kind: run.kind.clone(),
+            started_at_ms: run.started_at_ms,
+            origin_run_id: run.origin_run_id.clone(),
+            previous_run_id: run.previous_run_id.clone(),
+        }
     }
 }
 
@@ -2335,7 +2638,7 @@ pub fn run_history(
 ///
 /// Wrapped rather than cut. A tail-cut uuid is a uuid nobody can use, and unlike the divider
 /// (`fit_label`) this has as many rows as it needs.
-fn run_header(run: &AgentRun, width: usize, utc_offset_secs: i32) -> Vec<MdLine> {
+fn run_header(run: &RunFacts, width: usize, utc_offset_secs: i32) -> Vec<MdLine> {
     // `run.id` when the agent supplied no session id of its own: `run_id` keys such a run by
     // pane and start time, and naming that "session" would be a claim the run cannot make.
     let (label, value) = match run.session_id.trim() {
@@ -2453,9 +2756,9 @@ pub fn summary_history(
             revision: None,
             start: 0,
             len: entries.len(),
-            kind: "summary".to_owned(),
+            kind: "summary",
             created_at_ms: summary.created_at_ms,
-            text: summary.text.clone(),
+            text: summary.text.as_str().into(),
         }],
     };
     HistoryLines {
@@ -2477,28 +2780,74 @@ pub fn summary_history(
 /// and `Enter` opens the whole of it - which is what makes this a cap rather than a truncation.
 pub const MAX_ENTRY_ROWS: usize = 4;
 
-/// One event's rows, cut to [`MAX_ENTRY_ROWS`] with the last of them saying how much was left
-/// out.
+/// One event's rows, cut to [`MAX_ENTRY_ROWS`] with the last of them saying there is more.
 ///
 /// The marker takes one of the four rather than being squeezed in beside them: a row that says
 /// "there is more here" is worth as much as the row of prose it replaces, and a cap that
 /// silently dropped the tail would read as an agent that stopped mid-sentence.
 ///
+/// It does not say how much more. It used to count the rows dropped, which meant wrapping the
+/// whole of every event at every width only to throw all but four rows away - most of what a
+/// resize of the agents pane cost, on a run of long plans and messages. [`labelled_blocks`]
+/// now stops wrapping at the first row past the cap, and `Enter` on the event is how much.
+///
 /// `indent` is the entry's gutter width, so the marker sits in the column the entry's
 /// continuation rows are indented to rather than out at the margin.
-fn cap_rows(rows: Vec<MdLine>, indent: usize) -> Vec<MdLine> {
-    if rows.len() <= MAX_ENTRY_ROWS {
+///
+/// `complete` is whether `rows` were wrapped from the whole of the event. One that was parsed
+/// only in part is capped whatever its head came to - see [`ENTRY_HEAD_BYTES`].
+fn cap_rows(mut rows: Vec<MdLine>, indent: usize, complete: bool) -> Vec<MdLine> {
+    if complete && rows.len() <= MAX_ENTRY_ROWS {
         return rows;
     }
-    let kept = MAX_ENTRY_ROWS - 1;
-    let dropped = rows.len() - kept;
-    let mut rows: Vec<MdLine> = rows.into_iter().take(kept).collect();
+    rows.truncate(MAX_ENTRY_ROWS - 1);
     rows.push(
         MdLine::plain("")
-            .prepend(&format!("… +{dropped} lines"), LABEL_STYLE)
+            .prepend(CAPPED_MARKER, LABEL_STYLE)
             .indent(indent),
     );
     rows
+}
+
+/// What the last row of a capped event says. See [`cap_rows`].
+const CAPPED_MARKER: &str = "… more";
+
+/// How many of an event's blocks the timeline parses.
+///
+/// Enough to tell whether it overflows at any width. Every block draws at least one row, and
+/// [`wrap_head`] never wants more than one row past [`MAX_ENTRY_ROWS`], so the block after
+/// these could only ever be cut off.
+const ENTRY_HEAD_BLOCKS: usize = MAX_ENTRY_ROWS + 1;
+
+/// How many bytes of an event's text the timeline parses.
+///
+/// A block count alone does not bound the parse: a 100KB code fence or table is one block, and
+/// pulldown-cmark reads the whole of its input before handing over the first. Four rows at even
+/// five hundred columns is two thousand characters, so this leaves eight times that for markup
+/// and multi-byte characters. An event longer than this is capped whatever its head comes to,
+/// and `Enter` opens the whole of it from [`HistoryEvent::text`].
+const ENTRY_HEAD_BYTES: usize = 16 * 1024;
+
+/// [`crate::markdown::wrap`] with compact blocks, stopped once it has more than `limit` rows.
+///
+/// All [`cap_rows`] needs to know is whether an event overflows, and the first row past the
+/// cap answers that; the rows after it would be wrapped only to be dropped. That holds inside a
+/// block as well as between them, since one block can be the whole of a long event.
+fn wrap_head(blocks: &[crate::markdown::MdBlock], cols: usize, limit: usize) -> Vec<MdLine> {
+    if blocks.is_empty() {
+        return vec![MdLine::blank()];
+    }
+    let mut lines = Vec::new();
+    for block in blocks {
+        let Some(wanted) = (limit + 1)
+            .checked_sub(lines.len())
+            .filter(|rows| *rows > 0)
+        else {
+            break;
+        };
+        lines.extend(crate::markdown::render_block_head(block, cols, wanted));
+    }
+    lines
 }
 
 /// One history row's text as markdown, with `label` in front of it, and whether the label took
@@ -2511,23 +2860,29 @@ fn cap_rows(rows: Vec<MdLine>, indent: usize) -> Vec<MdLine> {
 /// onto a marker it does not belong to, and so the marker keeps the column its continuation rows
 /// are indented to.
 ///
-/// Which of the two it is has to be known before a width can be picked, which is why the text
-/// is parsed into blocks here and wrapped once afterwards rather than rendered twice: the parse
-/// is by far the most expensive thing this does.
+/// Which of the two it is has to be known before a width can be picked, which is why this takes
+/// the text already parsed into blocks rather than rendering it twice. Parsed by the caller
+/// rather than here so [`ParsedRun`] can keep the parse across widths.
+///
+/// The gutter's own text is not on the first row - only its width, `indent`, which the rows
+/// below are indented by. The gutter is the one part of an entry that changes with the clock,
+/// so leaving it off is what lets the wrapped rows be kept across minutes. Never empty, so a
+/// caller can always put the gutter there.
+///
+/// Wrapped only as far as [`cap_rows`] needs: the first row past [`MAX_ENTRY_ROWS`] says an
+/// event is capped, and nothing after it is ever drawn.
 ///
 /// `style` is how the label itself is painted: dim for most kinds, because it is the pane
 /// talking rather than the agent, and bold for a summary, which is the one kind worth picking
 /// out of the timeline now that nothing stands above it.
-fn labelled(
-    text: &str,
+fn labelled_blocks(
+    blocks: &[crate::markdown::MdBlock],
     label: &str,
-    gutter: &str,
+    indent: usize,
     width: usize,
     style: MdStyle,
 ) -> (Vec<MdLine>, bool) {
     let label = format!("{label}: ");
-    let indent = gutter.width();
-    let blocks = crate::markdown::parse(text);
     let inline = blocks
         .first()
         .is_some_and(|block| block.prefix.is_empty() && !block.chars.is_empty());
@@ -2542,22 +2897,20 @@ fn labelled(
             .saturating_sub(indent)
             .saturating_sub(label.width())
             .max(1);
-        let mut lines = crate::markdown::wrap(&blocks, body, crate::markdown::Options::compact());
+        let mut lines = wrap_head(blocks, body, MAX_ENTRY_ROWS);
         let first = lines.remove(0);
-        let mut rows = vec![first.prepend(&label, style).prepend(gutter, AGE_STYLE)];
+        let mut rows = vec![first.prepend(&label, style)];
         rows.extend(lines.into_iter().map(|line| line.indent(indent)));
         return (rows, false);
     }
     // Nothing shares the label's row in this branch, so the body gets the width back - all
     // but the gutter, which every row of an entry leaves clear.
-    let mut lines = crate::markdown::wrap(
-        &blocks,
+    let mut lines = wrap_head(
+        blocks,
         width.saturating_sub(indent).max(1),
-        crate::markdown::Options::compact(),
+        MAX_ENTRY_ROWS - 1,
     );
-    let mut labelled = vec![MdLine::plain("")
-        .prepend(label.trim_end(), style)
-        .prepend(gutter, AGE_STYLE)];
+    let mut labelled = vec![MdLine::plain("").prepend(label.trim_end(), style)];
     labelled.extend(lines.drain(..).map(|line| line.indent(indent)));
     (labelled, true)
 }
@@ -5158,7 +5511,7 @@ mod tests {
         run.origin_run_id = Some(format!("claude:{origin}"));
         run.previous_run_id = Some(format!("claude:{previous}"));
         for width in [20, 32, 60] {
-            let header = run_header(&run, width, 0);
+            let header = run_header(&RunFacts::of(&run), width, 0);
             assert!(header.iter().all(|row| row.text.chars().count() <= width));
             for (label, expected) in [("origin", origin), ("previous", previous)] {
                 let field: String = header
@@ -7070,29 +7423,343 @@ mod tests {
 
         let history = run_history(&run, 30, 100, 0);
         assert_eq!(history.entries.len(), MAX_ENTRY_ROWS);
-        // Three rows kept, so the marker speaks for everything from the fourth on - the count
-        // is the rows the cap dropped rather than a round number.
-        let rows = labelled(
-            &run.entries[0].text,
-            "prompt",
-            &age_gutter(100, None),
-            wrap_width(30).expect("wide enough"),
-            LABEL_STYLE,
-        )
-        .0
-        .len();
-        assert!(rows > MAX_ENTRY_ROWS, "{rows} rows before the cap");
+        // Three rows kept, and the marker speaks for everything from the fourth on.
         assert_eq!(
             history.entries.last().expect("four rows").text.trim(),
-            format!("… +{} lines", rows - (MAX_ENTRY_ROWS - 1))
+            CAPPED_MARKER
         );
 
         // The event keeps the whole of what it said, which is what makes the cap honest: the
         // pane opens this rather than the three rows it drew.
         assert_eq!(history.events.len(), 1);
-        assert_eq!(history.events[0].text, run.entries[0].text);
+        assert_eq!(&*history.events[0].text, run.entries[0].text);
         assert_eq!(history.events[0].kind, "prompt");
         assert_eq!(history.events[0].len, MAX_ENTRY_ROWS);
+    }
+
+    /// A run shaped like a real one: every kind the timeline draws, a harness prompt that is
+    /// drawn as its digest, an entry too long for the cap, entries with and without stamps, and
+    /// a rolling summary.
+    fn a_mixed_run() -> AgentRun {
+        let mut run = a_pane_run();
+        let entry = |revision: u64, kind: RunEntryKind, text: String, created_at_ms| RunEntry {
+            revision,
+            event_id: None,
+            kind,
+            text,
+            created_at_ms,
+        };
+        run.entries = vec![
+            entry(
+                1,
+                RunEntryKind::Prompt,
+                "fix the **flaky** test".to_owned(),
+                Some(0),
+            ),
+            entry(2, RunEntryKind::Prompt, task_notification(3), Some(60_000)),
+            entry(
+                3,
+                RunEntryKind::Plan,
+                "- one\n- two\n\n# Then\n\ndone".to_owned(),
+                None,
+            ),
+            entry(
+                4,
+                RunEntryKind::Message,
+                "word ".repeat(80),
+                Some(3_600_000),
+            ),
+            entry(
+                5,
+                RunEntryKind::Summary,
+                "Fixed it.".to_owned(),
+                Some(7_200_000),
+            ),
+        ];
+        run.summary = Some(a_summary("Fixed it, and ran the suite.", false));
+        run
+    }
+
+    /// Keeping the parse is only allowed to change what the half costs, never what it draws:
+    /// one `ParsedRun` walked through several widths draws exactly what a fresh `run_history`
+    /// draws at each of them, and a later minute re-reads every age.
+    #[test]
+    fn a_kept_parse_draws_what_a_fresh_one_draws_at_every_width() {
+        let run = a_mixed_run();
+        let mut parsed = ParsedRun::new(&run);
+        for (width, now) in [(80, 100), (30, 100), (57, 90_000_000), (80, 100)] {
+            assert_eq!(
+                parsed.lines(width, now, 0),
+                run_history(&run, width, now, 0),
+                "width {width} at {now}"
+            );
+        }
+        // Resizing and the clock re-wrap and re-stamp; they never parse.
+        assert_eq!(parsed.parses, 6);
+    }
+
+    /// A run that grew by an entry costs the parse of that entry, and draws what the whole
+    /// run parsed afresh draws.
+    #[test]
+    fn a_grown_run_parses_only_what_is_new() {
+        let mut run = a_mixed_run();
+        let mut parsed = ParsedRun::new(&run);
+        let _ = parsed.lines(60, 100, 0);
+        let before = parsed.parses;
+
+        run.entries.push(RunEntry {
+            revision: 6,
+            event_id: None,
+            kind: RunEntryKind::Question,
+            text: "Shall I push?".to_owned(),
+            created_at_ms: Some(8_000_000),
+        });
+        parsed.update(&run);
+        assert_eq!(parsed.lines(60, 100, 0), run_history(&run, 60, 100, 0));
+        assert_eq!(parsed.parses - before, 1, "only the question");
+    }
+
+    /// A revision that comes back a different length is parsed again rather than drawn as what
+    /// it used to say - and so is a rolling summary that changed. Only the length is read of a
+    /// recorded entry (see `ParsedEvent::is`), so the rewrite here is deliberately not the
+    /// length it was.
+    #[test]
+    fn an_entry_that_changed_is_parsed_again() {
+        let mut run = a_mixed_run();
+        let mut parsed = ParsedRun::new(&run);
+        let _ = parsed.lines(60, 100, 0);
+        let before = parsed.parses;
+
+        run.entries[0].text = "fix the *other* test".to_owned();
+        assert_ne!(
+            run.entries[0].text.len(),
+            a_mixed_run().entries[0].text.len()
+        );
+        run.summary = Some(a_summary("Something else entirely.", true));
+        parsed.update(&run);
+        assert_eq!(parsed.lines(60, 100, 0), run_history(&run, 60, 100, 0));
+        assert_eq!(parsed.parses - before, 2);
+
+        // And one the run dropped is dropped here too.
+        run.entries.remove(1);
+        parsed.update(&run);
+        assert_eq!(parsed.lines(60, 100, 0), run_history(&run, 60, 100, 0));
+    }
+
+    /// The rolling summary is rewritten in place, so it is recognised by what it says and not
+    /// by its length: one that came back the same size saying something else is parsed again.
+    #[test]
+    fn a_summary_rewritten_to_the_same_length_is_parsed_again() {
+        let mut run = a_mixed_run();
+        let mut parsed = ParsedRun::new(&run);
+        let _ = parsed.lines(60, 100, 0);
+        let before = parsed.parses;
+
+        let old = run.summary.as_ref().expect("a summary").text.clone();
+        let new = "Broke it, and ran the suite.";
+        assert_eq!(old.len(), new.len());
+        run.summary = Some(a_summary(new, false));
+        parsed.update(&run);
+        assert_eq!(parsed.lines(60, 100, 0), run_history(&run, 60, 100, 0));
+        assert_eq!(parsed.parses - before, 1, "only the summary");
+    }
+
+    /// Entries are recognised by revision, and revisions are only unique within a run, so a
+    /// parse handed another run starts over: its revision 1 is not this one's, however alike
+    /// the two look from outside.
+    #[test]
+    fn another_run_is_parsed_afresh_however_alike_its_revisions_are() {
+        let run = a_mixed_run();
+        let mut parsed = ParsedRun::new(&run);
+        let _ = parsed.lines(60, 100, 0);
+
+        let mut other = run.clone();
+        other.id = "claude:session-2".to_owned();
+        other.entries[0].text = "fix the **stale** test".to_owned();
+        assert_eq!(other.entries[0].text.len(), run.entries[0].text.len());
+        parsed.update(&other);
+        assert_eq!(parsed.lines(60, 100, 0), run_history(&other, 60, 100, 0));
+        assert!(parsed
+            .lines(60, 100, 0)
+            .entries
+            .iter()
+            .any(|line| line.text.contains("stale")));
+    }
+
+    /// A stamp is read by the gutter and nothing else, so an entry whose stamp was corrected
+    /// keeps its parse - and is still drawn with the age the new stamp gives it.
+    #[test]
+    fn a_restamped_entry_is_not_parsed_again() {
+        let mut run = a_mixed_run();
+        let mut parsed = ParsedRun::new(&run);
+        let _ = parsed.lines(60, 90_000_000, 0);
+        let before = parsed.parses;
+
+        // A new age, a stamp where there was none - which widens the gutter the rows were
+        // wrapped beside - and the same for the rolling summary.
+        run.entries[0].created_at_ms = Some(89_000_000);
+        run.entries[2].created_at_ms = Some(60_000);
+        run.summary.as_mut().expect("a summary").created_at_ms = Some(80_000_000);
+        parsed.update(&run);
+        assert_eq!(
+            parsed.lines(60, 90_000_000, 0),
+            run_history(&run, 60, 90_000_000, 0)
+        );
+        assert_eq!(parsed.parses, before);
+    }
+
+    /// A minute on, the timeline restamped in place is the one drawn afresh at that minute -
+    /// and one of another shape than the parse would draw is refused and left as it was.
+    #[test]
+    fn a_restamped_timeline_is_the_one_drawn_at_the_new_minute() {
+        let run = a_mixed_run();
+        let mut parsed = ParsedRun::new(&run);
+        let mut lines = parsed.lines(60, 100, 0);
+        for now in [90_000_000, 90_060_000, 200_000_000, 200_000_000] {
+            assert!(parsed.restamp(&mut lines, now), "at {now}");
+            assert_eq!(lines, run_history(&run, 60, now, 0), "at {now}");
+        }
+
+        let mut other = HistoryLines::default();
+        assert!(!parsed.restamp(&mut other, 5));
+        assert_eq!(other, HistoryLines::default());
+    }
+
+    /// The timeline's parse is handed to a reader only where it is the whole of the event's
+    /// text - and only for that very event, not another holding the same words.
+    #[test]
+    fn only_an_event_parsed_whole_shares_its_parse() {
+        let run = a_mixed_run();
+        let mut parsed = ParsedRun::new(&run);
+        let lines = parsed.lines(60, 100, 0);
+        let options = crate::markdown::Options::compact();
+
+        let blocks = parsed
+            .whole_blocks(&lines.events[0].text)
+            .expect("a short prompt is parsed whole");
+        assert_eq!(
+            crate::markdown::wrap(&blocks, 40, options),
+            crate::markdown::render(&run.entries[0].text, 40, options)
+        );
+        assert!(
+            parsed.whole_blocks(&lines.events[1].text).is_none(),
+            "a prompt drawn as its digest"
+        );
+        assert!(
+            parsed
+                .whole_blocks(&Arc::from(&*lines.events[0].text))
+                .is_none(),
+            "the same words, somewhere else"
+        );
+
+        let mut long = a_pane_run();
+        long.entries = vec![RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: RunEntryKind::Message,
+            text: "word ".repeat(ENTRY_HEAD_BYTES),
+            created_at_ms: None,
+        }];
+        let mut parsed = ParsedRun::new(&long);
+        let lines = parsed.lines(60, 100, 0);
+        assert!(
+            parsed.whole_blocks(&lines.events[0].text).is_none(),
+            "an event parsed only in part"
+        );
+    }
+
+    /// An entry that is one enormous block - a paragraph, a code fence, a table - is parsed
+    /// and wrapped only as far as the timeline draws it, and is still capped and still opens
+    /// whole. The cap used to stop only between blocks, so an entry like these was wrapped in
+    /// full on every resize step and then cut to four rows.
+    #[test]
+    fn one_enormous_block_is_parsed_only_as_far_as_its_head() {
+        let table = std::iter::once("| id | what |\n|---|---|".to_owned())
+            .chain((0..4_000).map(|n| format!("| {n} | {} |", "cell ".repeat(4))))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fence = format!(
+            "```\n{}\n```",
+            (0..5_000)
+                .map(|n| format!("let line_{n} = {n};"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        for (shape, text) in [
+            ("paragraph", "word ".repeat(20_000)),
+            ("fence", fence),
+            ("table", table),
+        ] {
+            assert!(text.len() >= 100_000, "{shape} is {} bytes", text.len());
+            let mut run = a_pane_run();
+            run.entries = vec![RunEntry {
+                revision: 1,
+                event_id: None,
+                kind: RunEntryKind::Message,
+                text: text.clone(),
+                created_at_ms: None,
+            }];
+
+            let parsed = ParsedRun::new(&run);
+            assert!(
+                parsed.parsed_chars() <= ENTRY_HEAD_BYTES,
+                "{shape} kept {} characters",
+                parsed.parsed_chars()
+            );
+
+            let history = run_history(&run, 60, 100, 0);
+            assert_eq!(history.entries.len(), MAX_ENTRY_ROWS, "{shape}");
+            assert_eq!(
+                history.entries.last().expect("four rows").text.trim(),
+                CAPPED_MARKER,
+                "{shape}"
+            );
+            assert_eq!(&*history.events[0].text, text, "{shape} opens whole");
+        }
+    }
+
+    /// An event parsed only in part says there is more even when its head fits: what was
+    /// parsed is not all it said. Whole, the same rows are left alone.
+    #[test]
+    fn a_partly_parsed_event_is_capped_however_short_its_head() {
+        let rows = vec![MdLine::plain("one"), MdLine::plain("two")];
+        let whole = cap_rows(rows.clone(), 2, true);
+        assert_eq!(whole, rows);
+
+        let part = cap_rows(rows, 2, false);
+        assert_eq!(part.len(), 3);
+        assert_eq!(part[..2], whole[..]);
+        assert_eq!(part[2].text.trim(), CAPPED_MARKER);
+    }
+
+    /// A head is only ever a saving: on text short enough to be parsed whole, the timeline is
+    /// the one the whole parse draws, at every width.
+    #[test]
+    fn a_parsed_head_draws_what_the_whole_parse_draws() {
+        let run = a_mixed_run();
+        for width in [20, 30, 57, 80] {
+            let Some(inner) = wrap_width(width) else {
+                continue;
+            };
+            for entry in &run.entries {
+                let whole = crate::markdown::parse(&entry.text);
+                let (head, complete) =
+                    crate::markdown::parse_head(&entry.text, ENTRY_HEAD_BLOCKS, ENTRY_HEAD_BYTES);
+                let draw = |blocks: &[crate::markdown::MdBlock], complete| {
+                    cap_rows(
+                        labelled_blocks(blocks, "message", 3, inner, LABEL_STYLE).0,
+                        3,
+                        complete,
+                    )
+                };
+                assert_eq!(
+                    draw(&head, complete),
+                    draw(&whole, true),
+                    "{:?} at {width}",
+                    entry.text
+                );
+            }
+        }
     }
 
     /// An event that fits is left alone: the marker costs a row, so spending one to say "one
@@ -7156,9 +7823,9 @@ mod tests {
 
         // The stamp travels with the event, so a reader's divider can go on ticking.
         assert_eq!(history.events[0].created_at_ms, Some(40));
-        assert_eq!(history.events[1].text, "Ship it?");
+        assert_eq!(&*history.events[1].text, "Ship it?");
         assert_eq!(history.events[2].kind, "summary");
-        assert_eq!(history.events[2].text, "Ran the tests, all green.");
+        assert_eq!(&*history.events[2].text, "Ran the tests, all green.");
     }
 
     /// Everything in the half is markdown by the time it gets here - a prompt is what the user
@@ -7860,7 +8527,7 @@ mod tests {
     fn the_history_event_behind_a_digest_still_carries_the_raw_prompt() {
         let raw = task_notification(3);
         let history = run_history(&run_of_prompts(&[&raw]), 52, 10, 0);
-        assert_eq!(history.events[0].text, raw);
+        assert_eq!(&*history.events[0].text, raw);
         assert_eq!(history.events[0].kind, "prompt");
     }
 
@@ -7885,7 +8552,7 @@ mod tests {
         let prose = "fix the flaky reconnect test\n\n- check the timeout\n- check the retry";
         let run = run_of_prompts(&[prose]);
         let history = run_history(&run, 52, 10, 0);
-        assert_eq!(history.events[0].text, prose);
+        assert_eq!(&*history.events[0].text, prose);
 
         // Byte for byte what an entry of any other kind renders to.
         let mut same = a_pane_run();
