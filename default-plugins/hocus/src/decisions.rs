@@ -243,6 +243,15 @@ impl State {
         self.status = Status::Idle;
         if let Some(call) = self.pending.front().cloned() {
             if approved {
+                // Say what Jev answered here too, so an automatic run is as
+                // visible on screen as a declined one.
+                if let Ok(answers) = &response {
+                    self.messages.push(Message::notice(format!(
+                        "{}; auto-approved {}",
+                        approval::verdict(answers, gate),
+                        call.name
+                    )));
+                }
                 // Use the normal dispatcher once; never turn this into standing authority.
                 if self.run_head(&call) {
                     self.pump_tools();
