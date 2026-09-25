@@ -13,12 +13,26 @@
 //!
 //! Note this measures the native build. The plugin runs as wasm, so treat these as relative
 //! figures for comparing one revision against another, not as real frame times.
+//!
+//! `agents_history` is the same question asked of the agents pane's history half, which draws
+//! one run's timeline. `full` is what a history-cache miss cost before `agents::ParsedRun`: every
+//! entry parsed and wrapped again, on every resize step and every time the run grew. `resize`
+//! is what a resize step costs now. `grown` is everything the pane does with the run hocus sends
+//! once it has one more entry - the JSON fingerprinted and compared with what is held, decoded,
+//! the parse brought up to date and drawn - so the decode is counted rather than left out of the
+//! comparison. `resent` is the same run sent again, which is one fingerprint and nothing else.
+//!
+//! `agents_history_huge_block` asks it of a run whose entries are each one enormous block - a
+//! code fence, a paragraph, a table - which `long_run`'s many-block entries never exercise. The
+//! timeline draws four rows of each, so `resize` is expected to cost about what it does on
+//! `long_run`, not to grow with the size of the blocks.
 
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use hocus::ui;
 use hocus::{Message, State};
+use hocus_proto::agents::{self, AgentRun, RunEntry, RunEntryKind};
 use std::hint::black_box;
 
 /// A typical hocus pane: wide enough for prose, narrow enough to wrap it.
@@ -134,5 +148,166 @@ fn bench(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench);
+/// A run shaped like the one that made the agents pane stall on resize: 140 entries and a
+/// quarter of a megabyte of markdown, mostly assistant messages, with a few plans and results
+/// long enough to be capped.
+fn long_run() -> AgentRun {
+    let entries = (0..140u64)
+        .map(|n| {
+            let (kind, repeat) = match n % 10 {
+                0 => (RunEntryKind::Prompt, 1),
+                4 => (RunEntryKind::Plan, 12),
+                9 => (RunEntryKind::Result, 6),
+                _ => (RunEntryKind::Message, 1),
+            };
+            RunEntry {
+                revision: n + 1,
+                event_id: None,
+                kind,
+                text: reply(n as usize).repeat(repeat),
+                created_at_ms: Some(n as i64 * 60_000),
+            }
+        })
+        .collect();
+    AgentRun {
+        id: "claude:bench".to_owned(),
+        pane_id: 1,
+        zellij_session_name: "bench".to_owned().into(),
+        host_id: zellij_tile::prelude::HostId::default(),
+        origin_run_id: None,
+        previous_run_id: None,
+        session_id: "bench".to_owned(),
+        kind: "claude".to_owned(),
+        cwd: None,
+        host: None,
+        worktree: None,
+        started_at_ms: 0,
+        ended_at_ms: None,
+        outcome: agents::RunOutcome::Active,
+        revision: 140,
+        summarized_revision: 0,
+        summary: None,
+        entries,
+    }
+}
+
+/// A run of a few entries of 100KB each, every one of them a single markdown block.
+fn huge_block_run() -> AgentRun {
+    let fence = format!(
+        "```\n{}\n```",
+        (0..5_000)
+            .map(|n| format!("let line_{n} = {n};"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let paragraph = "word ".repeat(20_000);
+    let table = std::iter::once("| id | what |\n|---|---|".to_owned())
+        .chain((0..4_000).map(|n| format!("| {n} | {} |", "cell ".repeat(4))))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut run = long_run();
+    run.entries = [fence, paragraph, table]
+        .into_iter()
+        .cycle()
+        .take(9)
+        .zip(1u64..)
+        .map(|(text, revision)| RunEntry {
+            revision,
+            event_id: None,
+            kind: RunEntryKind::Message,
+            text,
+            created_at_ms: Some(revision as i64 * 60_000),
+        })
+        .collect();
+    run.revision = run.entries.len() as u64;
+    run
+}
+
+fn agents_history_huge_block(c: &mut Criterion) {
+    let mut group = c.benchmark_group("agents_history_huge_block");
+    let run = huge_block_run();
+    let bytes: usize = run.entries.iter().map(|entry| entry.text.len()).sum();
+    group.throughput(Throughput::Bytes(bytes as u64));
+
+    group.bench_function("full", |b| {
+        b.iter(|| black_box(agents::run_history(black_box(&run), COLS, 0, 0)));
+    });
+
+    group.bench_function("resize", |b| {
+        let mut parsed = agents::ParsedRun::new(&run);
+        let mut width = COLS;
+        b.iter(|| {
+            width = if width == COLS { COLS - 1 } else { COLS };
+            black_box(parsed.lines(width, 0, 0))
+        });
+    });
+
+    group.finish();
+}
+
+fn agents_history(c: &mut Criterion) {
+    let mut group = c.benchmark_group("agents_history");
+    let run = long_run();
+    let bytes: usize = run.entries.iter().map(|entry| entry.text.len()).sum();
+    group.throughput(Throughput::Bytes(bytes as u64));
+
+    // Every entry parsed and wrapped from scratch: the old cost of every miss.
+    group.bench_function("full", |b| {
+        b.iter(|| black_box(agents::run_history(black_box(&run), COLS, 0, 0)));
+    });
+
+    // One resize step: a width the parse has not been wrapped to yet.
+    group.bench_function("resize", |b| {
+        let mut parsed = agents::ParsedRun::new(&run);
+        let mut width = COLS;
+        b.iter(|| {
+            width = if width == COLS { COLS - 1 } else { COLS };
+            black_box(parsed.lines(width, 0, 0))
+        });
+    });
+
+    // hocus sending the run again with one more entry on it, at an unchanged width: what the
+    // agents pane's `AGENT_RUN_DETAIL` handler and its next history miss do with it.
+    group.bench_function("grown", |b| {
+        let mut grown = run.clone();
+        grown.entries.push(RunEntry {
+            revision: 1_000,
+            event_id: None,
+            kind: RunEntryKind::Message,
+            text: reply(1_000),
+            created_at_ms: None,
+        });
+        let held = agents::run_payload_fingerprint(&serde_json::to_string(&run).expect("encoded"));
+        let payload = serde_json::to_string(&grown).expect("encoded");
+        let mut parsed = agents::ParsedRun::new(&run);
+        let _ = parsed.lines(COLS, 0, 0);
+        b.iter_custom(|iters| {
+            let mut elapsed = Duration::ZERO;
+            for _ in 0..iters {
+                // Untimed: back to the shorter run, so each iteration measures one new entry.
+                parsed.update(&run);
+                let _ = parsed.lines(COLS, 0, 0);
+                let start = Instant::now();
+                if black_box(held) != agents::run_payload_fingerprint(black_box(&payload)) {
+                    let decoded: AgentRun = serde_json::from_str(&payload).expect("decoded");
+                    parsed.update(&decoded);
+                    black_box(parsed.lines(COLS, 0, 0));
+                }
+                elapsed += start.elapsed();
+            }
+            elapsed
+        });
+    });
+
+    // The same run sent again, which the handler answers by comparing bytes.
+    group.bench_function("resent", |b| {
+        let payload = serde_json::to_string(&run).expect("encoded");
+        let held = agents::run_payload_fingerprint(&payload);
+        b.iter(|| black_box(held == agents::run_payload_fingerprint(black_box(&payload))));
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, bench, agents_history, agents_history_huge_block);
 criterion_main!(benches);

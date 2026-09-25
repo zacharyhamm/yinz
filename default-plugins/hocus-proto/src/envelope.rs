@@ -731,6 +731,31 @@ impl Section {
     }
 }
 
+/// One section of [`wrap_sections`], parsed: its fold row, and its body when it is open.
+///
+/// Apart from the wrap so a caller that redraws the reader at many widths - every step of a
+/// pane-edge drag - can keep this, which depends on nothing but the section, and parse again
+/// only the one whose fold was toggled.
+pub fn section_blocks(section: &Section) -> Vec<markdown::MdBlock> {
+    let name = escape_inline(&section.name);
+    let cut = match section.truncated {
+        true => " · cut",
+        false => "",
+    };
+    let source = match (section.foldable(), section.open) {
+        (false, _) => match &section.path {
+            Some(path) => format!("**{name}** {}", escape_inline(path)),
+            None => format!("**{name}** {}", escape_inline(&section.text)),
+        },
+        (true, false) => format!("▸ **{name}** · {} lines{cut}", section.lines),
+        (true, true) => format!(
+            "▾ **{name}** · {} lines{cut}\n\n{}",
+            section.lines, section.text
+        ),
+    };
+    markdown::parse(&source)
+}
+
 /// The reader's body: every section's rows, and where each section's rows begin.
 ///
 /// Rendered per section and concatenated rather than as one document, so a caller can put a
@@ -741,37 +766,22 @@ impl Section {
 /// and it gets rendered the way a `result:` entry already is, headings and lists and all.
 /// Indenting it would cost the reader the columns it exists to provide, and four spaces is a
 /// code block in markdown anyway.
-pub fn reader_lines(sections: &[Section], width: usize) -> ReaderLines {
+///
+/// Takes sections already parsed by [`section_blocks`], one slice per section.
+pub fn wrap_sections<'a>(
+    sections: impl IntoIterator<Item = &'a [markdown::MdBlock]>,
+    width: usize,
+) -> ReaderLines {
     let mut lines: Vec<MdLine> = Vec::new();
-    let mut starts: Vec<usize> = Vec::with_capacity(sections.len());
-    let options = markdown::Options::compact();
-    for section in sections {
+    let mut starts: Vec<usize> = Vec::new();
+    for blocks in sections {
         starts.push(lines.len());
-        let mut source = String::new();
-        let name = escape_inline(&section.name);
-        let cut = match section.truncated {
-            true => " · cut",
-            false => "",
-        };
-        match (section.foldable(), section.open) {
-            (false, _) => match &section.path {
-                Some(path) => source.push_str(&format!("**{name}** {}", escape_inline(path))),
-                None => source.push_str(&format!("**{name}** {}", escape_inline(&section.text))),
-            },
-            (true, false) => {
-                source.push_str(&format!("▸ **{name}** · {} lines{cut}", section.lines))
-            },
-            (true, true) => source.push_str(&format!(
-                "▾ **{name}** · {} lines{cut}\n\n{}",
-                section.lines, section.text
-            )),
-        }
-        lines.extend(markdown::render(&source, width, options));
+        lines.extend(markdown::wrap(blocks, width, markdown::Options::compact()));
     }
     ReaderLines { lines, starts }
 }
 
-/// [`reader_lines`]' answer: the rows, and one start per section.
+/// [`wrap_sections`]' answer: the rows, and one start per section.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReaderLines {
     pub lines: Vec<MdLine>,
@@ -1808,6 +1818,12 @@ mod tests {
     }
 
     // -- the reader's rows --------------------------------------------------
+
+    /// The reader's rows for `sections`, parsed and wrapped the way the reader does.
+    fn reader_lines(sections: &[Section], width: usize) -> ReaderLines {
+        let blocks: Vec<Vec<markdown::MdBlock>> = sections.iter().map(section_blocks).collect();
+        wrap_sections(blocks.iter().map(Vec::as_slice), width)
+    }
 
     /// The spans have to tile the rows exactly, or a cursor lands on a section that does not
     /// own the row under it — the same invariant `HistoryLines::events` holds.

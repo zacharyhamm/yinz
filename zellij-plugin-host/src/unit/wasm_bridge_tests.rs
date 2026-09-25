@@ -2563,9 +2563,9 @@ fn assert_reload_recovers(wasm: bool, by_url: bool) {
         assert!(map.rekey_client(id, ClientId::new(1), owner));
         let plugin = map.get_running_plugin(id, Some(owner)).unwrap();
         let mut running = plugin.lock().unwrap();
-        // Live values must win over the original insertion snapshot.
-        running.rows = 13;
-        running.columns = 37;
+        // Live values must win over the original insertion snapshot - the size included,
+        // asked and not yet drawn.
+        running.resize.request(13, 37);
         running.env_mut().plugin_cwd = cwd.clone();
         running.env_mut().tab_index = Some(TabId::new(4));
         Arc::downgrade(&plugin)
@@ -2815,8 +2815,10 @@ fn removing_an_instance_retains_latest_values_and_url_lookup_deduplicates_ids() 
     let weak = Arc::downgrade(&plugin);
     {
         let mut running = plugin.lock().unwrap();
-        running.rows = 17;
-        running.columns = 42;
+        // Asked and not yet drawn, as a resize is while it waits behind a busy render: the
+        // drawn size is still the old one.
+        running.resize.request(17, 42);
+        assert_ne!((running.rows, running.columns), (17, 42));
         running.env_mut().plugin_cwd = PathBuf::from("/changed");
         running.env_mut().tab_index = Some(TabId::new(9));
     }
@@ -3436,4 +3438,408 @@ fn runtime_failure_keeps_the_healthy_peer_and_stale_failures_cannot_retire_a_rel
         assert_eq!(test.pipe_acknowledgements(), ["replacement"]);
         test.bridge.unload_plugin(plugin).unwrap();
     }
+}
+
+/// What each `PluginBytes` the bridge sent for `plugin` drew, in order.
+fn frames(test: &mut TestBridge, plugin: PluginId) -> Vec<String> {
+    frames_by_client(test, plugin)
+        .into_iter()
+        .map(|(_, drawn)| drawn)
+        .collect()
+}
+
+/// [`frames`], with the client each one was drawn for.
+fn frames_by_client(test: &mut TestBridge, plugin: PluginId) -> Vec<(ClientId, String)> {
+    test.receiver::<ScreenInstruction>()
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ScreenInstruction::PluginBytes(assets) => Some(assets),
+            _ => None,
+        })
+        .flatten()
+        .filter(|asset| asset.plugin_id == plugin)
+        .filter_map(|asset| {
+            let drawn = String::from_utf8_lossy(&asset.bytes).into_owned();
+            let start = drawn.find("size ")?;
+            let end = start + drawn[start..].find(';')?;
+            Some((asset.client_id, drawn[start..end].to_owned()))
+        })
+        .collect()
+}
+
+fn a_plugin_that_draws_its_size(test: &mut TestBridge) -> PluginId {
+    let plugin = PluginId::new(1);
+    let context = test.context(
+        1,
+        1,
+        "export default { pipe() { return true; }, render(rows: number, columns: number) { return `size ${rows}x${columns};`; } };",
+    );
+    test.load(context).unwrap();
+    test.settle(plugin);
+    let _ = frames(test, plugin);
+    plugin
+}
+
+/// Resizes queued behind a busy plugin are drawn once, at the newest size, rather than replayed
+/// one by one after the plugin frees up - which is what a pane-edge drag over a slow plugin
+/// used to cost: seconds of stale frames ahead of the next key.
+///
+/// Counting frames is deliberate here and cannot vary: the executor is held while all four
+/// resizes are queued, so every one of them is issued before any of them runs.
+#[test]
+fn resizes_queued_behind_a_busy_plugin_draw_only_the_newest_size() {
+    let mut test = TestBridge::new();
+    let plugin = a_plugin_that_draws_its_size(&mut test);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+
+    let release = test.hold_executor(plugin);
+    for columns in [30, 31, 32, 33] {
+        test.bridge
+            .resize_plugin(plugin, columns, 10, shutdown.clone())
+            .unwrap();
+    }
+    release.send(()).unwrap();
+    test.settle(plugin);
+    assert_eq!(frames(&mut test, plugin), ["size 10x33"]);
+
+    // A drag that ends where it began still draws: the screen resized the pane to the size in
+    // between, whose render was skipped.
+    let release = test.hold_executor(plugin);
+    for columns in [40, 33] {
+        test.bridge
+            .resize_plugin(plugin, columns, 10, shutdown.clone())
+            .unwrap();
+    }
+    release.send(()).unwrap();
+    test.settle(plugin);
+    assert_eq!(frames(&mut test, plugin), ["size 10x33"]);
+
+    // And a resize to the size it already has, with nothing skipped, still draws nothing.
+    test.bridge
+        .resize_plugin(plugin, 33, 10, shutdown.clone())
+        .unwrap();
+    test.settle(plugin);
+    assert!(frames(&mut test, plugin).is_empty());
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+/// A shared instance rekeyed to another client when its owner leaves keeps its record of the
+/// last resize it ran, so a drag that ends where it began still draws. Keyed by client, the
+/// record stayed behind with the departed owner, and the rekeyed instance took the final resize
+/// as its first: same size, nothing skipped, no frame.
+///
+/// The one frame counted cannot vary: the setup's frames are drained first, and the executor is
+/// held while both resizes are queued, so both are issued before either runs.
+#[test]
+fn a_rekeyed_shared_plugin_still_draws_a_drag_that_ends_where_it_began() {
+    let mut test = TestBridge::new();
+    let owner = ClientId::new(1);
+    let new_owner = ClientId::new(2);
+    let plugin = a_shared_plugin_that_draws_its_size(&mut test, owner, &[owner, new_owner]);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .resize_plugin(plugin, 30, 10, shutdown.clone())
+        .unwrap();
+    test.settle(plugin);
+    test.bridge.remove_client(owner);
+    test.settle(plugin);
+    assert_eq!(
+        test.bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .owner_client_ids_of_plugin_id(plugin),
+        [new_owner]
+    );
+    let _ = frames(&mut test, plugin);
+
+    let release = test.hold_executor(plugin);
+    for columns in [40, 30] {
+        test.bridge
+            .resize_plugin(plugin, columns, 10, shutdown.clone())
+            .unwrap();
+    }
+    release.send(()).unwrap();
+    test.settle(plugin);
+    assert_eq!(frames(&mut test, plugin), ["size 10x30"]);
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+/// A shared plugin that draws its size, owned by `owner`, with every one of `clients` attached.
+fn a_shared_plugin_that_draws_its_size(
+    test: &mut TestBridge,
+    owner: ClientId,
+    clients: &[ClientId],
+) -> PluginId {
+    for client in clients {
+        test.bridge.add_client(*client).unwrap();
+    }
+    let path = test._dirs[0].path().join("shared.ts");
+    std::fs::write(
+        &path,
+        "export default { render(rows: number, columns: number) { return `size ${rows}x${columns};`; } };",
+    )
+    .unwrap();
+    let mut run =
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", path.display()))
+            .unwrap();
+    run.configuration.insert("shared", "true");
+    let (plugin, _) = test
+        .bridge
+        .load_plugin(
+            &Some(run),
+            None,
+            Size { rows: 10, cols: 80 },
+            None,
+            false,
+            Some(owner),
+        )
+        .unwrap();
+    test.settle(plugin);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .apply_cached_events(vec![plugin], false, shutdown)
+        .unwrap();
+    test.settle(plugin);
+    plugin
+}
+
+/// A coalesced resize draws for the clients connected when it draws, not for those connected
+/// when it was queued. The job that draws is the oldest one queued, so a client that attached
+/// during the drag would otherwise get no frame at the final size, and one that left would
+/// still be drawn for.
+///
+/// One frame per client cannot vary: the executor is held across both resizes and the change of
+/// clients, so a single job draws, once for each client connected when it runs.
+#[test]
+fn a_coalesced_resize_draws_for_the_clients_connected_when_it_draws() {
+    let mut test = TestBridge::new();
+    let owner = ClientId::new(1);
+    let leaving = ClientId::new(2);
+    let joining = ClientId::new(3);
+    let plugin = a_shared_plugin_that_draws_its_size(&mut test, owner, &[owner, leaving]);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+    let _ = frames(&mut test, plugin);
+
+    let release = test.hold_executor(plugin);
+    for columns in [30, 31] {
+        test.bridge
+            .resize_plugin(plugin, columns, 10, shutdown.clone())
+            .unwrap();
+    }
+    test.bridge.remove_client(leaving);
+    test.bridge.add_client(joining).unwrap();
+    release.send(()).unwrap();
+    test.settle(plugin);
+
+    let mut drawn = frames_by_client(&mut test, plugin);
+    drawn.sort_by_key(|(client, _)| *client);
+    assert_eq!(
+        drawn,
+        [
+            (owner, "size 10x31".to_owned()),
+            (joining, "size 10x31".to_owned())
+        ]
+    );
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+/// A resize that queues nothing - here because the plugin is pending again, so the size is
+/// cached for when it is ready - must not supersede one that is already queued: nothing would
+/// draw in its place.
+///
+/// The one frame counted cannot vary: the executor is held while the first resize queues its
+/// job, and the second queues none, so exactly one job runs once it is released.
+#[test]
+fn a_resize_that_queues_nothing_does_not_cancel_a_queued_one() {
+    let mut test = TestBridge::new();
+    let plugin = a_plugin_that_draws_its_size(&mut test);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+
+    let release = test.hold_executor(plugin);
+    test.bridge
+        .resize_plugin(plugin, 40, 10, shutdown.clone())
+        .unwrap();
+    test.bridge
+        .cached_resizes_for_pending_plugins
+        .insert(plugin, (10, 40));
+    test.bridge
+        .resize_plugin(plugin, 50, 10, shutdown.clone())
+        .unwrap();
+    release.send(()).unwrap();
+    test.settle(plugin);
+    assert_eq!(frames(&mut test, plugin), ["size 10x40"]);
+    assert_eq!(
+        test.bridge.cached_resizes_for_pending_plugins[&plugin],
+        (10, 50)
+    );
+    test.bridge
+        .cached_resizes_for_pending_plugins
+        .remove(&plugin);
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+#[test]
+fn a_resize_after_unload_leaves_no_resize_slot_behind() {
+    let mut test = TestBridge::new();
+    let plugin = a_plugin_that_draws_its_size(&mut test);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .resize_plugin(plugin, 40, 10, shutdown.clone())
+        .unwrap();
+    assert!(test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .has_resize_slots(plugin));
+    test.bridge.unload_plugin(plugin).unwrap();
+    test.bridge.resize_plugin(plugin, 50, 10, shutdown).unwrap();
+    assert!(!test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .has_resize_slots(plugin));
+}
+
+/// A frame is owed by any change of asked size, even back to the one last drawn, and by
+/// nothing else; drawing pays it off, and a request after that owes the next one. An instance's
+/// first resize draws whatever drew before it. A request queues a job only when one is due and
+/// none is queued to draw it.
+#[test]
+fn a_resize_slot_owes_a_frame_for_each_change_of_size() {
+    let slot = crate::plugin_map::ResizeSlot::new(10, 80);
+    assert_eq!(slot.take_for_render(), (10, 80));
+    assert!(
+        slot.request(10, 80),
+        "an instance's first resize queues a job even at the size it has"
+    );
+    assert!(slot.begin_job(), "and that job draws");
+    slot.note_resize();
+    assert_eq!(slot.take_for_render(), (10, 80));
+    assert!(!slot.request(10, 80), "the same size owes nothing");
+    assert!(!slot.resize_due());
+
+    assert!(slot.request(10, 40));
+    assert!(!slot.request(10, 80), "one job is queued already");
+    assert!(slot.begin_job(), "a drag that ends where it began");
+    assert_eq!(slot.take_for_render(), (10, 80));
+    assert!(!slot.resize_due());
+
+    assert!(slot.request(12, 80));
+    assert_eq!(slot.wanted(), (12, 80));
+    assert!(slot.resize_due(), "reading the size is not drawing it");
+    // A render that is not a resize job pays the frame off, and the queued job is still
+    // counted until it begins - when it finds nothing to draw.
+    assert_eq!(slot.take_for_render(), (12, 80));
+    assert!(!slot.request(14, 80), "the queued job will draw this");
+    assert!(slot.begin_job());
+    assert_eq!(slot.take_for_render(), (14, 80));
+    assert!(
+        slot.request(16, 80),
+        "nothing is queued once the job has begun"
+    );
+}
+
+/// A job the executor refused never begins, so cancelling it lets the next request queue one;
+/// the frame it was to draw is still owed.
+#[test]
+fn a_resize_slot_queues_again_after_a_refused_job() {
+    let slot = crate::plugin_map::ResizeSlot::new(10, 80);
+    assert!(slot.request(10, 40));
+    slot.cancel_job();
+    assert!(
+        slot.request(10, 40),
+        "the same size is still owed, and nothing is queued to draw it"
+    );
+    assert!(!slot.request(12, 80), "a job is counted as queued again");
+}
+
+/// A resize the executor refuses - the instance has no thread, or its thread died - must not
+/// leave the instance waiting on a job that will never run: the next resize still draws.
+#[test]
+fn a_refused_resize_job_does_not_block_later_resizes() {
+    let mut test = TestBridge::new();
+    let plugin = a_plugin_that_draws_its_size(&mut test);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+
+    test.bridge.plugin_executor.unregister_plugin(plugin);
+    test.bridge
+        .resize_plugin(plugin, 40, 10, shutdown.clone())
+        .unwrap();
+    test.bridge.plugin_executor.register_plugin(plugin);
+    test.bridge
+        .resize_plugin(plugin, 50, 10, shutdown.clone())
+        .unwrap();
+    test.settle(plugin);
+    let frames = frames(&mut test, plugin);
+    assert!(
+        frames.iter().any(|frame| frame == "size 10x50"),
+        "{frames:?}"
+    );
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+/// A render that runs between queued resizes - a pipe, timer or key the plugin redraws for -
+/// draws at the newest size asked for, not at the last one a resize job got to apply. It used
+/// to draw several drag steps behind the screen: 30 columns into a pane about 55 wide.
+#[test]
+fn a_render_between_queued_resizes_draws_at_the_newest_size() {
+    let mut test = TestBridge::new();
+    let plugin = a_plugin_that_draws_its_size(&mut test);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+
+    let release = test.hold_executor(plugin);
+    test.bridge
+        .resize_plugin(plugin, 40, 10, shutdown.clone())
+        .unwrap();
+    test.pipe(plugin, "redraw");
+    test.bridge
+        .resize_plugin(plugin, 50, 10, shutdown.clone())
+        .unwrap();
+    release.send(()).unwrap();
+    test.settle(plugin);
+    let frames = frames(&mut test, plugin);
+    assert!(!frames.is_empty());
+    assert!(
+        frames.iter().all(|frame| frame == "size 10x50"),
+        "{frames:?}"
+    );
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+/// An instance whose guest panicked while holding its lock is skipped by a resize, rather than
+/// panicking every resize job queued for it after.
+///
+/// No frame at all is asserted, which no scheduling can change: a skipped instance never draws.
+#[test]
+fn a_resize_skips_an_instance_whose_lock_is_poisoned() {
+    let mut test = TestBridge::new();
+    let plugin = a_plugin_that_draws_its_size(&mut test);
+    let (shutdown, _shutdown_receiver) = tokio::sync::mpsc::channel(1);
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, None)
+        .unwrap();
+    let poisoner = instance.clone();
+    let _ = std::thread::spawn(move || {
+        let _guard = poisoner.lock();
+        panic!("a guest panicking while it holds its instance");
+    })
+    .join();
+    assert!(instance.is_poisoned());
+    drop(instance);
+
+    for columns in [40, 50] {
+        test.bridge
+            .resize_plugin(plugin, columns, 10, shutdown.clone())
+            .unwrap();
+    }
+    test.settle(plugin);
+    assert!(frames(&mut test, plugin).is_empty());
+    test.bridge.unload_plugin(plugin).unwrap();
 }

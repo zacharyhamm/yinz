@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
     },
 };
 use wasmi::{Instance, Store};
@@ -53,6 +53,9 @@ pub struct PluginMap {
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
     instance_ids: HashMap<(PluginId, ClientId), PluginInstanceId>,
     availability: HashMap<(PluginId, ClientId), Arc<AtomicBool>>,
+    /// Each instance's [`ResizeSlot`], held here too so a resize can be asked of an instance
+    /// without waiting for its guest lock.
+    resize_slots: HashMap<(PluginId, ClientId), Arc<ResizeSlot>>,
     deno_client_cancellations: HashMap<(PluginId, ClientId), (Option<u64>, Arc<AtomicBool>)>,
     deno_workers: HashMap<(PluginId, ClientId), Arc<crate::deno::background_worker::Workers>>,
 }
@@ -75,7 +78,9 @@ impl PluginMetadata {
             resolved_source_path: env.resolved_source_path.clone(),
             cwd: env.plugin_cwd.clone(),
             tab_index: env.tab_index,
-            size: (plugin.rows, plugin.columns),
+            // The newest size asked, not the last drawn: a resize still owed a render when the
+            // instance goes is the size a reload should start at.
+            size: plugin.resize.wanted(),
             owner_client_id: env.owner_client_id,
         }
     }
@@ -193,6 +198,7 @@ impl PluginMap {
     pub fn remove_plugins(&mut self, pid: PluginId) -> HashMap<(PluginId, ClientId), PluginAssets> {
         self.retire_instances(pid);
         self.availability.retain(|(id, _), _| *id != pid);
+        self.resize_slots.retain(|(id, _), _| *id != pid);
         self.plugin_metadata.remove(&pid);
         self.deno_workers.retain(|(id, _), _| *id != pid);
         self.deno_client_cancellations
@@ -218,6 +224,7 @@ impl PluginMap {
         if let Some(unavailable) = self.availability.remove(&(plugin_id, client_id)) {
             unavailable.store(true, Ordering::Release);
         }
+        self.resize_slots.remove(&(plugin_id, client_id));
         self.deno_workers.remove(&(plugin_id, client_id));
         self.deno_client_cancellations
             .remove(&(plugin_id, client_id));
@@ -273,6 +280,24 @@ impl PluginMap {
                 (*plugin_id, *client_id, running_plugin.clone())
             })
             .collect()
+    }
+    /// Every instance of `plugin_id`, with the [`ResizeSlot`] a resize is asked of it through.
+    pub fn resize_targets(
+        &self,
+        plugin_id: PluginId,
+    ) -> Vec<(ClientId, Arc<Mutex<RunningPlugin>>, Arc<ResizeSlot>)> {
+        self.plugin_assets
+            .iter()
+            .filter(|((id, _), _)| *id == plugin_id)
+            .filter_map(|(key, (running_plugin, _, _))| {
+                let slot = self.resize_slots.get(key)?;
+                Some((key.1, running_plugin.clone(), slot.clone()))
+            })
+            .collect()
+    }
+    #[cfg(test)]
+    pub fn has_resize_slots(&self, plugin_id: PluginId) -> bool {
+        self.resize_slots.keys().any(|(id, _)| *id == plugin_id)
     }
     pub fn running_plugins_and_subscriptions(&mut self) -> Vec<RunningPluginEntry> {
         self.plugin_assets
@@ -444,29 +469,34 @@ impl PluginMap {
         subscriptions: Arc<Mutex<Subscriptions>>,
         running_workers: HashMap<String, UnboundedSender<MessageToWorker>>,
     ) {
-        self.availability.insert(
-            (plugin_id, client_id),
-            running_plugin.lock().unwrap().env().unavailable.clone(),
-        );
-        self.instance_ids.insert(
-            (plugin_id, client_id),
-            running_plugin.lock().unwrap().instance_id,
-        );
-        let metadata = PluginMetadata::from_running(&running_plugin.lock().unwrap());
-        self.plugin_metadata.insert(plugin_id, metadata);
-        if let PluginBackend::Deno(deno) = &running_plugin.lock().unwrap().backend {
-            if let Some(workers) = &deno.env().deno_workers {
-                self.deno_workers
-                    .insert((plugin_id, client_id), workers.clone());
+        {
+            // One guard for every field read here. Only identity set at construction is read, so
+            // a poisoned lock - a guest that panicked - still holds what is needed to file it.
+            let plugin = running_plugin
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            self.availability
+                .insert((plugin_id, client_id), plugin.env().unavailable.clone());
+            self.instance_ids
+                .insert((plugin_id, client_id), plugin.instance_id);
+            self.resize_slots
+                .insert((plugin_id, client_id), plugin.resize.clone());
+            self.plugin_metadata
+                .insert(plugin_id, PluginMetadata::from_running(&plugin));
+            if let PluginBackend::Deno(deno) = &plugin.backend {
+                if let Some(workers) = &deno.env().deno_workers {
+                    self.deno_workers
+                        .insert((plugin_id, client_id), workers.clone());
+                }
+                self.deno_client_cancellations.insert(
+                    (plugin_id, client_id),
+                    (Some(deno.generation()), deno.client_cancel()),
+                );
+            } else {
+                self.deno_workers.remove(&(plugin_id, client_id));
+                self.deno_client_cancellations
+                    .remove(&(plugin_id, client_id));
             }
-            self.deno_client_cancellations.insert(
-                (plugin_id, client_id),
-                (Some(deno.generation()), deno.client_cancel()),
-            );
-        } else {
-            self.deno_workers.remove(&(plugin_id, client_id));
-            self.deno_client_cancellations
-                .remove(&(plugin_id, client_id));
         }
         if let Some((previous, _, _)) = self.plugin_assets.insert(
             (plugin_id, client_id),
@@ -490,6 +520,9 @@ impl PluginMap {
                 }
                 if let Some(id) = self.instance_ids.remove(&(plugin_id, from)) {
                     self.instance_ids.insert((plugin_id, to), id);
+                }
+                if let Some(slot) = self.resize_slots.remove(&(plugin_id, from)) {
+                    self.resize_slots.insert((plugin_id, to), slot);
                 }
                 if let Some(workers) = self.deno_workers.remove(&(plugin_id, from)) {
                     self.deno_workers.insert((plugin_id, to), workers);
@@ -767,6 +800,114 @@ pub enum PluginBackend {
     Deno(DenoPlugin),
 }
 
+/// The newest size the screen asked of one plugin instance, and whether it still owes a frame.
+///
+/// Every `Resize` the screen sends queues a render on the plugin's pinned executor, and they run
+/// in order. Dragging a pane edge sends one per cell the edge crosses, dozens a second, and a
+/// plugin whose render takes longer than the gap between them used to replay every one of those
+/// sizes after the drag had ended - seconds of backlog in front of the user's next key. The
+/// screen writes the size here instead, and whichever render runs next - the first queued resize
+/// job, or an event, timer or pipe render that gets there before it - draws at it and pays the
+/// frame off; the resize jobs behind it find nothing owed and return without the guest.
+///
+/// A frame is owed whenever the asked size changes, even back to the one last drawn: the screen
+/// resized the pane in between, so a drag that ends where it began still needs one. An
+/// instance's first resize draws regardless, as it always has - a plugin can change what it
+/// shows before then without asking for a render, and that resize is where it gets one.
+///
+/// A job is queued only when a request finds none queued already: the one in the queue draws
+/// whatever size is newest when it runs, so a second would only find nothing owed. A drag over
+/// a busy plugin therefore queues one job, not one per cell the edge crosses.
+pub struct ResizeSlot(Mutex<ResizeState>);
+
+struct ResizeState {
+    /// (rows, columns)
+    wanted: (usize, usize),
+    render_owed: bool,
+    first_resize_ran: bool,
+    /// A resize job is queued for this instance and has not begun.
+    job_queued: bool,
+}
+
+impl ResizeSlot {
+    pub fn new(rows: usize, columns: usize) -> Self {
+        Self(Mutex::new(ResizeState {
+            wanted: (rows, columns),
+            render_owed: false,
+            first_resize_ran: false,
+            job_queued: false,
+        }))
+    }
+
+    /// Ask for `rows` x `columns`; asking again for the size already asked owes nothing.
+    ///
+    /// Answers whether the caller should queue a resize job: one is due, and none is queued to
+    /// draw it. A `true` counts the caller's job as queued until it calls [`Self::begin_job`],
+    /// or the caller calls [`Self::cancel_job`] because the executor refused it.
+    pub fn request(&self, rows: usize, columns: usize) -> bool {
+        let mut state = self.state();
+        if state.wanted != (rows, columns) {
+            state.wanted = (rows, columns);
+            state.render_owed = true;
+        }
+        let enqueue = state.due() && !state.job_queued;
+        if enqueue {
+            state.job_queued = true;
+        }
+        enqueue
+    }
+
+    /// A queued resize job has begun: the next request queues another. Answers
+    /// [`Self::resize_due`], read under the same lock.
+    pub fn begin_job(&self) -> bool {
+        let mut state = self.state();
+        state.job_queued = false;
+        state.due()
+    }
+
+    /// The job a `true` from [`Self::request`] counted as queued was refused by the executor:
+    /// the next request queues another rather than waiting on one that will never begin. The
+    /// frame stays owed.
+    pub fn cancel_job(&self) {
+        self.state().job_queued = false;
+    }
+
+    /// Whether a resize job has anything to draw: a frame owed, or its instance's first resize.
+    pub fn resize_due(&self) -> bool {
+        self.state().due()
+    }
+
+    /// A resize job is about to draw; the first resize is no longer to come.
+    pub fn note_resize(&self) {
+        self.state().first_resize_ran = true;
+    }
+
+    /// The size to draw at, clearing the frame owed. A request that lands after this owes a
+    /// new one, and the job queued with it draws it.
+    pub fn take_for_render(&self) -> (usize, usize) {
+        let mut state = self.state();
+        state.render_owed = false;
+        state.wanted
+    }
+
+    /// The newest size asked, leaving any frame owed in place.
+    pub fn wanted(&self) -> (usize, usize) {
+        self.state().wanted
+    }
+
+    // Plain fields, written together and never around guest code: a poisoned lock still
+    // holds a consistent state.
+    fn state(&self) -> std::sync::MutexGuard<'_, ResizeState> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl ResizeState {
+    fn due(&self) -> bool {
+        self.render_owed || !self.first_resize_ran
+    }
+}
+
 pub struct RunningPlugin {
     pub instance_id: PluginInstanceId,
     pipes_released: bool,
@@ -777,6 +918,9 @@ pub struct RunningPlugin {
     pub columns: usize,
     next_event_ids: HashMap<AtomicEvent, usize>,
     last_applied_event_ids: HashMap<AtomicEvent, usize>,
+    /// The size the screen last asked of this instance, which `rows` and `columns` catch up to
+    /// at the next render. See [`ResizeSlot`].
+    pub resize: Arc<ResizeSlot>,
     /// Event types this plugin has already been told it lacks the permission for. A denial is a
     /// standing misconfiguration, not an incident: subscribing to a high-frequency event without
     /// its permission would otherwise log once per keystroke and blow the log's 100KB cap in
@@ -796,6 +940,7 @@ impl RunningPlugin {
             columns,
             next_event_ids: HashMap::new(),
             last_applied_event_ids: HashMap::new(),
+            resize: Arc::new(ResizeSlot::new(rows, columns)),
             denied_events_logged: HashSet::new(),
         }
     }
@@ -860,8 +1005,23 @@ impl RunningPlugin {
             columns,
             next_event_ids: HashMap::new(),
             last_applied_event_ids: HashMap::new(),
+            resize: Arc::new(ResizeSlot::new(rows, columns)),
             denied_events_logged: HashSet::new(),
         }
+    }
+    /// Whether the newest size asked of this instance has any area to draw an event's render
+    /// into. A resize draws at any size, as it always has.
+    pub fn has_area(&self) -> bool {
+        let (rows, columns) = self.resize.wanted();
+        rows > 0 && columns > 0
+    }
+    /// Bring `rows` and `columns` up to the newest size asked of this instance, as a render is
+    /// about to draw at them, and return them. That render pays off the frame the resize owed.
+    pub fn take_size_for_render(&mut self) -> (usize, usize) {
+        let (rows, columns) = self.resize.take_for_render();
+        self.rows = rows;
+        self.columns = columns;
+        (rows, columns)
     }
     /// Record that an event of this type was denied to this plugin, returning whether it is the
     /// first of its type - which is the only one worth logging.
