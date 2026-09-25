@@ -653,8 +653,17 @@ load_plugins {
 // Where plugin data is stored. Unset (default): a SQLite file in the data dir.
 // A postgres:// URL stores plugin data in that database instead, so that every
 // machine using it sees the same rows; session recordings stay local either way.
-// The URL may carry a password, so keep this file private. TLS is not yet supported.
-// plugin_data_url "postgres://zellij:secret@127.0.0.1:5432/zellij"
+// The URL may carry a password, so keep this file private.
+// sslmode: disable uses plaintext, prefer (default) permits plaintext if the server
+// declines TLS, and require refuses plaintext. TLS always verifies trust and hostname.
+// Certificate verification failures do not fall back to plaintext.
+// plugin_data_url "postgres://zellij:secret@db.example.com/zellij?sslmode=require"
+// For a custom CA, add sslrootcert with a PEM file containing one or more certificates.
+// These certificates supplement system trust. The file is read again on reconnect.
+// Percent-encode special characters in the path. Relative paths use the server's working directory.
+// sslrootcert applies only to URLs and is not loaded when sslmode=disable.
+// plugin_data_url "postgres://zellij:secret@db.example.com/zellij?sslmode=require&sslrootcert=/path/ca.pem"
+// plugin_data_url "postgres://zellij:secret@127.0.0.1:5432/zellij?sslmode=disable"
 // The schema the store owns inside that database.
 // plugin_data_schema "zellij_plugin_data"
 

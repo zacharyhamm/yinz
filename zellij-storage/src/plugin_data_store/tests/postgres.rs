@@ -118,6 +118,8 @@ mod queries;
 mod schema;
 #[path = "search.rs"]
 mod search;
+#[path = "postgres_tls.rs"]
+mod tls;
 #[path = "watches.rs"]
 mod watches;
 #[path = "writes.rs"]

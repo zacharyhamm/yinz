@@ -28,9 +28,10 @@ const COMPOSE_PROJECT: &str = "zellij-postgres";
 /// Where the server is published. Matches the compose file's port mapping.
 const PORT: u16 = 54329;
 /// The connection string the tests use. Credentials match the compose file's environment.
-const URL: &str = "postgres://zellij:zellij@127.0.0.1:54329/zellij_test";
+const URL: &str = "postgres://zellij:zellij@127.0.0.1:54329/zellij_test?sslmode=disable";
 /// How the test binary learns the URL; read by `plugin_data_store/tests/postgres.rs`.
 const URL_ENV: &str = "ZELLIJ_PLUGIN_DATA_TEST_URL";
+const CA_ENV: &str = "ZELLIJ_PLUGIN_DATA_TEST_CA";
 /// How long to wait for the server to accept connections after `up`.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// One process per test, each with a connection of its own; the compose file allows 300.
@@ -60,7 +61,7 @@ fn build(sh: &Shell) -> anyhow::Result<()> {
     let _pd = sh.push_dir(crate::project_root());
     crate::status(">> Bringing the Postgres container up");
     println!(">> Bringing the Postgres container up");
-    compose(sh, &["up", "-d"])
+    compose(sh, &["up", "-d", "--build"])
         .run()
         .context("failed to start the container. Is docker running?")?;
     wait_for_postgres(sh).context("the container came up but Postgres never started answering")?;
@@ -79,6 +80,12 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
 
     let _pd = sh.push_dir(crate::project_root());
     let cargo = crate::cargo()?;
+    let ca = run.path().join("postgres-ca.pem");
+    compose(sh, &["cp", "postgres:/tls/ca-bundle.pem"])
+        .arg(&ca)
+        .run()
+        .context("failed to export the test CA; run 'cargo x postgres-test --build'")?;
+    let _ca = sh.push_env(CA_ENV, &ca);
 
     crate::status(">> Running the plugin-data store suite against Postgres");
     println!(">> Running the plugin-data store suite against Postgres");

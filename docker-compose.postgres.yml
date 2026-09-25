@@ -14,7 +14,9 @@
 ---
 services:
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: docker
+      dockerfile: postgres.Dockerfile
     container_name: zellij-postgres-test
     command:
       - postgres
@@ -26,6 +28,12 @@ services:
       - synchronous_commit=off
       - -c
       - full_page_writes=off
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/server.crt
+      - -c
+      - ssl_key_file=/tls/server.key
     environment:
       POSTGRES_USER: zellij
       POSTGRES_PASSWORD: zellij
