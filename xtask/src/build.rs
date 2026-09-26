@@ -126,7 +126,12 @@ pub fn plugin_names() -> Vec<&'static str> {
 }
 
 /// Plugins that exist for the test suites and must not be installed for users.
-pub const TEST_ONLY_PLUGINS: &[&str] = &["fixture-plugin-for-tests", "shared-test", "status-bar"];
+pub const TEST_ONLY_PLUGINS: &[&str] = &[
+    "fixture-plugin-for-tests",
+    "shared-test",
+    "status-bar",
+    "tab-bar",
+];
 
 /// Where a plugin build for `profile` leaves a plugin.
 pub fn plugin_path(profile: &str, plugin_name: &str) -> PathBuf {
