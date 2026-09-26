@@ -550,11 +550,10 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
                 let vm_changed = self.poll_vms();
-                let swamp_changed = self.poll_swamp(now_ms(), false);
                 let minute = now_ms() / 60_000;
                 let changed = minute != self.age_minute;
                 self.age_minute = minute;
-                vm_changed || swamp_changed || (changed && self.shows_an_age())
+                vm_changed || (changed && self.shows_an_age())
             },
             _ => false,
         };
@@ -1215,7 +1214,7 @@ impl State {
             self.poll_vms();
         }
         if surface == Surface::Swamp {
-            self.poll_swamp(now_ms(), true);
+            self.activate_swamp();
         }
     }
 

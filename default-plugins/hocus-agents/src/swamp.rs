@@ -4,12 +4,17 @@
 use super::*;
 use chrono::{DateTime, FixedOffset};
 use hocus_proto::swamp::swamp_lab::{self, api::SearchQuery, types as lab, Client, Credentials};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use zellij_tile::ui_components::forms::{Combo, Form, FormEvent, Rect, RenderBuffer, Select};
 
-const REFRESH_MS: i64 = 60_000;
+#[path = "swamp_cache.rs"]
+mod cache;
+
 const REQUEST_ID: &str = "swamp_issue_request";
 const ISSUE_NUMBER: &str = "swamp_issue_number";
-const PAGE: u32 = 100;
+const PAGE: u32 = 200;
 const TYPES: [&str; 4] = ["", "bug", "feature", "security"];
 const STATUSES: [&str; 6] = ["", "open", "triaged", "in_progress", "shipped", "closed"];
 const SORTS: [&str; 4] = [
@@ -20,13 +25,15 @@ const SORTS: [&str; 4] = [
 ];
 
 /// What the panel draws of an issue, read from the Lab's own shape.
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Issue {
     number: u64,
     title: String,
     status: String,
     kind: String,
     author: String,
+    source: String,
+    assignees: Vec<String>,
     url: String,
     created_at: Option<DateTime<FixedOffset>>,
     updated_at: Option<DateTime<FixedOffset>>,
@@ -40,6 +47,8 @@ impl Issue {
             status: issue.status.to_string(),
             kind: issue.kind.to_string(),
             author: issue.author_username.clone(),
+            source: issue.source.clone(),
+            assignees: issue.assignees.iter().map(|a| a.username.clone()).collect(),
             url: credentials.issue_url(issue.number),
             created_at: timestamp(issue.created_at.as_deref()),
             updated_at: timestamp(issue.updated_at.as_deref()),
@@ -51,12 +60,13 @@ fn timestamp(value: Option<&str>) -> Option<DateTime<FixedOffset>> {
     value.and_then(|value| DateTime::parse_from_rfc3339(value).ok())
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Search {
     issues: Vec<Issue>,
-    total: usize,
+    fetched_at: i64,
 }
 
+#[cfg(test)]
 impl Search {
     fn from_lab(search: &lab::SearchResponse, credentials: &Credentials) -> Self {
         Search {
@@ -65,8 +75,40 @@ impl Search {
                 .iter()
                 .map(|issue| Issue::from_lab(issue, credentials))
                 .collect(),
-            total: usize::try_from(search.total).unwrap_or(usize::MAX),
+            fetched_at: now_ms(),
         }
+    }
+}
+
+#[derive(Default)]
+struct Loading {
+    query: String,
+    offset: u32,
+    issues: BTreeMap<u64, Issue>,
+}
+
+impl Loading {
+    /// Offsets count returned rows, including duplicates. The Lab's total can
+    /// include inaccessible issues, so an empty page also ends the catalogue.
+    fn append(
+        &mut self,
+        page: lab::SearchResponse,
+        credentials: &Credentials,
+    ) -> Result<bool, String> {
+        let length = page.issues.len();
+        let before = self.issues.len();
+        for issue in page.issues {
+            self.issues
+                .insert(issue.number, Issue::from_lab(&issue, credentials));
+        }
+        if length > 0 && self.issues.len() == before {
+            return Err("Swamp pagination made no progress".into());
+        }
+        self.offset = u32::try_from(length)
+            .ok()
+            .and_then(|length| self.offset.checked_add(length))
+            .ok_or("Swamp pagination offset overflow")?;
+        Ok(length == 0 || u64::from(self.offset) >= page.total)
     }
 }
 
@@ -74,7 +116,6 @@ impl Search {
 struct Detail {
     issue: Issue,
     body: String,
-    assignees: Vec<String>,
     comments: Vec<Comment>,
 }
 
@@ -83,12 +124,6 @@ impl Detail {
         Detail {
             issue: Issue::from_lab(&detail.issue, credentials),
             body: detail.issue.body.clone(),
-            assignees: detail
-                .issue
-                .assignees
-                .iter()
-                .map(|assignee| assignee.username.clone())
-                .collect(),
             comments: detail
                 .comments
                 .iter()
@@ -150,21 +185,29 @@ pub(super) struct View {
     kind: usize,
     sort: usize,
     source: String,
+    // None = all; an empty username = unassigned.
+    assignee: Option<String>,
     filter: Option<FilterEditor>,
     source_tags: Vec<String>,
     filter_cells: Vec<(usize, usize, usize, char)>, // row, column, width, shortcut
     search: Option<Search>,
+    cache: cache::Cache,
+    cache_identity: Option<String>,
+    cache_error: Option<String>,
+    loading: Option<Loading>,
+    catalogue_wanted: bool,
     selected: usize,
     list_scroll: Option<usize>,
     list_rows: Vec<(usize, markdown::MdLine)>,
+    list_cache_key: Option<(usize, i64)>, // width, age minute
     list_error: Option<String>,
     opened: Option<u64>,
     detail: Option<Detail>,
     detail_scroll: usize,
     detail_error: Option<String>,
-    // Read again at the start of every refresh cycle and after a 401, so a login, logout or key
-    // switch made since is picked up; requests within a cycle reuse it.
+    // Resolve on activation, explicit reload and once after a 401.
     credentials: Option<Credentials>,
+    credentials_wanted: bool,
     credentials_error: Option<String>,
     // A 401 reloads the credentials once per cycle; a second in a row is shown.
     reloaded_after_401: bool,
@@ -181,7 +224,6 @@ pub(super) struct View {
     search_generation: u64,
     detail_generation: u64,
     sequence: u64,
-    last_refresh: Option<i64>,
     last_body_top: usize,
     last_body_rows: usize,
     window: usize,
@@ -190,6 +232,8 @@ pub(super) struct View {
     // Keeps the login a test set across refreshes, for tests about anything but its lifetime.
     #[cfg(test)]
     keep_credentials: bool,
+    #[cfg(test)]
+    cache_dir: Option<PathBuf>,
     #[cfg(test)]
     commands: Vec<(Vec<String>, BTreeMap<String, String>)>,
     #[cfg(test)]
@@ -203,6 +247,7 @@ impl View {
         self.filter_cells.clear();
         if self.opened.is_none() {
             let mut x = 0;
+            let assignee = self.assignee_label().to_owned();
             for (label, value, shortcut) in [
                 ("Status", status_label(STATUSES[self.status]), 's'),
                 (
@@ -224,6 +269,7 @@ impl View {
                     'f',
                 ),
                 ("Sort", SORTS[self.sort], 'o'),
+                ("Assignee", &assignee, 'u'),
             ] {
                 let text = fit(&format!("[{label}: {value} ({shortcut})]"), cols);
                 let width = text.width();
@@ -273,6 +319,7 @@ impl View {
 
     pub(super) fn has_error(&self) -> bool {
         self.list_error.is_some()
+            || self.cache_error.is_some()
             || self.detail_error.is_some()
             || self.credentials_error.is_some()
             || self.permission == Permission::Denied
@@ -286,8 +333,64 @@ impl View {
         self.issues().get(self.selected).map(|issue| issue.number)
     }
 
+    fn cache_path(&self) -> Option<PathBuf> {
+        #[cfg(test)]
+        let directory = self.cache_dir.clone()?;
+        #[cfg(not(test))]
+        let directory = PathBuf::from("/cache/swamp-issues");
+        Some(directory.join(format!("{}.json", self.cache_identity.as_ref()?)))
+    }
+
+    fn assignee_label(&self) -> &str {
+        match self.assignee.as_deref() {
+            None => "All",
+            Some("") => "Unassigned",
+            Some(name) => name,
+        }
+    }
+
+    fn assignee_options(&self) -> Vec<String> {
+        let names: BTreeSet<_> = self
+            .cache
+            .catalogue
+            .iter()
+            .chain(self.cache.text_search.iter().map(|(_, search)| search))
+            .flat_map(|search| &search.issues)
+            .flat_map(|issue| issue.assignees.iter().cloned())
+            .collect();
+        let mut names: Vec<_> = names.into_iter().collect();
+        names.sort_by_cached_key(|name| name.to_lowercase());
+        ["All".into(), "Unassigned".into()]
+            .into_iter()
+            .chain(names)
+            .collect()
+    }
+
+    fn filter_issues(&mut self) {
+        let selected = self.selected_number();
+        self.search = self.cache.search(&self.query).cloned();
+        if let Some(search) = &mut self.search {
+            search.issues.retain(|issue| {
+                (self.status == 0 || issue.status == STATUSES[self.status])
+                    && (self.kind == 0 || issue.kind == TYPES[self.kind])
+                    && (self.source.is_empty() || issue.source == self.source)
+                    && match &self.assignee {
+                        None => true,
+                        Some(name) if name.is_empty() => issue.assignees.is_empty(),
+                        Some(name) => issue.assignees.contains(name),
+                    }
+            });
+        }
+        self.sort_issues(selected);
+    }
+
     fn sort_issues(&mut self, selected: Option<u64>) {
+        self.list_scroll = None;
+        self.list_cache_key = None;
+        // Mouse events can arrive before the next render.
+        self.list_rows.clear();
         let Some(search) = &mut self.search else {
+            self.selected = 0;
             return;
         };
         search.issues.sort_by(|a, b| {
@@ -310,7 +413,24 @@ impl View {
             .iter()
             .position(|issue| Some(issue.number) == selected)
             .unwrap_or(self.selected.min(search.issues.len().saturating_sub(1)));
-        self.list_scroll = None;
+    }
+
+    fn fill_list_cache(&mut self, cols: usize, now: i64) {
+        let key = (cols, now / 60_000);
+        if self.list_cache_key == Some(key) {
+            return;
+        }
+        self.list_rows = self
+            .issues()
+            .iter()
+            .enumerate()
+            .flat_map(|(index, issue)| {
+                issue_lines(issue, cols, now)
+                    .into_iter()
+                    .map(move |line| (index, line))
+            })
+            .collect();
+        self.list_cache_key = Some(key);
     }
 
     pub(super) fn shows_an_age(&self) -> bool {
@@ -347,7 +467,14 @@ impl View {
         if let Some(error) = error {
             return Some(format!("Error: {error} · r retry"));
         }
-        (self.pending.is_some() || self.search_wanted || self.detail_wanted)
+        if let Some(error) = &self.cache_error {
+            return Some(format!("Cache not saved: {error} · r retry"));
+        }
+        (self.pending.is_some()
+            || self.loading.is_some()
+            || self.catalogue_wanted
+            || self.search_wanted
+            || self.detail_wanted)
             .then(|| "Loading…".into())
     }
 
@@ -359,11 +486,10 @@ impl View {
             return format!("#{number} · Esc back · a triage · r refresh");
         }
         let count = self.search.as_ref().map_or(String::new(), |search| {
-            if search.total > search.issues.len() {
-                format!(" · {} of {}", search.issues.len(), search.total)
-            } else {
-                format!(" · {} issues", search.issues.len())
-            }
+            let timestamp = DateTime::from_timestamp_millis(search.fetched_at)
+                .map(|time| time.format("%Y-%m-%d %H:%M UTC").to_string())
+                .unwrap_or_else(|| "unknown".into());
+            format!(" · {} issues · cached {timestamp}", search.issues.len())
         });
         let query = if self.query.is_empty() {
             String::new()
@@ -406,7 +532,7 @@ impl State {
             return false;
         }
         if visible {
-            self.poll_swamp(now_ms(), true);
+            self.activate_swamp();
         }
         self.surface == Surface::Swamp
     }
@@ -423,35 +549,68 @@ impl State {
         self.surface == Surface::Swamp && self.swamp.visible()
     }
 
-    pub(super) fn poll_swamp(&mut self, now: i64, force: bool) -> bool {
+    pub(super) fn activate_swamp(&mut self) -> bool {
         if self.surface != Surface::Swamp || !self.swamp.visible() {
             return false;
         }
-        if self.swamp.pending.is_some() {
-            return false;
-        }
-        if !force
-            && self
-                .swamp
-                .last_refresh
-                .is_some_and(|last| now.saturating_sub(last) < REFRESH_MS)
-        {
-            return false;
-        }
-        self.swamp.last_refresh = Some(now);
-        // A failed read waits for `r`, which clears the error first.
-        #[cfg(test)]
-        let keep = self.swamp.keep_credentials;
-        #[cfg(not(test))]
-        let keep = false;
-        if self.swamp.credentials_error.is_none() && !keep {
-            self.swamp.credentials = None;
-            self.swamp.reloaded_after_401 = false;
-        }
-        self.swamp.search_wanted = true;
-        self.swamp.detail_wanted = self.swamp.opened.is_some();
+        self.swamp.credentials_wanted = true;
+        self.swamp.credentials_error = None;
+        self.swamp.reloaded_after_401 = false;
         self.dispatch_swamp();
         true
+    }
+
+    fn reload_swamp(&mut self) {
+        self.swamp.loading = None;
+        self.swamp.search_generation += 1;
+        self.swamp.catalogue_wanted = true;
+        self.swamp.search_wanted = !self.swamp.query.is_empty();
+        self.swamp.detail_wanted = self.swamp.opened.is_some();
+        self.swamp.detail_generation += 1;
+        self.swamp.credentials_error = None;
+        self.swamp.list_error = None;
+        self.swamp.cache_error = None;
+        self.activate_swamp();
+    }
+
+    fn use_swamp_credentials(&mut self, credentials: Credentials) {
+        let identity = cache::identity(&credentials);
+        if self.swamp.cache_identity.as_ref() != Some(&identity) {
+            self.swamp.cache_identity = Some(identity);
+            self.swamp.cache = self
+                .swamp
+                .cache_path()
+                .and_then(|path| cache::Cache::read(&path))
+                .unwrap_or_default();
+            self.swamp.loading = None;
+            self.swamp.search_generation += 1;
+            self.swamp.search = None;
+            self.swamp.selected = 0;
+            self.swamp.opened = None;
+            self.swamp.detail = None;
+            self.swamp.detail_cache = None;
+            self.swamp.detail_generation += 1;
+            self.swamp.detail_wanted = false;
+            self.swamp.detail_error = None;
+            self.swamp.triage_wanted = None;
+            self.swamp.triage_waiting = false;
+            self.swamp.triage_note = None;
+            #[cfg(test)]
+            {
+                self.swamp.triage_text = None;
+            }
+            self.swamp.list_error = None;
+            self.swamp.cache_error = None;
+            self.swamp.source_tags.clear();
+            self.swamp.cancel_filter();
+            self.swamp.search_wanted = !self.swamp.query.is_empty()
+                && (self.swamp.catalogue_wanted
+                    || self.swamp.cache.search(&self.swamp.query).is_none());
+            self.swamp.catalogue_wanted |= self.swamp.cache.catalogue.is_none();
+            self.swamp.filter_issues();
+        }
+        self.swamp.credentials = Some(credentials);
+        self.swamp.credentials_wanted = false;
     }
 
     fn dispatch_swamp(&mut self) {
@@ -479,13 +638,13 @@ impl State {
         if self.swamp.credentials_error.is_some() {
             return;
         }
-        let Some(credentials) = self.swamp.credentials.clone() else {
-            if !(self.swamp.triage_wanted.is_some()
-                || self.swamp.search_wanted
-                || self.swamp.detail_wanted)
-            {
-                return;
+        #[cfg(test)]
+        if self.swamp.keep_credentials && self.swamp.credentials_wanted {
+            if let Some(credentials) = self.swamp.credentials.clone() {
+                self.use_swamp_credentials(credentials);
             }
+        }
+        if self.swamp.credentials_wanted || self.swamp.credentials.is_none() {
             let id = self.next_swamp_request_id();
             let context = BTreeMap::from([(REQUEST_ID.into(), id.clone())]);
             let argv = swamp_lab::auth::auth_json_argv();
@@ -500,8 +659,29 @@ impl State {
                 target: Target::Credentials,
             });
             return;
+        }
+        let Some(credentials) = self.swamp.credentials.clone() else {
+            return;
         };
         let client = Client::new(&credentials);
+        if self.swamp.loading.is_none() {
+            let query = if self.swamp.catalogue_wanted {
+                self.swamp.catalogue_wanted = false;
+                Some(String::new())
+            } else if self.swamp.search_wanted {
+                self.swamp.search_wanted = false;
+                (!self.swamp.query.is_empty()).then(|| self.swamp.query.clone())
+            } else {
+                None
+            };
+            if let Some(query) = query {
+                self.swamp.loading = Some(Loading {
+                    query,
+                    ..Default::default()
+                });
+                self.swamp.search_generation += 1;
+            }
+        }
         let (target, request) = if let Some(number) = self.swamp.triage_wanted.take() {
             match client.get(number) {
                 Ok(request) => (Target::Triage(number), request),
@@ -511,18 +691,13 @@ impl State {
                     return;
                 },
             }
-        } else if self.swamp.search_wanted {
-            self.swamp.search_wanted = false;
-            let request = search_query(
-                &self.swamp.query,
-                STATUSES[self.swamp.status],
-                TYPES[self.swamp.kind],
-                &self.swamp.source,
-            )
-            .and_then(|query| client.search(&query).map_err(|error| error.to_string()));
+        } else if let Some(loading) = &self.swamp.loading {
+            let request = search_query(&loading.query, loading.offset)
+                .and_then(|query| client.search(&query).map_err(|error| error.to_string()));
             match request {
                 Ok(request) => (Target::Search(self.swamp.search_generation), request),
                 Err(error) => {
+                    self.swamp.loading = None;
                     self.swamp.list_error = Some(error);
                     return;
                 },
@@ -597,7 +772,7 @@ impl State {
                 Credentials::resolve(&get_session_environment_variables(), file.as_deref())
             });
         match resolved {
-            Ok(credentials) => self.swamp.credentials = Some(credentials),
+            Ok(credentials) => self.use_swamp_credentials(credentials),
             Err(error) => {
                 if self.swamp.triage_wanted.take().is_some() {
                     self.swamp.triage_waiting = false;
@@ -626,27 +801,34 @@ impl State {
         let Some(target) = self.take_swamp_reply(context) else {
             return false;
         };
+        let current = match target {
+            Target::Search(generation) => generation == self.swamp.search_generation,
+            Target::Detail(number, generation) => {
+                self.swamp.opened == Some(number) && generation == self.swamp.detail_generation
+            },
+            _ => true,
+        };
+        if !current {
+            self.dispatch_swamp();
+            return self.surface == Surface::Swamp && self.swamp.visible();
+        }
         let Some(credentials) = self.swamp.credentials.clone() else {
             return false;
         };
+        // An activation/reload during this request must resolve identity before
+        // accepting any of its data. A still-wanted page resumes at the same offset.
+        if self.swamp.credentials_wanted {
+            self.retry_swamp_target(&target);
+            self.dispatch_swamp();
+            return self.surface == Surface::Swamp && self.swamp.visible();
+        }
         // A key revoked or expired since it was read: read it again once, in
         // case `swamp auth login` has replaced it, before saying so.
         if status == 401 && !self.swamp.reloaded_after_401 {
             self.swamp.reloaded_after_401 = true;
             self.swamp.credentials = None;
-            match target {
-                Target::Triage(number) => self.swamp.triage_wanted = Some(number),
-                Target::Search(generation) if generation == self.swamp.search_generation => {
-                    self.swamp.search_wanted = true
-                },
-                Target::Detail(number, generation)
-                    if self.swamp.opened == Some(number)
-                        && generation == self.swamp.detail_generation =>
-                {
-                    self.swamp.detail_wanted = true
-                },
-                _ => {},
-            }
+            self.swamp.credentials_wanted = true;
+            self.retry_swamp_target(&target);
             self.dispatch_swamp();
             return self.surface == Surface::Swamp && self.swamp.visible();
         }
@@ -671,14 +853,31 @@ impl State {
                 },
             },
             Target::Search(generation) if generation == self.swamp.search_generation => {
-                match swamp_lab::parse::<lab::SearchResponse>(status, headers, body) {
-                    Ok(search) => {
-                        let selected = self.swamp.selected_number();
-                        self.swamp.search = Some(Search::from_lab(&search, &credentials));
-                        self.swamp.sort_issues(selected);
-                        self.swamp.list_error = None;
-                    },
-                    Err(error) => self.swamp.list_error = Some(error.to_string()),
+                if let Some(mut loading) = self.swamp.loading.take() {
+                    let result = swamp_lab::parse::<lab::SearchResponse>(status, headers, body)
+                        .map_err(|error| error.to_string())
+                        .and_then(|page| loading.append(page, &credentials));
+                    match result {
+                        Ok(false) => self.swamp.loading = Some(loading),
+                        Ok(true) => {
+                            let search = Search {
+                                issues: loading.issues.into_values().collect(),
+                                fetched_at: now_ms(),
+                            };
+                            if loading.query.is_empty() {
+                                self.swamp.cache.catalogue = Some(search);
+                            } else {
+                                self.swamp.cache.text_search = Some((loading.query, search));
+                            }
+                            self.swamp.filter_issues();
+                            self.swamp.cache_error = self
+                                .swamp
+                                .cache_path()
+                                .and_then(|path| self.swamp.cache.write(&path).err())
+                                .map(|error| error.to_string());
+                        },
+                        Err(error) => self.swamp.list_error = Some(error),
+                    }
                 }
             },
             Target::Detail(number, generation)
@@ -704,6 +903,19 @@ impl State {
         self.surface == Surface::Swamp && self.swamp.visible()
     }
 
+    fn retry_swamp_target(&mut self, target: &Target) {
+        match *target {
+            Target::Triage(number) => self.swamp.triage_wanted = Some(number),
+            Target::Detail(number, generation)
+                if self.swamp.opened == Some(number)
+                    && generation == self.swamp.detail_generation =>
+            {
+                self.swamp.detail_wanted = true;
+            },
+            _ => {},
+        }
+    }
+
     fn triage_swamp_issue(&mut self) {
         if self.swamp.triage_waiting {
             return;
@@ -713,16 +925,7 @@ impl State {
         };
         self.swamp.triage_waiting = true;
         self.swamp.triage_note = Some(format!("Fetching #{number} for triage…"));
-        if let Some(detail) = self.swamp.detail.take() {
-            if detail.issue.number == number {
-                self.send_swamp_triage(&detail);
-            } else {
-                self.swamp.triage_wanted = Some(number);
-            }
-            self.swamp.detail = Some(detail);
-        } else {
-            self.swamp.triage_wanted = Some(number);
-        }
+        self.swamp.triage_wanted = Some(number);
         self.dispatch_swamp();
     }
 
@@ -790,10 +993,21 @@ impl State {
     }
 
     fn search_swamp(&mut self) {
-        self.swamp.search_generation += 1;
-        self.swamp.search_wanted = true;
-        self.swamp.list_scroll = None;
-        self.swamp.last_refresh = Some(now_ms());
+        // Keep a catalogue load running when text changes, but discard an older
+        // text search. Its correlated reply cannot complete a newer generation.
+        if self
+            .swamp
+            .loading
+            .as_ref()
+            .is_some_and(|load| !load.query.is_empty())
+        {
+            self.swamp.loading = None;
+            self.swamp.search_generation += 1;
+        }
+        self.swamp.search_wanted =
+            !self.swamp.query.is_empty() && self.swamp.cache.search(&self.swamp.query).is_none();
+        self.swamp.list_error = None;
+        self.swamp.filter_issues();
         self.dispatch_swamp();
     }
 
@@ -821,12 +1035,7 @@ impl State {
             match key.bare_key {
                 BareKey::Esc => self.swamp.editing = None,
                 BareKey::Enter => {
-                    if let Err(error) = search_query(
-                        query.trim(),
-                        STATUSES[self.swamp.status],
-                        TYPES[self.swamp.kind],
-                        &self.swamp.source,
-                    ) {
+                    if let Err(error) = search_query(query.trim(), 0) {
                         self.swamp.list_error = Some(error);
                         return true;
                     }
@@ -876,16 +1085,14 @@ impl State {
                 if self.swamp.permission == Permission::Denied {
                     self.swamp.permission = Permission::Unrequested;
                 }
-                // A retry after a failed read of the credentials reads them again.
-                if self.swamp.credentials_error.take().is_some() {
-                    self.swamp.credentials = None;
-                }
-                self.poll_swamp(now_ms(), true);
+                self.reload_swamp();
             },
             BareKey::Char('/') if self.swamp.opened.is_none() => {
                 self.swamp.editing = Some(self.swamp.query.clone());
             },
-            BareKey::Char(shortcut @ ('s' | 't' | 'f' | 'o')) if self.swamp.opened.is_none() => {
+            BareKey::Char(shortcut @ ('s' | 't' | 'f' | 'o' | 'u'))
+                if self.swamp.opened.is_none() =>
+            {
                 self.open_swamp_filter(shortcut);
             },
             BareKey::Enter if self.swamp.opened.is_none() => self.open_swamp_issue(),
@@ -918,6 +1125,23 @@ impl State {
                 "Sort",
                 Select::new(SORTS).with_selected(self.swamp.sort),
             ),
+            'u' => {
+                let options = self.swamp.assignee_options();
+                let selected = match self.swamp.assignee.as_deref() {
+                    None => 0,
+                    Some("") => 1,
+                    Some(name) => options
+                        .iter()
+                        .skip(2)
+                        .position(|value| value == name)
+                        .map_or(0, |i| i + 2),
+                };
+                Form::new().select(
+                    "value",
+                    "Assignee",
+                    Select::new(options).with_selected(selected),
+                )
+            },
             _ => Form::new().combo(
                 "value",
                 "Source",
@@ -940,31 +1164,39 @@ impl State {
         let Some(editor) = &mut self.swamp.filter else {
             return;
         };
-        let sorting = editor.shortcut == 'o';
         let changed = if let Some(select) = editor.form.select_by_id("value") {
             let Some(index) = select.selected_index() else {
                 return;
             };
-            let value = match editor.shortcut {
-                's' => &mut self.swamp.status,
-                'o' => &mut self.swamp.sort,
-                _ => &mut self.swamp.kind,
-            };
-            let changed = *value != index;
-            *value = index;
-            changed
+            if editor.shortcut == 'u' {
+                let assignee = match index {
+                    0 => None,
+                    1 => Some(String::new()),
+                    _ => select.selected_option().map(str::to_owned),
+                };
+                let changed = self.swamp.assignee != assignee;
+                self.swamp.assignee = assignee;
+                changed
+            } else {
+                let value = match editor.shortcut {
+                    's' => &mut self.swamp.status,
+                    'o' => &mut self.swamp.sort,
+                    _ => &mut self.swamp.kind,
+                };
+                let changed = *value != index;
+                *value = index;
+                changed
+            }
         } else {
             let source = editor.form.text("value").trim().to_owned();
-            if let Err(error) = search_query(
-                &self.swamp.query,
-                STATUSES[self.swamp.status],
-                TYPES[self.swamp.kind],
-                &source,
-            ) {
-                self.swamp.list_error = Some(error);
-                editor.form.handle_key(KeyWithModifier::new(BareKey::Enter));
-                return;
+            if !source.is_empty() {
+                if let Err(error) = swamp_lab::api::valid_source(&source) {
+                    self.swamp.list_error = Some(error.to_string());
+                    editor.form.handle_key(KeyWithModifier::new(BareKey::Enter));
+                    return;
+                }
             }
+            self.swamp.list_error = None;
             if !source.is_empty() && source != "swamp" && !self.swamp.source_tags.contains(&source)
             {
                 self.swamp.source_tags.push(source.clone());
@@ -975,11 +1207,7 @@ impl State {
         };
         self.swamp.cancel_filter();
         if changed {
-            if sorting {
-                self.swamp.sort_issues(self.swamp.selected_number());
-            } else {
-                self.search_swamp();
-            }
+            self.swamp.filter_issues();
         }
     }
 
@@ -1204,18 +1432,7 @@ impl State {
                 Some(cols),
                 None,
             );
-            let now = now_ms();
-            self.swamp.list_rows = self
-                .swamp
-                .issues()
-                .iter()
-                .enumerate()
-                .flat_map(|(index, issue)| {
-                    issue_lines(issue, index == self.swamp.selected, cols, now)
-                        .into_iter()
-                        .map(move |line| (index, line))
-                })
-                .collect();
+            self.swamp.fill_list_cache(cols, now_ms());
             let lines = &self.swamp.list_rows;
             self.swamp.max_scroll = lines.len().saturating_sub(room);
             let first = lines
@@ -1252,7 +1469,7 @@ impl State {
                     );
                 }
                 for (row, (index, line)) in lines.iter().skip(start).take(room).enumerate() {
-                    let text = list_text(line, *index == self.swamp.selected);
+                    let text = list_text(line, *index == self.swamp.selected, start + row == first);
                     paint(text, 0, top + row, Some(cols), None);
                 }
             }
@@ -1271,28 +1488,18 @@ impl State {
     }
 }
 
-/// The search the filters describe, or why the server would refuse it.
-fn search_query(
-    query: &str,
-    status: &str,
-    kind: &str,
-    source: &str,
-) -> Result<SearchQuery, String> {
+/// Text stays on the API: list responses have no bodies to search locally.
+fn search_query(query: &str, offset: u32) -> Result<SearchQuery, String> {
     if query.encode_utf16().count() > swamp_lab::api::MAX_QUERY_CHARS {
         return Err(format!(
             "Search is longer than {} characters",
             swamp_lab::api::MAX_QUERY_CHARS
         ));
     }
-    if !source.is_empty() {
-        swamp_lab::api::valid_source(source).map_err(|error| error.to_string())?;
-    }
     Ok(SearchQuery {
         text: (!query.is_empty()).then(|| query.to_owned()),
-        status: lab::IssueStatus::parse(status),
-        kind: lab::IssueType::parse(kind),
-        source: (!source.is_empty()).then(|| source.to_owned()),
         limit: PAGE,
+        offset,
         ..SearchQuery::default()
     })
 }
@@ -1376,8 +1583,9 @@ fn wrap_line(line: markdown::MdLine, cols: usize) -> Vec<markdown::MdLine> {
         .collect()
 }
 
-fn list_text(line: &markdown::MdLine, selected: bool) -> Text {
-    let text = markdown::style_text(&line.text, &line.styles, false);
+fn list_text(line: &markdown::MdLine, selected: bool, first: bool) -> Text {
+    let marked = (selected && first).then(|| line.text.replacen(' ', ">", 1));
+    let text = markdown::style_text(marked.as_deref().unwrap_or(&line.text), &line.styles, false);
     if selected {
         text.selected()
     } else {
@@ -1385,13 +1593,10 @@ fn list_text(line: &markdown::MdLine, selected: bool) -> Text {
     }
 }
 
-fn issue_lines(issue: &Issue, selected: bool, cols: usize, now: i64) -> Vec<markdown::MdLine> {
+fn issue_lines(issue: &Issue, cols: usize, now: i64) -> Vec<markdown::MdLine> {
     let mut lines = vec![clip_line(
         styled_line(&[
-            (
-                if selected { ">" } else { " " },
-                markdown::MdStyle::default(),
-            ),
+            (" ", markdown::MdStyle::default()),
             (&format!(" #{} ", issue.number), METADATA),
             (status_label(&issue.status), status_style(&issue.status)),
             (&format!(" · {}", issue.kind), METADATA),
@@ -1426,10 +1631,10 @@ fn issue_lines(issue: &Issue, selected: bool, cols: usize, now: i64) -> Vec<mark
 
 fn detail_lines(detail: &Detail, cols: usize) -> Vec<markdown::MdLine> {
     let issue = &detail.issue;
-    let assignees = if detail.assignees.is_empty() {
+    let assignees = if detail.issue.assignees.is_empty() {
         "none".into()
     } else {
-        detail.assignees.join(", ")
+        detail.issue.assignees.join(", ")
     };
     let mut lines = Vec::new();
     let precise = |timestamp: Option<DateTime<FixedOffset>>| {
@@ -1515,12 +1720,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const REFRESH_MS: i64 = 60_000;
+
     // Lab API shapes (`GET /api/v1/lab/issues` and `/issues/{n}`), including a
     // shipped issue with a comment (#2180). Bodies are shortened for the fixture.
     const SEARCH: &str = r#"{"issues":[
         {"id":"i-2254","number":2254,"title":"Invite output","type":"bug","status":"triaged","authorId":"u1","authorUsername":"skunk-ape","source":"swamp"},
         {"id":"i-2180","number":2180,"title":"CLI referral link","type":"platform","status":"shipped","authorId":"u1","authorUsername":"skunk-ape","source":"swamp-club"}
-    ],"total":2219,"tierByUsername":{},"relationshipSummaries":{}}"#;
+    ],"total":2,"tierByUsername":{},"relationshipSummaries":{}}"#;
     const DETAIL: &str = r###"{
         "issue":{"id":"i-2180","number":2180,"title":"CLI referral link","type":"platform","status":"shipped",
             "authorId":"u1","authorUsername":"skunk-ape","source":"swamp-club","body":"## Referral link\n\nPrint **one URL**.",
@@ -1560,9 +1767,9 @@ mod tests {
         BTreeMap::from([("content-type".into(), "application/json".into())])
     }
 
-    fn search_url(query: &str, status: &str, kind: &str, source: &str) -> String {
+    fn search_url(query: &str) -> String {
         Client::new(&Credentials::anonymous())
-            .search(&search_query(query, status, kind, source).unwrap())
+            .search(&search_query(query, 0).unwrap())
             .unwrap()
             .url
     }
@@ -1607,7 +1814,7 @@ mod tests {
 
     fn loaded() -> State {
         let mut state = ready();
-        state.poll_swamp(0, true);
+        state.activate_swamp();
         reply(&mut state, SEARCH);
         state.render(10, 80);
         state
@@ -1686,18 +1893,29 @@ mod tests {
     }
 
     #[test]
-    fn triage_in_reader_uses_detail_and_reports_each_acknowledgement() {
+    fn triage_in_reader_fetches_current_detail_and_reports_each_acknowledgement() {
         let mut state = reader();
-        let count = state.swamp.requests.len();
         assert!(state.swamp.header().contains("a triage"));
         for (outcome, note) in [
             (wire::AskOutcome::Sent, "sent"),
             (wire::AskOutcome::Queued, "queued"),
             (wire::AskOutcome::Refused, "no API key"),
         ] {
+            let count = state.swamp.requests.len();
             key(&mut state, BareKey::Char('a'));
             assert!(state.swamp.triage_waiting);
-            assert_eq!(state.swamp.requests.len(), count);
+            assert_eq!(state.swamp.requests.len(), count + 1);
+            assert!(!ack(&mut state, outcome));
+            reply(
+                &mut state,
+                &DETAIL.replace("Print **one URL**.", "Fresh body."),
+            );
+            assert!(state
+                .swamp
+                .triage_text
+                .as_ref()
+                .unwrap()
+                .contains("Fresh body."));
             assert!(ack(&mut state, outcome));
             assert!(state.swamp.note().unwrap().contains(note));
             assert!(!state.swamp.triage_waiting);
@@ -1707,7 +1925,7 @@ mod tests {
     #[test]
     fn triage_waits_for_existing_requests_and_recovers_from_fetch_errors() {
         let mut state = loaded();
-        state.poll_swamp(REFRESH_MS, true);
+        key(&mut state, BareKey::Char('r'));
         key(&mut state, BareKey::Char('j'));
         key(&mut state, BareKey::Char('a'));
         key(&mut state, BareKey::Char('k'));
@@ -1766,7 +1984,7 @@ mod tests {
     #[test]
     fn cli_shapes_include_comments_empty_results_and_unknown_statuses() {
         let search = decode::<Search>(SEARCH.as_bytes()).unwrap();
-        assert_eq!((search.issues.len(), search.total), (2, 2219));
+        assert_eq!(search.issues.len(), 2);
         let detail = decode::<Detail>(DETAIL.as_bytes()).unwrap();
         let lines = detail_lines(&detail, 100);
         let text = lines
@@ -1794,14 +2012,14 @@ mod tests {
         assert!(empty.issues.is_empty());
         let unknown = SEARCH.replace("triaged", "reviewing");
         let search = decode::<Search>(unknown.as_bytes()).unwrap();
-        assert!(issue_lines(&search.issues[0], true, 100, now_ms())[0]
+        assert!(issue_lines(&search.issues[0], 100, now_ms())[0]
             .text
             .contains("reviewing"));
         let mut value: serde_json::Value = serde_json::from_str(DETAIL).unwrap();
         value["issue"]["assignees"] = json!([]);
         value["comments"] = json!([]);
         let detail = decode::<Detail>(value.to_string().as_bytes()).unwrap();
-        assert!(detail.assignees.is_empty() && detail.comments.is_empty());
+        assert!(detail.issue.assignees.is_empty() && detail.comments.is_empty());
     }
 
     #[test]
@@ -1813,12 +2031,12 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-09-18T12:00:00.123Z")
             .unwrap()
             .timestamp_millis();
-        let lines = issue_lines(&detail.issue, true, 100, now);
+        let lines = issue_lines(&detail.issue, 100, now);
         assert_eq!(
             lines.last().unwrap().text,
             "  Created 2h ago · Updated 5m ago"
         );
-        assert!(issue_lines(&detail.issue, true, 100, now + REFRESH_MS)
+        assert!(issue_lines(&detail.issue, 100, now + REFRESH_MS)
             .last()
             .unwrap()
             .text
@@ -1830,14 +2048,14 @@ mod tests {
         assert!(precise.contains(&"Created: 2026-09-18T05:00:00-05:00".into()));
         assert!(precise.contains(&"Updated: 2026-09-18T13:55:00.123+02:00".into()));
         for cols in 1..50 {
-            assert!(issue_lines(&detail.issue, true, cols, now)
+            assert!(issue_lines(&detail.issue, cols, now)
                 .iter()
                 .all(|line| line.text.width() <= cols));
             assert!(detail_lines(&detail, cols)
                 .iter()
                 .all(|line| line.text.width() <= cols));
         }
-        assert!(issue_lines(&detail.issue, false, 100, 0)
+        assert!(issue_lines(&detail.issue, 100, 0)
             .last()
             .unwrap()
             .text
@@ -1865,7 +2083,7 @@ mod tests {
             let detail = decode::<Detail>(value.to_string().as_bytes()).unwrap();
             assert!(detail.issue.created_at.is_none() && detail.issue.updated_at.is_none());
             assert_eq!(
-                issue_lines(&detail.issue, false, 100, now_ms())
+                issue_lines(&detail.issue, 100, now_ms())
                     .last()
                     .unwrap()
                     .text,
@@ -1916,7 +2134,7 @@ mod tests {
     #[test]
     fn all_sort_orders_use_instants_then_descending_numbers_with_unknowns_last() {
         let mut state = ready();
-        state.poll_swamp(0, true);
+        state.activate_swamp();
         reply(&mut state, &timestamped_search());
         assert_eq!(state.swamp.sort, 0);
         assert_eq!(state.swamp.selected_number(), Some(3));
@@ -1944,7 +2162,7 @@ mod tests {
             );
             assert_eq!(state.swamp.selected_number(), Some(3));
             assert_eq!(state.swamp.requests.len(), count, "sorting stays local");
-            assert!(state.swamp.header().contains("6 of 2219"));
+            assert!(state.swamp.header().contains("6 issues"));
         }
         key(&mut state, BareKey::Char('o'));
         key(&mut state, BareKey::Up);
@@ -1960,7 +2178,7 @@ mod tests {
     #[test]
     fn sorting_and_refresh_reveal_selection_and_keep_sort_across_surfaces() {
         let mut state = ready();
-        state.poll_swamp(0, true);
+        state.activate_swamp();
         reply(&mut state, &timestamped_search());
         state.render(9, 12);
         state.swamp.list_scroll = Some(usize::MAX);
@@ -1975,7 +2193,7 @@ mod tests {
         let mut refresh: serde_json::Value = serde_json::from_str(&timestamped_search()).unwrap();
         refresh["issues"][2]["createdAt"] = json!("2026-09-18T08:00:00Z");
         refresh["issues"].as_array_mut().unwrap().reverse();
-        state.poll_swamp(REFRESH_MS, true);
+        key(&mut state, BareKey::Char('r'));
         state.swamp.list_scroll = Some(usize::MAX);
         reply(&mut state, &refresh.to_string());
         assert_eq!(state.swamp.selected_number(), Some(3));
@@ -1995,11 +2213,11 @@ mod tests {
     fn minute_ticks_redraw_issue_ages_while_a_refresh_is_pending() {
         let mut state = loaded();
         assert!(!state.shows_an_age(), "legacy issues have no ages to tick");
-        state.poll_swamp(REFRESH_MS, true);
+        key(&mut state, BareKey::Char('r'));
         reply(&mut state, &timestamped_search());
         state.render(12, 80);
         assert!(state.shows_an_age());
-        state.poll_swamp(2 * REFRESH_MS, true);
+        key(&mut state, BareKey::Char('r'));
         let count = state.swamp.requests.len();
         state.age_minute = now_ms() / REFRESH_MS - 1;
         assert!(state.update(Event::Timer(FractionalSeconds::new(0.0))));
@@ -2013,6 +2231,102 @@ mod tests {
         state.render(12, 80);
         state.swamp_visibility(false);
         assert!(!state.shows_an_age());
+    }
+
+    #[test]
+    fn list_layout_is_reused_while_navigating_and_typing() {
+        let mut state = loaded();
+        let poison = markdown::MdLine::plain("cached title");
+        for input in [
+            BareKey::Down,
+            BareKey::Up,
+            BareKey::End,
+            BareKey::Home,
+            BareKey::PageDown,
+            BareKey::PageUp,
+            BareKey::Char('/'),
+            BareKey::Char('a'),
+            BareKey::Backspace,
+            BareKey::Esc,
+            BareKey::Char('f'),
+            BareKey::Char('a'),
+            BareKey::Esc,
+        ] {
+            state.swamp.list_rows[1].1 = poison.clone();
+            let cache_key = state.swamp.list_cache_key;
+            key(&mut state, input);
+            state.render(10, 80);
+            // Crossing a real minute boundary is allowed to rebuild the layout.
+            if state.swamp.list_cache_key == cache_key {
+                assert_eq!(state.swamp.list_rows[1].1, poison);
+            }
+            assert!(state
+                .swamp
+                .list_rows
+                .iter()
+                .all(|(_, line)| !line.text.starts_with('>')));
+        }
+        assert_eq!(state.swamp.issues().len(), 2);
+        assert_eq!(state.swamp.requests.len(), 1);
+    }
+
+    #[test]
+    fn list_layout_is_invalidated_by_filters_sorting_results_and_width() {
+        let mut state = loaded();
+        choose(&mut state, 's', "triaged");
+        assert!(state.swamp.list_rows.is_empty());
+        assert!(state.swamp.list_cache_key.is_none());
+        assert!(!state.swamp_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize, 0)));
+        state.render(10, 80);
+        assert_eq!(state.swamp.list_rows.len(), 3);
+        assert!(state.swamp.list_rows[0].1.text.contains("#2254"));
+
+        key(&mut state, BareKey::Char('r'));
+        reply(&mut state, &timestamped_search());
+        assert!(state.swamp.list_rows.is_empty());
+        assert!(state.swamp.list_cache_key.is_none());
+        state.render(20, 80);
+        assert_eq!(state.swamp.list_rows.len(), 18);
+        assert!(state.swamp.list_rows[0].1.text.contains("#3"));
+
+        choose(&mut state, 'o', "Created oldest first");
+        assert!(state.swamp.list_rows.is_empty());
+        assert!(state.swamp.list_cache_key.is_none());
+        state.render(20, 80);
+        assert!(state.swamp.list_rows[0].1.text.contains("#2"));
+        state.render(20, 12);
+        assert_eq!(state.swamp.list_cache_key.unwrap().0, 12);
+        assert!(state.swamp.list_rows.len() > 18);
+        assert!(state
+            .swamp
+            .list_rows
+            .iter()
+            .all(|(_, line)| line.text.width() <= 12));
+
+        choose(&mut state, 's', "closed");
+        state.render(20, 80);
+        assert!(state.swamp.list_rows.is_empty());
+        choose(&mut state, 's', "all");
+        state.render(20, 80);
+        assert_eq!(state.swamp.list_rows.len(), 18);
+    }
+
+    #[test]
+    fn list_layout_refreshes_age_labels_on_the_next_minute() {
+        let mut state = ready();
+        state.activate_swamp();
+        reply(&mut state, &timestamped_search());
+        let now = timestamp(Some("2026-09-18T12:05:00Z"))
+            .unwrap()
+            .timestamp_millis();
+        state.swamp.fill_list_cache(80, now);
+        assert!(state.swamp.list_rows[2].1.text.contains("Updated 5m ago"));
+        state.swamp.list_rows[1].1 = markdown::MdLine::plain("cached title");
+        state.swamp.fill_list_cache(80, now + REFRESH_MS - 1);
+        assert_eq!(state.swamp.list_rows[1].1.text, "cached title");
+        state.swamp.fill_list_cache(80, now + REFRESH_MS);
+        assert_eq!(state.swamp.list_rows[1].1.text, "  Invite output");
+        assert!(state.swamp.list_rows[2].1.text.contains("Updated 6m ago"));
     }
 
     fn type_text(state: &mut State, text: &str) {
@@ -2033,34 +2347,33 @@ mod tests {
     }
 
     #[test]
-    fn filters_combine_coalesce_and_source_edits_apply_cancel_clear() {
+    fn filters_combine_locally_and_source_edits_apply_cancel_clear() {
         let mut state = loaded();
-        choose(&mut state, 's', "open");
-        let stale = context(&state);
+        choose(&mut state, 's', "triaged");
         choose(&mut state, 't', "bug");
-        choose(&mut state, 'f', "  cli-tag  ");
-        assert_eq!(state.swamp.source, "cli-tag");
+        choose(&mut state, 'f', "  swamp  ");
+        assert_eq!(state.swamp.source, "swamp");
+        assert_eq!(state.swamp.issues().len(), 1);
+        assert_eq!(state.swamp.selected_number(), Some(2254));
+        assert_eq!(state.swamp.requests.len(), 1);
         choose(&mut state, '/', "two words");
         assert_eq!(state.swamp.requests.len(), 2);
-        state.swamp_web_result(200, &server(), EMPTY.as_bytes(), &stale);
-        assert_eq!(state.swamp.issues().len(), 2, "superseded result discarded");
         assert_eq!(
             state.swamp.requests.last().unwrap().0.url,
-            "https://swamp-club.com/api/v1/lab/issues?q=two+words&type=bug&status=open&source=cli-tag&limit=100"
+            search_url("two words")
         );
         reply(&mut state, SEARCH);
+        assert_eq!(state.swamp.issues().len(), 1);
         key(&mut state, BareKey::Char('f'));
         key(&mut state, BareKey::Backspace);
         key(&mut state, BareKey::Esc);
-        assert_eq!(state.swamp.source, "cli-tag");
+        assert_eq!(state.swamp.source, "swamp");
         key(&mut state, BareKey::Char('f'));
         clear_source(&mut state);
         type_text(&mut state, "cli tag");
-        let count = state.swamp.requests.len();
         key(&mut state, BareKey::Enter);
         assert!(state.swamp.is_editing());
-        assert_eq!(state.swamp.requests.len(), count);
-        assert_eq!(state.swamp.source, "cli-tag");
+        assert_eq!(state.swamp.source, "swamp");
         assert!(state
             .swamp
             .list_error
@@ -2071,14 +2384,47 @@ mod tests {
         key(&mut state, BareKey::Enter);
         assert!(state.swamp.source.is_empty());
         assert!(!state.swamp.is_editing());
+        assert!(!state.swamp.has_error());
+        assert!(state.swamp.note().is_none());
         choose(&mut state, 's', "all");
         choose(&mut state, 't', "all");
-        assert_eq!((state.swamp.status, state.swamp.kind), (0, 0));
-        reply(&mut state, SEARCH);
-        assert_eq!(
-            state.swamp.requests.last().unwrap().0.url,
-            search_url("two words", "", "", "")
-        );
+        assert_eq!(state.swamp.issues().len(), 2);
+        assert_eq!(state.swamp.requests.len(), 2);
+    }
+
+    #[test]
+    fn correcting_clearing_or_restoring_a_source_removes_its_error_banner_and_marker() {
+        for (previous, corrected) in [
+            ("swamp", "swamp-club"),
+            ("swamp", ""),
+            ("swamp", "swamp"),
+            ("", ""),
+        ] {
+            let mut state = loaded();
+            choose(&mut state, 'f', previous);
+            key(&mut state, BareKey::Char('f'));
+            clear_source(&mut state);
+            type_text(&mut state, "invalid source");
+            key(&mut state, BareKey::Enter);
+            state.render(12, 80);
+            assert_eq!(state.swamp.source, previous);
+            assert!(state.swamp.has_error());
+            assert!(state.swamp.note().unwrap().starts_with("Error:"));
+            assert!(state.tab_cells.last().unwrap().text.contains("Swamp!"));
+            let error_body_top = state.swamp.last_body_top;
+
+            clear_source(&mut state);
+            type_text(&mut state, corrected);
+            key(&mut state, BareKey::Enter);
+            state.render(12, 80);
+            assert_eq!(state.swamp.source, corrected);
+            assert!(!state.swamp.is_editing());
+            assert!(!state.swamp.has_error());
+            assert!(state.swamp.note().is_none());
+            assert!(!state.tab_cells.last().unwrap().text.contains('!'));
+            assert_eq!(state.swamp.last_body_top + 1, error_body_top);
+            assert_eq!(state.swamp.requests.len(), 1);
+        }
     }
 
     #[test]
@@ -2126,7 +2472,7 @@ mod tests {
         choose(&mut state, 'f', "");
         assert_eq!(
             state.swamp.requests.len(),
-            2,
+            1,
             "unchanged source does not search"
         );
         key(&mut state, BareKey::Char('f'));
@@ -2163,7 +2509,7 @@ mod tests {
 
     #[test]
     fn filter_mouse_selects_on_release_and_intercepts_issue_rows() {
-        for shortcut in ['s', 't', 'f', 'o'] {
+        for shortcut in ['s', 't', 'f', 'o', 'u'] {
             let mut state = loaded();
             let (row, x, _, _) = *state
                 .swamp
@@ -2198,12 +2544,13 @@ mod tests {
             state.on_mouse(Mouse::Release(y, rect.x));
             assert!(!state.swamp.is_editing());
             assert!(state.swamp.opened.is_none());
-            let expected_count = count + usize::from(shortcut != 'o');
+            let expected_count = count;
             assert_eq!(state.swamp.requests.len(), expected_count);
             match shortcut {
                 's' => assert_eq!(STATUSES[state.swamp.status], "open"),
                 't' => assert_eq!(TYPES[state.swamp.kind], "bug"),
                 'o' => assert_eq!(state.swamp.sort, 1),
+                'u' => assert_eq!(state.swamp.assignee.as_deref(), Some("")),
                 _ => assert_eq!(state.swamp.source, "swamp"),
             }
             reply(&mut state, SEARCH);
@@ -2219,7 +2566,7 @@ mod tests {
     #[test]
     fn filter_chips_and_active_forms_fit_resized_panes() {
         let mut state = loaded();
-        for shortcut in ['s', 't', 'f', 'o'] {
+        for shortcut in ['s', 't', 'f', 'o', 'u'] {
             key(&mut state, BareKey::Char(shortcut));
             for cols in 1..80 {
                 for rows in [2, 4, 12] {
@@ -2241,7 +2588,7 @@ mod tests {
             key(&mut state, BareKey::Esc);
         }
         state.render(12, 20);
-        assert_eq!(state.swamp.filter_cells.len(), 4);
+        assert_eq!(state.swamp.filter_cells.len(), 5);
         assert!(state
             .swamp
             .filter_cells
@@ -2320,21 +2667,21 @@ mod tests {
     #[test]
     fn search_text_is_one_encoded_parameter_and_statuses_use_the_api_spelling() {
         assert_eq!(
-            search_url("", "", "", ""),
-            "https://swamp-club.com/api/v1/lab/issues?limit=100"
+            search_url(""),
+            "https://swamp-club.com/api/v1/lab/issues?limit=200"
         );
         let query = "two words; $(touch /tmp/no) `echo no` --help";
         assert_eq!(
-            search_url(query, "in_progress", "", ""),
+            search_url(query),
             "https://swamp-club.com/api/v1/lab/issues?q=two+words%3B+%24%28touch+%2Ftmp%2Fno%29+%60echo+no%60+--help\
-             &status=in_progress&limit=100"
+             &limit=200"
         );
-        assert!(search_query(&"q".repeat(201), "", "", "").is_err());
+        assert!(search_query(&"q".repeat(201), 0).is_err());
         let mut state = loaded();
         for status in STATUSES.iter().skip(1).chain([&STATUSES[0]]) {
             choose(&mut state, 's', status_label(status));
             let url = &state.swamp.requests.last().unwrap().0.url;
-            assert_eq!(*url, search_url("", status, "", ""));
+            assert_eq!(*url, search_url(""));
             reply(&mut state, SEARCH);
         }
         assert_eq!(state.swamp.status, 0);
@@ -2372,8 +2719,8 @@ mod tests {
         reply(&mut state, EMPTY);
         assert_eq!(
             state.swamp.issues().len(),
-            2,
-            "ignore old query's empty results"
+            0,
+            "old query cannot populate a new query"
         );
         assert_eq!(state.swamp.requests.len(), 3);
         assert!(state.swamp.requests.last().unwrap().0.url.contains("?q=b&"));
@@ -2385,10 +2732,49 @@ mod tests {
         key(&mut state, BareKey::Char('/'));
         key(&mut state, BareKey::Backspace);
         key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.issues().len(), 2);
         assert_eq!(
-            state.swamp.requests.last().unwrap().0.url,
-            search_url("", "", "", "")
+            state.swamp.requests.len(),
+            3,
+            "clearing search reuses the catalogue"
         );
+    }
+
+    #[test]
+    fn clearing_a_pending_search_repaints_when_the_obsolete_reply_removes_loading() {
+        for visibility in ["visible", "hidden", "other surface"] {
+            let mut state = loaded();
+            let catalogue = serde_json::to_value(&state.swamp.search).unwrap();
+            choose(&mut state, '/', "a");
+            let pending = context(&state);
+            key(&mut state, BareKey::Char('/'));
+            key(&mut state, BareKey::Backspace);
+            key(&mut state, BareKey::Enter);
+            assert_eq!(state.swamp.note().as_deref(), Some("Loading…"));
+            assert_eq!(
+                serde_json::to_value(&state.swamp.search).unwrap(),
+                catalogue
+            );
+            match visibility {
+                "hidden" => {
+                    state.swamp_visibility(false);
+                },
+                "other surface" => state.switch_surface(Surface::Agents),
+                _ => {},
+            }
+            assert_eq!(
+                state.swamp_web_result(200, &server(), EMPTY.as_bytes(), &pending),
+                visibility == "visible"
+            );
+            assert!(state.swamp.note().is_none());
+            assert!(state.swamp.pending.is_none());
+            assert_eq!(
+                serde_json::to_value(&state.swamp.search).unwrap(),
+                catalogue
+            );
+            assert_eq!(state.swamp.requests.len(), 2);
+            assert!(!state.swamp_web_result(200, &server(), EMPTY.as_bytes(), &pending));
+        }
     }
 
     #[test]
@@ -2396,21 +2782,21 @@ mod tests {
         let mut state = loaded();
         state.swamp.selected = 1;
         state.swamp.list_scroll = Some(1);
-        state.poll_swamp(REFRESH_MS, false);
+        key(&mut state, BareKey::Char('r'));
         let mut reordered: serde_json::Value = serde_json::from_str(SEARCH).unwrap();
         reordered["issues"].as_array_mut().unwrap().reverse();
         reply(&mut state, &reordered.to_string());
         assert_eq!(state.swamp.selected, 1);
         assert_eq!(state.swamp.list_scroll, None);
-        state.poll_swamp(2 * REFRESH_MS, false);
+        key(&mut state, BareKey::Char('r'));
         reply_status(&mut state, 503, r#"{"error":"Network unavailable"}"#);
         assert_eq!(state.swamp.issues()[state.swamp.selected].number, 2180);
         assert!(state.swamp.note().unwrap().contains("Network unavailable"));
-        state.poll_swamp(3 * REFRESH_MS, false);
+        key(&mut state, BareKey::Char('r'));
         reply(&mut state, SEARCH);
         assert_eq!(state.swamp.selected, 1);
         assert!(!state.swamp.has_error());
-        state.poll_swamp(4 * REFRESH_MS, false);
+        key(&mut state, BareKey::Char('r'));
         reply(&mut state, EMPTY);
         assert_eq!(state.swamp.selected, 0);
         key(&mut state, BareKey::Enter);
@@ -2418,40 +2804,30 @@ mod tests {
     }
 
     #[test]
-    fn refreshes_only_when_visible_and_never_overlap() {
+    fn timer_ticks_and_returning_to_panel_do_not_reload_issues() {
         let mut state = reader();
         let count = state.swamp.requests.len();
-        state.swamp.last_refresh = Some(0);
-        assert!(!state.poll_swamp(REFRESH_MS - 1, false));
-        assert!(state.poll_swamp(REFRESH_MS, false));
-        assert_eq!(state.swamp.requests.len(), count + 1);
-        assert!(!state.poll_swamp(REFRESH_MS * 2, true));
-        assert!(!state.poll_swamp(REFRESH_MS * 2, false));
+        for _ in 0..3 {
+            assert!(!state.update(Event::Timer(FractionalSeconds::new(0.0))));
+        }
         state.switch_surface(Surface::Agents);
-        reply(&mut state, SEARCH);
-        assert!(state.swamp.detail_wanted);
-        assert!(!state.poll_swamp(REFRESH_MS * 3, true));
-        assert_eq!(state.swamp.requests.len(), count + 1);
+        assert!(!state.activate_swamp());
         state.switch_surface(Surface::Swamp);
+        state.swamp_visibility(false);
+        assert!(!state.activate_swamp());
+        state.swamp_visibility(true);
+        state.update(Event::Timer(FractionalSeconds::new(0.0)));
+        assert_eq!(state.swamp.requests.len(), count);
+        key(&mut state, BareKey::Char('r'));
+        assert_eq!(state.swamp.requests.len(), count + 1);
+        assert!(!state.update(Event::Timer(FractionalSeconds::new(0.0))));
         reply(&mut state, SEARCH);
         assert_eq!(
             state.swamp.requests.last().unwrap().0.url,
             "https://swamp-club.com/api/v1/lab/issues/2180"
         );
         reply(&mut state, DETAIL);
-        let count = state.swamp.requests.len();
-        state.swamp_visibility(false);
-        assert!(!state.poll_swamp(i64::MAX, true));
-        assert_eq!(state.swamp.requests.len(), count);
-        state.swamp_visibility(true);
-        assert_eq!(state.swamp.requests.len(), count + 1);
-        reply(&mut state, SEARCH);
-        reply(&mut state, DETAIL);
-        assert_eq!(
-            state.swamp.requests.len(),
-            count + 2,
-            "reopening refreshes both list and reader"
-        );
+        assert_eq!(state.swamp.requests.len(), count + 2);
     }
 
     #[test]
@@ -2464,12 +2840,12 @@ mod tests {
             state.swamp.permission = Permission::Granted;
             state.swamp.credentials = Some(Credentials::anonymous());
             state.swamp.keep_credentials = true;
-            assert!(!state.poll_swamp(0, true));
+            assert!(!state.activate_swamp());
             if surface_event {
                 assert!(!state.update(Event::Visible(true)));
             }
             assert!(!state.update(Event::PaneUpdate(PaneManifest::default())));
-            assert!(!state.poll_swamp(REFRESH_MS, true));
+            assert!(!state.activate_swamp());
             assert!(state.swamp.requests.is_empty());
             assert!(state.update(pane_update(state.own_plugin_id, false)));
             assert_eq!(state.swamp.requests.len(), 1);
@@ -2493,7 +2869,7 @@ mod tests {
             assert!(!state.update(restore[0].clone()));
             assert!(!state.update(Event::PaneUpdate(PaneManifest::default())));
             assert!(!state.swamp.visible());
-            assert!(!state.poll_swamp(i64::MAX, true));
+            assert!(!state.activate_swamp());
             assert!(state.swamp.requests.is_empty());
 
             assert!(state.update(restore[1].clone()));
@@ -2513,7 +2889,7 @@ mod tests {
     fn dismissal_preserves_surface_state_and_hidden_results_wait_for_reopening() {
         for surface_hidden in [false, true] {
             let mut state = reader();
-            state.poll_swamp(REFRESH_MS, true);
+            key(&mut state, BareKey::Char('r'));
             let count = state.swamp.requests.len();
             let pending = context(&state);
             if surface_hidden {
@@ -2531,7 +2907,7 @@ mod tests {
             } else {
                 assert!(!state.update(Event::Visible(true)));
             }
-            assert!(!state.poll_swamp(i64::MAX, true));
+            assert!(!state.activate_swamp());
             assert!(!state.update(Event::WebRequestResult(
                 200,
                 server(),
@@ -2548,11 +2924,10 @@ mod tests {
                 assert!(state.update(pane_update(state.own_plugin_id, false)));
             }
             assert_eq!(state.swamp.requests.len(), count + 1);
-            reply(&mut state, SEARCH);
             reply(&mut state, DETAIL);
             assert!(!state.update(pane_update(state.own_plugin_id, false)));
             assert!(!state.update(Event::Visible(true)));
-            assert_eq!(state.swamp.requests.len(), count + 2);
+            assert_eq!(state.swamp.requests.len(), count + 1);
         }
     }
 
@@ -2561,7 +2936,7 @@ mod tests {
         for surface_hidden in [false, true] {
             let mut state = ready();
             state.swamp.permission = Permission::Unrequested;
-            state.poll_swamp(0, true);
+            state.activate_swamp();
             assert!(state.swamp.requests.is_empty());
             assert!(state
                 .swamp
@@ -2570,7 +2945,7 @@ mod tests {
                 .contains("Waiting for permission"));
             state.update(Event::PermissionRequestResult(PermissionStatus::Denied));
             assert!(state.swamp.note().unwrap().contains("Permission denied"));
-            state.poll_swamp(REFRESH_MS, false);
+            state.update(Event::Timer(FractionalSeconds::new(0.0)));
             assert!(state.swamp.permission == Permission::Denied);
             key(&mut state, BareKey::Char('r'));
             assert!(state.swamp.permission == Permission::Waiting);
@@ -2596,7 +2971,7 @@ mod tests {
     fn detail_replies_match_both_request_and_issue_and_survive_refresh_failure() {
         let mut state = reader();
         state.swamp.detail_scroll = 4;
-        state.poll_swamp(REFRESH_MS, true);
+        key(&mut state, BareKey::Char('r'));
         reply(&mut state, SEARCH);
         let mut wrong_context = context(&state);
         wrong_context.insert(ISSUE_NUMBER.into(), "2254".into());
@@ -2611,13 +2986,13 @@ mod tests {
             .contains("wrong issue number"));
         assert_eq!(state.swamp.detail.as_ref().unwrap().issue.number, 2180);
         assert_eq!(state.swamp.detail_scroll, 4);
-        state.poll_swamp(2 * REFRESH_MS, true);
+        key(&mut state, BareKey::Char('r'));
         reply(&mut state, SEARCH);
         reply(&mut state, DETAIL);
         assert_eq!(state.swamp.detail_scroll, 4);
         assert!(!state.swamp.has_error());
 
-        state.poll_swamp(3 * REFRESH_MS, true);
+        key(&mut state, BareKey::Char('r'));
         reply(&mut state, SEARCH);
         let old = context(&state);
         key(&mut state, BareKey::Esc);
@@ -2712,7 +3087,7 @@ mod tests {
                     .iter()
                     .all(|line| line.text.width() <= cols));
             }
-            assert!(issue_lines(&state.swamp.issues()[0], true, cols, now_ms())
+            assert!(issue_lines(&state.swamp.issues()[0], cols, now_ms())
                 .iter()
                 .all(|line| line.text.width() <= cols));
         }
@@ -2726,7 +3101,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["A", "T", "V", "S"]
         );
-        assert!(state.swamp.header().contains("2 of 2219"));
+        assert!(state.swamp.header().contains("2 issues"));
     }
 
     #[test]
@@ -2734,7 +3109,7 @@ mod tests {
         let mut state = loaded();
         let issue = &mut state.swamp.search.as_mut().unwrap().issues[0];
         issue.title = "alpha beta\ngamma\nabcdefghijk\n界面 é".into();
-        let lines = issue_lines(issue, true, 8, now_ms());
+        let lines = issue_lines(issue, 8, now_ms());
         assert_eq!(
             lines[1..7]
                 .iter()
@@ -2755,14 +3130,16 @@ mod tests {
             assert!(line.styles[2..].iter().all(|style| *style == TITLE));
         }
         for cols in 0..20 {
-            assert!(issue_lines(issue, false, cols, now_ms())
+            assert!(issue_lines(issue, cols, now_ms())
                 .iter()
                 .all(|line| line.text.width() <= cols));
         }
         for selected in [false, true] {
             for line in &lines {
                 assert_eq!(
-                    list_text(line, selected).serialize().starts_with('x'),
+                    list_text(line, selected, false)
+                        .serialize()
+                        .starts_with('x'),
                     selected
                 );
             }
@@ -2788,8 +3165,14 @@ mod tests {
                 ..Default::default()
             };
             for selected in [false, true] {
-                let lines = issue_lines(&detail.issue, selected, 100, 0);
-                assert_eq!(lines[0].text.starts_with('>'), selected);
+                let lines = issue_lines(&detail.issue, 100, 0);
+                assert!(!lines[0].text.starts_with('>'));
+                assert_eq!(
+                    list_text(&lines[0], selected, true)
+                        .content()
+                        .starts_with('>'),
+                    selected
+                );
                 let start = format!("  #{} ", detail.issue.number).chars().count();
                 let end = start + status_label(status).chars().count();
                 assert!(lines[0].styles[1..start].iter().all(|s| *s == METADATA));
@@ -2800,7 +3183,8 @@ mod tests {
                 assert!(lines[1].styles[2..].iter().all(|s| *s == TITLE));
                 assert!(lines[2].styles[2..].iter().all(|s| *s == METADATA));
                 for cols in 0..30 {
-                    let clipped = issue_lines(&detail.issue, selected, cols, 0).remove(0);
+                    let clipped = issue_lines(&detail.issue, cols, 0).remove(0);
+                    assert!(list_text(&clipped, selected, true).content().width() <= cols);
                     assert_eq!(
                         clipped.styles,
                         lines[0].styles[..clipped.text.chars().count()]
@@ -2808,8 +3192,8 @@ mod tests {
                 }
                 for line in &lines {
                     assert_eq!(
-                        list_text(line, true).serialize(),
-                        format!("x{}", list_text(line, false).serialize())
+                        list_text(line, true, false).serialize(),
+                        format!("x{}", list_text(line, false, false).serialize())
                     );
                 }
             }
@@ -2849,7 +3233,7 @@ mod tests {
                 }
                 for line in wrapped
                     .iter()
-                    .chain(issue_lines(&detail.issue, true, cols, 0).iter())
+                    .chain(issue_lines(&detail.issue, cols, 0).iter())
                 {
                     assert!(line.text.width() <= cols);
                     assert!(
@@ -2871,7 +3255,11 @@ mod tests {
                     .remove(0)
             })
             .collect();
-        state.swamp.search = Some(Search { issues, total: 20 });
+        state.swamp.cache.catalogue = Some(Search {
+            issues,
+            fetched_at: 0,
+        });
+        state.swamp.filter_issues();
         state.render_swamp(8, 80);
         key(&mut state, BareKey::PageDown);
         assert_eq!(state.swamp.selected, 1);
@@ -2958,11 +3346,382 @@ mod tests {
         request.headers.get("x-api-key").cloned()
     }
 
+    fn page(numbers: &[u64], total: u64) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(SEARCH).unwrap();
+        let template = value["issues"][0].clone();
+        value["issues"] = numbers
+            .iter()
+            .map(|number| {
+                let mut issue = template.clone();
+                issue["number"] = json!(number);
+                issue
+            })
+            .collect();
+        value["total"] = json!(total);
+        value.to_string()
+    }
+
+    #[test]
+    fn assignees_filter_all_any_person_or_unassigned_and_combine_with_other_filters() {
+        let mut state = ready();
+        state.activate_swamp();
+        let mut data: serde_json::Value = serde_json::from_str(&page(&[1, 2, 3, 4], 4)).unwrap();
+        data["issues"][0]["assignees"] = json!([
+            {"userId":"z", "username":"zoe"}, {"userId":"a", "username":"amy"}
+        ]);
+        data["issues"][1]["assignees"] = json!([{"userId":"a", "username":"amy"}]);
+        data["issues"][1]["source"] = json!("swamp-club");
+        data["issues"][2]["assignees"] = json!([{"userId":"z", "username":"zoe"}]);
+        data["issues"][2]["status"] = json!("closed");
+        data["issues"][2]["type"] = json!("feature");
+        reply(&mut state, &data.to_string());
+        assert_eq!(
+            state.swamp.assignee_options(),
+            ["All", "Unassigned", "amy", "zoe"]
+        );
+        choose(&mut state, 'u', "zoe");
+        assert_eq!(
+            state
+                .swamp
+                .issues()
+                .iter()
+                .map(|issue| issue.number)
+                .collect::<Vec<_>>(),
+            [3, 1]
+        );
+        key(&mut state, BareKey::Down);
+        choose(&mut state, 's', "triaged");
+        choose(&mut state, 't', "bug");
+        choose(&mut state, 'f', "swamp");
+        assert_eq!(state.swamp.selected_number(), Some(1));
+        choose(&mut state, 'u', "amy");
+        assert_eq!(state.swamp.selected_number(), Some(1));
+        assert_eq!(state.swamp.issues().len(), 1);
+        choose(&mut state, 'u', "Unassigned");
+        assert_eq!(state.swamp.selected_number(), Some(4));
+        assert!(state.swamp.header().contains("1 issues · cached"));
+        choose(&mut state, 'u', "All");
+        assert_eq!(state.swamp.issues().len(), 2);
+        for cancel in [BareKey::Esc, BareKey::Tab] {
+            key(&mut state, BareKey::Char('u'));
+            type_text(&mut state, "amy");
+            key(&mut state, cancel);
+            assert_eq!(state.swamp.assignee, None);
+        }
+        assert_eq!(state.swamp.requests.len(), 1);
+    }
+
+    #[test]
+    fn pagination_finds_assignees_beyond_page_one_and_deduplicates_at_returned_offsets() {
+        let mut state = ready();
+        state.activate_swamp();
+        reply(&mut state, &page(&(1..=200).collect::<Vec<_>>(), 203));
+        assert!(
+            state.swamp.issues().is_empty(),
+            "partial catalogues are never displayed"
+        );
+        assert_eq!(
+            state.swamp.requests.last().unwrap().0.url,
+            format!("{}&offset=200", search_url(""))
+        );
+        let mut second: serde_json::Value = serde_json::from_str(&page(&[200, 201], 203)).unwrap();
+        second["issues"][1]["assignees"] = json!([{"userId":"a", "username":"amy"}]);
+        reply(&mut state, &second.to_string());
+        assert!(state
+            .swamp
+            .requests
+            .last()
+            .unwrap()
+            .0
+            .url
+            .ends_with("offset=202"));
+        reply(&mut state, &page(&[202], 203));
+        assert!(
+            state.swamp.pending.is_none(),
+            "reported total terminates the load"
+        );
+        assert_eq!(state.swamp.issues().len(), 202);
+        choose(&mut state, 'u', "amy");
+        assert_eq!(state.swamp.selected_number(), Some(201));
+        assert_eq!(state.swamp.issues().len(), 1);
+        assert_eq!(state.swamp.requests.len(), 3);
+    }
+
+    #[test]
+    fn empty_pages_finish_and_repeated_pages_or_mid_load_errors_preserve_the_cache() {
+        let mut state = loaded();
+        let before = serde_json::to_value(&state.swamp.cache).unwrap();
+        for failure in ["repeated", "network", "malformed"] {
+            key(&mut state, BareKey::Char('r'));
+            reply(&mut state, &page(&[1, 2], 50));
+            assert_eq!(serde_json::to_value(&state.swamp.cache).unwrap(), before);
+            match failure {
+                "repeated" => reply(&mut state, &page(&[2, 1], 50)),
+                "network" => reply_status(&mut state, 503, r#"{"error":"unavailable"}"#),
+                _ => reply(&mut state, "invalid"),
+            }
+            assert!(state.swamp.pending.is_none());
+            assert!(state.swamp.loading.is_none());
+            assert!(state.swamp.has_error());
+            assert_eq!(serde_json::to_value(&state.swamp.cache).unwrap(), before);
+            assert_eq!(state.swamp.issues().len(), 2);
+        }
+        key(&mut state, BareKey::Char('r'));
+        reply(&mut state, &page(&[1, 2], 50));
+        reply(&mut state, &page(&[], 50));
+        assert!(state.swamp.pending.is_none());
+        assert!(!state.swamp.has_error());
+        assert_eq!(state.swamp.selected_number(), Some(2));
+    }
+
+    #[test]
+    fn body_search_pages_are_cached_locally_and_reload_refreshes_both_snapshots() {
+        let mut state = loaded();
+        choose(&mut state, '/', "body-only phrase");
+        assert!(state
+            .swamp
+            .requests
+            .last()
+            .unwrap()
+            .0
+            .url
+            .contains("q=body-only+phrase"));
+        reply(&mut state, &page(&[9], 2));
+        assert!(state
+            .swamp
+            .requests
+            .last()
+            .unwrap()
+            .0
+            .url
+            .ends_with("offset=1"));
+        reply(&mut state, &page(&[10], 2));
+        assert_eq!(state.swamp.issues().len(), 2);
+        assert!(state
+            .swamp
+            .issues()
+            .iter()
+            .all(|issue| !issue.title.contains("body-only phrase")));
+        let count = state.swamp.requests.len();
+        choose(&mut state, 's', "triaged");
+        choose(&mut state, 't', "bug");
+        choose(&mut state, 'u', "Unassigned");
+        state.swamp.query.clear();
+        state.search_swamp();
+        assert_eq!(state.swamp.selected_number(), Some(2254));
+        choose(&mut state, '/', "body-only phrase");
+        assert_eq!(state.swamp.requests.len(), count);
+        assert_eq!(state.swamp.issues().len(), 2);
+        key(&mut state, BareKey::Enter);
+        reply(&mut state, &DETAIL.replace("2180", "10"));
+        key(&mut state, BareKey::Char('r'));
+        assert_eq!(state.swamp.requests.last().unwrap().0.url, search_url(""));
+        reply(&mut state, SEARCH);
+        assert_eq!(
+            state.swamp.requests.last().unwrap().0.url,
+            search_url("body-only phrase")
+        );
+        reply(&mut state, &page(&[10], 1));
+        assert!(state
+            .swamp
+            .requests
+            .last()
+            .unwrap()
+            .0
+            .url
+            .ends_with("/issues/10"));
+        reply(&mut state, &DETAIL.replace("2180", "10"));
+        assert_eq!(
+            state.swamp.cache.catalogue.as_ref().unwrap().issues.len(),
+            2
+        );
+        assert_eq!(state.swamp.issues().len(), 1);
+        assert!(state.swamp.pending.is_none());
+    }
+
+    #[test]
+    fn superseded_pages_including_unauthorized_replies_cannot_replace_a_new_search() {
+        let mut state = loaded();
+        choose(&mut state, '/', "old");
+        reply(&mut state, &page(&[1], 3));
+        let stale = context(&state);
+        state.swamp.query = "new".into();
+        state.search_swamp();
+        reply_status(&mut state, 401, r#"{"error":"Unauthorized"}"#);
+        assert!(
+            state.swamp.commands.is_empty(),
+            "stale 401 does not reread credentials"
+        );
+        assert_eq!(
+            state.swamp.requests.last().unwrap().0.url,
+            search_url("new")
+        );
+        assert!(!state.swamp_web_result(200, &server(), page(&[2], 2).as_bytes(), &stale));
+        reply(&mut state, &page(&[7], 1));
+        assert_eq!(state.swamp.selected_number(), Some(7));
+        assert_eq!(state.swamp.cache.text_search.as_ref().unwrap().0, "new");
+        key(&mut state, BareKey::Char('r'));
+        let old_reload = context(&state);
+        let count = state.swamp.requests.len();
+        key(&mut state, BareKey::Char('r'));
+        assert_eq!(state.swamp.requests.len(), count, "reloads never overlap");
+        reply_status(&mut state, 503, r#"{"error":"stale failure"}"#);
+        assert!(!state.swamp.has_error());
+        assert_eq!(state.swamp.selected_number(), Some(7));
+        assert!(!state.swamp_web_result(200, &server(), EMPTY.as_bytes(), &old_reload));
+        reply(&mut state, SEARCH);
+        reply(&mut state, &page(&[8], 1));
+        assert_eq!(state.swamp.selected_number(), Some(8));
+    }
+
+    #[test]
+    fn persistent_catalogue_and_search_are_reused_after_resolving_credentials_on_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = ready();
+        state.swamp.cache_dir = Some(directory.path().to_owned());
+        state.swamp.keep_credentials = false;
+        state.activate_swamp();
+        answer_login(&mut state, &login("swamp_secret"));
+        let mut assigned: serde_json::Value = serde_json::from_str(SEARCH).unwrap();
+        assigned["issues"][1]["assignees"] = json!([{"userId":"k", "username":"keeper"}]);
+        reply(&mut state, &assigned.to_string());
+        choose(&mut state, '/', "body match");
+        reply(&mut state, &page(&[99], 1));
+        let saved = std::fs::read_to_string(state.swamp.cache_path().unwrap()).unwrap();
+        assert!(!saved.contains("swamp_secret"));
+        let mut restarted = ready();
+        restarted.swamp.cache_dir = Some(directory.path().to_owned());
+        restarted.swamp.keep_credentials = false;
+        restarted.activate_swamp();
+        assert!(
+            restarted.swamp.issues().is_empty(),
+            "identity must be resolved first"
+        );
+        answer_login(&mut restarted, &login("swamp_secret"));
+        assert_eq!(restarted.swamp.issues().len(), 2);
+        choose(&mut restarted, 'u', "keeper");
+        assert_eq!(restarted.swamp.issues().len(), 1);
+        assert_eq!(restarted.swamp.issues()[0].source, "swamp-club");
+        choose(&mut restarted, 'u', "All");
+        choose(&mut restarted, '/', "body match");
+        assert_eq!(restarted.swamp.selected_number(), Some(99));
+        assert!(restarted.swamp.requests.is_empty());
+        restarted.switch_surface(Surface::Agents);
+        restarted.switch_surface(Surface::Swamp);
+        answer_login(&mut restarted, &login("swamp_secret"));
+        assert!(restarted.swamp.requests.is_empty());
+        key(&mut restarted, BareKey::Char('r'));
+        answer_login(&mut restarted, &login("swamp_secret"));
+        reply_status(&mut restarted, 503, r#"{"error":"offline"}"#);
+        reply_status(&mut restarted, 503, r#"{"error":"offline"}"#);
+        assert_eq!(restarted.swamp.selected_number(), Some(99));
+        assert_eq!(
+            std::fs::read_to_string(restarted.swamp.cache_path().unwrap()).unwrap(),
+            saved
+        );
+        restarted.activate_swamp();
+        answer_login(&mut restarted, &login("different_key"));
+        assert!(
+            restarted.swamp.search_wanted,
+            "the new identity needs this query too"
+        );
+        restarted.activate_swamp();
+        reply(&mut restarted, EMPTY);
+        let count = restarted.swamp.requests.len();
+        answer_login(&mut restarted, &login("swamp_secret"));
+        assert_eq!(restarted.swamp.selected_number(), Some(99));
+        assert_eq!(
+            restarted.swamp.requests.len(),
+            count,
+            "old identity's queued search cannot refresh a valid cache"
+        );
+    }
+
+    #[test]
+    fn identity_changes_clear_data_and_isolate_keys_servers_and_anonymous_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = ready();
+        state.swamp.cache_dir = Some(directory.path().to_owned());
+        state.swamp.keep_credentials = false;
+        for file in [
+            login("same-prefix-key-one"),
+            login("same-prefix-key-two"),
+            String::from_utf8(login("same-prefix-key-two"))
+                .unwrap()
+                .replace("lab.example.test", "other.example.test")
+                .into_bytes(),
+            vec![],
+        ] {
+            state.activate_swamp();
+            answer_login(&mut state, &file);
+            assert!(state.swamp.issues().is_empty());
+            assert!(state.swamp.detail.is_none());
+            assert!(state.swamp.opened.is_none());
+            reply(&mut state, SEARCH);
+            key(&mut state, BareKey::Down);
+            key(&mut state, BareKey::Enter);
+            reply(&mut state, DETAIL);
+        }
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 4);
+        state.activate_swamp();
+        let count = state.swamp.requests.len();
+        answer_login(&mut state, &login("same-prefix-key-one"));
+        assert_eq!(
+            state.swamp.requests.len(),
+            count,
+            "returning identity reuses its own cache"
+        );
+        assert_eq!(state.swamp.issues().len(), 2);
+    }
+
+    #[test]
+    fn activation_during_a_page_load_resolves_identity_before_accepting_the_reply() {
+        let mut state = loaded();
+        key(&mut state, BareKey::Char('r'));
+        reply(&mut state, &page(&[1], 3));
+        state.swamp.keep_credentials = false;
+        state.switch_surface(Surface::Agents);
+        state.switch_surface(Surface::Swamp);
+        reply(&mut state, &page(&[2, 3], 3));
+        assert_eq!(state.swamp.selected_number(), Some(2254));
+        answer_login(&mut state, &login("new_identity"));
+        assert!(state.swamp.issues().is_empty());
+        assert_eq!(state.swamp.loading.as_ref().unwrap().offset, 0);
+        reply(&mut state, EMPTY);
+        assert!(state.swamp.issues().is_empty());
+    }
+
+    #[test]
+    fn corrupt_or_incompatible_caches_load_from_api_and_write_errors_keep_fresh_results() {
+        let directory = tempfile::tempdir().unwrap();
+        let identity = cache::identity(&Credentials::anonymous());
+        let path = directory.path().join(format!("{identity}.json"));
+        for invalid in [
+            "not json",
+            r#"{"version":999,"catalogue":null,"text_search":null}"#,
+        ] {
+            std::fs::write(&path, invalid).unwrap();
+            let mut state = ready();
+            state.swamp.cache_dir = Some(directory.path().to_owned());
+            state.activate_swamp();
+            assert_eq!(state.swamp.requests.len(), 1);
+            reply(&mut state, SEARCH);
+            assert!(cache::Cache::read(&path).unwrap().catalogue.is_some());
+        }
+        let mut state = ready();
+        state.swamp.cache_dir = Some(path.clone()); // parent is a file, so saving must fail
+        state.activate_swamp();
+        reply(&mut state, SEARCH);
+        assert_eq!(state.swamp.issues().len(), 2);
+        assert!(state.swamp.note().unwrap().contains("Cache not saved"));
+        assert!(cache::Cache::read(&path).unwrap().catalogue.is_some());
+    }
+
     #[test]
     fn credentials_are_read_at_the_start_of_every_refresh() {
         let mut state = ready();
         state.swamp.keep_credentials = false;
-        state.poll_swamp(0, true);
+        state.activate_swamp();
         assert!(state.swamp.requests.is_empty());
         let (argv, context) = state.swamp.commands.last().unwrap().clone();
         assert_eq!(argv, swamp_lab::auth::auth_json_argv());
@@ -2972,7 +3731,7 @@ mod tests {
         let (request, _) = state.swamp.requests.last().unwrap();
         assert_eq!(
             request.url,
-            "https://lab.example.test/api/v1/lab/issues?limit=100"
+            "https://lab.example.test/api/v1/lab/issues?limit=200"
         );
         assert_eq!(sent_key(&state).as_deref(), Some("swamp_k"));
         reply(&mut state, SEARCH);
@@ -2988,7 +3747,7 @@ mod tests {
         assert_eq!(sent_key(&state).as_deref(), Some("swamp_k"));
         reply(&mut state, DETAIL);
         // The next refresh reads it again, and so picks up a key switched since.
-        state.poll_swamp(REFRESH_MS, false);
+        key(&mut state, BareKey::Char('r'));
         assert_eq!(state.swamp.commands.len(), 2);
         answer_login(&mut state, &login("swamp_k2"));
         assert_eq!(sent_key(&state).as_deref(), Some("swamp_k2"));
@@ -2998,11 +3757,11 @@ mod tests {
     fn a_login_after_an_anonymous_start_is_picked_up_on_refresh() {
         let mut state = ready();
         state.swamp.keep_credentials = false;
-        state.poll_swamp(0, true);
+        state.activate_swamp();
         answer_login(&mut state, b"");
         assert_eq!(sent_key(&state), None);
         reply(&mut state, SEARCH);
-        state.poll_swamp(REFRESH_MS, false);
+        key(&mut state, BareKey::Char('r'));
         answer_login(&mut state, &login("swamp_k"));
         assert_eq!(sent_key(&state).as_deref(), Some("swamp_k"));
     }
@@ -3011,19 +3770,19 @@ mod tests {
     fn no_login_is_anonymous_and_an_unreadable_login_waits_for_a_retry() {
         let mut state = ready();
         state.swamp.keep_credentials = false;
-        state.poll_swamp(0, true);
+        state.activate_swamp();
         answer_login(&mut state, b"");
         assert_eq!(sent_key(&state), None);
 
         let mut state = ready();
         state.swamp.keep_credentials = false;
-        state.poll_swamp(0, true);
+        state.activate_swamp();
         let context = state.swamp.commands.last().unwrap().1.clone();
         state.swamp_result(Some(1), b"", b"Permission denied", &context);
         assert!(state.swamp.requests.is_empty());
         assert!(state.swamp.has_error());
         assert!(state.swamp.note().unwrap().contains("Permission denied"));
-        state.poll_swamp(REFRESH_MS, true);
+        state.update(Event::Timer(FractionalSeconds::new(0.0)));
         assert_eq!(state.swamp.commands.len(), 1, "no retry loop");
         key(&mut state, BareKey::Char('r'));
         assert_eq!(state.swamp.commands.len(), 2);
@@ -3035,7 +3794,7 @@ mod tests {
     fn a_rejected_key_is_reread_once_per_refresh_then_reported() {
         let mut state = loaded();
         state.swamp.keep_credentials = false;
-        state.poll_swamp(REFRESH_MS, true);
+        key(&mut state, BareKey::Char('r'));
         answer_login(&mut state, &login("swamp_old"));
         reply_status(&mut state, 401, r#"{"error":"Unauthorized"}"#);
         assert!(state.swamp.credentials.is_none());
@@ -3044,9 +3803,12 @@ mod tests {
         reply_status(&mut state, 401, r#"{"error":"Unauthorized"}"#);
         assert_eq!(state.swamp.commands.len(), 2, "only one reread");
         assert!(state.swamp.note().unwrap().contains("swamp auth login"));
-        assert_eq!(state.swamp.issues().len(), 2, "the last good list stays");
+        assert!(
+            state.swamp.issues().is_empty(),
+            "the old identity is cleared"
+        );
         // After `swamp auth login` again, the next refresh reads the new key and succeeds.
-        state.poll_swamp(2 * REFRESH_MS, false);
+        key(&mut state, BareKey::Char('r'));
         assert_eq!(state.swamp.commands.len(), 3);
         answer_login(&mut state, &login("swamp_new"));
         assert_eq!(sent_key(&state).as_deref(), Some("swamp_new"));
@@ -3090,11 +3852,7 @@ mod tests {
             )
         };
         let client = Client::new(&credentials);
-        let (status, headers, body) = send(
-            client
-                .search(&search_query("", "", "", "").unwrap())
-                .unwrap(),
-        );
+        let (status, headers, body) = send(client.search(&search_query("", 0).unwrap()).unwrap());
         let search = swamp_lab::parse::<lab::SearchResponse>(status, &headers, &body).unwrap();
         let search = Search::from_lab(&search, &credentials);
         assert!(search.issues.len() <= PAGE as usize);

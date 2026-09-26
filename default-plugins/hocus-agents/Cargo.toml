@@ -8,13 +8,15 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-chrono = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
 zellij-tile = { path = "../../zellij-tile" }
 hocus-proto = { path = "../hocus-proto" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 # The ignored live check calls swamp-club from a native test.
 isahc = { workspace = true }

@@ -598,6 +598,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-targets 0.52.6",
 ]
@@ -2064,6 +2065,8 @@ dependencies = [
  "isahc",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "unicode-width 0.2.2",
  "zellij-tile",
 ]
