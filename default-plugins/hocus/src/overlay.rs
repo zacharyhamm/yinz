@@ -64,26 +64,24 @@ fn resolve(value: Option<&String>, whole: usize, default_percent: usize) -> usiz
 /// [`MultipaneSplit::ratio`] takes. `None` is the default even split.
 ///
 /// A count of columns is turned into a share of this width, once: the host keeps a ratio, so a
-/// divider set as "40" is a share of whatever the panel is when it is set. Either way the result
-/// is clamped so that neither half drops under [`MIN_HALF_COLS`] while the panel has room for
-/// both - "0" and "100%" would otherwise leave one half a single column wide. The host applies
-/// the same floor to what it draws; clamping the ratio too keeps a panel that later grows from
-/// springing back to the one-column sliver the value asked for.
+/// divider set as "40" is a share of whatever the panel is when it is set.
+///
+/// The ratio is not clamped to [`MIN_HALF_COLS`]: the container carries that floor as its
+/// `min_cells`, and the host applies it to what it draws at every width while leaving the ratio
+/// alone (`MultipaneSplit::geometry`). So "0" and "100%" are drawn with a half at the floor
+/// rather than a single column wide - and a share set while the panel is too narrow for it
+/// comes back when the panel grows, where a ratio clamped to this width's floor would have
+/// kept the narrow panel's squeezed divider for the rest of the session.
 fn split_ratio(split: Option<Measure>, panel_cols: usize) -> u16 {
     // One outer frame either side and the divider between the halves, as the host counts it.
     let available = panel_cols.saturating_sub(3).max(1);
-    // The host draws the list `available * ratio / 10_000` columns wide, rounded down, so every
-    // ratio here is the smallest or largest that rounds to the width it stands for: a count of
-    // columns rounds up to land on that count rather than one short of it, the low bound rounds
-    // up to land on `floor`, and the high bound is the last ratio that leaves `floor` over.
+    // The host draws the list `available * ratio / 10_000` columns wide, rounded down, so a
+    // count of columns rounds up to land on that count rather than one short of it.
     let ratio = match split.unwrap_or(Measure::Percent(DEFAULT_SPLIT_PERCENT)) {
         Measure::Percent(percent) => percent.saturating_mul(100),
         Measure::Cells(columns) => columns.saturating_mul(10_000).div_ceil(available),
     };
-    let floor = MultipaneSplit::floor(available, MIN_HALF_COLS);
-    let high = ((available - floor + 1) * 10_000 - 1) / available;
-    let low = (floor * 10_000).div_ceil(available).min(high);
-    ratio.clamp(low, high).clamp(1, 9999) as u16
+    ratio.clamp(1, 9999) as u16
 }
 
 /// The two halves' widths, `(list, conversation)`, for a split of a panel `rows` x `cols`, as the

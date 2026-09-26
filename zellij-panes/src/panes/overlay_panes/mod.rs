@@ -1421,6 +1421,14 @@ impl OverlayPanes {
         let floor = MultipaneSplit::floor(available, *min_cells);
         let first_size = (pointer - (start + usize::from(framed)) as isize)
             .clamp(floor as isize, (available - floor) as isize) as usize;
+        // Where the divider is drawn now, by the rule `MultipaneSplit::geometry` draws it with.
+        // A pointer that has not moved it - a click on the divider, or a drag that stops where
+        // it started - leaves the ratio alone: a divider the floor is squeezing is drawn at the
+        // floor, and storing that would lose the share it returns to when the surface grows.
+        let drawn = (available * usize::from(split.ratio) / 10_000).clamp(floor, available - floor);
+        if first_size == drawn {
+            return false;
+        }
         let ratio = (first_size * 10_000).div_ceil(available).clamp(1, 9999) as u16;
         if split.ratio == ratio {
             return false;

@@ -785,6 +785,53 @@ fn a_followed_panel_stays_armed_through_another_switch() {
     assert_eq!(state.panel_focus_seen, Some((TabPosition::new(1), false)));
 }
 
+/// A modal opened from the pane a followed panel landed over - New agent, `Ctrl e n` - and
+/// then cancelled hands the keys back to that pane. That is the pane keeping them, not a tiled
+/// pane taking them from the panel: the panel used to go away with the cancelled modal.
+#[test]
+fn a_modal_cancelled_over_a_followed_panel_leaves_it_up() {
+    let mut state = panel_with_the_keys();
+    state.keyboard_holder_for_test = Some(tiled(4, true).id);
+    state.on_panes(manifest(
+        1,
+        vec![pane(7, false), pane(9, false), tiled(4, true)],
+    ));
+    assert_eq!(state.followed_holder, Some(tiled(4, true).id));
+
+    let modal = PaneInfo {
+        id: PaneId::Plugin(PluginId::new(20)),
+        is_floating: true,
+        is_focused: true,
+        ..Default::default()
+    };
+    state.keyboard_holder_for_test = Some(modal.id);
+    state.on_panes(manifest(
+        1,
+        vec![pane(7, false), pane(9, false), tiled(4, false), modal],
+    ));
+    assert!(!state.hidden);
+
+    state.keyboard_holder_for_test = Some(tiled(4, true).id);
+    state.on_panes(manifest(
+        1,
+        vec![pane(7, false), pane(9, false), tiled(4, true)],
+    ));
+    assert!(!state.hidden, "the keys back on the pane that had them");
+
+    // The keyboard moving on from that pane still puts the panel away.
+    state.keyboard_holder_for_test = Some(tiled(5, true).id);
+    state.on_panes(manifest(
+        1,
+        vec![
+            pane(7, false),
+            pane(9, false),
+            tiled(4, false),
+            tiled(5, true),
+        ],
+    ));
+    assert!(state.hidden);
+}
+
 /// The host is asked who has the keys only while a leave is armed: not while the panel has
 /// them, on each manifest while a floating pane holds them, and not once the panel is away.
 #[test]
@@ -934,9 +981,13 @@ fn the_lists_request_still_needs_the_list_here() {
 
 // -- the split ----------------------------------------------------------------
 
-/// The configured split `value` as the host would draw it, for a panel on a `rows` x `cols`
-/// screen - with no host floor, so what is measured is hocus's own clamp.
-fn configured_halves(value: &str, rows: usize, cols: usize) -> (usize, usize) {
+/// The container hocus asks for with the configured split `value`, for a panel on a `rows` x
+/// `cols` screen, and the panel's own width.
+fn configured_request(
+    value: &str,
+    rows: usize,
+    cols: usize,
+) -> (zellij_types::multipane::CreateMultipane, usize) {
     let mut state = placed_state();
     state.multipane = None;
     state.surface_rows = rows;
@@ -947,12 +998,26 @@ fn configured_halves(value: &str, rows: usize, cols: usize) -> (usize, usize) {
     else {
         panic!("create")
     };
-    let outer = zellij_types::pane_size::PaneGeom::from(&Size {
-        rows: panel.rows,
-        cols: panel.cols,
-    });
-    let ([list, conversation], _) = request.split.geometry(outer, true, 0);
+    (request, panel.cols)
+}
+
+/// The two halves of a `request` as the host draws them on a panel `cols` wide, with the floor
+/// the container carries.
+fn drawn_halves(
+    request: &zellij_types::multipane::CreateMultipane,
+    rows: usize,
+    cols: usize,
+) -> (usize, usize) {
+    let outer = zellij_types::pane_size::PaneGeom::from(&Size { rows, cols });
+    let ([list, conversation], _) = request.split.geometry(outer, true, request.min_cells);
     (list.cols.as_usize(), conversation.cols.as_usize())
+}
+
+/// The configured split `value` as the host would draw it, for a panel on a `rows` x `cols`
+/// screen.
+fn configured_halves(value: &str, rows: usize, cols: usize) -> (usize, usize) {
+    let (request, panel_cols) = configured_request(value, rows, cols);
+    drawn_halves(&request, rows, panel_cols)
 }
 
 /// "0" and "100%" used to leave one half a single column wide, and "40" on a small screen a
@@ -975,6 +1040,33 @@ fn a_configured_split_leaves_both_halves_room() {
     }
     // Inside the bounds a value is what it says.
     assert_eq!(configured_halves("30", 50, 200).0, 30);
+}
+
+/// A share the panel is too narrow for is drawn at the floor, but kept as the share it is: the
+/// ratio used to be clamped to the narrow panel's floor, and the list stayed that wide for the
+/// rest of the session once the panel grew.
+#[test]
+fn a_split_set_on_a_narrow_panel_comes_back_when_the_panel_grows() {
+    // A 100-column screen gives a panel with too few columns to share for 30% to clear the
+    // floor.
+    let (request, panel_cols) = configured_request("30%", 40, 100);
+    let available = panel_cols - 3;
+    assert!(
+        available * 3 / 10 < usize::from(request.min_cells),
+        "{panel_cols} columns"
+    );
+    assert_eq!(
+        request.split.ratio, 3000,
+        "the share asked for, not the floor"
+    );
+    let (list, _) = drawn_halves(&request, 40, panel_cols);
+    assert_eq!(
+        list,
+        usize::from(request.min_cells),
+        "drawn at the floor while narrow"
+    );
+    // Grown to 120 columns: 117 to share, and 30% of it is back.
+    assert_eq!(drawn_halves(&request, 40, 120).0, 117 * 3000 / 10_000);
 }
 
 #[test]

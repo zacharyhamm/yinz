@@ -256,6 +256,10 @@ pub(super) struct View {
     list_rows: Vec<(usize, markdown::MdLine)>,
     list_cache_key: Option<(usize, i64)>, // width, age minute
     list_error: Option<String>,
+    // The text search `list_error` came from, or `None` for the catalogue. A search's failure
+    // is about that search, so it goes with it: left standing once the search was cleared, it
+    // put `Swamp!` and `r retry` over a catalogue that had not failed at all.
+    list_error_query: Option<String>,
     opened: Option<u64>,
     detail: Option<Detail>,
     detail_scroll: usize,
@@ -1239,8 +1243,9 @@ impl State {
             match request {
                 Ok(request) => (Target::Search(self.swamp.search_generation), request),
                 Err(error) => {
-                    self.swamp.loading = None;
+                    let query = self.swamp.loading.take().map(|loading| loading.query);
                     self.swamp.list_error = Some(error);
+                    self.swamp.list_error_query = query.filter(|query| !query.is_empty());
                     self.swamp.triage_is_newer = false;
                     return;
                 },
@@ -1412,6 +1417,8 @@ impl State {
                         },
                         Err(error) => {
                             self.swamp.list_error = Some(error);
+                            self.swamp.list_error_query =
+                                (!loading.query.is_empty()).then_some(loading.query);
                             self.swamp.triage_is_newer = false;
                         },
                     }
@@ -1623,6 +1630,16 @@ impl State {
         // failed to refresh.
         if self.swamp.search_wanted {
             self.swamp.list_error = None;
+        } else if self
+            .swamp
+            .list_error_query
+            .as_ref()
+            .is_some_and(|failed| *failed != self.swamp.query)
+        {
+            // A text search that failed, now cleared or replaced by one answered from what is
+            // held: its error was about it, not about the list now shown.
+            self.swamp.list_error = None;
+            self.swamp.list_error_query = None;
         }
         self.swamp.clear_finished_triage();
         self.swamp.filter_issues();
@@ -5631,6 +5648,22 @@ mod tests {
         choose(&mut state, '/', "two words");
         assert_eq!(state.swamp.requests.len(), count + 1);
         assert!(state.swamp.list_error.is_none());
+    }
+
+    /// A text search's failure is about that search: cleared, the catalogue shown in its place
+    /// has not failed, and neither the error nor `Swamp!` stays over it until `r`.
+    #[test]
+    fn a_failed_text_search_takes_its_error_with_it() {
+        let mut state = loaded();
+        choose(&mut state, '/', "flaky");
+        reply_status(&mut state, 503, r#"{"error":"Network unavailable"}"#);
+        assert!(state.swamp.note().unwrap().contains("Network unavailable"));
+        state.render(12, 80);
+        assert!(state.tab_cells.last().unwrap().text.contains("Swamp!"));
+        key(&mut state, BareKey::Char('c'));
+        assert!(state.swamp.list_error.is_none());
+        state.render(12, 80);
+        assert!(!state.tab_cells.last().unwrap().text.contains("Swamp!"));
     }
 
     /// At the default panel's 24 columns a note that comes and goes in a few seconds takes one

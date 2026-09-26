@@ -3709,3 +3709,55 @@ fn a_multipane_floor_holds_against_the_ratio_and_the_divider() {
     panes.stop_seam_drag(Position::new(divider.y as i32, outer.x as u16));
     assert_eq!(widths(&panes), [24, 53]);
 }
+
+/// A click on a divider the floor is squeezing - pressed and released where it is drawn -
+/// moves nothing, so it must not store the floor's position as the ratio: the share it stands
+/// in for comes back when the surface grows, and a click used to lose it for good.
+#[test]
+fn a_click_on_a_squeezed_divider_keeps_the_ratio() {
+    let mut panes = overlay_panes(120, 40);
+    for id in [1, 2] {
+        add(
+            &mut panes,
+            id,
+            OverlayKind::Dismissible,
+            coordinates("50", "20"),
+        );
+    }
+    let children = [1, 2].map(|id| PaneId::Terminal(TerminalId::new(id)));
+    panes
+        .create_multipane(
+            children,
+            MultipaneSplit {
+                direction: MultipaneDirection::LeftRight,
+                ratio: 1500,
+            },
+            24,
+            OverlayPlacement::dismissible(Some(placed_coordinates("10", "5", "80", "24"))),
+        )
+        .unwrap();
+    let outer = panes.outer_geom(children[0]).unwrap();
+    let (_, divider) = panes
+        .multipane_info(&children[0])
+        .unwrap()
+        .split
+        .geometry(outer, true, 24);
+    let seam = Position::new(divider.y as i32, divider.x as u16);
+    assert_eq!(panes.seam_at(&seam), Some((children[0], children[1])));
+
+    panes.start_seam_drag(children[0], children[1], seam);
+    assert!(!panes.drag_seam_to(&seam), "nothing moved");
+    panes.stop_seam_drag(seam);
+    assert_eq!(
+        panes.multipane_info(&children[0]).unwrap().split.ratio,
+        1500
+    );
+
+    // A real move still sets it.
+    panes.start_seam_drag(children[0], children[1], seam);
+    panes.stop_seam_drag(Position::new(divider.y as i32, divider.x as u16 + 10));
+    assert_ne!(
+        panes.multipane_info(&children[0]).unwrap().split.ratio,
+        1500
+    );
+}
