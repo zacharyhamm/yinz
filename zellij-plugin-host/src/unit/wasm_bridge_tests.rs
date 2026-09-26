@@ -896,6 +896,58 @@ fn cached_cli_pipe_after_instance_removal_completes_without_unloading() {
 }
 
 #[test]
+fn shared_background_subscriptions_follow_the_client_after_detach() {
+    for reattach in [false, true] {
+        let mut test = TestBridge::new();
+        let plugin = PluginId::new(1);
+        let owner = ClientId::new(1);
+        let next_owner = ClientId::new(2);
+        test.bridge.add_client(owner).unwrap();
+        let mut context = test.context(
+            1,
+            1,
+            "import z from 'zellij:plugin'; export default { load() { z.subscribe(['PaneUpdate', 'TabUpdate']); } };",
+        );
+        context
+            .plugin_config
+            .initial_userspace_configuration
+            .insert("shared", "true");
+        test.bridge.shared_plugin_ids.insert(plugin);
+        test.load(context).unwrap();
+        let receiver = test.receiver::<PluginInstruction>();
+        let registrations = || {
+            receiver
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    PluginInstruction::PluginSubscribedToEvents(id, client, events, true)
+                        if id == plugin =>
+                    {
+                        Some((client, events))
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let events = HashSet::from([EventType::PaneUpdate, EventType::TabUpdate]);
+        assert_eq!(registrations(), [(owner, events.clone())]);
+
+        if !reattach {
+            test.bridge.add_client(next_owner).unwrap();
+        }
+        test.bridge.remove_client(owner);
+        if reattach {
+            test.bridge.add_client(next_owner).unwrap();
+        }
+        test.settle(plugin);
+        assert_eq!(
+            registrations(),
+            [(owner, HashSet::new()), (next_owner, events)]
+        );
+        test.bridge.unload_plugin(plugin).unwrap();
+    }
+}
+
+#[test]
 fn cached_shared_cli_pipe_after_rekey_uses_only_the_current_owner() {
     let mut test = TestBridge::new();
     let owner = ClientId::new(7);

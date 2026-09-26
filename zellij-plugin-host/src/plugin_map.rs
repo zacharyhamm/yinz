@@ -539,6 +539,30 @@ impl PluginMap {
                     let plugin_env = running_plugin.env_mut();
                     plugin_env.owner_client_id = to;
                     plugin_env.client_id = to;
+                    if plugin_env.tab_index.is_none() {
+                        // The screen routes background pane/tab updates by owner too.
+                        // Move that registration with the instance, or a reconnect leaves
+                        // hocus-agentd unaware of new panes and their checkout titles.
+                        for (client_id, events) in [
+                            (from, HashSet::new()),
+                            (
+                                to,
+                                plugin_env
+                                    .subscriptions
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .clone(),
+                            ),
+                        ] {
+                            plugin_env
+                                .senders
+                                .send_to_plugin(PluginInstruction::PluginSubscribedToEvents(
+                                    plugin_id, client_id, events, true,
+                                ))
+                                .context("failed to move background plugin subscriptions")
+                                .non_fatal();
+                        }
+                    }
                 }
                 self.plugin_assets.insert((plugin_id, to), plugin_asset);
                 true
