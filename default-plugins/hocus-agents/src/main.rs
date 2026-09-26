@@ -360,6 +360,9 @@ struct State {
     last_window_start: usize,
     /// Manual wheel position; None keeps the list centered on the selection.
     list_scroll: Option<usize>,
+    /// A second click's press, waiting for its release on the same cell to do what `Enter`
+    /// does there. See `on_click`.
+    click_press: Option<ClickPress>,
     /// Latest pane-relative pointer position, including the negative hover-leave sentinel.
     mouse_position: Option<(isize, usize)>,
     last_rows: usize,
@@ -575,6 +578,29 @@ struct Reading {
     /// kind, because `prompt` alone does not say which of the shapes a harness writes this is —
     /// and for an envelope nobody registered, the tag is the only name it has.
     envelope: Option<String>,
+}
+
+/// A press that `State::on_click` found to be a second click, and what its release does.
+///
+/// Done on the release rather than the press, because the pane selects text with the mouse: a
+/// press on the row or event already chosen is also how a drag that copies its text starts,
+/// and doing the Enter on the press walked out of the panel, or opened the reader, under the
+/// drag. A release on the cell that was pressed is a click; one anywhere else ends a drag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ClickPress {
+    /// Where it was pressed, in the content coordinates `State::content_mouse` sees.
+    line: isize,
+    column: usize,
+    act: ClickAct,
+}
+
+/// What a second click does once it is released: see [`ClickPress`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClickAct {
+    /// Walk into the agent on this row of `rows`.
+    Activate(usize),
+    /// Read this event of the history half, counted as `history_cursor` counts it.
+    Read(usize),
 }
 
 /// An `s` waiting on its answer. See `State::summarizing`.
@@ -2000,14 +2026,18 @@ impl State {
         self.swamp.cancel_filter();
         // A search being typed takes every key ahead of the surface, so leaving one open would
         // send the next tab's keys into a box on a tab no longer showing. Ended the way Esc
-        // ends it. An armed VM question is dropped for the reason `end_visit` drops it: it
-        // would otherwise take the first key of the next visit, and freeze the list's polling
-        // until then.
+        // ends it. An armed question - a VM close or sync, a todo delete or complete, a resume -
+        // is dropped for the reason `end_visit` drops it: it would otherwise take the first key
+        // of the next visit to its tab, and a `y` then would act on a question asked about a
+        // list since forgotten.
         if self.search_editing {
             self.cancel_search_edit();
         }
-        if self.surface == Surface::Vms {
-            self.cancel_vm_confirmation();
+        match self.surface {
+            Surface::Vms => self.cancel_vm_confirmation(),
+            Surface::Todos => self.cancel_todo_question(),
+            Surface::Agents => self.confirming_resume = None,
+            Surface::Swamp => {},
         }
         self.surface = surface;
         if surface == Surface::Vms {
@@ -2754,13 +2784,22 @@ impl State {
         let Some((rows, summaries)) = self.search_base.take() else {
             return false;
         };
+        // The cursor stays on its row where the list it goes back to has it: a box opened and
+        // left without a search - Tab stepping on from it, into the history of the agent it
+        // was over - never moved the rows at all. It used to go back to the top, and the Tab
+        // stepped into the first agent's history instead.
+        let keep = self.selection_key();
         self.search_draft = None;
         self.rows = rows;
         self.summaries = summaries;
         self.search_query.clear();
         self.search_error = None;
         self.search_truncated = false;
-        self.selected = self.rows.iter().position(selectable).unwrap_or(0);
+        self.selected = keep
+            .as_deref()
+            .and_then(|key| position_of_key(&self.rows, key))
+            .or_else(|| self.rows.iter().position(selectable))
+            .unwrap_or(0);
         self.generation += 1;
         true
     }
@@ -2777,9 +2816,17 @@ impl State {
                 summaries: self.summaries.clone(),
             };
             self.waiting_base = Some(strip.clone());
+            let was = self.selection_key();
             // Nothing kept: the view opening is the queue as it stands, and an agent the
             // cursor happened to be on is not in it unless it is waiting.
             self.set_rows_keeping(strip, None);
+            // Then the cursor starts at the top of the queue. A view opening is not a row
+            // vanishing inside it, so the neighbour `set_rows_keeping` hands such a row's cursor
+            // to does not apply: it was found by the cursor's place in the whole list, and
+            // landed on an arbitrary waiting agent - most often the last.
+            if was.is_none_or(|key| position_of_key(&self.rows, &key).is_none()) {
+                self.selected = self.rows.iter().position(selectable).unwrap_or(0);
+            }
         }
         true
     }
@@ -2862,7 +2909,12 @@ impl State {
         // points: its second half, the one that walks into an agent or opens an event, is for
         // a click made where the keys already were, which is what makes a second click the
         // Enter. Asked before the click moves anything.
-        let keys_were_here = self.keys_here();
+        //
+        // Not while the search box is being typed in, which takes every key ahead of the list
+        // and its history: a click there only points. Taken as the Enter, it opened the reader
+        // over the box - drawing the reader's keys while every key went on into the hidden query
+        // - or walked out of the panel on the first click.
+        let keys_were_here = self.keys_here() && !self.search_editing;
         // Whether the click took the keys off the tab bar, which is a redraw whatever it lands
         // on: the bar's highlight and its footer come down. Only a press does - the wheel and
         // a hover leave the bar with the keys.
@@ -2910,9 +2962,23 @@ impl State {
         }
         match mouse_event {
             // The view label above the list names the view, and nothing on it is a target.
-            Mouse::LeftClick(line, _) if line >= 0 => (line as usize)
-                .checked_sub(self.last_label_rows)
-                .is_some_and(|line| self.on_click(line, keys_were_here)),
+            Mouse::LeftClick(line, column) if line >= 0 => {
+                self.click_press = None;
+                let Some(content) = (line as usize).checked_sub(self.last_label_rows) else {
+                    return false;
+                };
+                let (redraw, act) = self.point_at(content, keys_were_here);
+                self.click_press = act.map(|act| ClickPress { line, column, act });
+                redraw
+            },
+            // A second click does its Enter when it comes up where it went down: see
+            // `ClickPress`.
+            Mouse::Release(line, column) => match self.click_press.take() {
+                Some(press) if press.line == line && press.column == column => {
+                    self.click_act(press.act)
+                },
+                _ => false,
+            },
             Mouse::ScrollUp(lines) => self.scroll_surface(-(lines.max(1) as isize)),
             Mouse::ScrollDown(lines) => self.scroll_surface(lines.max(1) as isize),
             _ => false,
@@ -2968,7 +3034,21 @@ impl State {
     /// back from the tab bar, or from another pane, is saying where the user is looking, the
     /// same as one that brings them over from the other half - and a user clicking to get the
     /// keys back is clicking on whatever the cursor was left on, most often.
+    ///
+    /// The press and the release in one, for a test with no mouse to release. The pointer does
+    /// the Enter half on the release instead (`content_mouse`, [`ClickPress`]).
+    #[cfg(test)]
     fn on_click(&mut self, line: usize, keys_were_here: bool) -> bool {
+        match self.point_at(line, keys_were_here) {
+            (_, Some(act)) => self.click_act(act),
+            (redraw, None) => redraw,
+        }
+    }
+
+    /// The press of a click on content line `line`: what it points at, whether that is worth a
+    /// redraw, and - for a second click, on what the cursor is already on in the half that
+    /// already has the keys - the Enter it does once released. See `on_click`.
+    fn point_at(&mut self, line: usize, keys_were_here: bool) -> (bool, Option<ClickAct>) {
         if self.last_history_rows > 0 && line >= self.last_list_rows {
             let was_history = self.focus == Focus::History && keys_were_here;
             self.focus = Focus::History;
@@ -2980,16 +3060,16 @@ impl State {
             let Some(event) = event else {
                 // The divider, the header or an empty row: the focus is all the click does -
                 // and it is worth a redraw, because the divider draws it.
-                return !was_history;
+                return (!was_history, None);
             };
             if was_history && event == self.history_cursor {
-                return self.open_reader();
+                return (false, Some(ClickAct::Read(event)));
             }
             let moved = event != self.history_cursor;
             self.history_cursor = event;
             self.history_cursor_anchor = self.cursor_anchor();
             self.history_scrolled = false;
-            return moved || !was_history;
+            return (moved || !was_history, None);
         }
         let was_list = self.focus == Focus::List && keys_were_here;
         self.focus = Focus::List;
@@ -2999,26 +3079,48 @@ impl State {
             self.last_list_rows,
             line,
         ) else {
-            return !was_list;
+            return (!was_list, None);
         };
         let again = index == self.selected && was_list;
         let moved = index != self.selected;
-        let recentered = self.list_scroll.take().is_some();
+        // The window stays where it is drawn, so the row clicked stays under the pointer. It
+        // used to be handed back to the selection, which re-centred the list on the row and
+        // moved it away from the pointer - and the second click of the pair then landed on
+        // another row, so in a list longer than its window a double click walked into nothing.
+        self.list_scroll = Some(self.last_window_start);
         self.selected = index;
         match self.rows.get(index) {
             // Nothing to preview on this row, so the first click is the Enter.
             Some(StripRow::MoreRuns) => {
                 self.ask_for_older_runs();
-                true
+                (true, None)
             },
             // Only with the keys already in the list: the click that brings them back from the
             // history half, the tab bar or another pane onto the selected row is a click saying
             // where the user is looking, not one walking them out of the panel.
-            Some(StripRow::Agent { .. }) if again => {
-                self.activate();
+            Some(StripRow::Agent { .. }) if again => (false, Some(ClickAct::Activate(index))),
+            _ => (moved || !was_list, None),
+        }
+    }
+
+    /// The Enter half of a second click, once released: only while what it was pressed on is
+    /// still what the cursor is on, since a strip or a key may have moved it in between.
+    fn click_act(&mut self, act: ClickAct) -> bool {
+        match act {
+            ClickAct::Activate(index) => {
+                if index == self.selected
+                    && matches!(self.rows.get(index), Some(StripRow::Agent { .. }))
+                {
+                    self.activate();
+                }
                 false
             },
-            _ => moved || !was_list || recentered,
+            ClickAct::Read(event) => {
+                self.focus == Focus::History
+                    && self.history_cursor == event
+                    && self.reading.is_none()
+                    && self.open_reader()
+            },
         }
     }
 
@@ -3040,6 +3142,12 @@ impl State {
         let Some(fold) = self.fold_at(line) else {
             return false;
         };
+        // Only the fold's own row, the one drawn as its target. `fold_at` also answers for the
+        // body of an open fold, and a click there - or the press a drag to copy from it starts
+        // with - shut the fold being read and wound the reader back to its header.
+        if self.reader_starts().get(fold) != Some(&line) {
+            return false;
+        }
         let Some(reading) = self.reading.as_mut() else {
             return false;
         };
@@ -3254,6 +3362,7 @@ impl State {
     fn end_visit(&mut self) {
         self.tabs_focused = false;
         self.focus = Focus::List;
+        self.click_press = None;
         self.vms.details = false;
         self.confirming_resume = None;
         // The key sheet is about the moment it was asked for, like the questions are.
@@ -6472,6 +6581,70 @@ mod tests {
         );
     }
 
+    /// Leaving the tab drops the resume question armed there, as it drops a VMs one: left
+    /// armed, it answered the first key of the next visit, and a `y` then started a process
+    /// for a question asked about a list since forgotten.
+    #[test]
+    fn a_tab_switch_drops_an_armed_resume() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('r'))));
+        assert!(state.confirming_resume.is_some());
+        state.switch_surface(Surface::Todos);
+        state.switch_surface(Surface::Agents);
+        assert!(state.confirming_resume.is_none());
+    }
+
+    /// While the search box has the keys, a click only points. Taken as the Enter, a click on
+    /// the row already chosen walked out of the panel, and two on an event opened the reader
+    /// over the box - drawing the reader's keys while every key went on into the hidden query.
+    #[test]
+    fn a_click_while_the_search_box_is_open_only_points() {
+        let mut state = State::default();
+        state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
+        state.render(21, 40);
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('/'))));
+        state.render(21, 40);
+        let row = (1 + state.last_label_rows + state.selected - state.last_window_start) as isize;
+        for _ in 0..2 {
+            state.on_mouse(Mouse::LeftClick(row, 0));
+            state.on_mouse(Mouse::Release(row, 0));
+        }
+        assert!(state.activations.is_empty());
+        assert_eq!(state.panel_hides, 0);
+        let event =
+            (1 + state.last_label_rows + state.last_list_rows + 1 + state.last_history_body_top)
+                as isize;
+        for _ in 0..2 {
+            state.on_mouse(Mouse::LeftClick(event, 0));
+            state.on_mouse(Mouse::Release(event, 0));
+        }
+        assert_eq!(state.focus, Focus::History, "pointed at");
+        assert!(state.reading.is_none());
+        assert!(state.search_editing, "and the box still has the keys");
+    }
+
+    /// Tab out of a search box that never searched steps into the history of the agent the
+    /// cursor was on: leaving the box used to put the cursor back at the top of the list, and
+    /// the Tab stepped into the first agent's history instead.
+    #[test]
+    fn tab_out_of_an_unapplied_search_keeps_the_row() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(21, 40);
+        state.selected = 5;
+        assert_eq!(state.selection(), Some(9));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('/'))));
+        for ch in "ab".chars() {
+            state.on_key(KeyWithModifier::new(BareKey::Char(ch)));
+        }
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        assert!(!state.search_editing);
+        assert_eq!(state.selection(), Some(9));
+        assert_eq!(state.focus, Focus::History);
+    }
+
     /// `r` is a letter, so a modified one belongs to whatever the modifiers are bound to.
     /// `Ctrl-r` in particular is already this pane's refresh.
     #[test]
@@ -7420,6 +7593,8 @@ mod tests {
             // What the manifest the click makes the host send says.
             state.has_keyboard = Some(true);
             state.on_mouse(Mouse::LeftClick(row, 0));
+            assert!(state.activations.is_empty(), "{away}: not on the press");
+            state.on_mouse(Mouse::Release(row, 0));
             assert_eq!(state.activations, [3], "{away}");
         }
 
@@ -7434,7 +7609,9 @@ mod tests {
         state.on_mouse(Mouse::LeftClick(event, 0));
         assert!(state.reading.is_none());
         state.has_keyboard = Some(true);
-        assert!(state.on_mouse(Mouse::LeftClick(event, 0)));
+        state.on_mouse(Mouse::LeftClick(event, 0));
+        assert!(state.reading.is_none(), "not on the press");
+        assert!(state.on_mouse(Mouse::Release(event, 0)));
         assert!(state.reading.is_some(), "the idle summary is an event too");
     }
 
@@ -7720,7 +7897,40 @@ mod tests {
         assert_eq!(state.last_window_start, 15);
         assert!(state.on_mouse(Mouse::LeftClick(2, 0)));
         assert_eq!(state.selected, 16);
+        // The window stays where it is, so the row clicked stays under the pointer for a second
+        // click; a key hands it back to the selection.
+        assert_eq!(state.list_scroll, Some(15));
+        state.render(12, 50);
+        assert_eq!(state.last_window_start, 15);
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Down)));
         assert_eq!(state.list_scroll, None);
+    }
+
+    /// In a list longer than its window, the first click of a double click used to re-centre
+    /// the list on the row, so the second one landed on another row and walked into nothing.
+    #[test]
+    fn a_double_click_walks_into_the_agent_anywhere_in_a_long_list() {
+        let mut state = State::default();
+        state.set_rows(unfocused((0..20).map(|id| agent(id, "claude")).collect()));
+        state.selected = 10;
+        state.render(12, 50);
+        let start = state.last_window_start;
+        assert!(start > 0 && start < 10, "a window centred on the cursor");
+        // The window's first row, under the tab bar: not the cursor's, and not the centre.
+        let line = 1;
+        state.on_mouse(Mouse::LeftClick(line, 0));
+        state.on_mouse(Mouse::Release(line, 0));
+        assert_eq!(state.selected, start, "the first click points");
+        assert!(state.activations.is_empty());
+        state.render(12, 50);
+        assert_eq!(
+            state.last_window_start, start,
+            "the row stayed under the pointer"
+        );
+        state.on_mouse(Mouse::LeftClick(line, 0));
+        assert!(state.activations.is_empty(), "not on the press");
+        state.on_mouse(Mouse::Release(line, 0));
+        assert_eq!(state.activations, [start as u32]);
     }
 
     #[test]
@@ -8535,10 +8745,19 @@ mod tests {
             !state.on_mouse(Mouse::LeftClick((list_rows + 3) as isize, 0)),
             "already down here, and on no event"
         );
-        // A click on the event the cursor is on, with the keys already down here, reads it.
-        assert!(state.on_mouse(Mouse::LeftClick((list_rows + 2) as isize, 0)));
+        // A click on the event the cursor is on, with the keys already down here, reads it -
+        // once it comes up on the cell it went down on.
+        let event = (list_rows + 2) as isize;
+        state.on_mouse(Mouse::LeftClick(event, 0));
+        assert!(state.reading.is_none(), "not on the press");
+        assert!(state.on_mouse(Mouse::Release(event, 0)));
         assert!(state.reading.is_some(), "the idle summary is an event too");
         assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        // A press on it that ends as a drag - to copy its text - reads nothing.
+        state.on_mouse(Mouse::LeftClick(event, 0));
+        state.on_mouse(Mouse::Hold(event, 6));
+        assert!(!state.on_mouse(Mouse::Release(event, 6)));
+        assert!(state.reading.is_none(), "a drag is not a click");
 
         assert!(
             state.on_mouse(Mouse::LeftClick(4, 0)),
@@ -10493,6 +10712,17 @@ mod tests {
         assert_eq!(reader.cursor, 5);
         assert!(!reader.sections[5].open);
         assert!(state.on_mouse(Mouse::LeftClick(line, 3)));
+        assert!(state.reading.as_ref().expect("a reader").sections[5].open);
+
+        // The open fold's body is what is being read, not its target: a click there - or the
+        // press a drag to copy from it starts with - used to shut it and wind the reader back.
+        state.render(21, 50);
+        let starts = state.reader_starts().to_vec();
+        let end = starts.get(6).copied().unwrap_or(state.reader_lines().len());
+        assert!(end > starts[5] + 1, "the open fold has a body");
+        let scroll = state.reading.as_ref().expect("a reader").scroll;
+        let body = (starts[5] + 1 - scroll + 2) as isize;
+        assert!(!state.on_mouse(Mouse::LeftClick(body, 3)));
         assert!(state.reading.as_ref().expect("a reader").sections[5].open);
 
         let mut prose = reading(&"word ".repeat(200));

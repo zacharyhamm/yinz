@@ -907,7 +907,8 @@ pub struct State {
     /// would have on the tab it came from, and this pane keeping them - every manifest after the
     /// arrival says so - does not. A click on this pane is no signal at all: it had the keys
     /// already, so nothing changes. Cleared once the panel has the keys again, is put away, or
-    /// another pane takes them.
+    /// another tiled pane takes them - not by a modal or floating pane taking them from this
+    /// one, which hands them back to it when it closes.
     pub(crate) followed_holder: Option<PaneId>,
     /// Who `keyboard_holder` answers in tests, where there is no host to ask.
     #[cfg(test)]

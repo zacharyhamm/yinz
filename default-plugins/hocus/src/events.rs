@@ -754,6 +754,10 @@ impl State {
             && self
                 .panel_focus_seen
                 .is_some_and(|(tab, armed)| armed && tab != tab_index);
+        // A floating pane or an overlay taking the keys from the followed pane is not another pane
+        // taking them for good: a modal hands them back to that pane when it closes - New agent
+        // opened from it and then cancelled - and that pane getting them back is it keeping them,
+        // not a tiled pane taking them from the panel. Only a tiled pane taking them ends it.
         if arrived {
             self.followed_holder = self
                 .keyboard_holder()
@@ -761,7 +765,7 @@ impl State {
                 .filter(|holder| panes.iter().any(|pane| pane.id == *holder));
         } else if panel_focused
             || own.is_suppressed
-            || holder_floating.is_some()
+            || holder_floating == Some(false)
             || (left && holder.is_none())
         {
             self.followed_holder = None;

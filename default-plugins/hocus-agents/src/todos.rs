@@ -29,12 +29,14 @@ pub(super) struct View {
     /// next change to the list, which for this pane's own write is the echo of that write a
     /// moment later.
     note: Option<Note>,
-    /// A box put away with text in it, by Esc or by the panel going away, for the key that
-    /// opened it to bring back.
-    draft: Option<(InputAction, TextInput)>,
+    /// The boxes put away with text in them, by Esc or by the panel going away, for the key that
+    /// opened each to bring back: one for each entry a box was about - a new todo, a subtask
+    /// under an item, an edit of an item. One slot for all of them used to let the second box
+    /// put away drop the first one's text without a word.
+    drafts: Vec<(InputAction, TextInput)>,
     /// The drafts of the projects not on screen, by root: each one waits for its own list, the
     /// only one whose items it can be about, rather than being dropped by a look at another.
-    parked_drafts: HashMap<String, (InputAction, TextInput)>,
+    parked_drafts: HashMap<String, Vec<(InputAction, TextInput)>>,
     list_scroll: Option<usize>,
     last_window: usize,
     last_list_rows: usize,
@@ -349,15 +351,20 @@ impl State {
             if let Some(watch_id) = self.todos.todo_watch.take() {
                 unwatch(watch_id);
             }
-            if let (Some(old), Some(draft)) =
-                (self.todos.project_root.take(), self.todos.draft.take())
+            let drafts = std::mem::take(&mut self.todos.drafts);
+            if let Some(old) = self
+                .todos
+                .project_root
+                .take()
+                .filter(|_| !drafts.is_empty())
             {
-                self.todos.parked_drafts.insert(old, draft);
+                self.todos.parked_drafts.insert(old, drafts);
             }
             self.todos.project_root = root.clone();
-            self.todos.draft = root
+            self.todos.drafts = root
                 .as_ref()
-                .and_then(|root| self.todos.parked_drafts.remove(root));
+                .and_then(|root| self.todos.parked_drafts.remove(root))
+                .unwrap_or_default();
             self.todos.list = Default::default();
             self.todos.selected = None;
         }
@@ -432,8 +439,9 @@ impl State {
     /// A question or a move about an item that has gone is dropped, saying why - its answer
     /// would only be refused, in words written for the model (`call todo_list`). A box about
     /// one keeps its text, since the text is the user's, and becomes a new top-level todo
-    /// instead, which the box says before Enter makes it one. A draft put away about one is
-    /// kept the same way.
+    /// instead, which the box says before Enter makes it one - unless it is an edit nobody has
+    /// typed in, whose text was only the item's, which closes like the question does. A draft
+    /// put away about one is kept the same way.
     fn check_todo_mode(&mut self) {
         let gone = |state: &Self, id: u64| todos::item_of(&state.todos.list, id).is_none();
         match self.todos.mode {
@@ -468,7 +476,21 @@ impl State {
             Mode::Input { action, .. } => orphaned(self, action),
             _ => None,
         };
-        if let (
+        // An edit box nobody has typed in holds only the item's own text, which is no draft of
+        // anything: with the item gone it closes, saying so. Made a new todo instead, Esc or a
+        // hide kept it as the user's words - in place of a draft they had really typed.
+        let untouched = matches!(
+            &self.todos.mode,
+            Mode::Input {
+                action: InputAction::Edit { original, .. },
+                input,
+                ..
+            } if input.get_text() == original
+        );
+        if why.is_some() && untouched {
+            self.todos.mode = Mode::Normal;
+            self.todos.note = Some(Note::error(GONE));
+        } else if let (
             Some(why),
             Mode::Input {
                 action, refusal, ..
@@ -478,13 +500,16 @@ impl State {
             *action = InputAction::Add { parent_id: None };
             *refusal = Some(why.to_owned());
         }
-        let draft_orphaned = self
+        let orphans: Vec<usize> = self
             .todos
-            .draft
-            .as_ref()
-            .is_some_and(|(action, _)| orphaned(self, action).is_some());
-        if let (true, Some((action, _))) = (draft_orphaned, &mut self.todos.draft) {
-            *action = InputAction::Add { parent_id: None };
+            .drafts
+            .iter()
+            .enumerate()
+            .filter(|(_, (action, _))| orphaned(self, action).is_some())
+            .map(|(index, _)| index)
+            .collect();
+        for index in orphans {
+            self.todos.drafts[index].0 = InputAction::Add { parent_id: None };
         }
     }
 
@@ -665,9 +690,9 @@ impl State {
         };
         let drafted = self
             .todos
-            .draft
-            .as_ref()
-            .is_some_and(|(kept, _)| kept.same_target(&action));
+            .drafts
+            .iter()
+            .any(|(kept, _)| kept.same_target(&action));
         match limit {
             None => self.begin_todo_input(action, ""),
             Some(limit) if drafted => {
@@ -767,6 +792,16 @@ impl State {
         true
     }
 
+    /// Drop an armed y/n question - a delete, or a complete with open subtasks - for a switch to
+    /// another tab, as the other tabs' questions are dropped there: left armed, it answered the
+    /// first key of the next visit here, and a `y` then deleted or completed what was asked
+    /// about a list the user had stopped looking at.
+    pub(super) fn cancel_todo_question(&mut self) {
+        if matches!(self.todos.mode, Mode::Delete { .. } | Mode::Complete { .. }) {
+            self.todos.mode = Mode::Normal;
+        }
+    }
+
     /// The Todos side of `end_visit`: the panel went away, so a question it was asking or a
     /// pick it was part-way through does not wait to take the first keys of the next visit.
     ///
@@ -861,7 +896,7 @@ impl State {
             // `Input` for completeness only: see above.
             Mode::Normal | Mode::Input { .. } => {
                 let mut rows = Vec::new();
-                if let Some(key) = self.todo_draft_key() {
+                for key in self.todo_draft_keys() {
                     let key = match key {
                         "e" => "Enter / e",
                         key => key,
@@ -906,12 +941,14 @@ impl State {
     /// Open the box for `action`, starting from `text` - or from the draft put away for the
     /// same entry, which keeps the revision its text was composed from.
     fn begin_todo_input(&mut self, action: InputAction, text: &str) -> bool {
-        let (action, input) = match self.todos.draft.take() {
-            Some((kept, input)) if kept.same_target(&action) => (kept, input),
-            other => {
-                self.todos.draft = other;
-                (action, TextInput::new(text.to_owned()))
-            },
+        let kept = self
+            .todos
+            .drafts
+            .iter()
+            .position(|(kept, _)| kept.same_target(&action));
+        let (action, input) = match kept {
+            Some(index) => self.todos.drafts.remove(index),
+            None => (action, TextInput::new(text.to_owned())),
         };
         self.todos.mode = Mode::Input {
             action,
@@ -924,11 +961,13 @@ impl State {
     /// Put the box away, keeping what was typed in it as the draft the next `a`, `A` or `e`
     /// on the same item brings back - the conversation's box keeps its draft the same way.
     ///
+    /// Beside the drafts kept for other entries: a draft for this entry, if there was one, is
+    /// the text the box opened with (`begin_todo_input` takes it out), so nothing is kept twice.
     /// An edit nobody has changed yet is not a draft, and does not take the place of one.
     fn close_todo_input(&mut self) {
         if let Mode::Input { action, input, .. } = std::mem::take(&mut self.todos.mode) {
             if is_a_draft(&self.todos.list, &action, &input) {
-                self.todos.draft = Some((action.into_draft(), input));
+                self.todos.drafts.push((action.into_draft(), input));
             }
         }
     }
@@ -1051,10 +1090,16 @@ impl State {
                 };
                 self.todos.note = Some(Note::done(verb, &text, 0));
             },
-            Applied::Refused(error) => self.refuse_todo_input(error),
+            Applied::Refused(error) => {
+                self.disarm_todo_overwrite();
+                self.refuse_todo_input(error);
+            },
             Applied::Conflict {
                 reloaded: Err(error),
-            } => self.refuse_todo_input(format!("changed elsewhere · could not reload: {error}")),
+            } => {
+                self.disarm_todo_overwrite();
+                self.refuse_todo_input(format!("changed elsewhere · could not reload: {error}"));
+            },
             // `check_todo_mode` has said what became of the item the box was about.
             Applied::Conflict { reloaded: Ok(()) } if self.todo_input_refused() => {},
             Applied::Conflict { reloaded: Ok(()) } => {
@@ -1109,6 +1154,21 @@ impl State {
                 ..
             }
         )
+    }
+
+    /// An overwrite a conflict armed, dropped because the write was then refused for another
+    /// reason - the store failing on it, or on the reload after it. The refusal now drawn is
+    /// not the one that offered the overwrite, so an Enter waiting for `Enter overwrites` to be
+    /// drawn again did nothing for good. The next Enter plans from the revision the box opened
+    /// with, and a conflict then offers the overwrite again.
+    fn disarm_todo_overwrite(&mut self) {
+        if let Mode::Input {
+            action: InputAction::Edit { theirs, .. },
+            ..
+        } = &mut self.todos.mode
+        {
+            *theirs = None;
+        }
     }
 
     fn refuse_todo_input(&mut self, why: String) {
@@ -1826,13 +1886,15 @@ impl State {
                 false => vec!["p pick a project".into(), "Ctrl-r reload".into()],
             };
         }
-        let draft = self.todo_draft_key();
+        let drafts = self.todo_draft_keys();
+        let drafted = |key: &str| drafts.contains(&key);
         let mut hints = Vec::new();
         // Enter opens the item into the box as `e` does, and so brings back its draft too.
-        match draft {
-            Some("e") => hints.push("Enter/e resume draft".to_owned()),
-            Some(key) => hints.push(format!("{key} resume draft")),
-            None => {},
+        for key in &drafts {
+            match *key {
+                "e" => hints.push("Enter/e resume draft".to_owned()),
+                key => hints.push(format!("{key} resume draft")),
+            }
         }
         let selected = self.selected_todo();
         if let Some(item) = selected {
@@ -1844,15 +1906,15 @@ impl State {
                 }
                 .into(),
             );
-            if draft != Some("e") {
+            if !drafted("e") {
                 hints.push("Enter/e edit".into());
             }
         }
-        if draft != Some("a") {
+        if !drafted("a") {
             hints.push("a add".into());
         }
         if selected.is_some() {
-            if draft != Some("A") {
+            if !drafted("A") {
                 hints.push("A subtask".into());
             }
             hints.extend(["d delete", "n agent", "m move"].map(String::from));
@@ -1868,18 +1930,28 @@ impl State {
         hints
     }
 
-    /// The key that brings the draft back from here, if one would: `a` for a new top-level
-    /// todo, and `A` or `e` on the item a subtask or an edit was about.
-    fn todo_draft_key(&self) -> Option<&'static str> {
-        let (action, _) = self.todos.draft.as_ref()?;
-        match action {
+    /// The keys that bring a draft back from here, in the order the hints name them: `e` on
+    /// the item an edit was about, `A` on the item a subtask was for, and `a` for a new
+    /// top-level todo.
+    fn todo_draft_keys(&self) -> Vec<&'static str> {
+        let key = |action: &InputAction| match action {
             InputAction::Add { parent_id: None } => Some("a"),
             InputAction::Add {
                 parent_id: Some(parent),
             } if self.todos.selected == Some(*parent) => Some("A"),
             InputAction::Edit { id, .. } if self.todos.selected == Some(*id) => Some("e"),
             _ => None,
-        }
+        };
+        let found: Vec<&'static str> = self
+            .todos
+            .drafts
+            .iter()
+            .filter_map(|(action, _)| key(action))
+            .collect();
+        ["e", "A", "a"]
+            .into_iter()
+            .filter(|key| found.contains(key))
+            .collect()
     }
 
     /// The box as its divider row, and the column the caret is drawn in; `None` when no box is
@@ -2553,6 +2625,19 @@ mod tests {
         state.todos.list.items = vec![item(1, "one", false, vec![]), item(2, "two", false, vec![])];
         state.todos.selected = Some(1);
         state
+    }
+
+    /// Leaving the tab drops a delete or complete question armed there, as a VMs question is
+    /// dropped: left armed, it answered the first key of the next visit, and a `y` then deleted
+    /// or completed what was asked about a list the user had long stopped looking at.
+    #[test]
+    fn a_tab_switch_drops_an_armed_todo_question() {
+        let mut state = two_todos();
+        assert!(state.todo_key(key('d')));
+        assert!(matches!(state.todos.mode, Mode::Delete { .. }));
+        state.switch_surface(Surface::Agents);
+        state.switch_surface(Surface::Todos);
+        assert!(matches!(state.todos.mode, Mode::Normal));
     }
 
     /// A tab click, like the bar it no longer focuses, hands the keys to the list: `j` walks
@@ -3230,6 +3315,44 @@ mod tests {
         }
     }
 
+    /// An overwrite a conflict armed, and then refused for another reason, is disarmed: the
+    /// refusal now drawn does not offer it, and Enter used to wait for `Enter overwrites` to be
+    /// drawn again - which it never was - doing nothing for good. The next Enter meets the
+    /// conflict afresh, and the overwrite it offers then goes through.
+    #[test]
+    fn an_overwrite_refused_for_another_reason_does_not_stall_enter() {
+        let (backend, mut state) = stored(|backend| {
+            put(backend, "mine", None);
+        });
+        let id = state.todos.selected.unwrap();
+        let set_text = |state: &mut State, text: &str| {
+            if let Mode::Input { input, .. } = &mut state.todos.mode {
+                *input = TextInput::new(text.to_owned());
+            }
+        };
+        state.todo_key_with(&backend, key('e'));
+        typed(&mut state, " and more");
+        retext(&backend, id, "theirs");
+        state.todo_key_with(&backend, bare(BareKey::Enter));
+        state.render_todos(12, 40);
+        assert!(state.todos.overwrite_shown);
+        // Nothing visible to save: refused by the planner, not by a conflict.
+        set_text(&mut state, "\u{7}");
+        state.todo_key_with(&backend, bare(BareKey::Enter));
+        assert!(refusal(&state).unwrap().contains("visible characters"));
+        set_text(&mut state, "mine and more");
+        state.render_todos(12, 40);
+        state.todo_key_with(&backend, bare(BareKey::Enter));
+        assert!(
+            refusal(&state).unwrap().contains("Enter overwrites"),
+            "asked again"
+        );
+        state.render_todos(12, 40);
+        state.todo_key_with(&backend, bare(BareKey::Enter));
+        assert!(matches!(state.todos.mode, Mode::Normal));
+        assert_eq!(texts(&state), ["mine and more"]);
+    }
+
     /// On a pane too short for all of an edit conflict's refusal the project's row gives way
     /// to it first, and an Enter whose `Enter overwrites` was never on screen overwrites
     /// nothing.
@@ -3283,9 +3406,9 @@ mod tests {
         assert_eq!(draft(&state), Some("half"));
         // Saving it spends it.
         state.todo_key(bare(BareKey::Esc));
-        assert!(state.todos.draft.is_some());
+        assert!(!state.todos.drafts.is_empty());
         state.todo_key(key('a'));
-        assert!(state.todos.draft.is_none());
+        assert!(state.todos.drafts.is_empty());
     }
 
     /// A box still holding the text it opened with is no draft, even once the item has been
@@ -3303,7 +3426,7 @@ mod tests {
         let (row, _) = state.input_divider(80).unwrap();
         assert!(row.line.contains("Esc cancel"), "{}", row.line);
         state.todo_key_with(&backend, bare(BareKey::Esc));
-        assert!(state.todos.draft.is_none());
+        assert!(state.todos.drafts.is_empty());
         assert!(state.todo_divider(80, 0, 0).line.contains("Enter/e edit"));
         state.todo_key_with(&backend, key('e'));
         assert_eq!(draft(&state), Some("uno"));
@@ -3341,8 +3464,61 @@ mod tests {
             .unwrap();
         state.watch_todo_root_with(&backend, Some("/work".into()));
         assert!(state.todo_divider(80, 0, 0).line.contains("a resume draft"));
+        // Both new todos now, and neither lost: the edit's words did not take the place of the
+        // draft kept before them. `a` brings them back one at a time.
+        state.todo_key_with(&backend, key('a'));
+        assert_eq!(draft(&state), Some("half"));
+        state.todo_key_with(&backend, bare(BareKey::Esc));
         state.todo_key_with(&backend, key('a'));
         assert_eq!(draft(&state), Some("one more"));
+    }
+
+    /// A second box put away keeps its words beside the first box's: one slot for all of them
+    /// used to let an edit put away drop a new todo's text without a word.
+    #[test]
+    fn a_draft_for_one_entry_does_not_drop_another() {
+        let mut state = two_todos();
+        state.todo_key(key('a'));
+        typed(&mut state, "buy milk");
+        state.todo_key(bare(BareKey::Esc));
+        state.todo_key(key('e'));
+        typed(&mut state, " and more");
+        state.todo_key(bare(BareKey::Esc));
+        let divider = state.todo_divider(80, 0, 0).line;
+        assert!(divider.contains("Enter/e resume draft"), "{divider}");
+        assert!(divider.contains("a resume draft"), "{divider}");
+        state.todo_key(key('a'));
+        assert_eq!(draft(&state), Some("buy milk"));
+        state.todo_key(bare(BareKey::Esc));
+        state.todo_key(key('e'));
+        assert!(draft(&state).is_some_and(|text| text.ends_with(" and more")));
+    }
+
+    /// An edit box nobody typed in holds only its item's text: with the item deleted elsewhere
+    /// it closes, rather than becoming a new todo that Esc would keep - in place of a draft the
+    /// user did type.
+    #[test]
+    fn an_untouched_edit_of_a_deleted_item_closes_without_a_draft() {
+        let (backend, mut state) = stored(|backend| {
+            put(backend, "one", None);
+        });
+        let one = state.todos.selected.unwrap();
+        state.todo_key_with(&backend, key('a'));
+        typed(&mut state, "half");
+        state.todo_key_with(&backend, bare(BareKey::Esc));
+        state.todo_key_with(&backend, key('e'));
+        assert_eq!(draft(&state), Some("one"));
+        backend
+            .apply(vec![Mutation::delete("todo", Pred::eq("id", one))])
+            .unwrap();
+        state.reload_todos(&backend).unwrap();
+        assert!(matches!(state.todos.mode, Mode::Normal));
+        state.todo_key_with(&backend, key('a'));
+        assert_eq!(
+            draft(&state),
+            Some("half"),
+            "the draft typed is the one kept"
+        );
     }
 
     #[test]
@@ -3354,7 +3530,7 @@ mod tests {
             assert!(state.todo_key(bare(BareKey::Enter)));
             assert!(matches!(state.todos.mode, Mode::Normal));
             assert!(state.todos.note.is_none());
-            assert!(state.todos.draft.is_none());
+            assert!(state.todos.drafts.is_empty());
         }
     }
 
@@ -3412,9 +3588,9 @@ mod tests {
         assert!(matches!(state.todos.mode, Mode::Normal));
         assert!(state
             .todos
-            .draft
-            .as_ref()
-            .is_some_and(|(_, input)| input.get_text() == "kept"));
+            .drafts
+            .iter()
+            .any(|(_, input)| input.get_text() == "kept"));
 
         // A subtask whose parent has been pushed down to the depth limit meanwhile.
         let mut state = two_todos();

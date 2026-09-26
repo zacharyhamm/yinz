@@ -293,3 +293,23 @@ fn attention_falls_back_to_the_neighbour_when_the_selected_pane_exits() {
     state.set_rows(strip(vec![agent(3, true), agent(9, true)]));
     assert_eq!(state.selection(), Some(9));
 }
+
+/// Opening the view from a row that is not waiting starts at the top of the queue. The cursor
+/// used to be placed by its index in the whole list, applied to the queue, and landed on an
+/// arbitrary waiting agent - from the foot of the list, always the last.
+#[test]
+fn opening_the_view_off_the_queue_starts_at_its_top() {
+    for from in [3, 4] {
+        let mut state = State::default();
+        state.set_rows(strip(vec![
+            StripRow::Project("p".into()),
+            agent(1, true),
+            agent(2, true),
+            agent(3, false),
+            agent(4, false),
+        ]));
+        state.selected = from;
+        state.update(Event::Key(KeyWithModifier::new(BareKey::Char('w'))));
+        assert_eq!(state.selection(), Some(1), "from row {from}");
+    }
+}

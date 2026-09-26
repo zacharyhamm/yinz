@@ -220,7 +220,12 @@ impl State {
         // with the tab out of sight. Left for the next visit, a close confirmed before the user
         // went elsewhere went out hours later, the moment the tab was looked at again.
         let drain = self.vms.queued.is_some() && !self.vms.busy;
-        if (showing || drain) && self.vms.pending.is_none() && self.vms.confirming.is_none() {
+        // Not held while a close or sync question is armed: the question names the panes and
+        // the sharing it is about, and a list frozen under it - for as long as the keys are in
+        // the conversation - showed them as they were minutes ago, with nothing saying so. A
+        // listing that moves the selection off the lease drops the question, and a `y` pressed
+        // while one is out waits for it (`send_or_queue`).
+        if (showing || drain) && self.vms.pending.is_none() {
             self.vm_request(Operation::List, None);
         }
         // A request of the user's own counts its seconds on the divider, so a tick that
@@ -243,8 +248,12 @@ impl State {
         };
         let seconds = REQUEST_TIMEOUT_MS / 1000;
         if request.operation == Operation::List {
-            // Through the reply path, so a request queued behind the listing goes out now
-            // rather than waiting on an answer that may never come.
+            // Through the reply path, for the words it leaves on the divider. Not for a request
+            // queued behind the listing: hocus is most likely still running the listing, and
+            // would refuse it as busy - which used to be recorded as the request failing, and
+            // lose it. It waits for a listing hocus answers, as `send_or_queue` makes a new one
+            // wait while this one is still out.
+            let queued = self.vms.queued.take();
             self.accept_vm_result(ResultMessage {
                 request_id: request.request_id,
                 operation: request.operation,
@@ -253,6 +262,7 @@ impl State {
                 output: String::new(),
                 error: format!("VM listing did not answer in {seconds} s; retrying."),
             });
+            self.vms.queued = queued;
             // After the reply path, which clears it for any answer that is not a refusal.
             self.vms.list_expired = true;
             return true;
@@ -311,11 +321,14 @@ impl State {
     }
     /// The user's own request: out now, or queued behind a background listing, which answers
     /// within the tick, or behind a request hocus is still [`busy`](View::busy) with - a `y`
-    /// armed just before hocus said so, which sent now would only be refused. False only where
-    /// it cannot go at all.
+    /// armed just before hocus said so, which sent now would only be refused. So too behind a
+    /// listing given up on ([`list_expired`](View::list_expired)), which hocus is most likely
+    /// still running. False only where it cannot go at all.
     fn send_or_queue(&mut self, operation: Operation, identity: Identity) -> bool {
         match &self.vms.pending {
-            None if !self.vms.busy => self.vm_request(operation, Some(identity)),
+            None if !self.vms.busy && !self.vms.list_expired => {
+                self.vm_request(operation, Some(identity))
+            },
             Some(pending) if pending.operation != Operation::List => false,
             _ => {
                 self.vms.queued = Some((operation, identity));
@@ -481,10 +494,11 @@ impl State {
             }
             // The listing the user's request was waiting on has answered. It goes out only to
             // a lease still listed: hocus would refuse a changed one anyway, and saying so
-            // here names the lease rather than leaving it to a later refusal. Not while hocus
-            // is still busy with a request given up on, which would refuse it too: it waits for
-            // the late reply, or for a listing that is not refused.
-            if let Some((operation, identity)) = self.vms.queued.take_if(|_| !self.vms.busy) {
+            // here names the lease rather than leaving it to a later refusal. Not after a
+            // listing hocus refused as busy - with a request given up on, or with a listing
+            // given up on, which it is most likely still running - since it would refuse this
+            // too: it waits for a listing that is not refused.
+            if let Some((operation, identity)) = self.vms.queued.take_if(|_| !refused) {
                 if self
                     .vms
                     .snapshot
@@ -506,12 +520,22 @@ impl State {
             }
         } else {
             if let Some(identity) = result.target {
-                let failed = !result.error.is_empty();
-                let text = match failed {
-                    true => result.error,
-                    false => result.output,
-                };
-                self.record_outcome(result.operation, identity, failed, text);
+                if result.error == vms::BUSY {
+                    // Not run: hocus was still busy with another request. That is proof the
+                    // other one is alive, not that this one failed - recorded as a failure, the
+                    // user's confirmed close or sync was lost. It goes back in the queue, to go
+                    // out after a listing hocus answers.
+                    if self.vms.queued.is_none() {
+                        self.vms.queued = Some((result.operation, identity));
+                    }
+                } else {
+                    let failed = !result.error.is_empty();
+                    let text = match failed {
+                        true => result.error,
+                        false => result.output,
+                    };
+                    self.record_outcome(result.operation, identity, failed, text);
+                }
             }
             self.poll_vms();
         }
@@ -644,8 +668,7 @@ impl State {
     }
     /// Drop an armed close or sync question. For the moments nothing else would answer it -
     /// the panel going away, the surface switching, a click moving the selection - where it
-    /// would otherwise take the first key of the next visit, or a key meant for another row,
-    /// and hold the list's polling until then.
+    /// would otherwise take the first key of the next visit, or a key meant for another row.
     pub(super) fn cancel_vm_confirmation(&mut self) {
         self.vms.confirming = None;
     }
@@ -3162,6 +3185,82 @@ mod tests {
             Some(Operation::List)
         );
         sync
+    }
+
+    /// A listing given up on is most likely still running in hocus, which refuses anything else
+    /// as busy. A close confirmed behind it waits for a listing hocus answers - it used to go
+    /// out at the expiry, be refused, and be recorded as a failed close, lost - and a busy
+    /// refusal of a request that did go out puts it back in the queue rather than failing it.
+    #[test]
+    fn a_request_behind_an_expired_listing_waits_for_one_that_answers() {
+        let mut state = state();
+        state.render(20, 40);
+        let one = state.vms.snapshot.vms[0].identity();
+        let out = |state: &State| state.vms.pending.as_ref().map(|pending| pending.operation);
+        state.poll_vms();
+        assert_eq!(out(&state), Some(Operation::List));
+        state.vm_key(key(BareKey::Char('x')));
+        state.vm_key(key(BareKey::Char('y')));
+        assert_eq!(state.vms.queued, Some((Operation::Close, one.clone())));
+
+        assert!(state.expire_vm_request(state.vms.pending_deadline_ms));
+        assert!(state.vms.list_expired);
+        assert_eq!(out(&state), None, "not sent into the listing still running");
+        assert_eq!(state.vms.queued, Some((Operation::Close, one.clone())));
+        // Refused while hocus still runs the first listing: still waiting, nothing failed.
+        state.poll_vms();
+        assert_eq!(out(&state), Some(Operation::List));
+        assert!(state.accept_vm_result(reply(&state, None, "", vms::BUSY)));
+        assert_eq!(state.vms.queued, Some((Operation::Close, one.clone())));
+        assert!(state.vms.results.is_empty());
+        // A key pressed now waits the same way.
+        state.vms.queued = None;
+        state.vm_key(key(BareKey::Char('x')));
+        state.vm_key(key(BareKey::Char('y')));
+        assert_eq!(out(&state), None);
+        assert_eq!(state.vms.queued, Some((Operation::Close, one.clone())));
+
+        // A listing hocus answers sends it.
+        state.poll_vms();
+        let snapshot = state.vms.snapshot.clone();
+        assert!(state.accept_vm_result(reply(&state, Some(snapshot), "", "")));
+        assert!(!state.vms.list_expired);
+        assert_eq!(out(&state), Some(Operation::Close));
+        assert!(state.vms.queued.is_none());
+        // Were hocus busy after all, the close is not a failure: it waits again.
+        assert!(state.accept_vm_result(reply(&state, None, "", vms::BUSY)));
+        assert!(
+            state.vms.results.is_empty(),
+            "a busy refusal is not a failed close"
+        );
+        assert_eq!(state.vms.queued, Some((Operation::Close, one)));
+    }
+
+    /// An armed close or sync question does not hold the list's polling: it names the panes and
+    /// the sharing the list says, which used to freeze under it for as long as the keys were in
+    /// the conversation.
+    #[test]
+    fn an_armed_question_keeps_the_list_polling() {
+        let mut state = state();
+        state.render(20, 40);
+        assert!(state.vm_key(key(BareKey::Char('x'))));
+        assert!(state.vms.confirming.is_some());
+        state.poll_vms();
+        assert_eq!(
+            state.vms.pending.as_ref().map(|pending| pending.operation),
+            Some(Operation::List)
+        );
+        let snapshot = state.vms.snapshot.clone();
+        assert!(state.accept_vm_result(reply(&state, Some(snapshot), "", "")));
+        assert!(
+            state.vms.confirming.is_some(),
+            "a listing that keeps the lease keeps the question"
+        );
+        assert!(state.vm_key(key(BareKey::Char('y'))));
+        assert_eq!(
+            state.vms.pending.as_ref().map(|pending| pending.operation),
+            Some(Operation::Close)
+        );
     }
 
     /// hocus's late answer to `request`.
