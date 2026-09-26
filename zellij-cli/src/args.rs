@@ -240,6 +240,16 @@ pub enum Plugins {
 /// agent's own hook, runs from a shell.
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Hocus {
+    /// Run Codex with pane tracking while retaining its shared background daemon.
+    Codex {
+        #[clap(long, default_value = "codex")]
+        command: PathBuf,
+        #[clap(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Receive a Codex hook and route it by its conversation id.
+    #[clap(hide = true)]
+    CodexReport,
     /// Wire coding-agent hooks up to the agent plugins, so panes report their own state.
     #[clap(subcommand)]
     Hooks(HocusHooks),

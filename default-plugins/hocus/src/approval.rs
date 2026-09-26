@@ -881,7 +881,18 @@ mod tests {
             .unwrap()
             .starts_with("opens a new pane running `codex`"));
         let launch = &pending["launch"];
-        assert_eq!(launch["program"], "codex");
+        assert_eq!(launch["program"], "zellij");
+        assert_eq!(
+            launch["args"],
+            json!([
+                "hocus",
+                "codex",
+                "--command",
+                "codex",
+                "--",
+                "Fix the parser"
+            ])
+        );
         assert_eq!(launch["directory"], "/work/hocus");
         assert_eq!(launch["prompt"], "Fix the parser");
         assert_eq!(launch["reuse_prompt"], "Continue fixing the parser");

@@ -1484,7 +1484,8 @@ mod tests {
             .set_text("topic".into());
         state.changed(BRANCH);
         let (command, checkout) = request(state.dialog.form()).unwrap();
-        assert_eq!(command.path, PathBuf::from("codex"));
+        assert_eq!(command.path, PathBuf::from("zellij"));
+        assert_eq!(command.args, ["hocus", "codex", "--command", "codex", "--"]);
         assert!(
             matches!(checkout, GitCheckout::NewWorktree { branch, base, path }
             if branch == "topic" && base == "main" && path == *".worktrees/topic")
@@ -1580,7 +1581,17 @@ mod tests {
         state.set_checked(CREATE_BRANCH, false);
         state.set_text(PROMPT, "fix the parser");
         let (command, _) = request(state.dialog.form()).unwrap();
-        assert_eq!(command.args, ["fix the parser"]);
+        assert_eq!(
+            command.args,
+            [
+                "hocus",
+                "codex",
+                "--command",
+                "codex",
+                "--",
+                "fix the parser"
+            ]
+        );
     }
 
     #[test]
@@ -1604,7 +1615,10 @@ mod tests {
                 .get_cursor_position(),
             0
         );
-        assert_eq!(request(state.dialog.form()).unwrap().0.args, [prompt]);
+        assert_eq!(
+            request(state.dialog.form()).unwrap().0.args,
+            ["hocus", "codex", "--command", "codex", "--", prompt]
+        );
         state.set_text(PROMPT, "the edited task");
         assert_eq!(
             spec(state.dialog.form()).prompt.as_deref(),
@@ -1674,6 +1688,11 @@ mod tests {
         assert_eq!(
             command.args,
             [
+                "hocus",
+                "codex",
+                "--command",
+                "codex",
+                "--",
                 "-c",
                 "model_reasoning_effort=\"xhigh\"",
                 "--model",
@@ -2580,9 +2599,27 @@ mod tests {
             assert_eq!(duplicate.cwd, Some("/work/repo".into()));
             assert_eq!(duplicate.target, target);
             let fork = command_in_context(&pane, "codex").unwrap();
-            assert_eq!(fork.path, PathBuf::from("codex"));
+            if target.is_local() {
+                assert_eq!(fork.path, PathBuf::from("zellij"));
+                assert_eq!(fork.args, ["hocus", "codex", "--command", "codex", "--"]);
+            } else {
+                assert_eq!(fork.path, PathBuf::from("codex"));
+            }
+            assert_eq!(
+                zellij_tile::agent::agent_kind_of(&fork.path, &fork.args).as_deref(),
+                Some("codex")
+            );
             assert_eq!(fork.cwd, duplicate.cwd);
             assert_eq!(fork.target, target);
+            let codex = AgentPane {
+                agent: Some(agents::registered_agent("codex", Some("/work/repo".into()))),
+                command: Some("codex resume old-thread old-prompt".into()),
+                ..pane
+            };
+            assert_eq!(
+                duplicate_command(&codex, &reply.manual_kinds).unwrap(),
+                fork
+            );
         }
         assert!(source_pane(&reply, 7, |_| None).is_none());
         let visible = agent_pane("codex");

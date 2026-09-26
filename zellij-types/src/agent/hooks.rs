@@ -220,12 +220,24 @@ pub fn hook_settings(events: &[&str], command: &str, timeout: u64) -> Value {
     json!({ "hooks": hooks })
 }
 
-/// The command `env(1)` will execute and its remaining arguments, skipping `env` options and
-/// assignments. A non-`env` command is returned unchanged.
-fn unwrapped_program_and_args<'a>(
+/// The program and arguments behind an `env(1)` or `zellij hocus codex` wrapper.
+/// Other commands are returned unchanged.
+pub fn unwrapped_program_and_args<'a>(
     program: &'a Path,
     args: &'a [String],
 ) -> Option<(&'a Path, &'a [String])> {
+    if program.file_name()? == "zellij" {
+        if let [hocus, codex, flag, command, separator, rest @ ..] = args {
+            if hocus == "hocus" && codex == "codex" && flag == "--command" && separator == "--" {
+                return Some((Path::new(command), rest));
+            }
+        }
+        if let [hocus, codex, separator, rest @ ..] = args {
+            if hocus == "hocus" && codex == "codex" && separator == "--" {
+                return Some((Path::new("codex"), rest));
+            }
+        }
+    }
     if program.file_name()? != "env" {
         return Some((program, args));
     }
@@ -244,7 +256,7 @@ fn unwrapped_program_and_args<'a>(
         if arg.starts_with('-') || arg.contains('=') {
             continue;
         }
-        return Some((Path::new(arg), &args[index + 1..]));
+        return unwrapped_program_and_args(Path::new(arg), &args[index + 1..]);
     }
     None
 }
@@ -316,6 +328,10 @@ pub fn kind_of(word: &str) -> Option<&'static str> {
 pub fn kind_from_command(command: &str) -> Option<&'static str> {
     let mut words = command.split_whitespace();
     let first = words.next().unwrap_or_default();
+    if program(first) == "zellij" && words.next() == Some("hocus") && words.next() == Some("codex")
+    {
+        return Some("codex");
+    }
     if let Some(kind) = kind_of(first) {
         return Some(kind);
     }

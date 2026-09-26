@@ -4,7 +4,34 @@ use std::{
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
+use zellij_runtime::errors::prelude::*;
 use zellij_types::input::command::RunCommand;
+
+/// Resolve the portable Codex wrapper using the Zellij binary on the execution host.
+pub fn resolve_codex_wrapper(
+    host_bin: &Path,
+    program: &mut PathBuf,
+    args: &mut [String],
+) -> Result<()> {
+    if program == Path::new("zellij")
+        && matches!(args, [hocus, codex, ..] if hocus == "hocus" && codex == "codex")
+    {
+        *program = host_bin.to_path_buf();
+    } else if program == Path::new("env") {
+        // Generated env wrappers contain assignments followed by the command.
+        if let Some(index) = args.iter().position(|arg| !arg.contains('=')) {
+            let (assignments, rest) = args.split_at_mut(index + 1);
+            let executable = &mut assignments[index];
+            let mut path = PathBuf::from(&*executable);
+            resolve_codex_wrapper(host_bin, &mut path, rest)?;
+            *executable = path
+                .into_os_string()
+                .into_string()
+                .map_err(|_| anyhow!("the Codex launcher path is not valid UTF-8"))?;
+        }
+    }
+    Ok(())
+}
 
 fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {
     if candidate.is_file() && access(candidate, AccessFlags::X_OK).is_ok() {

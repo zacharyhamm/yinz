@@ -307,7 +307,11 @@ fn a_todo_launches_an_agent_with_its_project_and_task_context() {
     click("Create agent");
     let agent = zellij.expect_pty_spawn();
     let command = agent.run_command();
-    assert_eq!(command.command.to_string_lossy(), "codex");
+    assert_eq!(command.command.to_string_lossy(), "zellij");
+    assert_eq!(
+        &command.args[..5],
+        ["hocus", "codex", "--command", "codex", "--"]
+    );
     assert_eq!(
         command.cwd.as_ref().unwrap().canonicalize().unwrap(),
         repository.canonicalize().unwrap()

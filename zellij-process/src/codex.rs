@@ -1,0 +1,581 @@
+//! Bind a Codex UI's selected conversation to its pane while retaining the shared daemon.
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::{Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::ExitStatusExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio_tungstenite::tungstenite::Message;
+use zellij_runtime::errors::prelude::*;
+
+const ROUTE_ENV: &[&str] = &[
+    "ZELLIJ_PANE_REF",
+    "ZELLIJ_PANE_ID",
+    "ZELLIJ_SESSION_NAME",
+    "ZELLIJ_REMOTE_PANE_TOKEN",
+    "ZELLIJ_SWAMP_OWNER",
+    "ZELLIJ_SOCKET_DIR",
+];
+
+fn directory() -> PathBuf {
+    // The shared daemon can inherit different TMPDIR and XDG directories from its UIs.
+    Path::new("/tmp")
+        .join(format!("zellij-{}", nix::unistd::Uid::current()))
+        .join("codex")
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Binding {
+    thread_id: String,
+    env: HashMap<String, String>,
+}
+
+struct Registration {
+    dir: tempfile::TempDir,
+    _lease: File,
+    env: HashMap<String, String>,
+}
+
+impl Registration {
+    fn new(root: &Path, mut env: HashMap<String, String>) -> Result<Self> {
+        let sockets = std::path::absolute(&*zellij_runtime::consts::ZELLIJ_SOCK_DIR)
+            .context("resolve Codex pane socket directory")?;
+        // ZELLIJ_SOCKET_DIR takes the base; ZELLIJ_SOCK_DIR appends the contract version.
+        env.insert(
+            "ZELLIJ_SOCKET_DIR".into(),
+            sockets
+                .parent()
+                .and_then(Path::to_str)
+                .context("encode Codex pane socket directory")?
+                .into(),
+        );
+        std::fs::create_dir_all(root).context("create Codex pane registry")?;
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
+            .context("protect Codex pane registry")?;
+        let dir = tempfile::Builder::new()
+            .prefix("ui-")
+            .tempdir_in(root)
+            .context("create Codex UI registration")?;
+        let lease = File::create(dir.path().join("lease")).context("create Codex UI lease")?;
+        lease.lock().context("hold Codex UI lease")?;
+        Ok(Self {
+            dir,
+            _lease: lease,
+            env,
+        })
+    }
+
+    fn select(&self, thread_id: &str) -> Result<()> {
+        if thread_id.is_empty() || thread_id.len() > 256 {
+            return Err(anyhow!("invalid Codex conversation id"));
+        }
+        let binding = Binding {
+            thread_id: thread_id.into(),
+            env: self.env.clone(),
+        };
+        let mut file = tempfile::NamedTempFile::new_in(self.dir.path())
+            .context("prepare Codex pane binding")?;
+        serde_json::to_writer(&mut file, &binding).context("write Codex pane binding")?;
+        file.persist(self.dir.path().join("binding.json"))
+            .context("publish Codex pane binding")?;
+        Ok(())
+    }
+}
+
+fn binding_for(root: &Path, thread_id: &str) -> Result<Option<Binding>> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context("read Codex pane registry"),
+    };
+    // ponytail: scan the open UIs; index by conversation if thousands of panes make this hot.
+    let mut latest = None;
+    for entry in entries {
+        let entry = entry.context("read Codex UI registration")?;
+        let read = || -> Result<Option<_>> {
+            let lease = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(entry.path().join("lease"))
+                .context("open Codex UI lease")?;
+            match lease.try_lock() {
+                // A dead launcher cannot own a conversation, even after an unclean exit.
+                Ok(()) => return Ok(None),
+                Err(TryLockError::WouldBlock) => {},
+                Err(TryLockError::Error(e)) => return Err(e).context("check Codex UI lease"),
+            }
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(entry.path().join("binding.json"))
+                .context("open Codex pane binding")?;
+            let metadata = file.metadata().context("inspect Codex pane binding")?;
+            if !metadata.is_file() || metadata.len() > 16 * 1024 {
+                return Ok(None);
+            }
+            let binding: Binding =
+                serde_json::from_reader(file.take(16 * 1024)).context("read Codex pane binding")?;
+            (binding.thread_id == thread_id)
+                .then(|| metadata.modified().map(|modified| (modified, binding)))
+                .transpose()
+                .context("read Codex pane binding time")
+        };
+        // Registrations are created and removed concurrently with hooks.
+        if let Ok(Some(candidate)) = read() {
+            if latest.as_ref().is_none_or(|(time, _)| candidate.0 > *time) {
+                latest = Some(candidate);
+            }
+        }
+    }
+    Ok(latest.map(|(_, binding)| binding))
+}
+
+#[derive(Default)]
+struct Conversations {
+    pending: HashSet<String>,
+}
+
+impl Conversations {
+    fn request(&mut self, value: &Value, registration: &Registration) -> Result<()> {
+        let Some(method) = value["method"].as_str() else {
+            return Ok(());
+        };
+        if matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
+            if let Some(id) = value.get("id") {
+                self.pending.insert(id.to_string());
+            }
+        }
+        // Also handles a UI returning to an already loaded conversation without resuming it.
+        if matches!(method, "turn/start" | "turn/steer") {
+            if let Some(thread) = value["params"]["threadId"].as_str() {
+                registration.select(thread)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn response(&mut self, value: &Value, registration: &Registration) -> Result<()> {
+        // Server requests have their own id namespace (eg approval requests).
+        if value.get("method").is_some() {
+            return Ok(());
+        }
+        if let Some(id) = value.get("id") {
+            if self.pending.remove(&id.to_string()) {
+                if let Some(thread) = value["result"]["thread"]["id"].as_str() {
+                    // Publish before the UI sees the reply and can submit its first turn.
+                    registration.select(thread)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn proxy(
+    stream: tokio::net::UnixStream,
+    program: &Path,
+    registration: &Registration,
+) -> Result<()> {
+    let mut ui = tokio_tungstenite::accept_async(stream)
+        .await
+        .context("accept Codex UI connection")?;
+    // Codex owns daemon discovery and connection setup. The child only forwards JSONL;
+    // dropping it closes this UI's connection without stopping the shared server.
+    let mut backend = tokio::process::Command::new(program)
+        .args(["app-server", "proxy"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("connect to the Codex daemon")?;
+    let mut input = backend.stdin.take().context("open Codex daemon input")?;
+    let mut output =
+        BufReader::new(backend.stdout.take().context("open Codex daemon output")?).lines();
+    let mut conversations = Conversations::default();
+    loop {
+        tokio::select! {
+            message = ui.next() => {
+                let Some(message) = message else { break };
+                match message.context("read Codex UI message")? {
+                    Message::Text(text) => {
+                        let value: Value = serde_json::from_str(&text).context("parse Codex UI message")?;
+                        conversations.request(&value, registration)?;
+                        input.write_all(text.as_bytes()).await.context("forward Codex request")?;
+                        input.write_all(b"\n").await.context("finish Codex request")?;
+                    },
+                    Message::Close(_) => break,
+                    Message::Ping(_) | Message::Pong(_) => {
+                        ui.flush().await.context("flush Codex connection control frame")?;
+                    },
+                    _ => return Err(anyhow!("Codex UI sent a non-text message")),
+                }
+            },
+            line = output.next_line() => {
+                let Some(line) = line.context("read Codex daemon reply")? else { break };
+                let value: Value = serde_json::from_str(&line).context("parse Codex daemon reply")?;
+                conversations.response(&value, registration)?;
+                ui.send(Message::text(line)).await.context("forward Codex daemon reply")?;
+            },
+        }
+    }
+    Ok(())
+}
+
+// Only known, unambiguous UI arguments may acquire an implicit --remote endpoint.
+fn bridge_eligible(args: &[String]) -> bool {
+    let mut args = args.iter().map(String::as_str);
+    let mut first_positional = true;
+    let mut resume_or_fork = false;
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            break;
+        }
+        if arg.starts_with('-') {
+            let (option, inline_value) = if arg.starts_with("--") {
+                arg.split_once('=')
+                    .map_or((arg, None), |(option, value)| (option, Some(value)))
+            } else if matches!(
+                arg.as_bytes().get(1),
+                Some(b'c' | b'm' | b'p' | b's' | b'C' | b'a')
+            ) {
+                (
+                    &arg[..2],
+                    (arg.len() > 2).then(|| arg[2..].trim_start_matches('=')),
+                )
+            } else {
+                return false;
+            };
+            match option {
+                "--config" | "-c" | "--model" | "-m" | "--profile" | "-p" | "--sandbox" | "-s"
+                | "--cd" | "-C" | "--ask-for-approval" | "-a" | "--enable" | "--disable"
+                | "--local-provider" => {
+                    let value = inline_value.or_else(|| args.next());
+                    if value.is_none_or(|value| value.is_empty() || value.starts_with('-')) {
+                        return false;
+                    }
+                    if matches!(option, "--config" | "-c")
+                        && value.and_then(|value| value.split_once('=').map(|(key, _)| key.trim()))
+                            == Some("sandbox_workspace_write.writable_roots")
+                    {
+                        return false;
+                    }
+                },
+                "--oss"
+                | "--full-auto"
+                | "--approve-for-me"
+                | "--dangerously-bypass-approvals-and-sandbox"
+                | "--dangerously-bypass-hook-trust"
+                | "--search"
+                | "--no-alt-screen"
+                | "--strict-config"
+                    if inline_value.is_none() => {},
+                "--last" | "--all" | "--include-non-interactive"
+                    if resume_or_fork && inline_value.is_none() => {},
+                // Includes --add-dir (unsupported with --remote), explicit endpoints,
+                // standalone launches, help, and variadic --image arguments.
+                _ => return false,
+            }
+        } else if first_positional {
+            first_positional = false;
+            match arg {
+                "resume" | "fork" => resume_or_fork = true,
+                "agents"
+                | "exec"
+                | "e"
+                | "review"
+                | "login"
+                | "logout"
+                | "mcp"
+                | "plugin"
+                | "app-server"
+                | "remote-control"
+                | "completion"
+                | "update"
+                | "doctor"
+                | "sandbox"
+                | "debug"
+                | "apply"
+                | "a"
+                | "queue"
+                | "archive"
+                | "delete"
+                | "migrate-rollouts"
+                | "unarchive"
+                | "features"
+                | "exec-server"
+                | "execpolicy"
+                | "tcp-tunnel"
+                | "responses-api-proxy"
+                | "stdio-to-uds"
+                | "cloud"
+                | "help" => return false,
+                _ => {},
+            }
+        }
+    }
+    true
+}
+
+/// Run the ordinary Codex UI through a pane-aware connection to its shared daemon.
+pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
+    let env: HashMap<_, _> = ROUTE_ENV
+        .iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
+        .collect();
+    if ![
+        "ZELLIJ_PANE_REF",
+        "ZELLIJ_PANE_ID",
+        "ZELLIJ_REMOTE_PANE_TOKEN",
+    ]
+    .iter()
+    .any(|key| env.get(*key).is_some_and(|value| !value.is_empty()))
+        || !bridge_eligible(args)
+    {
+        return Command::new(program)
+            .args(args)
+            .status()
+            .map(exit_code)
+            .context("run Codex");
+    }
+    let registration = Registration::new(&directory(), env)?;
+    let status = Command::new(program)
+        .args(["app-server", "daemon", "start"])
+        .stdout(Stdio::null())
+        .status()
+        .context("start the Codex daemon")?;
+    if !status.success() {
+        return Err(anyhow!("Codex could not start its shared daemon"));
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("start Codex pane bridge")?
+        .block_on(async {
+            let path = registration.dir.path().join("ui.sock");
+            crate::pty_host::protocol::check_socket_path_length(&path, 0)?;
+            let listener = tokio::net::UnixListener::bind(&path).context("listen for Codex UI")?;
+            let mut ui = tokio::process::Command::new(program)
+                .arg("--remote")
+                .arg(format!("unix://{}", path.display()))
+                .args(args)
+                .kill_on_drop(true)
+                .spawn()
+                .context("start Codex UI")?;
+            let connections = async {
+                loop {
+                    let (stream, _) = listener.accept().await.context("accept Codex UI")?;
+                    proxy(stream, program, &registration).await?;
+                }
+                #[expect(unreachable_code, reason = "the connection loop exits through errors")]
+                Ok::<(), anyhow::Error>(())
+            };
+            tokio::select! {
+                status = ui.wait() => status.map(exit_code).context("wait for Codex UI"),
+                result = connections => {
+                    result?;
+                    Err(anyhow!("Codex pane connection stopped"))
+                },
+            }
+        })
+}
+
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
+}
+
+/// Dispatch a hook by its conversation, never by the shared daemon's inherited pane.
+pub fn report(zellij: &Path) -> Result<()> {
+    let trace = std::sync::Arc::new(std::sync::Mutex::new(
+        zellij_runtime::agent::report::ReportTrace::new(std::time::Instant::now()),
+    ));
+    zellij_runtime::agent::report::reporting_watchdog(trace.clone())?;
+    {
+        let mut trace = trace
+            .lock()
+            .map_err(|_| anyhow!("Codex hook trace poisoned"))?;
+        trace.kind = "codex".into();
+        trace.enter("codex_route");
+    }
+    let mut raw = String::new();
+    std::io::stdin()
+        .read_to_string(&mut raw)
+        .context("read Codex hook")?;
+    let event: Value = serde_json::from_str(&raw).context("parse Codex hook")?;
+    let thread = event["session_id"]
+        .as_str()
+        .context("Codex hook has no conversation id")?;
+    let binding = binding_for(&directory(), thread)?;
+    let env = match binding {
+        Some(binding) => binding.env,
+        None => {
+            // Standalone Codex still runs underneath its pane's original process. A daemon
+            // is detached from that ancestry, so an unregistered daemon hook must be ignored.
+            let env: HashMap<_, _> = ROUTE_ENV
+                .iter()
+                .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
+                .collect();
+            if !owned_by_ancestor(&env) {
+                if let Ok(trace) = trace.lock() {
+                    trace.record("codex_route", trace.started.elapsed(), "unbound");
+                }
+                return Ok(());
+            }
+            env
+        },
+    };
+    let mut command = Command::new(zellij);
+    for key in ROUTE_ENV {
+        command.env_remove(key);
+    }
+    if env
+        .get("ZELLIJ_REMOTE_PANE_TOKEN")
+        .is_some_and(|token| !token.is_empty())
+    {
+        command.args(["--pty-broker", "report", "codex"]);
+    } else {
+        command.args(["action", "agent-report", "--hook-json", "--kind", "codex"]);
+    }
+    let mut child = command
+        .envs(env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .context("forward Codex hook to its pane")?;
+    child
+        .stdin
+        .take()
+        .context("open Codex report input")?
+        .write_all(raw.as_bytes())
+        .context("write Codex hook to its pane")?;
+    if !child
+        .wait()
+        .context("wait for Codex hook report")?
+        .success()
+    {
+        return Err(anyhow!("Codex pane did not accept its hook report"));
+    }
+    Ok(())
+}
+
+fn owned_by_ancestor(env: &HashMap<String, String>) -> bool {
+    let remote = env
+        .get("ZELLIJ_REMOTE_PANE_TOKEN")
+        .is_some_and(|token| !token.is_empty());
+    let mut server_socket = None;
+    let child = if remote {
+        None
+    } else if let Some(reference) = env.get("ZELLIJ_PANE_REF") {
+        if reference.len() != 12 || !reference.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
+        let Ok(status) = crate::pty_host::client::query(&crate::pty_host::protocol::socket_path(
+            &zellij_types::internal_ids::SupervisorId::new(reference.clone()),
+        )) else {
+            return false;
+        };
+        let Some(child) = status.child_pid else {
+            return false;
+        };
+        Some(child.get())
+    } else {
+        if env.contains_key("ZELLIJ_REMOTE_PANE_TOKEN")
+            || env
+                .get("ZELLIJ_PANE_ID")
+                .and_then(|id| id.parse::<u32>().ok())
+                .is_none()
+        {
+            return false;
+        }
+        let Some(session) = env.get("ZELLIJ_SESSION_NAME") else {
+            return false;
+        };
+        if zellij_session::sessions::validate_session_name(session).is_err() {
+            return false;
+        }
+        let Ok(socket) = zellij_runtime::consts::ZELLIJ_SOCK_DIR
+            .join(session)
+            .canonicalize()
+        else {
+            return false;
+        };
+        let Ok(leader) = nix::unistd::getsid(None) else {
+            return false;
+        };
+        server_socket = Some(socket);
+        Some(leader.as_raw() as u32)
+    };
+    let mut system = sysinfo::System::new();
+    let executable = std::env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .ok();
+    let refresh = sysinfo::ProcessRefreshKind::nothing()
+        .with_cmd(sysinfo::UpdateKind::OnlyIfNotSet)
+        .with_exe(sysinfo::UpdateKind::OnlyIfNotSet);
+    let mut pid = Some(sysinfo::Pid::from_u32(std::process::id()));
+    for _ in 0..128 {
+        let Some(current) = pid else { break };
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[current]),
+            true,
+            refresh,
+        );
+        let Some(process) = system.process(current) else {
+            break;
+        };
+        if Some(current.as_u32()) == child {
+            let Some(socket) = &server_socket else {
+                return true;
+            };
+            // An in-process PTY's session leader is a direct child of this session's
+            // server. A detached daemon has a different leader or has been reparented.
+            let Some(parent) = process.parent() else {
+                return false;
+            };
+            system.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::Some(&[parent]),
+                true,
+                refresh,
+            );
+            return system.process(parent).is_some_and(|server| {
+                server
+                    .exe()
+                    .and_then(|exe| exe.canonicalize().ok())
+                    .is_some_and(|exe| Some(exe) == executable)
+                    && matches!(server.cmd(), [_, flag, path, ..]
+                        if flag == "--server"
+                            && Path::new(path)
+                                .canonicalize()
+                                .is_ok_and(|path| path == *socket)
+                    )
+            });
+        }
+        // Remote supervisors deliberately omit a local pane reference. Their child still
+        // inherits the broker token, but a shared Codex daemon has no supervisor ancestor.
+        if remote
+            && process
+                .cmd()
+                .get(1)
+                .is_some_and(|arg| arg == crate::pty_host::PTY_HOST_FLAG)
+            && process
+                .exe()
+                .and_then(|exe| exe.canonicalize().ok())
+                .is_some_and(|exe| Some(exe) == executable)
+        {
+            return true;
+        }
+        pid = process.parent();
+    }
+    false
+}
+
+#[cfg(test)]
+#[path = "unit/codex_tests.rs"]
+mod tests;

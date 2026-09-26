@@ -614,7 +614,8 @@ fn restart_and_fork_are_offered_while_the_workflow_runs_and_a_started_fork_cance
             panes(&zellij).iter().any(|p| {
                 p.pane_info.id == before[0].pane_info.id
                     && !p.pane_info.exited
-                    && p.pane_info.terminal_command.as_deref() == Some("codex")
+                    && p.pane_info.terminal_command.as_deref()
+                        == Some("zellij hocus codex --command codex --")
             }) && fixture_reply(&zellij, "status") == "cancelled"
         },
     );
@@ -713,7 +714,8 @@ fn workflow_fork_reuses_the_source_layout_scrollback_directory_and_focus() {
                 p.pane_info.id == before[0].pane_info.id
                     && !p.pane_info.exited
                     && !p.pane_info.is_suppressed
-                    && p.pane_info.terminal_command.as_deref() == Some("codex")
+                    && p.pane_info.terminal_command.as_deref()
+                        == Some("zellij hocus codex --command codex --")
             })
     });
     let after = panes(&zellij);
@@ -835,9 +837,10 @@ fn workflow_fork_cancels_when_the_source_restarts_before_confirmation() {
         after.iter().filter(|p| !p.pane_info.is_plugin()).count(),
         before.len()
     );
-    assert!(!after
-        .iter()
-        .any(|p| p.pane_info.terminal_command.as_deref() == Some("codex")));
+    assert!(
+        !after.iter().any(|p| p.pane_info.terminal_command.as_deref()
+            == Some("zellij hocus codex --command codex --"))
+    );
     let mut restarted = expected;
     assert_eq!(restarted.args.pop().as_deref(), Some("original prompt"));
     assert_eq!(original.run_command(), restarted);

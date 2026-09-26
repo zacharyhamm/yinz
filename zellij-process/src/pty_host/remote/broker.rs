@@ -408,6 +408,7 @@ fn start_pane(
     // none, because only this machine can say what it should be.
     let mut cmd = cmd;
     let arg0 = resolve_default_shell(&mut cmd, &ShellSource::from_user(&user));
+    crate::command::resolve_codex_wrapper(host_bin, &mut cmd.command, &mut cmd.args)?;
 
     // Recomputed here, per pane, from *this* machine's passwd entry. Nothing is
     // inherited from the broker: its environment is a frozen copy of whichever

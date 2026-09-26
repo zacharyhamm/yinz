@@ -95,6 +95,19 @@ pub fn binary_for(kind: &str) -> &str {
     }
 }
 
+/// Route a Codex UI through the pane-aware launcher, retaining its original arguments.
+pub fn wrap_codex(program: String, args: Vec<String>) -> (String, Vec<String>) {
+    let mut wrapped = vec![
+        "hocus".to_owned(),
+        "codex".to_owned(),
+        "--command".to_owned(),
+        program,
+        "--".to_owned(),
+    ];
+    wrapped.extend(args);
+    ("zellij".to_owned(), wrapped)
+}
+
 /// Where a branch's worktree goes: `<dir>/<branch>`, with [`WORKTREE_PREFIX`] for a caller
 /// who does not name a directory.
 ///
@@ -346,6 +359,11 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     // Everything here is visible in `ps` and in the pane's title, so it carries settings,
     // never secrets. A credential reaches a Firecracker guest as a file, through the
     // provider's `credential_files`.
+    let (program, args) = if kind.as_deref() == Some("codex") && spec.hooks.unwrap_or(true) {
+        wrap_codex(program, args)
+    } else {
+        (program, args)
+    };
     let (path, args) = if env.is_empty() {
         (program, args)
     } else {
@@ -764,7 +782,20 @@ mod tests {
         .unwrap();
         assert!(command.args.is_empty());
         let (command, _) = plan(&spec("codex")).unwrap();
-        assert!(command.args.is_empty());
+        assert_eq!(command.path, PathBuf::from("zellij"));
+        assert_eq!(command.args, ["hocus", "codex", "--command", "codex", "--"]);
+        assert_eq!(
+            crate::agent::agent_kind_of(&command.path, &command.args).as_deref(),
+            Some("codex")
+        );
+        let (command, _) = plan(&Spec {
+            hooks: Some(false),
+            args: vec!["--no-daemon".into(), "original prompt".into()],
+            ..spec("codex")
+        })
+        .unwrap();
+        assert_eq!(command.path, PathBuf::from("codex"));
+        assert_eq!(command.args, ["--no-daemon", "original prompt"]);
     }
 
     fn without_hooks(kind: &str) -> Spec {
@@ -951,7 +982,7 @@ mod tests {
             permission_mode: Some("never".to_owned()),
             args: vec!["--verbose".to_owned()],
             prompt: Some("go".to_owned()),
-            ..spec("codex")
+            ..without_hooks("codex")
         })
         .unwrap();
         assert_eq!(
@@ -968,13 +999,13 @@ mod tests {
         let (command, _) = plan(&Spec {
             resume: Some("0192-abc".to_owned()),
             permission_mode: Some("full-auto".to_owned()),
-            ..spec("codex")
+            ..without_hooks("codex")
         })
         .unwrap();
         assert_eq!(command.args, vec!["resume", "0192-abc", "--full-auto"]);
         let (command, _) = plan(&Spec {
             permission_mode: Some("skip".to_owned()),
-            ..spec("codex")
+            ..without_hooks("codex")
         })
         .unwrap();
         assert_eq!(
@@ -1137,8 +1168,19 @@ mod tests {
     #[test]
     fn a_codex_run_resumes_through_its_subcommand() {
         let command = resume_command("codex", "0192-abc", Some("/w"), None).unwrap();
-        assert_eq!(command.path, PathBuf::from("codex"));
-        assert_eq!(command.args, vec!["resume", "0192-abc"]);
+        assert_eq!(command.path, PathBuf::from("zellij"));
+        assert_eq!(
+            command.args,
+            vec![
+                "hocus",
+                "codex",
+                "--command",
+                "codex",
+                "--",
+                "resume",
+                "0192-abc"
+            ]
+        );
         let command = resume_command("cursor", "chat-7", None, None).unwrap();
         assert_eq!(command.path, PathBuf::from("cursor-agent"));
         assert_eq!(command.args, vec!["--resume", "chat-7"]);

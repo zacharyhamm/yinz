@@ -2,6 +2,101 @@ use super::*;
 use std::os::unix::fs::{symlink, PermissionsExt};
 
 #[test]
+fn codex_wrappers_use_the_execution_hosts_binary_outside_path() {
+    let root = tempfile::tempdir().unwrap();
+    let host_bin = root.path().join("host zellij");
+    zellij_test_support::write_warm_script(&host_bin, "printf '%s\\n' \"$@\"");
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    symlink("/usr/bin/env", bin.join("env")).unwrap();
+    let (program, args) = zellij_runtime::agent::launch::wrap_codex(
+        "/opt/codex cli".into(),
+        vec![
+            "resume".into(),
+            "--last".into(),
+            "prompt with spaces=kept".into(),
+        ],
+    );
+    assert!(resolve_command_with_path(
+        &RunCommand {
+            command: program.clone().into(),
+            ..Default::default()
+        },
+        Some(bin.as_os_str()),
+    )
+    .is_none());
+
+    for with_env in [false, true] {
+        let mut cmd = RunCommand {
+            command: program.clone().into(),
+            args: args.clone(),
+            ..Default::default()
+        };
+        let mut expected = cmd.clone();
+        expected.command = host_bin.clone();
+        if with_env {
+            cmd.command = "env".into();
+            cmd.args.splice(
+                ..0,
+                [
+                    format!("PATH={}", bin.display()),
+                    "SETTING=value with spaces=kept".into(),
+                    program.clone(),
+                ],
+            );
+            expected = cmd.clone();
+            expected.args[2] = host_bin.to_str().unwrap().into();
+        }
+        resolve_codex_wrapper(&host_bin, &mut cmd.command, &mut cmd.args).unwrap();
+        assert_eq!(cmd, expected);
+        let output = std::process::Command::new(&cmd.command)
+            .args(&cmd.args)
+            .env("PATH", &bin)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{}\n", args.join("\n"))
+        );
+    }
+}
+
+#[test]
+fn codex_wrapper_resolution_leaves_other_commands_and_explicit_paths_unchanged() {
+    for (program, args) in [
+        ("codex", vec![]),
+        ("zellij", vec!["action", "new-pane"]),
+        ("zellij", vec!["hocus"]),
+        ("env", vec!["PATH=/remote/bin", "codex"]),
+        (
+            "env",
+            vec!["PATH=/remote/bin", "zellij", "action", "new-pane"],
+        ),
+        ("env", vec!["PATH=/remote/bin"]),
+        ("/other/zellij", vec!["hocus", "codex", "--"]),
+        (
+            "env",
+            vec!["PATH=/remote/bin", "/other/zellij", "hocus", "codex", "--"],
+        ),
+    ] {
+        let requested = RunCommand {
+            command: program.into(),
+            args: args.into_iter().map(String::from).collect(),
+            ..Default::default()
+        };
+        let mut resolved = requested.clone();
+        resolve_codex_wrapper(
+            Path::new("/remote/bin/zellij"),
+            &mut resolved.command,
+            &mut resolved.args,
+        )
+        .unwrap();
+        assert_eq!(resolved, requested);
+    }
+}
+
+#[test]
 fn command_lookup_agrees_with_execution_in_the_child_directory() {
     let root = tempfile::tempdir().unwrap();
     let cwd = root.path().canonicalize().unwrap();
