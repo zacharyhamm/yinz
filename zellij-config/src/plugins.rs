@@ -78,7 +78,8 @@ impl PluginConfig {
     /// configuration block.
     pub fn is_shared(&self) -> bool {
         // Delivery and view attachment survive the short-lived CLI client that loads them.
-        if matches!(&self.location, RunPluginLocation::Zellij(tag) if matches!(tag.to_string().as_str(), "swamp-bridge" | "swamp-workflow"))
+        // Agent launchers must create one pane per action, not one per attached client.
+        if matches!(&self.location, RunPluginLocation::Zellij(tag) if matches!(tag.to_string().as_str(), "swamp-bridge" | "swamp-workflow" | "hocus-new-agent"))
         {
             return true;
         }

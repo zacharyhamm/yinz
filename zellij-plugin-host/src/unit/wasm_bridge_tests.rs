@@ -801,6 +801,42 @@ fn detached_cached_cli_pipe(loading: bool, unload: bool) {
 }
 
 #[test]
+fn duplicate_agent_has_one_instance_across_client_attachments() {
+    let mut test = TestBridge::new();
+    let first = ClientId::new(1);
+    test.bridge.add_client(first).unwrap();
+    test.bridge.add_client(ClientId::new(2)).unwrap();
+    let mut run = RunPlugin {
+        location: RunPluginLocation::Zellij(PluginTag::new("hocus-new-agent")),
+        ..Default::default()
+    };
+    run.configuration.insert("duplicate_focused", "true");
+    run.configuration.insert("caller_terminal_pane_id", "7");
+    let (id, _) = test
+        .bridge
+        .load_plugin(
+            &Some(run),
+            None,
+            Size { rows: 5, cols: 20 },
+            None,
+            false,
+            Some(first),
+        )
+        .unwrap();
+    test.finish_reload(id);
+    assert_eq!(
+        test.bridge.all_plugin_ids(),
+        [(id, first)],
+        "each client instance would launch its own duplicate on the agent snapshot"
+    );
+
+    test.bridge.add_client(ClientId::new(3)).unwrap();
+    test.settle(id);
+    assert_eq!(test.bridge.all_plugin_ids(), [(id, first)]);
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
 fn cached_cli_pipe_after_instance_removal_completes_without_unloading() {
     let mut test = TestBridge::new();
     let first = ClientId::new(7);
