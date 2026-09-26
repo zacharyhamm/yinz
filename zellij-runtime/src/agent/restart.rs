@@ -5,6 +5,15 @@ use std::path::Path;
 /// could replay work or silently change the model, permissions, or working directory.
 pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, String> {
     let name = program.file_name().and_then(|name| name.to_str());
+    if name == Some("zellij") {
+        if let Some((inner, inner_args)) = crate::agent::unwrapped_program_and_args(program, args) {
+            if inner != program {
+                let mut result = args[..args.len() - inner_args.len()].to_vec();
+                result.extend(restart_args(inner, inner_args)?);
+                return Ok(result);
+            }
+        }
+    }
     if name == Some("env") {
         let mut index = 0;
         let mut options_done = false;
@@ -142,6 +151,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 "--oss",
                 "--search",
                 "--no-alt-screen",
+                "--no-daemon",
                 "--strict-config",
             ],
             &["-i", "--image"],

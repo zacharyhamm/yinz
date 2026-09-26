@@ -270,7 +270,10 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
                 // cannot read.
                 return Some("opens a new pane running an agent".to_owned());
             };
-            let mut sentence = format!("opens a new pane running `{}`", command.path.display());
+            let (program, _) =
+                zellij_tile::agent::unwrapped_program_and_args(&command.path, &command.args)
+                    .unwrap_or((&command.path, &command.args));
+            let mut sentence = format!("opens a new pane running `{}`", program.display());
             // The one flag worth a sentence of its own: an agent that never asks.
             if permission_checks_off(args.permission_mode.as_deref()) {
                 sentence.push_str(" with its permission checks off");

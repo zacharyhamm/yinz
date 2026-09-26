@@ -1115,11 +1115,24 @@ fn an_env_wrapped_agent_is_named_for_the_agent() {
 
 #[test]
 fn accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation() {
+    for kind in ["claude", "codex"] {
+        assert_hook_report_order(kind);
+    }
+}
+
+fn assert_hook_report_order(kind: &str) {
     use {zellij_types::agent::report::AgentReport, zellij_types::agent::report::AgentReportState};
     let mut mock = MockScreen::new(Size { cols: 80, rows: 20 });
     // No plugin consumer runs: screen delivery must only enqueue its events.
     let plugins = mock.plugin_receiver.take().unwrap();
     let instruction = |hook: &str, state: AgentReportState| {
+        let state = match state {
+            AgentReportState::Set(mut agent) => {
+                agent.kind = kind.into();
+                AgentReportState::Set(agent)
+            },
+            other => other,
+        };
         let json = serde_json::json!({"hook_event_name": hook}).to_string();
         let event = serde_json::from_str(&json).unwrap();
         ScreenInstruction::AgentReport(
@@ -1130,14 +1143,14 @@ fn accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation(
                 ),
                 state,
                 event: Some(zellij_types::agent::AgentEvent::from_hook(
-                    "claude",
+                    kind,
                     zellij_types::internal_ids::TerminalId::new(2),
                     &event,
                     json,
                 )),
                 trace: false,
                 process_id: ProcessId::new(42),
-                kind: "claude".into(),
+                kind: kind.into(),
             },
             std::time::Instant::now(),
         )
@@ -1180,12 +1193,18 @@ fn accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation(
                         for session in sessions {
                             for pane in session.panes.panes.values().flatten() {
                                 if pane.id == PaneId::Terminal(crate::TerminalId::new(2)) {
+                                    if let Some(agent) = &pane.agent {
+                                        assert_eq!(agent.kind, kind);
+                                    }
                                     state = pane.agent.as_ref().map(|a| a.state);
                                 }
                             }
                         }
                     },
-                    Event::AgentEvent(event) => observed.push((event.hook, state)),
+                    Event::AgentEvent(event) => {
+                        assert_eq!(event.kind, kind);
+                        observed.push((event.hook, state));
+                    },
                     _ => {},
                 }
             }

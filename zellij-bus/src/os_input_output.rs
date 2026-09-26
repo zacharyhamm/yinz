@@ -619,7 +619,7 @@ pub struct ServerOsInputOutput {
 
 #[cfg(not(windows))]
 impl ServerOsInputOutput {
-    /// Resolve where a command runs: nothing for a local one, the ssh host for an
+    /// Resolve where a command runs: this binary for a local Codex wrapper, the ssh host for an
     /// ssh one, and for a Firecracker one the endpoint the provider hands back once
     /// the VM is up. The returned command is the one to send there (a Firecracker
     /// command gets the guest cwd filled in); the second is the command as asked for,
@@ -635,7 +635,15 @@ impl ServerOsInputOutput {
     ) -> Result<(RunCommand, RunCommand, Option<RemoteEndpoint>)> {
         let rerun_cmd = cmd.clone();
         let (name, image, worktree) = match &cmd.target {
-            PaneTarget::Local => return Ok((cmd, rerun_cmd, None)),
+            PaneTarget::Local => {
+                zellij_process::command::resolve_codex_wrapper(
+                    &env::current_exe()
+                        .context("find this Zellij binary for the Codex launcher")?,
+                    &mut cmd.command,
+                    &mut cmd.args,
+                )?;
+                return Ok((cmd, rerun_cmd, None));
+            },
             PaneTarget::Ssh { host } => {
                 let endpoint = RemoteEndpoint {
                     host: host.clone(),
@@ -1302,6 +1310,12 @@ impl ServerOsApi for ServerOsInputOutput {
             return Ok((terminal_id, async_reader, None));
         }
 
+        let quit_cb = if cmd != rerun_cmd {
+            Box::new(move |pane_id, status, _| quit_cb(pane_id, status, rerun_cmd.clone()))
+                as Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>
+        } else {
+            quit_cb
+        };
         let (async_reader, child_pid) = self
             .pty_backend
             .spawn_terminal(cmd, failover_cmd, quit_cb, terminal_id)
@@ -1618,6 +1632,12 @@ impl ServerOsApi for ServerOsInputOutput {
         }
 
         self.clear_terminal_id(terminal_id).non_fatal();
+        let quit_cb = if run_command != rerun_command {
+            Box::new(move |pane_id, status, _| quit_cb(pane_id, status, rerun_command.clone()))
+                as Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>
+        } else {
+            quit_cb
+        };
         let (async_reader, child_pid) =
             self.pty_backend
                 .spawn_terminal(run_command, None, quit_cb, terminal_id)?;

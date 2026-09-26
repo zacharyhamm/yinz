@@ -99,6 +99,13 @@ fn main() {
             std::process::exit(if result.is_ok() { 0 } else { 1 });
         }
     }
+    if matches!(
+        &opts.command,
+        Some(Command::Hocus(zellij_cli::args::Hocus::CodexReport))
+    ) {
+        let result = hocus_hooks::hocus(zellij_cli::args::Hocus::CodexReport);
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
     configure_logger();
     create_config_and_cache_folders();
 

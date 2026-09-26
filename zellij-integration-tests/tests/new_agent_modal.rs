@@ -298,7 +298,17 @@ fn normal_duplicate_shortcut_starts_a_new_pane_and_focuses_it() {
     normal_agent_shortcut("duplicate_focused", "claude");
 }
 
+#[test]
+fn normal_codex_duplicate_shortcut_starts_a_new_pane_and_focuses_it() {
+    normal_agent_shortcut("duplicate_focused", "codex");
+}
+
 fn normal_agent_shortcut(action: &str, kind: &str) {
+    let source_kind = if action == "fork_focused" {
+        "claude"
+    } else {
+        kind
+    };
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(
             r#"
@@ -315,9 +325,9 @@ plugins {{ hocus-new-agent location="zellij:hocus-new-agent"; }}
 load_plugins clear-defaults=true {{ "zellij:hocus-agentd"; }}
 "#
         ))
-        .with_layout(LayoutInfo::Stringified(
-            "layout { pane command=\"claude\" cwd=\"/host/topic\"; }".into(),
-        ))
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane command=\"{source_kind}\" cwd=\"/host/topic\"; }}"
+        )))
         .start();
     let original = zellij.expect_pty_spawn();
     original.output(b"ORIGINAL AGENT\r\n");
@@ -339,7 +349,16 @@ load_plugins clear-defaults=true {{ "zellij:hocus-agentd"; }}
     else {
         panic!("the shortcut must start a command");
     };
-    assert_eq!(command.command, std::path::PathBuf::from(kind));
+    if kind == "codex" {
+        assert_eq!(command.command, std::path::PathBuf::from("zellij"));
+        assert_eq!(command.args, ["hocus", "codex", "--command", "codex", "--"]);
+    } else {
+        assert_eq!(command.command, std::path::PathBuf::from(kind));
+    }
+    assert_eq!(
+        zellij_types::agent::kind_from_program_and_args(&command.command, &command.args),
+        Some(kind)
+    );
     assert_eq!(
         command.cwd.as_deref(),
         Some(std::path::Path::new("/host/topic"))

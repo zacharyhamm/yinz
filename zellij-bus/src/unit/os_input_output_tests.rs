@@ -9,6 +9,147 @@ fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
 }
 
+fn codex_command(with_env: bool) -> RunCommand {
+    let (command, _) = zellij_runtime::agent::launch::plan(&zellij_runtime::agent::launch::Spec {
+        kind: Some("codex".into()),
+        env: if with_env {
+            BTreeMap::from([("SETTING".into(), "value".into())])
+        } else {
+            BTreeMap::new()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+    RunCommand {
+        command: command.path,
+        args: command.args,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
+    const CHILD_ENV: &str = "ZELLIJ_TEST_CODEX_PATH";
+    if env::var_os(CHILD_ENV).is_none() {
+        let bin = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/usr/bin/env", bin.path().join("env")).unwrap();
+        for incompatible in [false, true] {
+            if incompatible {
+                zellij_test_support::write_warm_script(&bin.path().join("zellij"), "exit 42\n");
+            }
+            let output = Command::new(env::current_exe().unwrap())
+                .args(["--exact", "os_input_output::os_input_output_tests::local_codex_wrappers_use_current_binary_and_keep_portable_reruns"])
+                .env(CHILD_ENV, "1")
+                .env("PATH", bin.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "incompatible={incompatible}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+        return;
+    }
+    let server = make_server();
+    server.set_pty_host_enabled(false);
+    let current_exe = env::current_exe().unwrap();
+    for with_env in [false, true] {
+        let requested = codex_command(with_env);
+        let (resolved, rerun, endpoint) = server.resolve_target(requested.clone(), None).unwrap();
+        let mut expected = requested.clone();
+        if with_env {
+            expected.args[1] = current_exe.to_str().unwrap().into();
+        } else {
+            expected.command = current_exe.clone();
+        }
+        assert_eq!(resolved, expected);
+        assert!(command_exists(&resolved));
+        assert_eq!(rerun, requested);
+        assert!(endpoint.is_none());
+        assert_eq!(server.resolve_target(rerun, None).unwrap().0, resolved);
+
+        // The test executable rejects the wrapper's arguments, but its exit still
+        // exercises command validation and the portable command returned to a held pane.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (terminal_id, _reader, _) = server
+            .spawn_terminal(
+                TerminalAction::RunCommand(requested.clone()),
+                Box::new(move |_, _, command| tx.send(command).unwrap()),
+                None,
+            )
+            .unwrap();
+        let held = rx.recv_timeout(AMPLE_TIMEOUT).unwrap();
+        assert_eq!(held, requested);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (_reader, _) = server
+            .re_run_command_in_terminal(
+                terminal_id,
+                held,
+                Box::new(move |_, _, command| tx.send(command).unwrap()),
+            )
+            .unwrap();
+        assert_eq!(rx.recv_timeout(AMPLE_TIMEOUT).unwrap(), requested);
+        server.clear_terminal_id(terminal_id).unwrap();
+    }
+    for (program, args) in [
+        ("codex", vec![]),
+        ("zellij", vec!["action", "new-pane"]),
+        ("env", vec!["SETTING=value", "codex"]),
+        ("env", vec!["SETTING=value", "zellij", "action", "new-pane"]),
+        ("/other/zellij", vec!["hocus", "codex", "--"]),
+    ] {
+        let requested = RunCommand {
+            command: program.into(),
+            args: args.into_iter().map(String::from).collect(),
+            ..Default::default()
+        };
+        let (resolved, rerun, endpoint) = server.resolve_target(requested.clone(), None).unwrap();
+        assert_eq!(resolved, requested);
+        assert_eq!(rerun, requested);
+        assert!(endpoint.is_none());
+    }
+}
+
+#[test]
+fn remote_codex_wrappers_keep_the_remote_executable() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = dir.path().join("provider");
+    zellij_test_support::write_warm_script(
+        &provider,
+        "printf '{\"version\":2,\"ssh_host\":\"build-box\"}'\n",
+    );
+    let server = make_server();
+    *server.firecracker.write().unwrap() = Some((
+        crate::firecracker::Provider::new(provider, AMPLE_TIMEOUT).unwrap(),
+        "work".to_owned(),
+    ));
+    for target in [
+        PaneTarget::Ssh {
+            host: "build-box".into(),
+        },
+        PaneTarget::Firecracker {
+            vm: "review".into(),
+            image: None,
+            worktree: None,
+        },
+    ] {
+        for with_env in [false, true] {
+            let requested = RunCommand {
+                target: target.clone(),
+                ..codex_command(with_env)
+            };
+            let (resolved, rerun, endpoint) =
+                server.resolve_target(requested.clone(), None).unwrap();
+            assert_eq!(resolved, requested);
+            assert_eq!(rerun, requested);
+            assert_eq!(endpoint.unwrap().host, "build-box");
+        }
+    }
+}
+
 #[test]
 fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
     let dir = tempfile::tempdir().unwrap();

@@ -32,6 +32,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1032,6 +1033,90 @@ fn a_remote_child_exiting_is_reported_as_a_child_exit() {
     );
 
     pane.close();
+}
+
+#[test]
+#[ignore]
+fn a_planned_codex_launch_works_without_zellij_on_the_remote_path() {
+    let hosts = start();
+    let bin = tempfile::tempdir_in(remote_test_dir()).unwrap();
+    // Rootless containers can map the test user to a different uid from this directory's owner.
+    std::fs::set_permissions(bin.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    zellij_test_support::write_warm_script(
+        &bin.path().join("codex"),
+        r#"command -v zellij >/dev/null && exit 91
+printf 'token=%s\npath=%s\nsetting=%s\n' "$ZELLIJ_REMOTE_PANE_TOKEN" "$PATH" "$SETTING"
+printf 'arg=<%s>\n' "$@"
+echo remote-codex-done
+exit 23"#,
+    );
+    // target/ is mounted here on the far machine; only the stub is on this PATH.
+    let remote_bin = format!(
+        "/usr/src/zellij/remote-test/{}",
+        bin.path().file_name().unwrap().to_str().unwrap()
+    );
+    let (command, _) = zellij_runtime::agent::launch::plan(&zellij_runtime::agent::launch::Spec {
+        kind: Some("codex".into()),
+        args: vec!["--no-daemon".into(), "--model=model=kept".into()],
+        prompt: Some("prompt with spaces".into()),
+        env: std::collections::BTreeMap::from([
+            ("PATH".into(), remote_bin.clone()),
+            ("SETTING".into(), "value with spaces=kept".into()),
+        ]),
+        ..Default::default()
+    })
+    .unwrap();
+    let cmd = RunCommand {
+        command: command.path,
+        args: command.args,
+        target: PaneTarget::Ssh { host: HOST.into() },
+        ..Default::default()
+    };
+    for carried_env in [
+        vec![],
+        // The broker rejects a carried PATH; the planner's explicit env wrapper wins.
+        vec![("PATH".into(), "/not-on-the-remote-machine".into())],
+    ] {
+        let (conn, socket) = hosts
+            .open_pane_with_env(
+                HOST,
+                &cmd,
+                None,
+                zellij_types::internal_ids::TerminalId::new(0),
+                carried_env,
+            )
+            .unwrap();
+        let reader = RemoteReader::new(conn.clone(), socket).unwrap();
+        let pane = pump(conn, reader);
+        let output = pane.wait_for_output("remote-codex-done");
+        assert!(
+            output.contains(&format!("token={}\r\n", pane.conn.pane_token())),
+            "{output}"
+        );
+        assert!(
+            output.contains(&format!("path={remote_bin}\r\n")),
+            "{output}"
+        );
+        assert!(
+            output.contains("setting=value with spaces=kept\r\n"),
+            "{output}"
+        );
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.starts_with("arg="))
+                .collect::<Vec<_>>(),
+            [
+                "arg=<--no-daemon>",
+                "arg=<--model=model=kept>",
+                "arg=<prompt with spaces>"
+            ],
+            "{output}"
+        );
+        pane.wait_until_ended(SETTLE).unwrap();
+        assert_eq!(pane.conn.child_exit(), Some(Some(23)));
+        pane.close();
+    }
 }
 
 /// A child can be gone before the broker has finished registering the pane it

@@ -587,7 +587,11 @@ fn an_authorized_codex_launch_includes_the_prompt_and_cwd_then_dispatches() {
     let body: serde_json::Value = serde_json::from_slice(body).unwrap();
     assert_eq!(body["state"]["human_request"], request);
     let launch = &body["state"]["pending_call"]["launch"];
-    assert_eq!(launch["program"], "codex");
+    assert_eq!(launch["program"], "zellij");
+    assert_eq!(
+        launch["args"],
+        json!(["hocus", "codex", "--command", "codex", "--", prompt])
+    );
     assert_eq!(launch["directory"], "/work/hocus");
     assert_eq!(launch["prompt"], prompt);
     let arguments = &body["state"]["pending_call"]["arguments"];
